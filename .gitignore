@@ -1,0 +1,40 @@
+# Log files
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# API credentials and secrets
+*.env
+.env.*
+secrets.json
+credentials.json
+access_token.txt
+access_token.json
+api_credentials.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data files (optional - uncomment if needed)
+# *.csv
+# *.xlsx
+# data/
