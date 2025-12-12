@@ -84,6 +84,7 @@ async def get_screener(strategy: str = 'momentum'):
     cache_key = f'screener_{strategy}'
     current_time = time.time()
     if cache_key in CACHE and (current_time - CACHE[cache_key].get('cache_time', 0)) < config.CACHE_TTL:
+        return CACHE[cache_key]['data']
     
     start_time = time.time()
     

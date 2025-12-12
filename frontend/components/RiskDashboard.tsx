@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState } from 'react';
+import CircularProgress from './CircularProgress';
 
 interface Position {
     symbol: string;
@@ -201,7 +202,7 @@ export default function PortfolioAnalyzer() {
             )}
 
             {/* Header */}
-            <div className="glass-card rounded-2xl p-6">
+            <div className="glass-card rounded-2xl p-6 animate-fade-in">
                 <div className="flex flex-col gap-4">
                     <div>
                         <h1 className="text-2xl font-bold">Portfolio Analyzer</h1>
@@ -210,7 +211,7 @@ export default function PortfolioAnalyzer() {
 
                     {/* Single Action Row */}
                     <div className="flex gap-3 items-center flex-wrap">
-                        <div className="flex-1 min-w-[280px] flex items-center bg-white/50 dark:bg-black/20 rounded-lg p-1 border border-gray-200/50 dark:border-gray-700/50">
+                        <div className="flex-1 min-w-[280px] flex items-center bg-white/50 dark:bg-black/20 rounded-lg p-1 border border-gray-200/50 dark:border-gray-700/50 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all">
                             <input
                                 type="text"
                                 value={inputTicker}
@@ -235,18 +236,18 @@ export default function PortfolioAnalyzer() {
                                         setInputTicker('');
                                     }
                                 }}
-                                className="px-4 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition-colors text-sm font-medium"
+                                className="px-4 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition-all text-sm font-medium shadow-sm hover:shadow-md"
                             >
                                 Add
                             </button>
                         </div>
-                        <button onClick={() => setShowUpload(true)} className="px-4 py-2 rounded-lg bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 transition-colors text-sm font-medium whitespace-nowrap">
+                        <button onClick={() => setShowUpload(true)} className="px-4 py-2.5 rounded-lg bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 transition-all text-sm font-medium whitespace-nowrap border border-purple-500/20">
                             📊 Upload
                         </button>
-                        <button onClick={equalAllocation} disabled={positions.length === 0} className="px-4 py-2 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 transition-colors disabled:opacity-50 text-sm font-medium whitespace-nowrap">
+                        <button onClick={equalAllocation} disabled={positions.length === 0} className="px-4 py-2.5 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 transition-all disabled:opacity-50 text-sm font-medium whitespace-nowrap border border-blue-500/20">
                             Equal Alloc
                         </button>
-                        <button onClick={analyzeRisk} disabled={loading || positions.length === 0} className="px-4 py-2 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 transition-colors disabled:opacity-50 text-sm font-medium whitespace-nowrap">
+                        <button onClick={analyzeRisk} disabled={loading || positions.length === 0} className="px-4 py-2.5 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 transition-all disabled:opacity-50 text-sm font-medium whitespace-nowrap border border-green-500/20">
                             {loading ? 'Analyzing...' : '🎯 Analyze'}
                         </button>
                     </div>
@@ -255,9 +256,9 @@ export default function PortfolioAnalyzer() {
 
             {/* Positions Manager */}
             {positions.length > 0 && (
-                <div className="glass-card rounded-2xl p-6">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-sm font-semibold opacity-70 uppercase">Positions ({positions.length})</h3>
+                <div className="glass-card rounded-2xl p-6 animate-fade-in">
+                    <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-sm font-semibold opacity-70 uppercase tracking-wide">Positions ({positions.length})</h3>
                         <div className="text-sm">
                             <span className="opacity-60">Total: </span>
                             <span className={`font-bold ${Math.abs(positions.reduce((sum, p) => sum + (p.allocation || 0), 0) - 100) < 0.01 ? 'text-green-600' : 'text-red-500'}`}>
@@ -268,7 +269,7 @@ export default function PortfolioAnalyzer() {
                     </div>
                     <div className="space-y-3">
                         {positions.map((pos, idx) => (
-                            <div key={idx} className="flex items-center gap-3 p-3 rounded-lg bg-white/40 dark:bg-white/5 border border-gray-100/50 dark:border-gray-800/50">
+                            <div key={idx} className="flex items-center gap-3 p-4 rounded-lg bg-white/40 dark:bg-white/5 border border-gray-100/50 dark:border-gray-800/50 hover:border-gray-200 dark:hover:border-gray-700 transition-colors">
                                 <div className="flex-1 font-semibold">{pos.symbol}</div>
                                 <input
                                     type="number"
@@ -278,38 +279,43 @@ export default function PortfolioAnalyzer() {
                                         const val = Number(e.target.value);
                                         setPositions(prev => prev.map((p, i) => i === idx ? { ...p, allocation: val } : p));
                                     }}
-                                    className="w-24 px-3 py-1 rounded border border-gray-300 dark:border-gray-700 bg-transparent text-right"
+                                    className="w-28 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white/50 dark:bg-black/30 text-right focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
                                 />
-                                <button onClick={() => removePosition(idx)} className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded px-2 py-1">✕</button>
+                                <button onClick={() => removePosition(idx)} className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg px-3 py-2 transition-colors">✕</button>
                             </div>
                         ))}
                     </div>
                 </div>
             )}
 
+
             {/* Results */}
             {riskData ? (
                 <>
-                    {/* Risk Grade */}
-                    <div className="glass-card rounded-2xl p-8 text-center bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20">
-                        <div className="text-sm opacity-60 mb-2">Portfolio Risk Grade</div>
-                        <div className={`text-6xl font-bold mb-4 ${riskData.portfolio_metrics.risk_grade.startsWith('A') ? 'text-green-600' :
-                            riskData.portfolio_metrics.risk_grade.startsWith('B') ? 'text-blue-600' :
-                                riskData.portfolio_metrics.risk_grade.startsWith('C') ? 'text-yellow-600' : 'text-red-600'
-                            }`}>
-                            {riskData.portfolio_metrics.risk_grade}
-                        </div>
-                        <div className="text-xl">Score: {riskData.portfolio_metrics.combined_risk_score}/10</div>
-                        <div className="flex justify-center gap-8 mt-4 text-sm">
-                            <div><span className="opacity-60">Technical:</span> <span className="font-bold">{riskData.portfolio_metrics.technical_risk_score}</span></div>
-                            <div><span className="opacity-60">Fundamental:</span> <span className="font-bold">{riskData.portfolio_metrics.fundamental_risk_score}</span></div>
+                    {/* Risk Grade with Circular Progress */}
+                    <div className="glass-card rounded-2xl p-8 animate-slide-up">
+                        <div className="flex flex-col md:flex-row items-center justify-center gap-8">
+                            <CircularProgress
+                                value={riskData.portfolio_metrics.combined_risk_score}
+                                grade={riskData.portfolio_metrics.risk_grade}
+                            />
+                            <div className="flex flex-col gap-4 text-center md:text-left">
+                                <div>
+                                    <div className="text-sm opacity-60 uppercase tracking-wide mb-1">Technical Risk</div>
+                                    <div className="text-2xl font-bold">{riskData.portfolio_metrics.technical_risk_score.toFixed(1)}<span className="text-base opacity-50">/10</span></div>
+                                </div>
+                                <div>
+                                    <div className="text-sm opacity-60 uppercase tracking-wide mb-1">Fundamental Risk</div>
+                                    <div className="text-2xl font-bold">{riskData.portfolio_metrics.fundamental_risk_score.toFixed(1)}<span className="text-base opacity-50">/10</span></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
                     {/* Warnings */}
                     {riskData.warnings.length > 0 && (
-                        <div className="glass-card rounded-2xl p-6 bg-red-50/50 dark:bg-red-900/10 border-2 border-red-200 dark:border-red-800">
-                            <h3 className="text-sm font-semibold text-red-600 mb-4">⚠️ WARNINGS ({riskData.warnings.length})</h3>
+                        <div className="glass-card rounded-2xl p-6 bg-red-50/50 dark:bg-red-900/10 border-2 border-red-200 dark:border-red-800 animate-fade-in">
+                            <h3 className="text-sm font-semibold text-red-600 mb-4 uppercase tracking-wide">⚠️ WARNINGS ({riskData.warnings.length})</h3>
                             <div className="space-y-2">
                                 {riskData.warnings.map((w, i) => (
                                     <div key={i} className="text-sm p-3 rounded bg-white/50 dark:bg-black/20">{w}</div>
@@ -319,7 +325,7 @@ export default function PortfolioAnalyzer() {
                     )}
 
                     {/* Metrics */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in">
                         <MetricCard label="Sharpe Ratio" value={riskData.portfolio_metrics.sharpe_ratio?.toFixed(2) || '0.00'} />
                         <MetricCard label="Volatility" value={`${(riskData.portfolio_metrics.volatility * 100 || 0).toFixed(1)}%`} />
                         <MetricCard label="VaR (95%)" value={`${(riskData.portfolio_metrics.var_95 * 100 || 0).toFixed(1)}%`} />
@@ -327,8 +333,8 @@ export default function PortfolioAnalyzer() {
                     </div>
 
                     {/* Position Breakdown */}
-                    <div className="glass-card rounded-2xl p-6 overflow-x-auto">
-                        <h3 className="text-sm font-semibold opacity-70 mb-4 uppercase">Position Breakdown</h3>
+                    <div className="glass-card rounded-2xl p-6 overflow-x-auto animate-slide-up">
+                        <h3 className="text-sm font-semibold opacity-70 mb-6 uppercase tracking-wide">Position Breakdown</h3>
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="border-b border-gray-200 dark:border-gray-700">
@@ -378,9 +384,9 @@ export default function PortfolioAnalyzer() {
 
 function MetricCard({ label, value }: { label: string; value: string }) {
     return (
-        <div className="glass-card rounded-xl p-4">
-            <div className="text-xs opacity-50 mb-1">{label}</div>
-            <div className="text-xl font-bold">{value}</div>
+        <div className="glass-card rounded-xl p-5 hover:shadow-lg transition-all duration-300">
+            <div className="text-xs opacity-60 mb-2 uppercase tracking-wide">{label}</div>
+            <div className="text-2xl font-bold tabular-nums">{value}</div>
         </div>
     );
 }
