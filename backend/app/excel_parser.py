@@ -14,7 +14,7 @@ class SmartFinancialParser:
     
     def __init__(self):
         # Load from environment variable
-        self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY', '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')
+        self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY', '')
         self.model = "kwaipilot/kat-coder-pro-v1"
         
     def parse_excel(self, file_content: bytes, filename: str) -> Tuple[pd.DataFrame, Dict]:
