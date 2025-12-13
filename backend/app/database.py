@@ -1,19 +1,28 @@
 """
 Database models for NSE Trading Screener
 Supports historical prices, financial data, and quarterly results
+Now using PostgreSQL instead of SQLite
 """
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, Text, ForeignKey, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from pathlib import Path
+import os
+from dotenv import load_dotenv
 
-# Database setup
-DB_PATH = Path(__file__).parent.parent / 'data' / 'screener.db'
-DB_PATH.parent.mkdir(exist_ok=True)
+# Load environment variables
+load_dotenv('database/.env')
 
-DATABASE_URL = f"sqlite:///{DB_PATH}"
-engine = create_engine(DATABASE_URL, echo=False)
+# Database setup - PostgreSQL
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '5432')
+DB_NAME = os.getenv('DB_NAME', 'algotrading')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '')
+
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -200,7 +209,7 @@ class DataUpdateLog(Base):
 def init_db():
     """Initialize database and create all tables"""
     Base.metadata.create_all(bind=engine)
-    print(f"Database initialized at: {DB_PATH}")
+    print(f"Database initialized: PostgreSQL at {DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 
 def get_db():

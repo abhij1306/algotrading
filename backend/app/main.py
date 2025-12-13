@@ -1,24 +1,16 @@
-"""
-FastAPI main application
-NSE Intraday/Swing Trading Screener
-"""
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, WebSocket, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
-import time
-from .config import config
-from .screener import run_screener
-from .data_fetcher import fetch_yfinance_data
-from .models import ScreenerResponse, HealthResponse
-from .cache_api import router as cache_router
+from sqlalchemy import create_engine, desc, func
+from sqlalchemy.orm import sessionmaker
+from typing import List, Optional
+import json
+from datetime import date
+from .database import Base, Company, FinancialStatement, engine, SessionLocal
+from .data_repository import DataRepository
 
-app = FastAPI(
-    title="NSE Trading Screener",
-    description="Intraday and Swing trading stock screener for NSE F&O stocks",
-    version="1.0.0"
-)
+app = FastAPI()
 
-# CORS middleware
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,487 +19,301 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include cache management routes
-app.include_router(cache_router, prefix="/api", tags=["cache"])
+# Start Cache Manager
+# Initialize Database
+Base.metadata.create_all(bind=engine)
 
-# In-memory cache
-CACHE = {
-    'screener': None,
-    'generated_at': None,
-    'cache_time': 0
+# --- Compute Features (EMA, RSI, etc) ---
+import pandas as pd
+from .indicators import compute_features
+
+# --- Cache for Screeners ---
+SCREENER_CACHE = {
+    'last_update': None,
+    'data': []
 }
 
 @app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "NSE Trading Screener API",
-        "version": "1.0.0",
-        "mode": config.get_mode(),
-        "endpoints": {
-            "screener": "/api/screener",
-            "history": "/api/history/{symbol}",
-            "health": "/api/health"
+def read_root():
+    return {"status": "ok", "message": "AlgoTrading Backend Running"}
+
+@app.get("/api/symbols/search")
+async def search_symbols(q: str = ""):
+    if len(q) < 1:
+        return {"symbols": []}
+    
+    from .database import SessionLocal, Company
+    db = SessionLocal()
+    try:
+        companies = db.query(Company).filter(
+            Company.symbol.ilike(f"{q}%")
+        ).order_by(Company.symbol).limit(10).all()
+        
+        return {
+            "symbols": [
+                {"symbol": c.symbol, "name": c.name} 
+                for c in companies
+            ]
         }
-    }
-
-@app.get("/api/health", response_model=HealthResponse)
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "mode": config.get_mode(),
-        "has_fyers": config.HAS_FYERS
-    }
-
-@app.get("/api/strategies")
-async def get_strategies():
-    """Get available trading strategies"""
-    from .strategies import get_all_strategies
-    return {
-        "strategies": get_all_strategies()
-    }
-
-@app.get("/api/market-data")
-async def get_market_data_api():
-    """Get market data (FII/DII activity)"""
-    from .market_data import get_market_data
-    return get_market_data()
+    finally:
+        db.close()
 
 @app.get("/api/screener")
-async def get_screener(strategy: str = 'momentum'):
+async def get_screener(page: int = 1, limit: int = 100, sort_by: str = 'symbol', sort_order: str = 'asc', symbol: str = None):
     """
-    Main screener endpoint with strategy selection
-    Returns stocks based on selected strategy
+    Returns paginated list of companies with technical indicators.
+    Also supports sorting and filtering by symbol.
     """
-    # Check cache
-    cache_key = f'screener_{strategy}'
-    current_time = time.time()
-    if cache_key in CACHE and (current_time - CACHE[cache_key].get('cache_time', 0)) < config.CACHE_TTL:
-        return CACHE[cache_key]['data']
-    
-    start_time = time.time()
-    
+    db = SessionLocal()
+    repo = DataRepository(db)
     try:
-        from .strategies import calculate_score_with_strategy, get_strategy
-        from .database import SessionLocal
-        from .data_repository import DataRepository
-        from .indicators import compute_features
-        from .data_fetcher import fetch_fyers_quotes
+        # Complex sorting (RSI etc) requires full compute, so for first load we force Symbol sort.
         
-        # Get strategy config
-        strategy_config = get_strategy(strategy)
+        offset = (page - 1) * limit
+        companies_query = db.query(Company).filter(Company.is_active == True)
         
-        # Get database session
-        db = SessionLocal()
-        repo = DataRepository(db)
+        # Add symbol filter if provided
+        if symbol:
+            companies_query = companies_query.filter(Company.symbol == symbol.upper())
         
-        # Get all F&O companies
-        companies = repo.get_all_companies(fno_only=True, active_only=True)
-        universe = [c.symbol for c in companies]
+        total_records = companies_query.count() # Fast count
         
+        # If user requested specific sort that we can't do in SQL easily (like RSI), 
+        # we warn or fallback. For now, just fetch by symbol to show *something*.
+        companies = companies_query.order_by(Company.symbol).offset(offset).limit(limit).all()
         
-        # Compute features for all stocks
-        
-        # Compute features for all stocks
-        all_features = []
-        for symbol in universe:
+        computed_list = []
+        for company in companies:
             try:
-                # Get historical data from database
-                hist = repo.get_historical_prices(symbol, days=365)
-                if hist is None or hist.empty:
-                    continue
+                hist = repo.get_historical_prices(company.symbol, days=200)
+                if hist is not None and not hist.empty:
+                    features = compute_features(company.symbol, hist)
+                else:
+                    features = {'symbol': company.symbol, 'close': 0, 'volume': 0, 'ema20': 0, 'ema50': 0, 'atr_pct': 0, 'rsi': 0, 'vol_percentile': 0}
                 
-                # Compute features
-                features = compute_features(symbol, hist)
-                if features:
-                    all_features.append(features)
-            except Exception as e:
-                print(f"Error processing {symbol}: {e}")
+                if 'symbol' not in features:
+                    features['symbol'] = company.symbol
+                computed_list.append(features)
+            except:
                 continue
         
-        # Get real-time quotes if Fyers is available
-        if config.HAS_FYERS and all_features:
-            try:
-                symbols = [f['symbol'] for f in all_features]
-                quotes = fetch_fyers_quotes(symbols)
-                
-                # Update latest prices
-                for features in all_features:
-                    symbol = features['symbol']
-                    if symbol in quotes:
-                        quote = quotes[symbol]
-                        features['close'] = quote['ltp']
-                        features['volume'] = quote.get('volume', features.get('volume', 0))
-                        features['data_source'] = 'fyers'
-            except Exception as e:
-                print(f"Failed to fetch real-time quotes: {e}")
-        
-        # Calculate scores using selected strategy
-        for features in all_features:
-            score = calculate_score_with_strategy(features, strategy)
-            features['score'] = score
-        
-        # Filter and sort by score
-        stocks = [f for f in all_features if f.get('score', 0) > 0]
-        stocks.sort(key=lambda x: x.get('score', 0), reverse=True)
-        
-        # Limit to top 50
-        stocks = stocks[:50]
-        
-        # Build response
-        response = {
-            'stocks': stocks,
-            'stats': {
-                'total_screened': len(universe),
-                'features_computed': len(all_features),
-                'stock_count': len(stocks)
-            },
-            'generated_at': datetime.utcnow().isoformat() + 'Z',
-            'mode': config.get_mode(),
-            'strategy': strategy,
-            'processing_time_seconds': round(time.time() - start_time, 2)
-        }
-        
-        # Update cache
-        CACHE[cache_key] = {
-            'data': response,
-            'cache_time': current_time
-        }
-        
-        
         db.close()
-        return response
-        
-        db.close()
-        return response
-        
-    except Exception as e:
-        print(f"Error in screener: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Screening failed: {str(e)}")
-
-@app.get("/api/history/{symbol}")
-async def get_history(symbol: str, days: int = 400):
-    """
-    Get historical data for a symbol
-    
-    Args:
-        symbol: Stock symbol (without .NS)
-        days: Number of days (default: 400)
-    """
-    try:
-        from .data_fetcher import fetch_historical_data
-        
-        # Use our robust fetcher (DB -> Fyers -> yfinance)
-        hist = fetch_historical_data(symbol, days=days)
-        
-        if hist is None or hist.empty:
-            raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
-        
-        # Reset index to get Date column if it's the index
-        if 'Date' not in hist.columns and hist.index.name == 'Date':
-            hist = hist.reset_index()
-            
-        # Ensure Date format
-        if 'Date' in hist.columns:
-            hist['Date'] = pd.to_datetime(hist['Date']).dt.strftime('%Y-%m-%d')
         
         return {
-            'symbol': symbol,
-            'history': hist.tail(days).to_dict(orient='records')
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching history: {str(e)}")
-
-@app.get("/api/fundamentals/{symbol}")
-async def get_fundamentals(symbol: str):
-    """
-    Get fundamental data for a symbol
-    """
-    try:
-        import yfinance as yf
-        ticker = yf.Ticker(symbol + ".NS")
-        info = ticker.info
-        return {
-            "symbol": symbol,
-            "sector": info.get("sector", "Unknown"),
-            "industry": info.get("industry", "Unknown"),
-            "marketCap": info.get("marketCap", 0),
-            "peRatio": info.get("trailingPE", 0),
-            "bookValue": info.get("bookValue", 0),
-            "dividendYield": info.get("dividendYield", 0),
-        }
-    except Exception as e:
-        print(f"Error fetching fundamentals for {symbol}: {e}")
-        return {
-            "symbol": symbol,
-            "error": str(e)
-        }
-
-@app.post("/api/upload/financials")
-async def upload_financials(file: UploadFile = File(...), symbol: str = Form(...)):
-    """
-    Upload Screener.in Excel for fundamentals
-    """
-    try:
-        content = await file.read()
-        
-        # Parse Excel
-        from .excel_parser import parse_screener_excel
-        data = parse_screener_excel(content)
-        
-        if not data:
-            # Parser returned no data (not implemented or format not recognized)
-            # Still return success so user knows file was received
-            return {
-                "message": f"File uploaded for {symbol}, but no financial data extracted. Excel parser needs implementation for this format.",
-                "symbol": symbol,
-                "records_saved": 0
+            'data': computed_list,
+            'meta': {
+                'page': page,
+                'limit': limit,
+                'total': total_records,
+                'total_pages': (total_records + limit - 1) // limit if limit > 0 else 0
             }
-             
-        # Save to DB
-        from .database import SessionLocal
-        from .data_repository import DataRepository
-        
-        db = SessionLocal()
-        repo = DataRepository(db)
-        
-        count = 0
-        for record in data:
-            repo.save_financial_statement(symbol, record)
-            count += 1
-            
-        db.close()
-        
-        return {"message": f"Successfully saved {count} financial records for {symbol}"}
+        }
         
     except Exception as e:
-        print(f"Upload error: {e}")
+        db.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/symbols")
-async def get_symbols():
-    """Get all available symbols"""
-    try:
-        from .database import SessionLocal
-        from .data_repository import DataRepository
-        
-        db = SessionLocal()
-        repo = DataRepository(db)
-        companies = repo.get_all_companies(fno_only=True, active_only=True)
-        db.close()
-        
-        return {"symbols": [c.symbol for c in companies]}
-    except Exception as e:
-        return {"symbols": [], "error": str(e)}
-
-def sanitize_for_json(obj):
-    """Replace NaN and inf values with safe defaults"""
-    import math
-    if isinstance(obj, dict):
-        return {k: sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [sanitize_for_json(item) for item in obj]
-    elif isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return 0.0
-        return obj
-    return obj
-
-@app.post("/api/risk/comprehensive")
-async def comprehensive_risk_assessment(request: dict):
+@app.get("/api/screener/financials")
+async def get_financials_screener(page: int = 1, limit: int = 100, sort_by: str = 'symbol', sort_order: str = 'asc', symbol: str = None):
     """
-    Comprehensive risk assessment combining technical and fundamental analysis
-    Request: {symbols: [...], allocations: [...], lookback_days: 365}
+    Returns paginated list of companies with latest financial data
     """
+    db = SessionLocal()
     try:
-        from .database import SessionLocal
-        from .data_repository import DataRepository
-        from .risk_metrics import RiskMetricsEngine
-        from .data_fetcher import fetch_historical_data
-        import pandas as pd
-        import numpy as np
+        offset = (page - 1) * limit
         
-        symbols = request.get('symbols', [])
-        allocations = request.get('allocations', [])
-        lookback_days = request.get('lookback_days', 365)
+        # Subquery to get latest financial statement date for each company
+        latest_subquery = db.query(
+            FinancialStatement.company_id,
+            func.max(FinancialStatement.period_end).label('max_date')
+        ).filter(FinancialStatement.period_type == 'annual').group_by(FinancialStatement.company_id).subquery()
         
-        if not symbols:
-            raise HTTPException(status_code=400, detail="No symbols provided")
+        query = db.query(Company, FinancialStatement).join(
+            latest_subquery,
+            (FinancialStatement.company_id == latest_subquery.c.company_id) & 
+            (FinancialStatement.period_end == latest_subquery.c.max_date)
+        ).join(
+            Company, Company.id == FinancialStatement.company_id
+        ).filter(Company.is_active == True)
         
-        # Normalize allocations
-        if not allocations or len(allocations) != len(symbols):
-            allocations = [100.0 / len(symbols)] * len(symbols)
+        # Add symbol filter if provided
+        if symbol:
+            query = query.filter(Company.symbol == symbol.upper())
         
-        total_alloc = sum(allocations)
-        allocations = [a / total_alloc for a in allocations]
+        # Get total count before pagination
+        total_records = query.count()
         
-        db = SessionLocal()
-        repo = DataRepository(db)
-        engine = RiskMetricsEngine()
+        # Apply sorting
+        if sort_by == 'symbol':
+            sort_col = Company.symbol
+        elif hasattr(FinancialStatement, sort_by):
+            sort_col = getattr(FinancialStatement, sort_by)
+        else:
+            sort_col = Company.symbol
+            
+        if sort_order == 'desc':
+            query = query.order_by(desc(sort_col))
+        else:
+            query = query.order_by(sort_col)
+            
+        results = query.offset(offset).limit(limit).all()
         
-        position_metrics = []
-        all_warnings = []
-        portfolio_returns = None
-        
-        # Calculate NIFTY returns once for beta calculation
-        nifty_returns = None
-        nifty_data = repo.get_historical_prices("NIFTY", days=lookback_days)
-        if not nifty_data.empty:
-            nifty_df = pd.DataFrame(nifty_data)
-            nifty_df.columns = [c.lower() for c in nifty_df.columns]
-            if 'close' in nifty_df.columns:
-                nifty_returns = engine.calculate_returns(nifty_df['close'])
-        
-        for i, symbol in enumerate(symbols):
-            # Fetch price data using robust fetcher
-            price_data = fetch_historical_data(symbol, days=lookback_days)
-            
-            if price_data is None or price_data.empty:
-                continue
-            
-            # Normalize column names to lowercase
-            price_data.columns = [c.lower() for c in price_data.columns]
-            
-            if 'close' not in price_data.columns:
-                continue
-            
-            prices = price_data['close']
-            returns = engine.calculate_returns(prices)
-            
-            # Calculate technical metrics
-            tech_metrics = {
-                'sharpe_ratio': engine.sharpe_ratio(returns),
-                'sortino_ratio': engine.sortino_ratio(returns),
-                'max_drawdown': engine.max_drawdown(prices),
-                'var_95': engine.value_at_risk(returns, 0.95),
-                'var_99': engine.value_at_risk(returns, 0.99),
-                'cvar_95': engine.conditional_var(returns, 0.95),
-                'volatility': engine.annualized_volatility(returns),
-                'beta': engine.beta(returns, nifty_returns) if isinstance(nifty_returns, pd.Series) and len(nifty_returns) > 0 else 1.0
-            }
-            
-            # Fetch fundamental data
-            financials = repo.get_latest_financials(symbol)
-            fund_metrics = {}
-            
-            if financials:
-                # Calculate fundamental metrics from REAL data only
-                total_debt = (financials.total_debt or 0)
-                equity = (financials.shareholders_equity or 0)
-                
-                fund_metrics = {
-                    'debt_equity': engine.debt_to_equity(total_debt, equity) if equity > 0 else 0,
-                    'roe': engine.roe(financials.net_income or 0, equity) if equity > 0 else 0,
-                    'roa': engine.roa(financials.net_income or 0, financials.total_assets or 0),
-                    'profit_margin': engine.profit_margin(financials.net_income or 0, financials.revenue or 0),
-                    'current_ratio': engine.current_ratio(
-                        financials.total_assets or 0,  # Approximation
-                        financials.total_liabilities or 0
-                    ),
-                    'interest_coverage': 999.0
-                }
-                
-                # Calculate risk scores
-                tech_score = engine.technical_risk_score(tech_metrics)
-                fund_score = engine.fundamental_risk_score(fund_metrics)
-                combined_score, grade = engine.combined_risk_score(tech_score, fund_score)
-            else:
-                # NO mock data - use technical analysis ONLY
-                fund_metrics = {}
-                tech_score = engine.technical_risk_score(tech_metrics)
-                fund_score = 5.0  # Neutral score when no data
-                combined_score = tech_score  # Technical only
-                grade = engine._score_to_grade(combined_score)
-            
-            # Generate warnings
-            warnings = engine.generate_warnings(symbol, tech_metrics, fund_metrics)
-            all_warnings.extend(warnings)
-            
-            # Build position metrics
-            position_metrics.append({
-                'symbol': symbol,
-                'allocation': allocations[i],
-                'technical_score': round(tech_score, 2),
-                'fundamental_score': round(fund_score, 2),
-                'combined_score': round(combined_score, 2),
-                'risk_grade': grade,
-                **{k: round(v, 4) if isinstance(v, (int, float)) else v 
-                   for k, v in tech_metrics.items()},
-                **{k: round(v, 4) if isinstance(v, (int, float)) else v 
-                   for k, v in fund_metrics.items()}
+        data = []
+        for company, fs in results:
+            data.append({
+                'symbol': company.symbol,
+                'market_cap': float(company.market_cap) if company.market_cap else 0,
+                'revenue': float(fs.revenue) if fs.revenue else 0,
+                'net_income': float(fs.net_income) if fs.net_income else 0,
+                'eps': float(fs.eps) if fs.eps else 0,
+                'roe': float(fs.roe) if fs.roe else 0,
+                'debt_to_equity': float(fs.debt_to_equity) if fs.debt_to_equity else 0,
+                'pe_ratio': float(fs.pe_ratio) if fs.pe_ratio else 0,
+                'period_end': fs.period_end.isoformat()
             })
             
-            # Accumulate portfolio returns
-            if not isinstance(portfolio_returns, pd.Series):
-                portfolio_returns = returns * allocations[i]
-            else:
-                portfolio_returns = portfolio_returns + (returns * allocations[i])
-        
-        # Calculate portfolio-level metrics
-        if isinstance(portfolio_returns, pd.Series) and len(portfolio_returns) > 0:
-            portfolio_tech = {
-                'sharpe_ratio': engine.sharpe_ratio(portfolio_returns),
-                'sortino_ratio': engine.sortino_ratio(portfolio_returns),
-                'var_95': engine.value_at_risk(portfolio_returns, 0.95),
-                'var_99': engine.value_at_risk(portfolio_returns, 0.99),
-                'cvar_95': engine.conditional_var(portfolio_returns, 0.95),
-                'volatility': engine.annualized_volatility(portfolio_returns),
-                'beta': engine.beta(portfolio_returns, nifty_returns) if isinstance(nifty_returns, pd.Series) and len(nifty_returns) > 0 else 1.0
-            }
-            
-            # Average fundamental scores
-            avg_fund_score = np.mean([p['fundamental_score'] for p in position_metrics])
-            avg_tech_score = np.mean([p['technical_score'] for p in position_metrics])
-            
-            portfolio_combined, portfolio_grade = engine.combined_risk_score(avg_tech_score, avg_fund_score)
-            
-            portfolio_metrics = {
-                'technical_risk_score': round(avg_tech_score, 2),
-                'fundamental_risk_score': round(avg_fund_score, 2),
-                'combined_risk_score': round(portfolio_combined, 2),
-                'risk_grade': portfolio_grade,
-                **{k: round(v, 4) if isinstance(v, (int, float)) else v 
-                   for k, v in portfolio_tech.items()}
-            }
-        else:
-            portfolio_metrics = {
-                'technical_risk_score': 5.0,
-                'fundamental_risk_score': 5.0,
-                'combined_risk_score': 5.0,
-                'risk_grade': 'C',
-                'sharpe_ratio': 0.0,
-                'var_95': 0.0,
-                'var_99': 0.0,
-                'cvar_95': 0.0,
-                'volatility': 0.0,
-                'beta': 1.0,
-                'sortino_ratio': 0.0
-            }
-        
         db.close()
         
-        response = {
-            'portfolio_metrics': portfolio_metrics,
-            'position_metrics': position_metrics,
-            'warnings': all_warnings
+        return {
+            'data': data,
+            'meta': {
+                'page': page,
+                'limit': limit,
+                'total': total_records,
+                'total_pages': (total_records + limit - 1) // limit if limit > 0 else 0
+            }
         }
         
-        # Sanitize NaN/inf values before returning
-        return sanitize_for_json(response)
+    except Exception as e:
+        print(f"Error in financials screener: {str(e)}")
+        # import traceback
+        # traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Financials failed: {str(e)}")
+
+@app.post("/api/upload/bulk-financials")
+async def upload_financials(files: List[UploadFile] = File(...)):
+    db = SessionLocal()
+    from .excel_parser import SmartFinancialParser
+    parser = SmartFinancialParser()
+    
+    try:
+        all_metadata = []
+        stats = {
+            'total_processed': 0,
+            'symbols_updated': [],
+            'symbols_not_found': []
+        }
+        all_errors = []
+        total_success = 0
+        symbols_updated = []
+        symbols_not_found = []
+
+        for file in files:
+            try:
+                # Read file
+                contents = await file.read()
+                
+                # Use AI parser
+                parsed_df, metadata = parser.parse_excel(contents, file.filename)
+                all_metadata.append({
+                    'filename': file.filename,
+                    **metadata
+                })
+                
+                print(f"Parsed {file.filename}: {len(parsed_df)} rows")
+                if not parsed_df.empty:
+                    print(f"First row: {parsed_df.iloc[0].to_dict()}")
+                
+                file_success_count = 0
+                
+                for _, row in parsed_df.iterrows():
+                    try:
+                        symbol = row['symbol']
+                        print(f"Processing symbol: {symbol}, revenue: {row.get('revenue', 0)}")
+                        
+                        # Find Company - Strict Match Only
+                        company = db.query(Company).filter(Company.symbol == symbol).first()
+                        if not company:
+                            # Try finding with symbol matching logic first
+                            matched_symbol = parser._match_symbol_from_db(symbol)
+                            if matched_symbol != symbol:
+                                company = db.query(Company).filter(Company.symbol == matched_symbol).first()
+                        
+                        if not company:
+                            print(f"Skipping {symbol}: Not found in master list")
+                            symbols_not_found.append(symbol)
+                            continue
+                                
+                        # Upsert Financial Statement
+                        today = date.today()
+                        existing_fs = db.query(FinancialStatement).filter(
+                            FinancialStatement.company_id == company.id,
+                            FinancialStatement.period_type == 'annual',
+                            FinancialStatement.period_end == today
+                        ).first()
+
+                        if existing_fs:
+                            existing_fs.revenue = row['revenue']
+                            existing_fs.net_income = row['net_income']
+                            existing_fs.eps = row['eps']
+                            existing_fs.roe = row['roe']
+                            existing_fs.debt_to_equity = row['debt_to_equity']
+                            existing_fs.pe_ratio = row['pe_ratio']
+                            existing_fs.source = 'ai_bulk_upload'
+                            print(f"Updated existing financial statement for {company.symbol}")
+                        else:
+                            fs = FinancialStatement(
+                                company_id=company.id,
+                                period_end=today,
+                                period_type='annual',
+                                revenue=row['revenue'],
+                                net_income=row['net_income'],
+                                eps=row['eps'],
+                                roe=row['roe'],
+                                debt_to_equity=row['debt_to_equity'],
+                                pe_ratio=row['pe_ratio'],
+                                source='ai_bulk_upload'
+                            )
+                            db.add(fs)
+                            print(f"Created new financial statement for {company.symbol}")
+                        
+                        symbols_updated.append(company.symbol)
+                        file_success_count += 1
+                        
+                    except Exception as row_e:
+                        print(f"❌ Row error for {symbol}: {str(row_e)}")
+                        all_errors.append(f"Row error for {symbol}: {str(row_e)}")
+                        continue
+                
+                db.commit()
+                total_success += file_success_count
+                
+            except Exception as file_e:
+                all_errors.append(f"File {file.filename}: {str(file_e)}")
+                continue
+        
+        # Build detailed message
+        message_parts = [f"Successfully processed {total_success} records from {len(files)} files"]
+        if symbols_updated:
+            message_parts.append(f"Updated: {', '.join(sorted(list(set(symbols_updated)))[:10])}")
+        if symbols_not_found:
+            message_parts.append(f"Symbols not in database: {', '.join(sorted(list(set(symbols_not_found)))[:10])}")
+        
+        full_message = ". ".join(message_parts)
+            
+        return {
+            "message": full_message,
+            "metadata": all_metadata,
+            "stats": {
+                'total_processed': total_success,
+                'symbols_updated': list(set(symbols_updated)),
+                'symbols_not_found': list(set(symbols_not_found))
+            },
+            "errors": all_errors
+        }
         
     except Exception as e:
-        print(f"Risk assessment error: {e}")
-        import traceback
-        traceback.print_exc()
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=config.PORT)
+    finally:
+        db.close()

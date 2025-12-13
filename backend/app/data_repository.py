@@ -49,46 +49,53 @@ class DataRepository:
     
     def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = 'fyers'):
         """Save historical prices from DataFrame"""
-        company = self.get_or_create_company(symbol)
-        
-        records_added = 0
-        for idx, row in df.iterrows():
-            # Check if record exists
-            existing = self.db.query(HistoricalPrice).filter(
-                and_(
-                    HistoricalPrice.company_id == company.id,
-                    HistoricalPrice.date == idx.date()
-                )
-            ).first()
+        try:
+            company = self.get_or_create_company(symbol)
             
-            if not existing:
-                price = HistoricalPrice(
-                    company_id=company.id,
-                    date=idx.date(),
-                    open=float(row['Open']),
-                    high=float(row['High']),
-                    low=float(row['Low']),
-                    close=float(row['Close']),
-                    volume=int(row['Volume']),
-                    adj_close=float(row.get('Adj Close', row['Close'])),
-                    source=source
+            records_added = 0
+            for idx, row in df.iterrows():
+                # Check if record exists
+                existing = self.db.query(HistoricalPrice).filter(
+                    and_(
+                        HistoricalPrice.company_id == company.id,
+                        HistoricalPrice.date == idx.date()
+                    )
+                ).first()
+                
+                if not existing:
+                    price = HistoricalPrice(
+                        company_id=company.id,
+                        date=idx.date(),
+                        open=float(row['Open']),
+                        high=float(row['High']),
+                        low=float(row['Low']),
+                        close=float(row['Close']),
+                        volume=int(row['Volume']),
+                        adj_close=float(row.get('Adj Close', row['Close'])),
+                        source=source
+                    )
+                    self.db.add(price)
+                    records_added += 1
+            
+            self.db.commit()
+            
+            # Log update
+            try:
+                self.log_data_update(
+                    company.id, 
+                    'historical', 
+                    records_added, 
+                    'success',
+                    start_date=df.index.min().date(),
+                    end_date=df.index.max().date()
                 )
-                self.db.add(price)
-                records_added += 1
-        
-        self.db.commit()
-        
-        # Log update
-        self.log_data_update(
-            company.id, 
-            'historical', 
-            records_added, 
-            'success',
-            start_date=df.index.min().date(),
-            end_date=df.index.max().date()
-        )
-        
-        return records_added
+            except:
+                pass  # Don't fail if logging fails
+            
+            return records_added
+        except Exception as e:
+            self.db.rollback()
+            raise e
     
     def get_historical_prices(
         self, 

@@ -4,6 +4,16 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
 
 ## 🎯 Features
 
+### Stock Screener
+- **2,386 NSE Companies**: Complete database with technicals and financials
+- **Dual View**: Technicals (LTP, Volume, RSI, MACD) + Financials (Revenue, EPS, ROE, P/E)
+- **Smart Pagination**: Navigate all companies with working page controls
+- **Sticky Headers**: Table headers stay visible while scrolling
+- **Symbol Search**: Quick search with autocomplete
+- **Sorting**: Sort by any column (ascending/descending)
+- **AI-Powered Upload**: Bulk upload financial data from Excel files
+- **Screener.in Integration**: Auto-scrape financial data from screener.in
+
 ### Portfolio Risk Analyzer
 - **Comprehensive Risk Assessment**: Technical + fundamental analysis
 - **Real-time Data Fetching**: Auto-fetches from Fyers API or yfinance
@@ -12,29 +22,27 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
 - **Fundamental Scoring**: ROE, debt/equity, profit margins
 - **Risk Grading**: A to F grade system with detailed warnings
 
-### Stock Screener
-- **Strategy-based Screening**: Momentum, reversal, volatility strategies
-- **F&O Universe**: Focus on NSE futures & options stocks
-- **Technical Indicators**: EMA, RSI, ATR, volume analysis
-- **Database Caching**: Fast repeat queries with SQLite storage
-
 ## 📁 Project Structure
 
 ```
 AlgoTrading/
 ├── frontend/                   # Next.js React frontend
+│   ├── app/
+│   │   └── page.tsx           # Main screener UI
 │   └── components/
-│       └── RiskDashboard.tsx  # Main portfolio analyzer UI
+│       └── RiskDashboard.tsx  # Portfolio analyzer UI
 ├── backend/                    # FastAPI backend
 │   ├── app/
 │   │   ├── main.py            # API endpoints
+│   │   ├── screener_scraper.py # Screener.in data scraper
 │   │   ├── risk_metrics.py    # Risk calculation engine
 │   │   ├── data_fetcher.py    # Price data fetcher
 │   │   ├── excel_parser.py    # Financial statement parser
-│   │   └── database.py        # SQLite ORM models
+│   │   └── database.py        # PostgreSQL ORM models
 │   └── data/
-│       ├── screener.db        # Price & financial data cache
 │       └── nse_fno_universe.json
+├── database/
+│   └── .env                   # PostgreSQL connection config
 ├── fyers/                      # Fyers broker integration
 └── zerodha/                    # Zerodha broker integration
 ```
@@ -59,10 +67,22 @@ npm run dev
 # Frontend runs on http://localhost:3000
 ```
 
-### Database Initialization
+### Database Setup
 
-The database auto-initializes on first run. To populate with historical data:
+**PostgreSQL Required**
 
+1. Install PostgreSQL
+2. Create database: `createdb algotrading`
+3. Configure `database/.env`:
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=algotrading
+DB_USER=postgres
+DB_PASSWORD=your_password
+```
+
+4. Initialize database:
 ```bash
 python init_database.py
 ```

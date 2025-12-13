@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import RiskDashboard from '../components/RiskDashboard'
 
 // Types
 interface Stock {
@@ -12,53 +13,50 @@ interface Stock {
   atr_pct: number
   rsi: number
   vol_percentile: number
-  score: number
-  is_20d_breakout: boolean
+  // Removed score, is_20d_breakout might strictly not be needed if not in API, but let's keep it safe
 }
 
-interface MarketData {
-  cash_market: {
-    fii: { daily: Activity; monthly: Activity; yearly: Activity }
-    dii: { daily: Activity; monthly: Activity; yearly: Activity }
-  }
-  derivatives: {
-    index_futures: { fii: FnoActivity; pro: FnoActivity }
-    index_options: { fii: FnoActivity; pro: FnoActivity }
-  }
-  last_updated: string
+interface FinancialRecord {
+  symbol: string
+  market_cap: number
+  revenue: number
+  net_income: number
+  eps: number
+  roe: number
+  debt_to_equity: number
+  pe_ratio: number
 }
 
-interface Activity {
-  buy: number
-  sell: number
-  net: number
-}
-
-interface FnoActivity {
-  buy: number
-  sell: number
-  net: number
-  oi: string
-}
-
-import RiskDashboard from '../components/RiskDashboard'
-
-type TabType = 'intraday' | 'swing' | 'market_data' | 'risk'
-type SortField = 'symbol' | 'close' | 'current_price' | 'volume' | 'ema20' | 'ema50' | 'atr_pct' | 'rsi' | 'vol_percentile' | 'score'
-type SortOrder = 'asc' | 'desc'
+type MainTab = 'screener' | 'strategies'
+type ScreenerTab = 'technicals' | 'financials'
 
 export default function MacOSPage() {
-  const [activeTab, setActiveTab] = useState<TabType>('intraday')
+  // State
+  const [mainTab, setMainTab] = useState<MainTab>('screener')
+  const [screenerTab, setScreenerTab] = useState<ScreenerTab>('technicals')
+
   const [isDark, setIsDark] = useState(true)
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
-  const [data, setData] = useState<Stock[]>([])
-  const [marketData, setMarketData] = useState<MarketData | null>(null)
-  const [loading, setLoading] = useState(true)
   const [currentTime, setCurrentTime] = useState('')
 
-  // Sorting State
-  const [sortField, setSortField] = useState<SortField>('score')
-  const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
+  // Data State
+  const [stocks, setStocks] = useState<Stock[]>([])
+  const [financials, setFinancials] = useState<FinancialRecord[]>([])
+  const [loading, setLoading] = useState(false)
+
+  // Pagination State
+  const [page, setPage] = useState(1)
+  const [limit] = useState(100)
+  const [totalRecords, setTotalRecords] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+
+  // Sorting & Upload State
+  const [sortBy, setSortBy] = useState('symbol')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [uploading, setUploading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<{ symbol: string, name: string }[]>([])
+  const [showAutocomplete, setShowAutocomplete] = useState(false)
+  const [selectedSymbol, setSelectedSymbol] = useState('')
 
   // Theme effect
   useEffect(() => {
@@ -93,24 +91,74 @@ export default function MacOSPage() {
     return () => clearInterval(timer)
   }, [])
 
+  // Symbol Search
+  const searchSymbols = async (query: string) => {
+    if (query.length < 1) {
+      setSearchResults([])
+      setShowAutocomplete(false)
+      return
+    }
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/symbols/search?q=${encodeURIComponent(query)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setSearchResults(data.symbols || [])
+        setShowAutocomplete(data.symbols.length > 0)
+      }
+    } catch (e) {
+      console.error('Symbol search failed:', e)
+    }
+  }
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.toUpperCase()
+    setSearchQuery(value)
+    searchSymbols(value)
+  }
+
+  const selectSymbol = (symbol: string) => {
+    setSelectedSymbol(symbol)
+    setSearchQuery(symbol)
+    setShowAutocomplete(false)
+    setPage(1)
+  }
+
+  const clearSearch = () => {
+    setSearchQuery('')
+    setSelectedSymbol('')
+    setSearchResults([])
+    setShowAutocomplete(false)
+    setPage(1)
+  }
+
   // Data fetching
-  const fetchData = async (forceRefresh = false) => {
+  const fetchData = async () => {
     setLoading(true)
     try {
-      if (forceRefresh) {
-        await fetch('http://localhost:8000/api/cache/clear', { method: 'POST' })
-      }
+      if (mainTab === 'screener') {
+        const endpoint = screenerTab === 'technicals' ? '/api/screener' : '/api/screener/financials'
+        let url = `http://localhost:8000${endpoint}?page=${page}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`
 
-      if (activeTab === 'market_data') {
-        const res = await fetch('http://localhost:8000/api/market-data')
+        // Add symbol filter if selected
+        if (selectedSymbol) {
+          url += `&symbol=${selectedSymbol}`
+        }
+
+        const res = await fetch(url)
         const json = await res.json()
-        setMarketData(json)
-      } else {
-        const strategy = activeTab === 'intraday' ? 'intraday' : 'swing_trade'
-        const res = await fetch(`http://localhost:8000/api/screener?strategy=${strategy}`)
-        const json = await res.json()
-        if (json.stocks) {
-          setData(json.stocks)
+
+        if (json.data) {
+          if (screenerTab === 'technicals') {
+            setStocks(json.data)
+          } else {
+            setFinancials(json.data)
+          }
+          // Backend returns 'meta' not 'metadata'
+          if (json.meta) {
+            setTotalRecords(json.meta.total || 0)
+            setTotalPages(json.meta.total_pages || 0)
+          }
         }
       }
     } catch (e) {
@@ -122,431 +170,411 @@ export default function MacOSPage() {
 
   useEffect(() => {
     fetchData()
-  }, [activeTab])
+  }, [mainTab, screenerTab, page, sortBy, sortOrder, selectedSymbol])
 
-  // Sorting Logic
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
+  // Pagination Handler
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setPage(newPage)
+    }
+  }
+
+  // Sorting Handler
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
     } else {
-      setSortField(field)
-      setSortOrder('desc') // Default to desc for new field
+      setSortBy(field)
+      setSortOrder('desc')
+    }
+    setPage(1)
+  }
+
+  // File Upload Handler
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+
+    setUploading(true)
+    const formData = new FormData()
+
+    // Append all selected files with the key 'files' (must match backend argument name)
+    Array.from(files).forEach((file) => {
+      formData.append('files', file)
+      console.log(`Adding file: ${file.name}, size: ${file.size}`)
+    })
+
+    try {
+      console.log('Uploading to:', 'http://localhost:8000/api/upload/bulk-financials')
+      const res = await fetch('http://localhost:8000/api/upload/bulk-financials', {
+        method: 'POST',
+        body: formData
+      })
+
+      console.log('Response status:', res.status)
+
+      if (res.ok) {
+        const data = await res.json()
+        console.log('Upload response:', data)
+
+        // Show detailed message
+        let message = data.message
+        if (data.summary) {
+          if (data.summary.symbols_updated && data.summary.symbols_updated.length > 0) {
+            message += `\n\nUpdated: ${data.summary.symbols_updated.join(', ')}`
+          }
+          if (data.summary.symbols_not_found && data.summary.symbols_not_found.length > 0) {
+            message += `\n\nNot in database: ${data.summary.symbols_not_found.join(', ')}`
+          }
+        }
+
+        alert(message)
+
+        if (data.errors && data.errors.length > 0) {
+          console.warn('Upload warnings:', data.errors)
+        }
+
+        fetchData() // Refresh data
+      } else {
+        const errorText = await res.text()
+        console.error('Upload failed:', errorText)
+        try {
+          const err = JSON.parse(errorText)
+          alert('Upload failed: ' + (err.detail || 'Unknown error'))
+        } catch {
+          alert('Upload failed: ' + errorText)
+        }
+      }
+    } catch (e) {
+      console.error('Upload exception:', e)
+      alert('Upload failed: ' + (e instanceof Error ? e.message : 'Server error'))
+    } finally {
+      setUploading(false)
+      event.target.value = ''
     }
   }
 
-  const sortedData = [...data].sort((a, b) => {
-    let valA = a[fieldToDataKey(sortField)]
-    let valB = b[fieldToDataKey(sortField)]
-
-    if (valA === undefined) valA = -Infinity
-    if (valB === undefined) valB = -Infinity
-
-    if (typeof valA === 'string' && typeof valB === 'string') {
-      return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA)
-    }
-
-    // Numeric sort
-    return sortOrder === 'asc' ? (valA as number) - (valB as number) : (valB as number) - (valA as number)
-  })
-
-  function fieldToDataKey(field: SortField): keyof Stock {
-    if (field === 'current_price') return 'close'
-    return field as keyof Stock
+  // Helper for Header Sort Icon
+  const SortIcon = ({ field }: { field: string }) => {
+    if (sortBy !== field) return <span className="ml-1 opacity-20">⇅</span>
+    return <span className="ml-1 opacity-100">{sortOrder === 'asc' ? '↑' : '↓'}</span>
   }
 
-  // Helper to render sort icon
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <span className="opacity-20 ml-1">⇅</span>
-    return <span className="ml-1 text-blue-500">{sortOrder === 'asc' ? '↑' : '↓'}</span>
-  }
-
-  // Scoring Logic Panel (Drawer)
-  const renderDrawer = () => (
-    <>
-      <div
-        className={`fixed inset-0 bg-black/20 backdrop-blur-sm z-40 transition-opacity duration-300 ${isDrawerOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-        onClick={() => setIsDrawerOpen(false)}
-      />
-      <div className={`fixed top-0 left-0 h-full w-[360px] glass-panel z-50 transform transition-transform duration-300 ease-out ${isDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-6 h-full overflow-y-auto">
-          <div className="flex justify-between items-center mb-8">
-            <h2 className="text-xl font-semibold tracking-tight">Scoring Logic</h2>
-            <button
-              onClick={() => setIsDrawerOpen(false)}
-              className="p-2 rounded-full hover:bg-gray-200/50 dark:hover:bg-gray-700/50 transition-colors"
-            >
-              <svg className="w-5 h-5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          <div className="space-y-8">
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-                </div>
-                <h3 className="font-medium text-lg">Trend Alignment</h3>
-              </div>
-              <p className="text-sm opacity-70 leading-relaxed pl-10">
-                Stocks must be trading above both EMA 20 and EMA 50, with EMA 20 &gt; EMA 50 to confirm a strong uptrend.
-              </p>
-              <div className="ml-10 mt-2 text-xs font-sans tabular-nums tracking-tight opacity-50 bg-gray-100 dark:bg-gray-800/50 p-2 rounded">
-                {'Price > EMA20 > EMA50'}
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center text-green-500">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z" /></svg>
-                </div>
-                <h3 className="font-medium text-lg">Volume Surge</h3>
-              </div>
-              <p className="text-sm opacity-70 leading-relaxed pl-10">
-                Current volume must be significantly higher than the 10-day average volume to confirm institutional interest.
-              </p>
-            </div>
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                </div>
-                <h3 className="font-medium text-lg">Momentum (RSI)</h3>
-              </div>
-              <p className="text-sm opacity-70 leading-relaxed pl-10">
-                RSI (14) must be in the bullish zone (55-70) indicating strength without being overbought.
-              </p>
-            </div>
-          </div>
-        </div>
+  const Th = ({ field, label, align = 'right' }: { field: string, label: string, align?: string }) => (
+    <th
+      className={`px-6 py-4 text-xs font-semibold opacity-60 tracking-wider cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors select-none text-${align}`}
+      onClick={() => handleSort(field)}
+    >
+      <div className={`flex items-center ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
+        {label}
+        <SortIcon field={field} />
       </div>
-    </>
+    </th>
   )
 
-  const columns: { id: SortField; label: string; align: 'left' | 'right' | 'center' }[] = [
-    { id: 'symbol', label: 'SYMBOL', align: 'left' },
-    { id: 'close', label: 'LTP', align: 'right' },
-    { id: 'current_price', label: 'CURRENT PRICE', align: 'right' },
-    { id: 'volume', label: 'VOLUME', align: 'right' },
-    { id: 'ema20', label: 'EMA 20', align: 'right' },
-    { id: 'ema50', label: 'EMA 50', align: 'right' },
-    { id: 'atr_pct', label: 'ATR%', align: 'right' },
-    { id: 'rsi', label: 'RSI', align: 'right' },
-    { id: 'vol_percentile', label: 'VOL %', align: 'right' },
-    { id: 'score', label: 'SCORE', align: 'center' },
-  ]
+  // Render Technicals Table
+  const renderTechnicals = () => (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="sticky top-0 z-20 bg-white/50 dark:bg-black/50 backdrop-blur-md border-b border-gray-200/20 dark:border-gray-700/30">
+          <tr>
+            <Th field="symbol" label="SYMBOL" align="left" />
+            <Th field="close" label="LTP" />
+            <Th field="volume" label="VOLUME" />
+            <Th field="ema20" label="EMA 20" />
+            <Th field="ema50" label="EMA 50" />
+            <Th field="atr_pct" label="ATR%" />
+            <Th field="rsi" label="RSI" />
+            <Th field="vol_percentile" label="VOL %" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200/10 dark:divide-gray-800/30">
+          {loading ? (
+            Array.from({ length: 10 }).map((_, i) => (
+              <tr key={i} className="animate-pulse">
+                <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
+                <td className="px-6 py-4."><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+              </tr>
+            ))
+          ) : (
+            stocks.map((stock) => (
+              <tr key={stock.symbol} className="group transition-colors hover:bg-white/40 dark:hover:bg-white/5">
+                <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
+                  {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
+                </td>
+                <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20.toFixed(2)}</td>
+                <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50.toFixed(2)}</td>
+                <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
+                  <span className={`${stock.atr_pct > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
+                    {stock.atr_pct.toFixed(2)}%
+                  </span>
+                </td>
+                <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
+                  <span className={`${stock.rsi > 70 ? 'text-purple-500 font-bold' : stock.rsi < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
+                    {stock.rsi.toFixed(1)}
+                  </span>
+                </td>
+                <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile)}%</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
 
-  // Format currency
-  const formatCr = (val: number) => {
-    return (val / 100).toFixed(2) + 'Cr'
-  }
-
-  // Market Data View
-  const renderMarketData = () => {
-    if (!marketData) return null
-    return (
-      <div className="animate-in fade-in slide-in-from-bottom-4 space-y-8">
-        {/* Cash Market */}
-        <div className="glass-card rounded-2xl p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-              FII/DII Cash Market Activity
-            </h3>
-            <span className="text-xs opacity-50 font-sans tabular-nums tracking-tight">Updated: {marketData.last_updated}</span>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-black/5 dark:bg-white/5 border-b border-gray-200/10">
-                <tr>
-                  <th className="px-4 py-3 text-left opacity-60">Category</th>
-                  <th className="px-4 py-3 text-right opacity-60">Daily Net</th>
-                  <th className="px-4 py-3 text-right opacity-60">Monthly Net</th>
-                  <th className="px-4 py-3 text-right opacity-60">Yearly Net</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200/10">
-                <tr>
-                  <td className="px-4 py-4 font-semibold">FII Cash</td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.fii.daily.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.fii.daily.net)}
-                  </td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.fii.monthly.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.fii.monthly.net)}
-                  </td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.fii.yearly.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.fii.yearly.net)}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-4 font-semibold">DII Cash</td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.dii.daily.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.dii.daily.net)}
-                  </td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.dii.monthly.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.dii.monthly.net)}
-                  </td>
-                  <td className={`px-4 py-4 text-right font-sans tabular-nums tracking-tight ${marketData.cash_market.dii.yearly.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {formatCr(marketData.cash_market.dii.yearly.net)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Derivatives */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Index Futures */}
-          <div className="glass-card rounded-2xl p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-              Index Futures
-            </h3>
-            <table className="w-full text-sm">
-              <thead className="bg-black/5 dark:bg-white/5 border-b border-gray-200/10">
-                <tr>
-                  <th className="px-3 py-2 text-left opacity-60">Client</th>
-                  <th className="px-3 py-2 text-right opacity-60">Net (Cr)</th>
-                  <th className="px-3 py-2 text-right opacity-60">OI</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200/10">
-                <tr>
-                  <td className="px-3 py-3 font-medium">FII</td>
-                  <td className={`px-3 py-3 text-right font-sans tabular-nums tracking-tight ${marketData.derivatives.index_futures.fii.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {marketData.derivatives.index_futures.fii.net.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-3 text-right font-sans tabular-nums tracking-tight opacity-80">{marketData.derivatives.index_futures.fii.oi}</td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-3 font-medium">Pro</td>
-                  <td className={`px-3 py-3 text-right font-sans tabular-nums tracking-tight ${marketData.derivatives.index_futures.pro.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {marketData.derivatives.index_futures.pro.net.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-3 text-right font-sans tabular-nums tracking-tight opacity-80">{marketData.derivatives.index_futures.pro.oi}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Index Options */}
-          <div className="glass-card rounded-2xl p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-orange-500"></span>
-              Index Options
-            </h3>
-            <table className="w-full text-sm">
-              <thead className="bg-black/5 dark:bg-white/5 border-b border-gray-200/10">
-                <tr>
-                  <th className="px-3 py-2 text-left opacity-60">Client</th>
-                  <th className="px-3 py-2 text-right opacity-60">Net (Cr)</th>
-                  <th className="px-3 py-2 text-right opacity-60">OI</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200/10">
-                <tr>
-                  <td className="px-3 py-3 font-medium">FII</td>
-                  <td className={`px-3 py-3 text-right font-sans tabular-nums tracking-tight ${marketData.derivatives.index_options.fii.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {marketData.derivatives.index_options.fii.net.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-3 text-right font-sans tabular-nums tracking-tight opacity-80">{marketData.derivatives.index_options.fii.oi}</td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-3 font-medium">Pro</td>
-                  <td className={`px-3 py-3 text-right font-sans tabular-nums tracking-tight ${marketData.derivatives.index_options.pro.net > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {marketData.derivatives.index_options.pro.net.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-3 text-right font-sans tabular-nums tracking-tight opacity-80">{marketData.derivatives.index_options.pro.oi}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  // Render Financials Table
+  const renderFinancials = () => (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="sticky top-0 z-20 bg-white/50 dark:bg-black/50 backdrop-blur-md border-b border-gray-200/20 dark:border-gray-700/30">
+          <tr>
+            <Th field="symbol" label="SYMBOL" align="left" />
+            <Th field="market_cap" label="MARKET CAP (Cr)" align="right" />
+            <Th field="revenue" label="REVENUE (Cr)" align="right" />
+            <Th field="net_income" label="NET INCOME (Cr)" align="right" />
+            <Th field="eps" label="EPS" align="right" />
+            <Th field="roe" label="ROE %" align="right" />
+            <Th field="ev_ebitda" label="EV/EBITDA" align="right" />
+            <Th field="pe_ratio" label="P/E" align="right" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200/10 dark:divide-gray-800/30">
+          {loading ? (
+            Array.from({ length: 10 }).map((_, i) => (
+              <tr key={i} className="animate-pulse">
+                <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+              </tr>
+            ))
+          ) : (
+            financials.map((stock) => (
+              <tr key={stock.symbol} className="group transition-colors hover:bg-white/40 dark:hover:bg-white/5">
+                <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.market_cap ? (stock.market_cap / 1000).toFixed(2) : '-'}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.revenue ? (stock.revenue).toFixed(2) : '-'}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.net_income ? (stock.net_income).toFixed(2) : '-'}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.eps ? stock.eps.toFixed(2) : '-'}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.roe ? stock.roe.toFixed(2) : '-'}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {(() => {
+                    // EV/EBITDA = (Market Cap + Debt) / EBITDA
+                    // Using Net Income as EBITDA proxy
+                    const ev = (stock.market_cap || 0) + ((stock.debt_to_equity || 0) * (stock.market_cap || 0) / 100);
+                    const ebitda = stock.net_income || 0;
+                    const evEbitda = ebitda > 0 ? ev / ebitda : 0;
+                    return evEbitda > 0 ? evEbitda.toFixed(2) : '-';
+                  })()}
+                </td>
+                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                  {stock.pe_ratio ? stock.pe_ratio.toFixed(2) : '-'}
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
 
   return (
     <div className="min-h-screen transition-colors duration-300">
-
       {/* Background Ambience */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-blue-500/20 blur-[120px]" />
         <div className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/15 blur-[100px]" />
       </div>
 
-      {renderDrawer()}
-
-      {/* Main Content */}
       <div className="relative z-10 max-w-[1400px] mx-auto px-6 pt-6">
 
         {/* Header */}
-        <header className="flex items-center justify-between mb-8 sticky top-6 z-30">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="p-2 rounded-full glass-button opacity-70 hover:opacity-100"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </button>
-            <h1 className="text-2xl font-semibold tracking-tight" style={{ fontFamily: '"Segoe UI", sans-serif' }}>
-              NSE Trading Screener
-            </h1>
-          </div>
+        <header className="flex items-center justify-between px-8 py-4 mb-8 border-b border-gray-200/10">
+          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent">
+            NSE Trading Screener
+          </h1>
 
-          <div className="absolute left-1/2 transform -translate-x-1/2">
-            <div className="flex bg-gray-200/50 dark:bg-gray-800/50 p-1 rounded-full backdrop-blur-md">
-              <button
-                onClick={() => setActiveTab('intraday')}
-                className={`flex items-center gap-2 px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'intraday' ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'opacity-60 hover:opacity-100'}`}
-              >
-                <span>⚡</span> Intraday
-              </button>
-              <button
-                onClick={() => setActiveTab('swing')}
-                className={`flex items-center gap-2 px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'swing' ? 'bg-white dark:bg-gray-700 shadow-sm text-green-600 dark:text-green-400' : 'opacity-60 hover:opacity-100'}`}
-              >
-                <span>📈</span> Swing
-              </button>
-              <button
-                onClick={() => setActiveTab('market_data')}
-                className={`flex items-center gap-2 px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'market_data' ? 'bg-white dark:bg-gray-700 shadow-sm text-purple-600 dark:text-purple-400' : 'opacity-60 hover:opacity-100'}`}
-              >
-                <span>📊</span> Market Data
-              </button>
-              <button
-                onClick={() => setActiveTab('risk')}
-                className={`flex items-center gap-2 px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'risk' ? 'bg-white dark:bg-gray-700 shadow-sm text-red-600 dark:text-red-400' : 'opacity-60 hover:opacity-100'}`}
-              >
-                <span>⚠️</span> Risk
-              </button>
-            </div>
+          <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-full p-1">
+            <button
+              onClick={() => setMainTab('screener')}
+              className={`px-8 py-2 rounded-full text-sm font-medium transition-all duration-300 ${mainTab === 'screener' ? 'bg-white dark:bg-gray-700 shadow-sm' : 'opacity-60 hover:opacity-100'}`}
+            >
+              Screener
+            </button>
+            <button
+              onClick={() => setMainTab('strategies')}
+              className={`px-8 py-2 rounded-full text-sm font-medium transition-all duration-300 ${mainTab === 'strategies' ? 'bg-white dark:bg-gray-700 shadow-sm' : 'opacity-60 hover:opacity-100'}`}
+            >
+              Strategies
+            </button>
           </div>
 
           <div className="flex items-center gap-3">
             <span className="text-sm font-sans tabular-nums tracking-tight opacity-50 mr-2 hidden sm:block">
               {currentTime}
             </span>
-            <button className="glass-button px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2">
-              Export
-            </button>
-            <button
-              onClick={() => fetchData(true)}
-              className="glass-button px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 group"
-            >
-              <svg className={`w-4 h-4 transition-transform duration-700 ${loading ? 'animate-spin' : 'group-hover:rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-              Refresh
-            </button>
             <button
               onClick={toggleTheme}
-              className="glass-button p-1.5 rounded-lg"
+              className="glass-button p-2 rounded-lg"
             >
               {isDark ? '☀️' : '🌙'}
             </button>
           </div>
         </header>
 
-        {/* Dynamic Content */}
-        {activeTab === 'market_data' ? (
-          renderMarketData()
-        ) : activeTab === 'risk' ? (
-          <RiskDashboard />
-        ) : (
-          /* Table Container */
-          <div className="glass-card rounded-2xl overflow-hidden mt-8 min-h-[600px] mb-10 transition-all duration-500 animate-in fade-in slide-in-from-bottom-4">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="sticky top-0 z-20 bg-white/50 dark:bg-black/50 backdrop-blur-md border-b border-gray-200/20 dark:border-gray-700/30">
-                  <tr>
-                    {columns.map((col) => (
-                      <th
-                        key={col.id}
-                        onClick={() => handleSort(col.id)}
-                        className={`px-6 py-4 text-xs font-semibold opacity-60 tracking-wider cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-${col.align === 'right' ? 'right' : col.align === 'center' ? 'center' : 'left'}`}
-                      >
-                        <div className={`flex items-center gap-1 ${col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start'}`}>
-                          {col.label}
-                          <SortIcon field={col.id} />
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+        {/* Content */}
+        {mainTab === 'screener' ? (
+          <div className="animate-in fade-in slide-in-from-bottom-4">
+            {/* Screener Sub-Tabs & Actions */}
+            <div className="flex items-center justify-between mb-6 border-b border-gray-200/10 pb-1">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => { setScreenerTab('technicals'); setPage(1); }}
+                  className={`pb-2 px-2 text-sm font-medium transition-colors relative ${screenerTab === 'technicals' ? 'text-blue-500' : 'opacity-60 hover:opacity-100'}`}
+                >
+                  Technicals
+                  {screenerTab === 'technicals' && <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />}
+                </button>
+                <button
+                  onClick={() => { setScreenerTab('financials'); setPage(1); }}
+                  className={`pb-2 px-2 text-sm font-medium transition-colors relative ${screenerTab === 'financials' ? 'text-blue-500' : 'opacity-60 hover:opacity-100'}`}
+                >
+                  Financials
+                  {screenerTab === 'financials' && <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />}
+                </button>
+              </div>
 
-                <tbody className="divide-y divide-gray-200/10 dark:divide-gray-800/30">
-                  {loading ? (
-                    Array.from({ length: 12 }).map((_, i) => (
-                      <tr key={i} className="animate-pulse">
-                        <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                        <td className="px-6 py-4"><div className="h-6 w-10 bg-gray-200 dark:bg-gray-800 rounded mx-auto"></div></td>
-                      </tr>
-                    ))
-                  ) : (
-                    sortedData.map((stock) => (
-                      <tr
-                        key={stock.symbol}
-                        className="group transition-colors hover:bg-white/40 dark:hover:bg-white/5"
-                      >
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-[15px]">{stock.symbol}</span>
-                            {stock.is_20d_breakout && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-500/20 text-green-600 dark:text-green-400">BO</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                          {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
-                        </td>
-                        <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-50">
-                          {/* Empty until updated tomorrow */}
-                          -
-                        </td>
-                        <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
-                          {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
-                        </td>
-                        <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20.toFixed(2)}</td>
-                        <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50.toFixed(2)}</td>
-                        <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                          <span className={`${stock.atr_pct > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
-                            {stock.atr_pct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                          <span className={`${stock.rsi > 70 ? 'text-purple-500 font-bold' : stock.rsi < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
-                            {stock.rsi.toFixed(1)}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile)}%</td>
-                        <td className="px-6 py-4 text-center">
-                          <div className={`
-                            inline-flex items-center justify-center w-12 h-7 rounded-lg text-sm font-bold
-                            ${stock.score >= 80 ? 'bg-green-500 text-white shadow-lg shadow-green-500/30' :
-                              stock.score >= 60 ? 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/30' :
-                                'bg-gray-200 dark:bg-gray-800 opacity-60'}
-                          `}>
-                            {stock.score.toFixed(0)}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+              {/* Upload Button (Visible only on Financials tab) */}
+              {screenerTab === 'financials' && (
+                <div className="pb-2">
+                  <label className={`
+                      flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
+                      ${uploading ? 'bg-gray-100 dark:bg-gray-800 opacity-50 cursor-wait' : 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-500'}
+                   `}>
+                    {uploading ? 'Uploading...' : 'Upload Excel(s)'}
+                    <input
+                      type="file"
+                      accept=".xlsx, .xls, .csv"
+                      multiple
+                      className="hidden"
+                      onChange={handleFileUpload}
+                      disabled={uploading}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* Symbol Search */}
+            <div className="mb-4 relative">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 max-w-md">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={handleSearchChange}
+                    onFocus={() => searchQuery.length > 0 && setShowAutocomplete(true)}
+                    onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
+                    placeholder="Search symbol..."
+                    className="w-full px-4 py-2 pl-10 rounded-lg bg-white/5 border border-gray-200/10 text-sm focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                  <svg className="absolute left-3 top-2.5 w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+
+                  {/* Autocomplete Dropdown */}
+                  {showAutocomplete && searchResults.length > 0 && (
+                    <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200/10 max-h-60 overflow-y-auto">
+                      {searchResults.map((result) => (
+                        <button
+                          key={result.symbol}
+                          onClick={() => selectSymbol(result.symbol)}
+                          className="w-full px-4 py-2 text-left hover:bg-blue-500/10 transition-colors text-sm"
+                        >
+                          <div className="font-medium">{result.symbol}</div>
+                          {result.name && <div className="text-xs opacity-60">{result.name}</div>}
+                        </button>
+                      ))}
+                    </div>
                   )}
-                </tbody>
-              </table>
+                </div>
+
+                {selectedSymbol && (
+                  <button
+                    onClick={clearSearch}
+                    className="px-3 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-medium transition-all"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Table Card */}
+            <div className="glass-card rounded-2xl overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+              <div className="flex-grow overflow-auto">
+                {screenerTab === 'technicals' ? renderTechnicals() : renderFinancials()}
+              </div>
+
+              {/* Pagination Controls */}
+              <div className="flex items-center justify-between p-4 border-t border-gray-200/10 bg-white/30 dark:bg-black/20">
+                <span className="text-sm opacity-60">
+                  Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handlePageChange(page - 1)}
+                    disabled={page <= 1}
+                    className="px-4 py-1.5 rounded-lg text-sm bg-gray-200/50 dark:bg-gray-800/50 hover:bg-gray-300 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm font-medium px-2">
+                    Page {page} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => handlePageChange(page + 1)}
+                    disabled={page >= totalPages}
+                    className="px-4 py-1.5 rounded-lg text-sm bg-gray-200/50 dark:bg-gray-800/50 hover:bg-gray-300 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-bottom-4">
+            {/* Strategies Tab Content */}
+            <RiskDashboard />
+          </div>
         )}
+
       </div>
     </div>
   )
