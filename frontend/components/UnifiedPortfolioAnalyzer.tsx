@@ -570,7 +570,7 @@ export default function UnifiedPortfolioAnalyzer() {
                         {riskAnalysis && (
                             <div className="bg-card-dark rounded-lg border border-border-dark p-4">
                                 <h2 className="text-sm font-semibold mb-4">Risk Metrics</h2>
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                                     {/* Market Risk Metrics */}
                                     <div>
                                         <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
@@ -578,36 +578,78 @@ export default function UnifiedPortfolioAnalyzer() {
                                             Market Risk
                                         </h3>
                                         <div className="space-y-2">
-                                            <MetricCard label="Value at Risk (95%)" value={`${((riskAnalysis.market_risk?.var_95 || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="Conditional VaR (95%)" value={`${((riskAnalysis.market_risk?.cvar_95 || 0) * 100).toFixed(2)}%`} />
+                                            <MetricCard label="VaR (95%)" value={`${((riskAnalysis.market_risk?.var_95 || 0) * 100).toFixed(2)}%`} />
+                                            <MetricCard label="VaR (99%)" value={`${((riskAnalysis.market_risk?.var_99 || 0) * 100).toFixed(2)}%`} />
+                                            <MetricCard label="CVaR (95%)" value={`${((riskAnalysis.market_risk?.cvar_95 || 0) * 100).toFixed(2)}%`} />
+                                            <MetricCard label="CVaR (99%)" value={`${((riskAnalysis.market_risk?.cvar_99 || 0) * 100).toFixed(2)}%`} />
                                             <MetricCard label="Max Drawdown" value={`${((riskAnalysis.market_risk?.max_drawdown?.max_drawdown || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="Average Volatility" value={`${((riskAnalysis.market_risk?.volatility || 0) * 100).toFixed(2)}%`} />
+                                            <MetricCard label="Avg Volatility" value={`${((riskAnalysis.market_risk?.volatility || 0) * 100).toFixed(2)}%`} />
                                         </div>
                                     </div>
 
-                                    {/* Portfolio Concentration */}
+                                    {/* Tail Risk */}
+                                    <div>
+                                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
+                                            <span className="text-lg">📉</span>
+                                            Tail Risk
+                                        </h3>
+                                        <div className="space-y-2">
+                                            <MetricCard
+                                                label="Skewness"
+                                                value={(riskAnalysis.market_risk?.skewness || 0).toFixed(3)}
+                                            />
+                                            <MetricCard
+                                                label="Kurtosis"
+                                                value={(riskAnalysis.market_risk?.kurtosis || 0).toFixed(3)}
+                                            />
+                                            <MetricCard
+                                                label="Excess Kurtosis"
+                                                value={(riskAnalysis.market_risk?.excess_kurtosis || 0).toFixed(3)}
+                                            />
+                                            <div className="text-[10px] text-text-muted mt-2 p-2 bg-background-base rounded">
+                                                {(() => {
+                                                    const skew = riskAnalysis.market_risk?.skewness || 0;
+                                                    if (skew < -0.5) return "⚠️ Left tail: downside risk";
+                                                    if (skew > 0.5) return "✓ Right tail: upside potential";
+                                                    return "≈ Symmetric distribution";
+                                                })()}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Position Concentration */}
                                     <div>
                                         <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
                                             <span className="text-lg">⚡</span>
-                                            Portfolio Concentration
+                                            Position Concentration
                                         </h3>
                                         <div className="space-y-2">
-                                            <MetricCard label="Concentration Risk" value={(riskAnalysis.portfolio_risk?.concentration || 0).toFixed(3)} />
-                                            <MetricCard label="Number of Positions" value={positions.length.toString()} />
-                                            <MetricCard label="HHI Index" value={(riskAnalysis.portfolio_risk?.hhi || 0).toFixed(2)} />
+                                            <MetricCard label="Top 3 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_3_concentration || 0) * 100).toFixed(1)}%`} />
+                                            <MetricCard label="Top 5 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_5_concentration || 0) * 100).toFixed(1)}%`} />
+                                            <MetricCard label="Top 10 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_10_concentration || 0) * 100).toFixed(1)}%`} />
+                                            <MetricCard label="Largest Position" value={`${((riskAnalysis.portfolio_risk?.max_position || 0) * 100).toFixed(1)}%`} />
+                                            <MetricCard label="HHI Index" value={(riskAnalysis.portfolio_risk?.hhi || 0).toFixed(3)} />
                                         </div>
                                     </div>
 
-                                    {/* Fundamental Risk */}
+                                    {/* Correlation & Fundamental */}
                                     <div>
                                         <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-                                            <span className="text-lg">💰</span>
-                                            Fundamental Risk
+                                            <span className="text-lg">🔗</span>
+                                            Correlation
                                         </h3>
                                         <div className="space-y-2">
-                                            <MetricCard label="Average Leverage (D/E)" value={(riskAnalysis.fundamental_risk?.avg_leverage || 0).toFixed(2)} />
-                                            <MetricCard label="Financial Fragility Score" value={`${(riskAnalysis.fundamental_risk?.avg_fragility || 0).toFixed(1)}/100`} />
-                                            <MetricCard label="Weighted Avg ROE" value={`${((riskAnalysis.fundamental_risk?.avg_roe || 0) * 100).toFixed(1)}%`} />
+                                            <MetricCard label="Avg Correlation" value={(riskAnalysis.portfolio_risk?.avg_correlation || 0).toFixed(3)} />
+                                            <MetricCard label="Max Correlation" value={(riskAnalysis.portfolio_risk?.max_correlation || 0).toFixed(3)} />
+                                            <MetricCard label="Min Correlation" value={(riskAnalysis.portfolio_risk?.min_correlation || 0).toFixed(3)} />
+                                        </div>
+                                        <h3 className="text-sm font-semibold mb-3 mt-4 flex items-center gap-1.5">
+                                            <span className="text-lg">💰</span>
+                                            Fundamental
+                                        </h3>
+                                        <div className="space-y-2">
+                                            <MetricCard label="Avg Leverage (D/E)" value={(riskAnalysis.fundamental_risk?.avg_leverage || 0).toFixed(2)} />
+                                            <MetricCard label="Fragility Score" value={`${(riskAnalysis.fundamental_risk?.avg_fragility || 0).toFixed(1)}/100`} />
                                         </div>
                                     </div>
                                 </div>

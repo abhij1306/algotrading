@@ -166,6 +166,23 @@ class PortfolioRiskEngine:
         """
         return np.sum(weights ** 2)
     
+    def position_concentration_metrics(self, weights: np.array) -> Dict:
+        """
+        Calculate position-level concentration metrics
+        Args:
+            weights: Array of portfolio weights
+        Returns:
+            Dict with top 3/5/10 concentration and max position
+        """
+        sorted_weights = np.sort(weights)[::-1]  # Sort descending
+        return {
+            'top_3_concentration': np.sum(sorted_weights[:3]) if len(sorted_weights) >= 3 else np.sum(sorted_weights),
+            'top_5_concentration': np.sum(sorted_weights[:5]) if len(sorted_weights) >= 5 else np.sum(sorted_weights),
+            'top_10_concentration': np.sum(sorted_weights[:10]) if len(sorted_weights) >= 10 else np.sum(sorted_weights),
+            'max_position': sorted_weights[0] if len(sorted_weights) > 0 else 0,
+            'hhi': np.sum(weights ** 2)  # Herfindahl-Hirschman Index
+        }
+    
     def correlation_matrix(self, returns: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate correlation matrix for portfolio stocks
@@ -175,6 +192,42 @@ class PortfolioRiskEngine:
             Correlation matrix
         """
         return returns.corr()
+    
+    def correlation_metrics(self, returns: pd.DataFrame) -> Dict:
+        """
+        Calculate enhanced correlation metrics
+        Args:
+            returns: DataFrame of returns (columns = stocks)
+        Returns:
+            Dict with avg correlation, max correlation, and pairwise details
+        """
+        corr_matrix = returns.corr()
+        
+        # Get upper triangle (excluding diagonal) to avoid duplicates
+        upper_triangle = np.triu(corr_matrix.values, k=1)
+        upper_mask = upper_triangle != 0
+        correlations = upper_triangle[upper_mask]
+        
+        return {
+            'avg_correlation': np.mean(correlations) if len(correlations) > 0 else 0,
+            'max_correlation': np.max(correlations) if len(correlations) > 0 else 0,
+            'min_correlation': np.min(correlations) if len(correlations) > 0 else 0,
+            'correlation_matrix': corr_matrix.to_dict()
+        }
+    
+    def tail_risk_metrics(self, returns: pd.Series) -> Dict:
+        """
+        Calculate tail risk metrics (skewness and kurtosis)
+        Args:
+            returns: Series of portfolio returns
+        Returns:
+            Dict with skewness and kurtosis
+        """
+        return {
+            'skewness': stats.skew(returns.dropna()),
+            'kurtosis': stats.kurtosis(returns.dropna()),
+            'excess_kurtosis': stats.kurtosis(returns.dropna(), fisher=True)  # Excess kurtosis (subtract 3)
+        }
     
     # ==================== MONTE CARLO SIMULATION ====================
     
@@ -333,19 +386,28 @@ class PortfolioRiskEngine:
             'volatility': returns.std().mean() * np.sqrt(self.trading_days_per_year),
             'portfolio_volatility': self.portfolio_volatility(weights, cov_matrix),
             'var_95': self.value_at_risk(portfolio_returns, 0.95),
-            'var_99': self.value_at_risk(portfolio_returns, 0.99),
+            'var_99': self.value_at_risk(portfolio_returns, 0.99),  # Already had this
             'cvar_95': self.conditional_var(portfolio_returns, 0.95),
-            'cvar_99': self.conditional_var(portfolio_returns, 0.99),
+            'cvar_99': self.conditional_var(portfolio_returns, 0.99),  # Already had this
             'beta': self.calculate_beta(portfolio_returns, market_returns),
             'sharpe_ratio': self.sharpe_ratio(portfolio_returns),
-            'max_drawdown': self.max_drawdown(portfolio_returns)
+            'max_drawdown': self.max_drawdown(portfolio_returns),
+            **self.tail_risk_metrics(portfolio_returns)  # ADD: Skewness, Kurtosis
         }
         
         # Portfolio risk metrics
+        correlation_data = self.correlation_metrics(returns)  # Enhanced correlation
+        position_concentration = self.position_concentration_metrics(weights)  # NEW: Top N concentration
+        
         portfolio_risk = {
             'concentration': self.concentration_risk(weights),
             'marginal_contributions': self.marginal_risk_contribution(weights, cov_matrix).tolist(),
-            'correlation_matrix': self.correlation_matrix(returns).to_dict()
+            'hhi': position_concentration['hhi'],  # ADD: Explicit HHI
+            **position_concentration,  # ADD: Top 3/5/10, max position
+            'avg_correlation': correlation_data['avg_correlation'],  # ADD
+            'max_correlation': correlation_data['max_correlation'],  # ADD
+            'min_correlation': correlation_data['min_correlation'],  # ADD
+            'correlation_matrix': correlation_data['correlation_matrix']
         }
         
         # Fundamental risk
