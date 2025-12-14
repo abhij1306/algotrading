@@ -61,7 +61,6 @@ AlgoTrading/
 ├── frontend/                   # Next.js React frontend
 │   ├── app/
 │   │   ├── page.tsx           # Main app with Screener, Portfolio Risk, and Backtest tabs
-│   │   ├── strategies/        # Legacy (strategies now on main page)
 │   │   └── globals.css        # Tailwind styles
 │   └── components/
 │       ├── strategies/        # Backtesting components
@@ -75,21 +74,34 @@ AlgoTrading/
 │   ├── app/
 │   │   ├── strategies/        # Strategy Engine
 │   │   │   ├── orb_strategy.py        # ORB strategy logic
-│   │   │   ├── performance_metrics.py # Metrics calculation (Sharpe, CAGR, etc.)
+│   │   │   ├── performance_metrics.py # Metrics calculation
 │   │   │   ├── black_scholes.py       # Options pricing
-│   │   │   └── backtest_engine.py     # Backtesting framework
+│   │   │   ├── backtest_engine.py     # Backtesting framework
+│   │   │   └── atr_utils.py           # ATR calculation
 │   │   ├── main.py            # API endpoints
+│   │   ├── database.py        # PostgreSQL ORM models
+│   │   ├── data_fetcher.py    # Fyers API integration
+│   │   ├── data_repository.py # Data persistence layer
 │   │   ├── screener_scraper.py # Screener.in data scraper
 │   │   ├── risk_metrics.py    # Risk calculation engine
-│   │   ├── data_fetcher.py    # Price data fetcher
+│   │   ├── portfolio_risk.py  # Portfolio risk analyzer
 │   │   ├── excel_parser.py    # Financial statement parser
-│   │   └── database.py        # PostgreSQL ORM models
-│   └── data/
-│       └── nse_fno_universe.json
-├── database/
-│   └── .env                   # PostgreSQL connection config
-├── fyers/                      # Fyers broker integration
-└── zerodha/                    # Zerodha broker integration
+│   │   ├── indicators.py      # Technical indicators
+│   │   └── populate_sectors.py # Sector classification (OpenRouter AI)
+│   ├── data/
+│   │   └── nse_fno_universe.json  # 299 F&O stocks list
+│   ├── scripts/               # Utility scripts
+│   │   ├── fetch_nse_symbols.py   # NSE symbol fetcher
+│   │   └── populate_historicals.py # Historical data loader
+│   ├── fetch_fno_data.py      # F&O data downloader (3 months, 5-min)
+│   ├── fetch_intraday_data.py # Intraday data fetcher utility
+│   └── check_nifty_data.py    # Data verification tool
+├── Fyers/                      # Fyers broker integration (active)
+├── NSEdata/                    # jugaad-data library for NSE data
+├── KotakNeo/                   # Kotak broker integration (future)
+├── Zerodha/                    # Zerodha broker integration (future)
+└── docs/                       # Documentation
+    └── risk_metrics_roadmap.md
 ```
 
 ## 🚀 Quick Start
