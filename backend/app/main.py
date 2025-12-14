@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 import numpy as np
 from datetime import date
@@ -894,3 +894,255 @@ async def list_all_sectors():
         return {'sectors': sector_list, 'count': len(sector_list)}
     finally:
         db.close()
+
+
+# ==================== STRATEGY BACKTESTING ====================
+
+from .strategies import ORBStrategy
+from .strategies.backtest_engine import BacktestEngine, BacktestConfig
+from datetime import datetime
+
+class BacktestRequest(BaseModel):
+    """Request model for backtesting"""
+    strategy_name: str
+    symbol: str
+    start_date: str  # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
+    timeframe: str = "5min"  # 1min, 5min, 15min, 1D
+    initial_capital: float = 100000
+    params: Optional[Dict[str, Any]] = {}
+
+@app.get("/api/strategies/list")
+async def list_strategies():
+    """List all available trading strategies"""
+    strategies = [
+        {
+            "name": "ORB",
+            "display_name": "Opening Range Breakout",
+            "description": "Trades breakouts from opening range with CE/PE executions",
+            "timeframes": ["1min", "5min", "15min"],
+            "default_params": {
+                "opening_range_minutes": 5,
+                "stop_loss_pct": 0.5,
+                "take_profit_pct": 1.5,
+                "max_positions_per_day": 1,
+                "trade_type": "options"
+            }
+        }
+    ]
+    
+    return {"strategies": strategies}
+
+@app.post("/api/strategies/backtest")
+async def run_backtest(request: BacktestRequest):
+    """
+    Run backtest for a strategy
+    
+    For intraday strategies (5min, 15min):
+    - Uses equity data simulation (CE/PE not available yet)
+    - Simulates directional trades based on strategy signals
+    """
+    db = SessionLocal()
+    repo = DataRepository(db)
+    
+    try:
+        print(f"[BACKTEST] Starting backtest for {request.strategy_name} on {request.symbol}")
+        
+        # Validate strategy
+        if request.strategy_name not in ['ORB']:
+            raise HTTPException(status_code=400, detail=f"Strategy {request.strategy_name} not found")
+        
+        # Parse dates
+        start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
+        end_date = datetime.strptime(request.end_date, "%Y-%m-%d")
+        
+        # Fetch data based on timeframe
+        if request.timeframe in ['1min', '5min', '15min', '30min', '60min']:
+            # Use intraday data
+            timeframe_map = {'1min': 1, '5min': 5, '15min': 15, '30min': 30, '60min': 60}
+            tf_minutes = timeframe_map.get(request.timeframe, 5)
+            
+            print(f"[BACKTEST] Fetching {tf_minutes}-minute intraday data for {request.symbol}")
+            hist = repo.get_intraday_candles(
+                symbol=request.symbol,
+                timeframe=tf_minutes,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if hist is None or hist.empty:
+                # Fall back to daily data if intraday not available
+                print(f"[BACKTEST] No intraday data found, falling back to daily data")
+                days = (end_date - start_date).days + 30
+                hist = repo.get_historical_prices(request.symbol, days=days)
+                
+                if hist is None or hist.empty:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No data found for {request.symbol}. Please ensure intraday data is available."
+                    )
+                
+                # Add timestamp column for daily data
+                if 'timestamp' not in hist.columns:
+                    hist = hist.reset_index()
+                    hist['timestamp'] = pd.to_datetime(hist['Date'])
+                
+                # Filter to requested date range
+                hist = hist[
+                    (hist['timestamp'] >= start_date) & 
+                    (hist['timestamp'] <= end_date)
+                ].copy()
+                
+                # Normalize column names
+                hist.columns = hist.columns.str.lower()
+        else:
+            # Use daily data for 1D timeframe
+            days = (end_date - start_date).days + 30
+            
+            print(f"[BACKTEST] Fetching daily data for {request.symbol}")
+            hist = repo.get_historical_prices(request.symbol, days=days)
+            
+            if hist is None or hist.empty:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"No historical data found for {request.symbol}"
+                )
+            
+            # Add timestamp column if using Date index
+            if 'timestamp' not in hist.columns:
+                hist = hist.reset_index()
+                hist['timestamp'] = pd.to_datetime(hist['Date'])
+            
+            # Filter to requested date range
+            hist = hist[
+                (hist['timestamp'] >= start_date) & 
+                (hist['timestamp'] <= end_date)
+            ].copy()
+            
+            # Normalize column names
+            hist.columns = hist.columns.str.lower()
+        
+        print(f"[BACKTEST] Prepared {len(hist)} candles for backtest")
+
+        
+        if len(hist) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No data available for {request.symbol} in the specified date range"
+            )
+        
+        # Normalize column names (handle both 'Close' and 'close')
+        hist.columns = hist.columns.str.lower()
+        required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        
+        # Check if all required columns exist
+        missing_cols = [col for col in required_cols if col not in hist.columns]
+        if missing_cols:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Missing required columns: {missing_cols}"
+            )
+        
+        # Initialize strategy
+        if request.strategy_name == 'ORB':
+            strategy_params = {
+                'symbol': request.symbol,
+                'opening_range_minutes': request.params.get('opening_range_minutes', 5),
+                'stop_loss_pct': request.params.get('stop_loss_pct', 0.5),
+                'take_profit_pct': request.params.get('take_profit_pct', 1.5),
+                'max_positions_per_day': request.params.get('max_positions_per_day', 1),
+                'trade_type': request.params.get('trade_type', 'options')
+            }
+            strategy = ORBStrategy(strategy_params)
+        else:
+            raise HTTPException(status_code=400, detail="Strategy not implemented")
+        
+        # Initialize backtest config
+        config = BacktestConfig(
+            initial_capital=request.initial_capital,
+            commission_pct=0.03,  # 0.03%
+            slippage_pct=0.05,    # 0.05%
+            max_positions=1
+        )
+        
+        # Run backtest
+        print(f"[BACKTEST] Running backtest...")
+        engine = BacktestEngine(strategy, config)
+        results = engine.run(hist, request.symbol)
+        
+        print(f"[BACKTEST] Backtest complete. Total trades: {results['summary']['total_trades']}")
+        
+        return {
+            "status": "success",
+            "strategy": request.strategy_name,
+            "symbol": request.symbol,
+            "period": {
+                "start": request.start_date,
+                "end": request.end_date,
+                "days": (end_date - start_date).days
+            },
+            **results
+        }
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/strategies/{strategy_name}/params")
+async def get_strategy_params(strategy_name: str):
+    """Get default parameters for a strategy"""
+    params_map = {
+        "ORB": {
+            "opening_range_minutes": {
+                "type": "number",
+                "default": 5,
+                "min": 1,
+                "max": 30,
+                "description": "Opening range duration in minutes"
+            },
+            "stop_loss_pct": {
+                "type": "number",
+                "default": 0.5,
+                "min": 0.1,
+                "max": 5.0,
+                "step": 0.1,
+                "description": "Stop loss percentage"
+            },
+            "take_profit_pct": {
+                "type": "number",
+                "default": 1.5,
+                "min": 0.5,
+                "max": 10.0,
+                "step": 0.1,
+                "description": "Take profit percentage"
+            },
+            "max_positions_per_day": {
+                "type": "number",
+                "default": 1,
+                "min": 1,
+                "max": 5,
+                "description": "Maximum trades per day"
+            },
+            "trade_type": {
+                "type": "select",
+                "default": "options",
+                "options": ["options", "equity"],
+                "description": "Trade using options (CE/PE) or equity"
+            }
+        }
+    }
+    
+    if strategy_name not in params_map:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    
+    return {"params": params_map[strategy_name]}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

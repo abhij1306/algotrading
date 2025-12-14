@@ -34,6 +34,16 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
   - Compact layout for better space utilization
   - One-click "Create New Portfolio" button
 
+### 📉 Strategy Backtester (NEW)
+- **Engine**: Event-driven backtesting for Equity and Options
+- **Strategies**: 
+  - **ORB (Opening Range Breakout)**: Intraday strategy with Black-Scholes pricing
+- **Features**:
+  - **Option Pricing**: Synthetic premiums using Black-Scholes model
+  - **Risk Management**: Position sizing based on Risk Amount, NIFTY lot sizes (75)
+  - **Analytics**: Equity Curve, Drawdown, Sharpe Ratio, Trade Logs
+- **Data**: Fyers Integration for 5-minute Intraday Data (NIFTY50, Stock Futures)
+
 ## 📁 Project Structure
 
 ```

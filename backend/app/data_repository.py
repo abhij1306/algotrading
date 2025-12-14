@@ -10,7 +10,7 @@ import pandas as pd
 
 from .database import (
     Company, HistoricalPrice, FinancialStatement, 
-    QuarterlyResult, DataUpdateLog, get_db
+    QuarterlyResult, DataUpdateLog, IntradayCandle, get_db
 )
 
 
@@ -152,6 +152,66 @@ class DataRepository:
         ).order_by(desc(HistoricalPrice.date)).first()
         
         return latest.date if latest else None
+    
+    # ==================== INTRADAY DATA OPERATIONS ====================
+    
+    def get_intraday_candles(
+        self,
+        symbol: str,
+        timeframe: int = 5,  # timeframe in minutes
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        days: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get intraday candle data as DataFrame
+        
+        Args:
+            symbol: Stock symbol
+            timeframe: Candle timeframe in minutes (1, 5, 15, 30, 60)
+            start_date: Start datetime
+            end_date: End datetime
+            days: Alternative to start_date - fetch last N days
+            
+        Returns:
+            DataFrame with columns: timestamp, open, high, low, close, volume
+        """
+        company = self.get_company(symbol)
+        if not company:
+            return pd.DataFrame()
+        
+        query = self.db.query(IntradayCandle).filter(
+            and_(
+                IntradayCandle.company_id == company.id,
+                IntradayCandle.timeframe == timeframe
+            )
+        )
+        
+        if start_date:
+            query = query.filter(IntradayCandle.timestamp >= start_date)
+        if end_date:
+            query = query.filter(IntradayCandle.timestamp <= end_date)
+        if days and not start_date:
+            cutoff = datetime.now() - timedelta(days=days)
+            query = query.filter(IntradayCandle.timestamp >= cutoff)
+        
+        query = query.order_by(IntradayCandle.timestamp)
+        candles = query.all()
+        
+        if not candles:
+            return pd.DataFrame()
+        
+        # Convert to DataFrame
+        data = {
+            'timestamp': [c.timestamp for c in candles],
+            'open': [c.open for c in candles],
+            'high': [c.high for c in candles],
+            'low': [c.low for c in candles],
+            'close': [c.close for c in candles],
+            'volume': [c.volume for c in candles],
+        }
+        df = pd.DataFrame(data)
+        return df
     
     # ==================== FINANCIAL STATEMENT OPERATIONS ====================
     

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import UnifiedPortfolioAnalyzer from '../components/UnifiedPortfolioAnalyzer';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 // Types
 interface Stock {
@@ -27,7 +28,7 @@ interface FinancialRecord {
   pe_ratio: number
 }
 
-type MainTab = 'screener' | 'strategies'
+type MainTab = 'screener' | 'portfolio' | 'strategies'
 type ScreenerTab = 'technicals' | 'financials'
 
 export default function MacOSPage() {
@@ -428,26 +429,32 @@ export default function MacOSPage() {
         <div className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/15 blur-[100px]" />
       </div>
 
-      <div className="relative z-10 max-w-[1400px] mx-auto px-6 pt-6">
+      <div className="relative z-10 max-w-[1400px] mx-auto px-6 pt-3">
 
         {/* Header */}
-        <header className="flex items-center justify-between px-8 py-4 mb-8 border-b border-gray-200/10">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent">
+        <header className="flex items-center justify-between px-4 py-2 mb-3 border-b border-gray-200/10">
+          <h1 className="text-base font-bold bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent">
             NSE Trading Screener
           </h1>
 
           <div className="flex items-center gap-2 bg-gray-200 dark:bg-gray-800 rounded-full p-1">
             <button
               onClick={() => setMainTab('screener')}
-              className={`px-8 py-2 rounded-full text-sm font-medium transition-all duration-300 ${mainTab === 'screener' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
+              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'screener' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
             >
               Screener
             </button>
             <button
-              onClick={() => setMainTab('strategies')}
-              className={`px-8 py-2 rounded-full text-sm font-medium transition-all duration-300 ${mainTab === 'strategies' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
+              onClick={() => setMainTab('portfolio')}
+              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'portfolio' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
             >
               Portfolio Risk
+            </button>
+            <button
+              onClick={() => setMainTab('strategies')}
+              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'strategies' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
+            >
+              Strategies
             </button>
           </div>
 
@@ -605,10 +612,15 @@ export default function MacOSPage() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : mainTab === 'portfolio' ? (
           <div className="animate-in fade-in slide-in-from-bottom-4">
             {/* Portfolio Risk Tab Content */}
             <PortfolioRiskTab />
+          </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-bottom-4">
+            {/* Strategies Tab Content */}
+            <StrategiesTab />
           </div>
         )}
 
@@ -620,4 +632,403 @@ export default function MacOSPage() {
 // Portfolio Risk Tab Component - Now Using Unified Interface
 function PortfolioRiskTab() {
   return <UnifiedPortfolioAnalyzer />;
+}
+
+// Strategies Tab Component
+function StrategiesTab() {
+  const [backtestResults, setBacktestResults] = useState<any>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [config, setConfig] = useState({
+    strategy: 'ORB',
+    symbol: 'RELIANCE',
+    timeframe: '5min',
+    segment: 'options',
+    startDate: '2025-11-14',
+    endDate: '2025-12-12',
+    initialCapital: 1000000,
+    openingRangeMinutes: 5,
+    stopLoss: 20.0,
+    takeProfit: 200.0,
+    maxPositions: 1,
+    riskPerTrade: 2.0,
+  });
+
+  const handleRunBacktest = async () => {
+    setIsRunning(true);
+    setError(null);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/strategies/backtest', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          strategy_name: config.strategy,
+          symbol: config.symbol,
+          start_date: config.startDate,
+          end_date: config.endDate,
+          timeframe: config.timeframe,
+          initial_capital: config.initialCapital,
+          params: {
+            opening_range_minutes: config.openingRangeMinutes,
+            stop_loss_pct: config.stopLoss,
+            take_profit_pct: config.takeProfit,
+            max_positions_per_day: config.maxPositions,
+            trade_type: config.segment
+          }
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Backtest failed');
+      }
+
+      const data = await response.json();
+      setBacktestResults(data);
+    } catch (err: any) {
+      setError(err.message);
+      console.error('Backtest error:', err);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-12 gap-6">
+      {/* Left Sidebar - Configuration */}
+      <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-6">
+        <h3 className="text-lg font-semibold mb-6">Strategy Configuration</h3>
+
+        <div className="space-y-2">
+          {/* Strategy Selector */}
+          <div>
+            <label className="block text-xs font-medium opacity-60 mb-1">Strategy</label>
+            <select
+              value={config.strategy}
+              onChange={(e) => setConfig({ ...config, strategy: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            >
+              <option value="ORB">Opening Range Breakout (ORB)</option>
+            </select>
+          </div>
+
+          {/* Symbol */}
+          <div>
+            <label className="block text-sm font-medium opacity-60 mb-2">Symbol</label>
+            <input
+              type="text"
+              value={config.symbol}
+              onChange={(e) => setConfig({ ...config, symbol: e.target.value.toUpperCase() })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          {/* Timeframe */}
+          <div>
+            <label className="block text-sm font-medium opacity-60 mb-2">Timeframe</label>
+            <select
+              value={config.timeframe}
+              onChange={(e) => setConfig({ ...config, timeframe: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            >
+              <option value="5min">5 Min</option>
+              <option value="15min">15 Min</option>
+              <option value="1D">1 Day</option>
+            </select>
+          </div>
+
+          {/* Date Range */}
+          <div>
+            <label className="block text-sm font-medium opacity-60 mb-2">Start Date</label>
+            <input
+              type="date"
+              value={config.startDate}
+              onChange={(e) => setConfig({ ...config, startDate: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium opacity-60 mb-2">End Date</label>
+            <input
+              type="date"
+              value={config.endDate}
+              onChange={(e) => setConfig({ ...config, endDate: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          {/* Capital Settings */}
+          <div className="pt-2 border-t border-gray-200/10">
+            <label className="block text-xs font-medium opacity-60 mb-1">Initial Capital (₹)</label>
+            <input
+              type="number"
+              step="10000"
+              value={config.initialCapital}
+              onChange={(e) => setConfig({ ...config, initialCapital: parseFloat(e.target.value) })}
+              className="w-full px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium opacity-60 mb-1">Risk Per Trade (%)</label>
+            <input
+              type="number"
+              step="0.5"
+              value={config.riskPerTrade}
+              onChange={(e) => setConfig({ ...config, riskPerTrade: parseFloat(e.target.value) })}
+              className="w-full px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          {/* Risk Parameters */}
+          <div className="pt-4 border-t border-gray-200/10">
+            <label className="block text-sm font-medium opacity-60 mb-2">Stop Loss (%)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={config.stopLoss}
+              onChange={(e) => setConfig({ ...config, stopLoss: parseFloat(e.target.value) })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium opacity-60 mb-2">Take Profit (%)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={config.takeProfit}
+              onChange={(e) => setConfig({ ...config, takeProfit: parseFloat(e.target.value) })}
+              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
+              disabled={isRunning}
+            />
+          </div>
+
+          {/* Run Button */}
+          <button
+            onClick={handleRunBacktest}
+            disabled={isRunning}
+            className={`w-full py-3 rounded-lg font-semibold transition-all ${isRunning
+              ? 'bg-gray-300 dark:bg-gray-700 cursor-not-allowed opacity-50'
+              : 'bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-lg'
+              }`}
+          >
+            {isRunning ? 'Running...' : '▶ Run Backtest'}
+          </button>
+        </div>
+      </div>
+
+      {/* Right Content - Results */}
+      <div className="col-span-9 space-y-3">
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {isRunning && (
+          <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+            <p className="opacity-60">Running backtest...</p>
+          </div>
+        )}
+
+        {!isRunning && !backtestResults && !error && (
+          <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center opacity-60">
+            <p>Configure strategy and run backtest to see results</p>
+          </div>
+        )}
+
+        {backtestResults && !isRunning && (
+          <>
+            {/* Results Header */}
+            <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold">Opening Range Breakout (ORB)</h3>
+                  <p className="text-xs opacity-60 mt-0.5">
+                    {backtestResults.symbol} • {backtestResults.period?.start} to {backtestResults.period?.end}
+                  </p>
+                </div>
+                <div className={`text-xl font-bold ${backtestResults.total_return >= 0 ? 'text-green-400' : 'text-red-400'
+                  }`}>
+                  {backtestResults.total_return >= 0 ? '+' : ''}
+                  {backtestResults.total_return?.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+
+            {/* Metrics Grid */}
+            <div className="grid grid-cols-3 gap-3">
+              {/* Performance */}
+              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+                <h4 className="text-xs font-semibold opacity-60 mb-2">PERFORMANCE</h4>
+                <div className="space-y-1.5">
+                  <div>
+                    <div className="text-xs opacity-60">Win Rate</div>
+                    <div className="text-lg font-bold text-green-400">
+                      {backtestResults.metrics?.trade_analysis?.win_rate_pct?.toFixed(0) || 0}%
+                    </div>
+                  </div>
+                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="opacity-60">CAGR</span>
+                      <span className="font-medium">{backtestResults.metrics?.performance?.cagr_pct?.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Sharpe Ratio</span>
+                      <span className="font-medium">{backtestResults.metrics?.performance?.sharpe_ratio?.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Risk */}
+              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+                <h4 className="text-xs font-semibold opacity-60 mb-2">RISK</h4>
+                <div className="space-y-1.5">
+                  <div>
+                    <div className="text-xs opacity-60">Max Drawdown</div>
+                    <div className="text-lg font-bold text-red-400">
+                      {backtestResults.metrics?.risk?.max_drawdown_pct?.toFixed(1)}%
+                    </div>
+                  </div>
+                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Max Cons. Losses</span>
+                      <span className="font-medium">{backtestResults.metrics?.risk?.max_consecutive_losses || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Volatility</span>
+                      <span className="font-medium">{backtestResults.metrics?.risk?.volatility_pct?.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Trades */}
+              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+                <h4 className="text-xs font-semibold opacity-60 mb-2">TRADES</h4>
+                <div className="space-y-1.5">
+                  <div>
+                    <div className="text-xs opacity-60">Total Trades</div>
+                    <div className="text-lg font-bold">{backtestResults.summary?.total_trades || 0}</div>
+                  </div>
+                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Wins / Losses</span>
+                      <span className="font-medium">
+                        {backtestResults.summary?.winning_trades} / {backtestResults.summary?.losing_trades}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Profit Factor</span>
+                      <span className="font-medium">{backtestResults.metrics?.performance?.profit_factor?.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Equity Curve Chart */}
+            {backtestResults.equity_curve && backtestResults.equity_curve.length > 0 && (
+              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+                <h4 className="text-xs font-semibold opacity-60 mb-2">EQUITY CURVE</h4>
+                <div style={{ width: '100%', height: 150 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={backtestResults.equity_curve.map((point: any) => ({
+                      timestamp: new Date(point.timestamp).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+                      equity: point.equity
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis
+                        dataKey="timestamp"
+                        stroke="#94a3b8"
+                        style={{ fontSize: '10px' }}
+                      />
+                      <YAxis
+                        stroke="#94a3b8"
+                        style={{ fontSize: '10px' }}
+                        tickFormatter={(value) => `₹${(value / 1000).toFixed(0)}k`}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#1e293b',
+                          border: '1px solid #334155',
+                          borderRadius: '8px',
+                          color: '#fff'
+                        }}
+                        formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Equity']}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="equity"
+                        stroke="#10b981"
+                        strokeWidth={2}
+                        dot={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+
+            {/* Trades Table */}
+            {backtestResults.trades && backtestResults.trades.length > 0 && (
+              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
+                <h4 className="text-xs font-semibold opacity-60 mb-2">RECENT TRADES</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="border-b border-gray-200/10">
+                      <tr className="text-xs opacity-60">
+                        <th className="text-left pb-1.5">Date & Time</th>
+                        <th className="text-left pb-1.5">Instrument</th>
+                        <th className="text-right pb-1.5">Entry</th>
+                        <th className="text-right pb-1.5">Exit</th>
+                        <th className="text-right pb-1.5">P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {backtestResults.trades.slice(0, 10).map((trade: any, index: number) => (
+                        <tr key={index} className="border-b border-gray-200/5">
+                          <td className="py-1.5">
+                            {new Date(trade.entry_time).toLocaleString('en-IN', {
+                              month: 'short',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </td>
+                          <td className="py-2 font-medium">{trade.instrument}</td>
+                          <td className="py-2 text-right opacity-80">₹{trade.entry_price.toFixed(2)}</td>
+                          <td className="py-2 text-right opacity-80">₹{trade.exit_price.toFixed(2)}</td>
+                          <td className={`py-2 text-right font-medium ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                            {trade.pnl >= 0 ? '+' : ''}₹{trade.pnl.toFixed(2)}
+                            <span className="text-xs ml-1">({trade.pnl_pct.toFixed(1)}%)</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
 }

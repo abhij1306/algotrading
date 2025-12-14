@@ -225,3 +225,35 @@ Just need to expand `FinancialStatement` model or create new tables.
 
 ---
 *Last Updated: 2024-12-13 14:41 IST*
+
+### 5. AlgoTrading Strategy Engine (2025-12-14)
+**What worked:**
+- **ORB Strategy**: Implemented Opening Range Breakout (5-min default) logic in `backend/app/strategies/orb_strategy.py`.
+- **Intraday Data**: Successfully fetched 5-min candles for `NIFTY50-INDEX` from Fyers API.
+- **Timezone Handling**: Fixed UTC (db) vs IST (strategy) mismatch using native UTC time checks (03:45 UTC open).
+- **Options Pricing**: Integrated Black-Scholes model (`strategies/black_scholes.py`) for synthetic CE/PE premiums.
+- **Backtest Dashboard**: 
+  - Complete UI in `frontend/app/strategies/page.tsx`
+  - Interactive Equity Curve, Trades Table, and Risk Metrics (Sharpe, Drawdown).
+  - Configurable inputs: Initial Capital, Risk Per Trade (%), Stop Loss (%).
+
+**Key Features:**
+- **Risk Management**: Position sizing based on Risk Amount (not just capital).
+- **Lot Size**: Enforced NIFTY 75 qty multiples.
+- **Realistic P&L**: Simulated slippage and commission.
+- **Visuals**: Charts display time in IST correctly.
+
+**How to Run Backtest:**
+1. Navigate to **Strategies** tab.
+2. Select **NIFTY50-INDEX**.
+3. Set Risk Per Trade (e.g., 2%) and Stop Loss (e.g., 20%).
+4. Click **Run Backtest**.
+
+**Code Pattern (Strategy):**
+```python
+class ORBStrategy(BaseStrategy):
+    def on_data(self, ...):
+         # Check for 03:45 UTC (09:15 IST) market open
+         # Calculate Opening Range
+         # Signal BUY/SELL with Option Premium prices
+```

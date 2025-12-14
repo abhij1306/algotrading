@@ -85,6 +85,41 @@ class HistoricalPrice(Base):
     )
 
 
+class IntradayCandle(Base):
+    """Intraday OHLCV candle data for backtesting"""
+    __tablename__ = "intraday_candles"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    
+    # Timeframe (1, 5, 15, 30, 60 minutes)
+    timeframe = Column(Integer, nullable=False)  # in minutes
+    
+    # OHLCV
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Integer, nullable=False)
+    
+    # Additional fields
+    trades = Column(Integer)  # Number of trades in this candle
+    
+    # Data source tracking
+    source = Column(String(20), default='fyers')  # 'fyers', 'zerodha', etc.
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    company = relationship("Company")
+    
+    # Composite index for fast queries by company, timeframe, and timestamp
+    __table_args__ = (
+        Index('ix_intraday_company_tf_ts', 'company_id', 'timeframe', 'timestamp', unique=True),
+        Index('ix_intraday_timestamp', 'timestamp'),
+    )
+
+
 class FinancialStatement(Base):
     """Annual/Quarterly financial statements"""
     __tablename__ = "financial_statements"
