@@ -12,6 +12,7 @@ export default function PerformanceMetrics({ results }: PerformanceMetricsProps)
 
     const metrics = results.metrics?.performance || {};
     const risk = results.metrics?.risk || {};
+    const trade_analysis = results.metrics?.trade_analysis || {}; // Add this for win_rate
     const summary = results.summary || {};
 
     // Calculate Net Profit
@@ -70,7 +71,7 @@ export default function PerformanceMetrics({ results }: PerformanceMetricsProps)
                 </div>
                 <div className="space-y-1">
                     <div className="text-2xl font-bold text-white tracking-tight">
-                        {(metrics.win_rate_pct || 0).toFixed(1)}%
+                        {(trade_analysis.win_rate_pct || 0).toFixed(1)}%
                     </div>
                     <div className="text-xs text-text-secondary opacity-60">
                         {summary.winning_trades || 0} Winning Trades
@@ -96,20 +97,20 @@ export default function PerformanceMetrics({ results }: PerformanceMetricsProps)
                 </div>
             </div>
 
-            {/* Box 4: Max Drawdown */}
+            {/* Box 4: Sharpe Ratio */}
             <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm relative overflow-hidden group">
                 <div className="flex justify-between items-start mb-2">
-                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Max Drawdown</div>
-                    <div className="p-1.5 rounded-lg bg-red-500/10">
-                        <Droplet className="w-4 h-4 text-red-500" />
+                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Sharpe Ratio</div>
+                    <div className="p-1.5 rounded-lg bg-purple-500/10">
+                        <Scale className="w-4 h-4 text-purple-500" />
                     </div>
                 </div>
                 <div className="space-y-1">
                     <div className="text-2xl font-bold text-white tracking-tight">
-                        {(risk.max_drawdown_pct || 0).toFixed(1)}%
+                        {(metrics.sharpe_ratio || 0).toFixed(2)}
                     </div>
                     <div className="text-xs text-text-secondary opacity-60">
-                        {drawdownPeriod}
+                        {metrics.sharpe_ratio && metrics.sharpe_ratio > 1 ? 'Good' : metrics.sharpe_ratio && metrics.sharpe_ratio > 2 ? 'Excellent' : 'Poor'} Risk-Adjusted Return
                     </div>
                 </div>
             </div>

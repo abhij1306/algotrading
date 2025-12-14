@@ -1048,8 +1048,8 @@ async def run_backtest(request: BacktestRequest):
             strategy_params = {
                 'symbol': request.symbol,
                 'opening_range_minutes': request.params.get('opening_range_minutes', 5),
-                'stop_loss_pct': request.params.get('stop_loss_pct', 0.5),
-                'take_profit_pct': request.params.get('take_profit_pct', 1.5),
+                'stop_loss_atr_multiplier': request.params.get('stopLoss', 0.5),  # ATR multiplier from UI
+                'take_profit_atr_multiplier': request.params.get('takeProfit', 1.5),  # ATR multiplier from UI
                 'max_positions_per_day': request.params.get('max_positions_per_day', 1),
                 'trade_type': request.params.get('trade_type', 'options')
             }
@@ -1057,12 +1057,13 @@ async def run_backtest(request: BacktestRequest):
         else:
             raise HTTPException(status_code=400, detail="Strategy not implemented")
         
-        # Initialize backtest config
+        # Initialize backtest config with risk_per_trade from frontend
         config = BacktestConfig(
             initial_capital=request.initial_capital,
             commission_pct=0.03,  # 0.03%
             slippage_pct=0.05,    # 0.05%
-            max_positions=1
+            max_positions=1,
+            risk_per_trade_pct=request.params.get('riskPerTrade', 2.0)  # Use frontend value
         )
         
         # Run backtest

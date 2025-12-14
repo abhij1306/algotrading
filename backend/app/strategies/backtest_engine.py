@@ -130,10 +130,12 @@ class BacktestEngine:
     
     def _execute_signal(self, signal: Signal, current_price: float):
         """Execute a trading signal"""
-        # Calculate position size
+        # Calculate position size based on INITIAL capital for consistent risk %
+        # Pass the actual stop loss to use ATR-based risk calculation
         quantity = self.strategy.calculate_position_size(
             signal.entry_price,
-            self.capital * (self.config.risk_per_trade_pct / 100)
+            self.config.initial_capital * (self.config.risk_per_trade_pct / 100),
+            signal.stop_loss  # Pass actual SL for accurate risk calculation
         )
         
         if quantity == 0:
@@ -148,9 +150,9 @@ class BacktestEngine:
         
         # For options, determine position type from instrument
         if 'CE' in signal.instrument:
-            position_type = 'LONG'
+            position_type = 'LONG'  # Call = Bullish
         elif 'PE' in signal.instrument:
-            position_type = 'LONG'  # We're buying the put
+            position_type = 'SHORT'  # Put = Bearish (even though we're buying it)
         else:
             position_type = 'LONG'  # Equity
         
@@ -181,20 +183,23 @@ class BacktestEngine:
                 positions_to_close.append(position)
         
         for position in positions_to_close:
-            # Determine exit reason
+            # Get current value (premium for options, spot for equity)
+            if hasattr(self.strategy, 'get_exit_price'):
+                current_val = self.strategy.get_exit_price(position, current_price, current_time)
+            else:
+                current_val = current_price
+            
+            # Determine exit reason using current value
             exit_reason = 'SIGNAL'
-            if current_price <= position.stop_loss:
+            if current_val <= position.stop_loss:
                 exit_reason = 'STOP_LOSS'
-            elif current_price >= position.take_profit:
+            elif current_val >= position.take_profit:
                 exit_reason = 'TAKE_PROFIT'
             elif current_time.time() >= self.strategy.market_close:
                 exit_reason = 'EOD'
             
-            # Get exit price (strategy might calculate specific price, e.g., options params)
-            if hasattr(self.strategy, 'get_exit_price'):
-                exit_price = self.strategy.get_exit_price(position, current_price, current_time)
-            else:
-                exit_price = current_price
+            # Use the calculated current value as exit price
+            exit_price = current_val
             
             self._close_position(position, exit_price, current_time, exit_reason)
     
@@ -268,8 +273,16 @@ class BacktestEngine:
         # Convert equity curve to DataFrame
         equity_df = pd.DataFrame(self.equity_curve)
         
-        # Convert trades to list of dicts
-        trades_list = [asdict(trade) for trade in self.trades]
+        # Convert trades to list of dicts with datetime serialization
+        trades_list = []
+        for trade in self.trades:
+            trade_dict = asdict(trade)
+            # Convert datetime objects to ISO strings
+            if 'entry_time' in trade_dict and hasattr(trade_dict['entry_time'], 'isoformat'):
+                trade_dict['entry_time'] = trade_dict['entry_time'].isoformat()
+            if 'exit_time' in trade_dict and hasattr(trade_dict['exit_time'], 'isoformat'):
+                trade_dict['exit_time'] = trade_dict['exit_time'].isoformat()
+            trades_list.append(trade_dict)
         
         # Calculate performance metrics
         metrics_calculator = PerformanceMetrics(

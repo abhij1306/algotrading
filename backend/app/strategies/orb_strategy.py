@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from .base_strategy import BaseStrategy, Signal, Position
 from .black_scholes import price_synthetic_option
+from .atr_utils import calculate_atr
 
 
 class ORBStrategy(BaseStrategy):
@@ -35,8 +36,15 @@ class ORBStrategy(BaseStrategy):
         
         # Strategy parameters
         self.opening_range_minutes = params.get('opening_range_minutes', 5)
-        self.stop_loss_pct = params.get('stop_loss_pct', 0.5)
-        self.take_profit_pct = params.get('take_profit_pct', 1.5)
+        
+        # ATR-based stops (multipliers, not percentages)
+        self.stop_loss_atr_multiplier = params.get('stop_loss_atr_multiplier', 0.5)
+        self.take_profit_atr_multiplier = params.get('take_profit_atr_multiplier', 1.5)
+        
+        # For fallback if ATR can't be calculated
+        self.stop_loss_pct = params.get('stop_loss_pct', 20)  # 20% fallback
+        self.take_profit_pct = params.get('take_profit_pct', 30)  # 30% fallback
+        
         self.max_positions_per_day = params.get('max_positions_per_day', 1)
         self.trade_type = params.get('trade_type', 'options')
         self.days_to_expiry = params.get('days_to_expiry', 5)  # Weekly options default
@@ -44,7 +52,7 @@ class ORBStrategy(BaseStrategy):
         # State variables
         self.opening_range_high = None
         self.opening_range_low = None
-        self.opening_range_calculated = False
+        self.range_calculated = False
         self.trades_today = 0
         self.current_date = None
         
@@ -156,19 +164,29 @@ class ORBStrategy(BaseStrategy):
                 strike = round(current_price / 50) * 50
                 instrument = f"{self.params.get('symbol', 'STOCK')} {strike} {instrument_suffix}"
                 
-                # Calculate Option Premium using Black-Scholes
+                # Calculate option premium with dynamic volatility and accurate expiry
                 entry_price = price_synthetic_option(
                     underlying_price=current_price,
-                    option_type=instrument_suffix.replace('CE', 'call').replace('PE', 'put'),
+                    option_type=instrument_suffix,  # CE or PE
                     strike=strike,
-                    days_to_expiry=self.days_to_expiry
+                    days_to_expiry=7  # Weekly options
                 )
             else:
                 instrument = f"{self.params.get('symbol', 'STOCK')}-EQ"
             
-            # Calculate stop loss and take profit on the PREMIUM
-            stop_loss = entry_price * (1 - self.stop_loss_pct / 100)
-            take_profit = entry_price * (1 + self.take_profit_pct / 100)
+            # Calculate ATR-based stop loss and take profit
+            # Use last 20 candles for ATR calculation
+            try:
+                atr = calculate_atr(historical_data.tail(20))
+                
+                # ATR-based stops (more dynamic and volatility-adaptive)
+                stop_loss = entry_price - (atr * self.stop_loss_atr_multiplier)
+                take_profit = entry_price + (atr * self.take_profit_atr_multiplier)
+                
+            except Exception as e:
+                # Fallback to percentage-based if ATR calculation fails
+                stop_loss = entry_price * (1 - self.stop_loss_pct / 100)
+                take_profit = entry_price * (1 + self.take_profit_pct / 100)
             
             self.trades_today += 1
             
@@ -189,9 +207,14 @@ class ORBStrategy(BaseStrategy):
         
         return None
 
-    def calculate_position_size(self, price: float, capital: float) -> int:
+    def calculate_position_size(self, price: float, capital: float, stop_loss: float = None) -> int:
         """
         Calculate position size based on Risk Amount (passed as 'capital')
+        
+        Args:
+            price: Entry price
+            capital: Total risk amount (e.g. 2% of equity)
+            stop_loss: Actual stop loss price (optional)
         """
         if price <= 0:
             return 0
@@ -205,10 +228,13 @@ class ORBStrategy(BaseStrategy):
         else:
             lot_size = 1
             
-        # Calculate Risk Amount per Unit
-        # capital argument is the Total Risk Amount allowed (e.g. 2% of Equity)
-        # Loss per unit = price * (stop_loss_pct / 100)
-        risk_per_unit = price * (self.stop_loss_pct / 100)
+        # Calculate Risk Per Unit
+        if stop_loss and stop_loss > 0:
+            # Use actual stop loss distance
+            risk_per_unit = abs(price - stop_loss)
+        else:
+            # Fallback to percentage if SL not provided
+            risk_per_unit = price * (self.stop_loss_pct / 100)
         
         if risk_per_unit <= 0:
             # Fallback if SL is 0
@@ -219,7 +245,12 @@ class ORBStrategy(BaseStrategy):
             
         # Round to nearest lot size
         if lot_size > 1:
-            qty = (qty // lot_size) * lot_size
+            rounded_qty = (qty // lot_size) * lot_size
+            # If calculated qty is less than 1 lot, use 1 lot minimum
+            if rounded_qty == 0 and qty > 0:
+                qty = lot_size  # Use 1 lot minimum
+            else:
+                qty = rounded_qty
             
         return max(qty, 0)
     

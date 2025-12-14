@@ -4,8 +4,10 @@ Calculate theoretical option prices for backtesting
 """
 
 import numpy as np
+import pandas as pd
 from scipy.stats import norm
-from typing import Tuple
+from typing import Tuple, Optional
+from datetime import datetime, timedelta
 
 
 def black_scholes_call(S: float, K: float, T: float, r: float, sigma: float) -> float:
@@ -192,29 +194,134 @@ def get_option_greeks(
 
 
 # Default parameters for Indian market
-DEFAULT_RISK_FREE_RATE = 0.07  # 7% (approx RBI repo rate)
-DEFAULT_VOLATILITY = 0.25  # 25% annual volatility
-DEFAULT_DTE = 30  # Days to expiration
+DEFAULT_RISK_FREE_RATE = 0.065  # 6.5% (current RBI repo rate)
+DEFAULT_VOLATILITY = 0.20  # 20% annual volatility (fallback)
+DEFAULT_DTE = 7  # Days to expiration (weekly options)
+NIFTY_DIVIDEND_YIELD = 0.012  # 1.2% annual dividend yield
+
+
+def calculate_historical_volatility(
+    price_data: pd.DataFrame,
+    window: int = 20,
+    timeframe_minutes: int = 5
+) -> float:
+    """
+    Calculate annualized historical volatility from recent price data
+    
+    Args:
+        price_data: DataFrame with 'close' column
+        window: Lookback period (default: 20 periods)
+        timeframe_minutes: Timeframe in minutes (default: 5 for 5-min data)
+    
+    Returns:
+        Annualized volatility (e.g., 0.25 for 25%)
+    """
+    if len(price_data) < window + 1:
+        return DEFAULT_VOLATILITY
+    
+    try:
+        # Calculate log returns
+        returns = np.log(price_data['close'] / price_data['close'].shift(1))
+        
+        # Calculate rolling standard deviation
+        rolling_std = returns.rolling(window=window).std()
+        
+        # Get current volatility
+        current_std = rolling_std.iloc[-1]
+        
+        if pd.isna(current_std) or current_std == 0:
+            return DEFAULT_VOLATILITY
+        
+        # Annualize based on timeframe
+        # For 5-min data: 78 periods per day (9:15 AM - 3:30 PM = 375 min / 5)
+        periods_per_day = int(375 / timeframe_minutes)
+        trading_days_per_year = 252
+        annualization_factor = np.sqrt(periods_per_day * trading_days_per_year)
+        
+        annualized_vol = current_std * annualization_factor
+        
+        # Ensure reasonable bounds (10% to 60%)
+        annualized_vol = max(min(annualized_vol, 0.60), 0.10)
+        
+        return annualized_vol
+        
+    except Exception as e:
+        # Fallback to default if calculation fails
+        return DEFAULT_VOLATILITY
+
+
+def get_next_weekly_expiry(current_date: datetime) -> datetime:
+    """
+    Get next Thursday (weekly expiry for NIFTY options)
+    
+    Args:
+        current_date: Current datetime
+    
+    Returns:
+        Next Thursday at 3:30 PM (market close)
+    """
+    # Thursday = 3 (Monday = 0)
+    days_ahead = 3 - current_date.weekday()
+    
+    if days_ahead <= 0:  # Already past or on Thursday
+        days_ahead += 7
+    
+    expiry_date = current_date + timedelta(days=days_ahead)
+    
+    # Set to 3:30 PM (market close)
+    expiry_datetime = expiry_date.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    return expiry_datetime
+
+
+def calculate_time_to_expiry(current_time: datetime) -> float:
+    """
+    Calculate time to expiry in years (for Black-Scholes)
+    
+    Args:
+        current_time: Current datetime during trading
+    
+    Returns:
+        Time to expiry in years
+    """
+    expiry = get_next_weekly_expiry(current_time)
+    
+    # Calculate hours remaining
+    time_delta = expiry - current_time
+    hours_remaining = time_delta.total_seconds() / 3600
+    
+    # Convert to years (assuming 6.25 trading hours per day, 252 trading days)
+    trading_hours_per_year = 6.25 * 252
+    years_to_expiry = hours_remaining / trading_hours_per_year
+    
+    # Minimum 0.001 years (approx 6 trading hours) to avoid division by zero
+    return max(years_to_expiry, 0.001)
 
 
 def price_synthetic_option(
     underlying_price: float,
     option_type: str = 'CE',
     strike: float = None,
-    days_to_expiry: int = DEFAULT_DTE,
-    volatility: float = DEFAULT_VOLATILITY,
-    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+    days_to_expiry: int = None,
+    volatility: float = None,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    historical_data: Optional[pd.DataFrame] = None,
+    current_time: Optional[datetime] = None,
+    apply_dividend_adjustment: bool = True
 ) -> float:
     """
-    Price a synthetic option using Black-Scholes
+    Price a synthetic option using Black-Scholes with improved accuracy
     
     Args:
         underlying_price: Current price of underlying stock
         option_type: 'CE' (call) or 'PE' (put)
         strike: Strike price (if None, uses ATM)
-        days_to_expiry: Days until expiration
-        volatility: Annual volatility (default: 25%)
-        risk_free_rate: Risk-free rate (default: 7%)
+        days_to_expiry: Days until expiration (if None, calculates from current_time)
+        volatility: Annual volatility (if None, calculates from historical_data)
+        risk_free_rate: Risk-free rate (default: 6.5%)
+        historical_data: DataFrame with price history for volatility calculation
+        current_time: Current datetime for expiry calculation
+        apply_dividend_adjustment: Whether to apply dividend yield adjustment
     
     Returns:
         Option price
@@ -223,17 +330,46 @@ def price_synthetic_option(
     if strike is None:
         strike = calculate_atm_strike(underlying_price)
     
-    # Convert days to years
-    T = days_to_expiry / 365.0
+    # Calculate dynamic volatility if not provided
+    if volatility is None:
+        if historical_data is not None and len(historical_data) > 20:
+            volatility = calculate_historical_volatility(historical_data, window=20)
+        else:
+            volatility = DEFAULT_VOLATILITY
+    
+    # Calculate time to expiry
+    if current_time is not None:
+        T = calculate_time_to_expiry(current_time)
+    elif days_to_expiry is not None:
+        T = days_to_expiry / 365.0
+    else:
+        T = DEFAULT_DTE / 365.0
     
     # Calculate option price
     if option_type.upper() in ['CE', 'CALL']:
         price = black_scholes_call(
             underlying_price, strike, T, risk_free_rate, volatility
         )
+        
+        # Apply dividend adjustment (reduces call price)
+        if apply_dividend_adjustment:
+            price = price * (1 - NIFTY_DIVIDEND_YIELD * T)
+            
     else:  # PE or PUT
         price = black_scholes_put(
             underlying_price, strike, T, risk_free_rate, volatility
         )
+        
+        # Apply dividend adjustment (increases put price)
+        if apply_dividend_adjustment:
+            price = price * (1 + NIFTY_DIVIDEND_YIELD * T)
     
-    return price
+    # Validate result - ensure no NaN or Inf values
+    if not np.isfinite(price) or price <= 0:
+        # Fallback to simple intrinsic value if calculation failed
+        if option_type.upper() in ['CE', 'CALL']:
+            price = max(underlying_price - strike, 1.0)  # Min 1 rupee
+        else:
+            price = max(strike - underlying_price, 1.0)  # Min 1 rupee
+    
+    return float(price)

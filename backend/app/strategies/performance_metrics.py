@@ -157,8 +157,8 @@ class PerformanceMetrics:
         return {
             'max_drawdown_pct': round(max_drawdown, 2),
             'max_drawdown_duration_days': max_dd_duration_days,
-            'max_drawdown_start_date': max_dd_start_date,
-            'max_drawdown_end_date': max_dd_end_date,
+            'max_drawdown_start_date': max_dd_start_date.isoformat() if max_dd_start_date else None,
+            'max_drawdown_end_date': max_dd_end_date.isoformat() if max_dd_end_date else None,
             'volatility_pct': round(volatility, 2),
             'max_consecutive_losses': max_consecutive_losses,
             'var_95_pct': round(var_95, 2)
