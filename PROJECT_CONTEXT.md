@@ -23,7 +23,7 @@ This file tracks successful workflows, configurations, and solutions for future 
 - Access token saved successfully
 - Config detection: `backend/app/config.py` checks for token file
 
-**Status:** ✅ Connected (Token verified: eyJhbGciOiJIUzI1NiIs...)
+**Status:** ✅ Connected (Token verified: [HIDDEN])
 
 **How to use Fyers:**
 ```python

@@ -50,11 +50,14 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
 AlgoTrading/
 ├── frontend/                   # Next.js React frontend
 │   ├── app/
+│   │   ├── strategies/        # Strategy Backtester UI
 │   │   └── page.tsx           # Main screener UI
 │   └── components/
+│       ├── strategies/        # Backtesting components (EquityCurve, TradesTable)
 │       └── RiskDashboard.tsx  # Portfolio analyzer UI
 ├── backend/                    # FastAPI backend
 │   ├── app/
+│   │   ├── strategies/        # Strategy Engine (ORB, Black-Scholes, Backtest)
 │   │   ├── main.py            # API endpoints
 │   │   ├── screener_scraper.py # Screener.in data scraper
 │   │   ├── risk_metrics.py    # Risk calculation engine
