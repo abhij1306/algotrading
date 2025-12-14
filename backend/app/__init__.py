@@ -1,0 +1,3 @@
+"""
+Backend app package initialization
+"""
