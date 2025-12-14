@@ -49,7 +49,7 @@ hist = fetch_fyers_historical("RELIANCE", days=365)
 - Source: Fyers public symbol master (`NSE_CM.csv`)
 - Script: `backend/scripts/fetch_nse_symbols.py` (extracts ~2300 EQ symbols)
 - Population: `backend/scripts/populate_historicals.py`
-  - Handles Fyers API limits and yfinance fallback
+  - Handles Fyers API rate limits (1 req/sec)
   - Checks for existing recent data to optimize updates
   - Transaction-safe (commits per company)
 
@@ -62,17 +62,15 @@ python backend/scripts/populate_historicals.py
 ### Data Fetching (Yesterday's Success)
 **File:** `init_database.py`
 **What worked:**
-- Fetched data for 200 stocks successfully
-- Used Fyers API with yfinance fallback
-- Processed stocks one at a time with individual commits
+- Fetched data for F&O universe successfully
+- Uses Fyers API exclusively for all data
+- Processed stocks with rate limits (1 sec delay)
 
 **Key code pattern:**
 ```python
 for symbol in universe:
     try:
         hist = fetch_fyers_historical(symbol, days=365)
-        if hist is None or hist.empty:
-            hist = fetch_yfinance_data(symbol, period='1y')
         
         if hist is not None and not hist.empty:
             records = repo.save_historical_prices(symbol, hist, source='fyers')
@@ -94,13 +92,14 @@ for symbol in universe:
 ### Issue: Fyers Data Fetch Fails
 **Possible causes:**
 1. Token expired (re-run `fyers/fyers_login.py`)
-2. Symbol format wrong (use "RELIANCE" not "RELIANCE.NS")
-3. Market hours restriction (some data only during market hours)
+2. Symbol format wrong (use NSE format: "RELIANCE")
+3. Rate limits (1 request/second maximum)
+4. Date range limits (max 100 days per request)
 
-**Solution:** Always have yfinance fallback
-
-### Issue: yfinance Slow
-**Solution:** Use Fyers API when available (10x faster)
+**Solution:** 
+- Ensure valid Fyers token
+- Implement rate limiting
+- Split large date ranges into chunks
 
 ## 📝 Environment Variables
 

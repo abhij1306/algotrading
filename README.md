@@ -45,10 +45,13 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
   - **Zero Mock Data**: All values from backend calculations
 - **Features**:
   - **Option Pricing**: Synthetic premiums using Black-Scholes model
-  - **Risk Management**: Position sizing based on Risk Amount, NIFTY lot sizes (75)
-  - **Analytics**: Equity Curve, Drawdown, Sharpe Ratio, Trade Logs
+  - **ATR-Based Risk Management**: Dynamic stop loss and take profit based on volatility
+  - **Position Sizing**: Kelly Criterion support (future), 1-lot minimum for options
+  - **Analytics**: Equity Curve, Sharpe Ratio, Win Rate, Trade Logs
   - **Currency**: Proper rupee (₹) formatting throughout
-- **Data**: Fyers Integration for 5-minute Intraday Data (NIFTY50, Stock Futures)
+- **Data**: Fyers API Integration for 5-minute Intraday Data
+  - 299 NSE F&O stocks (3 months historical data)
+  - NIFTY50-INDEX, Stock Futures, Index Options
 - **Location**: Available on home page (`localhost:3000`) Backtest tab
 
 ## 📁 Project Structure

@@ -45,7 +45,7 @@ Daily OHLCV data
 | volume | INTEGER | Trading volume |
 | adj_close | FLOAT | Adjusted close (for splits/dividends) |
 | trades | INTEGER | Number of trades |
-| source | VARCHAR(20) | Data source (fyers/yfinance) |
+| source | VARCHAR(20) | Data source (fyers) |
 | created_at | DATETIME | Record creation time |
 
 **Indexes**: 
