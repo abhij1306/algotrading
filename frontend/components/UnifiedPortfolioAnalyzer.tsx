@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react';
-import { Search, Plus, X, TrendingUp, ChevronDown, ChevronUp, BarChart3 } from 'lucide-react';
+import { Download, Upload, Search, Plus, X, TrendingUp, ChevronDown, ChevronUp, BarChart3, LayoutDashboard, List } from 'lucide-react';
 import PerformanceChart from './charts/PerformanceChart';
 import SectorAllocationChart from './charts/SectorAllocationChart';
 import RiskScatterPlot from './charts/RiskScatterPlot';
@@ -18,6 +18,8 @@ export default function UnifiedPortfolioAnalyzer() {
     const [portfolioName, setPortfolioName] = useState('');
     const [description, setDescription] = useState('');
     const [positions, setPositions] = useState<Position[]>([]);
+    const [totalCapital, setTotalCapital] = useState(1000000); // Added for save/load functionality
+    const [benchmarkIndex, setBenchmarkIndex] = useState('NIFTY50'); // Added for save/load functionality
 
     // Input State
     const [currentSymbol, setCurrentSymbol] = useState('');
@@ -29,10 +31,9 @@ export default function UnifiedPortfolioAnalyzer() {
     // UI State
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [showInput, setShowInput] = useState(true);
+    const [viewMode, setViewMode] = useState<'edit' | 'analysis'>('edit'); // Replaces showInput
     const [portfolioId, setPortfolioId] = useState<number | null>(null);
     const [riskAnalysis, setRiskAnalysis] = useState<any>(null);
-    const [showDetailedReport, setShowDetailedReport] = useState(false);
 
     // Search symbols
     const searchSymbols = async (query: string) => {
@@ -103,8 +104,49 @@ export default function UnifiedPortfolioAnalyzer() {
         setPositions(positions.filter((_, i) => i !== index));
     };
 
+    // Save portfolio
+    const handleSavePortfolio = () => {
+        const portfolioData = {
+            portfolioName,
+            totalCapital,
+            benchmarkIndex,
+            positions,
+            savedAt: new Date().toISOString()
+        };
+
+        const blob = new Blob([JSON.stringify(portfolioData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `portfolio_${portfolioName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    // Load portfolio
+    const handleLoadPortfolio = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = JSON.parse(e.target?.result as string);
+                setPortfolioName(data.portfolioName || '');
+                setTotalCapital(data.totalCapital || 1000000);
+                setBenchmarkIndex(data.benchmarkIndex || 'NIFTY50');
+                setPositions(data.positions || []);
+                setError(''); // Clear any previous errors
+            } catch (error) {
+                console.error('Error loading portfolio:', error);
+                setError('Failed to load portfolio file. Please ensure it is a valid JSON.');
+            }
+        };
+        reader.readAsText(file);
+    };
+
     // Analyze portfolio
-    const analyzePortfolio = async () => {
+    const handleAnalyze = async () => {
         if (!portfolioName) {
             setError('Please enter portfolio name');
             return;
@@ -154,7 +196,7 @@ export default function UnifiedPortfolioAnalyzer() {
 
             const analysisData = await analyzeResponse.json();
             setRiskAnalysis(analysisData);
-            setShowInput(false);
+            setViewMode('analysis'); // Switch to Analysis View
 
         } catch (err: any) {
             setError(err.message || 'Failed to create portfolio');
@@ -166,528 +208,387 @@ export default function UnifiedPortfolioAnalyzer() {
     const totalInvested = positions.reduce((sum, p) => sum + p.investedValue, 0);
 
     return (
-        <div className="min-h-screen bg-background-dark p-4">
-            <div className="max-w-7xl mx-auto">
-                {/* Header */}
-                <div className="mb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                            <BarChart3 className="w-5 h-5 text-primary" />
+        <div className="min-h-screen bg-background-dark text-white font-sans">
+            {/* Main Grid Layout */}
+            <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4">
+
+                {/* Left Sidebar: Inputs & Configuration */}
+                <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-sm font-bold opacity-60 px-1">PORTFOLIO DETAILS</h3>
+                        <div className="flex gap-1">
+                            <input
+                                type="file"
+                                id="portfolio-upload"
+                                className="hidden"
+                                accept=".json"
+                                onChange={handleLoadPortfolio}
+                            />
+                            <button
+                                onClick={() => document.getElementById('portfolio-upload')?.click()}
+                                className="p-1.5 hover:bg-white/10 rounded-lg text-text-secondary hover:text-white transition-colors"
+                                title="Load Portfolio"
+                            >
+                                <Upload className="w-4 h-4" />
+                            </button>
+                            <button
+                                onClick={handleSavePortfolio}
+                                className="p-1.5 hover:bg-white/10 rounded-lg text-text-secondary hover:text-white transition-colors"
+                                title="Save Portfolio"
+                            >
+                                <Download className="w-4 h-4" />
+                            </button>
                         </div>
+                    </div>
+
+                    <div className="space-y-4 flex-grow">
+                        {/* Portfolio Name */}
                         <div>
-                            <h1 className="text-xl font-bold gradient-text">Portfolio Risk Analyzer</h1>
-                            <p className="text-text-secondary text-xs">Create and analyze your portfolio in real-time</p>
+                            <label className="block text-xs font-medium opacity-60 mb-2">Name</label>
+                            <input
+                                type="text"
+                                value={portfolioName}
+                                onChange={(e) => setPortfolioName(e.target.value)}
+                                placeholder="My Growth Portfolio"
+                                className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                            />
                         </div>
+
+                        {/* Description */}
+                        <div>
+                            <label className="block text-xs font-medium opacity-60 mb-2">Description</label>
+                            <textarea
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                placeholder="Portfolio strategy..."
+                                rows={2}
+                                className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors resize-none"
+                            />
+                        </div>
+
+                        <div className="h-px bg-border-dark my-2"></div>
+
+                        <h3 className="text-sm font-bold opacity-60 px-1">ADD POSITIONS</h3>
+
+                        {/* Symbol Search */}
+                        <div className="relative">
+                            <label className="block text-xs font-medium opacity-60 mb-2">Symbol</label>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-2.5 w-4 h-4 opacity-40" />
+                                <input
+                                    type="text"
+                                    value={currentSymbol}
+                                    onChange={(e) => {
+                                        setCurrentSymbol(e.target.value);
+                                        searchSymbols(e.target.value);
+                                    }}
+                                    placeholder="Search..."
+                                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                                />
+                            </div>
+                            {searchResults.length > 0 && (
+                                <div className="absolute z-50 w-full mt-1 bg-card-dark rounded-lg shadow-xl border border-border-dark max-h-48 overflow-y-auto">
+                                    {searchResults.map((result, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => {
+                                                setCurrentSymbol(result.symbol);
+                                                setSearchResults([]);
+                                            }}
+                                            className="w-full px-4 py-2 text-left hover:bg-primary/10 transition-colors text-sm border-b border-border-dark last:border-0"
+                                        >
+                                            <div className="font-medium text-white">{result.symbol}</div>
+                                            <div className="text-xs opacity-60">{result.name}</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label className="block text-xs font-medium opacity-60 mb-2">Qty</label>
+                                <input
+                                    type="number"
+                                    value={currentQuantity}
+                                    onChange={(e) => setCurrentQuantity(e.target.value)}
+                                    placeholder="0"
+                                    className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-medium opacity-60 mb-2">Avg Price</label>
+                                <input
+                                    type="number"
+                                    value={currentAvgPrice}
+                                    onChange={(e) => setCurrentAvgPrice(e.target.value)}
+                                    placeholder="₹0.00"
+                                    className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-medium opacity-60 mb-2">Invested Value (₹)</label>
+                            <input
+                                type="number"
+                                value={currentValue}
+                                onChange={(e) => setCurrentValue(e.target.value)}
+                                placeholder="100000"
+                                className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                            />
+                            {currentQuantity && currentAvgPrice && (
+                                <p className="text-[10px] opacity-60 mt-1 text-right">
+                                    Auto: ₹{(parseFloat(currentQuantity) * parseFloat(currentAvgPrice)).toLocaleString()}
+                                </p>
+                            )}
+                        </div>
+
+                        <button
+                            onClick={addPosition}
+                            className="w-full py-2 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
+                        >
+                            <Plus className="w-4 h4" /> Add to Portfolio
+                        </button>
+
+                        {error && (
+                            <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-500 rounded-lg text-xs">
+                                {error}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="pt-4 border-t border-border-dark mt-4">
+                        <div className="flex justify-between items-center mb-3">
+                            <span className="text-sm opacity-60">Total Positions</span>
+                            <span className="font-bold">{positions.length}</span>
+                        </div>
+                        <div className="flex justify-between items-center mb-4">
+                            <span className="text-sm opacity-60">Total Invested</span>
+                            <span className="font-bold text-primary">₹{totalInvested.toLocaleString()}</span>
+                        </div>
+
+                        <button
+                            onClick={handleAnalyze}
+                            disabled={loading || positions.length === 0}
+                            className="w-full py-3 bg-primary hover:bg-blue-600 text-white rounded-lg font-bold shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        >
+                            {loading ? 'Analyzing...' : 'Analyze Risk'}
+                        </button>
                     </div>
                 </div>
 
-                {/* Main Content */}
-                {showInput ? (
-                    /* Input Mode */
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        {/* Left: Portfolio Input */}
-                        <div className="space-y-4">
-                            {/* Portfolio Details */}
-                            <div className="bg-card-dark rounded-lg border border-border-dark p-4 card-glow">
-                                <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                                    <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse"></span>
-                                    Portfolio Details
-                                </h2>
-                                <div className="space-y-3">
-                                    <div>
-                                        <label className="block text-xs font-medium text-text-secondary mb-1">
-                                            Portfolio Name *
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={portfolioName}
-                                            onChange={(e) => setPortfolioName(e.target.value)}
-                                            placeholder="My Growth Portfolio"
-                                            className="w-full px-3 py-2 text-sm rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-text-secondary mb-2">
-                                            Description (Optional)
-                                        </label>
-                                        <textarea
-                                            value={description}
-                                            onChange={(e) => setDescription(e.target.value)}
-                                            placeholder="High growth tech stocks..."
-                                            rows={2}
-                                            className="w-full px-4 py-3 rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all resize-none"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Add Stocks */}
-                            <div className="bg-card-dark rounded-xl border border-border-dark p-6">
-                                <h2 className="text-lg font-semibold mb-4">Add Stocks</h2>
-                                <div className="space-y-4">
-                                    <div className="relative">
-                                        <label className="block text-sm font-medium text-text-secondary mb-2">
-                                            Stock Symbol *
-                                        </label>
-                                        <div className="relative">
-                                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-text-muted" />
-                                            <input
-                                                type="text"
-                                                value={currentSymbol}
-                                                onChange={(e) => {
-                                                    setCurrentSymbol(e.target.value);
-                                                    searchSymbols(e.target.value);
-                                                }}
-                                                placeholder="INFY, TCS..."
-                                                className="w-full pl-10 pr-4 py-3 rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                                            />
-                                        </div>
-
-                                        {/* Search Results */}
-                                        {searchResults.length > 0 && (
-                                            <div className="absolute z-10 w-full mt-2 bg-card-dark rounded-lg shadow-2xl border border-border-light max-h-48 overflow-y-auto">
-                                                {searchResults.map((result, idx) => (
-                                                    <button
-                                                        key={idx}
-                                                        onClick={() => {
-                                                            setCurrentSymbol(result.symbol);
-                                                            setSearchResults([]);
-                                                        }}
-                                                        className="w-full px-4 py-3 text-left hover:bg-card-hover transition-colors"
-                                                    >
-                                                        <div className="font-medium text-white text-sm">{result.symbol}</div>
-                                                        <div className="text-xs text-text-secondary">{result.name}</div>
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-text-secondary mb-2">
-                                                Quantity (Optional)
-                                            </label>
-                                            <input
-                                                type="number"
-                                                value={currentQuantity}
-                                                onChange={(e) => setCurrentQuantity(e.target.value)}
-                                                placeholder="50"
-                                                className="w-full px-4 py-3 rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-text-secondary mb-2">
-                                                Avg Buy Price (Optional)
-                                            </label>
-                                            <input
-                                                type="number"
-                                                value={currentAvgPrice}
-                                                onChange={(e) => setCurrentAvgPrice(e.target.value)}
-                                                placeholder="1500.00"
-                                                className="w-full px-4 py-3 rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium text-text-secondary mb-2">
-                                            Invested Value (₹) *
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={currentValue}
-                                            onChange={(e) => setCurrentValue(e.target.value)}
-                                            placeholder="100000"
-                                            className="w-full px-4 py-3 rounded-lg bg-background-base border border-border-dark text-white placeholder-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                                        />
-                                        <p className="text-xs text-text-muted mt-1">
-                                            {currentQuantity && currentAvgPrice
-                                                ? `Auto-calculated: ₹${(parseFloat(currentQuantity) * parseFloat(currentAvgPrice)).toLocaleString()}`
-                                                : 'Or will be calculated from Qty × Avg Price'
-                                            }
-                                        </p>
-                                    </div>
-                                </div>
-
-                                <button
-                                    onClick={addPosition}
-                                    className="w-full px-4 py-3 bg-primary hover:bg-primary-dark rounded-lg transition-all flex items-center justify-center gap-2 font-medium shadow-lg shadow-primary/20"
-                                >
-                                    <Plus className="w-5 h-5" />
-                                    Add Stock
-                                </button>
-                            </div>
-
-                            {error && (
-                                <div className="bg-loss-bg border border-loss/20 rounded-lg p-4 text-loss text-sm">
-                                    {error}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Right: Positions List */}
-                        <div className="bg-card-dark rounded-xl border border-border-dark p-6 flex flex-col">
-                            <div className="flex items-center justify-between mb-6">
-                                <h2 className="text-lg font-semibold">
-                                    Portfolio Positions ({positions.length})
-                                </h2>
-                            </div>
-
-                            {positions.length === 0 ? (
-                                <div className="flex-1 flex items-center justify-center text-center py-12">
-                                    <div>
-                                        <div className="text-6xl mb-4 opacity-20">📊</div>
-                                        <p className="text-text-secondary">No stocks added yet</p>
-                                        <p className="text-text-muted text-sm mt-2">Add stocks to build your portfolio</p>
-                                    </div>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="flex-1 overflow-y-auto space-y-3 mb-6 pr-2">
-                                        {positions.map((pos, idx) => {
-                                            const allocation = totalInvested > 0 ? (pos.investedValue / totalInvested * 100) : 0;
-                                            return (
-                                                <div
-                                                    key={idx}
-                                                    className="flex items-center justify-between p-4 rounded-lg border border-border-dark hover:border-border-light transition-all glass"
-                                                >
-                                                    <div className="flex-1">
-                                                        <div className="font-semibold text-white">{pos.symbol}</div>
-                                                        <div className="text-sm text-text-secondary">
-                                                            ₹{pos.investedValue.toLocaleString()} • {allocation.toFixed(1)}%
-                                                        </div>
-                                                    </div>
-                                                    <button
-                                                        onClick={() => removePosition(idx)}
-                                                        className="p-2 text-text-muted hover:text-loss hover:bg-loss-bg rounded-lg transition-all"
-                                                    >
-                                                        <X className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-
-                                    <div className="pt-6 border-t border-border-dark space-y-4">
-                                        <div className="flex justify-between text-lg font-semibold">
-                                            <span className="text-text-secondary">Total Invested</span>
-                                            <span className="text-primary">₹{totalInvested.toLocaleString()}</span>
-                                        </div>
-
-                                        <button
-                                            onClick={analyzePortfolio}
-                                            disabled={loading || positions.length === 0}
-                                            className="w-full px-6 py-4 bg-gradient-to-r from-primary to-accent-purple text-white rounded-lg hover:shadow-xl hover:shadow-primary/30 transition-all font-semibold text-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            {loading ? 'Analyzing...' : 'Analyze Portfolio'}
-                                        </button>
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    </div>
-                ) : (
-                    /* Analysis Mode - High-Level Summary */
-                    <div className="space-y-6">
-                        {/* Header with Create New Portfolio button */}
-                        <div className="flex items-center justify-between">
-                            <h2 className="text-lg font-semibold">Portfolio Analysis</h2>
+                {/* Right Main Content */}
+                <div className="col-span-9 space-y-4">
+                    {/* Top Bar Switcher */}
+                    <div className="flex items-center justify-between bg-card-dark rounded-xl border border-border-dark p-2">
+                        <div className="flex items-center gap-1">
                             <button
-                                onClick={() => {
-                                    setShowInput(true);
-                                    setRiskAnalysis(null);
-                                    setPortfolioId(null);
-                                }}
-                                className="px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-lg transition-all font-medium text-sm shadow-lg shadow-primary/20"
+                                onClick={() => setViewMode('edit')}
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${viewMode === 'edit' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
                             >
-                                + Create New Portfolio
+                                <List className="w-4 h-4" /> Positions List
+                            </button>
+                            <button
+                                onClick={() => viewMode !== 'analysis' && riskAnalysis && setViewMode('analysis')}
+                                disabled={!riskAnalysis}
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${viewMode === 'analysis' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white disabled:opacity-30'}`}
+                            >
+                                <LayoutDashboard className="w-4 h-4" /> Risk Dashboard
                             </button>
                         </div>
+                        {viewMode === 'analysis' && (
+                            <span className="text-xs opacity-40 px-3">Last Analyzed: just now</span>
+                        )}
+                    </div>
 
-                        {/* Holdings Table - First */}
-                        {riskAnalysis?.positions && riskAnalysis.positions.length > 0 && (
-                            <div className="bg-card-dark rounded-lg border border-border-dark p-4">
-                                <div className="flex items-center justify-between mb-3">
-                                    <h2 className="text-sm font-semibold">Holdings</h2>
-                                    <div className="text-xs text-text-secondary">
-                                        {riskAnalysis.positions.length} Positions
-                                    </div>
+                    {/* CONTENT AREA */}
+                    {viewMode === 'edit' ? (
+                        <div className="bg-card-dark rounded-xl border border-border-dark overflow-hidden flex flex-col h-[calc(100vh-200px)]">
+                            {positions.length === 0 ? (
+                                <div className="flex-1 flex flex-col items-center justify-center opacity-40">
+                                    <BarChart3 className="w-16 h-16 mb-4" />
+                                    <p>Start adding stocks from the sidebar</p>
                                 </div>
-                                <div className="overflow-x-auto">
+                            ) : (
+                                <div className="flex-grow overflow-auto">
                                     <table className="w-full">
-                                        <thead className="border-b border-border-dark">
-                                            <tr className="text-xs text-text-secondary uppercase">
-                                                <th className="text-left py-3 px-2">Instrument</th>
-                                                <th className="text-right py-3 px-2">Qty</th>
-                                                <th className="text-right py-3 px-2">Avg Price</th>
-                                                <th className="text-right py-3 px-2">LTP</th>
-                                                <th className="text-right py-3 px-2">Invested</th>
-                                                <th className="text-right py-3 px-2">Current Value</th>
-                                                <th className="text-right py-3 px-2">P&L</th>
-                                                <th className="text-right py-3 px-2">P&L %</th>
+                                        <thead className="sticky top-0 bg-background-dark/95 backdrop-blur-md border-b border-border-dark z-10">
+                                            <tr className="text-xs text-left opacity-60">
+                                                <th className="py-3 px-6">SYMBOL</th>
+                                                <th className="py-3 px-6 text-right">QTY</th>
+                                                <th className="py-3 px-6 text-right">AVG PRICE</th>
+                                                <th className="py-3 px-6 text-right">INVESTED</th>
+                                                <th className="py-3 px-6 text-right">ALLOCATION</th>
+                                                <th className="py-3 px-6"></th>
                                             </tr>
                                         </thead>
-                                        <tbody>
-                                            {riskAnalysis.positions.map((pos: any) => (
-                                                <tr key={pos.symbol} className="border-b border-border-dark/50 hover:bg-card-hover transition-colors">
-                                                    <td className="py-4 px-2">
-                                                        <div className="font-medium text-white">{pos.symbol}</div>
-                                                        <div className="text-xs text-text-secondary truncate max-w-[150px]">
-                                                            {pos.company_name}
-                                                        </div>
-                                                        <div className="text-xs text-text-muted">{pos.sector}</div>
-                                                    </td>
-                                                    <td className="text-right py-4 px-2 text-sm">
-                                                        {pos.quantity?.toLocaleString() || '--'}
-                                                    </td>
-                                                    <td className="text-right py-4 px-2 text-sm">
-                                                        ₹{pos.avg_buy_price?.toFixed(2) || '--'}
-                                                    </td>
-                                                    <td className="text-right py-4 px-2">
-                                                        <div className="text-sm font-medium">
-                                                            {pos.ltp ? `₹${pos.ltp.toFixed(2)}` : '--'}
-                                                        </div>
-                                                        {pos.last_updated && (
-                                                            <div className="text-xs text-text-muted">
-                                                                {new Date(pos.last_updated).toLocaleDateString()}
+                                        <tbody className="divide-y divide-border-dark">
+                                            {positions.map((pos, idx) => {
+                                                const allocation = totalInvested > 0 ? (pos.investedValue / totalInvested * 100) : 0;
+                                                return (
+                                                    <tr key={idx} className="group hover:bg-primary/5 transition-colors">
+                                                        <td className="py-3 px-6 font-medium">{pos.symbol}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm opacity-80">{pos.quantity || '-'}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm opacity-80">{pos.avgBuyPrice ? `₹${pos.avgBuyPrice}` : '-'}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm">₹{pos.investedValue.toLocaleString()}</td>
+                                                        <td className="py-3 px-6 text-right">
+                                                            <div className="flex items-center justify-end gap-2">
+                                                                <span className="font-mono text-sm">{allocation.toFixed(1)}%</span>
+                                                                <div className="w-16 h-1.5 bg-background-dark rounded-full overflow-hidden">
+                                                                    <div className="h-full bg-primary" style={{ width: `${allocation}%` }}></div>
+                                                                </div>
                                                             </div>
-                                                        )}
-                                                    </td>
-                                                    <td className="text-right py-4 px-2 text-sm">
-                                                        ₹{pos.invested_value?.toLocaleString() || '--'}
-                                                    </td>
-                                                    <td className="text-right py-4 px-2 text-sm font-medium">
-                                                        ₹{pos.current_value?.toLocaleString() || '--'}
-                                                    </td>
-                                                    <td className={`text-right py-4 px-2 text-sm font-medium ${pos.pnl === null ? '' : pos.pnl >= 0 ? 'text-profit' : 'text-loss'
-                                                        }`}>
-                                                        {pos.pnl !== null ? `₹${pos.pnl.toLocaleString()}` : '--'}
-                                                    </td>
-                                                    <td className={`text-right py-4 px-2 text-sm font-bold ${pos.pnl_pct === null ? '' : pos.pnl_pct >= 0 ? 'text-profit' : 'text-loss'
-                                                        }`}>
-                                                        {pos.pnl_pct !== null
-                                                            ? `${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(2)}%`
-                                                            : '--'
-                                                        }
-                                                    </td>
-                                                </tr>
-                                            ))}
+                                                        </td>
+                                                        <td className="py-3 px-6 text-right">
+                                                            <button
+                                                                onClick={() => removePosition(idx)}
+                                                                className="text-text-secondary hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                                            >
+                                                                <X className="w-4 h-4" />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })}
                                         </tbody>
-                                        <tfoot className="border-t-2 border-border-light">
-                                            <tr className="font-semibold">
-                                                <td className="py-4 px-2 text-white">Total</td>
-                                                <td className="text-right py-4 px-2"></td>
-                                                <td className="text-right py-4 px-2"></td>
-                                                <td className="text-right py-4 px-2"></td>
-                                                <td className="text-right py-4 px-2 text-white">
-                                                    ₹{riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.invested_value || 0), 0).toLocaleString()}
-                                                </td>
-                                                <td className="text-right py-4 px-2 text-white">
-                                                    ₹{riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.current_value || 0), 0).toLocaleString()}
-                                                </td>
-                                                <td className={`text-right py-4 px-2 ${riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.pnl || 0), 0) >= 0 ? 'text-profit' : 'text-loss'
-                                                    }`}>
-                                                    ₹{riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.pnl || 0), 0).toLocaleString()}
-                                                </td>
-                                                <td className={`text-right py-4 px-2 ${riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.pnl || 0), 0) >= 0 ? 'text-profit' : 'text-loss'
-                                                    }`}>
-                                                    {(() => {
-                                                        const totalInvested = riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.invested_value || 0), 0);
-                                                        const totalPnl = riskAnalysis.positions.reduce((sum: number, p: any) => sum + (p.pnl || 0), 0);
-                                                        const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
-                                                        return `${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`;
-                                                    })()}
-                                                </td>
+                                        <tfoot className="bg-background-dark border-t border-border-dark">
+                                            <tr>
+                                                <td className="py-3 px-6 font-bold text-sm">TOTAL</td>
+                                                <td colSpan={2}></td>
+                                                <td className="py-3 px-6 text-right font-bold text-primary">₹{totalInvested.toLocaleString()}</td>
+                                                <td colSpan={2}></td>
                                             </tr>
                                         </tfoot>
                                     </table>
                                 </div>
-                            </div>
-                        )}
-
-                        {/* Summary Cards */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                            <SummaryCard
-                                title="Total Portfolio Value"
-                                value={`₹${totalInvested.toLocaleString()}`}
-                                change={0}
-                                icon="💼"
-                            />
-                            <SummaryCard
-                                title="Portfolio Volatility"
-                                value={`${((riskAnalysis?.market_risk?.portfolio_volatility || 0) * 100).toFixed(1)}%`}
-                                subtitle="Annualized"
-                                icon="📊"
-                            />
-                            <SummaryCard
-                                title="Sharpe Ratio"
-                                value={(riskAnalysis?.market_risk?.sharpe_ratio || 0).toFixed(2)}
-                                subtitle="Risk-Adjusted Return"
-                                icon="⚖️"
-                            />
-                            <SummaryCard
-                                title="Portfolio Beta"
-                                value={(riskAnalysis?.market_risk?.beta || 0).toFixed(2)}
-                                subtitle="vs Market"
-                                icon="📈"
-                            />
+                            )}
                         </div>
-
-                        {/* Chart Visualizations */}
-                        {riskAnalysis?.charts && (
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                                {/* Performance Chart - Spans 2 columns */}
-                                <div className="lg:col-span-2 bg-card-dark rounded-lg border border-border-dark p-4">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <h2 className="text-sm font-semibold">Portfolio Performance vs Nifty 50</h2>
-                                        <div className="text-[10px] text-text-secondary">Last 1 Year</div>
-                                    </div>
-                                    <div className="h-48">
-                                        <PerformanceChart data={riskAnalysis.charts.performance} />
-                                    </div>
-                                </div>
-
-                                {/* Sector Allocation */}
-                                <div className="bg-card-dark rounded-lg border border-border-dark p-4">
-                                    <h2 className="text-sm font-semibold mb-3">Sector Allocation</h2>
-                                    <div className="h-48">
-                                        <SectorAllocationChart data={riskAnalysis.charts.sectors} />
-                                    </div>
-                                </div>
-
-                                {/* Risk Analysis Matrix - Spans 2 columns */}
-                                <div className="lg:col-span-2 bg-card-dark rounded-lg border border-border-dark p-4">
-                                    <h2 className="text-sm font-semibold mb-3">Risk Analysis Matrix</h2>
-                                    <div className="h-48 relative">
-                                        <RiskScatterPlot data={riskAnalysis.charts.risk_scatter} />
-                                    </div>
-                                </div>
+                    ) : (
+                        /* ANALYSIS DASHBOARD */
+                        <div className="space-y-6 h-[calc(100vh-200px)] overflow-y-auto pr-2">
+                            {/* Summary Cards */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <SummaryCard
+                                    title="Total Portfolio Value"
+                                    value={`₹${totalInvested.toLocaleString()}`}
+                                    change={0}
+                                    icon="💼"
+                                />
+                                <SummaryCard
+                                    title="Portfolio Volatility"
+                                    value={`${((riskAnalysis?.market_risk?.portfolio_volatility || 0) * 100).toFixed(1)}%`}
+                                    subtitle="Annualized"
+                                    icon="📊"
+                                />
+                                <SummaryCard
+                                    title="Sharpe Ratio"
+                                    value={(riskAnalysis?.market_risk?.sharpe_ratio || 0).toFixed(2)}
+                                    subtitle="Risk-Adjusted Return"
+                                    icon="⚖️"
+                                />
+                                <SummaryCard
+                                    title="Portfolio Beta"
+                                    value={(riskAnalysis?.market_risk?.beta || 0).toFixed(2)}
+                                    subtitle="vs Market"
+                                    icon="📈"
+                                />
                             </div>
-                        )}
 
-                        {/* Detailed Risk Metrics - Always Visible */}
-                        {riskAnalysis && (
-                            <div className="bg-card-dark rounded-lg border border-border-dark p-4">
-                                <h2 className="text-sm font-semibold mb-4">Risk Metrics</h2>
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                                    {/* Market Risk Metrics */}
-                                    <div>
-                                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-                                            <span className="text-lg">🎯</span>
-                                            Market Risk
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <MetricCard label="VaR (95%)" value={`${((riskAnalysis.market_risk?.var_95 || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="VaR (99%)" value={`${((riskAnalysis.market_risk?.var_99 || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="CVaR (95%)" value={`${((riskAnalysis.market_risk?.cvar_95 || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="CVaR (99%)" value={`${((riskAnalysis.market_risk?.cvar_99 || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="Max Drawdown" value={`${((riskAnalysis.market_risk?.max_drawdown?.max_drawdown || 0) * 100).toFixed(2)}%`} />
-                                            <MetricCard label="Avg Volatility" value={`${((riskAnalysis.market_risk?.volatility || 0) * 100).toFixed(2)}%`} />
+                            {/* Charts */}
+                            {riskAnalysis?.charts && (
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <div className="lg:col-span-2 bg-card-dark rounded-xl border border-border-dark p-4">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h2 className="text-sm font-semibold opacity-80">Portfolio Performance vs Nifty 50</h2>
                                         </div>
+                                        <div className="h-64">
+                                            <PerformanceChart data={riskAnalysis.charts.performance} />
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-card-dark rounded-xl border border-border-dark p-4">
+                                        <h2 className="text-sm font-semibold opacity-80 mb-3">Sector Allocation</h2>
+                                        <div className="h-64">
+                                            <SectorAllocationChart data={riskAnalysis.charts.sectors} />
+                                        </div>
+                                    </div>
+
+                                    {/* Risk Matrix */}
+                                    <div className="lg:col-span-3 bg-card-dark rounded-xl border border-border-dark p-4">
+                                        <h2 className="text-sm font-semibold opacity-80 mb-3">Risk Analysis Matrix</h2>
+                                        <div className="h-64 relative">
+                                            <RiskScatterPlot data={riskAnalysis.charts.risk_scatter} />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* detailed metrics... (Keeping specific metrics in a clean grid) */}
+                            <div className="bg-card-dark rounded-xl border border-border-dark p-6">
+                                <h2 className="text-sm font-bold opacity-60 mb-4 uppercase tracking-wide">Risk Metrics Deep Dive</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                                    {/* Market Risk */}
+                                    <div className="space-y-3">
+                                        <h3 className="text-sm font-semibold text-primary">Market Risk</h3>
+                                        <MetricRow label="VaR (95%)" value={`${((riskAnalysis?.market_risk?.var_95 || 0) * 100).toFixed(2)}%`} />
+                                        <MetricRow label="VaR (99%)" value={`${((riskAnalysis?.market_risk?.var_99 || 0) * 100).toFixed(2)}%`} />
+                                        <MetricRow label="Max Drawdown" value={`${((riskAnalysis?.market_risk?.max_drawdown?.max_drawdown || 0) * 100).toFixed(2)}%`} />
                                     </div>
 
                                     {/* Tail Risk */}
-                                    <div>
-                                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-                                            <span className="text-lg">📉</span>
-                                            Tail Risk
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <MetricCard
-                                                label="Skewness"
-                                                value={(riskAnalysis.market_risk?.skewness || 0).toFixed(3)}
-                                            />
-                                            <MetricCard
-                                                label="Kurtosis"
-                                                value={(riskAnalysis.market_risk?.kurtosis || 0).toFixed(3)}
-                                            />
-                                            <MetricCard
-                                                label="Excess Kurtosis"
-                                                value={(riskAnalysis.market_risk?.excess_kurtosis || 0).toFixed(3)}
-                                            />
-                                            <div className="text-[10px] text-text-muted mt-2 p-2 bg-background-base rounded">
-                                                {(() => {
-                                                    const skew = riskAnalysis.market_risk?.skewness || 0;
-                                                    if (skew < -0.5) return "⚠️ Left tail: downside risk";
-                                                    if (skew > 0.5) return "✓ Right tail: upside potential";
-                                                    return "≈ Symmetric distribution";
-                                                })()}
-                                            </div>
-                                        </div>
+                                    <div className="space-y-3">
+                                        <h3 className="text-sm font-semibold text-primary">Tail Risk</h3>
+                                        <MetricRow label="Skewness" value={(riskAnalysis?.market_risk?.skewness || 0).toFixed(3)} />
+                                        <MetricRow label="Kurtosis" value={(riskAnalysis?.market_risk?.kurtosis || 0).toFixed(3)} />
+                                        <MetricRow label="Excess Kurtosis" value={(riskAnalysis?.market_risk?.excess_kurtosis || 0).toFixed(3)} />
                                     </div>
 
-                                    {/* Position Concentration */}
-                                    <div>
-                                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-                                            <span className="text-lg">⚡</span>
-                                            Position Concentration
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <MetricCard label="Top 3 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_3_concentration || 0) * 100).toFixed(1)}%`} />
-                                            <MetricCard label="Top 5 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_5_concentration || 0) * 100).toFixed(1)}%`} />
-                                            <MetricCard label="Top 10 Holdings" value={`${((riskAnalysis.portfolio_risk?.top_10_concentration || 0) * 100).toFixed(1)}%`} />
-                                            <MetricCard label="Largest Position" value={`${((riskAnalysis.portfolio_risk?.max_position || 0) * 100).toFixed(1)}%`} />
-                                            <MetricCard label="HHI Index" value={(riskAnalysis.portfolio_risk?.hhi || 0).toFixed(3)} />
-                                        </div>
+                                    {/* Concentration */}
+                                    <div className="space-y-3">
+                                        <h3 className="text-sm font-semibold text-primary">Concentration</h3>
+                                        <MetricRow label="Top 3 Holdings" value={`${((riskAnalysis?.portfolio_risk?.top_3_concentration || 0) * 100).toFixed(1)}%`} />
+                                        <MetricRow label="Largest Position" value={`${((riskAnalysis?.portfolio_risk?.max_position || 0) * 100).toFixed(1)}%`} />
+                                        <MetricRow label="HHI Index" value={(riskAnalysis?.portfolio_risk?.hhi || 0).toFixed(3)} />
                                     </div>
 
-                                    {/* Correlation & Fundamental */}
-                                    <div>
-                                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-                                            <span className="text-lg">🔗</span>
-                                            Correlation
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <MetricCard label="Avg Correlation" value={(riskAnalysis.portfolio_risk?.avg_correlation || 0).toFixed(3)} />
-                                            <MetricCard label="Max Correlation" value={(riskAnalysis.portfolio_risk?.max_correlation || 0).toFixed(3)} />
-                                            <MetricCard label="Min Correlation" value={(riskAnalysis.portfolio_risk?.min_correlation || 0).toFixed(3)} />
-                                        </div>
-                                        <h3 className="text-sm font-semibold mb-3 mt-4 flex items-center gap-1.5">
-                                            <span className="text-lg">💰</span>
-                                            Fundamental
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <MetricCard label="Avg Leverage (D/E)" value={(riskAnalysis.fundamental_risk?.avg_leverage || 0).toFixed(2)} />
-                                            <MetricCard label="Fragility Score" value={`${(riskAnalysis.fundamental_risk?.avg_fragility || 0).toFixed(1)}/100`} />
-                                        </div>
+                                    {/* Correlation */}
+                                    <div className="space-y-3">
+                                        <h3 className="text-sm font-semibold text-primary">Correlation</h3>
+                                        <MetricRow label="Avg Correlation" value={(riskAnalysis?.portfolio_risk?.avg_correlation || 0).toFixed(3)} />
+                                        <MetricRow label="Fundamental Score" value={`${(riskAnalysis?.fundamental_risk?.avg_fragility || 0).toFixed(1)}`} />
                                     </div>
                                 </div>
                             </div>
-                        )}
 
-                    </div>
-                )}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );
 }
 
-// Summary Card Component
+// Sub-components
 function SummaryCard({ title, value, change, subtitle, icon }: any) {
     return (
-        <div className="bg-card-dark rounded-lg border border-border-dark p-3 hover:border-border-light transition-all card-glow">
-            <div className="flex items-start justify-between mb-2">
-                <div className="text-xl">{icon}</div>
-                {change !== undefined && (
-                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${change >= 0 ? 'bg-profit-bg text-profit' : 'bg-loss-bg text-loss'}`}>
-                        {change >= 0 ? '+' : ''}{change}%
-                    </span>
-                )}
+        <div className="bg-card-dark rounded-xl border border-border-dark p-4 hover:border-primary/30 transition-all shadow-sm">
+            <div className="flex items-start justify-between mb-2 opacity-80">
+                <div className="text-xl grayscale">{icon}</div>
+                {/* Change badge could go here */}
             </div>
-            <div className="text-text-secondary text-xs mb-1">{title}</div>
-            <div className="text-lg font-bold text-white mb-0.5">{value}</div>
-            {subtitle && <div className="text-[10px] text-text-muted">{subtitle}</div>}
+            <div className="text-xs text-text-secondary font-medium uppercase tracking-wider mb-1">{title}</div>
+            <div className="text-2xl font-bold text-white mb-0.5">{value}</div>
+            {subtitle && <div className="text-[10px] opacity-50">{subtitle}</div>}
         </div>
     );
 }
 
-// Metric Card Component
-function MetricCard({ label, value }: { label: string; value: string }) {
+function MetricRow({ label, value }: { label: string; value: string }) {
     return (
-        <div className="bg-background-base rounded-lg p-2 border border-border-dark">
-            <div className="text-[10px] text-text-secondary mb-0.5">{label}</div>
-            <div className="text-sm font-semibold text-white">{value}</div>
+        <div className="flex justify-between items-center text-sm border-b border-border-dark/50 pb-1 last:border-0 last:pb-0">
+            <span className="text-text-secondary">{label}</span>
+            <span className="font-mono font-medium">{value}</span>
         </div>
     );
 }

@@ -15,15 +15,14 @@ export default function EquityCurve({ equityCurve, initialCapital }: EquityCurve
     // Format data for chart
     const chartData = equityCurve.map((point, index) => ({
         index,
+        timestamp: point.timestamp,
         time: new Date(point.timestamp.endsWith('Z') ? point.timestamp : point.timestamp + 'Z').toLocaleString('en-IN', {
-            hour: '2-digit',
-            minute: '2-digit',
             day: '2-digit',
             month: 'short',
             timeZone: 'Asia/Kolkata'
         }),
         equity: point.equity,
-        drawdown: point.drawdown || 0
+        drawdown: point.drawdown
     }));
 
     const maxEquity = Math.max(...equityCurve.map(p => p.equity));
@@ -46,7 +45,7 @@ export default function EquityCurve({ equityCurve, initialCapital }: EquityCurve
                     <div className="text-right">
                         <div className="text-xs text-slate-500">Final Equity</div>
                         <div className="text-sm text-white font-medium">
-                            ₹{equityCurve[equityCurve.length - 1]?.equity.toLocaleString()}
+                            ₹{Math.floor(equityCurve[equityCurve.length - 1]?.equity).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                         </div>
                     </div>
                 </div>
@@ -75,7 +74,7 @@ export default function EquityCurve({ equityCurve, initialCapital }: EquityCurve
                             borderRadius: '8px',
                             color: '#fff'
                         }}
-                        formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Equity']}
+                        formatter={(value: any) => [`₹${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, 'Equity']}
                         labelStyle={{ color: '#94a3b8' }}
                     />
                     <Legend

@@ -9,14 +9,14 @@ const config: Config = {
     theme: {
         extend: {
             colors: {
-                "primary": "#6366f1", // New indigo primary
-                "background-light": "#f6f6f8",
-                "background-dark": "#0f1115", // Deeper black/gray background
-                "card-dark": "#181b21", // Slightly lighter card background
-                "border-dark": "#2d3139", // New border color
-                "text-secondary": "#9ca3af", // Gray-400 for secondary text
-                "profit": "#10b981", // Emerald green for profit
-                "loss": "#ef4444", // Red for loss
+                "primary": "#3b82f6", // Stitch Blue
+                "background-light": "#f8fafc",
+                "background-dark": "#0f172a", // Slate 900
+                "card-dark": "#1e293b", // Slate 800
+                "border-dark": "#334155", // Slate 700
+                "text-secondary": "#94a3b8", // Slate 400
+                "profit": "#10b981",
+                "loss": "#ef4444",
                 "accent-blue": "#3b82f6",
                 "accent-purple": "#8b5cf6",
                 "accent-teal": "#14b8a6",

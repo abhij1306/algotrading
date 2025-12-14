@@ -75,14 +75,14 @@ export default function TradesTable({ trades }: TradesTableProps) {
                                     </span>
                                 </td>
                                 <td className="py-3 text-right text-slate-300">
-                                    ₹{trade.entry_price.toFixed(2)}
+                                    ₹{trade.entry_price.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                                 </td>
                                 <td className="py-3 text-right text-slate-300">
-                                    ₹{trade.exit_price.toFixed(2)}
+                                    ₹{trade.exit_price.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                                 </td>
                                 <td className="py-3 text-right font-medium">
                                     <div className={trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                                        {trade.pnl >= 0 ? '+' : ''}₹{trade.pnl.toFixed(2)}
+                                        {trade.pnl >= 0 ? '+' : ''}₹{Math.floor(trade.pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                                     </div>
                                     <div className={`text-xs ${trade.pnl_pct >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
                                         {trade.pnl_pct >= 0 ? '+' : ''}{trade.pnl_pct.toFixed(2)}%
