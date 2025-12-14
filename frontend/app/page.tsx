@@ -55,7 +55,7 @@ export default function MacOSPage() {
 
   // Pagination State
   const [page, setPage] = useState(1)
-  const [limit] = useState(100)
+  const [limit] = useState(50) // Reduced from 100 for faster loading
   const [totalRecords, setTotalRecords] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
 
