@@ -153,6 +153,8 @@ python init_database.py
 - **Fyers:** Connected ✅
 - **Companies:** 2,386 in database
 - **Financial Data:** 10 companies with screener.in data
+- **Strategy Engine:** ORB backtest with metrics dashboard ✅
+- **Performance Metrics:** 4-card real-time display (Net Profit, Win Rate, Profit Factor, Max Drawdown) ✅
 
 ## 🔍 Screener.in Integration (2024-12-13)
 
@@ -257,3 +259,65 @@ class ORBStrategy(BaseStrategy):
          # Calculate Opening Range
          # Signal BUY/SELL with Option Premium prices
 ```
+
+### 6. Strategy Performance Metrics Dashboard (2025-12-14)
+**What worked:**
+- **4-Card Metrics Layout**: Implemented real-time performance metrics display above equity curve
+- **Component Architecture**: Created reusable `PerformanceMetrics.tsx` component
+- **Data Integration**: Connected backend `performance_metrics.py` calculations to frontend display
+- **UI Optimization**: Removed redundant header box, consolidated metrics into clean 4-card grid
+
+**Metrics Displayed:**
+1. **Net Profit Card**: 
+   - Shows P&L with color-coded display (green for profit, red for loss)
+   - Displays percentage return and CAGR/Sharpe Ratio
+   - Proper negative value handling with minus sign in red
+   
+2. **Win Rate Card**:
+   - Win rate percentage with blue accent
+   - Winning trades count
+   
+3. **Profit Factor Card**:
+   - Profit factor ratio with orange accent
+   - Average win/loss amounts in rupees (₹)
+   
+4. **Max Drawdown Card**:
+   - Maximum drawdown percentage with red accent
+   - Drawdown date range when available
+
+**Technical Implementation:**
+- **Component**: `frontend/components/strategies/PerformanceMetrics.tsx`
+- **Backend**: `backend/app/strategies/performance_metrics.py` (calculates all metrics)
+- **Data Flow**: Backend calculates → API returns JSON → Component displays
+- **Location**: Integrated on home page (`localhost:3000`) Backtest tab
+
+**Key Features:**
+- **Zero Mock Data**: All values from backend calculations (CAGR, Sharpe, profit factor, etc.)
+- **Currency Formatting**: Proper rupee symbols (₹) throughout
+- **Color Coding**: Red for losses, green for profits, themed colors for each metric
+- **Date Formatting**: Uses `date-fns` to format drawdown period dates
+
+**Code Pattern (Frontend):**
+```tsx
+export default function PerformanceMetrics({ results }) {
+  const metrics = results.metrics?.performance || {};
+  const risk = results.metrics?.risk || {};
+  const netProfit = results.final_capital - results.initial_capital;
+  const isProfit = netProfit >= 0;
+  
+  return (
+    <div className="grid grid-cols-4 gap-4">
+      {/* Net Profit, Win Rate, Profit Factor, Max Drawdown cards */}
+    </div>
+  );
+}
+```
+
+**Files Modified:**
+- `frontend/components/strategies/PerformanceMetrics.tsx` - Metrics display component
+- `frontend/app/page.tsx` - Integrated metrics on home page Strategies tab
+- `frontend/app/strategies/page.tsx` - Removed (strategies now on main page)
+- `backend/app/strategies/performance_metrics.py` - Added drawdown date tracking
+
+---
+*Last Updated: 2025-12-14 19:50 IST*

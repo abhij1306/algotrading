@@ -34,15 +34,22 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
   - Compact layout for better space utilization
   - One-click "Create New Portfolio" button
 
-### 📉 Strategy Backtester (NEW)
+### 📉 Strategy Backtester
 - **Engine**: Event-driven backtesting for Equity and Options
 - **Strategies**: 
   - **ORB (Opening Range Breakout)**: Intraday strategy with Black-Scholes pricing
+- **Performance Metrics Dashboard**:
+  - **4-Card Layout**: Net Profit, Win Rate, Profit Factor, Max Drawdown
+  - **Real-time Calculations**: CAGR, Sharpe Ratio, drawdown periods
+  - **Visual Design**: Color-coded metrics (red for losses, green for profits)
+  - **Zero Mock Data**: All values from backend calculations
 - **Features**:
   - **Option Pricing**: Synthetic premiums using Black-Scholes model
   - **Risk Management**: Position sizing based on Risk Amount, NIFTY lot sizes (75)
   - **Analytics**: Equity Curve, Drawdown, Sharpe Ratio, Trade Logs
+  - **Currency**: Proper rupee (₹) formatting throughout
 - **Data**: Fyers Integration for 5-minute Intraday Data (NIFTY50, Stock Futures)
+- **Location**: Available on home page (`localhost:3000`) Backtest tab
 
 ## 📁 Project Structure
 
@@ -50,14 +57,24 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
 AlgoTrading/
 ├── frontend/                   # Next.js React frontend
 │   ├── app/
-│   │   ├── strategies/        # Strategy Backtester UI
-│   │   └── page.tsx           # Main screener UI
+│   │   ├── page.tsx           # Main app with Screener, Portfolio Risk, and Backtest tabs
+│   │   ├── strategies/        # Legacy (strategies now on main page)
+│   │   └── globals.css        # Tailwind styles
 │   └── components/
-│       ├── strategies/        # Backtesting components (EquityCurve, TradesTable)
-│       └── RiskDashboard.tsx  # Portfolio analyzer UI
+│       ├── strategies/        # Backtesting components
+│       │   ├── PerformanceMetrics.tsx  # 4-card metrics dashboard
+│       │   ├── EquityCurve.tsx         # Equity curve chart
+│       │   ├── TradesTable.tsx         # Trade log table
+│       │   └── StrategyConfiguration.tsx  # Backtest config form
+│       ├── UnifiedPortfolioAnalyzer.tsx  # Portfolio risk analyzer
+│       └── Navbar.tsx         # Tab navigation
 ├── backend/                    # FastAPI backend
 │   ├── app/
-│   │   ├── strategies/        # Strategy Engine (ORB, Black-Scholes, Backtest)
+│   │   ├── strategies/        # Strategy Engine
+│   │   │   ├── orb_strategy.py        # ORB strategy logic
+│   │   │   ├── performance_metrics.py # Metrics calculation (Sharpe, CAGR, etc.)
+│   │   │   ├── black_scholes.py       # Options pricing
+│   │   │   └── backtest_engine.py     # Backtesting framework
 │   │   ├── main.py            # API endpoints
 │   │   ├── screener_scraper.py # Screener.in data scraper
 │   │   ├── risk_metrics.py    # Risk calculation engine

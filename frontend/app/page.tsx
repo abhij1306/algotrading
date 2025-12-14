@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import UnifiedPortfolioAnalyzer from '../components/UnifiedPortfolioAnalyzer';
+import StrategyConfiguration from '../components/strategies/StrategyConfiguration';
+import PerformanceMetrics from '../components/strategies/PerformanceMetrics';
+import EquityCurve from '../components/strategies/EquityCurve';
+import TradesTable from '../components/strategies/TradesTable';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import Navbar from '../components/Navbar';
 
 // Types
 interface Stock {
@@ -306,7 +311,7 @@ export default function MacOSPage() {
             <Th field="vol_percentile" label="VOL %" />
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-200/10 dark:divide-gray-800/30">
+        <tbody className="divide-y divide-border-dark">
           {loading ? (
             Array.from({ length: 10 }).map((_, i) => (
               <tr key={i} className="animate-pulse">
@@ -322,7 +327,7 @@ export default function MacOSPage() {
             ))
           ) : (
             stocks.map((stock) => (
-              <tr key={stock.symbol} className="group transition-colors hover:bg-white/40 dark:hover:bg-white/5">
+              <tr key={stock.symbol} className="group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300">
                 <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
                 <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
                   {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
@@ -355,7 +360,7 @@ export default function MacOSPage() {
   const renderFinancials = () => (
     <div className="overflow-x-auto">
       <table className="w-full">
-        <thead className="sticky top-0 z-20 bg-white/50 dark:bg-black/50 backdrop-blur-md border-b border-gray-200/20 dark:border-gray-700/30">
+        <thead className="sticky top-0 z-20 bg-background-dark/95 backdrop-blur-md border-b border-border-dark">
           <tr>
             <Th field="symbol" label="SYMBOL" align="left" />
             <Th field="market_cap" label="MARKET CAP (Cr)" align="right" />
@@ -367,7 +372,7 @@ export default function MacOSPage() {
             <Th field="pe_ratio" label="P/E" align="right" />
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-200/10 dark:divide-gray-800/30">
+        <tbody className="divide-y divide-border-dark">
           {loading ? (
             Array.from({ length: 10 }).map((_, i) => (
               <tr key={i} className="animate-pulse">
@@ -383,7 +388,7 @@ export default function MacOSPage() {
             ))
           ) : (
             financials.map((stock) => (
-              <tr key={stock.symbol} className="group transition-colors hover:bg-white/40 dark:hover:bg-white/5">
+              <tr key={stock.symbol} className="group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300">
                 <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
                 <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
                   {stock.market_cap ? (stock.market_cap / 1000).toFixed(2) : '-'}
@@ -422,210 +427,194 @@ export default function MacOSPage() {
   )
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
-      {/* Background Ambience */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-blue-500/20 blur-[120px]" />
-        <div className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/15 blur-[100px]" />
-      </div>
+    <div className="min-h-screen bg-background-dark text-white font-sans transition-colors duration-300">
+      <Navbar activeTab={mainTab} onTabChange={setMainTab} />
 
-      <div className="relative z-10 max-w-[1400px] mx-auto px-6 pt-3">
+      <div className="max-w-[1920px] mx-auto px-6 py-6">
 
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-2 mb-3 border-b border-gray-200/10">
-          <h1 className="text-base font-bold bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent">
-            NSE Trading Screener
-          </h1>
 
-          <div className="flex items-center gap-2 bg-gray-200 dark:bg-gray-800 rounded-full p-1">
-            <button
-              onClick={() => setMainTab('screener')}
-              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'screener' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
-            >
-              Screener
-            </button>
-            <button
-              onClick={() => setMainTab('portfolio')}
-              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'portfolio' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
-            >
-              Portfolio Risk
-            </button>
-            <button
-              onClick={() => setMainTab('strategies')}
-              className={`px-6 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${mainTab === 'strategies' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-600 dark:text-gray-400 opacity-60 hover:opacity-100'}`}
-            >
-              Strategies
-            </button>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-sans tabular-nums tracking-tight opacity-50 mr-2 hidden sm:block">
-              {currentTime}
-            </span>
-            <button
-              onClick={toggleTheme}
-              className="glass-button p-2 rounded-lg"
-            >
-              {isDark ? '☀️' : '🌙'}
-            </button>
-          </div>
-        </header>
 
         {/* Content */}
-        {mainTab === 'screener' ? (
-          <div className="animate-in fade-in slide-in-from-bottom-4">
-            {/* Screener Sub-Tabs & Actions */}
-            <div className="flex items-center justify-between mb-6 border-b border-gray-200/10 pb-1">
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => { setScreenerTab('technicals'); setPage(1); }}
-                  className={`pb-2 px-2 text-sm font-medium transition-colors relative ${screenerTab === 'technicals' ? 'text-blue-500' : 'opacity-60 hover:opacity-100'}`}
-                >
-                  Technicals
-                  {screenerTab === 'technicals' && <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />}
-                </button>
-                <button
-                  onClick={() => { setScreenerTab('financials'); setPage(1); }}
-                  className={`pb-2 px-2 text-sm font-medium transition-colors relative ${screenerTab === 'financials' ? 'text-blue-500' : 'opacity-60 hover:opacity-100'}`}
-                >
-                  Financials
-                  {screenerTab === 'financials' && <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />}
-                </button>
+        {
+          mainTab === 'screener' ? (
+            <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4">
+              {/* Sidebar Filters */}
+              <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold opacity-60">FILTERS</h3>
+                  <button
+                    onClick={() => { setSelectedSector('all'); setSelectedSymbol(''); setSearchQuery(''); }}
+                    className="text-xs text-primary hover:text-white transition-colors"
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  {/* Symbol Search */}
+                  <div>
+                    <label className="block text-xs font-medium opacity-60 mb-2">Symbol</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={handleSearchChange}
+                        onFocus={() => searchQuery.length > 0 && setShowAutocomplete(true)}
+                        onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
+                        placeholder="Search ticker..."
+                        className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                      />
+                      <svg className="absolute right-3 top-2.5 w-4 h-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+
+                      {/* Autocomplete Dropdown */}
+                      {showAutocomplete && searchResults.length > 0 && (
+                        <div className="absolute z-50 w-full mt-1 bg-card-dark rounded-lg shadow-xl border border-border-dark max-h-60 overflow-y-auto">
+                          {searchResults.map((result) => (
+                            <button
+                              key={result.symbol}
+                              onClick={() => selectSymbol(result.symbol)}
+                              className="w-full px-4 py-2 text-left hover:bg-primary/10 transition-colors text-sm border-b border-border-dark last:border-0"
+                            >
+                              <div className="font-medium text-white">{result.symbol}</div>
+                              {result.name && <div className="text-xs opacity-60">{result.name}</div>}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {selectedSymbol && (
+                      <div className="mt-2 flex items-center justify-between bg-primary/10 px-2 py-1 rounded border border-primary/20">
+                        <span className="text-xs font-bold text-primary">{selectedSymbol}</span>
+                        <button onClick={clearSearch} className="text-primary hover:text-white">×</button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Sector Filter */}
+                  <div>
+                    <label className="block text-xs font-medium opacity-60 mb-2">Sector</label>
+                    <select
+                      value={selectedSector}
+                      onChange={(e) => {
+                        setSelectedSector(e.target.value);
+                        setPage(1);
+                      }}
+                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                    >
+                      <option value="all">All Sectors</option>
+                      {availableSectors.map((sector: string) => (
+                        <option key={sector} value={sector}>{sector}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Mock Price Range Filter */}
+                  <div>
+                    <label className="block text-xs font-medium opacity-60 mb-2">Price Range</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" placeholder="Min" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" />
+                      <span className="opacity-40">-</span>
+                      <input type="number" placeholder="Max" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" />
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Upload Button (Visible only on Financials tab) */}
-              {screenerTab === 'financials' && (
-                <div className="pb-2">
-                  <label className={`
-                      flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
-                      ${uploading ? 'bg-gray-100 dark:bg-gray-800 opacity-50 cursor-wait' : 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-500'}
-                   `}>
-                    {uploading ? 'Uploading...' : 'Upload Excel(s)'}
-                    <input
-                      type="file"
-                      accept=".xlsx, .xls, .csv"
-                      multiple
-                      className="hidden"
-                      onChange={handleFileUpload}
-                      disabled={uploading}
-                    />
-                  </label>
-                </div>
-              )}
-            </div>
+              {/* Main Content */}
+              <div className="col-span-9 space-y-4">
+                {/* Sub-Tabs & Actions */}
+                <div className="flex items-center justify-between bg-card-dark rounded-xl border border-border-dark p-2">
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { setScreenerTab('technicals'); setPage(1); }}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'technicals' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
+                    >
+                      Technicals
+                    </button>
+                    <button
+                      onClick={() => { setScreenerTab('financials'); setPage(1); }}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'financials' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
+                    >
+                      Financials
+                    </button>
+                  </div>
 
-            {/* Symbol Search & Sector Filter */}
-            <div className="mb-4 relative">
-              <div className="flex items-center gap-3">
-                {/* Symbol Search */}
-                <div className="relative flex-1 max-w-md">
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={handleSearchChange}
-                    onFocus={() => searchQuery.length > 0 && setShowAutocomplete(true)}
-                    onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
-                    placeholder="Search symbol..."
-                    className="w-full px-4 py-2 pl-10 rounded-lg bg-white/5 border border-gray-200/10 text-sm focus:outline-none focus:border-blue-500/50 transition-colors"
-                  />
-                  <svg className="absolute left-3 top-2.5 w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-
-                  {/* Autocomplete Dropdown */}
-                  {showAutocomplete && searchResults.length > 0 && (
-                    <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200/10 max-h-60 overflow-y-auto">
-                      {searchResults.map((result) => (
-                        <button
-                          key={result.symbol}
-                          onClick={() => selectSymbol(result.symbol)}
-                          className="w-full px-4 py-2 text-left hover:bg-blue-500/10 transition-colors text-sm"
-                        >
-                          <div className="font-medium">{result.symbol}</div>
-                          {result.name && <div className="text-xs opacity-60">{result.name}</div>}
-                        </button>
-                      ))}
-                    </div>
+                  {screenerTab === 'financials' && (
+                    <label className={`
+                       flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
+                       ${uploading ? 'bg-background-dark opacity-50 cursor-wait' : 'bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20'}
+                    `}>
+                      {uploading ? 'Uploading...' : 'Upload Excel(s)'}
+                      <input
+                        type="file"
+                        accept=".xlsx, .xls, .csv"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileUpload}
+                        disabled={uploading}
+                      />
+                    </label>
                   )}
                 </div>
 
-                {/* Sector Filter */}
-                <select
-                  value={selectedSector}
-                  onChange={(e) => {
-                    setSelectedSector(e.target.value);
-                    setPage(1);
-                  }}
-                  className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:border-blue-500 transition-colors min-w-[180px]"
-                >
-                  <option value="all">All Sectors</option>
-                  {availableSectors.map((sector: string) => (
-                    <option key={sector} value={sector}>{sector}</option>
-                  ))}
-                </select>
+                {/* Active Filters Row */}
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="opacity-60">Results:</span>
+                  <span className="text-white font-medium">{totalRecords} stocks</span>
+                  {selectedSector !== 'all' && <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/20">Sector: {selectedSector}</span>}
+                </div>
 
-                {selectedSymbol && (
-                  <button
-                    onClick={clearSearch}
-                    className="px-3 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-medium transition-all"
-                  >
-                    Clear
-                  </button>
-                )}
-
-                <div className="text-xs opacity-60 ml-auto">
-                  {totalRecords} stocks {selectedSector !== 'all' && `in ${selectedSector}`}
+                {/* DATA TABLE CONTAINER */}
+                <div className="bg-card-dark rounded-xl border border-border-dark overflow-hidden flex flex-col shadow-lg shadow-black/20" style={{ minHeight: '600px' }}>
+                  <div className="flex-grow overflow-auto">
+                    {screenerTab === 'technicals' ? renderTechnicals() : renderFinancials()}
+                  </div>
+                  {/* Pagination Controls */}
+                  <div className="flex items-center justify-between p-4 border-t border-border-dark bg-card-dark">
+                    <span className="text-sm opacity-60">
+                      Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handlePageChange(page - 1)}
+                        disabled={page <= 1}
+                        className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-sm font-medium px-2">
+                        Page {page} of {totalPages}
+                      </span>
+                      <button
+                        onClick={() => handlePageChange(page + 1)}
+                        disabled={page >= totalPages}
+                        className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
-
-            {/* Table Card */}
-            <div className="bg-card-dark rounded-xl border border-border-dark overflow-hidden flex flex-col card-glow" style={{ maxHeight: 'calc(100vh - 200px)' }}>
-              <div className="flex-grow overflow-auto">
-                {screenerTab === 'technicals' ? renderTechnicals() : renderFinancials()}
-              </div>
-
-              {/* Pagination Controls */}
-              <div className="flex items-center justify-between p-4 border-t border-border-dark bg-card-dark">
-                <span className="text-sm opacity-60">
-                  Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handlePageChange(page - 1)}
-                    disabled={page <= 1}
-                    className="px-4 py-1.5 rounded-lg text-sm bg-gray-200/50 dark:bg-gray-800/50 hover:bg-gray-300 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Previous
-                  </button>
-                  <span className="text-sm font-medium px-2">
-                    Page {page} of {totalPages}
-                  </span>
-                  <button
-                    onClick={() => handlePageChange(page + 1)}
-                    disabled={page >= totalPages}
-                    className="px-4 py-1.5 rounded-lg text-sm bg-gray-200/50 dark:bg-gray-800/50 hover:bg-gray-300 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
+          ) : mainTab === 'portfolio' ? (
+            <div className="animate-in fade-in slide-in-from-bottom-4">
+              {/* Portfolio Risk Tab Content */}
+              <PortfolioRiskTab />
             </div>
-          </div>
-        ) : mainTab === 'portfolio' ? (
-          <div className="animate-in fade-in slide-in-from-bottom-4">
-            {/* Portfolio Risk Tab Content */}
-            <PortfolioRiskTab />
-          </div>
-        ) : (
-          <div className="animate-in fade-in slide-in-from-bottom-4">
-            {/* Strategies Tab Content */}
-            <StrategiesTab />
-          </div>
-        )}
+          ) : (
+            <div className="animate-in fade-in slide-in-from-bottom-4">
+              {/* Strategies Tab Content */}
+              <StrategiesTab />
+            </div>
+          )
+        }
 
-      </div>
-    </div>
+      </div >
+    </div >
   )
 }
 
@@ -639,22 +628,8 @@ function StrategiesTab() {
   const [backtestResults, setBacktestResults] = useState<any>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState({
-    strategy: 'ORB',
-    symbol: 'RELIANCE',
-    timeframe: '5min',
-    segment: 'options',
-    startDate: '2025-11-14',
-    endDate: '2025-12-12',
-    initialCapital: 1000000,
-    openingRangeMinutes: 5,
-    stopLoss: 20.0,
-    takeProfit: 200.0,
-    maxPositions: 1,
-    riskPerTrade: 2.0,
-  });
 
-  const handleRunBacktest = async () => {
+  const handleRunBacktest = async (config: any) => {
     setIsRunning(true);
     setError(null);
 
@@ -676,7 +651,8 @@ function StrategiesTab() {
             stop_loss_pct: config.stopLoss,
             take_profit_pct: config.takeProfit,
             max_positions_per_day: config.maxPositions,
-            trade_type: config.segment
+            trade_type: config.segment,
+            trailing_sl: config.trailingSL
           }
         }),
       });
@@ -697,141 +673,14 @@ function StrategiesTab() {
   };
 
   return (
-    <div className="grid grid-cols-12 gap-6">
+    <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4">
       {/* Left Sidebar - Configuration */}
-      <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-6">
-        <h3 className="text-lg font-semibold mb-6">Strategy Configuration</h3>
-
-        <div className="space-y-2">
-          {/* Strategy Selector */}
-          <div>
-            <label className="block text-xs font-medium opacity-60 mb-1">Strategy</label>
-            <select
-              value={config.strategy}
-              onChange={(e) => setConfig({ ...config, strategy: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            >
-              <option value="ORB">Opening Range Breakout (ORB)</option>
-            </select>
-          </div>
-
-          {/* Symbol */}
-          <div>
-            <label className="block text-sm font-medium opacity-60 mb-2">Symbol</label>
-            <input
-              type="text"
-              value={config.symbol}
-              onChange={(e) => setConfig({ ...config, symbol: e.target.value.toUpperCase() })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          {/* Timeframe */}
-          <div>
-            <label className="block text-sm font-medium opacity-60 mb-2">Timeframe</label>
-            <select
-              value={config.timeframe}
-              onChange={(e) => setConfig({ ...config, timeframe: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            >
-              <option value="5min">5 Min</option>
-              <option value="15min">15 Min</option>
-              <option value="1D">1 Day</option>
-            </select>
-          </div>
-
-          {/* Date Range */}
-          <div>
-            <label className="block text-sm font-medium opacity-60 mb-2">Start Date</label>
-            <input
-              type="date"
-              value={config.startDate}
-              onChange={(e) => setConfig({ ...config, startDate: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium opacity-60 mb-2">End Date</label>
-            <input
-              type="date"
-              value={config.endDate}
-              onChange={(e) => setConfig({ ...config, endDate: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          {/* Capital Settings */}
-          <div className="pt-2 border-t border-gray-200/10">
-            <label className="block text-xs font-medium opacity-60 mb-1">Initial Capital (₹)</label>
-            <input
-              type="number"
-              step="10000"
-              value={config.initialCapital}
-              onChange={(e) => setConfig({ ...config, initialCapital: parseFloat(e.target.value) })}
-              className="w-full px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium opacity-60 mb-1">Risk Per Trade (%)</label>
-            <input
-              type="number"
-              step="0.5"
-              value={config.riskPerTrade}
-              onChange={(e) => setConfig({ ...config, riskPerTrade: parseFloat(e.target.value) })}
-              className="w-full px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          {/* Risk Parameters */}
-          <div className="pt-4 border-t border-gray-200/10">
-            <label className="block text-sm font-medium opacity-60 mb-2">Stop Loss (%)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={config.stopLoss}
-              onChange={(e) => setConfig({ ...config, stopLoss: parseFloat(e.target.value) })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium opacity-60 mb-2">Take Profit (%)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={config.takeProfit}
-              onChange={(e) => setConfig({ ...config, takeProfit: parseFloat(e.target.value) })}
-              className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:border-blue-500"
-              disabled={isRunning}
-            />
-          </div>
-
-          {/* Run Button */}
-          <button
-            onClick={handleRunBacktest}
-            disabled={isRunning}
-            className={`w-full py-3 rounded-lg font-semibold transition-all ${isRunning
-              ? 'bg-gray-300 dark:bg-gray-700 cursor-not-allowed opacity-50'
-              : 'bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-lg'
-              }`}
-          >
-            {isRunning ? 'Running...' : '▶ Run Backtest'}
-          </button>
-        </div>
+      <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark py-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto">
+        <StrategyConfiguration onRunBacktest={handleRunBacktest} isRunning={isRunning} />
       </div>
 
-      {/* Right Content - Results */}
-      <div className="col-span-9 space-y-3">
+      {/* Main Content - Results */}
+      <div className="col-span-9 space-y-6 h-[calc(100vh-140px)] overflow-y-auto pr-2">
         {error && (
           <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 text-red-400 text-sm">
             {error}
@@ -839,192 +688,36 @@ function StrategiesTab() {
         )}
 
         {isRunning && (
-          <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-            <p className="opacity-60">Running backtest...</p>
+          <div className="h-full flex items-center justify-center">
+            <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+              <p className="opacity-60">Running strategy backtest...</p>
+            </div>
           </div>
         )}
 
         {!isRunning && !backtestResults && !error && (
-          <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center opacity-60">
-            <p>Configure strategy and run backtest to see results</p>
+          <div className="h-full flex items-center justify-center opacity-40">
+            <div className="text-center">
+              <div className="text-6xl mb-4">🚀</div>
+              <p>Select settings and run backtest</p>
+            </div>
           </div>
         )}
 
         {backtestResults && !isRunning && (
           <>
-            {/* Results Header */}
-            <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-bold">Opening Range Breakout (ORB)</h3>
-                  <p className="text-xs opacity-60 mt-0.5">
-                    {backtestResults.symbol} • {backtestResults.period?.start} to {backtestResults.period?.end}
-                  </p>
-                </div>
-                <div className={`text-xl font-bold ${backtestResults.total_return >= 0 ? 'text-green-400' : 'text-red-400'
-                  }`}>
-                  {backtestResults.total_return >= 0 ? '+' : ''}
-                  {backtestResults.total_return?.toFixed(2)}%
-                </div>
-              </div>
-            </div>
+            {/* Performance KPIs */}
+            <PerformanceMetrics results={backtestResults} />
 
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-3 gap-3">
-              {/* Performance */}
-              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-                <h4 className="text-xs font-semibold opacity-60 mb-2">PERFORMANCE</h4>
-                <div className="space-y-1.5">
-                  <div>
-                    <div className="text-xs opacity-60">Win Rate</div>
-                    <div className="text-lg font-bold text-green-400">
-                      {backtestResults.metrics?.trade_analysis?.win_rate_pct?.toFixed(0) || 0}%
-                    </div>
-                  </div>
-                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="opacity-60">CAGR</span>
-                      <span className="font-medium">{backtestResults.metrics?.performance?.cagr_pct?.toFixed(1)}%</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="opacity-60">Sharpe Ratio</span>
-                      <span className="font-medium">{backtestResults.metrics?.performance?.sharpe_ratio?.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Risk */}
-              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-                <h4 className="text-xs font-semibold opacity-60 mb-2">RISK</h4>
-                <div className="space-y-1.5">
-                  <div>
-                    <div className="text-xs opacity-60">Max Drawdown</div>
-                    <div className="text-lg font-bold text-red-400">
-                      {backtestResults.metrics?.risk?.max_drawdown_pct?.toFixed(1)}%
-                    </div>
-                  </div>
-                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="opacity-60">Max Cons. Losses</span>
-                      <span className="font-medium">{backtestResults.metrics?.risk?.max_consecutive_losses || 0}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="opacity-60">Volatility</span>
-                      <span className="font-medium">{backtestResults.metrics?.risk?.volatility_pct?.toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Trades */}
-              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-                <h4 className="text-xs font-semibold opacity-60 mb-2">TRADES</h4>
-                <div className="space-y-1.5">
-                  <div>
-                    <div className="text-xs opacity-60">Total Trades</div>
-                    <div className="text-lg font-bold">{backtestResults.summary?.total_trades || 0}</div>
-                  </div>
-                  <div className="pt-1.5 border-t border-gray-200/10 text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="opacity-60">Wins / Losses</span>
-                      <span className="font-medium">
-                        {backtestResults.summary?.winning_trades} / {backtestResults.summary?.losing_trades}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="opacity-60">Profit Factor</span>
-                      <span className="font-medium">{backtestResults.metrics?.performance?.profit_factor?.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Equity Curve Chart */}
-            {backtestResults.equity_curve && backtestResults.equity_curve.length > 0 && (
-              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-                <h4 className="text-xs font-semibold opacity-60 mb-2">EQUITY CURVE</h4>
-                <div style={{ width: '100%', height: 150 }}>
-                  <ResponsiveContainer>
-                    <LineChart data={backtestResults.equity_curve.map((point: any) => ({
-                      timestamp: new Date(point.timestamp).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
-                      equity: point.equity
-                    }))}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis
-                        dataKey="timestamp"
-                        stroke="#94a3b8"
-                        style={{ fontSize: '10px' }}
-                      />
-                      <YAxis
-                        stroke="#94a3b8"
-                        style={{ fontSize: '10px' }}
-                        tickFormatter={(value) => `₹${(value / 1000).toFixed(0)}k`}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: '#1e293b',
-                          border: '1px solid #334155',
-                          borderRadius: '8px',
-                          color: '#fff'
-                        }}
-                        formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Equity']}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="equity"
-                        stroke="#10b981"
-                        strokeWidth={2}
-                        dot={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+            {/* Equity Curve */}
+            {backtestResults.equity_curve && (
+              <EquityCurve equityCurve={backtestResults.equity_curve} initialCapital={backtestResults.initial_capital} />
             )}
 
             {/* Trades Table */}
-            {backtestResults.trades && backtestResults.trades.length > 0 && (
-              <div className="bg-card-dark rounded-xl border border-border-dark p-3">
-                <h4 className="text-xs font-semibold opacity-60 mb-2">RECENT TRADES</h4>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="border-b border-gray-200/10">
-                      <tr className="text-xs opacity-60">
-                        <th className="text-left pb-1.5">Date & Time</th>
-                        <th className="text-left pb-1.5">Instrument</th>
-                        <th className="text-right pb-1.5">Entry</th>
-                        <th className="text-right pb-1.5">Exit</th>
-                        <th className="text-right pb-1.5">P&L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {backtestResults.trades.slice(0, 10).map((trade: any, index: number) => (
-                        <tr key={index} className="border-b border-gray-200/5">
-                          <td className="py-1.5">
-                            {new Date(trade.entry_time).toLocaleString('en-IN', {
-                              month: 'short',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </td>
-                          <td className="py-2 font-medium">{trade.instrument}</td>
-                          <td className="py-2 text-right opacity-80">₹{trade.entry_price.toFixed(2)}</td>
-                          <td className="py-2 text-right opacity-80">₹{trade.exit_price.toFixed(2)}</td>
-                          <td className={`py-2 text-right font-medium ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                            {trade.pnl >= 0 ? '+' : ''}₹{trade.pnl.toFixed(2)}
-                            <span className="text-xs ml-1">({trade.pnl_pct.toFixed(1)}%)</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            {backtestResults.trades && (
+              <TradesTable trades={backtestResults.trades} />
             )}
           </>
         )}

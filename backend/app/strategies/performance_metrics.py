@@ -128,11 +128,18 @@ class PerformanceMetrics:
             drawdown_periods.append((start_idx, len(in_drawdown) - 1))
         
         max_dd_duration_days = 0
+        max_dd_start_date = None
+        max_dd_end_date = None
+
         if drawdown_periods:
             for start, end in drawdown_periods:
                 duration = (self.equity_curve['timestamp'].iloc[end] - 
                           self.equity_curve['timestamp'].iloc[start]).days
-                max_dd_duration_days = max(max_dd_duration_days, duration)
+                
+                if duration >= max_dd_duration_days:
+                    max_dd_duration_days = duration
+                    max_dd_start_date = self.equity_curve['timestamp'].iloc[start]
+                    max_dd_end_date = self.equity_curve['timestamp'].iloc[end]
         
         # Volatility (annualized)
         returns = self.equity_curve['equity'].pct_change().dropna()
@@ -150,6 +157,8 @@ class PerformanceMetrics:
         return {
             'max_drawdown_pct': round(max_drawdown, 2),
             'max_drawdown_duration_days': max_dd_duration_days,
+            'max_drawdown_start_date': max_dd_start_date,
+            'max_drawdown_end_date': max_dd_end_date,
             'volatility_pct': round(volatility, 2),
             'max_consecutive_losses': max_consecutive_losses,
             'var_95_pct': round(var_95, 2)

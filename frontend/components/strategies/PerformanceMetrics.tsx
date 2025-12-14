@@ -1,52 +1,115 @@
+import { TrendingUp, CheckCircle, Scale, Droplet } from 'lucide-react';
+import { format, parseISO } from 'date-fns';
+
 interface PerformanceMetricsProps {
-    metrics: any;
+    results: any;
 }
 
-export default function PerformanceMetrics({ metrics }: PerformanceMetricsProps) {
-    if (!metrics) return null;
+export default function PerformanceMetrics({ results }: PerformanceMetricsProps) {
+    if (!results) {
+        return null;
+    }
+
+    const metrics = results.metrics?.performance || {};
+    const risk = results.metrics?.risk || {};
+    const summary = results.summary || {};
+
+    // Calculate Net Profit
+    const netProfit = (results.final_capital || 0) - (results.initial_capital || 0);
+    const isProfit = netProfit >= 0;
+    const totalReturn = results.total_return || 0;
+
+    // Format dates for Max Drawdown
+    let drawdownPeriod = "High Risk Period";
+    if (results.metrics?.risk?.max_drawdown_start_date && results.metrics?.risk?.max_drawdown_end_date) {
+        try {
+            const start = parseISO(results.metrics.risk.max_drawdown_start_date);
+            const end = parseISO(results.metrics.risk.max_drawdown_end_date);
+            drawdownPeriod = `Occurred ${format(start, 'MMM dd')} - ${format(end, 'MMM dd')}`;
+        } catch (e) {
+            console.error("Error formatting dates", e);
+        }
+    }
 
     return (
-        <div className="bg-slate-800/50 rounded-lg p-6 border border-slate-700">
-            <h3 className="text-sm font-semibold text-slate-400 mb-4 flex items-center">
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                </svg>
-                PERFORMANCE
-            </h3>
-
-            <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <div className="text-sm text-slate-400">Win Rate</div>
-                        <div className={`text-2xl font-bold mt-1 ${(metrics.win_rate_pct || 0) >= 50 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                            {(metrics.win_rate_pct || 0).toFixed(0)}%
-                        </div>
-                    </div>
-
-                    <div>
-                        <div className="text-sm text-slate-400">Profit Factor</div>
-                        <div className={`text-2xl font-bold mt-1 ${(metrics.profit_factor || 0) >= 1 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                            {(metrics.profit_factor || 0).toFixed(2)}
-                        </div>
+        <div className="grid grid-cols-4 gap-4 mb-6">
+            {/* Box 1: Net Profit */}
+            <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm relative overflow-hidden group">
+                <div className="flex justify-between items-start mb-2">
+                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Net Profit</div>
+                    <div className={`p-1.5 rounded-lg ${isProfit ? 'bg-green-500/10' : 'bg-red-500/10'}`}>
+                        <TrendingUp className={`w-4 h-4 ${isProfit ? 'text-green-500' : 'text-red-500'}`} />
                     </div>
                 </div>
-
-                <div className="pt-4 border-t border-slate-700 space-y-3">
-                    <div className="flex justify-between text-sm">
-                        <span className="text-slate-400">CAGR</span>
-                        <span className={`font-medium ${(metrics.cagr_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                            {(metrics.cagr_pct || 0).toFixed(1)}%
+                <div className="space-y-1">
+                    <div className="flex items-baseline gap-2">
+                        <span className={`text-2xl font-bold tracking-tight ${isProfit ? 'text-white' : 'text-red-500'}`}>
+                            {isProfit ? '+' : '-'}₹{Math.abs(netProfit).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </span>
+                        <span className={`text-sm font-bold ${isProfit ? 'text-green-500' : 'text-red-500'}`}>
+                            {isProfit ? '+' : ''}{totalReturn.toFixed(1)}%
                         </span>
                     </div>
 
-                    <div className="flex justify-between text-sm">
-                        <span className="text-slate-400">Sharpe Ratio</span>
-                        <span className="text-white font-medium">
-                            {(metrics.sharpe_ratio || 0).toFixed(2)}
-                        </span>
+
+                    <div className="text-[10px] text-text-secondary opacity-60">
+                        {metrics.cagr_pct !== undefined && metrics.cagr_pct !== 0
+                            ? `CAGR: ${metrics.cagr_pct > 0 ? '+' : ''}${metrics.cagr_pct.toFixed(1)}%`
+                            : `Sharpe: ${(metrics.sharpe_ratio || 0).toFixed(2)}`}
+                    </div>
+                </div>
+            </div>
+
+            {/* Box 2: Win Rate */}
+            <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm relative overflow-hidden group">
+                <div className="flex justify-between items-start mb-2">
+                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Win Rate</div>
+                    <div className="p-1.5 rounded-lg bg-blue-500/10">
+                        <CheckCircle className="w-4 h-4 text-blue-500" />
+                    </div>
+                </div>
+                <div className="space-y-1">
+                    <div className="text-2xl font-bold text-white tracking-tight">
+                        {(metrics.win_rate_pct || 0).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-text-secondary opacity-60">
+                        {summary.winning_trades || 0} Winning Trades
+                    </div>
+                </div>
+            </div>
+
+            {/* Box 3: Profit Factor */}
+            <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm relative overflow-hidden group">
+                <div className="flex justify-between items-start mb-2">
+                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Profit Factor</div>
+                    <div className="p-1.5 rounded-lg bg-orange-500/10">
+                        <Scale className="w-4 h-4 text-orange-500" />
+                    </div>
+                </div>
+                <div className="space-y-1">
+                    <div className="text-2xl font-bold text-white tracking-tight">
+                        {(metrics.profit_factor || 0).toFixed(2)}
+                    </div>
+                    <div className="text-[10px] text-text-secondary opacity-60 truncate">
+                        Avg Win ₹{Math.round(summary.avg_win || 0)} / Avg Loss ₹{Math.round(Math.abs(summary.avg_loss || 0))}
+                    </div>
+                </div>
+            </div>
+
+            {/* Box 4: Max Drawdown */}
+            <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm relative overflow-hidden group">
+                <div className="flex justify-between items-start mb-2">
+                    <div className="text-xs text-text-secondary font-medium uppercase tracking-wider opacity-70">Max Drawdown</div>
+                    <div className="p-1.5 rounded-lg bg-red-500/10">
+                        <Droplet className="w-4 h-4 text-red-500" />
+                    </div>
+                </div>
+                <div className="space-y-1">
+                    <div className="text-2xl font-bold text-white tracking-tight">
+                        {(risk.max_drawdown_pct || 0).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-text-secondary opacity-60">
+                        {drawdownPeriod}
                     </div>
                 </div>
             </div>

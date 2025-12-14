@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from 'react';
-import StrategyConfiguration from '@/components/strategies/StrategyConfiguration';
-import EquityCurve from '@/components/strategies/EquityCurve';
-import PerformanceMetrics from '@/components/strategies/PerformanceMetrics';
-import RiskProfile from '@/components/strategies/RiskProfile';
-import TradesTable from '@/components/strategies/TradesTable';
+import StrategyConfiguration from '../../components/strategies/StrategyConfiguration';
+import EquityCurve from '../../components/strategies/EquityCurve';
+import TradesTable from '../../components/strategies/TradesTable';
+import PerformanceMetrics from '../../components/strategies/PerformanceMetrics';
 
 export default function StrategiesPage() {
     const [backtestResults, setBacktestResults] = useState<any>(null);
@@ -55,141 +54,100 @@ export default function StrategiesPage() {
     };
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-            {/* Header */}
-            <div className="border-b border-slate-700 bg-slate-900/50 backdrop-blur-sm">
-                <div className="px-6 py-4">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h1 className="text-2xl font-bold text-white">Strategies</h1>
-                            <p className="text-sm text-slate-400 mt-1">
-                                Backtest algorithmic trading strategies
-                            </p>
-                        </div>
-                        {backtestResults && (
-                            <button className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm transition-colors">
-                                Export Report
-                            </button>
-                        )}
-                    </div>
-                </div>
+        <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 h-full">
+            {/* Left Sidebar - Configuration */}
+            <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto">
+                <StrategyConfiguration
+                    onRunBacktest={handleRunBacktest}
+                    isRunning={isRunning}
+                />
             </div>
 
-            <div className="flex h-[calc(100vh-73px)]">
-                {/* Left Sidebar - Configuration */}
-                <div className="w-80 border-r border-slate-700 bg-slate-900/30 overflow-y-auto">
-                    <StrategyConfiguration
-                        onRunBacktest={handleRunBacktest}
-                        isRunning={isRunning}
-                    />
-                </div>
+            {/* Main Content */}
+            <div className="col-span-9 space-y-4 h-[calc(100vh-140px)] overflow-y-auto pr-2">
+                {error && (
+                    <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg">
+                        <p className="text-red-400 text-sm">{error}</p>
+                    </div>
+                )}
 
-                {/* Main Content */}
-                <div className="flex-1 overflow-y-auto">
-                    {error && (
-                        <div className="m-6 p-4 bg-red-500/10 border border-red-500/50 rounded-lg">
-                            <p className="text-red-400 text-sm">{error}</p>
+                {isRunning && (
+                    <div className="h-full flex items-center justify-center">
+                        <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center shadow-lg">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+                            <p className="opacity-60 text-sm">Running backtest...</p>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {isRunning && (
-                        <div className="flex items-center justify-center h-full">
-                            <div className="text-center">
-                                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mx-auto"></div>
-                                <p className="text-slate-400 mt-4">Running backtest...</p>
-                            </div>
+                {!isRunning && !backtestResults && !error && (
+                    <div className="flex items-center justify-center h-full opacity-40">
+                        <div className="text-center">
+                            <div className="text-6xl mb-4 grayscale">🚀</div>
+                            <p className="text-lg font-medium">Ready to Backtest</p>
+                            <p className="text-sm mt-2 max-w-xs mx-auto">Configure your strategy parameters in the sidebar and click run to simulate performance.</p>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {!isRunning && !backtestResults && !error && (
-                        <div className="flex items-center justify-center h-full">
-                            <div className="text-center text-slate-400">
-                                <svg className="w-20 h-20 mx-auto mb-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                </svg>
-                                <p className="text-lg">Configure strategy and run backtest</p>
-                                <p className="text-sm mt-2">Results will appear here</p>
-                            </div>
-                        </div>
-                    )}
 
-                    {backtestResults && !isRunning && (
-                        <div className="p-6 space-y-6">
-                            {/* Strategy Info Header */}
-                            <div className="bg-slate-800/50 rounded-lg p-4 border border-slate-700">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <h2 className="text-xl font-bold text-white">
-                                            {backtestResults.strategy === 'ORB' && 'Opening Range Breakout (ORB)'}
-                                        </h2>
-                                        <p className="text-sm text-slate-400 mt-1">
-                                            {backtestResults.symbol} • {backtestResults.period?.start} to {backtestResults.period?.end} ({backtestResults.period?.days} days)
-                                        </p>
-                                    </div>
-                                    <div className={`text-3xl font-bold ${backtestResults.total_return >= 0 ? 'text-green-400' : 'text-red-400'
-                                        }`}>
-                                        {backtestResults.total_return >= 0 ? '+' : ''}
-                                        {backtestResults.total_return?.toFixed(2)}%
-                                    </div>
-                                </div>
-                            </div>
+                {backtestResults && !isRunning && (
+                    <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
+                        {/* Performance Metrics - 4 Card Layout */}
+                        <PerformanceMetrics results={backtestResults} />
 
-                            {/* Metrics Grid */}
-                            <div className="grid grid-cols-3 gap-4">
-                                {/* Performance Metrics */}
-                                <PerformanceMetrics metrics={backtestResults.metrics?.performance} />
 
-                                {/* Risk Profile */}
-                                <RiskProfile metrics={backtestResults.metrics?.risk} />
 
-                                {/* Trade Statistics */}
-                                <div className="bg-slate-800/50 rounded-lg p-6 border border-slate-700">
-                                    <h3 className="text-sm font-semibold text-slate-400 mb-4 flex items-center">
-                                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                                        </svg>
-                                        TRADE STATISTICS
-                                    </h3>
-                                    <div className="space-y-4">
-                                        <div>
-                                            <div className="text-sm text-slate-400">Total Trades</div>
-                                            <div className="text-2xl font-bold text-white mt-1">
-                                                {backtestResults.summary?.total_trades || 0}
-                                            </div>
-                                            <div className="text-xs text-slate-500 mt-1">
-                                                {backtestResults.summary?.winning_trades || 0} Wins • {backtestResults.summary?.losing_trades || 0} Losses
-                                            </div>
+
+                        {/* Trade Statistics */}
+                        <div className="grid grid-cols-3 gap-4">
+                            <div className="bg-card-dark rounded-xl border border-border-dark p-5 shadow-sm">
+                                <h3 className="text-xs font-bold opacity-60 mb-4 uppercase flex items-center gap-2">
+                                    <svg className="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                                    Trade Statistics
+                                </h3>
+                                <div className="space-y-4">
+                                    <div className="bg-background-dark rounded-lg p-3 border border-border-dark">
+                                        <div className="text-xs opacity-60 mb-1">Total Trades</div>
+                                        <div className="text-2xl font-bold text-white">
+                                            {backtestResults.summary?.total_trades || 0}
                                         </div>
+                                        <div className="flex items-center gap-2 mt-2 text-[10px] font-medium uppercase tracking-wider">
+                                            <span className="text-green-500 bg-green-500/10 px-1.5 py-0.5 rounded">{backtestResults.summary?.winning_trades || 0} Wins</span>
+                                            <span className="text-red-500 bg-red-500/10 px-1.5 py-0.5 rounded">{backtestResults.summary?.losing_trades || 0} Losses</span>
+                                        </div>
+                                    </div>
 
-                                        <div className="pt-4 border-t border-slate-700">
-                                            <div className="flex justify-between text-sm mb-2">
-                                                <span className="text-slate-400">Avg Trade Duration</span>
-                                                <span className="text-white font-medium">
-                                                    {backtestResults.metrics?.trade_analysis?.avg_trade_duration_minutes?.toFixed(0) || 0}m
-                                                </span>
-                                            </div>
-                                            <div className="flex justify-between text-sm">
-                                                <span className="text-slate-400">Avg Win/Loss Ratio</span>
-                                                <span className="text-white font-medium">
-                                                    {backtestResults.metrics?.performance?.profit_factor?.toFixed(2) || 'N/A'}
-                                                </span>
-                                            </div>
+                                    <div className="space-y-2 pt-2">
+                                        <div className="flex justify-between text-sm py-1 border-b border-border-dark last:border-0">
+                                            <span className="opacity-60">Avg Trade Duration</span>
+                                            <span className="font-mono">
+                                                {backtestResults.metrics?.trade_analysis?.avg_trade_duration_minutes?.toFixed(0) || 0}m
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between text-sm py-1 border-b border-border-dark last:border-0">
+                                            <span className="opacity-60">Profit Factor</span>
+                                            <span className="font-mono">
+                                                {backtestResults.metrics?.performance?.profit_factor?.toFixed(2) || 'N/A'}
+                                            </span>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-
-                            {/* Equity Curve */}
-                            <EquityCurve
-                                equityCurve={backtestResults.equity_curve || []}
-                                initialCapital={backtestResults.initial_capital}
-                            />
-
-                            {/* Trades Table */}
-                            <TradesTable trades={backtestResults.trades || []} />
+                            <div></div>
+                            <div></div>
                         </div>
-                    )}
-                </div>
+
+                        {/* Equity Curve */}
+                        <EquityCurve
+                            equityCurve={backtestResults.equity_curve || []}
+                            initialCapital={backtestResults.initial_capital}
+                        />
+
+                        {/* Trades Table */}
+                        <TradesTable trades={backtestResults.trades || []} />
+                    </div>
+                )}
             </div>
         </div>
     );
