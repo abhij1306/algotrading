@@ -1,0 +1,101 @@
+{
+  "signals": [
+    {
+      "id": "ASIANPAINT_2025-12-15T13:09:01.693087",
+      "rank": 1,
+      "symbol": "ASIANPAINT",
+      "instrument_type": "STOCK",
+      "direction": "SHORT",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 2787.0,
+      "stop_loss": 2866.84,
+      "target": 2667.24,
+      "reasons": [
+        "5m breakdown below opening range (\u20b92862.10)",
+        "Price below VWAP (\u20b92882.60)",
+        "ATR 1.9% (good volatility)",
+        "RSI 47 (bearish zone)",
+        "Strong momentum (+0.8%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T13:09:01.693087",
+      "scan_timestamp": "2025-12-15T13:09:01.781216",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "MARUTI_2025-12-15T13:09:01.717305",
+      "rank": 2,
+      "symbol": "MARUTI",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 16407.0,
+      "stop_loss": 16027.07,
+      "target": 16976.89,
+      "reasons": [
+        "5m breakout above opening range (\u20b915999.00)",
+        "Price above VWAP (\u20b916052.00)",
+        "ATR 1.5% (good volatility)",
+        "RSI 65 (bullish zone)",
+        "Strong momentum (-0.7%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T13:09:01.717305",
+      "scan_timestamp": "2025-12-15T13:09:01.781216",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "ASIANPAINT_2025-12-15T13:09:29.476102",
+      "rank": 1,
+      "symbol": "ASIANPAINT",
+      "instrument_type": "STOCK",
+      "direction": "SHORT",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 2787.0,
+      "stop_loss": 2866.84,
+      "target": 2667.24,
+      "reasons": [
+        "5m breakdown below opening range (\u20b92862.10)",
+        "Price below VWAP (\u20b92882.60)",
+        "ATR 1.9% (good volatility)",
+        "RSI 47 (bearish zone)",
+        "Strong momentum (+0.8%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T13:09:29.476102",
+      "scan_timestamp": "2025-12-15T13:09:29.600891",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "MARUTI_2025-12-15T13:09:29.492617",
+      "rank": 2,
+      "symbol": "MARUTI",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 16407.0,
+      "stop_loss": 16027.07,
+      "target": 16976.89,
+      "reasons": [
+        "5m breakout above opening range (\u20b915999.00)",
+        "Price above VWAP (\u20b916052.00)",
+        "ATR 1.5% (good volatility)",
+        "RSI 65 (bullish zone)",
+        "Strong momentum (-0.7%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T13:09:29.492617",
+      "scan_timestamp": "2025-12-15T13:09:29.600891",
+      "scan_date": "2025-12-15"
+    }
+  ],
+  "last_updated": "2025-12-15T13:09:29.603453"
+}

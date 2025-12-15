@@ -7,8 +7,15 @@ import os
 from typing import Optional, Dict
 from .config import config
 
-# Add parent directory to path to import fyers module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+# Add AlgoTrading root directory to path to import Fyers module
+# Get the path: backend/app/data_fetcher.py -> go up 3 levels to AlgoTrading/
+algotrading_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+# Remove if already exists and insert at position 0 to ensure it's searched first
+if algotrading_root in sys.path:
+    sys.path.remove(algotrading_root)
+sys.path.insert(0, algotrading_root)
+print(f"[DATA_FETCHER] AlgoTrading root at position 0: {algotrading_root}")
 
 def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
     """
@@ -146,6 +153,32 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                 repo.save_historical_prices(symbol, hist, source='fyers')
                 return hist
         
+        # Fallback to YFinance
+        try:
+            print(f"Fetching {symbol} from YFinance fallback...")
+            import yfinance as yf
+            
+            # Add .NS suffix if not present for NSE
+            yf_symbol = f"{symbol}.NS" if not symbol.endswith(('.NS', '.BO')) else symbol
+            
+            # Fetch data
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period=f"{days}d")
+            
+            if not hist.empty:
+                # Rename columns and fix timezone
+                hist = hist.reset_index()
+                hist['Date'] = pd.to_datetime(hist['Date']).dt.date
+                hist = hist.set_index('Date')
+                hist = hist[['Open', 'High', 'Low', 'Close', 'Volume']]
+                
+                # Save to database
+                repo.save_historical_prices(symbol, hist, source='yfinance')
+                return hist
+                
+        except Exception as e:
+            print(f"YFinance fallback failed for {symbol}: {e}")
+        
         return None
         
     finally:
@@ -165,7 +198,7 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
         return {}
     
     try:
-        # Import Fyers client
+        # Import fyers client (sys.path already set at module level)
         from fyers import fyers_client
         
         # Format symbols for Fyers (NSE:SYMBOL-EQ)
@@ -198,6 +231,8 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
         
     except Exception as e:
         print(f"Error fetching Fyers quotes: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def fetch_fyers_preopen(symbol: str) -> Optional[dict]:

@@ -1,0 +1,36 @@
+mode: polling
+timeframe: 5m
+scan_interval_sec: 300  # 5 minutes
+
+market:
+  start: "09:15"
+  end: "15:30"
+  timezone: "Asia/Kolkata"
+
+universe:
+  stocks: nse_fo
+  indices:
+    - NIFTY
+    - BANKNIFTY
+
+risk:
+  max_trades_per_day: 5
+  max_risk_per_trade_pct: 2
+  max_daily_loss_pct: 5
+  symbol_cooldown_minutes: 30
+  min_risk_reward_ratio: 1.5
+
+groq:
+  api_key: "${GROQ_API_KEY}"
+  model: "llama-3.3-70b-versatile"
+  timeout: 30
+
+paper_trading:
+  initial_capital: 100000
+  slippage_pct: 0.05
+  commission_per_trade: 20
+
+scanner:
+  min_volume_percentile: 70
+  min_atr_pct: 1.5
+  min_momentum_score: 60

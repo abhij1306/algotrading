@@ -78,6 +78,42 @@ for symbol in universe:
     except Exception as e:
         # Continue to next stock
         pass
+        if hist is not None and not hist.empty:
+            records = repo.save_historical_prices(symbol, hist, source='fyers')
+            # Commit happens inside save_historical_prices
+    except Exception as e:
+        # Continue to next stock
+        pass
+```
+
+### 5. Smart Trader Integration (2024-12-15)
+**What worked:**
+- **Architecture**: Multi-agent system (Orchestrator -> Scanner -> Risk -> Execution)
+- **Live Data**: Fyers API polling + YFinance fallback for historical
+- **UI**: Dedicated dashboard with Start/Stop controls and Paper Trading mode
+- **Startup**: Non-blocking orchestration using background threads
+
+**Key Agents:**
+- `StockScannerAgent`: Analyzes F&O universe using Momentum/Vol/RSI
+- `RiskAgent`: Validates trades (max 5/day, 2% risk)
+- `ExecutionAgent`: Simulates fills with slippage
+
+### 6. Automated Data Scheduling (2024-12-15)
+**What worked:**
+- **Library**: `APScheduler` (BackgroundScheduler)
+- **Integration**: Initialized in `main.py` lifespan event
+- **Schedule**: `mon-fri` at `16:00` (Market Close)
+- **Resilience**: Automatically recovers if backend restarts
+
+**Implementation in `main.py`:**
+```python
+scheduler = BackgroundScheduler()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.add_job(run_daily_market_update, 'cron', day_of_week='mon-fri', hour=16)
+    scheduler.start()
+    yield
+    scheduler.shutdown()
 ```
 
 ## ⚠️ Common Issues & Solutions

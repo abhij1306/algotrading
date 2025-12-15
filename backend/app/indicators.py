@@ -51,10 +51,14 @@ def compute_features(symbol: str, hist: pd.DataFrame) -> dict:
     Returns:
         Dictionary of features or None if insufficient data
     """
-    if hist.empty or len(hist) < 60:
+    if hist.empty or len(hist) < 20:  # Reduced from 60 to 20 days
         return None
     
     hist = hist.copy()
+    
+    # Normalize column names to uppercase (database returns lowercase)
+    hist.columns = [col.capitalize() if col.lower() in ['open', 'high', 'low', 'close', 'volume'] else col for col in hist.columns]
+    
     hist.index = pd.to_datetime(hist.index)
     hist = hist.dropna()
     

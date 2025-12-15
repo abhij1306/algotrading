@@ -8,6 +8,8 @@ import EquityCurve from '../components/strategies/EquityCurve';
 import TradesTable from '../components/strategies/TradesTable';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Navbar from '../components/Navbar';
+import SmartTraderDashboard from '../components/smart-trader/SmartTraderDashboard';
+import Terminal from '../components/Terminal';
 
 // Types
 interface Stock {
@@ -19,6 +21,7 @@ interface Stock {
   atr_pct: number
   rsi: number
   vol_percentile: number
+  change_pct?: number  // For live price % change
   // Removed score, is_20d_breakout might strictly not be needed if not in API, but let's keep it safe
 }
 
@@ -33,7 +36,7 @@ interface FinancialRecord {
   pe_ratio: number
 }
 
-type MainTab = 'screener' | 'portfolio' | 'strategies'
+type MainTab = 'screener' | 'portfolio' | 'strategies' | 'signals' | 'terminal'
 type ScreenerTab = 'technicals' | 'financials'
 
 export default function MacOSPage() {
@@ -195,6 +198,50 @@ export default function MacOSPage() {
     fetchData()
   }, [mainTab, screenerTab, page, sortBy, sortOrder, selectedSymbol, selectedSector])
 
+  // Live price updates for screener
+  useEffect(() => {
+    if (mainTab !== 'screener' || screenerTab !== 'technicals' || stocks.length === 0) {
+      return
+    }
+
+    const updateLivePrices = async () => {
+      try {
+        // Get symbols from current stocks
+        const symbols = stocks.map(s => s.symbol).join(',')
+
+        const res = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbols}`)
+        const data = await res.json()
+
+        if (data.quotes) {
+          // Update stocks with live prices
+          setStocks(prevStocks =>
+            prevStocks.map(stock => {
+              const liveData = data.quotes[stock.symbol]
+              if (liveData && liveData.ltp) {
+                return {
+                  ...stock,
+                  close: liveData.ltp,
+                  change_pct: liveData.change_pct || 0
+                }
+              }
+              return stock
+            })
+          )
+        }
+      } catch (err) {
+        console.error('Failed to fetch live prices:', err)
+      }
+    }
+
+    // Update immediately
+    updateLivePrices()
+
+    // Then update every 5 seconds
+    const interval = setInterval(updateLivePrices, 5000)
+
+    return () => clearInterval(interval)
+  }, [mainTab, screenerTab, stocks.length])
+
   // Pagination Handler
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= totalPages) {
@@ -326,30 +373,42 @@ export default function MacOSPage() {
               </tr>
             ))
           ) : (
-            stocks.map((stock) => (
-              <tr key={stock.symbol} className="group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300">
-                <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
-                  {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
-                </td>
-                <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20.toFixed(2)}</td>
-                <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50.toFixed(2)}</td>
-                <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                  <span className={`${stock.atr_pct > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
-                    {stock.atr_pct.toFixed(2)}%
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                  <span className={`${stock.rsi > 70 ? 'text-purple-500 font-bold' : stock.rsi < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
-                    {stock.rsi.toFixed(1)}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile)}%</td>
-              </tr>
-            ))
+            stocks.map((stock) => {
+              const rowColor = stock.change_pct
+                ? stock.change_pct > 0 ? 'bg-green-900/10' : stock.change_pct < 0 ? 'bg-red-900/10' : ''
+                : '';
+              return (
+                <tr key={stock.symbol} className={`group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300 ${rowColor}`}>
+                  <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
+                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+                      <span>{stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}</span>
+                      {stock.change_pct !== undefined && stock.change_pct !== 0 && (
+                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: stock.change_pct > 0 ? '#4ade80' : '#f87171' }}>
+                          ({stock.change_pct > 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%)
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
+                    {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20.toFixed(2)}</td>
+                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50.toFixed(2)}</td>
+                  <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
+                    <span className={`${stock.atr_pct > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
+                      {stock.atr_pct.toFixed(2)}%
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
+                    <span className={`${stock.rsi > 70 ? 'text-purple-500 font-bold' : stock.rsi < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
+                      {stock.rsi.toFixed(1)}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile)}%</td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -497,12 +556,12 @@ export default function MacOSPage() {
                   <div>
                     <label className="block text-xs font-medium opacity-60 mb-2">Sector</label>
                     <select
+                      id="sector-filter"
+                      name="sector-filter"
                       value={selectedSector}
-                      onChange={(e) => {
-                        setSelectedSector(e.target.value);
-                        setPage(1);
-                      }}
-                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                      onChange={(e) => { setSelectedSector(e.target.value); setPage(1); }}
+                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary-purple transition-colors"
+                      aria-label="Filter by sector"
                     >
                       <option value="all">All Sectors</option>
                       {availableSectors.map((sector: string) => (
@@ -515,9 +574,9 @@ export default function MacOSPage() {
                   <div>
                     <label className="block text-xs font-medium opacity-60 mb-2">Price Range</label>
                     <div className="flex items-center gap-2">
-                      <input type="number" placeholder="Min" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" />
+                      <input id="price-min" name="price-min" type="number" placeholder="Min" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" aria-label="Minimum price" />
                       <span className="opacity-40">-</span>
-                      <input type="number" placeholder="Max" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" />
+                      <input id="price-max" name="price-max" type="number" placeholder="Max" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" aria-label="Maximum price" />
                     </div>
                   </div>
                 </div>
@@ -605,10 +664,20 @@ export default function MacOSPage() {
               {/* Portfolio Risk Tab Content */}
               <PortfolioRiskTab />
             </div>
-          ) : (
+          ) : mainTab === 'strategies' ? (
             <div className="animate-in fade-in slide-in-from-bottom-4">
               {/* Strategies Tab Content */}
               <StrategiesTab />
+            </div>
+          ) : mainTab === 'signals' ? (
+            <div className="animate-in fade-in slide-in-from-bottom-4">
+              {/* Signals Tab Content */}
+              <SignalsTab />
+            </div>
+          ) : (
+            <div className="animate-in fade-in slide-in-from-bottom-4">
+              {/* Terminal Tab Content */}
+              <TerminalTab />
             </div>
           )
         }
@@ -616,6 +685,16 @@ export default function MacOSPage() {
       </div >
     </div >
   )
+}
+
+// Signals Tab Component
+function SignalsTab() {
+  return <SmartTraderDashboard />;
+}
+
+// Terminal Tab Component
+function TerminalTab() {
+  return <Terminal />;
 }
 
 // Portfolio Risk Tab Component - Now Using Unified Interface

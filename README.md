@@ -54,6 +54,16 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
   - NIFTY50-INDEX, Stock Futures, Index Options
 - **Location**: Available on home page (`localhost:3000`) Backtest tab
 
+### 🤖 Smart Trader (New)
+- **Multi-Agent System**: Automated analysis and paper trading
+- **Features**:
+  - **Live Scanner**: Real-time momentum scanning of NSE F&O stocks
+  - **Grid View**: Compact signal display with expandable details
+  - **Paper Trading**: Simulate trades with realistic slippage and P&L tracking
+  - **Risk Guard**: Automatic validation (Max 5 trades/day, Max Daily Loss)
+- **Controls**: Manual Start/Stop scanner, Manual Trade execution
+- **Mode**: Toggle between PAPER and LIVE (Safety prompts enabled)
+
 ## 📁 Project Structure
 
 ```

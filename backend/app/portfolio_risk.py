@@ -126,8 +126,17 @@ class PortfolioRiskEngine:
         Returns:
             Beta value
         """
-        covariance = np.cov(asset_returns, market_returns)[0][1]
-        market_variance = np.var(market_returns)
+        # Align data on indices (dates) to handle different lengths
+        aligned_data = pd.concat([asset_returns, market_returns], axis=1, join='inner').dropna()
+        
+        if aligned_data.empty or len(aligned_data) < 2:
+            return 1.0
+            
+        asset_ret = aligned_data.iloc[:, 0]
+        market_ret = aligned_data.iloc[:, 1]
+        
+        covariance = np.cov(asset_ret, market_ret)[0][1]
+        market_variance = np.var(market_ret)
         return covariance / market_variance if market_variance != 0 else 1.0
     
     def sharpe_ratio(self, returns: pd.Series) -> float:

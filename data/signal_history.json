@@ -1,0 +1,149 @@
+{
+  "signals": [
+    {
+      "id": "INFY_2025-12-15T15:54:25.885424",
+      "rank": 1,
+      "symbol": "INFY",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 1606.8,
+      "stop_loss": 1568.98,
+      "target": 1663.53,
+      "reasons": [
+        "5m breakout above opening range (\u20b91543.00)",
+        "Price above VWAP (\u20b91563.81)",
+        "ATR 1.6% (good volatility)",
+        "RSI 44 (bullish zone)",
+        "Strong momentum (+0.5%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:25.885424",
+      "scan_timestamp": "2025-12-15T15:54:26.475516",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "ASIANPAINT_2025-12-15T15:54:26.261737",
+      "rank": 2,
+      "symbol": "ASIANPAINT",
+      "instrument_type": "STOCK",
+      "direction": "SHORT",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 2780.2,
+      "stop_loss": 2860.04,
+      "target": 2660.44,
+      "reasons": [
+        "5m breakdown below opening range (\u20b92862.10)",
+        "Price below VWAP (\u20b92882.60)",
+        "ATR 1.9% (good volatility)",
+        "RSI 47 (bearish zone)",
+        "Strong momentum (+0.6%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:26.261737",
+      "scan_timestamp": "2025-12-15T15:54:26.475516",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "MARUTI_2025-12-15T15:54:26.286466",
+      "rank": 3,
+      "symbol": "MARUTI",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 16415.0,
+      "stop_loss": 16035.07,
+      "target": 16984.89,
+      "reasons": [
+        "5m breakout above opening range (\u20b915999.00)",
+        "Price above VWAP (\u20b916052.00)",
+        "ATR 1.5% (good volatility)",
+        "RSI 65 (bullish zone)",
+        "Strong momentum (-0.6%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:26.286466",
+      "scan_timestamp": "2025-12-15T15:54:26.475516",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "INFY_2025-12-15T15:54:29.405146",
+      "rank": 1,
+      "symbol": "INFY",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 1606.8,
+      "stop_loss": 1568.98,
+      "target": 1663.53,
+      "reasons": [
+        "5m breakout above opening range (\u20b91543.00)",
+        "Price above VWAP (\u20b91563.81)",
+        "ATR 1.6% (good volatility)",
+        "RSI 44 (bullish zone)",
+        "Strong momentum (+0.5%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:29.405146",
+      "scan_timestamp": "2025-12-15T15:54:29.855557",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "ASIANPAINT_2025-12-15T15:54:29.704137",
+      "rank": 2,
+      "symbol": "ASIANPAINT",
+      "instrument_type": "STOCK",
+      "direction": "SHORT",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 2780.2,
+      "stop_loss": 2860.04,
+      "target": 2660.44,
+      "reasons": [
+        "5m breakdown below opening range (\u20b92862.10)",
+        "Price below VWAP (\u20b92882.60)",
+        "ATR 1.9% (good volatility)",
+        "RSI 47 (bearish zone)",
+        "Strong momentum (+0.6%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:29.704137",
+      "scan_timestamp": "2025-12-15T15:54:29.855557",
+      "scan_date": "2025-12-15"
+    },
+    {
+      "id": "MARUTI_2025-12-15T15:54:29.723314",
+      "rank": 3,
+      "symbol": "MARUTI",
+      "instrument_type": "STOCK",
+      "direction": "LONG",
+      "momentum_score": 65,
+      "composite_score": 69.0,
+      "confidence": "MEDIUM",
+      "entry_price": 16415.0,
+      "stop_loss": 16035.07,
+      "target": 16984.89,
+      "reasons": [
+        "5m breakout above opening range (\u20b915999.00)",
+        "Price above VWAP (\u20b916052.00)",
+        "ATR 1.5% (good volatility)",
+        "RSI 65 (bullish zone)",
+        "Strong momentum (-0.6%)"
+      ],
+      "risk_reward_ratio": 1.5,
+      "timestamp": "2025-12-15T15:54:29.723314",
+      "scan_timestamp": "2025-12-15T15:54:29.855557",
+      "scan_date": "2025-12-15"
+    }
+  ],
+  "last_updated": "2025-12-15T15:54:29.856149"
+}

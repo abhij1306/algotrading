@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-type NavTab = 'screener' | 'portfolio' | 'strategies';
+type NavTab = 'screener' | 'portfolio' | 'strategies' | 'signals' | 'terminal';
 
 interface NavbarProps {
     activeTab: NavTab;
@@ -47,6 +47,24 @@ export default function Navbar({ activeTab, onTabChange }: NavbarProps) {
                             }`}
                     >
                         Backtest
+                    </button>
+                    <button
+                        onClick={() => onTabChange('signals')}
+                        className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${activeTab === 'signals'
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'text-text-secondary hover:text-white hover:bg-white/5'
+                            }`}
+                    >
+                        Signals
+                    </button>
+                    <button
+                        onClick={() => onTabChange('terminal')}
+                        className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${activeTab === 'terminal'
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'text-text-secondary hover:text-white hover:bg-white/5'
+                            }`}
+                    >
+                        Terminal
                     </button>
                 </div>
 

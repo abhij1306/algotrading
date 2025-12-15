@@ -27,7 +27,6 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 
 # --- Compute Features (EMA, RSI, etc) ---
-import pandas as pd
 from .indicators import compute_features
 
 # --- Cache for Screeners ---
@@ -269,6 +268,37 @@ async def get_financials_screener(
         # import traceback
         # traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Financials failed: {str(e)}")
+
+@app.get("/api/quotes/live")
+async def get_live_quotes(symbols: str):
+    """
+    Get live quotes for multiple symbols from Fyers API
+    
+    Args:
+        symbols: Comma-separated list of symbols (e.g., "RELIANCE,TCS,INFY")
+    
+    Returns:
+        Dictionary of symbol -> quote data
+    """
+    try:
+        from .fyers_direct import get_fyers_quotes
+        
+        # Split symbols and clean them
+        symbol_list = [s.strip().upper() for s in symbols.split(',') if s.strip()]
+        
+        if not symbol_list:
+            return {"quotes": {}}
+        
+        # Fetch quotes from Fyers
+        quotes = get_fyers_quotes(symbol_list)
+        
+        return {"quotes": quotes}
+        
+    except Exception as e:
+        print(f"Error fetching live quotes: {str(e)}")
+        # Return empty quotes instead of error to prevent frontend issues
+        return {"quotes": {}}
+
 
 @app.post("/api/upload/bulk-financials")
 async def upload_financials(files: List[UploadFile] = File(...)):
@@ -564,13 +594,22 @@ async def analyze_portfolio(portfolio_id: int, lookback_days: int = 252):
         
         # Fetch historical prices
         prices_dict = {}
+        missing_data_symbols = []
         for symbol in symbols:
             print(f"[DEBUG] Fetching historical data for {symbol}")
             hist = repo.get_historical_prices(symbol, days=lookback_days)
             if hist is None or hist.empty:
-                raise HTTPException(status_code=400, detail=f"No historical data for {symbol}")
-            prices_dict[symbol] = hist['Close']
-            print(f"[DEBUG] Got {len(hist)} days of data for {symbol}")
+                missing_data_symbols.append(symbol)
+                print(f"[DEBUG] No historical data found for {symbol}")
+            else:
+                prices_dict[symbol] = hist['Close']
+                print(f"[DEBUG] Got {len(hist)} days of data for {symbol}")
+        
+        # Check if any symbols are missing data
+        if missing_data_symbols:
+            error_msg = f"No historical data found for: {', '.join(missing_data_symbols)}. Please ensure these symbols exist in the database and have historical price data."
+            print(f"[ERROR] {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
         
         prices_df = pd.DataFrame(prices_dict)
         print(f"[DEBUG] Created prices dataframe: {prices_df.shape}")

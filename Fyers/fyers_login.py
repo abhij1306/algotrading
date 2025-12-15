@@ -6,13 +6,13 @@ from fyers_apiv3 import fyersModel
 
 # --- Configuration Setup ---
 # Loads CLIENT_ID, SECRET_KEY, REDIRECT_URI from config/keys.env
-load_dotenv("fyers/config/keys.env")
+load_dotenv("config/keys.env")
 
 # Load credentials
 CLIENT_ID = os.getenv("CLIENT_ID")
 SECRET_KEY = os.getenv("SECRET_KEY")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
-CONFIG_DIR = "fyers/config"
+CONFIG_DIR = "config"
 ACCESS_TOKEN_FILE = os.path.join(CONFIG_DIR, "access_token.json")
 
 

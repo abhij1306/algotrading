@@ -118,8 +118,15 @@ class DataRepository:
         if end_date:
             query = query.filter(HistoricalPrice.date <= end_date)
         if days:
-            cutoff_date = date.today() - timedelta(days=days)
-            query = query.filter(HistoricalPrice.date >= cutoff_date)
+            # Use the latest available date in database, not today's date
+            # This ensures we get data even if database hasn't been updated today
+            latest_record = self.db.query(HistoricalPrice).filter(
+                HistoricalPrice.company_id == company.id
+            ).order_by(desc(HistoricalPrice.date)).first()
+            
+            if latest_record:
+                cutoff_date = latest_record.date - timedelta(days=days)
+                query = query.filter(HistoricalPrice.date >= cutoff_date)
         
         query = query.order_by(HistoricalPrice.date)
         prices = query.all()
@@ -127,7 +134,7 @@ class DataRepository:
         if not prices:
             return pd.DataFrame()
         
-        # Convert to DataFrame
+        # Convert to DataFrame with UPPERCASE column names (required by portfolio analysis)
         data = {
             'Open': [p.open for p in prices],
             'High': [p.high for p in prices],
@@ -136,7 +143,7 @@ class DataRepository:
             'Volume': [p.volume for p in prices],
         }
         df = pd.DataFrame(data, index=[p.date for p in prices])
-        df.index.name = 'Date'
+        df.index.name = 'date'
         df.index = pd.to_datetime(df.index)
         
         return df
