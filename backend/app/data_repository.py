@@ -48,7 +48,7 @@ class DataRepository:
     # ==================== HISTORICAL PRICE OPERATIONS ====================
     
     def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = 'fyers'):
-        """Save historical prices from DataFrame"""
+        """Save historical prices from DataFrame and calculate technical indicators"""
         try:
             company = self.get_or_create_company(symbol)
             
@@ -78,6 +78,40 @@ class DataRepository:
                     records_added += 1
             
             self.db.commit()
+            
+            # Calculate and save technical indicators for the latest data
+            if records_added > 0:
+                try:
+                    from .indicators import compute_features
+                    
+                    # Get last 200 days of data to calculate indicators
+                    hist = self.get_historical_prices(symbol, days=200)
+                    
+                    if hist is not None and not hist.empty and len(hist) >= 20:
+                        features = compute_features(symbol, hist)
+                        
+                        if features:
+                            # Update the latest price record with calculated indicators
+                            latest_price = self.db.query(HistoricalPrice).filter(
+                                HistoricalPrice.company_id == company.id
+                            ).order_by(HistoricalPrice.date.desc()).first()
+                            
+                            if latest_price:
+                                latest_price.ema_20 = features.get('ema20')
+                                latest_price.ema_34 = features.get('ema34')
+                                latest_price.ema_50 = features.get('ema50')
+                                latest_price.rsi = features.get('rsi')
+                                latest_price.atr = features.get('atr')
+                                latest_price.atr_pct = features.get('atr_pct')
+                                latest_price.avg_volume = features.get('adv20')
+                                latest_price.volume_percentile = features.get('vol_percentile')
+                                latest_price.high_20d = features.get('20d_high')
+                                latest_price.is_breakout = features.get('is_20d_breakout', False)
+                                
+                                self.db.commit()
+                except Exception as e:
+                    print(f"Warning: Failed to calculate indicators for {symbol}: {e}")
+                    # Don't fail the whole operation if indicator calculation fails
             
             # Log update
             try:

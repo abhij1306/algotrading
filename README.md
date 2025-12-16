@@ -54,15 +54,28 @@ Advanced portfolio risk analysis platform combining technical and fundamental an
   - NIFTY50-INDEX, Stock Futures, Index Options
 - **Location**: Available on home page (`localhost:3000`) Backtest tab
 
-### 🤖 Smart Trader (New)
-- **Multi-Agent System**: Automated analysis and paper trading
+### 🤖 Smart Trader (Refactored - New Architecture)
+- **Deterministic Signal Generation**: Signals always generated, never blocked by LLM
+- **Architecture**:
+  1. **MarketSnapshot**: Immutable market data with optional indicators
+  2. **5 Signal Generators**: Momentum, Volume, Range Expansion, Reversal, Index Alignment
+  3. **Signal Aggregator**: Merges signals with confluence counting
+  4. **LLM Signal Analyst**: Enhances confidence and provides narrative reasoning (optional)
+  5. **Confidence Engine**: Computes base confidence + LLM adjustment → LOW/MEDIUM/HIGH
+  6. **Trade Constructor**: Builds entry/SL/target with ATR-based risk management
+  7. **LLM Trade Reviewer**: Reviews trade logic, can only downgrade confidence (optional)
+  8. **Risk Agent**: Hard execution gate (capital limits, R:R, cooldown)
+- **Key Principles**:
+  - Signals generated deterministically first (no LLM dependency)
+  - LLMs enhance understanding, not raw detection
+  - Low confidence signals remain visible
+  - System works even if LLM fails (timeout + fallback)
 - **Features**:
-  - **Live Scanner**: Real-time momentum scanning of NSE F&O stocks
-  - **Grid View**: Compact signal display with expandable details
-  - **Paper Trading**: Simulate trades with realistic slippage and P&L tracking
-  - **Risk Guard**: Automatic validation (Max 5 trades/day, Max Daily Loss)
-- **Controls**: Manual Start/Stop scanner, Manual Trade execution
-- **Mode**: Toggle between PAPER and LIVE (Safety prompts enabled)
+  - **Confluence Signals**: Multiple signal types combined per symbol
+  - **Transparent Reasoning**: Deterministic reasons + LLM narrative
+  - **Risk Flags**: LLM identifies potential failure modes
+  - **Paper Trading**: Simulate trades with realistic execution
+- **Mode**: Paper trading with comprehensive signal analysis
 
 ## 📁 Project Structure
 

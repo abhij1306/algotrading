@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal, Company
 from app.data_repository import DataRepository
-from app.data_fetcher import fetch_historical_data_fyers
+from app.data_fetcher import fetch_historical_data
 
 def update_all_stocks():
     """Update historical data for all active stocks"""
@@ -33,7 +33,7 @@ def update_all_stocks():
                 print(f"\n[{i}/{len(companies)}] Updating {company.symbol}...", end=" ")
                 
                 # Fetch last 365 days of data
-                df = fetch_historical_data_fyers(company.symbol, days=365)
+                df = fetch_historical_data(company.symbol, days=365)
                 
                 if df is not None and not df.empty:
                     # Save to database
@@ -70,7 +70,7 @@ def update_specific_symbols(symbols: list):
                 print(f"\nUpdating {symbol}...", end=" ")
                 
                 # Fetch last 365 days of data
-                df = fetch_historical_data_fyers(symbol, days=365)
+                df = fetch_historical_data(symbol, days=365)
                 
                 if df is not None and not df.empty:
                     records_added = repo.save_historical_prices(symbol, df, source='fyers')

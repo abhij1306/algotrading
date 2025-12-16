@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { Sparkles } from 'lucide-react';
 
 type NavTab = 'screener' | 'portfolio' | 'strategies' | 'signals' | 'terminal';
 
@@ -8,6 +9,40 @@ interface NavbarProps {
 }
 
 export default function Navbar({ activeTab, onTabChange }: NavbarProps) {
+    const [isMarketOpen, setIsMarketOpen] = useState(false);
+    const [currentTime, setCurrentTime] = useState('');
+
+    useEffect(() => {
+        const checkMarketStatus = () => {
+            const now = new Date();
+
+            // System is already in IST, use local time directly
+            const day = now.getDay(); // 0 = Sunday, 6 = Saturday
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
+            const totalMinutes = hours * 60 + minutes;
+
+            // Market hours: 9:15 AM to 3:30 PM IST (Monday to Friday)
+            const marketOpen = 9 * 60 + 15; // 9:15 AM
+            const marketClose = 15 * 60 + 30; // 3:30 PM
+
+            const isWeekday = day >= 1 && day <= 5;
+            const isDuringMarketHours = totalMinutes >= marketOpen && totalMinutes <= marketClose;
+
+            setIsMarketOpen(isWeekday && isDuringMarketHours);
+            setCurrentTime(now.toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }));
+        };
+
+        checkMarketStatus();
+        const interval = setInterval(checkMarketStatus, 10000); // Update every 10 seconds
+
+        return () => clearInterval(interval);
+    }, []);
+
     return (
         <nav className="border-b border-border-dark bg-background-dark/80 backdrop-blur-md sticky top-0 z-50">
             <div className="max-w-[1920px] mx-auto px-6 h-16 flex items-center justify-between">
@@ -55,7 +90,7 @@ export default function Navbar({ activeTab, onTabChange }: NavbarProps) {
                             : 'text-text-secondary hover:text-white hover:bg-white/5'
                             }`}
                     >
-                        Signals
+                        Smart Trader
                     </button>
                     <button
                         onClick={() => onTabChange('terminal')}
@@ -68,9 +103,18 @@ export default function Navbar({ activeTab, onTabChange }: NavbarProps) {
                     </button>
                 </div>
 
-                {/* Right Actions */}
-                <div className="flex items-center gap-4">
-                    {/* Placeholder for future actions */}
+                {/* Right Actions - Market Status */}
+                <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card-dark border border-border-dark">
+                        <div className="flex items-center gap-1.5">
+                            <div className={`w-2 h-2 rounded-full ${isMarketOpen ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                            <span className="text-xs font-medium text-gray-300">
+                                {isMarketOpen ? 'Market Open' : 'Market Closed'}
+                            </span>
+                        </div>
+                        <div className="h-4 w-px bg-border-dark" />
+                        <span className="text-xs font-mono text-gray-400">{currentTime}</span>
+                    </div>
                 </div>
             </div>
         </nav>

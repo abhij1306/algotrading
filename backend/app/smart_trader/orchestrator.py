@@ -10,12 +10,17 @@ import pytz
 from .config import config
 from .stock_scanner import StockScannerAgent
 from .options_scanner import OptionsScannerAgent
-from.decision_agent import DecisionAgent
+from .decision_agent import DecisionAgent
 from .risk_agent import RiskAgent
 from .execution_agent import ExecutionAgent
 from .journal_agent import JournalAgent
 from .groq_client import get_groq_client
 from .utils import is_market_open, is_market_hours
+
+# LLM Agents
+from .llm_signal_agent import LLMSignalAgent
+from .llm_risk_agent import LLMRiskAgent
+from .llm_orchestrator import LLMDecisionOrchestrator
 
 
 class OrchestratorAgent:
@@ -29,7 +34,7 @@ class OrchestratorAgent:
         self.config_obj = config if custom_config is None else custom_config
         self.config = self.config_obj.config if hasattr(self.config_obj, 'config') else self.config_obj
         
-        # Initialize all agents
+        # Initialize core agents
         self.journal_agent = JournalAgent(self.config)
         self.stock_scanner = StockScannerAgent(self.config)
         self.options_scanner = OptionsScannerAgent(self.config)
@@ -37,6 +42,28 @@ class OrchestratorAgent:
         self.risk_agent = RiskAgent(self.config, journal_agent=self.journal_agent)
         self.execution_agent = ExecutionAgent(self.config, journal_agent=self.journal_agent)
         self.groq_client = get_groq_client(self.config.get('groq', {}))
+        
+        # Initialize LLM agents (if enabled in config)
+        llm_config = self.config.get('llm', {})
+        self.llm_enabled = llm_config.get('signal_enhancement', False)
+        
+        if self.llm_enabled:
+            try:
+                provider = llm_config.get('provider', 'groq')
+                self.llm_signal_agent = LLMSignalAgent(provider=provider)
+                self.llm_risk_agent = LLMRiskAgent(provider=provider)
+                self.llm_decision_orchestrator = LLMDecisionOrchestrator(provider=provider)
+                print("[ORCHESTRATOR] LLM agents initialized successfully")
+            except Exception as e:
+                print(f"[ORCHESTRATOR] Failed to initialize LLM agents: {e}")
+                self.llm_enabled = False
+                self.llm_signal_agent = None
+                self.llm_risk_agent = None
+                self.llm_decision_orchestrator = None
+        else:
+            self.llm_signal_agent = None
+            self.llm_risk_agent = None
+            self.llm_decision_orchestrator = None
         
         # State management
         self.is_running = False
@@ -163,13 +190,44 @@ class OrchestratorAgent:
             # 4. Get top candidates
             top_signals = self.decision_agent.get_top_candidates(all_signals, limit=10)
             
-            # 5. Format for display
+            # 5. LLM Enhancement (if enabled)
+            if self.llm_enabled and self.llm_signal_agent:
+                print("  → Enhancing signals with AI...")
+                try:
+                    # Run LLM analysis asynchronously
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    enhanced_signals = loop.run_until_complete(
+                        self.llm_signal_agent.batch_analyze(
+                            signals=top_signals,
+                            market_data=None  # TODO: Add market context
+                        )
+                    )
+                    
+                    loop.close()
+                    
+                    # Replace signals with enhanced versions
+                    top_signals = [s['original_signal'] for s in enhanced_signals]
+                    
+                    # Add LLM analysis to each signal
+                    for i, signal in enumerate(top_signals):
+                        if i < len(enhanced_signals) and enhanced_signals[i].get('llm_analysis'):
+                            signal['llm_analysis'] = enhanced_signals[i]['llm_analysis']
+                            signal['llm_enhanced'] = True
+                    
+                    print(f"  ✓ AI enhancement complete")
+                except Exception as e:
+                    print(f"  ⚠ AI enhancement failed: {e}")
+            
+            # 6. Format for display
             new_signals = [
                 self.decision_agent.format_for_display(signal)
                 for signal in top_signals
             ]
             
-            # 6. Append new signals to existing ones (don't replace!)
+            # 7. Append new signals to existing ones (don't replace!)
             # Deduplicate based on symbol + direction to avoid duplicates
             existing_keys = {(s['symbol'], s['direction']) for s in self.current_signals}
             for signal in new_signals:
@@ -180,7 +238,7 @@ class OrchestratorAgent:
             
             self.last_scan_time = datetime.now()
             
-            # 7. Save ALL signals to history (not just new ones)
+            # 8. Save ALL signals to history (not just new ones)
             try:
                 from .signal_history import get_signal_history_service
                 history_service = get_signal_history_service()
@@ -205,6 +263,7 @@ class OrchestratorAgent:
             
         except Exception as e:
             print(f"Error in scan cycle: {e}")
+            import traceback
             traceback.print_exc()
     
     def trigger_scan_cycle(self):

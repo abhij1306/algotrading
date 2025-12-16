@@ -20,12 +20,18 @@ interface Position {
     current_price: number;
     pnl: number;
     pnl_pct: number;
+    source?: 'MANUAL' | 'AGENT';  // Add source tracking
 }
 
 export default function Terminal() {
     const [tradingMode, setTradingMode] = useState<'PAPER' | 'LIVE'>('PAPER');
     const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-    const [positions, setPositions] = useState<Position[]>([]);
+    const [positions, setPositions] = useState<Position[]>([]);  // Manual positions
+    const [agentPositions, setAgentPositions] = useState<Position[]>([]);  // Agent positions
+    const [agentPnL, setAgentPnL] = useState(0);
+    const [showAgentTrades, setShowAgentTrades] = useState(true);
+    const [showManualTrades, setShowManualTrades] = useState(true);
+
     const [selectedSymbol, setSelectedSymbol] = useState<string>('');
     const [selectedInstrumentType, setSelectedInstrumentType] = useState<'EQ' | 'FUT' | 'CE' | 'PE'>('EQ');
     const [selectedLTP, setSelectedLTP] = useState(0);
@@ -39,6 +45,8 @@ export default function Terminal() {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+    const [showOrderModal, setShowOrderModal] = useState(false);
+
 
     // Load watchlist from localStorage
     useEffect(() => {
@@ -118,6 +126,46 @@ export default function Terminal() {
             }
         }
     }, [watchlist, selectedSymbol, selectedInstrumentType]);
+
+    // Fetch agent positions from Smart Trader
+    const fetchAgentPositions = async () => {
+        try {
+            const response = await fetch('http://localhost:8000/api/smart-trader/positions');
+            const data = await response.json();
+
+            if (data.positions && Array.isArray(data.positions)) {
+                // Transform agent positions to match Terminal format
+                const transformed = data.positions.map((p: any) => ({
+                    id: p.trade_id || p.id,
+                    symbol: p.symbol,
+                    type: p.side === 'LONG' ? 'BUY' : 'SELL',
+                    quantity: p.quantity,
+                    entry_price: p.entry_price,
+                    current_price: p.current_price || p.entry_price,
+                    pnl: p.unrealized_pnl || 0,
+                    pnl_pct: ((p.unrealized_pnl || 0) / (p.entry_price * p.quantity)) * 100,
+                    source: 'AGENT' as const
+                }));
+
+                setAgentPositions(transformed);
+            }
+
+            // Fetch P&L
+            const pnlResponse = await fetch('http://localhost:8000/api/smart-trader/pnl');
+            const pnlData = await pnlResponse.json();
+            setAgentPnL(pnlData.total_pnl || 0);
+        } catch (error) {
+            console.error('Failed to fetch agent positions:', error);
+            // Don't show error to user, just silently fail
+        }
+    };
+
+    // Fetch agent positions on mount and every 30 seconds
+    useEffect(() => {
+        fetchAgentPositions();
+        const interval = setInterval(fetchAgentPositions, 30000); // Every 30s
+        return () => clearInterval(interval);
+    }, []);
 
     const searchSymbols = async (query: string) => {
         if (query.length < 1) {
@@ -204,9 +252,40 @@ export default function Terminal() {
         }
     };
 
-    const totalPnL = positions.reduce((sum, p) => sum + p.pnl, 0);
+    const closeAgentPosition = async (posId: string) => {
+        try {
+            const response = await fetch('http://localhost:8000/api/smart-trader/close-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trade_id: posId })
+            });
 
-    const [showOrderModal, setShowOrderModal] = useState(false);
+            if (response.ok) {
+                // Refresh agent positions
+                await fetchAgentPositions();
+                alert('Agent position closed successfully');
+            } else {
+                alert('Failed to close agent position');
+            }
+        } catch (error) {
+            console.error('Error closing agent position:', error);
+            alert('Error closing agent position');
+        }
+    };
+
+    // Merge agent and manual positions
+    const allPositions = [
+        ...positions.map(p => ({ ...p, source: 'MANUAL' as const })),
+        ...agentPositions
+    ].filter(p => {
+        if (!showAgentTrades && p.source === 'AGENT') return false;
+        if (!showManualTrades && p.source === 'MANUAL') return false;
+        return true;
+    });
+
+    // Calculate total P&L (manual + agent)
+    const manualPnL = positions.reduce((sum, p) => sum + p.pnl, 0);
+    const totalPnL = manualPnL + agentPnL;
 
     const initiateOrder = (type: 'BUY' | 'SELL', item: WatchlistItem) => {
         selectSymbol(item);
@@ -346,12 +425,36 @@ export default function Terminal() {
                             </button>
                         </div>
 
-                        {/* Total P&L Display */}
-                        <div className="flex items-center gap-2 text-sm">
-                            <span className="text-text-secondary">Total P&L:</span>
-                            <span className={`font-bold ${totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toFixed(2)}
-                            </span>
+                        {/* Total P&L Display and Filters */}
+                        <div className="flex items-center gap-6 text-sm">
+                            <div className="flex items-center gap-2">
+                                <span className="text-text-secondary">Total P&L:</span>
+                                <span className={`font-bold ${totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                    {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toFixed(2)}
+                                </span>
+                            </div>
+
+                            {/* Trade Source Filters */}
+                            <div className="flex items-center gap-3 border-l border-border-dark pl-6">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={showAgentTrades}
+                                        onChange={(e) => setShowAgentTrades(e.target.checked)}
+                                        className="w-4 h-4 accent-purple-500"
+                                    />
+                                    <span className="text-text-secondary text-xs">Agent</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={showManualTrades}
+                                        onChange={(e) => setShowManualTrades(e.target.checked)}
+                                        className="w-4 h-4 accent-primary"
+                                    />
+                                    <span className="text-text-secondary text-xs">Manual</span>
+                                </label>
+                            </div>
                         </div>
                     </div>
 
@@ -376,7 +479,7 @@ export default function Terminal() {
                         )}
 
                         {activeTab === 'positions' && (
-                            positions.length === 0 ? (
+                            allPositions.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center h-full text-center">
                                     <div className="w-16 h-16 bg-card-dark rounded-full flex items-center justify-center mb-4 text-text-secondary">
                                         <LayoutDashboard className="w-8 h-8" />
@@ -398,10 +501,16 @@ export default function Terminal() {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-border-dark">
-                                            {positions.map((pos) => (
+                                            {allPositions.map((pos) => (
                                                 <tr key={pos.id} className="hover:bg-white/5 transition-colors">
                                                     <td className="p-4 font-medium text-white">
-                                                        {pos.symbol} <span className={`text-[10px] ml-2 px-1.5 py-0.5 rounded ${pos.type === 'BUY' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'}`}>{pos.type}</span>
+                                                        {pos.symbol}
+                                                        <span className={`text-[10px] ml-2 px-1.5 py-0.5 rounded ${pos.source === 'AGENT'
+                                                            ? 'bg-purple-500/20 text-purple-400'
+                                                            : pos.type === 'BUY' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'
+                                                            }`}>
+                                                            {pos.source === 'AGENT' ? 'AGENT' : pos.type}
+                                                        </span>
                                                     </td>
                                                     <td className="p-4 text-right text-text-secondary">{pos.quantity}</td>
                                                     <td className="p-4 text-right text-text-secondary">{pos.entry_price.toFixed(2)}</td>
@@ -414,7 +523,7 @@ export default function Terminal() {
                                                     </td>
                                                     <td className="p-4 text-center">
                                                         <button
-                                                            onClick={() => closePosition(pos.id)}
+                                                            onClick={() => pos.source === 'AGENT' ? closeAgentPosition(pos.id) : closePosition(pos.id)}
                                                             className="text-xs bg-background-dark border border-border-dark hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-text-secondary px-3 py-1.5 rounded transition-all"
                                                         >
                                                             Exit

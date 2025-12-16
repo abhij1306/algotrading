@@ -4,26 +4,26 @@ import { useState, useEffect } from 'react';
 import SignalCard from './SignalCard';
 
 interface SmartTraderStatus {
+    success: boolean;
     is_running: boolean;
-    market_open: boolean;
-    last_scan_time: string | null;
-    active_signals: number;
+    signal_count: number;
+    generators: string[];
 }
 
 interface Signal {
     id: string;
-    rank: number;
     symbol: string;
-    instrument_type: string;
     direction: string;
-    momentum_score: number;
-    composite_score: number;
-    confidence: string;
-    entry_price: number;
-    stop_loss: number;
-    target: number;
+    timeframe: string;
+    confluence_count: number;
+    aggregate_strength: number;
+    confidence_level: string;
+    final_confidence: number;
+    signal_families: string[];
+    signal_names: string[];
     reasons: string[];
-    risk_reward_ratio: number;
+    llm_narrative: string | null;
+    risk_flags: string[];
     timestamp: string;
 }
 
@@ -32,13 +32,17 @@ export default function SmartTraderDashboard() {
     const [signals, setSignals] = useState<Signal[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [confidenceFilter, setConfidenceFilter] = useState('ALL');
+    const [familyFilter, setFamilyFilter] = useState('ALL');
 
     // Fetch status
     const fetchStatus = async () => {
         try {
             const res = await fetch('http://localhost:8000/api/smart-trader/status');
             const data = await res.json();
-            setStatus(data);
+            if (data.success) {
+                setStatus(data);
+            }
         } catch (err: any) {
             console.error('Status fetch error:', err);
         }
@@ -47,9 +51,19 @@ export default function SmartTraderDashboard() {
     // Fetch signals
     const fetchSignals = async () => {
         try {
-            const res = await fetch('http://localhost:8000/api/smart-trader/signals');
+            let url = 'http://localhost:8000/api/smart-trader/signals?limit=50';
+            if (confidenceFilter !== 'ALL') {
+                url += `&confidence_level=${confidenceFilter}`;
+            }
+            if (familyFilter !== 'ALL') {
+                url += `&signal_family=${familyFilter}`;
+            }
+
+            const res = await fetch(url);
             const data = await res.json();
-            setSignals(data.signals || []);
+            if (data.success) {
+                setSignals(data.signals || []);
+            }
         } catch (err: any) {
             console.error('Signals fetch error:', err);
         }
@@ -62,16 +76,16 @@ export default function SmartTraderDashboard() {
         try {
             const res = await fetch('http://localhost:8000/api/smart-trader/start', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
+                headers: { 'Content-Type': 'application/json' }
             });
             const data = await res.json();
 
-            if (data.status === 'started' || data.status === 'already_running') {
+            if (data.success) {
                 fetchStatus();
-                fetchSignals();
-            } else if (data.status === 'market_closed') {
-                setError(data.message);
+                // Trigger initial scan
+                await handleManualScan();
+            } else {
+                setError(data.message || 'Failed to start scanner');
             }
         } catch (err: any) {
             setError(err.message);
@@ -91,35 +105,37 @@ export default function SmartTraderDashboard() {
     };
 
     // Execute trade from signal
-    const handleTakeTrade = async (signalId: string, tradeType: string = 'SPOT', optionType?: string) => {
+    const handleTakeTrade = async (signalId: string) => {
         try {
-            const res = await fetch('http://localhost:8000/api/smart-trader/execute-trade', {
+            const res = await fetch(`http://localhost:8000/api/smart-trader/execute/${signalId}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    signal_id: signalId,
-                    trade_type: tradeType,
-                    option_type: optionType
-                })
+                headers: { 'Content-Type': 'application/json' }
             });
             const data = await res.json();
 
-            if (data.status === 'rejected') {
-                alert(`Trade rejected: ${data.message}`);
-            } else if (data.status === 'success') {
-                alert('Trade executed successfully! View in Terminal tab.');
+            if (data.success) {
+                alert(`✅ Trade executed successfully!\n\nTrade ID: ${data.trade_id}\n\nCheck the Terminal tab to see your position.`);
                 fetchStatus();
+                fetchSignals();
+            } else {
+                // Show the actual error message from backend
+                const errorMsg = data.error || data.message || 'Unknown error occurred';
+                alert(`❌ Trade failed:\n\n${errorMsg}`);
             }
         } catch (err: any) {
-            alert(`Trade error: ${err.message}`);
+            console.error('Trade execution error:', err);
+            alert(`❌ Network error:\n\n${err.message || 'Failed to connect to server'}`);
         }
     };
 
     // Manual Scan
     const handleManualScan = async () => {
         try {
-            await fetch('http://localhost:8000/api/smart-trader/scan', { method: 'POST' });
-            setTimeout(fetchSignals, 2000);
+            const res = await fetch('http://localhost:8000/api/smart-trader/scan', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                setTimeout(fetchSignals, 2000);
+            }
         } catch (err: any) {
             console.error('Scan error:', err);
         }
@@ -128,18 +144,46 @@ export default function SmartTraderDashboard() {
     // Poll for updates
     useEffect(() => {
         fetchStatus();
+        fetchSignals();
 
-        const statusInterval = setInterval(() => {
+        const interval = setInterval(() => {
             fetchStatus();
             if (status?.is_running) {
                 fetchSignals();
             }
-        }, 10000);
+        }, 10000); // Poll every 10 seconds
 
-        return () => {
-            clearInterval(statusInterval);
-        };
-    }, [status?.is_running]);
+        return () => clearInterval(interval);
+    }, [confidenceFilter, familyFilter]);
+
+    // Confidence filters
+    const confidenceFilters = [
+        { id: 'ALL', label: 'All Confidence', emoji: '📊' },
+        { id: 'HIGH', label: 'High', emoji: '🟢' },
+        { id: 'MEDIUM', label: 'Medium', emoji: '🟡' },
+        { id: 'LOW', label: 'Low', emoji: '⚪' }
+    ];
+
+    // Signal family filters
+    const familyFilters = [
+        { id: 'ALL', label: 'All Families' },
+        { id: 'MOMENTUM', label: '📈 Momentum' },
+        { id: 'VOLUME', label: '🔊 Volume' },
+        { id: 'RANGE_EXPANSION', label: '📏 Range' },
+        { id: 'REVERSAL', label: '🔄 Reversal' },
+        { id: 'INDEX_ALIGNMENT', label: '📍 Index' }
+    ];
+
+    // Get counts for filters
+    const getConfidenceCount = (level: string) => {
+        if (level === 'ALL') return signals.length;
+        return signals.filter(s => s.confidence_level === level).length;
+    };
+
+    const getFamilyCount = (family: string) => {
+        if (family === 'ALL') return signals.length;
+        return signals.filter(s => s.signal_families.includes(family)).length;
+    };
 
     return (
         <div className="space-y-4">
@@ -147,8 +191,8 @@ export default function SmartTraderDashboard() {
             <div className="bg-gradient-to-r from-card-dark via-card-dark to-primary/5 rounded-xl border border-border-dark p-4">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h2 className="text-xl font-bold text-white">Trading Signals</h2>
-                        <p className="text-xs opacity-60">AI-Powered Market Opportunities</p>
+                        <h2 className="text-xl font-bold text-white">Smart Trader</h2>
+                        <p className="text-xs opacity-60">Deterministic Signals + LLM Enhancement</p>
                     </div>
 
                     {/* Stats Row */}
@@ -157,36 +201,88 @@ export default function SmartTraderDashboard() {
                             <>
                                 <div className="text-center">
                                     <div className="text-xs opacity-60">Active Signals</div>
-                                    <div className="font-bold text-primary">{signals.length}</div>
+                                    <div className="font-bold text-primary">{status.signal_count}</div>
                                 </div>
                                 <div className="text-center">
-                                    <div className="text-xs opacity-60">Market</div>
-                                    <div className={`font-bold ${status.market_open ? 'text-green-400' : 'text-red-400'}`}>
-                                        {status.market_open ? '🟢 OPEN' : '🔴 CLOSED'}
-                                    </div>
+                                    <div className="text-xs opacity-60">Generators</div>
+                                    <div className="font-bold text-white">{status.generators.length}</div>
                                 </div>
                             </>
                         )}
 
-                        {/* Single Start/Stop Button */}
+                        {/* Start/Stop Button */}
                         <div className="flex items-center gap-2">
                             {!status?.is_running ? (
                                 <button
-                                    onClick={() => { handleStart(); handleManualScan(); }}
+                                    onClick={handleStart}
                                     disabled={loading}
                                     className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
                                 >
                                     {loading ? 'Starting...' : '▶ Start Scanner'}
                                 </button>
                             ) : (
-                                <button
-                                    onClick={handleStop}
-                                    className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
-                                >
-                                    ⏹ Stop Scanner
-                                </button>
+                                <>
+                                    <button
+                                        onClick={handleManualScan}
+                                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                                    >
+                                        🔄 Scan Now
+                                    </button>
+                                    <button
+                                        onClick={handleStop}
+                                        className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                                    >
+                                        ⏹ Stop
+                                    </button>
+                                </>
                             )}
                         </div>
+                    </div>
+                </div>
+
+                {/* Confidence Level Filters */}
+                <div className="mt-4">
+                    <div className="text-xs font-medium text-gray-400 mb-2">Confidence Level</div>
+                    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                        {confidenceFilters.map(filter => (
+                            <button
+                                key={filter.id}
+                                onClick={() => setConfidenceFilter(filter.id)}
+                                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors flex items-center gap-2 ${confidenceFilter === filter.id
+                                    ? 'bg-primary text-white'
+                                    : 'bg-white/5 text-gray-400 hover:bg-white/10'
+                                    }`}
+                            >
+                                {filter.emoji} {filter.label}
+                                <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${confidenceFilter === filter.id ? 'bg-white/20' : 'bg-black/20'
+                                    }`}>
+                                    {getConfidenceCount(filter.id)}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Signal Family Filters */}
+                <div className="mt-3">
+                    <div className="text-xs font-medium text-gray-400 mb-2">Signal Family</div>
+                    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                        {familyFilters.map(filter => (
+                            <button
+                                key={filter.id}
+                                onClick={() => setFamilyFilter(filter.id)}
+                                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors flex items-center gap-2 ${familyFilter === filter.id
+                                    ? 'bg-primary text-white'
+                                    : 'bg-white/5 text-gray-400 hover:bg-white/10'
+                                    }`}
+                            >
+                                {filter.label}
+                                <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${familyFilter === filter.id ? 'bg-white/20' : 'bg-black/20'
+                                    }`}>
+                                    {getFamilyCount(filter.id)}
+                                </span>
+                            </button>
+                        ))}
                     </div>
                 </div>
 

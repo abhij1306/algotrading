@@ -10,6 +10,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import Navbar from '../components/Navbar';
 import SmartTraderDashboard from '../components/smart-trader/SmartTraderDashboard';
 import Terminal from '../components/Terminal';
+import NewsTicker from '../components/NewsTicker';
 
 // Types
 interface Stock {
@@ -21,8 +22,7 @@ interface Stock {
   atr_pct: number
   rsi: number
   vol_percentile: number
-  change_pct?: number  // For live price % change
-  // Removed score, is_20d_breakout might strictly not be needed if not in API, but let's keep it safe
+  change_pct?: number
 }
 
 interface FinancialRecord {
@@ -56,9 +56,12 @@ export default function MacOSPage() {
   const [selectedSector, setSelectedSector] = useState('all')
   const [availableSectors, setAvailableSectors] = useState<string[]>([])
 
+  // Scanner Filter State
+  const [scannerFilter, setScannerFilter] = useState('ALL')
+
   // Pagination State
   const [page, setPage] = useState(1)
-  const [limit] = useState(50) // Reduced from 100 for faster loading
+  const [limit] = useState(50)
   const [totalRecords, setTotalRecords] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
 
@@ -86,12 +89,6 @@ export default function MacOSPage() {
     }
   }, [])
 
-  const toggleTheme = () => {
-    const newMode = !isDark
-    setIsDark(newMode)
-    document.body.classList.toggle('dark', newMode)
-  }
-
   // Clock effect
   useEffect(() => {
     const timer = setInterval(() => {
@@ -106,7 +103,7 @@ export default function MacOSPage() {
 
   // Fetch sectors for filter
   useEffect(() => {
-    fetch('http://localhost:8000/api/sectors/list')
+    fetch('http://localhost:8000/api/sectors')
       .then(res => res.json())
       .then(data => setAvailableSectors(data.sectors || []))
       .catch(err => console.error('Failed to fetch sectors:', err))
@@ -158,8 +155,20 @@ export default function MacOSPage() {
     setLoading(true)
     try {
       if (mainTab === 'screener') {
-        const endpoint = screenerTab === 'technicals' ? '/api/screener' : '/api/screener/financials'
+        // Determine endpoint based on filter
+        let endpoint = screenerTab === 'technicals' ? '/api/screener' : '/api/screener/financials'
+
+        // If scanner filter is active, use trending endpoint instead
+        if (scannerFilter !== 'ALL') {
+          endpoint = '/api/screener/trending'
+        }
+
         let url = `http://localhost:8000${endpoint}?page=${page}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`
+
+        // Add scanner filter type if active
+        if (scannerFilter !== 'ALL') {
+          url += `&filter_type=${scannerFilter}`
+        }
 
         // Add symbol filter if selected
         if (selectedSymbol) {
@@ -175,12 +184,12 @@ export default function MacOSPage() {
         const json = await res.json()
 
         if (json.data) {
-          if (screenerTab === 'technicals') {
+          if (screenerTab === 'technicals' || scannerFilter !== 'ALL') {
+            // Both normal technicals and scanner filters use the stocks array
             setStocks(json.data)
           } else {
             setFinancials(json.data)
           }
-          // Backend returns 'meta' not 'metadata'
           if (json.meta) {
             setTotalRecords(json.meta.total || 0)
             setTotalPages(json.meta.total_pages || 0)
@@ -196,7 +205,7 @@ export default function MacOSPage() {
 
   useEffect(() => {
     fetchData()
-  }, [mainTab, screenerTab, page, sortBy, sortOrder, selectedSymbol, selectedSector])
+  }, [mainTab, screenerTab, page, sortBy, sortOrder, selectedSymbol, selectedSector, scannerFilter])
 
   // Live price updates for screener
   useEffect(() => {
@@ -206,14 +215,11 @@ export default function MacOSPage() {
 
     const updateLivePrices = async () => {
       try {
-        // Get symbols from current stocks
         const symbols = stocks.map(s => s.symbol).join(',')
-
         const res = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbols}`)
         const data = await res.json()
 
         if (data.quotes) {
-          // Update stocks with live prices
           setStocks(prevStocks =>
             prevStocks.map(stock => {
               const liveData = data.quotes[stock.symbol]
@@ -232,15 +238,10 @@ export default function MacOSPage() {
         console.error('Failed to fetch live prices:', err)
       }
     }
-
-    // Update immediately
     updateLivePrices()
-
-    // Then update every 5 seconds
     const interval = setInterval(updateLivePrices, 5000)
-
     return () => clearInterval(interval)
-  }, [mainTab, screenerTab, stocks.length])
+  }, [mainTab, screenerTab, stocks.length, scannerFilter])
 
   // Pagination Handler
   const handlePageChange = (newPage: number) => {
@@ -268,26 +269,18 @@ export default function MacOSPage() {
     setUploading(true)
     const formData = new FormData()
 
-    // Append all selected files with the key 'files' (must match backend argument name)
     Array.from(files).forEach((file) => {
       formData.append('files', file)
-      console.log(`Adding file: ${file.name}, size: ${file.size}`)
     })
 
     try {
-      console.log('Uploading to:', 'http://localhost:8000/api/upload/bulk-financials')
       const res = await fetch('http://localhost:8000/api/upload/bulk-financials', {
         method: 'POST',
         body: formData
       })
 
-      console.log('Response status:', res.status)
-
       if (res.ok) {
         const data = await res.json()
-        console.log('Upload response:', data)
-
-        // Show detailed message
         let message = data.message
         if (data.summary) {
           if (data.summary.symbols_updated && data.summary.symbols_updated.length > 0) {
@@ -297,17 +290,10 @@ export default function MacOSPage() {
             message += `\n\nNot in database: ${data.summary.symbols_not_found.join(', ')}`
           }
         }
-
         alert(message)
-
-        if (data.errors && data.errors.length > 0) {
-          console.warn('Upload warnings:', data.errors)
-        }
-
-        fetchData() // Refresh data
+        fetchData()
       } else {
         const errorText = await res.text()
-        console.error('Upload failed:', errorText)
         try {
           const err = JSON.parse(errorText)
           alert('Upload failed: ' + (err.detail || 'Unknown error'))
@@ -350,6 +336,7 @@ export default function MacOSPage() {
           <tr>
             <Th field="symbol" label="SYMBOL" align="left" />
             <Th field="close" label="LTP" />
+            <Th field="change_pct" label="CHANGE %" />
             <Th field="volume" label="VOLUME" />
             <Th field="ema20" label="EMA 20" />
             <Th field="ema50" label="EMA 50" />
@@ -363,7 +350,8 @@ export default function MacOSPage() {
             Array.from({ length: 10 }).map((_, i) => (
               <tr key={i} className="animate-pulse">
                 <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
-                <td className="px-6 py-4."><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
+                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
                 <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
                 <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
                 <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
@@ -381,31 +369,33 @@ export default function MacOSPage() {
                 <tr key={stock.symbol} className={`group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300 ${rowColor}`}>
                   <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
                   <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
-                      <span>{stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}</span>
-                      {stock.change_pct !== undefined && stock.change_pct !== 0 && (
-                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: stock.change_pct > 0 ? '#4ade80' : '#f87171' }}>
-                          ({stock.change_pct > 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%)
-                        </span>
-                      )}
-                    </div>
+                    {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
+                  </td>
+                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm">
+                    {stock.change_pct !== undefined && stock.change_pct !== 0 ? (
+                      <span className={`font-bold ${stock.change_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {stock.change_pct > 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
+                      </span>
+                    ) : (
+                      <span className="opacity-40">-</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
                     {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
                   </td>
-                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20.toFixed(2)}</td>
-                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50.toFixed(2)}</td>
+                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20?.toFixed(2) ?? '-'}</td>
+                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50?.toFixed(2) ?? '-'}</td>
                   <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                    <span className={`${stock.atr_pct > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
-                      {stock.atr_pct.toFixed(2)}%
+                    <span className={`${(stock.atr_pct ?? 0) > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
+                      {stock.atr_pct?.toFixed(2) ?? '-'}%
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                    <span className={`${stock.rsi > 70 ? 'text-purple-500 font-bold' : stock.rsi < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
-                      {stock.rsi.toFixed(1)}
+                    <span className={`${(stock.rsi ?? 50) > 70 ? 'text-purple-500 font-bold' : (stock.rsi ?? 50) < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
+                      {stock.rsi?.toFixed(1) ?? '-'}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile)}%</td>
+                  <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile ?? 0)}%</td>
                 </tr>
               );
             })
@@ -466,8 +456,6 @@ export default function MacOSPage() {
                 </td>
                 <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
                   {(() => {
-                    // EV/EBITDA = (Market Cap + Debt) / EBITDA
-                    // Using Net Income as EBITDA proxy
                     const ev = (stock.market_cap || 0) + ((stock.debt_to_equity || 0) * (stock.market_cap || 0) / 100);
                     const ebitda = stock.net_income || 0;
                     const evEbitda = ebitda > 0 ? ev / ebitda : 0;
@@ -485,15 +473,13 @@ export default function MacOSPage() {
     </div>
   )
 
+  // Removed renderTrending - scanner filters now use the same technicals table
+
   return (
     <div className="min-h-screen bg-background-dark text-white font-sans transition-colors duration-300">
       <Navbar activeTab={mainTab} onTabChange={setMainTab} />
 
       <div className="max-w-[1920px] mx-auto px-6 py-6">
-
-
-
-
         {/* Content */}
         {
           mainTab === 'screener' ? (
@@ -503,7 +489,7 @@ export default function MacOSPage() {
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold opacity-60">FILTERS</h3>
                   <button
-                    onClick={() => { setSelectedSector('all'); setSelectedSymbol(''); setSearchQuery(''); }}
+                    onClick={() => { setSelectedSector('all'); setSelectedSymbol(''); setSearchQuery(''); setScannerFilter('ALL'); }}
                     className="text-xs text-primary hover:text-white transition-colors"
                   >
                     Reset
@@ -561,7 +547,6 @@ export default function MacOSPage() {
                       value={selectedSector}
                       onChange={(e) => { setSelectedSector(e.target.value); setPage(1); }}
                       className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary-purple transition-colors"
-                      aria-label="Filter by sector"
                     >
                       <option value="all">All Sectors</option>
                       {availableSectors.map((sector: string) => (
@@ -570,13 +555,32 @@ export default function MacOSPage() {
                     </select>
                   </div>
 
-                  {/* Mock Price Range Filter */}
+                  {/* Scanner Filter - New! */}
                   <div>
-                    <label className="block text-xs font-medium opacity-60 mb-2">Price Range</label>
-                    <div className="flex items-center gap-2">
-                      <input id="price-min" name="price-min" type="number" placeholder="Min" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" aria-label="Minimum price" />
-                      <span className="opacity-40">-</span>
-                      <input id="price-max" name="price-max" type="number" placeholder="Max" className="w-1/2 px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-xs" aria-label="Maximum price" />
+                    <label className="block text-xs font-medium opacity-60 mb-2">Market Scans</label>
+                    <select
+                      id="scanner-filter"
+                      name="scanner-filter"
+                      value={scannerFilter}
+                      onChange={(e) => { setScannerFilter(e.target.value); setPage(1); }}
+                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
+                    >
+                      <option value="ALL">Default View</option>
+                      <option value="VOLUME_SHOCKER">🔥 Volume Shockers</option>
+                      <option value="PRICE_SHOCKER">🚀 Price Shockers</option>
+                      <option value="52W_HIGH">📈 52 Week High</option>
+                      <option value="52W_LOW">📉 52 Week Low</option>
+                    </select>
+                    <div className="mt-2 text-[10px] text-gray-500 leading-tight">
+                      Showing real-time signals from Smart Trader algorithms.
+                    </div>
+                  </div>
+
+                  {/* News Ticker */}
+                  <div>
+                    <h3 className="text-xs font-medium opacity-60 mb-2">Market News</h3>
+                    <div className="h-[400px] overflow-hidden rounded-lg bg-background-dark/50 border border-border-dark/50 p-1">
+                      <NewsTicker />
                     </div>
                   </div>
                 </div>
@@ -584,106 +588,121 @@ export default function MacOSPage() {
 
               {/* Main Content */}
               <div className="col-span-9 space-y-4">
-                {/* Sub-Tabs & Actions */}
-                <div className="flex items-center justify-between bg-card-dark rounded-xl border border-border-dark p-2">
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => { setScreenerTab('technicals'); setPage(1); }}
-                      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'technicals' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
-                    >
-                      Technicals
-                    </button>
-                    <button
-                      onClick={() => { setScreenerTab('financials'); setPage(1); }}
-                      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'financials' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
-                    >
-                      Financials
-                    </button>
-                  </div>
+                {/* Sub-Tabs & Actions (only if Scanner not active) */}
+                {scannerFilter === 'ALL' && (
+                  <div className="flex items-center justify-between bg-card-dark rounded-xl border border-border-dark p-2">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => { setScreenerTab('technicals'); setPage(1); }}
+                        className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'technicals' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
+                      >
+                        Technicals
+                      </button>
+                      <button
+                        onClick={() => { setScreenerTab('financials'); setPage(1); }}
+                        className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'financials' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
+                      >
+                        Financials
+                      </button>
+                    </div>
 
-                  {screenerTab === 'financials' && (
-                    <label className={`
-                       flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
-                       ${uploading ? 'bg-background-dark opacity-50 cursor-wait' : 'bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20'}
-                    `}>
-                      {uploading ? 'Uploading...' : 'Upload Excel(s)'}
-                      <input
-                        type="file"
-                        accept=".xlsx, .xls, .csv"
-                        multiple
-                        className="hidden"
-                        onChange={handleFileUpload}
-                        disabled={uploading}
-                      />
-                    </label>
-                  )}
-                </div>
+                    {screenerTab === 'financials' && (
+                      <label className={`
+                         flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
+                         ${uploading ? 'bg-background-dark opacity-50 cursor-wait' : 'bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20'}
+                      `}>
+                        {uploading ? 'Uploading...' : 'Upload Excel(s)'}
+                        <input
+                          type="file"
+                          accept=".xlsx, .xls, .csv"
+                          multiple
+                          className="hidden"
+                          onChange={handleFileUpload}
+                          disabled={uploading}
+                        />
+                      </label>
+                    )}
+                  </div>
+                )}
+
+                {scannerFilter !== 'ALL' && (
+                  <div className="bg-gradient-to-r from-purple-900/20 to-blue-900/20 rounded-xl border border-purple-500/30 p-4 flex justify-between items-center">
+                    <div>
+                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                        {scannerFilter === 'VOLUME_SHOCKER' && '🔥 Volume Shockers'}
+                        {scannerFilter === 'PRICE_SHOCKER' && '🚀 Price Shockers'}
+                        {scannerFilter === '52W_HIGH' && '📈 52 Week High Breakouts'}
+                        {scannerFilter === '52W_LOW' && '📉 52 Week Low Breakdowns'}
+                      </h3>
+                      <p className="text-xs text-gray-400">Real-time opportunities detected by Smart Trader</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-2xl font-bold font-mono">{totalRecords}</span>
+                      <span className="text-xs text-gray-400 block">Active Signals</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Active Filters Row */}
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="opacity-60">Results:</span>
-                  <span className="text-white font-medium">{totalRecords} stocks</span>
-                  {selectedSector !== 'all' && <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/20">Sector: {selectedSector}</span>}
-                </div>
+                {scannerFilter === 'ALL' && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="opacity-60">Results:</span>
+                    <span className="text-white font-medium">{totalRecords} stocks</span>
+                    {selectedSector !== 'all' && <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/20">Sector: {selectedSector}</span>}
+                  </div>
+                )}
 
                 {/* DATA TABLE CONTAINER */}
                 <div className="bg-card-dark rounded-xl border border-border-dark overflow-hidden flex flex-col shadow-lg shadow-black/20" style={{ minHeight: '600px' }}>
                   <div className="flex-grow overflow-auto">
                     {screenerTab === 'technicals' ? renderTechnicals() : renderFinancials()}
                   </div>
-                  {/* Pagination Controls */}
-                  <div className="flex items-center justify-between p-4 border-t border-border-dark bg-card-dark">
-                    <span className="text-sm opacity-60">
-                      Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handlePageChange(page - 1)}
-                        disabled={page <= 1}
-                        className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      >
-                        Previous
-                      </button>
-                      <span className="text-sm font-medium px-2">
-                        Page {page} of {totalPages}
+
+                  {/* Pagination Controls - Hide for signals as we show all */}
+                  {scannerFilter === 'ALL' && (
+                    <div className="flex items-center justify-between p-4 border-t border-border-dark bg-card-dark">
+                      <span className="text-sm opacity-60">
+                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
                       </span>
-                      <button
-                        onClick={() => handlePageChange(page + 1)}
-                        disabled={page >= totalPages}
-                        className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      >
-                        Next
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handlePageChange(page - 1)}
+                          disabled={page <= 1}
+                          className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Previous
+                        </button>
+                        <span className="text-sm font-medium px-2">
+                          Page {page} of {totalPages}
+                        </span>
+                        <button
+                          onClick={() => handlePageChange(page + 1)}
+                          disabled={page >= totalPages}
+                          className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Next
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
             </div>
           ) : mainTab === 'portfolio' ? (
             <div className="animate-in fade-in slide-in-from-bottom-4">
-              {/* Portfolio Risk Tab Content */}
               <PortfolioRiskTab />
             </div>
           ) : mainTab === 'strategies' ? (
             <div className="animate-in fade-in slide-in-from-bottom-4">
-              {/* Strategies Tab Content */}
               <StrategiesTab />
             </div>
           ) : mainTab === 'signals' ? (
             <div className="animate-in fade-in slide-in-from-bottom-4">
-              {/* Signals Tab Content */}
               <SignalsTab />
             </div>
-          ) : (
-            <div className="animate-in fade-in slide-in-from-bottom-4">
-              {/* Terminal Tab Content */}
-              <TerminalTab />
-            </div>
-          )
-        }
-
-      </div >
-    </div >
+          ) : null}
+      </div>
+    </div>
   )
 }
 
@@ -696,6 +715,7 @@ function SignalsTab() {
 function TerminalTab() {
   return <Terminal />;
 }
+
 
 // Portfolio Risk Tab Component - Now Using Unified Interface
 function PortfolioRiskTab() {
@@ -769,36 +789,31 @@ function StrategiesTab() {
         {isRunning && (
           <div className="h-full flex items-center justify-center">
             <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-              <p className="opacity-60">Running strategy backtest...</p>
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary mx-auto mb-4"></div>
+              <p className="text-gray-400">Running Backtest Strategy...</p>
             </div>
           </div>
+        )}
+
+        {!isRunning && backtestResults && (
+          <>
+            <div className="grid grid-cols-3 gap-6">
+              <PerformanceMetrics metrics={backtestResults.metrics} />
+              <div className="col-span-2">
+                <EquityCurve data={backtestResults.equity_curve} />
+              </div>
+            </div>
+            <TradesTable trades={backtestResults.trades} />
+          </>
         )}
 
         {!isRunning && !backtestResults && !error && (
-          <div className="h-full flex items-center justify-center opacity-40">
+          <div className="h-full flex items-center justify-center text-gray-500">
             <div className="text-center">
-              <div className="text-6xl mb-4">🚀</div>
-              <p>Select settings and run backtest</p>
+              <div className="text-4xl mb-2">📊</div>
+              <p>Select a strategy and parameters to begin backtesting</p>
             </div>
           </div>
-        )}
-
-        {backtestResults && !isRunning && (
-          <>
-            {/* Performance KPIs */}
-            <PerformanceMetrics results={backtestResults} />
-
-            {/* Equity Curve */}
-            {backtestResults.equity_curve && (
-              <EquityCurve equityCurve={backtestResults.equity_curve} initialCapital={backtestResults.initial_capital} />
-            )}
-
-            {/* Trades Table */}
-            {backtestResults.trades && (
-              <TradesTable trades={backtestResults.trades} />
-            )}
-          </>
         )}
       </div>
     </div>

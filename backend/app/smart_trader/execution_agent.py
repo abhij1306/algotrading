@@ -208,19 +208,26 @@ class ExecutionAgent:
         
         return False, ''
     
-    def close_position(self, trade_id: str, exit_price: float, exit_reason: str = 'Manual Exit'):
+    def close_position(self, trade_id: str, exit_price: float = None, exit_reason: str = 'Manual Exit'):
         """
         Close an open position
         
         Args:
             trade_id: Trade ID
-            exit_price: Exit price
+            exit_price: Exit price (if None, use current entry price)
             exit_reason: Reason for exit
+            
+        Returns:
+            Result dict with success status
         """
         if trade_id not in self.open_positions:
-            return
+            return {'success': False, 'error': 'Position not found'}
         
         position = self.open_positions[trade_id]
+        
+        # Use entry price if exit price not provided
+        if exit_price is None:
+            exit_price = position['entry_price']
         
         # Apply slippage to exit
         direction = position['direction']
@@ -250,20 +257,70 @@ class ExecutionAgent:
         
         # Remove from open positions
         del self.open_positions[trade_id]
+        
+        return {
+            'success': True,
+            'trade_id': trade_id,
+            'pnl': round(pnl, 2),
+            'exit_price': round(filled_exit_price, 2)
+        }
     
     def get_open_positions(self) -> list:
-        """Get all open positions"""
-        return list(self.open_positions.values())
+        """Get all open positions formatted for Terminal"""
+        positions = []
+        for trade_id, pos in self.open_positions.items():
+            positions.append({
+                'trade_id': trade_id,
+                'symbol': pos['symbol'],
+                'side': pos['direction'],
+                'quantity': pos['quantity'],
+                'entry_price': pos['entry_price'],
+                'current_price': pos.get('current_price', pos['entry_price']),
+                'unrealized_pnl': pos.get('pnl', 0),
+                'status': pos['status']
+            })
+        return positions
+    
+    def get_pnl_summary(self) -> dict:
+        """Get P&L summary for Terminal"""
+        total_pnl = sum(pos.get('pnl', 0) for pos in self.open_positions.values())
+        return {
+            'total_pnl': total_pnl,
+            'open_positions': len(self.open_positions),
+            'realized_pnl': 0  # Would need to track closed positions
+        }
+    
+    def execute_paper_trade(self, trade_setup) -> dict:
+        """Execute paper trade from TradeSetup object"""
+        # Convert TradeSetup to signal format
+        signal = {
+            'symbol': trade_setup.symbol,
+            'direction': trade_setup.direction.value,
+            'entry_price': trade_setup.entry_price,
+            'stop_loss': trade_setup.stop_loss,
+            'target': trade_setup.target,
+            'instrument_type': 'EQ',
+            'reasons': []
+        }
+        
+        # Create risk approval
+        risk_approval = {
+            'approved': True,
+            'qty': trade_setup.quantity
+        }
+        
+        return self.execute_trade(signal, risk_approval)
     
     def close_all_positions(self, current_prices: Dict[str, float], reason: str = 'Market Close'):
         """Close all open positions (e.g., at market close)"""
         for trade_id, position in list(self.open_positions.items()):
             symbol = position['symbol']
             current_price = current_prices.get(symbol, position['entry_price'])
-            self.close_position(trade_id, current_price, reason)
+            result = self.close_position(trade_id, current_price, reason)
     
     def _load_open_positions(self):
         """Load open positions from journal agent"""
         if self.journal_agent:
             self.open_positions = self.journal_agent.open_trades.copy()
             print(f"[EXECUTION] Loaded {len(self.open_positions)} open positions from journal")
+

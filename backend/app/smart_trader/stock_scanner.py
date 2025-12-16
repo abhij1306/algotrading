@@ -16,9 +16,9 @@ class StockScannerAgent:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.universe = self._get_universe()
-        self.min_momentum_score = config.get('scanner', {}).get('min_momentum_score', 40)  # Lowered to 40 for testing
-        self.min_volume_percentile = config.get('scanner', {}).get('min_volume_percentile', 50)  # Lowered to 50
-        self.min_atr_pct = config.get('scanner', {}).get('min_atr_pct', 1.0)  # Lowered to 1.0
+        self.min_momentum_score = config.get('scanner', {}).get('min_momentum_score', 25)  # Lowered to 25 for more signals
+        self.min_volume_percentile = config.get('scanner', {}).get('min_volume_percentile', 40)  # Lowered to 40
+        self.min_atr_pct = config.get('scanner', {}).get('min_atr_pct', 0.8)  # Lowered to 0.8
     
     def _get_universe(self) -> List[str]:
         """Get NSE F&O universe"""
@@ -172,33 +172,94 @@ class StockScannerAgent:
         reasons = []
         score = 0
         direction = None
+        signal_type = "MOMENTUM"  # Default type
         
-        # 1. Opening Range Breakout (first 15 minutes = 3 candles of 5-min)
-        opening_range_high = df.head(3)['high'].max()
-        opening_range_low = df.head(3)['low'].min()
+        # Calculate 52-week high/low
+        week_52_high = df['high'].rolling(window=252, min_periods=50).max().iloc[-1]
+        week_52_low = df['low'].rolling(window=252, min_periods=50).min().iloc[-1]
         
-        # LONG Signal Checks
-        if latest['close'] > opening_range_high:
-            reasons.append(f"5m breakout above opening range (₹{opening_range_high:.2f})")
-            score += 20
-            direction = 'LONG'
+        # Calculate volume ratio
+        avg_volume = df['volume'].mean()
+        volume_ratio = latest['volume'] / avg_volume if avg_volume > 0 else 1.0
         
-        # SHORT Signal Checks  
-        elif latest['close'] < opening_range_low:
-            reasons.append(f"5m breakdown below opening range (₹{opening_range_low:.2f})")
-            score += 20
-            direction = 'SHORT'
+        # Calculate price change percentage
+        price_change_pct = ((latest['close'] - prev['close']) / prev['close']) * 100
         
-        # If no breakout, check trend continuation
-        if not direction:
-            if latest['close'] > latest['ema20'] and latest['ema20'] > latest['ema50']:
+        # 1. VOLUME SHOCKER - Unusually high volume (3x+ average)
+        if volume_ratio >= 3.0:
+            signal_type = "VOLUME_SHOCKER"
+            reasons.append(f"🔥 VOLUME SHOCKER: {volume_ratio:.1f}x average volume!")
+            score += 35
+            # Determine direction based on price action
+            if price_change_pct > 0:
                 direction = 'LONG'
-                reasons.append("Uptrend (Price > EMA20 > EMA50)")
-                score += 15
-            elif latest['close'] < latest['ema20'] and latest['ema20'] < latest['ema50']:
+                reasons.append(f"Price up {price_change_pct:+.1f}% with massive volume")
+            else:
                 direction = 'SHORT'
-                reasons.append("Downtrend (Price < EMA20 < EMA50)")
+                reasons.append(f"Price down {price_change_pct:+.1f}% with massive volume")
+        
+        # 2. 52-WEEK HIGH BREAKOUT
+        if latest['close'] >= week_52_high * 0.999:  # Within 0.1% of 52-week high
+            signal_type = "52W_HIGH_BREAKOUT"
+            reasons.append(f"🚀 52-WEEK HIGH BREAKOUT at ₹{week_52_high:.2f}")
+            score += 40
+            direction = 'LONG'
+            if volume_ratio >= 1.5:
+                reasons.append(f"Breakout with {volume_ratio:.1f}x volume confirmation")
                 score += 15
+        
+        # 3. 52-WEEK LOW BREAKDOWN
+        elif latest['close'] <= week_52_low * 1.001:  # Within 0.1% of 52-week low
+            signal_type = "52W_LOW_BREAKDOWN"
+            reasons.append(f"📉 52-WEEK LOW BREAKDOWN at ₹{week_52_low:.2f}")
+            score += 40
+            direction = 'SHORT'
+            if volume_ratio >= 1.5:
+                reasons.append(f"Breakdown with {volume_ratio:.1f}x volume confirmation")
+                score += 15
+        
+        # 4. PRICE SHOCKER - Significant intraday move (5%+)
+        if abs(price_change_pct) >= 5.0 and not signal_type.startswith("52W"):
+            signal_type = "PRICE_SHOCKER"
+            if price_change_pct > 0:
+                reasons.append(f"⚡ PRICE SHOCKER: Up {price_change_pct:+.1f}% today!")
+                direction = 'LONG'
+            else:
+                reasons.append(f"⚡ PRICE SHOCKER: Down {price_change_pct:+.1f}% today!")
+                direction = 'SHORT'
+            score += 30
+            if volume_ratio >= 2.0:
+                reasons.append(f"With {volume_ratio:.1f}x volume surge")
+                score += 15
+        
+        # 5. MOMENTUM SIGNALS (Original logic)
+        if not direction:  # Only check if no special signal detected
+            # Opening Range Breakout
+            opening_range_high = df.head(3)['high'].max()
+            opening_range_low = df.head(3)['low'].min()
+            
+            # LONG Signal Checks
+            if latest['close'] > opening_range_high:
+                reasons.append(f"Breakout above opening range (₹{opening_range_high:.2f})")
+                score += 20
+                direction = 'LONG'
+            
+            # SHORT Signal Checks  
+            elif latest['close'] < opening_range_low:
+                reasons.append(f"Breakdown below opening range (₹{opening_range_low:.2f})")
+                score += 20
+                direction = 'SHORT'
+            
+            # If no breakout, check trend continuation
+            if not direction:
+                if latest['close'] > latest['ema20'] and latest['ema20'] > latest['ema50']:
+                    direction = 'LONG'
+                    reasons.append("Uptrend (Price > EMA20 > EMA50)")
+                    score += 15
+                elif latest['close'] < latest['ema20'] and latest['ema20'] < latest['ema50']:
+                    direction = 'SHORT'
+                    reasons.append("Downtrend (Price < EMA20 < EMA50)")
+                    score += 15
         
         if not direction:
             return None
@@ -246,10 +307,10 @@ class StockScannerAgent:
         stop_loss = calculate_atr_stop_loss(entry_price, atr, direction, multiplier=1.5)
         target = calculate_target(entry_price, stop_loss, risk_reward_ratio=1.5)
         
-        # Determine confidence level
-        if score >= 80:
+        # Determine confidence level (more granular)
+        if score >= 75:
             confidence = "HIGH"
-        elif score >= 65:
+        elif score >= 50:
             confidence = "MEDIUM"
         else:
             confidence = "LOW"
@@ -257,6 +318,7 @@ class StockScannerAgent:
         return {
             'instrument_type': 'STOCK',
             'symbol': symbol,
+            'signal_type': signal_type,  # NEW: Type of signal
             'direction': direction,
             'timeframe': '5m',
             'momentum_score': min(score, 100),  # Cap at 100

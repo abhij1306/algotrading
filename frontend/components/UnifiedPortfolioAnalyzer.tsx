@@ -11,6 +11,8 @@ interface Position {
     investedValue: number;
     quantity?: number;
     avgBuyPrice?: number;
+    currentPrice?: number;
+    currentValue?: number;
 }
 
 export default function UnifiedPortfolioAnalyzer() {
@@ -34,6 +36,7 @@ export default function UnifiedPortfolioAnalyzer() {
     const [viewMode, setViewMode] = useState<'edit' | 'analysis'>('edit'); // Replaces showInput
     const [portfolioId, setPortfolioId] = useState<number | null>(null);
     const [riskAnalysis, setRiskAnalysis] = useState<any>(null);
+    const [livePrices, setLivePrices] = useState<Record<string, number>>({});
 
     // Search symbols
     const searchSymbols = async (query: string) => {
@@ -205,7 +208,46 @@ export default function UnifiedPortfolioAnalyzer() {
         }
     };
 
+    // Fetch live prices for positions
+    useEffect(() => {
+        if (positions.length === 0) return;
+
+        const fetchLivePrices = async () => {
+            try {
+                const symbols = positions.map(p => p.symbol).join(',');
+                const response = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbols}`);
+                const data = await response.json();
+
+                if (data.quotes) {
+                    const prices: Record<string, number> = {};
+                    Object.entries(data.quotes).forEach(([symbol, quote]: [string, any]) => {
+                        if (quote.ltp) {
+                            prices[symbol] = quote.ltp;
+                        }
+                    });
+                    setLivePrices(prices);
+                }
+            } catch (err) {
+                console.error('Failed to fetch live prices:', err);
+            }
+        };
+
+        fetchLivePrices();
+        const interval = setInterval(fetchLivePrices, 10000); // Update every 10 seconds
+
+        return () => clearInterval(interval);
+    }, [positions]);
+
     const totalInvested = positions.reduce((sum, p) => sum + p.investedValue, 0);
+    const totalCurrentValue = positions.reduce((sum, p) => {
+        const currentPrice = livePrices[p.symbol];
+        if (currentPrice && p.quantity) {
+            return sum + (currentPrice * p.quantity);
+        }
+        return sum + p.investedValue; // Fallback to invested value if no live price
+    }, 0);
+    const totalPnL = totalCurrentValue - totalInvested;
+    const totalReturn = totalInvested > 0 ? (totalPnL / totalInvested * 100) : 0;
 
     return (
         <div className="min-h-screen bg-background-dark text-white font-sans">
@@ -363,9 +405,19 @@ export default function UnifiedPortfolioAnalyzer() {
                             <span className="text-sm opacity-60">Total Positions</span>
                             <span className="font-bold">{positions.length}</span>
                         </div>
-                        <div className="flex justify-between items-center mb-4">
+                        <div className="flex justify-between items-center mb-2">
                             <span className="text-sm opacity-60">Total Invested</span>
                             <span className="font-bold text-primary">₹{totalInvested.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center mb-2">
+                            <span className="text-sm opacity-60">Current Value</span>
+                            <span className="font-bold text-white">₹{totalCurrentValue.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center mb-4">
+                            <span className="text-sm opacity-60">Total P&L</span>
+                            <span className={`font-bold ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toLocaleString()} ({totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%)
+                            </span>
                         </div>
 
                         <button
@@ -418,7 +470,10 @@ export default function UnifiedPortfolioAnalyzer() {
                                                 <th className="py-3 px-6">SYMBOL</th>
                                                 <th className="py-3 px-6 text-right">QTY</th>
                                                 <th className="py-3 px-6 text-right">AVG PRICE</th>
+                                                <th className="py-3 px-6 text-right">CMP</th>
                                                 <th className="py-3 px-6 text-right">INVESTED</th>
+                                                <th className="py-3 px-6 text-right">CURRENT</th>
+                                                <th className="py-3 px-6 text-right">P&L</th>
                                                 <th className="py-3 px-6 text-right">ALLOCATION</th>
                                                 <th className="py-3 px-6"></th>
                                             </tr>
@@ -426,12 +481,31 @@ export default function UnifiedPortfolioAnalyzer() {
                                         <tbody className="divide-y divide-border-dark">
                                             {positions.map((pos, idx) => {
                                                 const allocation = totalInvested > 0 ? (pos.investedValue / totalInvested * 100) : 0;
+                                                const currentPrice = livePrices[pos.symbol];
+                                                const currentValue = currentPrice && pos.quantity ? currentPrice * pos.quantity : pos.investedValue;
+                                                const pnl = currentValue - pos.investedValue;
+                                                const pnlPct = pos.investedValue > 0 ? (pnl / pos.investedValue * 100) : 0;
+
                                                 return (
                                                     <tr key={idx} className="group hover:bg-primary/5 transition-colors">
                                                         <td className="py-3 px-6 font-medium">{pos.symbol}</td>
                                                         <td className="py-3 px-6 text-right font-mono text-sm opacity-80">{pos.quantity || '-'}</td>
-                                                        <td className="py-3 px-6 text-right font-mono text-sm opacity-80">{pos.avgBuyPrice ? `₹${pos.avgBuyPrice}` : '-'}</td>
-                                                        <td className="py-3 px-6 text-right font-mono text-sm">₹{pos.investedValue.toLocaleString()}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm opacity-80">{pos.avgBuyPrice ? `₹${pos.avgBuyPrice.toFixed(2)}` : '-'}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm">
+                                                            {currentPrice ? (
+                                                                <span className={pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                                                    ₹{currentPrice.toFixed(2)}
+                                                                </span>
+                                                            ) : '-'}
+                                                        </td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm opacity-80">₹{pos.investedValue.toLocaleString()}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm font-semibold">₹{currentValue.toLocaleString()}</td>
+                                                        <td className="py-3 px-6 text-right font-mono text-sm">
+                                                            <div className={`${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                                {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString()}
+                                                                <div className="text-xs opacity-80">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)</div>
+                                                            </div>
+                                                        </td>
                                                         <td className="py-3 px-6 text-right">
                                                             <div className="flex items-center justify-end gap-2">
                                                                 <span className="font-mono text-sm">{allocation.toFixed(1)}%</span>
@@ -455,8 +529,15 @@ export default function UnifiedPortfolioAnalyzer() {
                                         <tfoot className="bg-background-dark border-t border-border-dark">
                                             <tr>
                                                 <td className="py-3 px-6 font-bold text-sm">TOTAL</td>
-                                                <td colSpan={2}></td>
+                                                <td colSpan={3}></td>
                                                 <td className="py-3 px-6 text-right font-bold text-primary">₹{totalInvested.toLocaleString()}</td>
+                                                <td className="py-3 px-6 text-right font-bold text-white">₹{totalCurrentValue.toLocaleString()}</td>
+                                                <td className="py-3 px-6 text-right font-bold">
+                                                    <div className={`${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toLocaleString()}
+                                                        <div className="text-xs opacity-80">({totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%)</div>
+                                                    </div>
+                                                </td>
                                                 <td colSpan={2}></td>
                                             </tr>
                                         </tfoot>

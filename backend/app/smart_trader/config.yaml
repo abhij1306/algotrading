@@ -25,6 +25,26 @@ groq:
   model: "llama-3.3-70b-versatile"
   timeout: 30
 
+# LLM Enhancement Features
+llm:
+  provider: "groq"  # groq, openai, or anthropic
+  temperature: 0.3
+  max_tokens: 2000
+  
+  # Feature toggles
+  signal_enhancement: true      # Use LLM to analyze signals
+  risk_optimization: true        # Dynamic SL/TP with LLM
+  copilot_enabled: true          # Natural language stock screening
+  strategy_generation: false     # Auto-generate strategies (TODO)
+  autonomous_decisions: false    # Fully autonomous trading (TODO)
+  
+  # Autonomous trading settings (when enabled)
+  autonomous:
+    require_approval: true       # Require user approval for trades
+    min_confidence: 75           # Only trade signals with >75% LLM confidence
+    max_trades_per_day: 3        # Max autonomous trades per day
+    safety_checks: true          # Enable all safety validations
+
 paper_trading:
   initial_capital: 100000
   slippage_pct: 0.05

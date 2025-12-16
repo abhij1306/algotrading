@@ -38,3 +38,8 @@ Thumbs.db
 # *.csv
 # *.xlsx
 # data/
+
+# NSE Data Directory
+# Exclude raw and processed data files (can be regenerated)
+nse_data/raw/
+nse_data/processed/

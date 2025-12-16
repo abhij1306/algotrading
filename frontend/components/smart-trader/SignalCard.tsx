@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 interface SignalCardProps {
     signal: any;
-    onTakeTrade: (signalId: string, tradeType: string, optionType?: string) => void;
+    onTakeTrade: (signalId: string) => void;
 }
 
 // Helper function to format timestamp as relative time
@@ -26,18 +26,26 @@ function formatTimestamp(timestamp: string): string {
     }
 }
 
+// Get confidence color
+function getConfidenceColor(level: string): string {
+    switch (level) {
+        case 'HIGH': return 'text-green-400 bg-green-500/10';
+        case 'MEDIUM': return 'text-yellow-400 bg-yellow-500/10';
+        case 'LOW': return 'text-gray-400 bg-gray-500/10';
+        default: return 'text-gray-400 bg-gray-500/10';
+    }
+}
+
 export default function SignalCard({ signal, onTakeTrade }: SignalCardProps) {
-    const [tradeType, setTradeType] = useState<string>('SPOT');
-    const [optionType, setOptionType] = useState<string>('CE');
     const [isExpanded, setIsExpanded] = useState(false);
 
     const handleTrade = () => {
-        onTakeTrade(signal.id, tradeType, optionType);
+        onTakeTrade(signal.id);
     };
 
     return (
         <div className="bg-card-dark rounded-xl border border-border-dark hover:border-primary transition-all shadow-sm overflow-hidden group">
-            {/* Compact Header Row */}
+            {/* Header Row */}
             <div className="p-3 flex items-center justify-between gap-3 bg-gradient-to-r from-background-dark to-card-dark">
                 <div className="flex items-center gap-3">
                     <div className={`w-1 h-8 rounded-full ${signal.direction === 'LONG' ? 'bg-profit' : 'bg-loss'}`}></div>
@@ -48,11 +56,14 @@ export default function SignalCard({ signal, onTakeTrade }: SignalCardProps) {
                                 }`}>
                                 {signal.direction}
                             </span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${getConfidenceColor(signal.confidence_level)}`}>
+                                {signal.confidence_level}
+                            </span>
                         </div>
                         <div className="flex items-center gap-2 text-[10px] opacity-60">
-                            <span>{signal.instrument_type}</span>
+                            <span>{signal.timeframe}</span>
                             <span>•</span>
-                            <span>Score: {signal.momentum_score}</span>
+                            <span>Confluence: {signal.confluence_count}</span>
                             {signal.timestamp && (
                                 <>
                                     <span>•</span>
@@ -64,25 +75,32 @@ export default function SignalCard({ signal, onTakeTrade }: SignalCardProps) {
                 </div>
 
                 <div className="text-right">
-                    <div className="text-sm font-bold text-white">₹{signal.entry_price.toFixed(1)}</div>
-                    <div className="text-[10px] opacity-60">Entry Price</div>
+                    <div className="text-sm font-bold text-white">{(signal.final_confidence * 100).toFixed(0)}%</div>
+                    <div className="text-[10px] opacity-60">Confidence</div>
                 </div>
             </div>
 
-            {/* Compact Metrics Row */}
-            <div className="px-3 py-2 bg-[#0f1115] flex justify-between items-center text-xs border-y border-border-dark/50">
+            {/* Signal Families */}
+            <div className="px-3 py-2 bg-[#0f1115] border-y border-border-dark/50">
+                <div className="flex flex-wrap gap-1">
+                    {signal.signal_families.map((family: string, idx: number) => (
+                        <span key={idx} className="px-2 py-0.5 rounded-full text-[9px] font-medium bg-primary/10 text-primary">
+                            {family}
+                        </span>
+                    ))}
+                </div>
+            </div>
+
+            {/* Metrics Row */}
+            <div className="px-3 py-2 bg-[#0f1115] flex justify-between items-center text-xs border-b border-border-dark/50">
                 <div className="flex gap-4">
                     <div className="flex flex-col">
-                        <span className="opacity-40 text-[9px] uppercase">Target</span>
-                        <span className="text-profit font-medium">₹{signal.target.toFixed(1)}</span>
+                        <span className="opacity-40 text-[9px] uppercase">Strength</span>
+                        <span className="text-white font-medium">{(signal.aggregate_strength * 100).toFixed(0)}%</span>
                     </div>
                     <div className="flex flex-col">
-                        <span className="opacity-40 text-[9px] uppercase">Stop Loss</span>
-                        <span className="text-loss font-medium">₹{signal.stop_loss.toFixed(1)}</span>
-                    </div>
-                    <div className="flex flex-col">
-                        <span className="opacity-40 text-[9px] uppercase">R:R</span>
-                        <span className="text-text-secondary font-medium">{signal.risk_reward_ratio}:1</span>
+                        <span className="opacity-40 text-[9px] uppercase">Signals</span>
+                        <span className="text-text-secondary font-medium">{signal.signal_names.length}</span>
                     </div>
                 </div>
 
@@ -96,62 +114,69 @@ export default function SignalCard({ signal, onTakeTrade }: SignalCardProps) {
 
             {/* Action Area */}
             <div className="p-3 bg-card-dark">
-                {signal.instrument_type === 'STOCK' && (
-                    <div className="flex gap-2 mb-2">
-                        <select
-                            value={tradeType}
-                            onChange={(e) => setTradeType(e.target.value)}
-                            className="flex-1 h-8 rounded-lg bg-background-dark border border-border-dark text-xs px-2 focus:border-primary focus:outline-none text-white"
-                        >
-                            <option value="SPOT">Spot</option>
-                            <option value="FUTURES">Fut</option>
-                            <option value="OPTIONS">Opt</option>
-                        </select>
-
-                        {tradeType === 'OPTIONS' && (
-                            <select
-                                value={optionType}
-                                onChange={(e) => setOptionType(e.target.value)}
-                                className="w-20 h-8 rounded-lg bg-background-dark border border-border-dark text-xs px-2 focus:border-primary focus:outline-none text-white"
-                            >
-                                <option value="CE">CE</option>
-                                <option value="PE">PE</option>
-                            </select>
-                        )}
-
-                        <button
-                            onClick={handleTrade}
-                            className={`h-8 px-4 rounded-lg text-xs font-bold text-white shadow-lg shadow-primary/20 hover:shadow-primary/40 transition-all ${signal.direction === 'LONG' ? 'bg-primary hover:bg-blue-600' : 'bg-loss hover:bg-red-600'
-                                }`}
-                        >
-                            Execute
-                        </button>
-                    </div>
-                )}
-
-                {signal.instrument_type !== 'STOCK' && (
-                    <button
-                        onClick={handleTrade}
-                        className={`w-full h-8 rounded-lg text-xs font-bold text-white shadow-lg transition-all ${signal.direction === 'LONG' ? 'bg-primary hover:bg-blue-600 shadow-primary/20' : 'bg-loss hover:bg-red-600 shadow-orange-500/20'
-                            }`}
-                    >
-                        Execute Trade
-                    </button>
-                )}
+                <button
+                    onClick={handleTrade}
+                    className={`w-full h-9 rounded-lg text-sm font-bold text-white shadow-lg transition-all ${signal.direction === 'LONG'
+                            ? 'bg-primary hover:bg-blue-600 shadow-primary/20'
+                            : 'bg-loss hover:bg-red-600 shadow-orange-500/20'
+                        }`}
+                >
+                    Execute Trade
+                </button>
             </div>
 
             {/* Collapsible Details */}
             {isExpanded && (
                 <div className="px-3 pb-3 bg-card-dark border-t border-border-dark/50 animate-in slide-in-from-top-2">
-                    <div className="text-[10px] font-bold opacity-40 uppercase mb-1.5 mt-2">Analysis Logic</div>
-                    <ul className="space-y-1">
-                        {signal.reasons.map((reason: string, idx: number) => (
-                            <li key={idx} className="text-[10px] text-text-secondary flex items-start gap-1.5 leading-tight">
-                                <span className="w-1 h-1 rounded-full bg-primary/50 mt-1 shrink-0"></span>
-                                {reason}
-                            </li>
-                        ))}
-                    </ul>
+                    {/* Deterministic Reasons */}
+                    <div className="mt-3">
+                        <div className="text-[10px] font-bold opacity-40 uppercase mb-1.5">Deterministic Signals</div>
+                        <ul className="space-y-1">
+                            {signal.reasons.map((reason: string, idx: number) => (
+                                <li key={idx} className="text-[10px] text-text-secondary flex items-start gap-1.5 leading-tight">
+                                    <span className="w-1 h-1 rounded-full bg-primary/50 mt-1 shrink-0"></span>
+                                    {reason}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    {/* LLM Narrative */}
+                    {signal.llm_narrative && (
+                        <div className="mt-3">
+                            <div className="text-[10px] font-bold opacity-40 uppercase mb-1.5">🤖 LLM Analysis</div>
+                            <p className="text-[10px] text-text-secondary leading-relaxed italic">
+                                {signal.llm_narrative}
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Risk Flags */}
+                    {signal.risk_flags && signal.risk_flags.length > 0 && (
+                        <div className="mt-3">
+                            <div className="text-[10px] font-bold opacity-40 uppercase mb-1.5">⚠️ Risk Flags</div>
+                            <ul className="space-y-1">
+                                {signal.risk_flags.map((flag: string, idx: number) => (
+                                    <li key={idx} className="text-[10px] text-yellow-400 flex items-start gap-1.5 leading-tight">
+                                        <span className="w-1 h-1 rounded-full bg-yellow-400 mt-1 shrink-0"></span>
+                                        {flag}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {/* Signal Names */}
+                    <div className="mt-3">
+                        <div className="text-[10px] font-bold opacity-40 uppercase mb-1.5">Signal Types</div>
+                        <div className="flex flex-wrap gap-1">
+                            {signal.signal_names.map((name: string, idx: number) => (
+                                <span key={idx} className="px-2 py-0.5 rounded text-[9px] bg-white/5 text-gray-400">
+                                    {name}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

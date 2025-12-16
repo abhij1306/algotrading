@@ -57,10 +57,10 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
         
         # Convert to DataFrame
         candles = response['candles']
-        df = pd.DataFrame(candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-        df['Date'] = pd.to_datetime(df['timestamp'], unit='s')
-        df = df.set_index('Date')
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['date'] = pd.to_datetime(df['timestamp'], unit='s')
+        df = df.set_index('date')
+        df = df[['open', 'high', 'low', 'close', 'volume']]
         
         return df
         
@@ -124,10 +124,10 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                         if response.get('s') == 'ok' and 'candles' in response and response['candles']:
                             # Convert to DataFrame
                             candles = response['candles']
-                            new_df = pd.DataFrame(candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-                            new_df['Date'] = pd.to_datetime(new_df['timestamp'], unit='s')
-                            new_df = new_df.set_index('Date')
-                            new_df = new_df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                            new_df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                            new_df['date'] = pd.to_datetime(new_df['timestamp'], unit='s')
+                            new_df = new_df.set_index('date')
+                            new_df = new_df[['open', 'high', 'low', 'close', 'volume']]
                             
                             # Save to database
                             repo.save_historical_prices(symbol, new_df, source='fyers')
@@ -166,11 +166,12 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
             hist = ticker.history(period=f"{days}d")
             
             if not hist.empty:
-                # Rename columns and fix timezone
+                # Rename columns to lowercase and fix timezone
                 hist = hist.reset_index()
-                hist['Date'] = pd.to_datetime(hist['Date']).dt.date
-                hist = hist.set_index('Date')
-                hist = hist[['Open', 'High', 'Low', 'Close', 'Volume']]
+                hist['date'] = pd.to_datetime(hist['Date']).dt.date
+                hist = hist.set_index('date')
+                hist.columns = hist.columns.str.lower()
+                hist = hist[['open', 'high', 'low', 'close', 'volume']]
                 
                 # Save to database
                 repo.save_historical_prices(symbol, hist, source='yfinance')
@@ -271,10 +272,10 @@ def get_enhanced_quote(symbol: str, hist_data: pd.DataFrame) -> Dict:
     
     if hist_data is not None and not hist_data.empty:
         latest = hist_data.iloc[-1]
-        result['close'] = float(latest['Close'])
-        result['volume'] = int(latest['Volume'])
-        result['high'] = float(latest['High'])
-        result['low'] = float(latest['Low'])
+        result['close'] = float(latest['close'])
+        result['volume'] = int(latest['volume'])
+        result['high'] = float(latest['high'])
+        result['low'] = float(latest['low'])
     
     # Try to get real-time quote from Fyers
     if config.HAS_FYERS:

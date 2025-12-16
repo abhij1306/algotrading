@@ -86,7 +86,8 @@ def scrape_screener(symbol):
 
 def extract_financials(scraped_data: Dict) -> Optional[Dict]:
     """
-    Extract financial metrics from scraped data for database insertion
+    Extract comprehensive financial metrics from scraped data for database insertion
+    Extracts from: Profit & Loss, Balance Sheet, Cash Flows, Ratios tables
     """
     try:
         overview = scraped_data.get("overview", {})
@@ -94,65 +95,133 @@ def extract_financials(scraped_data: Dict) -> Optional[Dict]:
         
         # Helper to clean numeric values
         def clean_number(val):
-            if not val:
-                return 0
+            if not val or val == '-':
+                return None
             # Remove commas, %, Rs., Cr., etc.
             val = str(val).replace(',', '').replace('%', '').replace('Rs.', '').replace('Cr.', '').strip()
             try:
                 return float(val)
             except:
-                return 0
+                return None
         
-        # Try to get revenue, net income, and EPS from Profit & Loss table
-        revenue = 0
-        net_income = 0
-        eps = 0
+        financials = {}
         
-        # Check Profit & Loss table for latest values
+        # === PROFIT & LOSS TABLE ===
         if 'Profit & Loss' in tables:
             pl_df = tables['Profit & Loss']
             if not pl_df.empty and len(pl_df.columns) > 1:
-                # Get latest column (usually rightmost)
                 latest_col = pl_df.columns[-1]
                 
-                # Find Sales/Revenue row
+                # Revenue
                 sales_row = pl_df[pl_df.iloc[:, 0].astype(str).str.contains('Sales|Revenue', case=False, na=False)]
                 if not sales_row.empty:
-                    revenue = clean_number(sales_row.iloc[0][latest_col])
+                    financials['revenue'] = clean_number(sales_row.iloc[0][latest_col])
                 
-                # Find Net Profit row
+                # Operating Income / EBITDA
+                ebitda_row = pl_df[pl_df.iloc[:, 0].astype(str).str.contains('Operating Profit|EBITDA', case=False, na=False)]
+                if not ebitda_row.empty:
+                    financials['ebitda'] = clean_number(ebitda_row.iloc[0][latest_col])
+                    financials['operating_income'] = financials['ebitda']
+                
+                # Net Profit
                 profit_row = pl_df[pl_df.iloc[:, 0].astype(str).str.contains('Net Profit', case=False, na=False)]
                 if not profit_row.empty:
-                    net_income = clean_number(profit_row.iloc[0][latest_col])
+                    financials['net_income'] = clean_number(profit_row.iloc[0][latest_col])
                 
-                # Find EPS row
+                # EPS
                 eps_row = pl_df[pl_df.iloc[:, 0].astype(str).str.contains('EPS in Rs', case=False, na=False)]
                 if not eps_row.empty:
-                    eps = clean_number(eps_row.iloc[0][latest_col])
+                    financials['eps'] = clean_number(eps_row.iloc[0][latest_col])
         
-        # Fallback to overview
-        if revenue == 0:
-            revenue = clean_number(overview.get('Sales', 0))
-        if net_income == 0:
-            net_income = clean_number(overview.get('Net Profit', 0))
-        if eps == 0:
-            eps = clean_number(overview.get('EPS in Rs', 0))
+        # === BALANCE SHEET TABLE ===
+        if 'Balance Sheet' in tables:
+            bs_df = tables['Balance Sheet']
+            if not bs_df.empty and len(bs_df.columns) > 1:
+                latest_col = bs_df.columns[-1]
+                
+                # Total Assets
+                assets_row = bs_df[bs_df.iloc[:, 0].astype(str).str.contains('Total Assets', case=False, na=False)]
+                if not assets_row.empty:
+                    financials['total_assets'] = clean_number(assets_row.iloc[0][latest_col])
+                
+                # Total Liabilities
+                liab_row = bs_df[bs_df.iloc[:, 0].astype(str).str.contains('Total Liabilities', case=False, na=False)]
+                if not liab_row.empty:
+                    financials['total_liabilities'] = clean_number(liab_row.iloc[0][latest_col])
+                
+                # Shareholders Equity
+                equity_row = bs_df[bs_df.iloc[:, 0].astype(str).str.contains('Shareholders.*Equity|Equity Capital', case=False, na=False)]
+                if not equity_row.empty:
+                    financials['shareholders_equity'] = clean_number(equity_row.iloc[0][latest_col])
+                
+                # Total Debt / Borrowings
+                debt_row = bs_df[bs_df.iloc[:, 0].astype(str).str.contains('Borrowings|Total Debt', case=False, na=False)]
+                if not debt_row.empty:
+                    financials['total_debt'] = clean_number(debt_row.iloc[0][latest_col])
+                
+                # Cash and Equivalents
+                cash_row = bs_df[bs_df.iloc[:, 0].astype(str).str.contains('Cash|Equivalents', case=False, na=False)]
+                if not cash_row.empty:
+                    financials['cash_and_equivalents'] = clean_number(cash_row.iloc[0][latest_col])
         
-        # Extract Market Cap from overview
-        market_cap = clean_number(overview.get('Market Cap', 0))
+        # === CASH FLOWS TABLE ===
+        if 'Cash Flows' in tables:
+            cf_df = tables['Cash Flows']
+            if not cf_df.empty and len(cf_df.columns) > 1:
+                latest_col = cf_df.columns[-1]
+                
+                # Operating Cash Flow
+                ocf_row = cf_df[cf_df.iloc[:, 0].astype(str).str.contains('Cash from Operating', case=False, na=False)]
+                if not ocf_row.empty:
+                    financials['operating_cash_flow'] = clean_number(ocf_row.iloc[0][latest_col])
+                
+                # Investing Cash Flow
+                icf_row = cf_df[cf_df.iloc[:, 0].astype(str).str.contains('Cash from Investing', case=False, na=False)]
+                if not icf_row.empty:
+                    financials['investing_cash_flow'] = clean_number(icf_row.iloc[0][latest_col])
+                
+                # Financing Cash Flow
+                fcf_row = cf_df[cf_df.iloc[:, 0].astype(str).str.contains('Cash from Financing', case=False, na=False)]
+                if not fcf_row.empty:
+                    financials['financing_cash_flow'] = clean_number(fcf_row.iloc[0][latest_col])
+                
+                # Free Cash Flow (if available)
+                free_cf_row = cf_df[cf_df.iloc[:, 0].astype(str).str.contains('Free Cash Flow', case=False, na=False)]
+                if not free_cf_row.empty:
+                    financials['free_cash_flow'] = clean_number(free_cf_row.iloc[0][latest_col])
         
-        return {
-            'market_cap': market_cap,
-            'revenue': revenue,
-            'net_income': net_income,
-            'eps': eps,
-            'roe': clean_number(overview.get('ROE', 0)),
-            'debt_to_equity': clean_number(overview.get('Debt to equity', 0)),
-            'pe_ratio': clean_number(overview.get('Stock P/E', 0)),
-            'source': 'screener'
-        }
+        # === RATIOS FROM OVERVIEW ===
+        financials['pe_ratio'] = clean_number(overview.get('Stock P/E'))
+        financials['pb_ratio'] = clean_number(overview.get('Price to Book'))
+        financials['roe'] = clean_number(overview.get('ROE'))
+        financials['roa'] = clean_number(overview.get('ROA'))
+        financials['debt_to_equity'] = clean_number(overview.get('Debt to equity'))
+        financials['market_cap'] = clean_number(overview.get('Market Cap'))
+        
+        # Calculate Free Cash Flow if not available
+        if not financials.get('free_cash_flow'):
+            ocf = financials.get('operating_cash_flow')
+            icf = financials.get('investing_cash_flow')
+            if ocf and icf:
+                financials['free_cash_flow'] = ocf + icf
+        
+        # Fallback to overview for basic metrics if not found in tables
+        if not financials.get('revenue'):
+            financials['revenue'] = clean_number(overview.get('Sales'))
+        if not financials.get('net_income'):
+            financials['net_income'] = clean_number(overview.get('Net Profit'))
+        if not financials.get('eps'):
+            financials['eps'] = clean_number(overview.get('EPS in Rs'))
+        
+        # Add source
+        financials['source'] = 'screener'
+        
+        return financials
+        
     except Exception as e:
         print(f"Error extracting financials: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

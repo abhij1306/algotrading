@@ -1,15 +1,23 @@
-from fastapi import FastAPI, HTTPException, WebSocket, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, WebSocket, UploadFile, File, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from typing import List, Optional, Dict, Any
 import json
 import numpy as np
-from datetime import date
-from .database import Base, Company, FinancialStatement, HistoricalPrice, engine, SessionLocal, UserPortfolio, PortfolioPosition, ComputedRiskMetric
+from datetime import date, datetime, timezone
+from dotenv import load_dotenv
+from .database import Base, Company, FinancialStatement, HistoricalPrice, engine, SessionLocal, UserPortfolio, PortfolioPosition, ComputedRiskMetric, get_db
 from .data_repository import DataRepository
 from .portfolio_risk import PortfolioRiskEngine
 import pandas as pd
+
+# Import Smart Trader API routers
+from .smart_trader_api import router as smart_trader_router
+from .smart_trader_terminal_api import router as smart_trader_terminal_router
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
@@ -21,6 +29,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Smart Trader routers
+app.include_router(smart_trader_router)
+app.include_router(smart_trader_terminal_router)
 
 # Start Cache Manager
 # Initialize Database
@@ -56,6 +68,22 @@ async def search_symbols(q: str = ""):
                 {"symbol": c.symbol, "name": c.name} 
                 for c in companies
             ]
+        }
+    finally:
+        db.close()
+
+@app.get("/api/sectors")
+async def get_sectors():
+    """Get list of unique sectors for filter dropdown"""
+    db = SessionLocal()
+    try:
+        sectors = db.query(Company.sector).filter(
+            Company.sector.isnot(None),
+            Company.sector != ''
+        ).distinct().order_by(Company.sector).all()
+        
+        return {
+            "sectors": [s[0] for s in sectors]
         }
     finally:
         db.close()
@@ -116,6 +144,14 @@ async def get_screener(
                 companies_query = companies_query.order_by(desc(HistoricalPrice.volume))
             else:
                 companies_query = companies_query.order_by(HistoricalPrice.volume)
+        elif sort_by == 'change_pct':
+            # Calculate change_pct expression: (close - ema_20) / ema_20
+            # Handle division by zero/null by ordering them last
+            change_expr = (HistoricalPrice.close - HistoricalPrice.ema_20) / HistoricalPrice.ema_20
+            if sort_order == 'desc':
+                companies_query = companies_query.order_by(desc(change_expr))
+            else:
+                companies_query = companies_query.order_by(change_expr)
         else:
             # Default to symbol sorting
             companies_query = companies_query.order_by(Company.symbol)
@@ -139,27 +175,37 @@ async def get_screener(
                         'symbol': company.symbol,
                         'close': float(hist_price.close),
                         'volume': int(hist_price.volume),
-                        'ema20': 0,
-                        'ema50': 0,
-                        'atr_pct': 0,
-                        'rsi': 0,
-                        'vol_percentile': 0
+                        'ema20': hist_price.ema_20 or 0,
+                        'ema50': hist_price.ema_50 or 0,
+                        'atr_pct': hist_price.atr_pct or 0,
+                        'rsi': hist_price.rsi or 50,
+                        'vol_percentile': hist_price.volume_percentile or 50
                     }
+                
+                # Ensure change_pct is present
+                if 'change_pct' not in features:
+                    ema20 = features.get('ema20', 0)
+                    close = features.get('close', 0)
+                    features['change_pct'] = ((close - ema20) / ema20 * 100) if ema20 else 0
                 
                 if 'symbol' not in features:
                     features['symbol'] = company.symbol
                 computed_list.append(features)
             except Exception as e:
                 # Fallback to basic data
+                ema20 = hist_price.ema_20 or 0
+                change_pct = ((hist_price.close - ema20) / ema20 * 100) if ema20 else 0
+                
                 computed_list.append({
                     'symbol': company.symbol,
                     'close': float(hist_price.close),
+                    'change_pct': round(change_pct, 2),
                     'volume': int(hist_price.volume),
-                    'ema20': 0,
-                    'ema50': 0,
-                    'atr_pct': 0,
-                    'rsi': 0,
-                    'vol_percentile': 0
+                    'ema20': ema20,
+                    'ema50': hist_price.ema_50 or 0,
+                    'atr_pct': hist_price.atr_pct or 0,
+                    'rsi': hist_price.rsi or 50,
+                    'vol_percentile': hist_price.volume_percentile or 50
                 })
                 continue
         
@@ -1181,6 +1227,395 @@ async def get_strategy_params(strategy_name: str):
         raise HTTPException(status_code=404, detail="Strategy not found")
     
     return {"params": params_map[strategy_name]}
+
+
+# ============================================================================
+# SMART TRADER API ENDPOINTS - Terminal Integration
+# ============================================================================
+
+# Global orchestrator instance
+smart_trader_orchestrator = None
+
+@app.post("/api/smart-trader/start")
+async def start_smart_trader():
+    """Start the Smart Trader multi-agent system"""
+    global smart_trader_orchestrator
+    
+    try:
+        if smart_trader_orchestrator is None:
+            from .smart_trader.orchestrator import get_orchestrator
+            smart_trader_orchestrator = get_orchestrator()
+        
+        result = await smart_trader_orchestrator.start_market_session()
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to start Smart Trader: {str(e)}")
+
+
+@app.post("/api/smart-trader/stop")
+async def stop_smart_trader():
+    """Stop the Smart Trader system"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator:
+        result = smart_trader_orchestrator.stop_market_session()
+        return result
+    
+    return {"status": "not_running"}
+
+
+@app.get("/api/smart-trader/status")
+async def get_smart_trader_status():
+    """Get Smart Trader system status"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator:
+        return smart_trader_orchestrator.get_system_state()
+    
+    return {
+        "running": False,
+        "message": "Smart Trader not started"
+    }
+
+
+@app.get("/api/smart-trader/positions")
+async def get_smart_trader_positions():
+    """Get all open positions from Smart Trader agents"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator and smart_trader_orchestrator.execution_agent:
+        positions = smart_trader_orchestrator.execution_agent.get_open_positions()
+        return {"positions": positions}
+    
+    return {"positions": []}
+
+
+@app.get("/api/smart-trader/tradebook")
+async def get_smart_trader_tradebook(limit: int = 50):
+    """Get trade history from Smart Trader"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator and smart_trader_orchestrator.journal_agent:
+        trades = smart_trader_orchestrator.journal_agent.get_tradebook(limit=limit)
+        return {"trades": trades}
+    
+    return {"trades": []}
+
+
+@app.get("/api/smart-trader/pnl")
+async def get_smart_trader_pnl():
+    """Get P&L summary from Smart Trader"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator and smart_trader_orchestrator.journal_agent:
+        pnl = smart_trader_orchestrator.journal_agent.get_pnl_summary()
+        return pnl
+    
+    return {
+        "total_pnl": 0,
+        "total_trades": 0,
+        "win_rate": 0,
+        "profit_factor": 0
+    }
+
+
+@app.post("/api/smart-trader/close-position")
+async def close_smart_trader_position(trade_id: str):
+    """Close a specific Smart Trader position"""
+    global smart_trader_orchestrator
+    
+    if not smart_trader_orchestrator or not smart_trader_orchestrator.execution_agent:
+        raise HTTPException(status_code=400, detail="Smart Trader not running")
+    
+    # Find the position
+    positions = smart_trader_orchestrator.execution_agent.get_open_positions()
+    position = next((p for p in positions if p.get('trade_id') == trade_id), None)
+    
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    
+    # Get current price (use position's current_price or fetch live)
+    current_price = position.get('current_price', position.get('entry_price'))
+    
+    # Close the position
+    result = smart_trader_orchestrator.execution_agent.close_position(
+        trade_id, 
+        current_price, 
+        'Manual Close from Terminal'
+    )
+    
+    return result
+
+
+@app.get("/api/smart-trader/signals")
+async def get_smart_trader_signals():
+    """Get current trading signals"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator:
+        return smart_trader_orchestrator.get_current_signals()
+    
+    return {"signals": []}
+
+
+@app.post("/api/smart-trader/scan")
+async def trigger_manual_scan():
+    """Manually trigger a scan cycle"""
+    global smart_trader_orchestrator
+    
+    if smart_trader_orchestrator and smart_trader_orchestrator.is_running:
+        smart_trader_orchestrator.trigger_scan_cycle()
+        return {"status": "success", "message": "Scan triggered"}
+    
+    return {"status": "error", "message": "Smart Trader not running"}
+
+
+@app.get("/api/screener/trending")
+async def get_trending_stocks(
+    filter_type: str = 'ALL',
+    limit: int = 50,
+    sort_by: str = None,
+    sort_order: str = 'desc',
+    db: Session = Depends(get_db)
+):
+    """
+    Get trending stocks based on real-time calculations
+    Independent of Smart Trader scanner - uses historical data + live prices
+    
+    Args:
+        filter_type: One of 'VOLUME_SHOCKER', 'PRICE_SHOCKER', '52W_HIGH', '52W_LOW', 'ALL'
+        limit: Maximum number of results (default 50)
+        sort_by: Field to sort by (e.g., 'change_pct', 'close')
+        sort_order: 'asc' or 'desc'
+    """
+    from .trending_scanner import calculate_trending_stocks
+    
+    try:
+        stocks = calculate_trending_stocks(db, filter_type, limit, sort_by, sort_order)
+        # Return in same format as screener endpoint
+        return {
+            "data": stocks,
+            "meta": {
+                "page": 1,
+                "limit": limit,
+                "total": len(stocks),
+                "total_pages": 1
+            }
+        }
+    except Exception as e:
+        print(f"Error calculating trending stocks: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/smart-trader/execute-trade")
+async def execute_smart_trader_trade(signal_id: str, quantity: Optional[int] = None):
+    """Execute a trade from a signal"""
+    global smart_trader_orchestrator
+    
+    if not smart_trader_orchestrator:
+        raise HTTPException(status_code=400, detail="Smart Trader not running")
+    
+    result = await smart_trader_orchestrator.execute_signal(signal_id, quantity)
+    return result
+
+
+# ============================================================================
+# AI COPILOT API ENDPOINTS - Natural Language Stock Screening
+# ============================================================================
+
+from pydantic import BaseModel
+
+class CopilotQuery(BaseModel):
+    query: str
+    limit: Optional[int] = 20
+
+@app.post("/api/copilot/generate-list")
+async def generate_stock_list_copilot(request: CopilotQuery):
+    """
+    Generate stock list from natural language query
+    
+    Example queries:
+    - "Find oversold stocks with RSI < 30"
+    - "High momentum IT stocks"
+    - "Undervalued stocks with strong fundamentals"
+    """
+    try:
+        print(f"🔍 AI Copilot query received: {request.query}")
+        from .smart_trader.llm_copilot_agent import LLMCopilotAgent
+        
+        db = SessionLocal()
+        try:
+            print(f"📊 Initializing LLMCopilotAgent with provider=groq")
+            copilot = LLMCopilotAgent(db_session=db, provider="groq")
+            print(f"✅ LLMCopilotAgent initialized successfully")
+            
+            print(f"🚀 Generating stock list for query: {request.query}")
+            result = await copilot.generate_stock_list(
+                user_query=request.query,
+                limit=request.limit
+            )
+            print(f"✅ Stock list generated: {len(result.get('stocks', []))} stocks found")
+            return result
+        finally:
+            db.close()
+    
+    except Exception as e:
+        print(f"❌ Copilot failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Copilot failed: {str(e)}")
+
+
+@app.get("/api/copilot/suggestions")
+async def get_copilot_suggestions():
+    """Get suggested queries for AI Copilot"""
+    try:
+        from .smart_trader.llm_copilot_agent import LLMCopilotAgent
+        
+        db = SessionLocal()
+        try:
+            copilot = LLMCopilotAgent(db_session=db, provider="groq")
+            suggestions = await copilot.suggest_queries()
+            return {"suggestions": suggestions}
+        finally:
+            db.close()
+    
+    except Exception as e:
+        # Return default suggestions if LLM fails
+        return {
+            "suggestions": [
+                "Find oversold stocks with RSI < 30",
+                "High momentum stocks in IT sector",
+                "Undervalued stocks with PE < 15 and ROE > 20",
+                "Stocks breaking out with high volume",
+                "Low debt companies with strong fundamentals"
+            ]
+        }
+
+
+# ==================== NEWS API ENDPOINTS ====================
+
+@app.get("/api/news/latest")
+async def get_latest_news(limit: int = 50):
+    """Get latest market news from multiple Indian sources"""
+    try:
+        import feedparser
+        from datetime import datetime
+        
+        all_news = []
+        
+        # Multiple Indian news sources
+        sources = [
+            {
+                "name": "Economic Times",
+                "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
+            },
+            {
+                "name": "Moneycontrol",
+                "url": "https://www.moneycontrol.com/rss/marketreports.xml"
+            },
+            {
+                "name": "Business Standard",
+                "url": "https://www.business-standard.com/rss/markets-106.rss"
+            },
+            {
+                "name": "Google News",
+                "url": "https://news.google.com/rss/search?q=Indian+stock+market+NSE+BSE&hl=en-IN&gl=IN&ceid=IN:en"
+            }
+        ]
+        
+        # Fetch from all sources
+        for source in sources:
+            try:
+                feed = feedparser.parse(source["url"])
+                
+                for entry in feed.entries[:15]:  # 15 from each source
+                    # Extract symbols from title
+                    symbols = []
+                    title_upper = entry.title.upper()
+                    common_symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 
+                                    'HINDUNILVR', 'ITC', 'SBIN', 'BHARTIARTL', 'KOTAKBANK',
+                                    'NIFTY', 'SENSEX', 'BANKNIFTY']
+                    for symbol in common_symbols:
+                        if symbol in title_upper:
+                            symbols.append(symbol)
+                    
+                    all_news.append({
+                        "id": hash(entry.link),
+                        "title": entry.title,
+                        "summary": entry.get('summary', entry.title)[:200],  # Truncate summary
+                        "source": source["name"],
+                        "url": entry.link,
+                        "published_at": datetime(*entry.published_parsed[:6]).replace(tzinfo=timezone.utc).isoformat() if hasattr(entry, 'published_parsed') else datetime.now(timezone.utc).isoformat(),
+                        "symbols": symbols,
+                        "sentiment": "neutral"
+                    })
+            except Exception as e:
+                print(f"Error fetching from {source['name']}: {e}")
+                continue
+        
+        # Sort by published date (newest first)
+        all_news.sort(key=lambda x: x['published_at'], reverse=True)
+        
+        return {
+            "success": True,
+            "count": len(all_news[:limit]),
+            "news": all_news[:limit]
+        }
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "news": [],
+            "error": str(e)
+        }
+
+
+@app.get("/api/news/by-symbol/{symbol}")
+async def get_news_by_symbol(symbol: str, limit: int = 20):
+    """Get news for a specific stock symbol"""
+    try:
+        import feedparser
+        from datetime import datetime
+        
+        # Fetch from Google News with symbol query
+        query = f"{symbol}+stock+India"
+        rss_url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+        feed = feedparser.parse(rss_url)
+        
+        news = []
+        for entry in feed.entries[:limit]:
+            news.append({
+                "id": hash(entry.link),
+                "title": entry.title,
+                "summary": entry.get('summary', entry.title),
+                "source": "Google News",
+                "url": entry.link,
+                "published_at": datetime(*entry.published_parsed[:6]).isoformat() if hasattr(entry, 'published_parsed') else datetime.utcnow().isoformat(),
+                "symbols": [symbol.upper()],
+                "sentiment": "neutral"
+            })
+        
+        return {
+            "success": True,
+            "symbol": symbol.upper(),
+            "count": len(news),
+            "news": news
+        }
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "news": [],
+            "error": str(e)
+        }
+
 
 
 if __name__ == "__main__":
