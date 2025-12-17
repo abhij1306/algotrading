@@ -162,7 +162,8 @@ def clean_and_merge_equities():
     # Load existing NSE Parquet (if exists)
     if NSE_EQUITY_PARQUET.exists():
         print(f"\n📂 Loading existing NSE Parquet: {NSE_EQUITY_PARQUET}")
-        nse_existing = pd.read_parquet(NSE_EQUITY_PARQUET)
+        # Read without creating categorical types
+        nse_existing = pd.read_parquet(NSE_EQUITY_PARQUET, engine='pyarrow', strings_to_categorical=False)
         print(f"  ✓ Existing data: {len(nse_existing)} records, {nse_existing['symbol'].nunique()} symbols")
         print(f"  ✓ Date range: {nse_existing['trade_date'].min()} to {nse_existing['trade_date'].max()}")
         
@@ -171,6 +172,8 @@ def clean_and_merge_equities():
         
         # Merge: Append Yahoo data, remove duplicates (keep NSE data if overlap)
         print("\n🔀 Merging datasets...")
+        # Ensure both dataframes have the same column types
+        yahoo_combined = yahoo_combined.astype(nse_existing.dtypes.to_dict())
         merged = pd.concat([nse_existing, yahoo_combined], ignore_index=True)
         
         # Remove duplicates (keep first occurrence = NSE data)

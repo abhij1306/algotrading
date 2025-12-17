@@ -9,7 +9,10 @@ import glob
 from pathlib import Path
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
+
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from backend.app.database import SessionLocal
 from sqlalchemy import text

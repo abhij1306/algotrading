@@ -10,16 +10,19 @@ from datetime import datetime, date
 import time
 import sys
 import os
+from pathlib import Path
 
-# Add backend to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-from app.database import SessionLocal, Company, FinancialStatement
+from backend.app.database import SessionLocal, Company, FinancialStatement
 from sqlalchemy import func
 
 # ============== CONFIGURATION ==============
 SLEEP_SECONDS = 2.0  # Rate limiting (slower for financial data)
-START_YEAR = 2024  # Only fetch 2024 onwards
+START_YEAR = 2024  # Fetch from 2024 onwards
+START_MONTH = 4    # Start from April 2024 (Q1 FY2024-25)
 
 # ============== HELPER FUNCTIONS ==============
 
@@ -109,8 +112,8 @@ def parse_financial_data(financials, company_id, symbol, db):
         
         # Iterate through each period (columns in DataFrame)
         for period_date in income_stmt.columns:
-            # Filter to 2024 onwards only
-            if period_date.year < START_YEAR:
+            # Filter to April 2024 onwards only
+            if period_date.year < START_YEAR or (period_date.year == START_YEAR and period_date.month < START_MONTH):
                 continue
             
             try:
