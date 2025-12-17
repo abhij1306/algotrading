@@ -1,45 +1,223 @@
-# Log files
-*.log
+# AlgoTrading - Production .gitignore
+# Excludes market data, credentials, and build artifacts
 
-# Python cache
+# ============================================
+# Market Data & Databases (NEVER COMMIT)
+# ============================================
+
+# NSE Data Pipeline
+nse_data/raw/
+nse_data/processed/
+nse_data/backups/
+
+# Historical Data
+data/
+historical_data/
+
+# All Data Files
+*.parquet
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+
+# Compressed Archives
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ============================================
+# Credentials & Environment (NEVER COMMIT)
+# ============================================
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# API Keys & Secrets
+secrets/
+credentials/
+*.key
+*.pem
+*.crt
+
+# Fyers Config
+fyers/config/*.json
+!fyers/config/.gitkeep
+
+# ============================================
+# Python
+# ============================================
+
+# Byte-compiled / optimized
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
 
-# Virtual environments
+# Virtual Environments
+.venv/
 venv/
 env/
 ENV/
-.venv
+.virtualenv/
 
-# IDE
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# pyenv
+.python-version
+
+# ============================================
+# Node.js / Frontend
+# ============================================
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel
+
+# Production build
+frontend/build/
+frontend/dist/
+
+# ============================================
+# IDEs & Editors
+# ============================================
+
+# VSCode
 .vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
 .idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
 *.swp
 *.swo
 *~
 
-# API credentials and secrets
-*.env
-.env.*
-secrets.json
-credentials.json
-access_token.txt
-access_token.json
-api_credentials.json
+# ============================================
+# Operating System
+# ============================================
 
-# OS files
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# Data files (optional - uncomment if needed)
-# *.csv
-# *.xlsx
-# data/
+# Linux
+*~
 
-# NSE Data Directory
-# Exclude raw and processed data files (can be regenerated)
-nse_data/raw/
-nse_data/processed/
+# ============================================
+# Logs & Temporary Files
+# ============================================
+
+# Application Logs
+logs/
+*.log
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Health check reports
+health_check_report.json
+data_management_audit.json
+
+# ============================================
+# Project-Specific
+# ============================================
+
+# Backtest Results
+backtest_results/
+*.pkl
+*.pickle
+
+# Screenshots & Recordings (if large)
+screenshots/
+recordings/
+
+# Local configuration overrides
+config.local.json
+settings.local.json
+
+# ============================================
+# Keep These Files (Exceptions)
+# ============================================
+
+# Keep metadata files
+!nse_data/metadata/
+!nse_data/metadata/*.csv
+
+# Keep README files
+!**/README.md
+
+# Keep example configs
+!.env.example
+!config.example.json
+
+# Keep .gitkeep files
+!.gitkeep

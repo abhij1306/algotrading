@@ -194,6 +194,56 @@ class DataRepository:
         
         return latest.date if latest else None
     
+    def get_historical_data(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str
+    ) -> Optional[pd.DataFrame]:
+        """
+        Get historical data with NSE fallback
+        First tries Postgres, then falls back to NSE Parquet files
+        
+        Args:
+            symbol: Stock symbol
+            start_date: Start date (YYYY-MM-DD string)
+            end_date: End date (YYYY-MM-DD string)
+        
+        Returns:
+            DataFrame with OHLCV data
+        """
+        # Try Postgres first
+        from datetime import datetime
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        df = self.get_historical_prices(symbol, start_date=start_dt, end_date=end_dt)
+        
+        if df is not None and not df.empty:
+            return df
+        
+        # Fallback to NSE Parquet files
+        try:
+            from .nse_data_reader import NSEDataReader
+            reader = NSEDataReader()
+            nse_df = reader.get_historical_data(symbol, start_date, end_date)
+            return nse_df
+        except Exception as e:
+            print(f"NSE fallback failed for {symbol}: {e}")
+            return None
+    
+    def get_latest_price(self, symbol: str) -> Optional[float]:
+        """Get latest closing price for a symbol"""
+        company = self.get_company(symbol)
+        if not company:
+            return None
+        
+        latest = self.db.query(HistoricalPrice).filter(
+            HistoricalPrice.company_id == company.id
+        ).order_by(desc(HistoricalPrice.date)).first()
+        
+        return latest.close if latest else None
+    
     # ==================== INTRADAY DATA OPERATIONS ====================
     
     def get_intraday_candles(

@@ -316,26 +316,16 @@ async def get_financials_screener(
         raise HTTPException(status_code=500, detail=f"Financials failed: {str(e)}")
 
 @app.get("/api/quotes/live")
-async def get_live_quotes(symbols: str):
+async def get_live_quotes(symbols: str, db: Session = Depends(get_db)):
     """
-    Get live quotes for multiple symbols from Fyers API
-    
-    Args:
-        symbols: Comma-separated list of symbols (e.g., "RELIANCE,TCS,INFY")
-    
-    Returns:
-        Dictionary of symbol -> quote data
+    Get live quotes for multiple symbols
+    symbols: comma-separated list (e.g., "RELIANCE,TCS,INFY")
     """
     try:
+        symbol_list = [s.strip() for s in symbols.split(',')]
+        
+        # Fetch live quotes from Fyers
         from .fyers_direct import get_fyers_quotes
-        
-        # Split symbols and clean them
-        symbol_list = [s.strip().upper() for s in symbols.split(',') if s.strip()]
-        
-        if not symbol_list:
-            return {"quotes": {}}
-        
-        # Fetch quotes from Fyers
         quotes = get_fyers_quotes(symbol_list)
         
         return {"quotes": quotes}

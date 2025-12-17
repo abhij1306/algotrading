@@ -35,9 +35,9 @@ nse_data/
 ### Processed Data
 | Dataset | Status | Records | Last Updated | Notes |
 |---------|--------|---------|--------------|-------|
-| equities_clean | ⏳ Pending | - | - | Awaiting raw data completion |
-| indices_clean | ⏳ Pending | - | - | Not started |
-| adjusted_prices | ⏳ Pending | - | - | Not started |
+| equities_clean | ✅ Complete | 2,835 symbols | 2025-12-17 | Consolidated single file: equity_ohlcv.parquet |
+| indices_clean | ✅ Complete | Nifty 50 | 2025-12-17 | Single file: index_ohlcv.parquet |
+| adjusted_prices | ✅ Complete | 307 symbols | 2025-12-17 | Corporate actions applied: equity_ohlcv_adj.parquet |
 
 ## Data Processing Pipeline
 
