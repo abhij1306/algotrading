@@ -1,12 +1,28 @@
-# AlgoTrading - NSE Portfolio Analyzer & Trading System
+# AlgoTrading System — Research & Backtesting Platform
 
-**Production-ready algorithmic trading system for NSE (National Stock Exchange of India)**
+**A personal, zero-cost algorithmic trading research system built to backtest strategies, analyze trades, and generate deterministic intraday and swing signals using clean data pipelines and modern tooling.**
 
 [![Status](https://img.shields.io/badge/status-production-green)]()
 [![Data Coverage](https://img.shields.io/badge/data-2016--present-blue)]()
 [![Companies](https://img.shields.io/badge/companies-2426-orange)]()
 
-Advanced portfolio risk analysis platform combining technical and fundamental analysis with AI-powered trading signals, comprehensive backtesting, and real-time market data.
+This project focuses on **correct data modeling**, **reproducibility**, and **disciplined system design**, not black-box prediction.
+
+---
+
+## Design Principles
+
+### Deterministic strategies first
+All trade signals are rule-based and reproducible.
+
+### Clear separation of concerns
+Live trading, research, and historical analytics are isolated by design.
+
+### LLMs as assistants, not decision-makers
+Language models are used for reasoning, explanation, and confidence analysis — never for generating trades.
+
+### Data correctness over convenience
+Corporate actions, survivorship bias, and data gaps are handled explicitly.
 
 ---
 
@@ -104,6 +120,7 @@ These are deliberate design choices to maintain focus, reliability, and realisti
 - Sets realistic expectations for contributors
 - Maintains system reliability and auditability
 - Focuses on what retail traders actually need
+- **These exclusions are deliberate and foundational to the design**
 
 ---
 
@@ -241,7 +258,9 @@ AlgoTrading/
 
 ## 📂 Data Setup & Disclaimer
 
-**This repository does NOT include any market data.** Historical price data, financial statements, and corporate actions are not bundled due to licensing restrictions and repository size constraints.
+**This repository does NOT include any historical or live market data.**
+
+Market data is subject to licensing and redistribution restrictions imposed by data providers (e.g., NSE, brokers, third parties). Users are responsible for obtaining and using market data in compliance with applicable terms.
 
 **To use this system, you must obtain market data independently:**
 - **NSE Historical Data**: Download from [NSE Archives](https://archives.nseindia.com/) (free, registration required)
@@ -249,6 +268,8 @@ AlgoTrading/
 - **Live Data**: Requires Fyers API credentials (optional, for real-time features)
 
 All data acquisition scripts are provided in `scripts/data_pipeline/`. Users are responsible for compliance with data provider terms of service.
+
+**Data from different sources may vary slightly in OHLC values**; this system prioritizes continuity, transparency, and reproducibility over tick-level precision.
 
 ---
 
