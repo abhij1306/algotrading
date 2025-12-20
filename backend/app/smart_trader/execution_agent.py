@@ -318,6 +318,29 @@ class ExecutionAgent:
             current_price = current_prices.get(symbol, position['entry_price'])
             result = self.close_position(trade_id, current_price, reason)
     
+    def execute_manual_trade(self, order_details: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a manual trade (Paper)
+        """
+        # Construct pseudo-signal
+        signal = {
+            'symbol': order_details['symbol'],
+            'direction': 'LONG' if order_details['type'] == 'BUY' else 'SHORT',
+            'entry_price': order_details['price'],
+            'stop_loss': 0, # Manual orders might not have these initially
+            'target': 0,
+            'instrument_type': order_details.get('instrument_type', 'EQ'),
+            'reasons': ['Manual Trade']
+        }
+        
+        # Auto-approve risk for manual trades (or add check later)
+        risk_approval = {
+            'approved': True,
+            'qty': order_details['quantity']
+        }
+        
+        return self.execute_trade(signal, risk_approval)
+
     def _load_open_positions(self):
         """Load open positions from journal agent"""
         if self.journal_agent:

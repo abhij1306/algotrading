@@ -169,7 +169,7 @@ class ORBStrategy(BaseStrategy):
                     underlying_price=current_price,
                     option_type=instrument_suffix,  # CE or PE
                     strike=strike,
-                    days_to_expiry=7  # Weekly options
+                    days_to_expiry=self.days_to_expiry  # Use configured expiry
                 )
             else:
                 instrument = f"{self.params.get('symbol', 'STOCK')}-EQ"

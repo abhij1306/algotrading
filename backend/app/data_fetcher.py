@@ -52,7 +52,23 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
             range_to=range_to
         )
         
-        if response.get('s') != 'ok' or 'candles' not in response:
+        # CRITICAL: Check for token expiration errors
+        if isinstance(response, dict):
+            error_code = response.get('code')
+            
+            # Token expired or authentication failed
+            if error_code in [401, 403, -17]:
+                print(f"❌ Fyers token expired (code: {error_code})")
+                print(f"   Please re-authenticate: cd fyers && python fyers_login.py")
+                return None
+            
+            # Other API errors
+            if response.get('s') != 'ok':
+                error_msg = response.get('message', 'Unknown error')
+                print(f"⚠️  Fyers API error for {symbol}: {error_msg}")
+                return None
+        
+        if 'candles' not in response:
             return None
         
         # Convert to DataFrame
@@ -65,6 +81,7 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
         return df
         
     except Exception as e:
+        print(f"❌ Exception fetching Fyers data for {symbol}: {str(e)}")
         return None
 
 def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
@@ -153,33 +170,8 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                 repo.save_historical_prices(symbol, hist, source='fyers')
                 return hist
         
-        # Fallback to YFinance
-        try:
-            print(f"Fetching {symbol} from YFinance fallback...")
-            import yfinance as yf
-            
-            # Add .NS suffix if not present for NSE
-            yf_symbol = f"{symbol}.NS" if not symbol.endswith(('.NS', '.BO')) else symbol
-            
-            # Fetch data
-            ticker = yf.Ticker(yf_symbol)
-            hist = ticker.history(period=f"{days}d")
-            
-            if not hist.empty:
-                # Rename columns to lowercase and fix timezone
-                hist = hist.reset_index()
-                hist['date'] = pd.to_datetime(hist['Date']).dt.date
-                hist = hist.set_index('date')
-                hist.columns = hist.columns.str.lower()
-                hist = hist[['open', 'high', 'low', 'close', 'volume']]
-                
-                # Save to database
-                repo.save_historical_prices(symbol, hist, source='yfinance')
-                return hist
-                
-        except Exception as e:
-            print(f"YFinance fallback failed for {symbol}: {e}")
-        
+        # No fallback - return None if Fyers fails
+        print(f"Failed to fetch {symbol} from Fyers")
         return None
         
     finally:

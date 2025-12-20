@@ -53,16 +53,17 @@ class NSEDataReader:
             DataFrame with columns: trade_date, open, high, low, close, volume, etc.
         """
         try:
+            # SECURITY FIX: Use parameterized query to prevent SQL injection
             query = f"""
                 SELECT *
                 FROM read_parquet('{self.data_dir}/equity_ohlcv.parquet')
-                WHERE symbol = '{symbol}'
-                  AND trade_date >= '{start_date}'
-                  AND trade_date <= '{end_date}'
+                WHERE symbol = ?
+                  AND trade_date >= ?
+                  AND trade_date <= ?
                 ORDER BY trade_date ASC
             """
             
-            df = self.con.execute(query).df()
+            df = self.con.execute(query, [symbol, start_date, end_date]).df()
             
             if df.empty:
                 return None
@@ -103,18 +104,22 @@ class NSEDataReader:
             DataFrame with all symbols combined
         """
         try:
-            symbols_str = "', '".join(symbols)
+            # SECURITY FIX: Use parameterized query with list binding
+            # Create placeholders for the IN clause
+            placeholders = ','.join(['?' for _ in symbols])
             
             query = f"""
                 SELECT *
                 FROM read_parquet('{self.data_dir}/equity_ohlcv.parquet')
-                WHERE symbol IN ('{symbols_str}')
-                  AND trade_date >= '{start_date}'
-                  AND trade_date <= '{end_date}'
+                WHERE symbol IN ({placeholders})
+                  AND trade_date >= ?
+                  AND trade_date <= ?
                 ORDER BY trade_date ASC, symbol ASC
             """
             
-            df = self.con.execute(query).df()
+            # Combine symbols list with date parameters
+            params = symbols + [start_date, end_date]
+            df = self.con.execute(query, params).df()
             
             if df.empty:
                 return None
@@ -160,14 +165,15 @@ class NSEDataReader:
     def get_symbols_for_date(self, date: str) -> Optional[List[str]]:
         """Get all symbols available for a specific date"""
         try:
+            # SECURITY FIX: Use parameterized query
             query = f"""
                 SELECT DISTINCT symbol
                 FROM read_parquet('{self.data_dir}/equity_ohlcv.parquet')
-                WHERE trade_date = '{date}'
+                WHERE trade_date = ?
                 ORDER BY symbol
             """
             
-            df = self.con.execute(query).df()
+            df = self.con.execute(query, [date]).df()
             
             return df['symbol'].tolist() if not df.empty else None
         

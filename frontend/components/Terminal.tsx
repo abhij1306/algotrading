@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react';
-import { Search, TrendingUp, Plus, X, List, LayoutDashboard, Briefcase, History } from 'lucide-react';
+import { Search, TrendingUp, Plus, X, List, LayoutDashboard, Briefcase, History, Zap } from 'lucide-react';
 
 interface WatchlistItem {
     symbol: string;
@@ -20,14 +20,24 @@ interface Position {
     current_price: number;
     pnl: number;
     pnl_pct: number;
-    source?: 'MANUAL' | 'AGENT';  // Add source tracking
+    source?: 'MANUAL' | 'AGENT';
+}
+
+interface Signal {
+    id: string;
+    symbol: string;
+    direction: 'LONG' | 'SHORT';
+    confidence: number;
+    reasoning: string;
+    timestamp: string;
+    signal_family: string;
 }
 
 export default function Terminal() {
     const [tradingMode, setTradingMode] = useState<'PAPER' | 'LIVE'>('PAPER');
     const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-    const [positions, setPositions] = useState<Position[]>([]);  // Manual positions
-    const [agentPositions, setAgentPositions] = useState<Position[]>([]);  // Agent positions
+    const [positions, setPositions] = useState<Position[]>([]);
+    const [agentPositions, setAgentPositions] = useState<Position[]>([]);
     const [agentPnL, setAgentPnL] = useState(0);
     const [showAgentTrades, setShowAgentTrades] = useState(true);
     const [showManualTrades, setShowManualTrades] = useState(true);
@@ -42,11 +52,14 @@ export default function Terminal() {
     const [orderMode, setOrderMode] = useState<'MARKET' | 'LIMIT' | 'SL'>('MARKET');
     const [activeTab, setActiveTab] = useState<'positions' | 'orders' | 'history'>('positions');
 
+    // Sidebar & Signals State
+    const [sidebarMode, setSidebarMode] = useState<'watchlist' | 'signals'>('watchlist');
+    const [signals, setSignals] = useState<Signal[]>([]);
+
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [showSearchDropdown, setShowSearchDropdown] = useState(false);
     const [showOrderModal, setShowOrderModal] = useState(false);
-
 
     // Load watchlist from localStorage
     useEffect(() => {
@@ -73,6 +86,16 @@ export default function Terminal() {
             localStorage.removeItem('terminal_watchlist');
         }
     }, [watchlist]);
+
+    // Fetch Signals
+    useEffect(() => {
+        if (sidebarMode === 'signals') {
+            fetch('http://localhost:8000/api/signals')
+                .then(res => res.json())
+                .then(data => setSignals(data.signals || []))
+                .catch(err => console.error("Failed to fetch signals", err));
+        }
+    }, [sidebarMode]);
 
     const isMarketOpen = () => {
         const now = new Date();
@@ -156,7 +179,6 @@ export default function Terminal() {
             setAgentPnL(pnlData.total_pnl || 0);
         } catch (error) {
             console.error('Failed to fetch agent positions:', error);
-            // Don't show error to user, just silently fail
         }
     };
 
@@ -223,26 +245,42 @@ export default function Terminal() {
         setSelectedLTP(item.ltp);
     };
 
-    const placeOrder = () => {
+    const executeOrder = async () => {
         if (!selectedSymbol) {
             alert('Please select a symbol');
             return;
         }
 
         const orderPrice = orderMode === 'MARKET' ? price : price;
-        const newPosition: Position = {
-            id: Date.now().toString(),
-            symbol: selectedSymbol,
-            type: orderType,
-            quantity,
-            entry_price: orderPrice,
-            current_price: orderPrice,
-            pnl: 0,
-            pnl_pct: 0
-        };
 
-        setPositions([...positions, newPosition]);
-        alert(`${orderType} Order Placed:\n${quantity} x ${selectedSymbol} @ ₹${orderPrice.toFixed(2)}`);
+        if (tradingMode === 'PAPER') {
+            try {
+                const res = await fetch('http://localhost:8000/api/trading/paper/order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: selectedSymbol,
+                        type: orderType,
+                        quantity: quantity,
+                        price: orderPrice,
+                        instrument_type: selectedInstrumentType
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`Paper Order Executed: ${data.message || 'Success'}`);
+                    fetchAgentPositions(); // Refresh positions
+                } else {
+                    alert(`Order Failed: ${data.error}`);
+                }
+            } catch (e) {
+                alert('Network error placing order');
+            }
+        } else {
+            alert('Live trading not enabled. Switch to Paper.');
+        }
+        // Keep modal open or closed? Let's close it for better UX if successful, but alert already happened.
+        // setShowOrderModal(false); 
     };
 
     const closePosition = (posId: string) => {
@@ -261,7 +299,6 @@ export default function Terminal() {
             });
 
             if (response.ok) {
-                // Refresh agent positions
                 await fetchAgentPositions();
                 alert('Agent position closed successfully');
             } else {
@@ -273,7 +310,6 @@ export default function Terminal() {
         }
     };
 
-    // Merge agent and manual positions
     const allPositions = [
         ...positions.map(p => ({ ...p, source: 'MANUAL' as const })),
         ...agentPositions
@@ -283,7 +319,6 @@ export default function Terminal() {
         return true;
     });
 
-    // Calculate total P&L (manual + agent)
     const manualPnL = positions.reduce((sum, p) => sum + p.pnl, 0);
     const totalPnL = manualPnL + agentPnL;
 
@@ -298,342 +333,433 @@ export default function Terminal() {
 
     return (
         <div className="flex h-full gap-0 bg-background-dark max-w-full overflow-hidden relative">
-            {/* Left Sidebar: Watchlist */}
+            {/* Left Sidebar */}
             <div className="w-[350px] bg-card-dark border-r border-border-dark flex flex-col h-full overflow-hidden shrink-0">
-                <div className="p-4 border-b border-border-dark">
-                    <div className="relative">
-                        <Search className="absolute left-3 top-2.5 w-4 h-4 text-text-secondary" />
-                        <input
-                            type="text"
-                            placeholder="Search eg: infy bse, nifty fut..."
-                            value={searchQuery}
-                            onChange={(e) => { setSearchQuery(e.target.value); searchSymbols(e.target.value); }}
-                            onFocus={() => searchQuery.length > 0 && setShowSearchDropdown(true)}
-                            onBlur={() => setTimeout(() => setShowSearchDropdown(false), 200)}
-                            className="w-full pl-10 pr-4 py-2 bg-background-dark border border-border-dark rounded text-sm text-text-primary outline-none focus:border-primary focus:shadow-[0_0_0_2px_rgba(59,130,246,0.1)] transition-all placeholder:text-text-secondary"
-                        />
-                        <div className="absolute right-3 top-2.5 flex items-center gap-1.5 opacity-40">
-                            <span className="text-[10px] bg-background-dark border border-border-dark px-1.5 py-0.5 rounded text-text-secondary font-medium">Ctrl + K</span>
-                        </div>
-                    </div>
-                    {showSearchDropdown && searchResults.length > 0 && (
-                        <div className="absolute z-50 mt-1 bg-card-dark rounded shadow-xl border border-border-dark max-h-60 overflow-y-auto w-80 left-4 text-text-primary">
-                            {searchResults.slice(0, 8).map((result) => (
-                                <button
-                                    key={result.symbol}
-                                    onClick={() => addToWatchlist(result.symbol, 'EQ')}
-                                    className="w-full px-4 py-3 text-left hover:bg-white/5 text-sm border-b border-border-dark last:border-0 transition-colors flex justify-between items-center group"
-                                >
-                                    <span className="font-medium text-text-primary">{result.symbol}</span>
-                                    <Plus className="w-4 h-4 text-primary opacity-0 group-hover:opacity-100 transition-opacity" />
-                                </button>
-                            ))}
-                        </div>
-                    )}
+                {/* Sidebar Mode Switch */}
+                <div className="flex items-center p-2 border-b border-border-dark gap-2">
+                    <button
+                        onClick={() => setSidebarMode('watchlist')}
+                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'watchlist' ? 'bg-white/10 text-white' : 'text-text-secondary hover:text-white hover:bg-white/5'
+                            }`}
+                    >
+                        <List className="w-4 h-4" /> Watchlist
+                    </button>
+                    <button
+                        onClick={() => setSidebarMode('signals')}
+                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'signals' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'text-text-secondary hover:text-white hover:bg-white/5'
+                            }`}
+                    >
+                        <Zap className="w-4 h-4" /> AI Signals
+                    </button>
                 </div>
 
-                <div className="px-4 py-2 border-b border-border-dark bg-background-dark/50 flex justify-between text-[11px] font-medium text-text-secondary uppercase tracking-wide">
-                    <span>Watchlist ({watchlist.length})</span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto scrollbar-thin">
-                    {watchlist.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-64 opacity-40">
-                            <TrendingUp className="w-10 h-10 mb-3 text-text-secondary" strokeWidth={1.5} />
-                            <p className="text-sm font-medium text-text-secondary">Nothing here yet</p>
-                            <p className="text-xs text-text-secondary mt-1">Use the search to add instruments</p>
-                        </div>
-                    ) : (
-                        watchlist.map((item, idx) => (
-                            <div
-                                key={`${item.symbol}-${idx}`}
-                                className={`group relative px-4 py-3.5 border-b border-border-dark cursor-pointer transition-all hover:bg-white/5
-                                    ${selectedSymbol === item.symbol ? 'bg-primary/10 border-l-2 border-l-primary -ml-[2px]' : 'border-l-2 border-l-transparent -ml-[2px]'}`}
-                                onClick={() => selectSymbol(item)}
-                            >
-                                <div className="flex items-center justify-between">
-                                    <div className={`font-medium text-sm ${item.change >= 0 ? 'text-text-primary' : 'text-text-primary'}`}>{item.symbol}</div>
-                                    <div className={`font-medium text-sm text-right ${item.change >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                        {item.change >= 0 ? '+' : ''}{item.change_pct.toFixed(2)}%
+                {sidebarMode === 'watchlist' ? (
+                    <>
+                        {/* Search Bar */}
+                        <div className="p-4 border-b border-border-dark">
+                            <div className="relative">
+                                <Search className="absolute left-3 top-2.5 w-4 h-4 text-text-secondary" />
+                                <input
+                                    type="text"
+                                    placeholder="Search eg: infy bse, nifty..."
+                                    value={searchQuery}
+                                    onChange={(e) => { setSearchQuery(e.target.value); searchSymbols(e.target.value); }}
+                                    onFocus={() => searchQuery.length > 0 && setShowSearchDropdown(true)}
+                                    onBlur={() => setTimeout(() => setShowSearchDropdown(false), 200)}
+                                    className="w-full pl-10 pr-4 py-2 bg-background-dark border border-border-dark rounded text-xs font-medium text-text-primary outline-none focus:border-primary placeholder:text-text-secondary focus:shadow-[0_0_0_1px_rgba(59,130,246,0.3)] transition-all"
+                                />
+                                {showSearchDropdown && searchResults.length > 0 && (
+                                    <div className="absolute z-[100] mt-1 bg-[#0a0a0a] rounded-lg shadow-2xl border border-white/10 max-h-60 overflow-y-auto w-80 left-0 text-text-primary backdrop-blur-xl">
+                                        {searchResults.slice(0, 8).map((result) => (
+                                            <button
+                                                key={result.symbol}
+                                                onClick={() => addToWatchlist(result.symbol, 'EQ')}
+                                                className="w-full px-4 py-3 text-left hover:bg-white/5 text-sm border-b border-white/5 last:border-0 transition-colors flex justify-between items-center group"
+                                            >
+                                                <span className="font-bold text-gray-200">{result.symbol}</span>
+                                                <Plus className="w-4 h-4 text-primary opacity-0 group-hover:opacity-100 transition-opacity" />
+                                            </button>
+                                        ))}
                                     </div>
-                                </div>
-                                <div className="flex items-center justify-between mt-1">
-                                    <span className="text-[10px] text-text-secondary">{item.instrument_type}</span>
-                                    <span className={`text-xs font-medium ${item.change >= 0 ? 'text-text-secondary' : 'text-text-secondary'}`}>
-                                        {item.ltp.toLocaleString('en-IN')}
-                                    </span>
-                                </div>
+                                )}
+                            </div>
+                        </div>
 
-                                {/* Hover Actions */}
-                                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex gap-2 opacity-0 group-hover:opacity-100 bg-card-dark shadow-lg border border-border-dark rounded px-1 py-1 transition-all z-10">
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); initiateOrder('BUY', item); }}
-                                        className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-2.5 py-1 rounded transition-colors"
-                                    >B</button>
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); initiateOrder('SELL', item); }}
-                                        className="bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold px-2.5 py-1 rounded transition-colors"
-                                    >S</button>
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); removeFromWatchlist(item.symbol, item.instrument_type); }}
-                                        className="text-text-secondary hover:text-red-500 hover:bg-red-500/10 p-1 rounded transition-colors"
+                        {/* Watchlist Content */}
+                        <div className="flex-1 overflow-y-auto scrollbar-thin">
+                            {watchlist.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center h-64 opacity-50">
+                                    <TrendingUp className="w-8 h-8 mb-3 text-text-secondary" strokeWidth={1.5} />
+                                    <p className="text-xs font-medium text-text-secondary">Watchlist empty</p>
+                                </div>
+                            ) : (
+                                watchlist.map((item, idx) => (
+                                    <div
+                                        key={`${item.symbol}-${idx}`}
+                                        className={`group relative px-4 py-3 border-b border-border-dark/50 cursor-pointer transition-all hover:bg-white/5
+                                        ${selectedSymbol === item.symbol ? 'bg-primary/5 border-l-2 border-l-primary -ml-[2px]' : 'border-l-2 border-l-transparent -ml-[2px]'}`}
+                                        onClick={() => selectSymbol(item)}
                                     >
-                                        <X className="w-3.5 h-3.5" />
+                                        <div className="flex items-center justify-between">
+                                            <div className="font-bold text-sm text-gray-200">{item.symbol}</div>
+                                            <div className={`font-mono text-sm text-right font-medium ${item.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {item.change >= 0 ? '+' : ''}{item.change_pct.toFixed(2)}%
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center justify-between mt-1">
+                                            <span className="text-[10px] text-text-secondary uppercase tracking-wider">{item.instrument_type}</span>
+                                            <span className="text-xs font-mono font-medium text-gray-400">
+                                                {item.ltp.toLocaleString('en-IN')}
+                                            </span>
+                                        </div>
+
+                                        {/* Hover Actions */}
+                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex gap-1.5 opacity-0 group-hover:opacity-100 bg-[#1a1a1a] shadow-xl border border-white/10 rounded px-1.5 py-1 transition-all z-10 scale-95 group-hover:scale-100">
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); initiateOrder('BUY', item); }}
+                                                className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded transition-colors"
+                                            >B</button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); initiateOrder('SELL', item); }}
+                                                className="bg-red-500 hover:bg-red-400 text-white text-[10px] font-bold px-2 py-0.5 rounded transition-colors"
+                                            >S</button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); removeFromWatchlist(item.symbol, item.instrument_type); }}
+                                                className="text-gray-400 hover:text-red-400 hover:bg-red-500/10 p-1 rounded transition-colors ml-1"
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </>
+                ) : (
+                    // Signals Sidebar View
+                    <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3 bg-background-dark/30">
+                        {signals.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-20 opacity-50">
+                                <div className="relative">
+                                    <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full"></div>
+                                    <Zap className="w-12 h-12 text-purple-500 mb-4 relative z-10" />
+                                </div>
+                                <h3 className="text-sm font-bold text-white">Scanning Markets...</h3>
+                                <p className="text-xs text-gray-400 text-center px-4 mt-2 leading-relaxed">AI agents are analyzing price action and volume patterns.</p>
+                            </div>
+                        ) : (
+                            signals.map((signal) => (
+                                <div key={signal.id} className="bg-card-dark border border-white/10 rounded-xl p-3 hover:border-purple-500/50 transition-all group relative overflow-hidden hover:shadow-[0_0_15px_rgba(168,85,247,0.1)]">
+                                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${signal.direction === 'LONG' ? 'bg-blue-500' : 'bg-red-500'}`} />
+
+                                    <div className="flex justify-between items-start mb-2 pl-2">
+                                        <div>
+                                            <h4 className="text-sm font-bold text-white tracking-tight">{signal.symbol}</h4>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${signal.direction === 'LONG'
+                                                        ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                                                        : 'bg-red-500/10 border-red-500/30 text-red-400'
+                                                    }`}>
+                                                    {signal.direction}
+                                                </span>
+                                                <span className="text-[9px] text-gray-500 font-mono">{signal.signal_family}</span>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-sm font-bold text-white">{Math.round(signal.confidence * 100)}%</div>
+                                            <div className="text-[9px] text-gray-500 uppercase">Conf</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/20 rounded p-2 mb-3 ml-1">
+                                        <p className="text-[10px] text-gray-400 leading-relaxed line-clamp-2 italic">
+                                            "{signal.reasoning}"
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            setSelectedSymbol(signal.symbol);
+                                            setOrderType(signal.direction as any);
+                                            setPrice(0);
+                                            setOrderMode('MARKET');
+                                            setShowOrderModal(true);
+                                        }}
+                                        className="w-full ml-1 py-1.5 bg-gradient-to-r from-purple-600/20 to-purple-600/10 hover:from-purple-600 hover:to-purple-500 text-purple-300 hover:text-white border border-purple-500/30 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 group-hover:shadow-lg shadow-purple-900/20"
+                                    >
+                                        <Zap className="w-3 h-3 group-hover:fill-current" /> Execute Trade
                                     </button>
                                 </div>
-                            </div>
-                        ))
-                    )}
-                </div>
+                            ))
+                        )}
+                    </div>
+                )}
             </div>
 
-            {/* Right Side: Tabbed Data View */}
+            {/* Main Content Area - Tabs */}
             <div className="flex-1 bg-background-dark h-full overflow-hidden flex flex-col">
                 <div className="bg-card-dark flex-1 flex flex-col overflow-hidden">
-                    {/* Tabs Header - Icon Based like Portfolio Risk */}
-                    <div className="flex items-center justify-between px-6 py-4 border-b border-border-dark bg-card-dark">
-                        <div className="flex items-center gap-2">
+                    {/* Tabs Header */}
+                    <div className="flex items-center justify-between px-6 py-3 border-b border-border-dark bg-card-dark">
+                        <div className="flex items-center gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
                             <button
                                 onClick={() => setActiveTab('positions')}
-                                className={`flex items-center gap-2 px-4 py-2 rounded transition-all ${activeTab === 'positions'
-                                    ? 'bg-primary text-white'
-                                    : 'bg-background-dark text-text-secondary hover:text-white hover:bg-white/5'
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all text-sm font-medium ${activeTab === 'positions'
+                                    ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                    : 'text-text-secondary hover:text-white hover:bg-white/5'
                                     }`}
                             >
-                                <LayoutDashboard className="w-4 h-4" />
-                                <span className="text-sm font-medium">Positions List</span>
+                                <LayoutDashboard className="w-3.5 h-3.5" />
+                                Positions
                             </button>
                             <button
                                 onClick={() => setActiveTab('orders')}
-                                className={`flex items-center gap-2 px-4 py-2 rounded transition-all ${activeTab === 'orders'
-                                    ? 'bg-primary text-white'
-                                    : 'bg-background-dark text-text-secondary hover:text-white hover:bg-white/5'
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all text-sm font-medium ${activeTab === 'orders'
+                                    ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                    : 'text-text-secondary hover:text-white hover:bg-white/5'
                                     }`}
                             >
-                                <List className="w-4 h-4" />
-                                <span className="text-sm font-medium">Orders</span>
+                                <List className="w-3.5 h-3.5" />
+                                Orders
                             </button>
                             <button
                                 onClick={() => setActiveTab('history')}
-                                className={`flex items-center gap-2 px-4 py-2 rounded transition-all ${activeTab === 'history'
-                                    ? 'bg-primary text-white'
-                                    : 'bg-background-dark text-text-secondary hover:text-white hover:bg-white/5'
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all text-sm font-medium ${activeTab === 'history'
+                                    ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                    : 'text-text-secondary hover:text-white hover:bg-white/5'
                                     }`}
                             >
-                                <Briefcase className="w-4 h-4" />
-                                <span className="text-sm font-medium">History</span>
+                                <History className="w-3.5 h-3.5" />
+                                History
                             </button>
                         </div>
 
-                        {/* Total P&L Display and Filters */}
+                        {/* Total P&L Display */}
                         <div className="flex items-center gap-6 text-sm">
-                            <div className="flex items-center gap-2">
-                                <span className="text-text-secondary">Total P&L:</span>
-                                <span className={`font-bold ${totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                            <div className="flex items-center gap-3 px-4 py-1.5 bg-black/30 rounded border border-white/5">
+                                <span className="text-text-secondary text-xs font-medium uppercase tracking-wider">Total P&L</span>
+                                <span className={`font-bold font-mono text-lg ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                     {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toFixed(2)}
                                 </span>
                             </div>
 
                             {/* Trade Source Filters */}
                             <div className="flex items-center gap-3 border-l border-border-dark pl-6">
-                                <label className="flex items-center gap-2 cursor-pointer">
+                                <label className="flex items-center gap-2 cursor-pointer group">
                                     <input
                                         type="checkbox"
                                         checked={showAgentTrades}
                                         onChange={(e) => setShowAgentTrades(e.target.checked)}
-                                        className="w-4 h-4 accent-purple-500"
+                                        className="w-3.5 h-3.5 accent-purple-500 rounded cursor-pointer"
                                     />
-                                    <span className="text-text-secondary text-xs">Agent</span>
+                                    <span className="text-text-secondary text-xs group-hover:text-purple-400 transition-colors">Agent</span>
                                 </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
+                                <label className="flex items-center gap-2 cursor-pointer group">
                                     <input
                                         type="checkbox"
                                         checked={showManualTrades}
                                         onChange={(e) => setShowManualTrades(e.target.checked)}
-                                        className="w-4 h-4 accent-primary"
+                                        className="w-3.5 h-3.5 accent-primary rounded cursor-pointer"
                                     />
-                                    <span className="text-text-secondary text-xs">Manual</span>
+                                    <span className="text-text-secondary text-xs group-hover:text-blue-400 transition-colors">Manual</span>
                                 </label>
                             </div>
                         </div>
                     </div>
 
                     {/* Tab Content */}
-                    <div className="flex-1 overflow-auto bg-background-dark p-6">
+                    <div className="flex-1 overflow-auto bg-[#050505] p-6 relative">
+                        {/* Background Grid Pattern */}
+                        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"></div>
+
                         {activeTab === 'orders' && (
-                            <div className="flex flex-col items-center justify-center h-full text-center">
-                                <div className="w-16 h-16 bg-card-dark rounded-full flex items-center justify-center mb-4 text-text-secondary">
-                                    <List className="w-8 h-8" />
+                            <div className="flex flex-col items-center justify-center h-full text-center relative z-10">
+                                <div className="w-20 h-20 bg-card-dark rounded-full flex items-center justify-center mb-6 text-text-secondary border border-white/5 shadow-2xl">
+                                    <List className="w-10 h-10 opacity-50" />
                                 </div>
-                                <h3 className="text-lg font-medium text-white mb-2">No orders placed</h3>
-                                <p className="text-text-secondary text-sm max-w-sm mb-6">
-                                    You haven't placed any orders today. Use the search bar to find instruments and place an order.
+                                <h3 className="text-xl font-bold text-white mb-2">No Active Orders</h3>
+                                <p className="text-gray-500 text-sm max-w-sm mb-8 leading-relaxed">
+                                    Orders placed will appear here. Use the Watchlist or AI Signals from the sidebar to find trading opportunities.
                                 </p>
-                                <button
-                                    className="bg-primary text-white px-6 py-2 rounded font-medium text-sm hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/20"
-                                    onClick={() => document.querySelector('input')?.focus()}
-                                >
-                                    Get started
-                                </button>
                             </div>
                         )}
 
                         {activeTab === 'positions' && (
                             allPositions.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-full text-center">
-                                    <div className="w-16 h-16 bg-card-dark rounded-full flex items-center justify-center mb-4 text-text-secondary">
-                                        <LayoutDashboard className="w-8 h-8" />
+                                <div className="flex flex-col items-center justify-center h-full text-center relative z-10">
+                                    <div className="w-20 h-20 bg-card-dark rounded-full flex items-center justify-center mb-6 text-text-secondary border border-white/5 shadow-2xl">
+                                        <LayoutDashboard className="w-10 h-10 opacity-50" />
                                     </div>
-                                    <h3 className="text-lg font-medium text-white mb-2">No open positions</h3>
-                                    <p className="text-text-secondary text-sm mb-6">You don't have any open positions currently.</p>
+                                    <h3 className="text-xl font-bold text-white mb-2">Portfolio is Empty</h3>
+                                    <p className="text-gray-500 text-sm mb-8">You don't have any open positions currently.</p>
+                                    <button
+                                        onClick={() => setSidebarMode('signals')}
+                                        className="px-6 py-2.5 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 border border-purple-500/50 rounded-lg text-sm font-bold transition-all flex items-center gap-2 hover:shadow-[0_0_20px_rgba(168,85,247,0.2)]"
+                                    >
+                                        <Zap className="w-4 h-4" /> Check AI Signals
+                                    </button>
                                 </div>
                             ) : (
-                                <div className="bg-card-dark rounded border border-border-dark shadow-sm overflow-hidden">
+                                <div className="bg-card-dark rounded-xl border border-border-dark shadow-xl overflow-hidden relative z-10">
                                     <table className="w-full text-left text-sm">
-                                        <thead className="bg-background-dark text-xs font-semibold text-text-secondary uppercase tracking-wider border-b border-border-dark">
+                                        <thead className="bg-[#111] text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-border-dark">
                                             <tr>
-                                                <th className="p-4">Instrument</th>
+                                                <th className="p-4 pl-6">Instrument</th>
                                                 <th className="p-4 text-right">Qty</th>
-                                                <th className="p-4 text-right">Avg.</th>
+                                                <th className="p-4 text-right">Avg. Price</th>
                                                 <th className="p-4 text-right">LTP</th>
                                                 <th className="p-4 text-right">P&L</th>
                                                 <th className="p-4 text-center">Action</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-border-dark">
+                                        <tbody className="divide-y divide-border-dark bg-[#0a0a0a]">
                                             {allPositions.map((pos) => (
-                                                <tr key={pos.id} className="hover:bg-white/5 transition-colors">
-                                                    <td className="p-4 font-medium text-white">
+                                                <tr key={pos.id} className="hover:bg-white/5 transition-colors group">
+                                                    <td className="p-4 pl-6 font-bold text-white">
                                                         {pos.symbol}
-                                                        <span className={`text-[10px] ml-2 px-1.5 py-0.5 rounded ${pos.source === 'AGENT'
-                                                            ? 'bg-purple-500/20 text-purple-400'
-                                                            : pos.type === 'BUY' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'
+                                                        <span className={`text-[10px] ml-3 px-2 py-0.5 rounded border ${pos.source === 'AGENT'
+                                                            ? 'bg-purple-500/10 border-purple-500/20 text-purple-400'
+                                                            : pos.type === 'BUY' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' : 'bg-red-500/10 border-red-500/20 text-red-400'
                                                             }`}>
-                                                            {pos.source === 'AGENT' ? 'AGENT' : pos.type}
+                                                            {pos.source === 'AGENT' ? 'AI AGENT' : pos.type}
                                                         </span>
                                                     </td>
-                                                    <td className="p-4 text-right text-text-secondary">{pos.quantity}</td>
-                                                    <td className="p-4 text-right text-text-secondary">{pos.entry_price.toFixed(2)}</td>
-                                                    <td className="p-4 text-right text-white font-medium">{pos.current_price.toFixed(2)}</td>
-                                                    <td className={`p-4 text-right font-medium ${pos.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                    <td className="p-4 text-right text-gray-400 font-mono">{pos.quantity}</td>
+                                                    <td className="p-4 text-right text-gray-400 font-mono">{pos.entry_price.toFixed(2)}</td>
+                                                    <td className="p-4 text-right text-white font-mono font-medium">{pos.current_price.toFixed(2)}</td>
+                                                    <td className={`p-4 text-right font-bold font-mono ${pos.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                                                         {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
-                                                        <div className="text-[10px] opacity-70">
-                                                            ({pos.pnl_pct.toFixed(2)}%)
+                                                        <div className="text-[10px] opacity-60 font-medium mt-0.5">
+                                                            {pos.pnl_pct.toFixed(2)}%
                                                         </div>
                                                     </td>
                                                     <td className="p-4 text-center">
                                                         <button
                                                             onClick={() => pos.source === 'AGENT' ? closeAgentPosition(pos.id) : closePosition(pos.id)}
-                                                            className="text-xs bg-background-dark border border-border-dark hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-text-secondary px-3 py-1.5 rounded transition-all"
+                                                            className="text-xs bg-white/5 border border-white/10 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-gray-400 px-4 py-1.5 rounded-md transition-all font-medium opacity-0 group-hover:opacity-100"
                                                         >
-                                                            Exit
+                                                            Close
                                                         </button>
                                                     </td>
                                                 </tr>
                                             ))}
                                         </tbody>
+                                        <tfoot className="bg-[#111] border-t border-border-dark">
+                                            <tr>
+                                                <td colSpan={4} className="p-4 text-right text-xs font-bold text-gray-500 uppercase tracking-wider">Total Portfolio P&L</td>
+                                                <td className={`p-4 text-right font-bold font-mono text-base ${totalPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                    {totalPnL >= 0 ? '+' : ''}₹{totalPnL.toFixed(2)}
+                                                </td>
+                                                <td></td>
+                                            </tr>
+                                        </tfoot>
                                     </table>
                                 </div>
                             )
                         )}
 
                         {activeTab === 'history' && (
-                            <div className="flex flex-col items-center justify-center h-full text-center">
-                                <div className="w-16 h-16 bg-card-dark rounded-full flex items-center justify-center mb-4 text-text-secondary">
-                                    <Briefcase className="w-8 h-8" />
+                            <div className="flex flex-col items-center justify-center h-full text-center relative z-10">
+                                <div className="w-20 h-20 bg-card-dark rounded-full flex items-center justify-center mb-6 text-text-secondary border border-white/5 shadow-2xl">
+                                    <History className="w-10 h-10 opacity-50" />
                                 </div>
-                                <h3 className="text-lg font-medium text-white mb-2">No executed orders</h3>
+                                <h3 className="text-xl font-bold text-white mb-2">History Empty</h3>
+                                <p className="text-gray-500 text-sm">No executed orders found in this session.</p>
                             </div>
                         )}
                     </div>
                 </div>
             </div>
 
-            {/* Simplified Order Modal */}
+            {/* Existing Order Modal */}
             {showOrderModal && selectedSymbol && (
-                <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-8" onClick={() => setShowOrderModal(false)}>
-                    <div className="bg-card-dark w-full max-w-[420px] max-h-[85vh] rounded-xl shadow-2xl border border-border-dark flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
-                        {/* Modal Header - High Contrast */}
-                        <div className={`p-5 shrink-0 ${orderType === 'BUY' ? 'bg-blue-600' : 'bg-red-600'}`}>
-                            <div className="flex items-center justify-between mb-3">
-                                <h3 className="text-xl font-bold text-white">
+                <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-8 animate-in fade-in duration-200" onClick={() => setShowOrderModal(false)}>
+                    <div className="bg-[#111] w-full max-w-[420px] max-h-[85vh] rounded-2xl shadow-2xl border border-white/10 flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                        {/* Modal Header */}
+                        <div className={`p-6 shrink-0 ${orderType === 'BUY'
+                                ? 'bg-gradient-to-r from-blue-600 to-blue-700'
+                                : 'bg-gradient-to-r from-red-600 to-red-700'
+                            }`}>
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-2xl font-bold text-white tracking-tight">
                                     {orderType} {selectedSymbol}
                                 </h3>
                                 <button
                                     onClick={() => setShowOrderModal(false)}
-                                    className="text-white/80 hover:text-white transition-colors p-1 hover:bg-white/20 rounded"
+                                    className="text-white/80 hover:text-white transition-colors p-1.5 hover:bg-white/20 rounded-full"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="flex items-center gap-3 text-sm text-white/90">
-                                <span>LTP:</span>
-                                <span className="font-semibold">₹{selectedLTP.toLocaleString('en-IN')}</span>
-                                <span>•</span>
-                                <label className="flex items-center gap-2 cursor-pointer">
+                            <div className="flex items-center justify-between text-white/90">
+                                <div className="flex flex-col">
+                                    <span className="text-xs opacity-80 uppercase tracking-widest font-bold">LTP</span>
+                                    <span className="text-xl font-mono font-bold">₹{selectedLTP.toLocaleString('en-IN')}</span>
+                                </div>
+                                <label className="flex items-center gap-3 cursor-pointer bg-black/20 px-3 py-1.5 rounded-lg border border-white/10">
+                                    <span className="text-xs font-bold uppercase tracking-wide">Paper</span>
                                     <input
                                         type="checkbox"
-                                        className="w-4 h-4"
+                                        className="w-4 h-4 accent-white"
                                         checked={tradingMode === 'PAPER'}
                                         onChange={() => setTradingMode(tradingMode === 'LIVE' ? 'PAPER' : 'LIVE')}
                                     />
-                                    <span className="text-xs font-medium">Paper Trading</span>
                                 </label>
                             </div>
                         </div>
 
                         {/* Modal Body */}
-                        <div className="p-6 overflow-y-auto flex-1">
+                        <div className="p-8 overflow-y-auto flex-1">
                             {/* Quantity and Price */}
-                            <div className="grid grid-cols-2 gap-4 mb-6">
+                            <div className="grid grid-cols-2 gap-6 mb-8">
                                 <div>
-                                    <label className="block text-xs text-text-secondary mb-2 font-medium">Quantity</label>
+                                    <label className="block text-xs text-secondary mb-2 font-bold uppercase tracking-wider">Quantity</label>
                                     <input
                                         type="number"
                                         value={quantity}
                                         onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
-                                        className="w-full px-4 py-3 bg-background-dark border border-border-dark rounded text-sm font-semibold text-white focus:border-primary focus:outline-none"
+                                        className="w-full px-4 py-3 bg-[#1a1a1a] border border-white/10 rounded-xl text-lg font-mono font-bold text-white focus:border-blue-500 focus:outline-none transition-all"
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs text-text-secondary mb-2 font-medium">Price</label>
+                                    <label className="block text-xs text-secondary mb-2 font-bold uppercase tracking-wider">Price</label>
                                     <input
                                         type="number"
                                         value={price}
                                         disabled={orderMode === 'MARKET'}
                                         onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
-                                        className={`w-full px-4 py-3 bg-background-dark border border-border-dark rounded text-sm font-semibold text-white focus:border-primary focus:outline-none ${orderMode === 'MARKET' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        className={`w-full px-4 py-3 bg-[#1a1a1a] border border-white/10 rounded-xl text-lg font-mono font-bold text-white focus:border-blue-500 focus:outline-none transition-all ${orderMode === 'MARKET' ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     />
                                 </div>
                             </div>
 
                             {/* Order Type */}
-                            <div className="mb-6">
-                                <label className="block text-xs text-text-secondary mb-3 font-medium">Order Type</label>
-                                <div className="flex gap-3">
+                            <div className="mb-8">
+                                <label className="block text-xs text-secondary mb-3 font-bold uppercase tracking-wider">Order Type</label>
+                                <div className="flex p-1 bg-[#1a1a1a] rounded-xl border border-white/5">
                                     <button
                                         onClick={() => setOrderMode('MARKET')}
-                                        className={`flex-1 py-2.5 rounded text-sm font-medium transition-all ${orderMode === 'MARKET'
-                                            ? 'bg-primary text-white'
-                                            : 'bg-background-dark text-text-secondary hover:bg-white/5'
+                                        className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${orderMode === 'MARKET'
+                                            ? 'bg-white/10 text-white shadow-sm'
+                                            : 'text-gray-500 hover:text-white'
                                             }`}
                                     >
                                         Market
                                     </button>
                                     <button
                                         onClick={() => setOrderMode('LIMIT')}
-                                        className={`flex-1 py-2.5 rounded text-sm font-medium transition-all ${orderMode === 'LIMIT'
-                                            ? 'bg-primary text-white'
-                                            : 'bg-background-dark text-text-secondary hover:bg-white/5'
+                                        className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${orderMode === 'LIMIT'
+                                            ? 'bg-white/10 text-white shadow-sm'
+                                            : 'text-gray-500 hover:text-white'
                                             }`}
                                     >
                                         Limit
                                     </button>
                                     <button
                                         onClick={() => setOrderMode('SL')}
-                                        className={`flex-1 py-2.5 rounded text-sm font-medium transition-all ${orderMode === 'SL'
-                                            ? 'bg-primary text-white'
-                                            : 'bg-background-dark text-text-secondary hover:bg-white/5'
+                                        className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${orderMode === 'SL'
+                                            ? 'bg-white/10 text-white shadow-sm'
+                                            : 'text-gray-500 hover:text-white'
                                             }`}
                                     >
                                         Stop Loss
@@ -642,20 +768,21 @@ export default function Terminal() {
                             </div>
 
                             {/* Margin Info */}
-                            <div className="flex justify-between items-center p-4 bg-background-dark rounded mb-6">
-                                <span className="text-sm text-text-secondary">Margin required</span>
-                                <span className="text-sm font-bold text-white">₹{(price * quantity * 0.2).toLocaleString('en-IN')}</span>
+                            <div className="flex justify-between items-center p-4 bg-[#1a1a1a] rounded-xl mb-8 border border-white/5">
+                                <span className="text-sm text-gray-400 font-medium">Margin required</span>
+                                <span className="text-base font-bold text-white font-mono">₹{(price * quantity * 0.2).toLocaleString('en-IN')}</span>
                             </div>
 
                             {/* Action Button */}
                             <button
-                                onClick={() => { placeOrder(); setShowOrderModal(false); }}
-                                className={`w-full py-3.5 rounded-lg font-bold text-white shadow-lg transition-all hover:scale-[1.02] active:scale-95 ${orderType === 'BUY'
-                                    ? 'bg-blue-600 hover:bg-blue-700'
-                                    : 'bg-red-500 hover:bg-red-600'
+                                onClick={() => { executeOrder(); setShowOrderModal(false); }}
+                                className={`w-full py-4 rounded-xl font-bold text-white shadow-lg transition-all hover:scale-[1.02] active:scale-95 text-lg flex items-center justify-center gap-3 ${orderType === 'BUY'
+                                    ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/25'
+                                    : 'bg-red-600 hover:bg-red-500 shadow-red-500/25'
                                     }`}
                             >
-                                {orderType} {quantity} @ ₹{orderMode === 'MARKET' ? 'Market' : price.toFixed(2)}
+                                <Zap className="w-5 h-5 fill-current" />
+                                {orderType} {quantity} @ ₹{orderMode === 'MARKET' ? 'MKT' : price.toFixed(2)}
                             </button>
                         </div>
                     </div>

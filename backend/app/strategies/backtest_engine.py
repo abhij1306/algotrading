@@ -272,7 +272,9 @@ class BacktestEngine:
         
         # Convert equity curve to DataFrame
         equity_df = pd.DataFrame(self.equity_curve)
-        
+        if not equity_df.empty and 'timestamp' in equity_df.columns:
+            equity_df['timestamp'] = equity_df['timestamp'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+            
         # Convert trades to list of dicts with datetime serialization
         trades_list = []
         for trade in self.trades:
@@ -286,7 +288,7 @@ class BacktestEngine:
         
         # Calculate performance metrics
         metrics_calculator = PerformanceMetrics(
-            equity_curve=equity_df,
+            equity_curve=pd.DataFrame(self.equity_curve), # Pass original DF with timestamps to metrics calc
             trades=self.trades,
             initial_capital=self.config.initial_capital
         )

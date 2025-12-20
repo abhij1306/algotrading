@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, WebSocket, UploadFile, File, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, desc, func
+from sqlalchemy import create_engine, desc, func, or_, and_
 from sqlalchemy.orm import sessionmaker, Session
 from typing import List, Optional, Dict, Any
 import json
@@ -14,7 +14,6 @@ import pandas as pd
 
 # Import Smart Trader API routers
 from .smart_trader_api import router as smart_trader_router
-from .smart_trader_terminal_api import router as smart_trader_terminal_router
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,7 +31,10 @@ app.add_middleware(
 
 # Include Smart Trader routers
 app.include_router(smart_trader_router)
-app.include_router(smart_trader_terminal_router)
+
+# Include AI Insight router
+from .ai_insight_api import router as ai_insight_router
+app.include_router(ai_insight_router)
 
 # Start Cache Manager
 # Initialize Database
@@ -51,26 +53,6 @@ SCREENER_CACHE = {
 def read_root():
     return {"status": "ok", "message": "AlgoTrading Backend Running"}
 
-@app.get("/api/symbols/search")
-async def search_symbols(q: str = ""):
-    if len(q) < 1:
-        return {"symbols": []}
-    
-    from .database import SessionLocal, Company
-    db = SessionLocal()
-    try:
-        companies = db.query(Company).filter(
-            Company.symbol.ilike(f"{q}%")
-        ).order_by(Company.symbol).limit(10).all()
-        
-        return {
-            "symbols": [
-                {"symbol": c.symbol, "name": c.name} 
-                for c in companies
-            ]
-        }
-    finally:
-        db.close()
 
 @app.get("/api/sectors")
 async def get_sectors():
@@ -87,6 +69,39 @@ async def get_sectors():
         }
     finally:
         db.close()
+
+def calculate_technical_score(features: dict) -> int:
+    """
+    Calculate a 0-100 technical score based on trend and momentum.
+    """
+    score = 50  # Base score
+    
+    # 1. Trend (30 pts)
+    if features.get('ema20_above_50'):
+        score += 15
+    if features.get('price_above_ema50'):
+        score += 15
+        
+    # 2. Momentum (RSI) (30 pts)
+    rsi = features.get('rsi', 50)
+    if 50 <= rsi <= 70:
+        score += 20
+    elif rsi > 70:
+        score += 10 # Overbought but strong
+    elif rsi < 30:
+        score -= 10 # Oversold weak
+        
+    # 3. Volatility/Action (20 pts)
+    if features.get('is_20d_breakout'):
+        score += 20
+        
+    # 4. Volume (20 pts)
+    if features.get('vol_percentile', 0) > 80:
+        score += 20
+    elif features.get('vol_percentile', 0) > 50:
+        score += 10
+        
+    return min(100, max(0, score))
 
 @app.get("/api/screener")
 async def get_screener(
@@ -125,9 +140,9 @@ async def get_screener(
             )
         ).filter(Company.is_active == True)
         
-        # Add symbol filter if provided
+        # Add symbol filter if provided (partial match)
         if symbol:
-            companies_query = companies_query.filter(Company.symbol == symbol.upper())
+            companies_query = companies_query.filter(Company.symbol.ilike(f"{symbol.upper()}%"))
         
         # Add sector filter if provided
         if sector:
@@ -162,11 +177,15 @@ async def get_screener(
         offset = (page - 1) * limit
         results = companies_query.offset(offset).limit(limit).all()
         
+        # Get all symbols for bulk fetch
+        symbols = [c.symbol for c, _ in results]
+        bulk_hist = repo.get_bulk_historical_prices(symbols, days=200)
+        
         # Compute features for the paginated results only
         computed_list = []
         for company, hist_price in results:
             try:
-                hist = repo.get_historical_prices(company.symbol, days=200)
+                hist = bulk_hist.get(company.symbol)
                 if hist is not None and not hist.empty:
                     features = compute_features(company.symbol, hist)
                 else:
@@ -190,6 +209,12 @@ async def get_screener(
                 
                 if 'symbol' not in features:
                     features['symbol'] = company.symbol
+                
+                # Calculate scores
+                tech_score = calculate_technical_score(features)
+                features['intraday_score'] = tech_score
+                features['swing_score'] = tech_score # Using same model for now
+                
                 computed_list.append(features)
             except Exception as e:
                 # Fallback to basic data
@@ -1017,6 +1042,9 @@ async def run_backtest(request: BacktestRequest):
     - Uses equity data simulation (CE/PE not available yet)
     - Simulates directional trades based on strategy signals
     """
+    if not request.symbol or request.symbol.strip() == "":
+        raise HTTPException(status_code=400, detail="Symbol is required for backtesting")
+        
     db = SessionLocal()
     repo = DataRepository(db)
     
@@ -1060,7 +1088,14 @@ async def run_backtest(request: BacktestRequest):
                 # Add timestamp column for daily data
                 if 'timestamp' not in hist.columns:
                     hist = hist.reset_index()
-                    hist['timestamp'] = pd.to_datetime(hist['Date'])
+                    # repository returns index named 'date' (lowercase), so reset_index creates 'date' col
+                    if 'date' in hist.columns:
+                        hist['timestamp'] = pd.to_datetime(hist['date'])
+                    elif 'Date' in hist.columns:
+                        hist['timestamp'] = pd.to_datetime(hist['Date'])
+                    else:
+                        # Fallback if index name was lost or different
+                        hist['timestamp'] = pd.to_datetime(hist.iloc[:, 0])
                 
                 # Filter to requested date range
                 hist = hist[
@@ -1086,7 +1121,13 @@ async def run_backtest(request: BacktestRequest):
             # Add timestamp column if using Date index
             if 'timestamp' not in hist.columns:
                 hist = hist.reset_index()
-                hist['timestamp'] = pd.to_datetime(hist['Date'])
+                # Check for 'date' or 'Date' or fallback
+                if 'date' in hist.columns:
+                    hist['timestamp'] = pd.to_datetime(hist['date'])
+                elif 'Date' in hist.columns:
+                    hist['timestamp'] = pd.to_datetime(hist['Date'])
+                else:
+                    hist['timestamp'] = pd.to_datetime(hist.iloc[:, 0])
             
             # Filter to requested date range
             hist = hist[
@@ -1366,8 +1407,11 @@ async def trigger_manual_scan():
 async def get_trending_stocks(
     filter_type: str = 'ALL',
     limit: int = 50,
+    page: int = 1,
     sort_by: str = None,
     sort_order: str = 'desc',
+    symbol: Optional[str] = None,
+    sector: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -1379,19 +1423,34 @@ async def get_trending_stocks(
         limit: Maximum number of results (default 50)
         sort_by: Field to sort by (e.g., 'change_pct', 'close')
         sort_order: 'asc' or 'desc'
+        symbol: Filter by symbol substring
+        sector: Filter by sector exact match
     """
     from .trending_scanner import calculate_trending_stocks
     
     try:
-        stocks = calculate_trending_stocks(db, filter_type, limit, sort_by, sort_order)
-        # Return in same format as screener endpoint
+        stocks, total_count = calculate_trending_stocks(
+            db, 
+            filter_type, 
+            limit, 
+            page, 
+            sort_by, 
+            sort_order,
+            symbol,
+            sector
+        )
+        
+        # Calculate total pages
+        import math
+        total_pages = math.ceil(total_count / limit) if limit > 0 else 1
+        
         return {
             "data": stocks,
             "meta": {
-                "page": 1,
+                "page": page,
                 "limit": limit,
-                "total": len(stocks),
-                "total_pages": 1
+                "total": total_count,
+                "total_pages": total_pages
             }
         }
     except Exception as e:
@@ -1485,6 +1544,74 @@ async def get_copilot_suggestions():
                 "Low debt companies with strong fundamentals"
             ]
         }
+
+
+@app.get("/api/symbols/search")
+async def search_symbols(q: str, limit: int = 10, db: Session = Depends(get_db)):
+    """Search for stock symbols"""
+    if not q:
+        return []
+    
+    q = q.upper()
+    
+    results = db.query(Company).filter(
+        and_(
+            Company.is_active == True,
+            or_(
+                Company.symbol.like(f"{q}%"),  # Starts with
+                Company.name.ilike(f"%{q}%")   # Contains name
+            )
+        )
+    ).limit(limit).all()
+    
+    return {
+        "symbols": [
+            {
+                "symbol": c.symbol,
+                "name": c.name,
+                "sector": c.sector
+            }
+            for c in results
+        ]
+    }
+
+# ==================== TRADING & SIGNALS API ====================
+
+@app.get("/api/signals")
+async def get_signals(limit: int = 50):
+    """Get recent trading signals"""
+    try:
+        from .smart_trader.signal_history import get_signal_history_service
+        service = get_signal_history_service()
+        signals = service.get_all_signals(limit=limit)
+        return {"signals": signals}
+    except Exception as e:
+        print(f"Error fetching signals: {e}")
+        return {"signals": []}
+
+@app.post("/api/trading/paper/order")
+async def place_paper_order(order: dict):
+    """Place a manual paper trade"""
+    try:
+        from .smart_trader.new_orchestrator import get_orchestrator
+        orchestrator = get_orchestrator()
+        
+        # Ensure execution agent is initialized
+        if not orchestrator.execution_agent:
+             return JSONResponse(status_code=500, content={"error": "Execution agent not initialized"})
+
+        result = orchestrator.execution_agent.execute_manual_trade({
+            'symbol': order.get('symbol'),
+            'type': order.get('type'), # BUY/SELL
+            'quantity': int(order.get('quantity', 1)),
+            'price': float(order.get('price', 0)),
+            'instrument_type': order.get('instrument_type', 'EQ')
+        })
+        
+        return result
+    except Exception as e:
+        print(f"Error placing paper order: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ==================== NEWS API ENDPOINTS ====================
@@ -1610,4 +1737,4 @@ async def get_news_by_symbol(symbol: str, limit: int = 20):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -15,9 +15,12 @@ def calculate_trending_stocks(
     db: Session,
     filter_type: str = 'ALL',
     limit: int = 50,
+    page: int = 1,
     sort_by: str = None,
-    sort_order: str = 'desc'
-) -> List[Dict]:
+    sort_order: str = 'desc',
+    symbol: str = None,
+    sector: str = None
+) -> tuple[List[Dict], int]:
     """
     Get trending stocks using LIVE market data + Historical Baselines
     """
@@ -39,7 +42,7 @@ def calculate_trending_stocks(
     ).group_by(HistoricalPrice.company_id).subquery()
     
     # Query all active F&O stocks with their latest historical stats
-    candidates = db.query(
+    query = db.query(
         Company.symbol,
         Company.name,
         HistoricalPrice.avg_volume,
@@ -48,6 +51,10 @@ def calculate_trending_stocks(
         HistoricalPrice.ema_50,
         HistoricalPrice.volume_percentile,
         HistoricalPrice.close.label('hist_close'),
+        HistoricalPrice.open.label('hist_open'),
+        HistoricalPrice.volume.label('hist_volume'),
+        HistoricalPrice.trend_7d,
+        HistoricalPrice.trend_30d,
         high_52w_subquery.c.high_52w
     ).join(
         HistoricalPrice, Company.id == HistoricalPrice.company_id
@@ -63,40 +70,38 @@ def calculate_trending_stocks(
     ).filter(
         Company.is_fno == True,
         Company.is_active == True
-    ).all()
+    )
+
+    # Apply Filters (Symbol/Sector)
+    if symbol:
+        query = query.filter(Company.symbol.contains(symbol.upper()))
     
-    # 2. Fetch Live Quotes
-    # --------------------
-    symbols = [c.symbol for c in candidates]
-    live_quotes = {}
+    if sector and sector != 'all':
+        query = query.filter(Company.sector == sector)
+
+    candidates = query.all()
     
-    # Batch fetching (50 at a time) to be safe
-    batch_size = 50
-    for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i + batch_size]
-        try:
-            quotes = get_fyers_quotes(batch)
-            if quotes:
-                live_quotes.update(quotes)
-        except Exception as e:
-            print(f"Error fetching batch {i}: {e}")
-        
+    
+    # 2. Fetch Live Quotes - REMOVED for Performance
+    # We now rely on the 'update_market_data.py' script to keep DB fresh
+    # This makes the API call ~200ms instead of 3s+
+    
     # 3. Merge & Filter
     # -----------------
     results = []
     
     for c in candidates:
-        quote = live_quotes.get(c.symbol)
+        # Use DB data directly
+        price = float(c.hist_close or 0)
+        open_price = float(c.hist_open or 0)
+        volume = int(c.hist_volume or 0)
         
-        # Use live data if available, else fallback to historical close
-        if quote:
-            price = float(quote.get('ltp', 0))
-            volume = int(quote.get('volume', 0))
-            change_p = float(quote.get('change_pct', 0))
+        # Calculate daily change % (Close vs Open)
+        if open_price > 0:
+            change_p = ((price - open_price) / open_price) * 100
         else:
-            price = float(c.hist_close or 0)
-            volume = 0 # Assume 0 volume if no live data
             change_p = 0.0
+
             
         # Prepare object
         avg_vol = int(c.avg_volume) if c.avg_volume else 0
@@ -115,6 +120,8 @@ def calculate_trending_stocks(
             "atr_pct": round((price * 0.02), 2) if price > 0 else 0,  # Placeholder: 2% of price
             "rsi": float(c.rsi) if c.rsi else 50,
             "vol_percentile": float(c.volume_percentile) if c.volume_percentile else 50,
+            "trend_7d": float(c.trend_7d) if c.trend_7d is not None else 0.0,
+            "trend_30d": float(c.trend_30d) if c.trend_30d is not None else 0.0,
             "high_52w": high_52w
         }
         
@@ -164,5 +171,13 @@ def calculate_trending_stocks(
     elif filter_type == 'PRICE_SHOCKER':
         # Sort by absolute change
         results.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+    
+    # Total count after filtering
+    total_count = len(results)
+    
+    # Pagination
+    start = (page - 1) * limit
+    end = start + limit
+    paginated_results = results[start:end]
         
-    return results[:limit]
+    return paginated_results, total_count

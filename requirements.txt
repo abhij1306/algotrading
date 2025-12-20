@@ -3,5 +3,5 @@ uvicorn==0.24.0
 pandas==2.1.3
 numpy==1.26.2
 python-dotenv==1.0.0
-fyers-apiv3==3.2.1
+fyers-apiv3==3.1.7
 pyarrow==14.0.1

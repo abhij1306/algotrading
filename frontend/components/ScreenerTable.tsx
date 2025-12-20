@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+// import { Sparkline } from './Sparkline' // Temporarily unused
 
 interface Stock {
     symbol: string
@@ -13,6 +14,8 @@ interface Stock {
     intraday_score?: number
     swing_score?: number
     is_20d_breakout: boolean
+    trend_7d?: number
+    trend_30d?: number
 }
 
 interface Props {
@@ -23,6 +26,8 @@ interface Props {
 export default function ScreenerTable({ data, type }: Props) {
     const [sortKey, setSortKey] = useState<keyof Stock>('symbol')
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+    const [selectedIndex, setSelectedIndex] = useState(0)
+    const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
 
     const handleSort = (key: keyof Stock) => {
         if (sortKey === key) {
@@ -46,87 +51,252 @@ export default function ScreenerTable({ data, type }: Props) {
         return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr)
     })
 
+    // Keyboard navigation
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Ignore if user is typing
+            if (
+                e.target instanceof HTMLInputElement ||
+                e.target instanceof HTMLTextAreaElement
+            ) {
+                return
+            }
+
+            switch (e.key) {
+                case 'ArrowUp':
+                    e.preventDefault()
+                    setSelectedIndex((prev) => Math.max(0, prev - 1))
+                    break
+                case 'ArrowDown':
+                    e.preventDefault()
+                    setSelectedIndex((prev) => Math.min(sortedData.length - 1, prev + 1))
+                    break
+                case 'Enter':
+                    e.preventDefault()
+                    // TODO: Open stock detail
+                    console.log('Open detail for:', sortedData[selectedIndex]?.symbol)
+                    break
+                case ' ':
+                    e.preventDefault()
+                    // TODO: Open peek preview
+                    console.log('Peek preview for:', sortedData[selectedIndex]?.symbol)
+                    break
+            }
+        }
+
+        document.addEventListener('keydown', handleKeyDown)
+        return () => document.removeEventListener('keydown', handleKeyDown)
+    }, [sortedData, selectedIndex])
+
     const getScoreColor = (score: number) => {
-        if (score >= 80) return 'text-green-400'
-        if (score >= 60) return 'text-yellow-400'
-        return 'text-gray-400'
+        if (score >= 80) return 'text-profit glow-profit'
+        if (score >= 60) return 'text-electric-amber'
+        return 'text-text-tertiary'
+    }
+
+    const getChangePercent = (close: number, ema20: number) => {
+        return ((close - ema20) / ema20) * 100
     }
 
     if (data.length === 0) {
         return (
-            <div className="bg-slate-800/50 rounded-lg p-12 text-center border border-purple-500/30">
-                <p className="text-gray-400 text-lg">No stocks match the current filters</p>
+            <div className="glass rounded-lg p-12 text-center">
+                <p className="text-text-secondary text-lg">No stocks match the current filters</p>
             </div>
         )
     }
 
     return (
-        <div className="bg-slate-800/50 rounded-lg overflow-hidden border border-purple-500/30">
-            <div className="overflow-x-auto">
-                <table className="w-full">
-                    <thead className="bg-slate-900/50">
-                        <tr>
-                            {[
-                                { key: 'symbol', label: 'Symbol' },
-                                { key: 'close', label: 'Close' },
-                                { key: 'ema20', label: 'EMA20' },
-                                { key: 'ema50', label: 'EMA50' },
-                                { key: 'atr_pct', label: 'ATR%' },
-                                { key: 'rsi', label: 'RSI' },
-                                { key: 'vol_percentile', label: 'Vol %ile' },
-                                { key: type === 'intraday' ? 'intraday_score' : 'swing_score', label: 'Score' },
-                            ].map(({ key, label }) => (
-                                <th
-                                    key={key}
-                                    onClick={() => handleSort(key as keyof Stock)}
-                                    className="px-4 py-3 text-left text-xs font-semibold text-purple-300 uppercase tracking-wider cursor-pointer hover:bg-slate-800/50 transition"
-                                >
-                                    <div className="flex items-center gap-2">
-                                        {label}
-                                        {sortKey === key && (
-                                            <span className="text-purple-400">
-                                                {sortDir === 'asc' ? '↑' : '↓'}
-                                            </span>
-                                        )}
-                                    </div>
-                                </th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700/50">
-                        {sortedData.map((stock, idx) => {
-                            const score = type === 'intraday' ? stock.intraday_score : stock.swing_score
-                            return (
-                                <tr
-                                    key={stock.symbol}
-                                    className="hover:bg-slate-700/30 transition"
-                                >
-                                    <td className="px-4 py-3">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-bold text-white">{stock.symbol}</span>
-                                            {stock.is_20d_breakout && (
-                                                <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">
-                                                    BO
-                                                </span>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-white font-mono">₹{stock.close.toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-gray-300 font-mono">{stock.ema20.toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-gray-300 font-mono">{stock.ema50.toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-gray-300 font-mono">{stock.atr_pct.toFixed(2)}%</td>
-                                    <td className="px-4 py-3 text-gray-300 font-mono">{stock.rsi.toFixed(1)}</td>
-                                    <td className="px-4 py-3 text-gray-300 font-mono">{Math.round(stock.vol_percentile)}%</td>
-                                    <td className="px-4 py-3">
-                                        <span className={`font-bold text-lg ${getScoreColor(score || 0)}`}>
-                                            {(score || 0).toFixed(0)}
-                                        </span>
-                                    </td>
-                                </tr>
-                            )
-                        })}
-                    </tbody>
-                </table>
+        <div className="h-full overflow-auto">
+            {/* ============================================================ */}
+            {/* STICKY GLASS HEADER (Phantom Grid) */}
+            {/* ============================================================ */}
+            <div className="sticky top-0 z-10 glass-subtle">
+                <div className="grid grid-cols-8 gap-4 px-4 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">
+                    <div
+                        onClick={() => handleSort('symbol')}
+                        className="cursor-pointer hover:text-electric-blue transition-colors flex items-center gap-1"
+                    >
+                        Symbol
+                        {sortKey === 'symbol' && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                    </div>
+                    <div
+                        onClick={() => handleSort('close')}
+                        className="text-right cursor-pointer hover:text-electric-blue transition-colors flex items-center justify-end gap-1"
+                    >
+                        Price
+                        {sortKey === 'close' && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                    </div>
+                    <div
+                        onClick={() => handleSort('atr_pct')}
+                        className="text-right cursor-pointer hover:text-electric-blue transition-colors flex items-center justify-end gap-1"
+                    >
+                        ATR%
+                        {sortKey === 'atr_pct' && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                    </div>
+                    <div
+                        onClick={() => handleSort('rsi')}
+                        className="text-right cursor-pointer hover:text-electric-blue transition-colors flex items-center justify-end gap-1"
+                    >
+                        RSI
+                        {sortKey === 'rsi' && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                    </div>
+                    <div
+                        onClick={() => handleSort('vol_percentile')}
+                        className="text-right cursor-pointer hover:text-electric-blue transition-colors flex items-center justify-end gap-1"
+                    >
+                        Vol %ile
+                        {sortKey === 'vol_percentile' && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                    </div>
+                    <div className="text-right">Trend (7D)</div>
+                    <div className="text-right">Trend (30D)</div>
+                    <div
+                        onClick={() => handleSort(type === 'intraday' ? 'intraday_score' : 'swing_score')}
+                        className="text-right cursor-pointer hover:text-electric-blue transition-colors flex items-center justify-end gap-1 group relative"
+                    >
+                        Technical Score
+                        {sortKey === (type === 'intraday' ? 'intraday_score' : 'swing_score') && (
+                            <span className="text-electric-blue">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+
+                        {/* Tooltip */}
+                        <div className="absolute top-full right-0 mt-2 w-48 p-2 bg-[#1a1a1a] border border-white/10 rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                            <p className="text-[10px] text-gray-400 normal-case font-normal leading-relaxed text-left">
+                                Quant-model based on Trend, Momentum & Volatility. Higher is better.
+                            </p>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            {/* ============================================================ */}
+            {/* PHANTOM GRID ROWS (32px Dense) */}
+            {/* ============================================================ */}
+            <div className="divide-y divide-white/5">
+                {sortedData.map((stock, i) => {
+                    const score = type === 'intraday' ? stock.intraday_score : stock.swing_score
+                    const changePercent = getChangePercent(stock.close, stock.ema20)
+                    const isSelected = i === selectedIndex
+                    const isHovered = i === hoveredIndex
+
+                    return (
+                        <div
+                            key={stock.symbol}
+                            className={`grid grid-cols-8 gap-4 px-4 h-row-dense items-center
+                         row-ghost cursor-pointer transition-all
+                         ${isSelected ? 'row-active' : ''}
+                         ${isHovered ? 'bg-white/3' : ''}
+                         group`}
+                            onMouseEnter={() => setHoveredIndex(i)}
+                            onMouseLeave={() => setHoveredIndex(null)}
+                            onClick={() => setSelectedIndex(i)}
+                        >
+                            {/* Symbol */}
+                            <div className="flex items-center gap-2">
+                                <span className="font-mono font-semibold text-sm text-text-primary">
+                                    {stock.symbol}
+                                </span>
+                                {stock.is_20d_breakout && (
+                                    <span className="text-xs bg-profit/20 text-profit px-1.5 py-0.5 rounded">
+                                        BO
+                                    </span>
+                                )}
+                            </div>
+
+                            {/* Price */}
+                            <div className="text-right">
+                                <div className="font-data text-sm tabular-nums text-text-primary">
+                                    ₹{stock.close.toFixed(2)}
+                                </div>
+                                <div className={`text-xs font-data tabular-nums ${changePercent > 0 ? 'text-profit' : 'text-loss'
+                                    }`}>
+                                    {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%
+                                </div>
+                            </div>
+
+                            {/* ATR% */}
+                            <div className="text-right font-data text-sm text-text-secondary tabular-nums">
+                                {stock.atr_pct.toFixed(2)}%
+                            </div>
+
+                            {/* RSI */}
+                            <div className="text-right font-data text-sm text-text-secondary tabular-nums">
+                                {stock.rsi.toFixed(1)}
+                            </div>
+
+                            {/* Vol Percentile */}
+                            <div className="text-right font-data text-sm text-text-secondary tabular-nums">
+                                {Math.round(stock.vol_percentile)}%
+                            </div>
+
+                            {/* Trend Indicator (Real Data) */}
+                            {/* Trend Indicator (Real Data 7D) */}
+                            <div className="flex justify-end items-center">
+                                {stock.trend_7d !== undefined ? (
+                                    <span className={`text-xs font-bold tabular-nums ${stock.trend_7d >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                        {stock.trend_7d > 0 ? '+' : ''}{stock.trend_7d.toFixed(1)}%
+                                    </span>
+                                ) : (
+                                    <span className="text-xs text-text-tertiary">-</span>
+                                )}
+                            </div>
+
+                            {/* Trend Indicator (Real Data 30D) */}
+                            <div className="flex justify-end items-center">
+                                {stock.trend_30d !== undefined ? (
+                                    <span className={`text-xs font-bold tabular-nums ${stock.trend_30d >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                        {stock.trend_30d > 0 ? '+' : ''}{stock.trend_30d.toFixed(1)}%
+                                    </span>
+                                ) : (
+                                    <span className="text-xs text-text-tertiary">-</span>
+                                )}
+                            </div>
+
+                            {/* Score */}
+                            <div className="text-right">
+                                <span className={`font-data text-base font-semibold tabular-nums ${getScoreColor(score || 0)}`}>
+                                    {(score || 0).toFixed(0)}
+                                </span>
+                            </div>
+
+
+                        </div>
+                    )
+                })}
+            </div>
+
+            {/* ============================================================ */}
+            {/* KEYBOARD HINT (Bottom) */}
+            {/* ============================================================ */}
+            <div className="sticky bottom-0 glass-subtle border-t border-white/5 px-4 py-2">
+                <div className="flex items-center gap-4 text-xs text-text-tertiary">
+                    <span className="flex items-center gap-1">
+                        <kbd className="px-1.5 py-0.5 bg-white/10 rounded font-mono">↑↓</kbd>
+                        Navigate
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <kbd className="px-1.5 py-0.5 bg-white/10 rounded font-mono">Enter</kbd>
+                        Open
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <kbd className="px-1.5 py-0.5 bg-white/10 rounded font-mono">Space</kbd>
+                        Preview
+                    </span>
+                    <span className="ml-auto text-text-tertiary">
+                        {sortedData.length} stocks
+                    </span>
+                </div>
             </div>
         </div>
     )

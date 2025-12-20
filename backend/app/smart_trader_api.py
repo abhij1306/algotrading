@@ -4,6 +4,7 @@ Smart Trader API Endpoints - Updated for new architecture
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
 import json
+from pydantic import BaseModel
 
 # Import new orchestrator
 from .smart_trader.new_orchestrator import get_orchestrator
@@ -136,3 +137,61 @@ async def trigger_scan():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Terminal Integration Endpoints ---
+
+@router.get("/positions")
+async def get_positions():
+    """Get all open agent positions"""
+    try:
+        orchestrator = get_orchestrator()
+        # Ensure execution agent is initialized
+        if not hasattr(orchestrator, 'execution_agent'):
+             return {"success": True, "positions": []}
+             
+        positions = orchestrator.execution_agent.get_open_positions()
+        return {"success": True, "positions": positions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/pnl")
+async def get_pnl():
+    """Get current P&L summary"""
+    try:
+        orchestrator = get_orchestrator()
+        if not hasattr(orchestrator, 'execution_agent'):
+             return {"total_pnl": 0, "open_positions": 0}
+             
+        summary = orchestrator.execution_agent.get_pnl_summary()
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ClosePositionRequest(BaseModel):
+    trade_id: str
+
+
+@router.post("/close-position")
+async def close_position(request: ClosePositionRequest):
+    """Close a specific agent position"""
+    try:
+        orchestrator = get_orchestrator()
+        if not hasattr(orchestrator, 'execution_agent'):
+             raise HTTPException(status_code=400, detail="Execution agent not initialized")
+             
+        # For valid closing, we ideally need current price. 
+        # For paper trading, we might fetch it or just use last known LPT.
+        # But close_position expects trade_id.
+        
+        result = orchestrator.execution_agent.close_position(request.trade_id, exit_reason="Manual Close via Terminal")
+        
+        if not result.get('success'):
+             raise HTTPException(status_code=400, detail=result.get('error', 'Failed to close position'))
+             
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

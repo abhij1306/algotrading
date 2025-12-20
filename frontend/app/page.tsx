@@ -1,16 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import UnifiedPortfolioAnalyzer from '../components/UnifiedPortfolioAnalyzer';
-import StrategyConfiguration from '../components/strategies/StrategyConfiguration';
-import PerformanceMetrics from '../components/strategies/PerformanceMetrics';
-import EquityCurve from '../components/strategies/EquityCurve';
-import TradesTable from '../components/strategies/TradesTable';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import Navbar from '../components/Navbar';
-import SmartTraderDashboard from '../components/smart-trader/SmartTraderDashboard';
-import Terminal from '../components/Terminal';
-import NewsTicker from '../components/NewsTicker';
+import { useState, useEffect } from 'react'
+import SkeletonTable from '@/components/SkeletonTable'
+import { useSearchParams } from 'next/navigation'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
+import ScreenerTable from '@/components/ScreenerTable'
+import BacktestHUD from '@/components/BacktestHUD'
+import PortfolioTab from '@/components/PortfolioTab'
+import AIAssistant from '@/components/AIAssistant'
+import Terminal from '@/components/Terminal'
+import ZeroStateScreener from '@/components/ZeroStateScreener'
+import { LayoutGrid, PieChart, PlayCircle, Zap, Search, Filter, Layers, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 
 // Types
 interface Stock {
@@ -23,85 +23,47 @@ interface Stock {
   rsi: number
   vol_percentile: number
   change_pct?: number
+  intraday_score?: number
+  swing_score?: number
+  is_20d_breakout: boolean
+  trend_7d?: number
+  trend_30d?: number
 }
 
-interface FinancialRecord {
-  symbol: string
-  market_cap: number
-  revenue: number
-  net_income: number
-  eps: number
-  roe: number
-  debt_to_equity: number
-  pe_ratio: number
-}
+type MainTab = 'screener' | 'pf_analysis' | 'backtest' | 'execution'
 
-type MainTab = 'screener' | 'portfolio' | 'strategies' | 'signals' | 'terminal'
-type ScreenerTab = 'technicals' | 'financials'
+export default function RaycastPage() {
+  // Global keyboard shortcuts
+  useKeyboardShortcuts()
 
-export default function MacOSPage() {
   // State
   const [mainTab, setMainTab] = useState<MainTab>('screener')
-  const [screenerTab, setScreenerTab] = useState<ScreenerTab>('technicals')
 
-  const [isDark, setIsDark] = useState(true)
-  const [currentTime, setCurrentTime] = useState('')
+  // URL Routing
+  const searchParams = useSearchParams()
+  const view = searchParams.get('view')
 
-  // Data State
+  useEffect(() => {
+    if (view === 'screener') setMainTab('screener')
+    if (view === 'analyst') setMainTab('pf_analysis')
+    if (view === 'tester') setMainTab('backtest')
+    if (view === 'trader') setMainTab('execution')
+  }, [view])
   const [stocks, setStocks] = useState<Stock[]>([])
-  const [financials, setFinancials] = useState<FinancialRecord[]>([])
   const [loading, setLoading] = useState(false)
 
-  // Sector Filter State
+  // Filters
+  const [selectedSymbol, setSelectedSymbol] = useState('')
   const [selectedSector, setSelectedSector] = useState('all')
+  const [scannerFilter, setScannerFilter] = useState('ALL')
   const [availableSectors, setAvailableSectors] = useState<string[]>([])
 
-  // Scanner Filter State
-  const [scannerFilter, setScannerFilter] = useState('ALL')
-
-  // Pagination State
+  // Pagination
   const [page, setPage] = useState(1)
   const [limit] = useState(50)
   const [totalRecords, setTotalRecords] = useState(0)
-  const [totalPages, setTotalPages] = useState(0)
 
-  // Sorting & Upload State
-  const [sortBy, setSortBy] = useState('symbol')
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
-  const [uploading, setUploading] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<{ symbol: string, name: string }[]>([])
-  const [showAutocomplete, setShowAutocomplete] = useState(false)
-  const [selectedSymbol, setSelectedSymbol] = useState('')
-
-  // Theme effect
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const isDarkQuery = window.matchMedia('(prefers-color-scheme: dark)')
-      setIsDark(isDarkQuery.matches)
-      document.body.classList.toggle('dark', isDarkQuery.matches)
-      const listener = (e: MediaQueryListEvent) => {
-        setIsDark(e.matches)
-        document.body.classList.toggle('dark', e.matches)
-      }
-      isDarkQuery.addEventListener('change', listener)
-      return () => isDarkQuery.removeEventListener('change', listener)
-    }
-  }, [])
-
-  // Clock effect
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date().toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      }))
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [])
-
-  // Fetch sectors for filter
+  // Fetch sectors
   useEffect(() => {
     fetch('http://localhost:8000/api/sectors')
       .then(res => res.json())
@@ -109,93 +71,60 @@ export default function MacOSPage() {
       .catch(err => console.error('Failed to fetch sectors:', err))
   }, [])
 
-  // Symbol Search
-  const searchSymbols = async (query: string) => {
-    if (query.length < 1) {
-      setSearchResults([])
-      setShowAutocomplete(false)
-      return
-    }
-
-    try {
-      const res = await fetch(`http://localhost:8000/api/symbols/search?q=${encodeURIComponent(query)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setSearchResults(data.symbols || [])
-        setShowAutocomplete(data.symbols.length > 0)
-      }
-    } catch (e) {
-      console.error('Symbol search failed:', e)
-    }
-  }
-
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.toUpperCase()
-    setSearchQuery(value)
-    searchSymbols(value)
-  }
-
-  const selectSymbol = (symbol: string) => {
-    setSelectedSymbol(symbol)
-    setSearchQuery(symbol)
-    setShowAutocomplete(false)
-    setPage(1)
-  }
-
-  const clearSearch = () => {
-    setSearchQuery('')
-    setSelectedSymbol('')
-    setSearchResults([])
-    setShowAutocomplete(false)
-    setPage(1)
-  }
-
-  // Data fetching
+  // Fetch data
   const fetchData = async () => {
     setLoading(true)
     try {
-      if (mainTab === 'screener') {
-        // Determine endpoint based on filter
-        let endpoint = screenerTab === 'technicals' ? '/api/screener' : '/api/screener/financials'
+      let endpoint = '/api/screener'
+      if (scannerFilter !== 'ALL') {
+        endpoint = '/api/screener/trending'
+      }
 
-        // If scanner filter is active, use trending endpoint instead
-        if (scannerFilter !== 'ALL') {
-          endpoint = '/api/screener/trending'
-        }
+      let url = `http://localhost:8000${endpoint}?page=${page}&limit=${limit}`
 
-        let url = `http://localhost:8000${endpoint}?page=${page}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`
+      if (scannerFilter !== 'ALL') {
+        url += `&filter_type=${scannerFilter}`
+      }
+      if (selectedSymbol) {
+        url += `&symbol=${selectedSymbol}`
+      }
+      if (selectedSector && selectedSector !== 'all') {
+        url += `&sector=${encodeURIComponent(selectedSector)}`
+      }
 
-        // Add scanner filter type if active
-        if (scannerFilter !== 'ALL') {
-          url += `&filter_type=${scannerFilter}`
-        }
-
-        // Add symbol filter if selected
-        if (selectedSymbol) {
-          url += `&symbol=${selectedSymbol}`
-        }
-
-        // Add sector filter if selected
-        if (selectedSector && selectedSector !== 'all') {
-          url += `&sector=${encodeURIComponent(selectedSector)}`
-        }
-
-        const res = await fetch(url)
-        const json = await res.json()
-
-        if (json.data) {
-          if (screenerTab === 'technicals' || scannerFilter !== 'ALL') {
-            // Both normal technicals and scanner filters use the stocks array
-            setStocks(json.data)
-          } else {
-            setFinancials(json.data)
+      // 1. CACHE CHECK (Stale-while-revalidate)
+      const cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${selectedSymbol}_${selectedSector}_${scannerFilter}`
+      const cached = localStorage.getItem(cacheKey)
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached)
+          setStocks(parsed.data || parsed) // Handle {data: [], meta: ...} vs []
+          if (parsed.meta) {
+            setTotalRecords(parsed.meta.total || 0)
           }
-          if (json.meta) {
-            setTotalRecords(json.meta.total || 0)
-            setTotalPages(json.meta.total_pages || 0)
-          }
+          setLoading(false) // Show cached immediately
+        } catch (e) {
+          console.error("Cache parse error", e)
         }
       }
+
+      // 2. NETWORK FETCH
+      const res = await fetch(url)
+      const json = await res.json()
+
+      if (json.data) {
+        setStocks(json.data)
+        if (json.meta) {
+          setTotalRecords(json.meta.total || 0)
+        }
+        // Update cache
+        localStorage.setItem(cacheKey, JSON.stringify(json))
+      } else if (Array.isArray(json)) {
+        // Fallback if API returns array directly
+        setStocks(json)
+        localStorage.setItem(cacheKey, JSON.stringify(json))
+      }
+
     } catch (e) {
       console.error(e)
     } finally {
@@ -204,618 +133,224 @@ export default function MacOSPage() {
   }
 
   useEffect(() => {
-    fetchData()
-  }, [mainTab, screenerTab, page, sortBy, sortOrder, selectedSymbol, selectedSector, scannerFilter])
-
-  // Live price updates for screener
-  useEffect(() => {
-    if (mainTab !== 'screener' || screenerTab !== 'technicals' || stocks.length === 0) {
-      return
+    if (mainTab === 'screener') {
+      fetchData()
     }
+  }, [mainTab, page, selectedSymbol, selectedSector, scannerFilter])
 
-    const updateLivePrices = async () => {
-      try {
-        const symbols = stocks.map(s => s.symbol).join(',')
-        const res = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbols}`)
-        const data = await res.json()
+  const tabs = [
+    { id: 'screener', label: 'SCREENER', icon: LayoutGrid, role: 'Data Foundation (Deterministic)' },
+    { id: 'pf_analysis', label: 'ANALYST', icon: PieChart, role: 'Insight & Risk (Multi-Agent)' },
+    { id: 'backtest', label: 'TESTER', icon: PlayCircle, role: 'Optimization Lab (Simulation)' },
+    { id: 'execution', label: 'TRADER', icon: Zap, role: 'Self-Learning Execution' },
+  ]
 
-        if (data.quotes) {
-          setStocks(prevStocks =>
-            prevStocks.map(stock => {
-              const liveData = data.quotes[stock.symbol]
-              if (liveData && liveData.ltp) {
-                return {
-                  ...stock,
-                  close: liveData.ltp,
-                  change_pct: liveData.change_pct || 0
-                }
-              }
-              return stock
-            })
-          )
-        }
-      } catch (err) {
-        console.error('Failed to fetch live prices:', err)
-      }
-    }
-    updateLivePrices()
-    const interval = setInterval(updateLivePrices, 5000)
-    return () => clearInterval(interval)
-  }, [mainTab, screenerTab, stocks.length, scannerFilter])
-
-  // Pagination Handler
-  const handlePageChange = (newPage: number) => {
-    if (newPage >= 1 && newPage <= totalPages) {
-      setPage(newPage)
-    }
-  }
-
-  // Sorting Handler
-  const handleSort = (field: string) => {
-    if (sortBy === field) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortBy(field)
-      setSortOrder('desc')
-    }
-    setPage(1)
-  }
-
-  // File Upload Handler
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files
-    if (!files || files.length === 0) return
-
-    setUploading(true)
-    const formData = new FormData()
-
-    Array.from(files).forEach((file) => {
-      formData.append('files', file)
-    })
-
-    try {
-      const res = await fetch('http://localhost:8000/api/upload/bulk-financials', {
-        method: 'POST',
-        body: formData
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        let message = data.message
-        if (data.summary) {
-          if (data.summary.symbols_updated && data.summary.symbols_updated.length > 0) {
-            message += `\n\nUpdated: ${data.summary.symbols_updated.join(', ')}`
-          }
-          if (data.summary.symbols_not_found && data.summary.symbols_not_found.length > 0) {
-            message += `\n\nNot in database: ${data.summary.symbols_not_found.join(', ')}`
-          }
-        }
-        alert(message)
-        fetchData()
-      } else {
-        const errorText = await res.text()
-        try {
-          const err = JSON.parse(errorText)
-          alert('Upload failed: ' + (err.detail || 'Unknown error'))
-        } catch {
-          alert('Upload failed: ' + errorText)
-        }
-      }
-    } catch (e) {
-      console.error('Upload exception:', e)
-      alert('Upload failed: ' + (e instanceof Error ? e.message : 'Server error'))
-    } finally {
-      setUploading(false)
-      event.target.value = ''
-    }
-  }
-
-  // Helper for Header Sort Icon
-  const SortIcon = ({ field }: { field: string }) => {
-    if (sortBy !== field) return <span className="ml-1 opacity-20">⇅</span>
-    return <span className="ml-1 opacity-100">{sortOrder === 'asc' ? '↑' : '↓'}</span>
-  }
-
-  const Th = ({ field, label, align = 'right' }: { field: string, label: string, align?: string }) => (
-    <th
-      className={`px-6 py-4 text-xs font-semibold opacity-60 tracking-wider cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors select-none text-${align}`}
-      onClick={() => handleSort(field)}
-    >
-      <div className={`flex items-center ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
-        {label}
-        <SortIcon field={field} />
-      </div>
-    </th>
-  )
-
-  // Render Technicals Table
-  const renderTechnicals = () => (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="sticky top-0 z-20 bg-white/50 dark:bg-black/50 backdrop-blur-md border-b border-gray-200/20 dark:border-gray-700/30">
-          <tr>
-            <Th field="symbol" label="SYMBOL" align="left" />
-            <Th field="close" label="LTP" />
-            <Th field="change_pct" label="CHANGE %" />
-            <Th field="volume" label="VOLUME" />
-            <Th field="ema20" label="EMA 20" />
-            <Th field="ema50" label="EMA 50" />
-            <Th field="atr_pct" label="ATR%" />
-            <Th field="rsi" label="RSI" />
-            <Th field="vol_percentile" label="VOL %" />
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border-dark">
-          {loading ? (
-            Array.from({ length: 10 }).map((_, i) => (
-              <tr key={i} className="animate-pulse">
-                <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-              </tr>
-            ))
-          ) : (
-            stocks.map((stock) => {
-              const rowColor = stock.change_pct
-                ? stock.change_pct > 0 ? 'bg-green-900/10' : stock.change_pct < 0 ? 'bg-red-900/10' : ''
-                : '';
-              return (
-                <tr key={stock.symbol} className={`group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300 ${rowColor}`}>
-                  <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
-                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                    {stock.close.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
-                  </td>
-                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm">
-                    {stock.change_pct !== undefined && stock.change_pct !== 0 ? (
-                      <span className={`font-bold ${stock.change_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {stock.change_pct > 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
-                      </span>
-                    ) : (
-                      <span className="opacity-40">-</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-80">
-                    {stock.volume ? (stock.volume / 100000).toFixed(2) + 'L' : '-'}
-                  </td>
-                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema20?.toFixed(2) ?? '-'}</td>
-                  <td className="px-6 py-4 text-right text-sm opacity-60 font-sans tabular-nums tracking-tight">{stock.ema50?.toFixed(2) ?? '-'}</td>
-                  <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                    <span className={`${(stock.atr_pct ?? 0) > 2.5 ? 'text-red-500' : 'opacity-80'}`}>
-                      {stock.atr_pct?.toFixed(2) ?? '-'}%
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right text-sm font-sans tabular-nums tracking-tight">
-                    <span className={`${(stock.rsi ?? 50) > 70 ? 'text-purple-500 font-bold' : (stock.rsi ?? 50) < 30 ? 'text-blue-500 font-bold' : 'opacity-80'}`}>
-                      {stock.rsi?.toFixed(1) ?? '-'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right text-sm opacity-80 font-sans tabular-nums tracking-tight">{Math.round(stock.vol_percentile ?? 0)}%</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
-    </div>
-  )
-
-  // Render Financials Table
-  const renderFinancials = () => (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="sticky top-0 z-20 bg-background-dark/95 backdrop-blur-md border-b border-border-dark">
-          <tr>
-            <Th field="symbol" label="SYMBOL" align="left" />
-            <Th field="market_cap" label="MARKET CAP (Cr)" align="right" />
-            <Th field="revenue" label="REVENUE (Cr)" align="right" />
-            <Th field="net_income" label="NET INCOME (Cr)" align="right" />
-            <Th field="eps" label="EPS" align="right" />
-            <Th field="roe" label="ROE %" align="right" />
-            <Th field="ev_ebitda" label="EV/EBITDA" align="right" />
-            <Th field="pe_ratio" label="P/E" align="right" />
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border-dark">
-          {loading ? (
-            Array.from({ length: 10 }).map((_, i) => (
-              <tr key={i} className="animate-pulse">
-                <td className="px-6 py-4"><div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-12 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-                <td className="px-6 py-4"><div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded ml-auto"></div></td>
-              </tr>
-            ))
-          ) : (
-            financials.map((stock) => (
-              <tr key={stock.symbol} className="group transition-colors hover:bg-primary/5 border-b border-border-dark last:border-0 text-gray-300">
-                <td className="px-6 py-4 font-semibold text-[15px]">{stock.symbol}</td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.market_cap ? (stock.market_cap / 1000).toFixed(2) : '-'}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.revenue ? (stock.revenue).toFixed(2) : '-'}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.net_income ? (stock.net_income).toFixed(2) : '-'}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.eps ? stock.eps.toFixed(2) : '-'}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.roe ? stock.roe.toFixed(2) : '-'}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {(() => {
-                    const ev = (stock.market_cap || 0) + ((stock.debt_to_equity || 0) * (stock.market_cap || 0) / 100);
-                    const ebitda = stock.net_income || 0;
-                    const evEbitda = ebitda > 0 ? ev / ebitda : 0;
-                    return evEbitda > 0 ? evEbitda.toFixed(2) : '-';
-                  })()}
-                </td>
-                <td className="px-6 py-4 text-right font-sans tabular-nums tracking-tight text-sm opacity-90">
-                  {stock.pe_ratio ? stock.pe_ratio.toFixed(2) : '-'}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  )
-
-  // Removed renderTrending - scanner filters now use the same technicals table
+  const activeAgent = tabs.find(t => t.id === mainTab)
 
   return (
-    <div className="min-h-screen bg-background-dark text-white font-sans transition-colors duration-300">
-      <Navbar activeTab={mainTab} onTabChange={setMainTab} />
+    <div className="h-screen bg-[#050505] text-gray-200 flex flex-col overflow-hidden font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
 
-      <div className="max-w-[1920px] mx-auto px-6 py-6">
-        {/* Content */}
-        {
-          mainTab === 'screener' ? (
-            <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4">
-              {/* Sidebar Filters */}
-              <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark p-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-bold opacity-60">FILTERS</h3>
-                  <button
-                    onClick={() => { setSelectedSector('all'); setSelectedSymbol(''); setSearchQuery(''); setScannerFilter('ALL'); }}
-                    className="text-xs text-primary hover:text-white transition-colors"
+      {/* ============================================================ */}
+      {/* ULTRA-COMPACT HEADER (32px height equivalent)                */}
+      {/* ============================================================ */}
+      <nav className="h-14 border-b border-white/5 bg-[#080808]/80 backdrop-blur-md flex items-center px-4 justify-between shrink-0 z-50">
+
+        {/* Creative Logo */}
+        <div className="flex items-center gap-3 group cursor-default">
+          <div className="relative w-9 h-9 flex items-center justify-center transition-transform group-hover:scale-105 duration-500">
+            <div className="absolute inset-0 bg-gradient-to-tr from-cyan-600/30 to-purple-600/30 rounded-xl blur-md group-hover:blur-lg transition-all"></div>
+            <div className="absolute inset-0 border border-white/10 rounded-xl bg-[#0A0A0A]/80 backdrop-blur-xl"></div>
+
+            {/* Animated Gradient Border */}
+            <div className="absolute inset-0 rounded-xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
+
+            <div className="relative font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-tr from-cyan-400 to-purple-400 text-sm">
+              ST
+            </div>
+
+            {/* Tech Accents */}
+            <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-cyan-400 rounded-full shadow-[0_0_8px_rgba(34,211,238,0.8)]"></div>
+            <div className="absolute bottom-0 left-0 w-1 h-1 bg-purple-500 rounded-full opacity-50"></div>
+          </div>
+
+          <div className="h-8 w-[1px] bg-white/5 mx-1"></div>
+
+          <div className="flex flex-col justify-center">
+            <span className="font-bold text-sm tracking-widest text-white leading-none">
+              SMAR<span className="text-cyan-400">TRADER</span>
+            </span>
+            <span className="text-[9px] text-gray-500 font-mono tracking-[0.2em] uppercase mt-0.5 flex items-center gap-1.5">
+              AI NATIVE <div className="w-1 h-1 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.6)] animate-pulse"></div>
+            </span>
+          </div>
+        </div>
+
+        {/* Floating Tab Bar */}
+        <div className="flex items-center bg-white/5 rounded-full p-1 border border-white/5">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setMainTab(tab.id as MainTab)}
+              className={`relative px-4 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 flex items-center gap-2 ${mainTab === tab.id
+                ? 'text-white shadow-[0_0_20px_rgba(34,211,238,0.15)] bg-white/5'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                }`}
+            >
+              {mainTab === tab.id && (
+                <div className="absolute inset-0 rounded-full bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-white/5"></div>
+              )}
+              <tab.icon className={`w-3.5 h-3.5 ${mainTab === tab.id ? 'text-cyan-400' : ''}`} />
+              <span className="relative z-10">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Agent Identity & Status */}
+        <div className="flex items-center gap-4">
+          <div className="flex flex-col items-end mr-2 w-64">
+            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Active Agent</span>
+            <span className="text-xs text-cyan-400 font-mono truncate">{activeAgent?.role}</span>
+          </div>
+
+          <div className="h-8 w-[1px] bg-white/10"></div>
+
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-gray-800 to-gray-900 border border-white/10 flex items-center justify-center text-xs font-bold text-gray-400 hover:text-white hover:border-white/30 transition-all cursor-pointer">
+            AB
+          </div>
+        </div>
+      </nav>
+
+      {/* ============================================================ */}
+      {/* MAIN CONTENT AREA */}
+      {/* ============================================================ */}
+      <main className="flex-1 overflow-hidden relative flex flex-col p-6">
+
+        {/* TAB 1: SCREENER (Restored Raycast Style) */}
+        {mainTab === 'screener' && (
+          <div className="h-full flex flex-col gap-4">
+
+            {/* Control Bar (Single Row, Floating) */}
+            <div className="glass-subtle rounded-xl border border-white/5 flex items-center px-4 py-2 gap-3 bg-[#080808]/80 backdrop-blur-md shrink-0 shadow-lg">
+
+              {/* Search (Autocomplete) */}
+              <div className="relative group w-64 z-20">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 group-focus-within:text-cyan-400 transition-colors pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Search symbols..."
+                  value={selectedSymbol}
+                  onChange={(e) => setSelectedSymbol(e.target.value.toUpperCase())}
+                  onFocus={() => { /* Open dropdown logic if needed, currently simplistic */ }}
+                  className="w-full h-8 pl-9 pr-3 rounded-lg bg-[#0A0A0A] border border-white/10 text-xs text-white focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-all placeholder:text-gray-600 uppercase"
+                />
+              </div>
+
+              <div className="h-4 w-[1px] bg-white/10"></div>
+
+              {/* Filters in one row */}
+              <div className="flex items-center gap-2 flex-1">
+                <div className="relative">
+                  <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                  <select
+                    value={selectedSector}
+                    onChange={(e) => setSelectedSector(e.target.value)}
+                    className="h-8 pl-8 pr-8 rounded-lg bg-[#0A0A0A] border border-white/10 text-xs text-gray-300 focus:outline-none focus:border-cyan-500/50 appearance-none hover:bg-white/5 cursor-pointer min-w-[140px]"
                   >
-                    Reset
+                    <option value="all" className="bg-[#0A0A0A] text-gray-300">All Sectors</option>
+                    {availableSectors.map((sector) => (
+                      <option key={sector} value={sector} className="bg-[#0A0A0A] text-gray-300">{sector}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="relative">
+                  <Layers className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                  <select
+                    value={scannerFilter}
+                    onChange={(e) => setScannerFilter(e.target.value)}
+                    className="h-8 pl-8 pr-8 rounded-lg bg-[#0A0A0A] border border-white/10 text-xs text-gray-300 focus:outline-none focus:border-cyan-500/50 appearance-none hover:bg-white/5 cursor-pointer min-w-[160px]"
+                  >
+                    <option value="ALL" className="bg-[#0A0A0A] text-gray-300">All Stocks</option>
+                    <option value="VOLUME_SHOCKER" className="bg-[#0A0A0A] text-gray-300">🔥 Volume Shockers</option>
+                    <option value="PRICE_SHOCKER" className="bg-[#0A0A0A] text-gray-300">🚀 Price Shockers</option>
+                    <option value="52W_HIGH" className="bg-[#0A0A0A] text-gray-300">📈 52 Week High</option>
+                    <option value="52W_LOW" className="bg-[#0A0A0A] text-gray-300">📉 52 Week Low</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={() => { setSelectedSymbol(''); setSelectedSector('all'); setScannerFilter('ALL'); }}
+                  className="h-8 w-8 flex items-center justify-center rounded-lg bg-[#0A0A0A] border border-white/10 text-gray-500 hover:text-white hover:border-white/30 transition-all"
+                  title="Reset Filters"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+
+            </div>
+
+            {/* Content Area - Raycast Style Glass Container */}
+            <div className="flex-1 glass rounded-xl overflow-hidden relative border border-white/5 bg-[#050505]/50 backdrop-blur-sm shadow-2xl flex flex-col">
+              {/* SCREENER TABLE or SKELETON */}
+              <div className="flex-1 min-h-0 relative">
+                {loading && stocks.length === 0 ? (
+                  <SkeletonTable rows={15} />
+                ) : stocks.length > 0 ? (
+                  <ScreenerTable data={stocks} type="intraday" />
+                ) : (
+                  <ZeroStateScreener />
+                )}
+              </div>
+
+              {/* Bottom Bar: Pagination & Stats */}
+              <div className="h-12 border-t border-white/5 flex items-center justify-between px-4 bg-white/2">
+                <div className="text-xs text-gray-500 font-mono">
+                  Showing {stocks.length} results
+                </div>
+
+                {/* Pagination Controls moved here */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="h-8 w-8 flex items-center justify-center rounded-lg bg-[#0A0A0A] border border-white/10 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="text-xs font-mono text-gray-400 min-w-[60px] text-center bg-[#0A0A0A] py-1.5 rounded-md border border-white/5">
+                    PAGE {page}
+                  </span>
+                  <button
+                    onClick={() => setPage(p => p + 1)}
+                    disabled={stocks.length < limit}
+                    className="h-8 w-8 flex items-center justify-center rounded-lg bg-[#0A0A0A] border border-white/10 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
-
-                <div className="space-y-6">
-                  {/* Symbol Search */}
-                  <div>
-                    <label className="block text-xs font-medium opacity-60 mb-2">Symbol</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={searchQuery}
-                        onChange={handleSearchChange}
-                        onFocus={() => searchQuery.length > 0 && setShowAutocomplete(true)}
-                        onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
-                        placeholder="Search ticker..."
-                        className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
-                      />
-                      <svg className="absolute right-3 top-2.5 w-4 h-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                      </svg>
-
-                      {/* Autocomplete Dropdown */}
-                      {showAutocomplete && searchResults.length > 0 && (
-                        <div className="absolute z-50 w-full mt-1 bg-card-dark rounded-lg shadow-xl border border-border-dark max-h-60 overflow-y-auto">
-                          {searchResults.map((result) => (
-                            <button
-                              key={result.symbol}
-                              onClick={() => selectSymbol(result.symbol)}
-                              className="w-full px-4 py-2 text-left hover:bg-primary/10 transition-colors text-sm border-b border-border-dark last:border-0"
-                            >
-                              <div className="font-medium text-white">{result.symbol}</div>
-                              {result.name && <div className="text-xs opacity-60">{result.name}</div>}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {selectedSymbol && (
-                      <div className="mt-2 flex items-center justify-between bg-primary/10 px-2 py-1 rounded border border-primary/20">
-                        <span className="text-xs font-bold text-primary">{selectedSymbol}</span>
-                        <button onClick={clearSearch} className="text-primary hover:text-white">×</button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Sector Filter */}
-                  <div>
-                    <label className="block text-xs font-medium opacity-60 mb-2">Sector</label>
-                    <select
-                      id="sector-filter"
-                      name="sector-filter"
-                      value={selectedSector}
-                      onChange={(e) => { setSelectedSector(e.target.value); setPage(1); }}
-                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary-purple transition-colors"
-                    >
-                      <option value="all">All Sectors</option>
-                      {availableSectors.map((sector: string) => (
-                        <option key={sector} value={sector}>{sector}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Scanner Filter - New! */}
-                  <div>
-                    <label className="block text-xs font-medium opacity-60 mb-2">Market Scans</label>
-                    <select
-                      id="scanner-filter"
-                      name="scanner-filter"
-                      value={scannerFilter}
-                      onChange={(e) => { setScannerFilter(e.target.value); setPage(1); }}
-                      className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm focus:outline-none focus:border-primary transition-colors"
-                    >
-                      <option value="ALL">Default View</option>
-                      <option value="VOLUME_SHOCKER">🔥 Volume Shockers</option>
-                      <option value="PRICE_SHOCKER">🚀 Price Shockers</option>
-                      <option value="52W_HIGH">📈 52 Week High</option>
-                      <option value="52W_LOW">📉 52 Week Low</option>
-                    </select>
-                    <div className="mt-2 text-[10px] text-gray-500 leading-tight">
-                      Showing real-time signals from Smart Trader algorithms.
-                    </div>
-                  </div>
-
-                  {/* News Ticker */}
-                  <div>
-                    <h3 className="text-xs font-medium opacity-60 mb-2">Market News</h3>
-                    <div className="h-[400px] overflow-hidden rounded-lg bg-background-dark/50 border border-border-dark/50 p-1">
-                      <NewsTicker />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Main Content */}
-              <div className="col-span-9 space-y-4">
-                {/* Sub-Tabs & Actions (only if Scanner not active) */}
-                {scannerFilter === 'ALL' && (
-                  <div className="flex items-center justify-between bg-card-dark rounded-xl border border-border-dark p-2">
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => { setScreenerTab('technicals'); setPage(1); }}
-                        className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'technicals' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
-                      >
-                        Technicals
-                      </button>
-                      <button
-                        onClick={() => { setScreenerTab('financials'); setPage(1); }}
-                        className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${screenerTab === 'financials' ? 'bg-background-dark text-white shadow-sm border border-border-dark' : 'text-text-secondary hover:text-white'}`}
-                      >
-                        Financials
-                      </button>
-                    </div>
-
-                    {screenerTab === 'financials' && (
-                      <label className={`
-                         flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all
-                         ${uploading ? 'bg-background-dark opacity-50 cursor-wait' : 'bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20'}
-                      `}>
-                        {uploading ? 'Uploading...' : 'Upload Excel(s)'}
-                        <input
-                          type="file"
-                          accept=".xlsx, .xls, .csv"
-                          multiple
-                          className="hidden"
-                          onChange={handleFileUpload}
-                          disabled={uploading}
-                        />
-                      </label>
-                    )}
-                  </div>
-                )}
-
-                {scannerFilter !== 'ALL' && (
-                  <div className="bg-gradient-to-r from-purple-900/20 to-blue-900/20 rounded-xl border border-purple-500/30 p-4 flex justify-between items-center">
-                    <div>
-                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        {scannerFilter === 'VOLUME_SHOCKER' && '🔥 Volume Shockers'}
-                        {scannerFilter === 'PRICE_SHOCKER' && '🚀 Price Shockers'}
-                        {scannerFilter === '52W_HIGH' && '📈 52 Week High Breakouts'}
-                        {scannerFilter === '52W_LOW' && '📉 52 Week Low Breakdowns'}
-                      </h3>
-                      <p className="text-xs text-gray-400">Real-time opportunities detected by Smart Trader</p>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-2xl font-bold font-mono">{totalRecords}</span>
-                      <span className="text-xs text-gray-400 block">Active Signals</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Active Filters Row */}
-                {scannerFilter === 'ALL' && (
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="opacity-60">Results:</span>
-                    <span className="text-white font-medium">{totalRecords} stocks</span>
-                    {selectedSector !== 'all' && <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/20">Sector: {selectedSector}</span>}
-                  </div>
-                )}
-
-                {/* DATA TABLE CONTAINER */}
-                <div className="bg-card-dark rounded-xl border border-border-dark overflow-hidden flex flex-col shadow-lg shadow-black/20" style={{ minHeight: '600px' }}>
-                  <div className="flex-grow overflow-auto">
-                    {screenerTab === 'technicals' ? renderTechnicals() : renderFinancials()}
-                  </div>
-
-                  {/* Pagination Controls - Hide for signals as we show all */}
-                  {scannerFilter === 'ALL' && (
-                    <div className="flex items-center justify-between p-4 border-t border-border-dark bg-card-dark">
-                      <span className="text-sm opacity-60">
-                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, totalRecords)} of {totalRecords} entries
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handlePageChange(page - 1)}
-                          disabled={page <= 1}
-                          className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        >
-                          Previous
-                        </button>
-                        <span className="text-sm font-medium px-2">
-                          Page {page} of {totalPages}
-                        </span>
-                        <button
-                          onClick={() => handlePageChange(page + 1)}
-                          disabled={page >= totalPages}
-                          className="px-3 py-1.5 rounded-lg text-sm bg-background-dark border border-border-dark hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        >
-                          Next
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
-          ) : mainTab === 'portfolio' ? (
-            <div className="animate-in fade-in slide-in-from-bottom-4">
-              <PortfolioRiskTab />
-            </div>
-          ) : mainTab === 'strategies' ? (
-            <div className="animate-in fade-in slide-in-from-bottom-4">
-              <StrategiesTab />
-            </div>
-          ) : mainTab === 'signals' ? (
-            <div className="animate-in fade-in slide-in-from-bottom-4">
-              <SignalsTab />
-            </div>
-          ) : null}
-      </div>
+          </div>
+        )}
+
+        {/* TABS 2, 3, 4: Keep mounted, hide with CSS */}
+        <div className={`h-full w-full glass rounded-xl overflow-hidden border border-white/5 bg-[#050505]/50 backdrop-blur-sm shadow-2xl p-6 ${mainTab === 'pf_analysis' ? '' : 'hidden'}`}>
+          <PortfolioTab />
+        </div>
+
+        <div className={`h-full w-full glass rounded-xl overflow-hidden border border-white/5 bg-[#050505]/50 backdrop-blur-sm shadow-2xl p-6 ${mainTab === 'backtest' ? '' : 'hidden'}`}>
+          <BacktestHUD />
+        </div>
+
+        <div className={`h-full w-full glass rounded-xl overflow-hidden border border-white/5 bg-[#050505]/50 backdrop-blur-sm shadow-2xl ${mainTab === 'execution' ? '' : 'hidden'}`}>
+          <Terminal />
+        </div>
+
+      </main>
+
+      {/* FIXED AI ASSISTANT OVERLAY */}
+      <AIAssistant />
     </div>
   )
-}
-
-// Signals Tab Component
-function SignalsTab() {
-  return <SmartTraderDashboard />;
-}
-
-// Terminal Tab Component
-function TerminalTab() {
-  return <Terminal />;
-}
-
-
-// Portfolio Risk Tab Component - Now Using Unified Interface
-function PortfolioRiskTab() {
-  return <UnifiedPortfolioAnalyzer />;
-}
-
-// Strategies Tab Component
-function StrategiesTab() {
-  const [backtestResults, setBacktestResults] = useState<any>(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleRunBacktest = async (config: any) => {
-    setIsRunning(true);
-    setError(null);
-
-    try {
-      const response = await fetch('http://localhost:8000/api/strategies/backtest', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          strategy_name: config.strategy,
-          symbol: config.symbol,
-          start_date: config.startDate,
-          end_date: config.endDate,
-          timeframe: config.timeframe,
-          initial_capital: config.initialCapital,
-          params: {
-            opening_range_minutes: config.openingRangeMinutes,
-            stop_loss_pct: config.stopLoss,
-            take_profit_pct: config.takeProfit,
-            max_positions_per_day: config.maxPositions,
-            trade_type: config.segment,
-            trailing_sl: config.trailingSL
-          }
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Backtest failed');
-      }
-
-      const data = await response.json();
-      setBacktestResults(data);
-    } catch (err: any) {
-      setError(err.message);
-      console.error('Backtest error:', err);
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  return (
-    <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4">
-      {/* Left Sidebar - Configuration */}
-      <div className="col-span-3 bg-card-dark rounded-xl border border-border-dark py-4 h-[calc(100vh-140px)] sticky top-24 overflow-y-auto">
-        <StrategyConfiguration onRunBacktest={handleRunBacktest} isRunning={isRunning} />
-      </div>
-
-      {/* Main Content - Results */}
-      <div className="col-span-9 space-y-6 h-[calc(100vh-140px)] overflow-y-auto pr-2">
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 text-red-400 text-sm">
-            {error}
-          </div>
-        )}
-
-        {isRunning && (
-          <div className="h-full flex items-center justify-center">
-            <div className="bg-card-dark rounded-xl border border-border-dark p-12 text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary mx-auto mb-4"></div>
-              <p className="text-gray-400">Running Backtest Strategy...</p>
-            </div>
-          </div>
-        )}
-
-        {!isRunning && backtestResults && (
-          <>
-            <div className="grid grid-cols-3 gap-6">
-              <PerformanceMetrics metrics={backtestResults.metrics} />
-              <div className="col-span-2">
-                <EquityCurve data={backtestResults.equity_curve} />
-              </div>
-            </div>
-            <TradesTable trades={backtestResults.trades} />
-          </>
-        )}
-
-        {!isRunning && !backtestResults && !error && (
-          <div className="h-full flex items-center justify-center text-gray-500">
-            <div className="text-center">
-              <div className="text-4xl mb-2">📊</div>
-              <p>Select a strategy and parameters to begin backtesting</p>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }

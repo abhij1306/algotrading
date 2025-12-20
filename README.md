@@ -1,4 +1,4 @@
-# AlgoTrading System — Research & Backtesting Platform
+# SmartTrader v2 — AlgoTrading System
 
 **A personal, zero-cost algorithmic trading research system built to backtest strategies, analyze trades, and generate deterministic intraday and swing signals using clean data pipelines and modern tooling.**
 
@@ -7,6 +7,16 @@
 [![Companies](https://img.shields.io/badge/companies-2426-orange)]()
 
 This project focuses on **correct data modeling**, **reproducibility**, and **disciplined system design**, not black-box prediction.
+
+
+---
+
+## 🚀 New in v2 (Release Notes)
+
+- **🤖 AI Copilot Integration**: Context-aware chat assistant that sits on top of your market data, ready to answer questions about trends, risks, and strategies.
+- **📊 Enhanced Screener**: Now powered by a real-time **Technical Score (0-100)** model aggregating Trend, Momentum (RSI), and Volatility metrics.
+- **🧪 Robust Backtester**: Fixed data pipeline issues and improved UI for reliable 5-min intraday strategy simulation.
+- **⚡ UI/UX Overhaul**: Solved z-index layering issues, improved dropdown handling, and completely revamped the "Technical Score" visualization.
 
 ---
 

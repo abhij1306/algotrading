@@ -26,7 +26,7 @@ class LLMClient:
         if provider == "groq":
             self.api_key = os.getenv("GROQ_API_KEY")
             self.base_url = "https://api.groq.com/openai/v1"
-            self.model = "llama-3.3-70b-versatile"
+            self.model = "llama-3.1-8b-instant"
         elif provider == "openai":
             self.api_key = os.getenv("OPENAI_API_KEY")
             self.base_url = "https://api.openai.com/v1"
@@ -68,7 +68,7 @@ class LLMClient:
             system_prompt = "You are an expert quantitative trader and risk manager. Provide precise, data-driven analysis in JSON format."
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
                 if self.provider in ["groq", "openai"]:
                     # OpenAI-compatible API
                     headers = {

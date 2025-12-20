@@ -1,0 +1,60 @@
+/* Command Palette Styles (cmdk overrides) */
+
+[cmdk-root] {
+    max-width: 100%;
+}
+
+[cmdk-dialog] {
+    z-index: 50;
+}
+
+[cmdk-input] {
+    font-size: 0.875rem;
+    caret-color: #3B82F6;
+}
+
+[cmdk-input]::placeholder {
+    color: rgba(156, 163, 175, 0.6);
+}
+
+[cmdk-list] {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+[cmdk-list]::-webkit-scrollbar {
+    width: 6px;
+}
+
+[cmdk-list]::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+[cmdk-list]::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+[cmdk-list]::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+[cmdk-group-heading] {
+    font-weight: 500;
+    letter-spacing: 0.05em;
+}
+
+[cmdk-item] {
+    content-visibility: auto;
+}
+
+[cmdk-item][aria-selected="true"] {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+[cmdk-separator] {
+    height: 1px;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.05);
+    margin: 0.5rem 0;
+}

@@ -1,67 +1,88 @@
 @import "tailwindcss";
 
+/* ============================================================ */
+/* OBSIDIAN DESIGN SYSTEM - Raycast-Inspired Financial Dark Mode */
+/* ============================================================ */
+
 @theme {
+  /* Typography Stack */
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-data: "JetBrains Mono", "Fira Code", monospace;
   --font-display: "Inter", sans-serif;
   --font-sans: "Inter", sans-serif;
 
-  /* Primary Colors */
-  --color-primary: #6366f1;
-  --color-primary-dark: #4f46e5;
-  --color-primary-light: #818cf8;
+  /* Obsidian Base Layers */
+  --color-obsidian: #0F1115;
+  /* Deepest Void */
+  --color-obsidian-surface: #16191F;
+  /* Elevated Layer */
+  --color-obsidian-elevated: #1C1F26;
+  /* Hover/Active */
 
-  /* Background Colors - Deep Dark Theme */
-  --color-background-dark: #0a0a0f;
-  --color-background-base: #0f1115;
-  --color-card-dark: #16181d;
-  --color-card-hover: #1c1f26;
+  /* Glass System */
+  --color-glass-border: rgba(255, 255, 255, 0.08);
+  --color-glass-highlight: rgba(255, 255, 255, 0.05);
+  --color-glass-strong: rgba(22, 25, 31, 0.8);
 
-  /* Border Colors */
-  --color-border-dark: #252932;
-  --color-border-light: #333844;
+  /* Financial Neon Colors */
+  --color-profit: #00E396;
+  /* Neon Green */
+  --color-profit-muted: #00B377;
+  --color-profit-bg: rgba(0, 227, 150, 0.1);
+  --color-loss: #FF4560;
+  /* Neon Red */
+  --color-loss-muted: #CC3750;
+  --color-loss-bg: rgba(255, 69, 96, 0.1);
 
-  /* Text Colors */
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #9ca3af;
-  --color-text-muted: #6b7280;
+  /* Electric Accents */
+  --color-electric-blue: #3B82F6;
+  --color-electric-purple: #8B5CF6;
+  --color-electric-cyan: #06B6D4;
+  --color-electric-amber: #F59E0B;
 
-  /* State Colors */
-  --color-profit: #10b981;
-  --color-profit-bg: rgba(16, 185, 129, 0.1);
-  --color-loss: #ef4444;
-  --color-loss-bg: rgba(239, 68, 68, 0.1);
-
-  /* Accent Colors */
-  --color-accent-blue: #3b82f6;
-  --color-accent-purple: #8b5cf6;
-  --color-accent-teal: #14b8a6;
-  --color-accent-orange: #f97316;
-  --color-accent-pink: #ec4899;
+  /* Text Hierarchy */
+  --color-text-primary: #F1F5F9;
+  --color-text-secondary: #94A3B8;
+  --color-text-tertiary: #64748B;
+  --color-text-disabled: #475569;
 }
 
 @layer base {
   * {
-    border-color: var(--color-border-dark);
+    border-color: var(--color-glass-border);
+  }
+
+  html {
+    background: var(--color-obsidian);
   }
 
   body {
-    background: linear-gradient(135deg, #0a0a0f 0%, #0f1115 50%, #14161c 100%);
-    background-attachment: fixed;
+    background: var(--color-obsidian);
     color: var(--color-text-primary);
-    font-family: var(--font-sans);
+    font-family: var(--font-ui);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    /* Inter features */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Tabular numbers for financial data */
+  .tabular-nums {
+    font-family: var(--font-data);
+    font-variant-numeric: tabular-nums;
   }
 
   /* Input & Form Elements */
   input,
   textarea,
   select {
-    @apply bg-card-dark border-border-dark text-white;
+    @apply bg-obsidian-surface border-glass-border text-text-primary;
   }
 
   input:focus,
   textarea:focus,
   select:focus {
-    @apply border-primary ring-2 ring-primary/20 outline-none;
+    @apply border-electric-blue ring-2 ring-electric-blue/20 outline-none;
   }
 
   /* Smooth transitions */
@@ -71,14 +92,116 @@
   card {
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
+
+  /* Screen reader only (accessibility) */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
 }
 
-/* Material Symbols */
-.material-symbols-outlined {
-  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+/* ============================================================ */
+/* OBSIDIAN GLASS MORPHISM SYSTEM */
+/* ============================================================ */
+
+/* Standard Glass Effect */
+.glass {
+  background: rgba(22, 25, 31, 0.6);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Scrollbar Styling */
+/* Strong Glass (Command Palette, Modals) */
+.glass-strong {
+  background: rgba(22, 25, 31, 0.85);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* Subtle Glass (Sticky Headers) */
+.glass-subtle {
+  background: rgba(15, 17, 21, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Glass Hover Effect */
+.glass-hover {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-hover:hover {
+  background: rgba(28, 31, 38, 0.7);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ============================================================ */
+/* PHANTOM GRID SYSTEM (High-Density Tables) */
+/* ============================================================ */
+
+/* Dense Row (32px) - Default for data tables */
+.row-dense {
+  height: 2rem;
+  padding: 0.5rem;
+}
+
+/* Compact Row (40px) - For less dense tables */
+.row-compact {
+  height: 2.5rem;
+  padding: 0.625rem;
+}
+
+/* Ghost Row (No background, only border) */
+.row-ghost {
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background-color 0.15s ease;
+}
+
+.row-ghost:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Active/Selected Row */
+.row-active {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* ============================================================ */
+/* NEON GLOW EFFECTS */
+/* ============================================================ */
+
+.glow-profit {
+  color: var(--color-profit);
+  text-shadow: 0 0 10px rgba(0, 227, 150, 0.5);
+}
+
+.glow-loss {
+  color: var(--color-loss);
+  text-shadow: 0 0 10px rgba(255, 69, 96, 0.5);
+}
+
+.glow-electric {
+  color: var(--color-electric-blue);
+  text-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+}
+
+/* ============================================================ */
+/* SCROLLBAR STYLING (Obsidian Theme) */
+/* ============================================================ */
+
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
 }
@@ -88,69 +211,183 @@
   scrollbar-width: none;
 }
 
-/* Custom Scrollbar for containers */
+/* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-background-base);
+  background: var(--color-obsidian);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-dark);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-light);
+  background: rgba(255, 255, 255, 0.2);
 }
 
-/* Glassmorphism Utilities */
-.glass {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+/* ============================================================ */
+/* ANIMATION UTILITIES */
+/* ============================================================ */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.glass-strong {
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+.animate-fade-in {
+  animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Card Glow Effects */
-.card-glow {
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.1);
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
-.card-glow:hover {
-  box-shadow: 0 0 30px rgba(99, 102, 241, 0.2);
+.animate-slide-in {
+  animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes pulseGlow {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ============================================================ */
+/* UTILITY CLASSES */
+/* ============================================================ */
 
 /* Gradient Text */
 .gradient-text {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-/* Utility Classes */
-.backdrop-blur-sm {
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+/* Card Glow on Hover */
+.card-glow {
+  transition: box-shadow 0.3s ease;
 }
 
-.backdrop-blur-md {
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+.card-glow:hover {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
 }
 
-.backdrop-blur-lg {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+/* Profit/Loss Background */
+.bg-profit-subtle {
+  background-color: rgba(0, 227, 150, 0.1);
+}
+
+.bg-loss-subtle {
+  background-color: rgba(255, 69, 96, 0.1);
+}
+
+/* Material Symbols (if used) */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* ============================================================ */
+/* COMMAND PALETTE SPECIFIC STYLES */
+/* ============================================================ */
+
+[cmdk-root] {
+  max-width: 100%;
+}
+
+[cmdk-dialog] {
+  z-index: 50;
+}
+
+[cmdk-input] {
+  font-size: 0.875rem;
+  caret-color: #3B82F6;
+}
+
+[cmdk-input]::placeholder {
+  color: rgba(148, 163, 184, 0.6);
+}
+
+[cmdk-list] {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+[cmdk-list]::-webkit-scrollbar {
+  width: 6px;
+}
+
+[cmdk-list]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[cmdk-list]::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+[cmdk-group-heading] {
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+[cmdk-item] {
+  content-visibility: auto;
+}
+
+[cmdk-item][aria-selected="true"] {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+[cmdk-separator] {
+  height: 1px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  margin: 0.5rem 0;
 }

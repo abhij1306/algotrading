@@ -108,6 +108,10 @@ class DataRepository:
                                 latest_price.high_20d = features.get('20d_high')
                                 latest_price.is_breakout = features.get('is_20d_breakout', False)
                                 
+                                # Save Trends
+                                latest_price.trend_7d = features.get('trend_7d')
+                                latest_price.trend_30d = features.get('trend_30d')
+                                
                                 self.db.commit()
                 except Exception as e:
                     print(f"Warning: Failed to calculate indicators for {symbol}: {e}")
@@ -181,6 +185,58 @@ class DataRepository:
         df.index = pd.to_datetime(df.index)
         
         return df
+
+    def get_bulk_historical_prices(
+        self,
+        symbols: List[str],
+        days: int = 200
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch historical prices for multiple symbols in a single query.
+        Returns a dictionary mapping symbols to DataFrames.
+        """
+        from datetime import timedelta, date
+        
+        companies = self.db.query(Company).filter(Company.symbol.in_(symbols)).all()
+        if not companies:
+            return {}
+            
+        company_map = {c.id: c.symbol for c in companies}
+        company_ids = list(company_map.keys())
+        
+        # Get start date
+        start_date = date.today() - timedelta(days=days)
+        
+        # Fetch all prices in one query
+        prices = self.db.query(HistoricalPrice).filter(
+            HistoricalPrice.company_id.in_(company_ids),
+            HistoricalPrice.date >= start_date
+        ).order_by(HistoricalPrice.company_id, HistoricalPrice.date).all()
+        
+        # Group by symbol
+        results = {}
+        for p in prices:
+            sym = company_map[p.company_id]
+            if sym not in results:
+                results[sym] = []
+            results[sym].append({
+                'date': p.date,
+                'Open': p.open,
+                'High': p.high,
+                'Low': p.low,
+                'Close': p.close,
+                'Volume': p.volume
+            })
+            
+        # Convert to DataFrames
+        final_dfs = {}
+        for sym, data in results.items():
+            df = pd.DataFrame(data)
+            df = df.set_index('date')
+            df.index = pd.to_datetime(df.index)
+            final_dfs[sym] = df
+            
+        return final_dfs
     
     def get_latest_price_date(self, symbol: str) -> Optional[date]:
         """Get the latest date for which we have price data"""
@@ -290,6 +346,34 @@ class DataRepository:
         candles = query.all()
         
         if not candles:
+            # Fallback: Read from CSV if database is empty
+            import os
+            csv_path = None
+            
+            if symbol == 'NIFTY50' and timeframe == 5:
+                csv_path = 'nse_data/raw/intraday/NIFTY50_5min_complete.csv'
+            elif symbol == 'BANKNIFTY' and timeframe == 5:
+                csv_path = 'nse_data/raw/intraday/BANKNIFTY_5min_complete.csv'
+            
+            if csv_path and os.path.exists(csv_path):
+                print(f"[DATA] Reading intraday data from CSV: {csv_path}")
+                df = pd.read_csv(csv_path)
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                
+                # Filter by date range
+                if start_date:
+                    df = df[df['timestamp'] >= start_date]
+                if end_date:
+                    df = df[df['timestamp'] <= end_date]
+                if days and not start_date:
+                    cutoff = datetime.now() - timedelta(days=days)
+                    df = df[df['timestamp'] >= cutoff]
+                
+                # Ensure correct columns
+                required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                if all(col in df.columns for col in required_cols):
+                    return df[required_cols].copy()
+            
             return pd.DataFrame()
         
         # Convert to DataFrame

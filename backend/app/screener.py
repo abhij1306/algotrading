@@ -43,15 +43,16 @@ def run_screener() -> Dict:
     
     all_features = []
     
-    # Step 1: Fetch historical data for all symbols (for indicators)
-    historical_data = {}
-    for i, symbol in enumerate(universe):
-        if (i + 1) % 10 == 0:
-            print(f"Fetching historical data: {i + 1}/{len(universe)} stocks...")
-        
-        hist = fetch_historical_data(symbol)
-        if hist is not None:
-            historical_data[symbol] = hist
+    # Step 1: Fetch historical data for all symbols in bulk
+    from .database import SessionLocal
+    from .data_repository import DataRepository
+    
+    db = SessionLocal()
+    repo = DataRepository(db)
+    
+    print(f"Fetching historical data for {len(universe)} stocks in bulk...")
+    historical_data = repo.get_bulk_historical_prices(universe, days=200)
+    db.close()
     
     print(f"Historical data fetched for {len(historical_data)} stocks")
     

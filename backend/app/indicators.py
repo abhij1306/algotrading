@@ -102,5 +102,11 @@ def compute_features(symbol: str, hist: pd.DataFrame) -> dict:
     # Breakout detection
     features['20d_high'] = float(hist['Close'].rolling(20).max().iloc[-1])
     features['is_20d_breakout'] = features['close'] >= features['20d_high']
+
+    # Trend Metrics (User Requested)
+    # 7D Trend (~5 trading days)
+    features['trend_7d'] = float(hist['Close'].pct_change(5).iloc[-1] * 100) if len(hist) >= 6 else 0.0
+    # 30D Trend (~21 trading days)
+    features['trend_30d'] = float(hist['Close'].pct_change(21).iloc[-1] * 100) if len(hist) >= 22 else 0.0
     
     return features

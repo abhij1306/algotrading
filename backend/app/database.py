@@ -3,7 +3,7 @@ Database models for NSE Trading Screener
 Supports historical prices, financial data, and quarterly results
 Now using PostgreSQL instead of SQLite
 """
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, Text, ForeignKey, Index
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, Text, ForeignKey, Index, JSON, func, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -51,6 +51,23 @@ class Company(Base):
     historical_prices = relationship("HistoricalPrice", back_populates="company", cascade="all, delete-orphan")
     financial_statements = relationship("FinancialStatement", back_populates="company", cascade="all, delete-orphan")
     quarterly_results = relationship("QuarterlyResult", back_populates="company", cascade="all, delete-orphan")
+    learning_artifacts = relationship("LearningArtifact", back_populates="company", cascade="all, delete-orphan")
+
+class LearningArtifact(Base):
+    __tablename__ = "learning_artifacts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True) # Can be null for general market learning
+    agent_id = Column(String(50), nullable=False) # 'data_agent', 'strategy_agent', etc.
+    artifact_type = Column(String(50), nullable=False) # 'insight', 'pattern', 'model_v1'
+    content = Column(JSON, nullable=False)
+    version = Column(Integer, default=1)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    company = relationship("Company", back_populates="learning_artifacts")
 
 
 class HistoricalPrice(Base):
@@ -66,11 +83,11 @@ class HistoricalPrice(Base):
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(Integer, nullable=False)
+    volume = Column(BigInteger, nullable=False)
     
     # Additional fields
     adj_close = Column(Float)  # Adjusted close
-    trades = Column(Integer)  # Number of trades
+    trades = Column(BigInteger)  # Number of trades
     
     # Technical Indicators (calculated and stored)
     ema_20 = Column(Float)  # 20-day EMA
@@ -87,6 +104,10 @@ class HistoricalPrice(Base):
     # Trend indicators
     high_20d = Column(Float)  # 20-day high
     is_breakout = Column(Boolean)  # Price at/above 20-day high
+    
+    # New Trend Metrics (Pre-calculated)
+    trend_7d = Column(Float)   # % Change over 7 days (5 trading days)
+    trend_30d = Column(Float)  # % Change over 30 days (21 trading days)
     
     # Data source tracking
     source = Column(String(20))  # 'fyers', 'yfinance', etc.
