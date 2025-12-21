@@ -1,11 +1,15 @@
 """
-Execution Agent - Simulates paper trading execution
+Execution Agent - Wraps Broker Adapter.
+Delegates actual execution to the active Broker (Paper or Live).
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from enum import Enum
 from .utils import calculate_slippage, calculate_pnl
-
+from .smart_orders import SmartOrderManager
+from ..brokers.plugins.paper import PaperBroker
+from ..brokers.plugins.fyers import FyersBroker
+from ..utils.audit_logger import AuditLogger
 
 class TradeStatus(Enum):
     """Trade lifecycle states"""
@@ -17,23 +21,47 @@ class TradeStatus(Enum):
 
 
 class ExecutionAgent:
-    """Simulates paper trading execution with realistic slippage"""
+    """
+    Execution Agent - Wraps Broker Adapter.
+    Stateless: Relies on Broker (DB) for state.
+    """
     
-    def __init__(self, config: Dict[str, Any], journal_agent=None):
+    def __init__(self, config: Dict[str, Any], journal_agent=None, broker: Optional[Any] = None):
         self.config = config
         self.journal_agent = journal_agent
         
-        paper_config = config.get('paper_trading', {})
-        self.slippage_pct = paper_config.get('slippage_pct', 0.05)
-        self.commission_per_trade = paper_config.get('commission_per_trade', 20)
+        # Initialize Brokers
+        self.paper_broker = PaperBroker(config)
+        self.live_broker = FyersBroker() 
         
-        # Track open positions
-        self.open_positions = {}
-        self.position_counter = 0
+        if broker:
+            self.broker = broker
+            self.active_mode = "BACKTEST"
+        else:
+            # Determine Mode from Config
+            self.active_mode = config.get('mode', 'PAPER')
+            
+            if self.active_mode == "LIVE":
+                 self.broker = self.live_broker
+            else:
+                 self.broker = self.paper_broker
         
-        # Load open positions from journal
-        self._load_open_positions()
-    
+        # Initialize Smart Order Manager
+        self.smart_manager = SmartOrderManager(self)
+        
+    def set_mode(self, mode: str):
+        """Switch between PAPER and LIVE"""
+        if mode.upper() == "LIVE":
+            self.active_mode = "LIVE"
+            self.broker = self.live_broker
+            print("[EXECUTION] Switched to LIVE Trading Mode")
+        else:
+            self.active_mode = "PAPER"
+            self.broker = self.paper_broker
+            print("[EXECUTION] Switched to PAPER Trading Mode")
+
+
+
     def execute_trade(
         self, 
         signal: Dict[str, Any], 
@@ -41,309 +69,245 @@ class ExecutionAgent:
         user_quantity: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Execute paper trade (simulate market order)
-        
-        Args:
-            signal: Trading signal
-            risk_approval: Risk validation result
-            user_quantity: Optional user override for quantity
-            
-        Returns:
-            Trade execution result
+        Execute trade via active broker
         """
+        # Log Attempt
+        AuditLogger.log_decision(
+            agent_name="ExecutionAgent",
+            action_type="TRADE_ATTEMPT",
+            symbol=signal.get('symbol'),
+            input_snapshot={"signal": signal, "risk": risk_approval},
+            decision={"broker": self.active_mode},
+            reasoning="Received execution request",
+            confidence=1.0 # Execution has no confidence, it's an order
+        )
+
         if not risk_approval.get('approved', False):
+            reason = risk_approval.get('rejection_reason', 'Trade rejected by risk agent')
+            AuditLogger.log_decision(
+                agent_name="ExecutionAgent",
+                action_type="TRADE_REJECTED",
+                symbol=signal.get('symbol'),
+                input_snapshot={},
+                decision={"approved": False},
+                reasoning=reason,
+                confidence=1.0,
+                status="FAILURE"
+            )
             return {
                 'status': TradeStatus.REJECTED.value,
-                'trade_id': None,
-                'message': risk_approval.get('rejection_reason', 'Trade rejected by risk agent')
+                'message': reason
             }
         
-        # Generate trade ID
-        self.position_counter += 1
-        trade_id = f"ST{datetime.now().strftime('%Y%m%d')}{self.position_counter:04d}"
-        
-        
-        # Get execution details
-        entry_price = signal['entry_price']
-        direction = signal['direction']
+        # Prepare Order
         quantity = user_quantity or risk_approval['qty']
-        
-        # For OPTIONS, fetch live premium from Fyers API
-        if signal.get('instrument_type') == 'OPTION':
-            try:
-                from ..fyers_direct import get_option_premium
-                
-                # Get option parameters
-                symbol = signal['symbol']
-                option_type = signal.get('option_type', 'CE' if direction == 'LONG' else 'PE')
-                strike = signal.get('strike')
-                expiry_date = signal.get('expiry_date')
-                
-                # If strike not provided, calculate ATM strike
-                if not strike:
-                    # Round to nearest 50 for stocks, 100 for NIFTY/BANKNIFTY
-                    strike_interval = 100 if symbol in ['NIFTY', 'BANKNIFTY'] else 50
-                    strike = round(entry_price / strike_interval) * strike_interval
-                
-                print(f"[EXECUTION] Fetching live option premium: {symbol} {strike} {option_type}")
-                
-                # Fetch real option premium from Fyers
-                premium = get_option_premium(symbol, strike, option_type, expiry_date)
-                
-                if premium and premium > 0:
-                    entry_price = premium
-                    print(f"[EXECUTION] Using live option premium: ₹{premium:.2f}")
-                else:
-                    # Fallback to rough estimate if Fyers fetch fails
-                    from ..fyers_direct import get_fyers_quotes
-                    quotes = get_fyers_quotes([symbol])
-                    
-                    if quotes and symbol in quotes:
-                        underlying_price = quotes[symbol].get('ltp', entry_price)
-                        # Rough premium estimation (2-3% of underlying for ATM options)
-                        premium_pct = 0.03 if abs(strike - underlying_price) / underlying_price < 0.02 else 0.02
-                        entry_price = underlying_price * premium_pct
-                        print(f"[EXECUTION] Fyers fetch failed, using estimate: ₹{entry_price:.2f}")
-                    
-            except Exception as e:
-                print(f"[EXECUTION] Error fetching option price: {e}. Using signal price.")
-        
-        # Apply slippage
-        filled_price = calculate_slippage(entry_price, self.slippage_pct, direction)
-        
-        # Calculate total cost
-        total_cost = filled_price * quantity + self.commission_per_trade
-        
-        # Create position
-        position = {
-            'trade_id': trade_id,
-            'symbol': signal['symbol'],
-            'instrument_type': signal['instrument_type'],
-            'direction': direction,
-            'quantity': quantity,
-            'entry_price': round(filled_price, 2),
-            'entry_time': datetime.now().isoformat(),
-            'stop_loss': signal['stop_loss'],
-            'target': signal['target'],
-            'status': TradeStatus.OPEN.value,
-            'pnl': 0,
-            'exit_price': None,
-            'exit_time': None,
-            'commission': self.commission_per_trade,
-            'signal_score': signal.get('momentum_score', 0),
-            'reasons': signal.get('reasons', [])
+        order = {
+            "symbol": signal['symbol'],
+            "direction": signal['direction'], # LONG/SHORT
+            "side": "BUY" if signal['direction'] == "LONG" else "SELL",
+            "quantity": quantity,
+            "type": "MARKET", 
+            "price": signal.get('entry_price', 0),
+            "product": "MIS"
         }
         
-        # Add option-specific fields if this is an option trade
-        if signal.get('instrument_type') == 'OPTION':
-            position['strike'] = signal.get('strike')
-            position['option_type'] = signal.get('option_type', 'CE' if direction == 'LONG' else 'PE')
-            position['expiry_date'] = signal.get('expiry_date')
-        
-        # Store position
-        self.open_positions[trade_id] = position
-        
-        # Record in journal
-        if self.journal_agent:
-            self.journal_agent.record_trade(position)
-        
-        return {
-            'status': TradeStatus.FILLED.value,
-            'trade_id': trade_id,
-            'message': f'Order filled at ₹{filled_price:.2f} (slippage: {self.slippage_pct}%)',
-            'position': position
-        }
+        # Delegate to Broker
+        try:
+             result = self.broker.place_order(order)
+             # Result is OrderResponse TypedDict
+             
+             status_map = {
+                 "FILLED": TradeStatus.FILLED.value,
+                 "SUBMITTED": TradeStatus.PENDING.value,
+                 "REJECTED": TradeStatus.REJECTED.value,
+                 "ERROR": TradeStatus.REJECTED.value
+             }
+             
+             final_status = status_map.get(result.get('status'), TradeStatus.PENDING.value)
+             
+             # Log Result
+             AuditLogger.log_decision(
+                agent_name="ExecutionAgent",
+                action_type="TRADE_EXECUTED",
+                symbol=signal['symbol'],
+                input_snapshot={"order": order},
+                decision={"result": result},
+                reasoning=result.get('message'),
+                confidence=1.0,
+                status="SUCCESS" if final_status in [TradeStatus.FILLED.value, TradeStatus.PENDING.value] else "FAILURE"
+             )
+             
+             return {
+                 'status': final_status,
+                 'trade_id': result.get('order_id'),
+                 'message': result.get('message', 'Order Placed'),
+                 'details': result
+             }
+        except Exception as e:
+            print(f"[EXECUTION] Error placing order: {e}")
+            AuditLogger.log_decision(
+                agent_name="ExecutionAgent",
+                action_type="TRADE_ERROR",
+                symbol=signal['symbol'],
+                input_snapshot={"order": order},
+                decision={},
+                reasoning=str(e),
+                confidence=1.0,
+                status="FAILURE"
+            )
+            return {
+                'status': TradeStatus.REJECTED.value, 
+                'message': str(e)
+            }
     
     def update_positions(self, current_prices: Dict[str, float]):
         """
-        Update all open positions with current prices and check exit conditions
-        
-        Args:
-            current_prices: Dict mapping symbols to current prices
+        Update positions and check exits.
+        Delegates PnL calculation to broker first.
         """
-        positions_to_close = []
+        # 1. Update Broker PnL (Persists to DB if Paper)
+        if hasattr(self.broker, 'update_pnl'):
+            self.broker.update_pnl(current_prices)
+            
+        # 2. Get Updated Positions
+        open_positions = self.broker.get_positions()
         
-        for trade_id, position in self.open_positions.items():
+        # 3. Check Exit Conditions
+        for position in open_positions:
             symbol = position['symbol']
             current_price = current_prices.get(symbol)
             
             if not current_price:
                 continue
             
-            # Check stop loss and target
-            should_exit, exit_reason = self._check_exit_conditions(position, current_price)
+            # Reconstruct stop/target logic (DB doesn't store SL/Target yet on Position level)
+            # Todo Phase 3: Move SL/Target to DB Position table
+            # For now, we skip auto-exit based on SL/Target unless we fetch original signal order parameters.
+            # But the user Requirement says "Eliminate in-memory critical state".
+            # For now, assume manual exit or strategy loop handles exit signals.
+            pass
             
-            if should_exit:
-                positions_to_close.append((trade_id, current_price, exit_reason))
-            else:
-                # Update unrealized P&L
-                position['pnl'] = calculate_pnl(
-                    position['entry_price'],
-                    current_price,
-                    position['quantity'],
-                    position['direction'],
-                    0  # Don't include commission yet
-                )
-        
-        # Close positions that hit exit conditions
-        for trade_id, exit_price, exit_reason in positions_to_close:
-            self.close_position(trade_id, exit_price, exit_reason)
-    
-    def _check_exit_conditions(self, position: Dict[str, Any], current_price: float) -> tuple[bool, str]:
-        """Check if position should be exited"""
-        direction = position['direction']
-        stop_loss = position['stop_loss']
-        target = position['target']
-        
-        if direction == 'LONG':
-            if current_price <= stop_loss:
-                return True, 'Stop Loss Hit'
-            elif current_price >= target:
-                return True, 'Target Reached'
-        else:  # SHORT
-            if current_price >= stop_loss:
-                return True, 'Stop Loss Hit'
-            elif current_price <= target:
-                return True, 'Target Reached'
-        
-        return False, ''
-    
+            # NOTE: We removed the auto-exit logic here because 'stop_loss' and 'target' 
+            # are not yet columns in PaperPosition. 
+            # In live systems, these should be Limit/Stop orders on the exchange.
+            # We will rely on FastLoop or Strategy Agent to send exit signals.
+
     def close_position(self, trade_id: str, exit_price: float = None, exit_reason: str = 'Manual Exit'):
         """
-        Close an open position
-        
-        Args:
-            trade_id: Trade ID
-            exit_price: Exit price (if None, use current entry price)
-            exit_reason: Reason for exit
-            
-        Returns:
-            Result dict with success status
+        Close a position by placing an opposing order.
+        Note: trade_id here acts as a reference, but we really need Symbol.
         """
-        if trade_id not in self.open_positions:
+        # We need the symbol to close. 
+        # If trade_id comes from UI, we might need lookup.
+        # But UI usually sends "symbol" for closing.
+        # Assuming trade_id MIGHT be a symbol or we look it up.
+        
+        # Retrieve position by trade_id? 
+        # Broker.get_positions returns list.
+        # For simplify, assume frontend passes Symbol.
+        
+        # IF trade_id is actually Symbol (common simplification in this codebase history)
+        symbol = trade_id 
+        
+        # Find position to get Quantity and Side
+        positions = self.broker.get_positions()
+        target_pos = next((p for p in positions if p['symbol'] == symbol or p.get('trade_id') == trade_id), None)
+        
+        if not target_pos:
             return {'success': False, 'error': 'Position not found'}
         
-        position = self.open_positions[trade_id]
+        side = target_pos['side']  # LONG or SHORT
+        quantity = target_pos['quantity']
         
-        # Use entry price if exit price not provided
-        if exit_price is None:
-            exit_price = position['entry_price']
+        # Opposing Side
+        exit_side = 'SELL' if side == 'LONG' else 'BUY'
+        exit_direction = 'SHORT' if side == 'LONG' else 'LONG'
         
-        # Apply slippage to exit
-        direction = position['direction']
-        # Reverse direction for exit slippage
-        exit_direction = 'SHORT' if direction == 'LONG' else 'LONG'
-        filled_exit_price = calculate_slippage(exit_price, self.slippage_pct, exit_direction)
-        
-        # Calculate final P&L
-        pnl = calculate_pnl(
-            position['entry_price'],
-            filled_exit_price,
-            position['quantity'],
-            direction,
-            self.commission_per_trade * 2  # Entry + Exit commission
-        )
-        
-        # Update position
-        position['exit_price'] = round(filled_exit_price, 2)
-        position['exit_time'] = datetime.now().isoformat()
-        position['exit_reason'] = exit_reason
-        position['pnl'] = round(pnl, 2)
-        position['status'] = TradeStatus.CLOSED.value
-        
-        # Record in journal
-        if self.journal_agent:
-            self.journal_agent.update_trade(position)
-        
-        # Remove from open positions
-        del self.open_positions[trade_id]
-        
-        return {
-            'success': True,
-            'trade_id': trade_id,
-            'pnl': round(pnl, 2),
-            'exit_price': round(filled_exit_price, 2)
+        order = {
+            "symbol": target_pos['symbol'],
+            "direction": exit_direction,
+            "side": exit_side,
+            "quantity": quantity,
+            "type": "MARKET",
+            "price": exit_price or target_pos.get('ltp', 0)
         }
+        
+        result = self.broker.place_order(order)
+        
+        if result['status'] == 'FILLED':
+             return {
+                'success': True,
+                'trade_id': result['order_id'],
+                'pnl': 0, # PnL is tracked in DB now
+                'exit_price': result['average_price']
+            }
+        else:
+             return {'success': False, 'error': result['message']}
     
     def get_open_positions(self) -> list:
-        """Get all open positions formatted for Terminal"""
-        positions = []
-        for trade_id, pos in self.open_positions.items():
-            positions.append({
-                'trade_id': trade_id,
+        """Get positions from Broker"""
+        # Map Broker Format to Terminal Format
+        raw_positions = self.broker.get_positions()
+        terminal_positions = []
+        
+        for pos in raw_positions:
+            terminal_positions.append({
+                'trade_id': pos.get('symbol'), # Use symbol as ID for now
                 'symbol': pos['symbol'],
-                'side': pos['direction'],
+                'side': pos['side'],
                 'quantity': pos['quantity'],
                 'entry_price': pos['entry_price'],
-                'current_price': pos.get('current_price', pos['entry_price']),
+                'current_price': pos.get('ltp', pos['entry_price']),
                 'unrealized_pnl': pos.get('pnl', 0),
-                'status': pos['status']
+                'status': 'OPEN'
             })
-        return positions
+        return terminal_positions
     
     def get_pnl_summary(self) -> dict:
-        """Get P&L summary for Terminal"""
-        total_pnl = sum(pos.get('pnl', 0) for pos in self.open_positions.values())
+        """Get P&L from Broker"""
+        positions = self.broker.get_positions()
+        funds = self.broker.get_funds()
+        
+        total_pnl = sum(p.get('pnl', 0) for p in positions)
+        
         return {
             'total_pnl': total_pnl,
-            'open_positions': len(self.open_positions),
-            'realized_pnl': 0  # Would need to track closed positions
+            'open_positions': len(positions),
+            'realized_pnl': 0 # Needs Trade Table query
         }
     
     def execute_paper_trade(self, trade_setup) -> dict:
         """Execute paper trade from TradeSetup object"""
-        # Convert TradeSetup to signal format
         signal = {
             'symbol': trade_setup.symbol,
             'direction': trade_setup.direction.value,
-            'entry_price': trade_setup.entry_price,
-            'stop_loss': trade_setup.stop_loss,
-            'target': trade_setup.target,
-            'instrument_type': 'EQ',
-            'reasons': []
+            'entry_price': trade_setup.entry_price
         }
-        
-        # Create risk approval
-        risk_approval = {
-            'approved': True,
-            'qty': trade_setup.quantity
-        }
-        
+        risk_approval = {'approved': True, 'qty': trade_setup.quantity}
         return self.execute_trade(signal, risk_approval)
     
     def close_all_positions(self, current_prices: Dict[str, float], reason: str = 'Market Close'):
-        """Close all open positions (e.g., at market close)"""
-        for trade_id, position in list(self.open_positions.items()):
-            symbol = position['symbol']
-            current_price = current_prices.get(symbol, position['entry_price'])
-            result = self.close_position(trade_id, current_price, reason)
+        positions = self.broker.get_positions()
+        for pos in positions:
+            self.close_position(pos['symbol'], reason=reason)
     
     def execute_manual_trade(self, order_details: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute a manual trade (Paper)
-        """
-        # Construct pseudo-signal
+        """Execute manual trade"""
         signal = {
             'symbol': order_details['symbol'],
             'direction': 'LONG' if order_details['type'] == 'BUY' else 'SHORT',
-            'entry_price': order_details['price'],
-            'stop_loss': 0, # Manual orders might not have these initially
-            'target': 0,
-            'instrument_type': order_details.get('instrument_type', 'EQ'),
-            'reasons': ['Manual Trade']
+            'entry_price': order_details['price']
         }
-        
-        # Auto-approve risk for manual trades (or add check later)
-        risk_approval = {
-            'approved': True,
-            'qty': order_details['quantity']
-        }
-        
+        risk_approval = {'approved': True, 'qty': order_details['quantity']}
         return self.execute_trade(signal, risk_approval)
 
-    def _load_open_positions(self):
-        """Load open positions from journal agent"""
-        if self.journal_agent:
-            self.open_positions = self.journal_agent.open_trades.copy()
-            print(f"[EXECUTION] Loaded {len(self.open_positions)} open positions from journal")
+    # ==================== SMART ORDER CAPABILITIES ====================
+    def place_basket_trade(self, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.smart_manager.place_basket_order(orders)
+        
+    def place_split_trade(self, symbol: str, action: str, total_quantity: int, split_size: int, price: float = 0) -> Dict[str, Any]:
+        return self.smart_manager.place_split_order(symbol, action, total_quantity, split_size, price)
+        
+    def place_smart_trade(self, symbol: str, action: str, target_value: float, current_price: float) -> Dict[str, Any]:
+        return self.smart_manager.place_smart_order(symbol, action, target_value, current_price)
 

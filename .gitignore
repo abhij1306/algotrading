@@ -46,9 +46,23 @@ credentials/
 *.pem
 *.crt
 
-# Fyers Config
-fyers/config/*.json
-!fyers/config/.gitkeep
+# Fyers Config & Tokens
+fyers/config/access_token.json
+fyers/config/keys.env
+fyers/config/refresh_token.json
+
+# Build Results (Standalone)
+frontend/dist/
+frontend/out/
+backend/dist/
+backend/build/
+*.exe
+
+# Reference Data & Repositories
+reference/
+openalgo/
+*.tar
+*.gz
 
 # ============================================
 # Python
@@ -88,6 +102,7 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+!**/backend_build.spec
 
 # Unit test / coverage
 .pytest_cache/

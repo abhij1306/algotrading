@@ -15,10 +15,10 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000)
 
-### 3. Build for Production
+### 3. Build Desktop Application
 ```bash
 npm run build
-npm start
+# Packaged into dist/win-unpacked for distribution
 ```
 
 ## Features
@@ -58,11 +58,14 @@ Score slider filter with count display
 CSV export with timestamp
 
 ## Tech Stack
-- **Next.js 16** (App Router)
-- **React 18**
+- **Next.js 16.0.10** (App Router)
+- **Electron 39.2.7**
+- **React 19.2.1**
 - **TypeScript**
-- **Tailwind CSS**
-- **Turbopack** (dev server)
+- **Tailwind CSS 4.0**
+- **Lucide Icons**
+- **Framer Motion**
+- **Recharts**
 
 ## API Integration
 Connects to backend at `http://localhost:8000/api/screener`

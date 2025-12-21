@@ -1,4 +1,4 @@
-# SmartTrader v2 — AlgoTrading System
+# SmartTrader v1.0.0 — Standalone Desktop Edition
 
 **A personal, zero-cost algorithmic trading research system built to backtest strategies, analyze trades, and generate deterministic intraday and swing signals using clean data pipelines and modern tooling.**
 
@@ -11,12 +11,15 @@ This project focuses on **correct data modeling**, **reproducibility**, and **di
 
 ---
 
-## 🚀 New in v2 (Release Notes)
+## 🚀 New in v1.0.0 (Release Notes)
 
-- **🤖 AI Copilot Integration**: Context-aware chat assistant that sits on top of your market data, ready to answer questions about trends, risks, and strategies.
-- **📊 Enhanced Screener**: Now powered by a real-time **Technical Score (0-100)** model aggregating Trend, Momentum (RSI), and Volatility metrics.
-- **🧪 Robust Backtester**: Fixed data pipeline issues and improved UI for reliable 5-min intraday strategy simulation.
-- **⚡ UI/UX Overhaul**: Solved z-index layering issues, improved dropdown handling, and completely revamped the "Technical Score" visualization.
+- **🖥️ Standalone Desktop App**: Packaged as a Windows `.exe` using Electron and PyInstaller, allowing for local execution without a complex environment setup.
+- **🛠️ Integrated Backend**: Python backend is now bundled into the application lifecycle, starting and stopping automatically with the frontend.
+- **🚀 Ctrl+K Command Palette**: Fast navigation and search inspired by Raycast, making it easy to switch views and find symbols.
+- **🤖 AI Agentic Workflow**: Smart Trader signals with Scanner, Analyst, and Execution agents for rule-based and AI-reviewed signals.
+- **📊 Technical Score Model**: Real-time signal strength (0-100) based on Trend, Momentum, and Volatility.
+- **🔗 Native Broker Auth**: Integrated Fyers OAuth flow with secure local token storage.
+- **🧪 Backtest Parity**: Improved backtesting engine with realistic slippage modeling and 5-min candle granularity.
 
 ---
 
@@ -79,24 +82,22 @@ Corporate actions, survivorship bias, and data gaps are handled explicitly.
   - Analytics: Equity Curve, Trade Logs
 - **Data**: Fyers API Integration (5-minute intraday, 100 days history)
 
-### 🤖 Smart Trader (AI-Powered)
-- **Deterministic Signal Generation**: Signals always generated, never blocked by LLM
-- **Architecture**:
-  1. MarketSnapshot: Immutable market data with indicators
-  2. 5 Signal Generators: Momentum, Volume, Range Expansion, Reversal, Index Alignment
-  3. Signal Aggregator: Merges signals with confluence counting
-  4. LLM Signal Analyst: Enhances confidence and provides reasoning
-  5. Confidence Engine: Computes LOW/MEDIUM/HIGH confidence
-  6. Trade Constructor: Builds entry/SL/target with ATR-based risk
-  7. Risk Agent: Hard execution gate (capital limits, R:R, cooldown)
-- **Features**:
-  - Confluence Signals: Multiple signal types combined per symbol
-  - Transparent Reasoning: Deterministic + LLM narrative
-  - Risk Flags: LLM identifies potential failure modes
-  - Paper Trading: Simulate trades with realistic execution
-  - Terminal: Track open positions, P&L, trade history
+### 🤖 Smart Trader (Agentic)
+- **Hybrid Architecture**:
+  - **Standard Mode**: Deep reasoning using LLM for complex market setups.
+  - **Fast Lane**: High-speed, rule-based execution for obvious technical signals (bypassing LLM for speed/cost).
+- **Core Components**:
+  - **Scanner Agent**: Parallel-processing engine finding opportunities in real-time.
+  - **Analyst Agent**: LLM-based reasoning for trend and sentiment validation.
+  - **Execution Agent**: Broker-agnostic order placement with risk checks.
+- **Workflow**:
+  1. **Parallel Scan**: Fetch & compute technicals for 50+ stocks in <2 seconds.
+  2. **Signal Filtering**: Momentum/Volume/Reversal logic.
+  3. **Routing**:
+     - *High Confidence*: Sent to Fast Lane for immediate execution.
+     - *Ambiguous*: Sent to Analyst Agent for deep LLM review.
+  4. **Execution**: Routed via Unified API to Paper or Live broker.
 
----
 
 ## ⛔ Intentional Limitations
 
@@ -601,8 +602,34 @@ python scripts/maintenance/health_check.py
 - Fyers tokens expire every 24 hours (auto-renewal needed)
 - PostgreSQL uses local authentication
 - No sensitive data in logs
-
----
+ 
+ ---
+ 
+ ## 🔐 Authentication & Broker Setup
+ 
+ ### Fyers Integration
+ 1. **Configuration**:
+    - Create `fyers/config/keys.env` with your API credentials:
+      ```env
+      CLIENT_ID=your_client_id
+      SECRET_KEY=your_secret_key
+      REDIRECT_URI=https://trade.fyers.in/api-login/redirect-uri/index.html
+      ```
+ 2. **Login**:
+    - Launch the SmartTrader App.
+    - Click **"Connect Fyers"** in the top-right of the Dashboard.
+    - Follow the login flow and paste the `auth_code`.
+    - Token is securely saved to `fyers/config/access_token.json`.
+ 3. **Auto-Connect**:
+    - The system automatically loads the token on startup.
+ 
+ ### Adding New Brokers
+ SmartTrader uses a **Plugin Architecture** (`backend/app/brokers/plugins/`).
+ 1. Create a new file (e.g., `zerodha.py`) in `plugins/`.
+ 2. Implement the `IBroker` interface.
+ 3. Update `ExecutionAgent` to load your new broker based on config.
+ 
+ ---
 
 ## 📚 Documentation
 

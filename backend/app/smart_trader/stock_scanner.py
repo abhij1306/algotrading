@@ -8,6 +8,7 @@ import numpy as np
 from ..data_fetcher import fetch_historical_data
 from ..indicators import ema, rsi
 from .utils import calculate_atr_stop_loss, calculate_target, get_nse_fo_universe
+from .config_utils import get_config_value
 
 
 class StockScannerAgent:
@@ -16,9 +17,10 @@ class StockScannerAgent:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.universe = self._get_universe()
-        self.min_momentum_score = config.get('scanner', {}).get('min_momentum_score', 25)  # Lowered to 25 for more signals
-        self.min_volume_percentile = config.get('scanner', {}).get('min_volume_percentile', 40)  # Lowered to 40
-        self.min_atr_pct = config.get('scanner', {}).get('min_atr_pct', 0.8)  # Lowered to 0.8
+        # Initial load (fallback to config dict), but dynamic refresh happens in scan
+        self.min_momentum_score = get_config_value("SCANNER_MIN_SCORE", config.get('scanner', {}).get('min_momentum_score', 25))
+        self.min_volume_percentile = get_config_value("SCANNER_MIN_VOL_PCT", config.get('scanner', {}).get('min_volume_percentile', 40))
+        self.min_atr_pct = get_config_value("SCANNER_MIN_ATR_PCT", config.get('scanner', {}).get('min_atr_pct', 0.8))
     
     def _get_universe(self) -> List[str]:
         """Get NSE F&O universe"""
@@ -31,14 +33,13 @@ class StockScannerAgent:
     
     def scan(self, use_live_prices: bool = True) -> List[Dict[str, Any]]:
         """
-        Scan stocks for trading signals
-        
-        Args:
-            use_live_prices: Whether to use live prices from Fyers
-            
-        Returns:
-            List of signal dictionaries
+        Scan stocks for trading signals in PARALLEL
         """
+        # Refresh Configs Dynamic logic
+        self.min_momentum_score = get_config_value("SCANNER_MIN_SCORE", self.min_momentum_score)
+        self.min_volume_percentile = get_config_value("SCANNER_MIN_VOL_PCT", self.min_volume_percentile)
+        
+        import concurrent.futures
         signals = []
         
         # Fetch live prices for all stocks if enabled
@@ -53,35 +54,45 @@ class StockScannerAgent:
                 print(f"[STOCK SCANNER] Could not fetch live prices: {e}. Using database data.")
                 live_prices = {}
         
-        # Scan each stock
-        print(f"[STOCK SCANNER] Scanning {len(self.universe)} stocks...")
+        # Scan each stock in parallel
+        print(f"[STOCK SCANNER] Scanning {len(self.universe)} stocks in PARALLEL...")
         
-        for symbol in self.universe:
-            try:
-                # Get live price for this symbol (if available)
-                live_price_data = live_prices.get(symbol)
-                signal = self._analyze_stock(symbol, live_price_data)
-                
-                if signal:
-                    print(f"[STOCK SCANNER] {symbol}: Signal generated (score={signal['momentum_score']})")
-                    if signal['momentum_score'] >= self.min_momentum_score:
-                        signals.append(signal)
-                    else:
-                        print(f"[STOCK SCANNER] {symbol}: Score {signal['momentum_score']} below threshold {self.min_momentum_score}")
-                else:
-                    print(f"[STOCK SCANNER] {symbol}: No signal (no data or criteria not met)")
-                    
-            except Exception as e:
-                print(f"[STOCK SCANNER] Error scanning {symbol}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            # Prepare arguments for map
+            # We need to pass symbol and its corresponding live price (if any)
+            # Since map takes one iterable, we'll wrap the logic in a lambda or helper
+            
+            future_to_symbol = {
+                executor.submit(self._analyze_stock_safe, symbol, live_prices.get(symbol)): symbol 
+                for symbol in self.universe
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    signal = future.result()
+                    if signal:
+                        print(f"[STOCK SCANNER] {symbol}: Signal generated (score={signal['momentum_score']})")
+                        if signal['momentum_score'] >= self.min_momentum_score:
+                            signals.append(signal)
+                        else:
+                            print(f"[STOCK SCANNER] {symbol}: Score {signal['momentum_score']} below threshold")
+                except Exception as e:
+                    print(f"[STOCK SCANNER] Error scanning {symbol}: {e}")
+
         # Sort by momentum score (highest first)
         signals.sort(key=lambda x: x['momentum_score'], reverse=True)
         
         print(f"[STOCK SCANNER] Total signals: {len(signals)}")
         return signals
+
+    def _analyze_stock_safe(self, symbol, live_price_data):
+        """Wrapper for _analyze_stock to handle exceptions safely in threads"""
+        try:
+            return self._analyze_stock(symbol, live_price_data)
+        except Exception as e:
+            print(f"Error in thread for {symbol}: {e}")
+            return None
     
     def _analyze_stock(self, symbol: str, live_price_data: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """

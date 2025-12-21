@@ -11,10 +11,27 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-# Load environment variables
-# Load environment variables
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-load_dotenv(BASE_DIR / '.env')
+import sys
+# Load environment variables with resilient path discovery
+def get_env_file():
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        # Check standard locations for .env relative to frozen exe
+        potential_paths = [
+            os.path.join(exe_dir, ".env"),
+            os.path.join(os.path.dirname(exe_dir), ".env"),
+            os.path.join(os.getcwd(), ".env")
+        ]
+        for p in potential_paths:
+            if os.path.exists(p): return p
+        return ".env" # Fallback
+    else:
+        # Development mode
+        return Path(__file__).resolve().parent.parent.parent / '.env'
+
+env_path = get_env_file()
+load_dotenv(env_path)
+load_dotenv(env_path)
 
 # Database setup - PostgreSQL
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -436,7 +453,146 @@ class SmartTraderSignal(Base):
     signal_metadata = Column(Text)  # JSON - renamed from metadata to avoid SQLAlchemy conflict
 
 
-# ==================== DATABASE INITIALIZATION ====================
+
+class AgentAuditLog(Base):
+    """Audit log for all agent decisions"""
+    __tablename__ = "agent_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_name = Column(String(50), nullable=False, index=True)
+    action_type = Column(String(50), nullable=False)  # 'SIGNAL_GENERATION', 'TRADE_EXECUTION', 'RISK_CHECK'
+    symbol = Column(String(20))
+    
+    # Context
+    input_snapshot = Column(JSON)  # What the agent saw
+    decision = Column(JSON)        # What the agent decided
+    reasoning = Column(Text)       # Why
+    confidence = Column(Float)
+    
+    # Outcome
+    status = Column(String(20))    # 'SUCCESS', 'FAILURE', 'SKIPPED'
+    execution_time_ms = Column(Integer)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PaperOrder(Base):
+    """Paper Trading Order Book"""
+    __tablename__ = "paper_orders"
+    
+    id = Column(String(50), primary_key=True)  # UUID
+    user_id = Column(String(50), default='default_user', index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    side = Column(String(10), nullable=False)  # BUY/SELL
+    quantity = Column(Integer, nullable=False)
+    product_type = Column(String(20), default='INTRADAY')  # CNC/INTRADAY
+    order_type = Column(String(20), default='MARKET')      # MARKET/LIMIT
+    
+    price = Column(Float)
+    trigger_price = Column(Float)
+    
+    status = Column(String(20), default='PENDING', index=True)
+    filled_quantity = Column(Integer, default=0)
+    average_price = Column(Float)
+    
+    message = Column(Text)
+    parent_order_id = Column(String(50))  # For bracket orders
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PaperTrade(Base):
+    """Paper Trading Trade Book (Fills)"""
+    __tablename__ = "paper_trades"
+    
+    id = Column(String(50), primary_key=True)  # UUID
+    order_id = Column(String(50), ForeignKey("paper_orders.id"), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=False)
+    value = Column(Float, nullable=False)
+    
+    commission = Column(Float, default=0.0)
+    realized_pnl = Column(Float)  # Only for closing trades
+    
+    trade_time = Column(DateTime, default=datetime.utcnow)
+
+
+class PaperPosition(Base):
+    """Paper Trading Open Positions"""
+    __tablename__ = "paper_positions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(50), default='default_user')
+    symbol = Column(String(20), nullable=False, index=True)
+    product_type = Column(String(20), default='INTRADAY')
+    side = Column(String(10), nullable=False)  # LONG/SHORT
+    
+    quantity = Column(Integer, nullable=False)
+    average_price = Column(Float, nullable=False)
+    
+    ltp = Column(Float)
+    pnl = Column(Float)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('ix_paper_position_sym', 'user_id', 'symbol', 'product_type', unique=True),
+    )
+
+
+class PaperFund(Base):
+    """Paper Trading Funds (Ledger)"""
+    __tablename__ = "paper_funds"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(50), unique=True, nullable=False)
+    
+    available_balance = Column(Float, default=1000000.0)
+    used_margin = Column(Float, default=0.0)
+    total_balance = Column(Float, default=1000000.0)
+    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+
+class StrategyConfig(Base):
+    """Runtime Configuration for Strategies/Agents"""
+    __tablename__ = "strategy_configs"
+    
+    key = Column(String(100), primary_key=True, index=True)
+    value = Column(JSON, nullable=False) # Store complex config as JSON
+    description = Column(String(200))
+    # Category (Risk, Trade, System)
+    category = Column(String(50), default="GENERAL", index=True) 
+    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ActionCenter(Base):
+    """Pending Actions/Orders requiring human approval"""
+    __tablename__ = "action_center"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    source_agent = Column(String(50), nullable=False) # 'FastLoop', 'StrategyAgent'
+    action_type = Column(String(50), nullable=False) # 'PLACE_ORDER', 'CLOSE_POSITION'
+    
+    # Action Details (JSON)
+    payload = Column(JSON, nullable=False) # The order dict
+    
+    # Context
+    reason = Column(String(500))
+    confidence = Column(Float)
+    
+    # Status
+    status = Column(String(20), default='PENDING', index=True) # PENDING, APPROVED, REJECTED, EXECUTED, FAILED
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 def init_db():
     """Initialize database and create all tables"""

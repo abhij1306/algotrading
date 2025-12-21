@@ -53,10 +53,11 @@ backend/
 - ✅ NSE F&O universe (~200 stocks)
 - ✅ Technical indicators (EMA, ATR, RSI, z-scores)
 - ✅ Intraday & swing scoring algorithms
-- ✅ Futures preference logic
-- ✅ 50-ticker cap with dynamic merging
-- ✅ Caching (1-hour TTL)
-- ⏳ Fyers API integration (Phase 3)
+- ✅ Action Center for manual order approval
+- ✅ Paper Trading Ledger (Orders, Trades, Positions, Funds)
+- ✅ Unified Broker Interface (Fyers, Paper, Backtest)
+- ✅ Integrated with Electron for standalone desktop use
+- ✅ Packaged with PyInstaller (`backend_build.spec`)
 
 ## Testing
 ```bash

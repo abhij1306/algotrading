@@ -24,6 +24,14 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
+    // Debounced search effect
+    React.useEffect(() => {
+        const timer = setTimeout(() => {
+            if (currentSymbol) searchSymbols(currentSymbol);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [currentSymbol]);
+
     // Search symbols
     const searchSymbols = async (query: string) => {
         if (query.length < 1) {
@@ -192,10 +200,7 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
                                     <input
                                         type="text"
                                         value={currentSymbol}
-                                        onChange={(e) => {
-                                            setCurrentSymbol(e.target.value);
-                                            searchSymbols(e.target.value);
-                                        }}
+                                        onChange={(e) => setCurrentSymbol(e.target.value)}
                                         placeholder="INFY, TCS..."
                                         className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                                     />
@@ -203,7 +208,7 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
 
                                 {/* Search Results */}
                                 {searchResults.length > 0 && (
-                                    <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-40 overflow-y-auto">
+                                    <div className="absolute z-[9999] w-full mt-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-40 overflow-y-auto">
                                         {searchResults.map((result, idx) => (
                                             <button
                                                 key={idx}

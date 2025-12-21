@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import SkeletonTable from '@/components/SkeletonTable'
 import { useSearchParams } from 'next/navigation'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
@@ -8,8 +8,12 @@ import ScreenerTable from '@/components/ScreenerTable'
 import BacktestHUD from '@/components/BacktestHUD'
 import PortfolioTab from '@/components/PortfolioTab'
 import AIAssistant from '@/components/AIAssistant'
+import TradingModeToggle from '@/components/TradingModeToggle'
+
 import Terminal from '@/components/Terminal'
 import ZeroStateScreener from '@/components/ZeroStateScreener'
+import LoginButton from '@/components/LoginButton'
+import { CommandPalette } from '@/components/CommandPalette'
 import { LayoutGrid, PieChart, PlayCircle, Zap, Search, Filter, Layers, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 
 // Types
@@ -32,7 +36,7 @@ interface Stock {
 
 type MainTab = 'screener' | 'pf_analysis' | 'backtest' | 'execution'
 
-export default function RaycastPage() {
+function RaycastContent() {
   // Global keyboard shortcuts
   useKeyboardShortcuts()
 
@@ -57,6 +61,7 @@ export default function RaycastPage() {
   const [selectedSector, setSelectedSector] = useState('all')
   const [scannerFilter, setScannerFilter] = useState('ALL')
   const [availableSectors, setAvailableSectors] = useState<string[]>([])
+  const [viewMode, setViewMode] = useState<'technical' | 'financial'>('technical')
 
   // Pagination
   const [page, setPage] = useState(1)
@@ -91,9 +96,12 @@ export default function RaycastPage() {
       if (selectedSector && selectedSector !== 'all') {
         url += `&sector=${encodeURIComponent(selectedSector)}`
       }
+      if (viewMode === 'financial') {
+        url += `&view=financial`
+      }
 
       // 1. CACHE CHECK (Stale-while-revalidate)
-      const cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${selectedSymbol}_${selectedSector}_${scannerFilter}`
+      const cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${selectedSymbol}_${selectedSector}_${scannerFilter}_${viewMode}`
       const cached = localStorage.getItem(cacheKey)
       if (cached) {
         try {
@@ -136,7 +144,7 @@ export default function RaycastPage() {
     if (mainTab === 'screener') {
       fetchData()
     }
-  }, [mainTab, page, selectedSymbol, selectedSector, scannerFilter])
+  }, [mainTab, page, selectedSymbol, selectedSector, scannerFilter, viewMode])
 
   const tabs = [
     { id: 'screener', label: 'SCREENER', icon: LayoutGrid, role: 'Data Foundation (Deterministic)' },
@@ -207,6 +215,8 @@ export default function RaycastPage() {
 
         {/* Agent Identity & Status */}
         <div className="flex items-center gap-4">
+          <TradingModeToggle />
+
           <div className="flex flex-col items-end mr-2 w-64">
             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Active Agent</span>
             <span className="text-xs text-cyan-400 font-mono truncate">{activeAgent?.role}</span>
@@ -287,6 +297,26 @@ export default function RaycastPage() {
                 </button>
               </div>
 
+              <div className="h-4 w-[1px] bg-white/10"></div>
+
+              {/* View Toggle */}
+              <div className="flex bg-[#0A0A0A] rounded-lg p-0.5 border border-white/10">
+                <button
+                  onClick={() => setViewMode('technical')}
+                  className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${viewMode === 'technical' ? 'bg-white/10 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  TECHNICAL
+                </button>
+                <button
+                  onClick={() => setViewMode('financial')}
+                  className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${viewMode === 'financial' ? 'bg-cyan-500/20 text-cyan-400 shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  FINANCIAL
+                </button>
+              </div>
+
+              <div className="h-4 w-[1px] bg-white/10"></div>
+              <LoginButton />
 
             </div>
 
@@ -297,7 +327,7 @@ export default function RaycastPage() {
                 {loading && stocks.length === 0 ? (
                   <SkeletonTable rows={15} />
                 ) : stocks.length > 0 ? (
-                  <ScreenerTable data={stocks} type="intraday" />
+                  <ScreenerTable data={stocks} type="intraday" viewMode={viewMode} />
                 ) : (
                   <ZeroStateScreener />
                 )}
@@ -332,7 +362,8 @@ export default function RaycastPage() {
               </div>
             </div>
           </div>
-        )}
+        )
+        }
 
         {/* TABS 2, 3, 4: Keep mounted, hide with CSS */}
         <div className={`h-full w-full glass rounded-xl overflow-hidden border border-white/5 bg-[#050505]/50 backdrop-blur-sm shadow-2xl p-6 ${mainTab === 'pf_analysis' ? '' : 'hidden'}`}>
@@ -347,10 +378,23 @@ export default function RaycastPage() {
           <Terminal />
         </div>
 
-      </main>
+      </main >
 
       {/* FIXED AI ASSISTANT OVERLAY */}
-      <AIAssistant />
-    </div>
+      < AIAssistant />
+      < CommandPalette />
+    </div >
+  )
+}
+
+export default function RaycastPage() {
+  return (
+    <Suspense fallback={
+      <div className="h-screen bg-[#050505] flex items-center justify-center">
+        <div className="text-cyan-400 font-mono animate-pulse">Initializing SmartTrader...</div>
+      </div>
+    }>
+      <RaycastContent />
+    </Suspense>
   )
 }

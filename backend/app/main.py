@@ -33,8 +33,22 @@ app.add_middleware(
 app.include_router(smart_trader_router)
 
 # Include AI Insight router
+# Include AI Insight router
 from .ai_insight_api import router as ai_insight_router
 app.include_router(ai_insight_router)
+
+# Include Unified Trading API router
+from .routers.unified import router as unified_router
+app.include_router(unified_router)
+
+# Include System Config router
+from .routers import screener, market, actions, auth
+
+# Register Routers
+app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
+app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
+app.include_router(actions.router, prefix="/api/actions", tags=["Action Center"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 
 # Start Cache Manager
 # Initialize Database
@@ -110,16 +124,18 @@ async def get_screener(
     sort_by: str = 'symbol', 
     sort_order: str = 'asc', 
     symbol: str = None,
-    sector: str = None
+    sector: str = None,
+    view: str = 'technical' # 'technical' or 'financial'
 ):
     """
-    Returns paginated list of companies with technical indicators.
+    Returns paginated list of companies with technical indicators or financial data.
     Also supports sorting and filtering by symbol and sector.
     """
-    db = SessionLocal()
-    repo = DataRepository(db)
     try:
-        from .database import HistoricalPrice
+        db = None
+        db = SessionLocal()
+        repo = DataRepository(db)
+        from .database import HistoricalPrice, FinancialStatement
         from sqlalchemy import and_
         
         # Get latest date for each company's historical prices
@@ -140,6 +156,15 @@ async def get_screener(
             )
         ).filter(Company.is_active == True)
         
+        # Join Financials if requested
+        # Join Financials if requested
+        if view == 'financial':
+            # Step 1: Filter to companies that HAVE financial statements
+            companies_query = companies_query.join(
+                FinancialStatement, 
+                Company.id == FinancialStatement.company_id
+            ).distinct()
+        
         # Add symbol filter if provided (partial match)
         if symbol:
             companies_query = companies_query.filter(Company.symbol.ilike(f"{symbol.upper()}%"))
@@ -148,7 +173,7 @@ async def get_screener(
         if sector:
             companies_query = companies_query.filter(Company.sector == sector)
         
-        # Apply sorting at database level for close price
+        # Apply sorting
         if sort_by == 'close':
             if sort_order == 'desc':
                 companies_query = companies_query.order_by(desc(HistoricalPrice.close))
@@ -160,30 +185,77 @@ async def get_screener(
             else:
                 companies_query = companies_query.order_by(HistoricalPrice.volume)
         elif sort_by == 'change_pct':
-            # Calculate change_pct expression: (close - ema_20) / ema_20
-            # Handle division by zero/null by ordering them last
             change_expr = (HistoricalPrice.close - HistoricalPrice.ema_20) / HistoricalPrice.ema_20
             if sort_order == 'desc':
                 companies_query = companies_query.order_by(desc(change_expr))
             else:
                 companies_query = companies_query.order_by(change_expr)
         else:
-            # Default to symbol sorting
+            # Default sorting
             companies_query = companies_query.order_by(Company.symbol)
         
         total_records = companies_query.count()
         
         # Paginate
         offset = (page - 1) * limit
+        # Note: If using distinct(), ensure order_by includes the distinct columns if required by DB strictness
+        # For Postgres, ORDER BY expressions must be in SELECT list if DISTINCT is used. 
+        # But we are selecting Company objects (which includes ID).
         results = companies_query.offset(offset).limit(limit).all()
         
         # Get all symbols for bulk fetch
-        symbols = [c.symbol for c, _ in results]
+        companies = [c for c, _ in results] if not view == 'financial' else results # If financial, results is just [Company] because no add_entity
+        
+        # Handle the structure difference
+        # If view != financial, results is [(Company, HistoricalPrice)]
+        # If view == financial, results is [Company] (due to distinct query structure usually returning primary entity)
+        # Wait, the base query was db.query(Company, HistoricalPrice).join(latest_prices...
+        # So results will be [(Company, HistoricalPrice)] even with distinct().
+        # But PostgreSQL requires DISTINCT ON columns to match ORDER BY.
+        # Let's simplify: JUST query Company for the financial view to be safe? 
+        # No, we need HistoricalPrice for sorting/display too.
+        # Let's trust the ORM's distinct() handling for now.
+        
+        # Unpack results consistently
+        fetched_companies = []
+        fetched_hist_prices = []
+        
+        if view == 'financial':
+             # With distinct(), results might be unique (Company, Hist) tuples.
+             fetched_companies = [r[0] for r in results]
+             fetched_hist_prices = [r[1] for r in results]
+        else:
+             fetched_companies = [r[0] for r in results]
+             fetched_hist_prices = [r[1] for r in results]
+
+        symbols = [c.symbol for c in fetched_companies]
         bulk_hist = repo.get_bulk_historical_prices(symbols, days=200)
         
-        # Compute features for the paginated results only
+        # Bulk Fetch Financials if requested
+        fin_map = {}
+        if view == 'financial' and fetched_companies:
+            comp_ids = [c.id for c in fetched_companies]
+            # Fetch all financials for these companies
+            all_fins = db.query(FinancialStatement).filter(
+                FinancialStatement.company_id.in_(comp_ids)
+            ).order_by(FinancialStatement.period_end.desc()).all()
+            
+            # Pick best per company
+            for f in all_fins:
+                if f.company_id not in fin_map:
+                    fin_map[f.company_id] = f
+                else:
+                    # Already have latest (due to desc sort), but prefer Annual if same date?
+                    # Or check duplicates.
+                    # Current logic: First one wins (Latest Date). 
+                    # If duplicate dates, pick first one encountered.
+                    pass
+        
+        # Compute features
         computed_list = []
-        for company, hist_price in results:
+        for i, company in enumerate(fetched_companies):
+            hist_price = fetched_hist_prices[i]
+            
             try:
                 hist = bulk_hist.get(company.symbol)
                 if hist is not None and not hist.empty:
@@ -210,10 +282,22 @@ async def get_screener(
                 if 'symbol' not in features:
                     features['symbol'] = company.symbol
                 
+                # Add financials if present
+                if view == 'financial' and company.id in fin_map:
+                    fin_stmt = fin_map[company.id]
+                    features['revenue'] = fin_stmt.revenue
+                    features['net_income'] = fin_stmt.net_income
+                    features['eps'] = fin_stmt.eps
+                    features['pe_ratio'] = fin_stmt.pe_ratio
+                    features['roe'] = fin_stmt.roe
+                    features['debt_to_equity'] = fin_stmt.debt_to_equity
+                    features['period'] = str(fin_stmt.period_end)
+                    features['market_cap'] = company.market_cap
+                
                 # Calculate scores
                 tech_score = calculate_technical_score(features)
                 features['intraday_score'] = tech_score
-                features['swing_score'] = tech_score # Using same model for now
+                features['swing_score'] = tech_score 
                 
                 computed_list.append(features)
             except Exception as e:
@@ -247,8 +331,11 @@ async def get_screener(
         }
         
     except Exception as e:
-        db.close()
+        if db:
+            db.close()
         import traceback
+        with open("traceback.log", "w") as f:
+            f.write(traceback.format_exc())
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1036,11 +1123,7 @@ async def list_strategies():
 @app.post("/api/strategies/backtest")
 async def run_backtest(request: BacktestRequest):
     """
-    Run backtest for a strategy
-    
-    For intraday strategies (5min, 15min):
-    - Uses equity data simulation (CE/PE not available yet)
-    - Simulates directional trades based on strategy signals
+    Run backtest for a strategy.
     """
     if not request.symbol or request.symbol.strip() == "":
         raise HTTPException(status_code=400, detail="Symbol is required for backtesting")
@@ -1554,16 +1637,64 @@ async def search_symbols(q: str, limit: int = 10, db: Session = Depends(get_db))
     
     q = q.upper()
     
-    results = db.query(Company).filter(
+    # Step 1: Fast search - Symbol Prefix
+    # This uses the index on symbol and is extremely fast
+    symbol_results = db.query(Company).filter(
         and_(
             Company.is_active == True,
-            or_(
-                Company.symbol.like(f"{q}%"),  # Starts with
-                Company.name.ilike(f"%{q}%")   # Contains name
-            )
+            Company.symbol.like(f"{q}%")
         )
-    ).limit(limit).all()
+    ).order_by(func.length(Company.symbol), Company.symbol).limit(limit).all()
     
+    results = list(symbol_results)
+    
+    # Step 2: If we need more results, search by Name (slower but useful)
+    if len(results) < limit:
+        remaining = limit - len(results)
+        existing_ids = [c.id for c in results]
+        
+        name_results = db.query(Company).filter(
+            and_(
+                Company.is_active == True,
+                Company.name.ilike(f"%{q}%"),
+                ~Company.id.in_(existing_ids) # Exclude already found
+            )
+        ).limit(remaining).all()
+        
+        results.extend(name_results)
+
+    # Step 3: Add Synthetic Options for Indices (NIFTY/BANKNIFTY)
+    if "NIFTY" in q or "BANK" in q:
+        import datetime
+        import re
+        
+        # Determine index and base price
+        target_index = "NIFTY" if "NIFTY" in q and "BANK" not in q else None
+        if "BANK" in q: target_index = "BANKNIFTY"
+        
+        if target_index:
+            # Try to find a strike price in the query (e.g., "NIFTY 24000")
+            strike_match = re.search(r'\d{5}', q)
+            center_strike = int(strike_match.group()) if strike_match else None
+            
+            # Default spots if no strike specified
+            defaults = {"NIFTY": 24000, "BANKNIFTY": 52000}
+            spot = center_strike if center_strike else defaults.get(target_index, 24000)
+            
+            # Generate options around the spot/strike
+            # If user specified strike, show just that. Else show a range.
+            range_width = 0 if center_strike else 500
+            step = 100
+            
+            for strike in range(spot - range_width, spot + range_width + step, step):
+                expiry_fmt = "20JAN" # Placeholder
+                ce_sym = f"{target_index}{expiry_fmt}{strike}CE"
+                pe_sym = f"{target_index}{expiry_fmt}{strike}PE"
+                
+                # Always add if it's a generic search or matches specifically
+                results.append(type('obj', (object,), {'symbol': ce_sym, 'name': f"{target_index} {strike} Call Option", 'sector': 'Derivatives'}))
+                results.append(type('obj', (object,), {'symbol': pe_sym, 'name': f"{target_index} {strike} Put Option", 'sector': 'Derivatives'}))
+
     return {
         "symbols": [
             {

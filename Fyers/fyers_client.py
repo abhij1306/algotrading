@@ -11,7 +11,19 @@ from typing import Dict, Any, Optional
 from fyers_apiv3 import fyersModel
 
 # Configuration
-ACCESS_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "access_token.json")
+import sys
+# Configuration - Discovery for packaged mode
+def get_fyers_dir():
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.exists(os.path.join(exe_dir, "fyers")): return os.path.join(exe_dir, "fyers")
+        if os.path.exists(os.path.join(os.path.dirname(exe_dir), "fyers")): return os.path.join(os.path.dirname(exe_dir), "fyers")
+        return os.path.join(os.getcwd(), "fyers")
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
+
+FYERS_DIR = get_fyers_dir()
+ACCESS_TOKEN_FILE = os.path.join(FYERS_DIR, "config", "access_token.json")
 
 
 def load_access_token() -> str:

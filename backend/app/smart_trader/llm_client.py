@@ -12,37 +12,32 @@ load_dotenv()
 
 
 class LLMClient:
-    """Unified LLM client supporting multiple providers"""
+    """Unified LLM client supporting multiple providers via LiteLLM"""
     
     def __init__(self, provider: str = "groq"):
         """
         Initialize LLM client
         
         Args:
-            provider: "groq", "openai", or "anthropic"
+           provider: "groq", "openai", "anthropic", or "cerebras"
         """
         self.provider = provider
         
+        # Map provider to default models (can be overridden by env)
         if provider == "groq":
-            self.api_key = os.getenv("GROQ_API_KEY")
-            self.base_url = "https://api.groq.com/openai/v1"
-            self.model = "llama-3.1-8b-instant"
+            self.model = os.getenv("LITELLM_MODEL", "groq/llama-3.1-70b-versatile")
         elif provider == "openai":
-            self.api_key = os.getenv("OPENAI_API_KEY")
-            self.base_url = "https://api.openai.com/v1"
-            self.model = "gpt-4-turbo-preview"
+            self.model = os.getenv("LITELLM_MODEL", "gpt-4-turbo-preview")
         elif provider == "anthropic":
-            self.api_key = os.getenv("ANTHROPIC_API_KEY")
-            self.base_url = "https://api.anthropic.com/v1"
-            self.model = "claude-3-sonnet-20240229"
+            self.model = os.getenv("LITELLM_MODEL", "claude-3-sonnet-20240229")
+        elif provider == "cerebras":
+            self.model = os.getenv("LITELLM_MODEL", "cerebras/llama3.1-70b")
         else:
-            raise ValueError(f"Unsupported provider: {provider}")
-        
-        if not self.api_key:
-            raise ValueError(f"API key not found for provider: {provider}. Please set {provider.upper()}_API_KEY in .env")
-        
-        print(f"✅ LLM Client initialized: provider={provider}, model={self.model}, api_key={'*' * 10}{self.api_key[-4:]}")
-    
+             # Allow direct model pass-through if provider is actually a model name
+             self.model = provider
+
+        print(f"✅ LLM Client initialized: provider={provider}, model={self.model}")
+
     async def generate(
         self, 
         prompt: str, 
@@ -52,88 +47,43 @@ class LLMClient:
         json_mode: bool = True
     ) -> str:
         """
-        Generate LLM response
-        
-        Args:
-            prompt: User prompt
-            system_prompt: System prompt (optional)
-            temperature: Sampling temperature (0-1)
-            max_tokens: Maximum tokens to generate
-            json_mode: Force JSON output
-            
-        Returns:
-            Generated text response
+        Generate LLM response using LiteLLM
         """
         if not system_prompt:
             system_prompt = "You are an expert quantitative trader and risk manager. Provide precise, data-driven analysis in JSON format."
         
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+
         try:
-            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
-                if self.provider in ["groq", "openai"]:
-                    # OpenAI-compatible API
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    payload = {
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": temperature,
-                        "max_tokens": max_tokens
-                    }
-                    
-                    if json_mode and self.provider == "openai":
-                        payload["response_format"] = {"type": "json_object"}
-                    
-                    response = await client.post(
-                        f"{self.base_url}/chat/completions",
-                        headers=headers,
-                        json=payload
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    return data["choices"][0]["message"]["content"]
-                
-                elif self.provider == "anthropic":
-                    # Anthropic API
-                    headers = {
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    payload = {
-                        "model": self.model,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "system": system_prompt,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ]
-                    }
-                    
-                    response = await client.post(
-                        f"{self.base_url}/messages",
-                        headers=headers,
-                        json=payload
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    return data["content"][0]["text"]
-        
-        except httpx.HTTPStatusError as e:
-            error_msg = f"LLM API error: {e.response.status_code} - {e.response.text}"
-            print(f"❌ {error_msg}")
-            raise Exception(error_msg)
+            from litellm import completion
+            
+            # Prepare kwargs
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+
+            # Call LiteLLM (it handles async if we use acompletion, but standard completion is sync. 
+            # ideally we use acompletion for async, but let's stick to simple completion wrapped or just check if we need async)
+            # Actually, for async we should use `acompletion`
+            from litellm import acompletion
+            
+            response = await acompletion(**kwargs)
+            
+            return response.choices[0].message.content
+            
         except Exception as e:
-            error_msg = f"LLM generation failed: {str(e)}"
+            error_msg = f"LLM generation failed (LiteLLM): {str(e)}"
             print(f"❌ {error_msg}")
-            import traceback
-            traceback.print_exc()
+            # Fallback or re-raise
             raise Exception(error_msg)
     
     async def generate_json(

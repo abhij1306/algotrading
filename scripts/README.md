@@ -234,6 +234,6 @@ pip install pyarrow duckdb
 
 ---
 
-**Last Updated**: December 17, 2025  
+**Last Updated**: December 21, 2025  
 **Total Scripts**: 9  
 **Categories**: Data Pipeline (5), Maintenance (3), Setup (2)

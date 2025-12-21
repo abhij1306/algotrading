@@ -194,3 +194,92 @@ def get_nse_fo_universe() -> List[str]:
         'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 'TITAN',
         'WIPRO', 'ULTRACEMCO', 'TATASTEEL', 'TECHM', 'HCLTECH'
     ]
+
+
+class SymbolHelper:
+    """
+    Helper class for formatting symbols for Fyers/OpenAlgo (from OpenAlgo MCP)
+    """
+    @staticmethod
+    def format_equity(symbol: str, exchange: str = "NSE") -> str:
+        """Format equity symbol e.g., NSE:RELIANCE-EQ"""
+        # For OpenAlgo/Fyers, it's typically EXCHANGE:SYMBOL-SERIES
+        # The MCP code assumes just SYMBOL.UPPER() but Fyers needs NSE:SYMBOL-EQ
+        # I will adapt it for internal Fyers usage if needed, but for now stick to MCP logic + Fyers compat
+        if exchange == "NSE":
+            return f"NSE:{symbol.upper()}-EQ"
+        return symbol.upper()
+    
+    @staticmethod
+    def format_future(base_symbol, expiry_year, expiry_month, expiry_date=None) -> str:
+        """Format futures symbol
+        Example: BANKNIFTY24APR24FUT (OpenAlgo format)
+        Fyers Ref: NSE:BANKNIFTY24APRFUT (sometimes differs, so be careful. 
+        OpenAlgo MCP uses: [BaseSymbol][Year][Month][Date]FUT
+        """
+        month_map = {
+            1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
+            7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
+        }
+        
+        # Handle month
+        if isinstance(expiry_month, int):
+            month_str = month_map[expiry_month]
+        else:
+            month_str = expiry_month.upper()
+            
+        # Format date
+        date_part = f"{expiry_date}" if expiry_date else ""
+            
+        # Format year
+        if isinstance(expiry_year, int) and expiry_year > 2000:
+            year = str(expiry_year)[2:]
+        else:
+            year = str(expiry_year)
+            
+        return f"{base_symbol.upper()}{year}{month_str}{date_part}FUT"
+    
+    @staticmethod
+    def format_option(base_symbol, expiry_date, expiry_month, expiry_year, strike_price, option_type) -> str:
+        """Format options symbol
+        Example: NIFTY28MAR2420800CE
+        """
+        month_map = {
+            1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
+            7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
+        }
+        
+        # Handle month
+        if isinstance(expiry_month, int):
+            month_str = month_map[expiry_month]
+        else:
+            month_str = expiry_month.upper()
+            
+        # Format year
+        if isinstance(expiry_year, int) and expiry_year > 2000:
+            year = str(expiry_year)[2:]
+        else:
+            year = str(expiry_year)
+            
+        # Format option type
+        opt_type = "CE" if option_type.upper() in ["C", "CALL", "CE"] else "PE"
+        
+        # Format strike
+        if isinstance(strike_price, (int, float)):
+            if strike_price == int(strike_price):
+                strike_str = str(int(strike_price))
+            else:
+                strike_str = str(strike_price)
+        else:
+            strike_str = strike_price
+            
+        return f"{base_symbol.upper()}{expiry_date}{month_str}{year}{strike_str}{opt_type}"
+
+    @staticmethod
+    def get_common_indices(exchange="NSE_INDEX") -> List[str]:
+        """Get common index symbols"""
+        if exchange.upper() == "NSE_INDEX":
+            return ["NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "INDIAVIX"]
+        elif exchange.upper() == "BSE_INDEX":
+            return ["SENSEX", "BANKEX", "SENSEX50"]
+        return []

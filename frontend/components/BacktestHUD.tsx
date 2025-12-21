@@ -40,6 +40,28 @@ export default function BacktestHUD() {
         segment: 'INTRADAY',
     })
 
+    // Debounced Search for Symbol
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (config.symbol && config.symbol.length > 0) {
+                fetch(`http://localhost:8000/api/symbols/search?q=${config.symbol}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        setSearchResults(data.symbols || [])
+                        setShowDropdown((data.symbols || []).length > 0)
+                    })
+                    .catch(() => {
+                        setSearchResults([])
+                        setShowDropdown(false)
+                    })
+            } else {
+                setSearchResults([])
+                setShowDropdown(false)
+            }
+        }, 300)
+        return () => clearTimeout(timer)
+    }, [config.symbol])
+
     const handleRunBacktest = async () => {
         setIsRunning(true)
         setError(null)
@@ -111,36 +133,11 @@ export default function BacktestHUD() {
                     <input
                         type="text"
                         value={config.symbol}
-                        onChange={(e) => {
-                            const val = e.target.value.toUpperCase();
-                            setConfig({ ...config, symbol: val });
-                            // Fetch symbols on every keystroke
-                            if (val.length > 0) {
-                                fetch(`http://localhost:8000/api/symbols/search?q=${val}`)
-                                    .then(res => res.json())
-                                    .then(data => {
-                                        setSearchResults(data.symbols || []);
-                                        setShowDropdown((data.symbols || []).length > 0);
-                                    })
-                                    .catch(() => {
-                                        setSearchResults([]);
-                                        setShowDropdown(false);
-                                    });
-                            } else {
-                                setSearchResults([]);
-                                setShowDropdown(false);
-                            }
-                        }}
+                        onChange={(e) => setConfig({ ...config, symbol: e.target.value.toUpperCase() })}
                         onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
                         onFocus={() => {
-                            if (config.symbol.length > 0) {
-                                fetch(`http://localhost:8000/api/symbols/search?q=${config.symbol}`)
-                                    .then(res => res.json())
-                                    .then(data => {
-                                        setSearchResults(data.symbols || []);
-                                        setShowDropdown((data.symbols || []).length > 0);
-                                    })
-                                    .catch(() => { });
+                            if (config.symbol.length > 0 && searchResults.length > 0) {
+                                setShowDropdown(true);
                             }
                         }}
                         placeholder="SYMBOL"

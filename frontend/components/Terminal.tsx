@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react';
-import { Search, TrendingUp, Plus, X, List, LayoutDashboard, Briefcase, History, Zap } from 'lucide-react';
+import { Search, TrendingUp, Plus, X, List, LayoutDashboard, Briefcase, History, Zap, ShieldCheck } from 'lucide-react';
+import ActionCenter from './smart-trader/ActionCenter';
 
 interface WatchlistItem {
     symbol: string;
@@ -33,6 +34,8 @@ interface Signal {
     signal_family: string;
 }
 
+import TradingViewWidget from './charts/TradingViewWidget';
+
 export default function Terminal() {
     const [tradingMode, setTradingMode] = useState<'PAPER' | 'LIVE'>('PAPER');
     const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -50,10 +53,10 @@ export default function Terminal() {
     const [quantity, setQuantity] = useState(50);
     const [price, setPrice] = useState(0);
     const [orderMode, setOrderMode] = useState<'MARKET' | 'LIMIT' | 'SL'>('MARKET');
-    const [activeTab, setActiveTab] = useState<'positions' | 'orders' | 'history'>('positions');
+    const [activeTab, setActiveTab] = useState<'chart' | 'positions' | 'orders' | 'history'>('chart');
 
     // Sidebar & Signals State
-    const [sidebarMode, setSidebarMode] = useState<'watchlist' | 'signals'>('watchlist');
+    const [sidebarMode, setSidebarMode] = useState<'watchlist' | 'signals' | 'actions'>('watchlist');
     const [signals, setSignals] = useState<Signal[]>([]);
 
     const [searchQuery, setSearchQuery] = useState('');
@@ -139,6 +142,18 @@ export default function Terminal() {
         const interval = setInterval(fetchWatchlistQuotes, 5000);
         return () => clearInterval(interval);
     }, [watchlist]);
+
+    // Debounced Search
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (searchQuery) searchSymbols(searchQuery);
+            else {
+                setSearchResults([]);
+                setShowSearchDropdown(false);
+            }
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [searchQuery]);
 
     useEffect(() => {
         if (selectedSymbol) {
@@ -334,7 +349,7 @@ export default function Terminal() {
     return (
         <div className="flex h-full gap-0 bg-background-dark max-w-full overflow-hidden relative">
             {/* Left Sidebar */}
-            <div className="w-[350px] bg-card-dark border-r border-border-dark flex flex-col h-full overflow-hidden shrink-0">
+            <div className="w-[350px] bg-card-dark border-r border-border-dark flex flex-col h-full overflow-visible shrink-0 relative z-[100]">
                 {/* Sidebar Mode Switch */}
                 <div className="flex items-center p-2 border-b border-border-dark gap-2">
                     <button
@@ -346,10 +361,17 @@ export default function Terminal() {
                     </button>
                     <button
                         onClick={() => setSidebarMode('signals')}
-                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'signals' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'text-text-secondary hover:text-white hover:bg-white/5'
+                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'signals' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'text-text-secondary hover:text-white hover:bg-white/5'
                             }`}
                     >
-                        <Zap className="w-4 h-4" /> AI Signals
+                        <Zap className="w-4 h-4" /> Signals
+                    </button>
+                    <button
+                        onClick={() => setSidebarMode('actions')}
+                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'actions' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 shadow-[0_0_10px_rgba(34,211,238,0.2)]' : 'text-text-secondary hover:text-white hover:bg-white/5'
+                            }`}
+                    >
+                        <ShieldCheck className="w-4 h-4" /> Actions
                     </button>
                 </div>
 
@@ -357,19 +379,19 @@ export default function Terminal() {
                     <>
                         {/* Search Bar */}
                         <div className="p-4 border-b border-border-dark">
-                            <div className="relative">
+                            <div className="relative z-[50]">
                                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-text-secondary" />
                                 <input
                                     type="text"
                                     placeholder="Search eg: infy bse, nifty..."
                                     value={searchQuery}
-                                    onChange={(e) => { setSearchQuery(e.target.value); searchSymbols(e.target.value); }}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
                                     onFocus={() => searchQuery.length > 0 && setShowSearchDropdown(true)}
                                     onBlur={() => setTimeout(() => setShowSearchDropdown(false), 200)}
                                     className="w-full pl-10 pr-4 py-2 bg-background-dark border border-border-dark rounded text-xs font-medium text-text-primary outline-none focus:border-primary placeholder:text-text-secondary focus:shadow-[0_0_0_1px_rgba(59,130,246,0.3)] transition-all"
                                 />
                                 {showSearchDropdown && searchResults.length > 0 && (
-                                    <div className="absolute z-[100] mt-1 bg-[#0a0a0a] rounded-lg shadow-2xl border border-white/10 max-h-60 overflow-y-auto w-80 left-0 text-text-primary backdrop-blur-xl">
+                                    <div className="absolute z-[9999] mt-1 bg-[#0a0a0a] rounded-lg shadow-xl border border-white/20 max-h-60 overflow-y-auto w-80 left-0 text-text-primary backdrop-blur-xl ring-1 ring-white/10">
                                         {searchResults.slice(0, 8).map((result) => (
                                             <button
                                                 key={result.symbol}
@@ -435,7 +457,7 @@ export default function Terminal() {
                             )}
                         </div>
                     </>
-                ) : (
+                ) : sidebarMode === 'signals' ? (
                     // Signals Sidebar View
                     <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3 bg-background-dark/30">
                         {signals.length === 0 ? (
@@ -457,8 +479,8 @@ export default function Terminal() {
                                             <h4 className="text-sm font-bold text-white tracking-tight">{signal.symbol}</h4>
                                             <div className="flex items-center gap-2 mt-1">
                                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${signal.direction === 'LONG'
-                                                        ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-                                                        : 'bg-red-500/10 border-red-500/30 text-red-400'
+                                                    ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                                                    : 'bg-red-500/10 border-red-500/30 text-red-400'
                                                     }`}>
                                                     {signal.direction}
                                                 </span>
@@ -493,6 +515,11 @@ export default function Terminal() {
                             ))
                         )}
                     </div>
+                ) : (
+                    // Action Center Sidebar View
+                    <div className="flex-1 overflow-y-auto scrollbar-thin bg-background-dark/30 italic">
+                        <ActionCenter />
+                    </div>
                 )}
             </div>
 
@@ -502,6 +529,16 @@ export default function Terminal() {
                     {/* Tabs Header */}
                     <div className="flex items-center justify-between px-6 py-3 border-b border-border-dark bg-card-dark">
                         <div className="flex items-center gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
+                            <button
+                                onClick={() => setActiveTab('chart')}
+                                className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all text-sm font-medium ${activeTab === 'chart'
+                                    ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                    : 'text-text-secondary hover:text-white hover:bg-white/5'
+                                    }`}
+                            >
+                                <LayoutDashboard className="w-3.5 h-3.5" />
+                                Chart
+                            </button>
                             <button
                                 onClick={() => setActiveTab('positions')}
                                 className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all text-sm font-medium ${activeTab === 'positions'
@@ -571,6 +608,12 @@ export default function Terminal() {
                     <div className="flex-1 overflow-auto bg-[#050505] p-6 relative">
                         {/* Background Grid Pattern */}
                         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"></div>
+
+                        {activeTab === 'chart' && (
+                            <div className="h-full w-full relative z-10 glass-subtle rounded-xl overflow-hidden border border-white/5">
+                                <TradingViewWidget symbol={selectedSymbol} />
+                            </div>
+                        )}
 
                         {activeTab === 'orders' && (
                             <div className="flex flex-col items-center justify-center h-full text-center relative z-10">
@@ -677,8 +720,8 @@ export default function Terminal() {
                     <div className="bg-[#111] w-full max-w-[420px] max-h-[85vh] rounded-2xl shadow-2xl border border-white/10 flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
                         {/* Modal Header */}
                         <div className={`p-6 shrink-0 ${orderType === 'BUY'
-                                ? 'bg-gradient-to-r from-blue-600 to-blue-700'
-                                : 'bg-gradient-to-r from-red-600 to-red-700'
+                            ? 'bg-gradient-to-r from-blue-600 to-blue-700'
+                            : 'bg-gradient-to-r from-red-600 to-red-700'
                             }`}>
                             <div className="flex items-center justify-between mb-4">
                                 <h3 className="text-2xl font-bold text-white tracking-tight">
