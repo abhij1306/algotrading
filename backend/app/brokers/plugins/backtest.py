@@ -194,6 +194,51 @@ class BacktestBroker(IBroker):
                 pnl=0.0 - commission,
                 product_type='INTRADAY'
             )
+            # Monkey patch entry_time onto the dict/object for tracking
+            self.positions[symbol]['entry_time'] = self.current_time
+            
+        # Log execution to internal history
+        self.trades.append({
+            'timestamp': self.current_time,
+            'symbol': symbol,
+            'direction': side, 
+            'quantity': qty,
+            'price': price,
+            'entry_price': price, # Needed for Engine
+            'exit_price': 0.0,
+            'commission': commission,
+            'pnl': 0.0,
+            'action': 'OPEN' if not position else 'MODIFY',
+            'status': 'OPEN'
+        }) 
+        
+        # If we closed a position, we should update the PnL of the *closing* trade log if possible
+        # Or better: keep a separate list of "Closed Trades" which is what the frontend expects usually.
+        # The frontend expects: entry_time, exit_time, entry_price, exit_price, pnl
+        
+        # We MUST log completed round-trips here for the Engine to pick up.
+        
+        if position:
+             # Check if we reduced/closed position
+            if (position['side'] == 'LONG' and side == 'SELL') or \
+               (position['side'] == 'SHORT' and side == 'BUY'):
+                   
+                   # This was a closing trade (partial or full)
+                   # We need to log it as a "Closed Trade" for the report
+                   
+                   pnl = (price - position['entry_price']) * qty if position['side'] == 'LONG' else (position['entry_price'] - price) * qty
+                   
+                   self.trades.append({
+                       'entry_time': position.get('entry_time', self.current_time), # Correct dict access
+                       'exit_time': self.current_time,
+                       'symbol': symbol,
+                       'direction': position['side'],
+                       'entry_price': position['entry_price'],
+                       'exit_price': price,
+                       'quantity': qty,
+                       'pnl': pnl,
+                       'status': 'CLOSED'
+                   })
 
     def cancel_order(self, order_id: str):
         pass

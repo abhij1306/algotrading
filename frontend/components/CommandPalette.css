@@ -5,7 +5,7 @@
 }
 
 [cmdk-dialog] {
-    z-index: 50;
+    z-index: var(--z-overlay);
 }
 
 [cmdk-input] {

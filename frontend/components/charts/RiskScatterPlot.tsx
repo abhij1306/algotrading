@@ -1,7 +1,16 @@
 'use client'
 
 import React from 'react';
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
+import {
+    DynamicScatterChart,
+    DynamicScatter,
+    DynamicXAxis,
+    DynamicYAxis,
+    DynamicCartesianGrid,
+    DynamicTooltip,
+    DynamicResponsiveContainer,
+    DynamicCell
+} from "@/components/DynamicCharts";
 
 interface RiskScatterPlotProps {
     data: Array<{
@@ -57,52 +66,58 @@ export default function RiskScatterPlot({ data }: RiskScatterPlotProps) {
         return '#ef4444'; // Risk/High Vol (red)
     };
 
+    // Assuming chartData is derived from data, and each item in chartData has 'std', 'cagr', and 'color' properties.
+    // For this change, we'll map the existing 'data' to 'chartData' structure as implied by the instruction.
+    const chartData = data.map(d => ({
+        std: d.volatility, // Map volatility to std
+        cagr: d.return,    // Map return to cagr
+        symbol: d.symbol,
+        weight: d.weight,
+        color: getColor(d) // Use the existing getColor logic
+    }));
+
     return (
-        <div className="w-full h-full">
-            <ResponsiveContainer width="100%" height="100%">
-                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#252932" opacity={0.3} />
-                    <XAxis
+        <div className="h-[250px] w-full">
+            <DynamicResponsiveContainer width="100%" height="100%">
+                <DynamicScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                    <DynamicCartesianGrid strokeDasharray="3 3" stroke="#252932" />
+                    <DynamicXAxis
                         type="number"
-                        dataKey="volatility"
-                        name="Volatility"
+                        dataKey="std"
+                        name="Risk (Std Dev)"
                         stroke="#6b7280"
-                        style={{ fontSize: '12px' }}
-                        tickLine={false}
-                        label={{ value: 'Volatility (%)', position: 'insideBottom', offset: -10, fill: '#9ca3af' }}
-                        tickFormatter={(value) => `${value}%`}
+                        fontSize={12}
+                        tickFormatter={(val: any) => `${val}%`}
+                        label={{ value: 'Risk (Std Dev)', position: 'bottom', offset: 0, fill: '#6b7280', fontSize: 12 }}
                     />
-                    <YAxis
+                    <DynamicYAxis
                         type="number"
-                        dataKey="return"
-                        name="Return"
+                        dataKey="cagr"
+                        name="Return (CAGR)"
                         stroke="#6b7280"
-                        style={{ fontSize: '12px' }}
-                        tickLine={false}
-                        label={{ value: 'Annual Return (%)', angle: -90, position: 'insideLeft', fill: '#9ca3af' }}
-                        tickFormatter={(value) => `${value}%`}
+                        fontSize={12}
+                        tickFormatter={(val: any) => `${val}%`}
+                        label={{ value: 'Return (CAGR)', angle: -90, position: 'left', fill: '#6b7280', fontSize: 12 }}
                     />
-                    <Tooltip content={<CustomTooltip />} />
+                    <DynamicTooltip content={<CustomTooltip />} cursor={{ strokeDasharray: '3 3' }} />
 
-                    {/* Reference lines for quadrants */}
-                    <ReferenceLine x={medianVol} stroke="#6b7280" strokeDasharray="3 3" opacity={0.5} />
-                    <ReferenceLine y={medianReturn} stroke="#6b7280" strokeDasharray="3 3" opacity={0.5} />
+                    {/* Reference lines for quadrants (removed as per instruction, but keeping the median calculations) */}
+                    {/* If ReferenceLine is needed, it would need to be imported from DynamicCharts or handled differently */}
+                    {/* <ReferenceLine x={medianVol} stroke="#6b7280" strokeDasharray="3 3" opacity={0.5} />
+                    <ReferenceLine y={medianReturn} stroke="#6b7280" strokeDasharray="3 3" opacity={0.5} /> */}
 
-                    <Scatter
-                        name="Stocks"
-                        data={data}
-                        shape="circle"
-                    >
-                        {data.map((entry, index) => (
-                            <Cell
+                    <DynamicScatter name="Portfolios" data={chartData} fill="#8884d8">
+                        {chartData.map((entry: any, index: number) => (
+                            <DynamicCell
                                 key={`cell-${index}`}
-                                fill={getColor(entry)}
-                                r={6 + (entry.weight * 0.3)} // Size based on weight
+                                fill={entry.color}
+                            // The instruction removed 'r' prop, but if sizing by weight is desired, it would need to be re-added
+                            // r={6 + (entry.weight * 0.3)}
                             />
                         ))}
-                    </Scatter>
-                </ScatterChart>
-            </ResponsiveContainer>
+                    </DynamicScatter>
+                </DynamicScatterChart>
+            </DynamicResponsiveContainer>
         </div>
     );
 }

@@ -109,4 +109,99 @@ def compute_features(symbol: str, hist: pd.DataFrame) -> dict:
     # 30D Trend (~21 trading days)
     features['trend_30d'] = float(hist['Close'].pct_change(21).iloc[-1] * 100) if len(hist) >= 22 else 0.0
     
+    # Calculate Advanced Indicators
+    macd, macd_signal, macd_hist = calculate_macd(hist['Close'])
+    hist['macd'] = macd
+    hist['macd_signal'] = macd_signal
+    hist['macd_hist'] = macd_hist
+    
+    stoch_k, stoch_d = calculate_stoch(hist['High'], hist['Low'], hist['Close'])
+    hist['stoch_k'] = stoch_k
+    hist['stoch_d'] = stoch_d
+    
+    bb_upper, bb_middle, bb_lower = calculate_bbands(hist['Close'])
+    hist['bb_upper'] = bb_upper
+    hist['bb_middle'] = bb_middle
+    hist['bb_lower'] = bb_lower
+    
+    hist['adx'] = calculate_adx(hist['High'], hist['Low'], hist['Close'])
+    hist['obv'] = calculate_obv(hist['Close'], hist['Volume'])
+
+    # Update 'recent' after adding columns
+    recent = hist.iloc[-1]
+
+    # Additional Technical Indicators
+    features['macd'] = float(recent['macd']) if not pd.isna(recent['macd']) else 0.0
+    features['macd_signal'] = float(recent['macd_signal']) if not pd.isna(recent['macd_signal']) else 0.0
+    
+    features['stoch_k'] = float(recent['stoch_k']) if not pd.isna(recent['stoch_k']) else 0.0
+    features['stoch_d'] = float(recent['stoch_d']) if not pd.isna(recent['stoch_d']) else 0.0
+    
+    features['bb_upper'] = float(recent['bb_upper']) if not pd.isna(recent['bb_upper']) else 0.0
+    features['bb_middle'] = float(recent['bb_middle']) if not pd.isna(recent['bb_middle']) else 0.0
+    features['bb_lower'] = float(recent['bb_lower']) if not pd.isna(recent['bb_lower']) else 0.0
+    
+    features['adx'] = float(recent['adx']) if not pd.isna(recent['adx']) else 0.0
+    features['obv'] = int(recent['obv']) if not pd.isna(recent['obv']) else 0
+    
     return features
+
+
+# Aliases for backward compatibility
+calculate_ema = ema
+calculate_atr = atr
+calculate_rsi = rsi
+
+
+# --- Advanced Indicators ---
+
+def calculate_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    """Calculate MACD, Signal, and Histogram"""
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def calculate_bbands(series: pd.Series, period: int = 20, num_std: float = 2.0):
+    """Calculate Bollinger Bands"""
+    ma = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = ma + (std * num_std)
+    lower = ma - (std * num_std)
+    return upper, ma, lower
+
+def calculate_stoch(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3):
+    """Calculate Stochastic Oscillator"""
+    lowest_low = low.rolling(window=k_period).min()
+    highest_high = high.rolling(window=k_period).max()
+    
+    k = 100 * ((close - lowest_low) / (highest_high - lowest_low + 1e-9))
+    d = k.rolling(window=d_period).mean()
+    return k, d
+
+def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14):
+    """Calculate Average Directional Index (ADX)"""
+    plus_dm = high.diff()
+    minus_dm = low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm > 0] = 0
+    
+    tr1 = pd.DataFrame(high - low)
+    tr2 = pd.DataFrame(abs(high - close.shift(1)))
+    tr3 = pd.DataFrame(abs(low - close.shift(1)))
+    frames = [tr1, tr2, tr3]
+    tr = pd.concat(frames, axis=1, join='inner').max(axis=1)
+    atr = tr.rolling(period).mean()
+    
+    plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
+    minus_di = 100 * (abs(minus_dm).ewm(alpha=1/period).mean() / atr)
+    dx = (abs(plus_di - minus_di) / abs(plus_di + minus_di)) * 100
+    adx = dx.rolling(period).mean()
+    return adx
+
+def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Calculate On-Balance Volume"""
+    obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+    return obv

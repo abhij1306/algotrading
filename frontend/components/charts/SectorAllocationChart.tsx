@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { DynamicPieChart, DynamicPie, DynamicCell, DynamicResponsiveContainer, DynamicTooltip, DynamicLegend } from "@/components/DynamicCharts";
 
 interface SectorAllocationChartProps {
     data: Array<{
@@ -44,6 +44,13 @@ export default function SectorAllocationChart({ data }: SectorAllocationChartPro
     // Sort by allocation descending
     const sortedData = [...data].sort((a, b) => b.allocation - a.allocation);
 
+    // Prepare chartData for the new Pie component structure
+    const chartData = sortedData.map((entry, index) => ({
+        name: entry.name,
+        value: entry.allocation,
+        color: SECTOR_COLORS[entry.name] || generateColor(index),
+    }));
+
     const CustomTooltip = ({ active, payload }: any) => {
         if (active && payload && payload.length) {
             return (
@@ -56,70 +63,45 @@ export default function SectorAllocationChart({ data }: SectorAllocationChartPro
         return null;
     };
 
-    const renderCustomLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
-        // Only show label if percentage is > 5%
-        if (percent < 0.05) return null;
-
-        const RADIAN = Math.PI / 180;
-        const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-        const x = cx + radius * Math.cos(-midAngle * RADIAN);
-        const y = cy + radius * Math.sin(-midAngle * RADIAN);
-
-        return (
-            <text
-                x={x}
-                y={y}
-                fill="white"
-                textAnchor={x > cx ? 'start' : 'end'}
-                dominantBaseline="central"
-                className="text-xs font-semibold"
-            >
-                {`${(percent * 100).toFixed(1)}%`}
-            </text>
-        );
-    };
-
-    const CustomLegend = ({ payload }: any) => {
-        return (
-            <div className="flex flex-wrap gap-2 justify-center mt-4">
-                {payload.map((entry: any, index: number) => (
-                    <div key={`legend-${index}`} className="flex items-center gap-1.5 text-xs">
-                        <div
-                            className="w-3 h-3 rounded-sm"
-                            style={{ backgroundColor: entry.color }}
-                        />
-                        <span className="text-gray-300">{entry.value}</span>
-                    </div>
-                ))}
-            </div>
-        );
-    };
+    // The renderCustomLabel and CustomLegend components are no longer directly used
+    // as the new DynamicLegend handles its own content and Pie component doesn't use custom labels in this new config.
 
     return (
-        <div className="w-full h-full">
-            <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                    <Pie
-                        data={sortedData}
+        <div className="w-full h-full relative">
+            <DynamicResponsiveContainer width="100%" height="100%">
+                <DynamicPieChart>
+                    <DynamicPie
+                        data={chartData}
                         cx="50%"
-                        cy="45%"
-                        labelLine={false}
-                        label={renderCustomLabel}
-                        outerRadius={100}
-                        fill="#8884d8"
-                        dataKey="allocation"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={80}
+                        paddingAngle={5}
+                        dataKey="value"
                     >
-                        {sortedData.map((entry, index) => (
-                            <Cell
-                                key={`cell-${index}`}
-                                fill={SECTOR_COLORS[entry.name] || generateColor(index)}
-                            />
+                        {chartData.map((entry: any, index: number) => (
+                            <DynamicCell key={`cell-${index}`} fill={entry.color} stroke="none" />
                         ))}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend content={<CustomLegend />} />
-                </PieChart>
-            </ResponsiveContainer>
+                    </DynamicPie>
+                    <DynamicTooltip content={<CustomTooltip />} />
+                    <DynamicLegend
+                        layout="vertical"
+                        verticalAlign="middle"
+                        align="right"
+                        iconType="circle"
+                        content={({ payload }: any) => (
+                            <ul className="list-none space-y-1">
+                                {payload.map((entry: any, index: number) => (
+                                    <li key={`item-${index}`} className="flex items-center gap-2 text-xs text-text-muted">
+                                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
+                                        <span>{entry.value}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    />
+                </DynamicPieChart>
+            </DynamicResponsiveContainer>
         </div>
     );
 }

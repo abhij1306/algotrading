@@ -65,8 +65,9 @@ class ORBStrategy(BaseStrategy):
         self.market_close = time(15, 15) # IST (Display/Config)
         
         # Derived UTC timings for data comparison
-        self.market_open_utc = time(3, 45)
-        self.market_close_utc = time(9, 45)
+        # ASSUMPTION: Data is IST (naive), so we match IST times directly
+        self.market_open_utc = time(9, 15)
+        self.market_close_utc = time(15, 15)
         
     def reset(self):
         """Reset strategy state for new backtest"""
@@ -97,12 +98,14 @@ class ORBStrategy(BaseStrategy):
         ]
         
         if len(opening_candles) == 0:
+            # print(f"No candles for opening range: {market_open_today} - {opening_range_end}")
             return False
         
         self.opening_range_high = opening_candles['high'].max()
         self.opening_range_low = opening_candles['low'].min()
         self.opening_range_calculated = True
         
+        # print(f"Opening Range: {self.opening_range_high} - {self.opening_range_low} for {market_open_today.date()}")
         return True
     
     def on_data(self, current_data: pd.DataFrame, historical_data: pd.DataFrame) -> Optional[Signal]:
@@ -270,12 +273,17 @@ class ORBStrategy(BaseStrategy):
              current_val = self.get_exit_price(position, current_price, current_time)
         
         # Update current price in position tracking
-        position.current_price = current_val
+        if isinstance(position, dict):
+            position['current_price'] = current_val
         
         # Stop loss & Take Profit checks
-        if current_val <= position.stop_loss:
+        # Safely get params, default to no-op if missing
+        stop_loss = position.get('stop_loss') if isinstance(position, dict) else getattr(position, 'stop_loss', None)
+        take_profit = position.get('take_profit') if isinstance(position, dict) else getattr(position, 'take_profit', None)
+        
+        if stop_loss is not None and current_val <= stop_loss:
             return True
-        if current_val >= position.take_profit:
+        if take_profit is not None and current_val >= take_profit:
             return True
         
         return False
@@ -290,7 +298,11 @@ class ORBStrategy(BaseStrategy):
         try:
             # Parse instrument to get strike and type
             # Format: "SYMBOL STRIKE TYPE" e.g., "RELIANCE 2400 CE"
-            parts = position.instrument.split()
+            instrument = position.get('instrument') if isinstance(position, dict) else getattr(position, 'instrument', '')
+            if not instrument:
+                return current_spot_price
+
+            parts = instrument.split()
             if len(parts) >= 3:
                 strike = float(parts[-2])
                 op_type = parts[-1] # CE or PE

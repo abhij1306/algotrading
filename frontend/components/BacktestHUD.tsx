@@ -44,11 +44,12 @@ export default function BacktestHUD() {
     useEffect(() => {
         const timer = setTimeout(() => {
             if (config.symbol && config.symbol.length > 0) {
-                fetch(`http://localhost:8000/api/symbols/search?q=${config.symbol}`)
+                fetch(`http://localhost:8000/api/market/search/?query=${config.symbol}`)
                     .then(res => res.json())
                     .then(data => {
-                        setSearchResults(data.symbols || [])
-                        setShowDropdown((data.symbols || []).length > 0)
+                        const symbols = Array.isArray(data) ? data : (data.symbols || []);
+                        setSearchResults(symbols);
+                        setShowDropdown(symbols.length > 0);
                     })
                     .catch(() => {
                         setSearchResults([])
@@ -129,7 +130,7 @@ export default function BacktestHUD() {
                 <div className="h-5 w-[1px] bg-white/10"></div>
 
                 {/* Symbol Input with Autocomplete */}
-                <div className="relative w-32 z-[101] search-container">
+                <div className="relative w-32 z-[200] search-container">
                     <input
                         type="text"
                         value={config.symbol}

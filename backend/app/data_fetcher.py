@@ -9,7 +9,7 @@ from .config import config
 
 # Add AlgoTrading root directory to path to import Fyers module
 # Get the path: backend/app/data_fetcher.py -> go up 3 levels to AlgoTrading/
-algotrading_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+algotrading_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Remove if already exists and insert at position 0 to ensure it's searched first
 if algotrading_root in sys.path:
@@ -73,10 +73,10 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
         
         # Convert to DataFrame
         candles = response['candles']
-        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = pd.DataFrame(candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['date'] = pd.to_datetime(df['timestamp'], unit='s')
         df = df.set_index('date')
-        df = df[['open', 'high', 'low', 'close', 'volume']]
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
         
         return df
         
@@ -141,10 +141,10 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                         if response.get('s') == 'ok' and 'candles' in response and response['candles']:
                             # Convert to DataFrame
                             candles = response['candles']
-                            new_df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                            new_df = pd.DataFrame(candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
                             new_df['date'] = pd.to_datetime(new_df['timestamp'], unit='s')
                             new_df = new_df.set_index('date')
-                            new_df = new_df[['open', 'high', 'low', 'close', 'volume']]
+                            new_df = new_df[['Open', 'High', 'Low', 'Close', 'Volume']]
                             
                             # Save to database
                             repo.save_historical_prices(symbol, new_df, source='fyers')
@@ -172,6 +172,23 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
         
         # No fallback - return None if Fyers fails
         print(f"Failed to fetch {symbol} from Fyers")
+        
+        # FINAL FALLBACK: NSE Data Reader (Parquet/CSV)
+        try:
+            from .nse_data_reader import NSEDataReader
+            reader = NSEDataReader()
+            end_str = datetime.now().strftime("%Y-%m-%d")
+            start_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            nse_df = reader.get_historical_data(symbol, start_str, end_str)
+            if nse_df is not None and not nse_df.empty:
+                print(f"[DATA] Recovered {symbol} from Local NSE Data")
+                # Save to DB so we don't need to read file next time
+                repo.save_historical_prices(symbol, nse_df, source='nse_local')
+                return nse_df
+        except Exception as e:
+             print(f"Local NSE fallback failed for {symbol}: {e}")
+
         return None
         
     finally:

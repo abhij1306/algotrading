@@ -2,66 +2,121 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import os
 import json
-from dotenv import load_dotenv
+import sys
+import time  # Add missing import
 from fyers_apiv3 import fyersModel
 
 router = APIRouter()
 
-# Constants - Adjust paths to discover files in both dev and packaged modes
+# Get base directory for saving access tokens
 def get_base_dir():
-    # If running as PyInstaller bundle, sys._MEIPASS is the temp folder with _internal
-    # However, we want the folder where the executable or the script resides.
+    """Get the base directory of the project."""
     if getattr(sys, 'frozen', False):
-        # We are in an executable. BASE_DIR is usually the folder containing the .exe
-        # but let's check one level up too (resources folder)
+        # Running as executable
         exe_dir = os.path.dirname(sys.executable)
-        # Try finding fyers folder nearby
-        if os.path.exists(os.path.join(exe_dir, "fyers")): return exe_dir
-        if os.path.exists(os.path.join(os.path.dirname(exe_dir), "fyers")): return os.path.dirname(exe_dir)
-        # Fallback to current working directory
+        if os.path.exists(os.path.join(exe_dir, "fyers")):
+            return exe_dir
+        if os.path.exists(os.path.join(os.path.dirname(exe_dir), "fyers")):
+            return os.path.dirname(exe_dir)
         return os.getcwd()
     else:
-        # Development mode
+        # Development mode - go up from backend/app/routers/ to project root
         return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import sys
 BASE_DIR = get_base_dir()
-FYERS_DIR = os.path.join(BASE_DIR, "fyers")
-CONFIG_DIR = os.path.join(FYERS_DIR, "config")
-KEYS_FILE = os.path.join(CONFIG_DIR, "keys.env")
+CONFIG_DIR = os.path.join(BASE_DIR, "fyers", "config")
 ACCESS_TOKEN_FILE = os.path.join(CONFIG_DIR, "access_token.json")
 
 
 class AuthCodeRequest(BaseModel):
     auth_code: str
 
-@router.get("/fyers/url")
-async def get_fyers_auth_url():
+
+# Simple cache for status (avoid repeated file checks)
+_status_cache = {"connected": False, "user_id": None, "cached_at": 0}
+
+@router.get("/fyers/status")
+def get_fyers_status():
     """
-    Generate Fyers Login URL based on keys.env
+    Check if Fyers is currently connected by verifying access token file exists.
+    Cached for 30s to avoid repeated file I/O.
+    """
+    
+    # Return cached result if less than 30s old
+    if time.time() - _status_cache["cached_at"] < 30:
+        return {
+            "connected": _status_cache["connected"],
+            "user_id": _status_cache["user_id"]
+        }
+    
+    try:
+        if os.path.exists(ACCESS_TOKEN_FILE):
+            with open(ACCESS_TOKEN_FILE, 'r') as f:
+                data = json.load(f)
+            
+            _status_cache["connected"] = True
+            _status_cache["user_id"] = data.get("fy_id", "")
+            _status_cache["cached_at"] = time.time()
+            
+            return {"connected": True, "user_id": data.get("fy_id", "")}
+        else:
+            _status_cache["connected"] = False
+            _status_cache["user_id"] = None
+            _status_cache["cached_at"] = time.time()
+            
+            return {"connected": False, "user_id": None}
+    except Exception as e:
+        print(f"[Fyers] Error checking status: {str(e)}")
+        return {"connected": False, "user_id": None, "error": str(e)}
+
+
+@router.post("/fyers/disconnect")
+def disconnect_fyers():
+    """
+    Disconnect Fyers by removing the access token file.
     """
     try:
-        # Load keys explicitly from the file
-        if not os.path.exists(KEYS_FILE):
-             return {"error": "keys.env not found in fyers/config"}
-        
-        # Manually load to avoid polluting global env if needed, or use dotenv
-        env_vars = {}
-        with open(KEYS_FILE) as f:
-            for line in f:
-                if '=' in line and not line.startswith('#'):
-                    k, v = line.strip().split('=', 1)
-                    # Strip quotes and whitespace
-                    v = v.strip().strip('"').strip("'")
-                    env_vars[k] = v
-        
-        client_id = env_vars.get("CLIENT_ID")
-        secret_key = env_vars.get("SECRET_KEY")
-        redirect_uri = env_vars.get("REDIRECT_URI")
-        
-        if not all([client_id, secret_key, redirect_uri]):
-             raise HTTPException(status_code=500, detail="Missing Fyers credentials in keys.env or file unreadable.")
+        if os.path.exists(ACCESS_TOKEN_FILE):
+            os.remove(ACCESS_TOKEN_FILE)
+            print(f"[Fyers] Access token removed")
+        return {"status": "success", "message": "Disconnected from Fyers"}
+    except Exception as e:
+        print(f"[Fyers] Error disconnecting: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to disconnect: {str(e)}")
 
+
+@router.get("/fyers/url")
+def get_fyers_auth_url():
+    """
+    Generate Fyers Login URL using credentials from environment variables.
+    Credentials should be set in .env file: CLIENT_ID, SECRET_KEY, REDIRECT_URI
+    """
+    try:
+        # Read credentials from environment variables (loaded from .env by main.py)
+        client_id = os.getenv("CLIENT_ID")
+        secret_key = os.getenv("SECRET_KEY")
+        redirect_uri = os.getenv("REDIRECT_URI")
+        
+        # Validate that all required credentials are present
+        if not client_id:
+            raise HTTPException(
+                status_code=500, 
+                detail="CLIENT_ID not found in environment variables. Please add it to .env file."
+            )
+        if not secret_key:
+            raise HTTPException(
+                status_code=500, 
+                detail="SECRET_KEY not found in environment variables. Please add it to .env file."
+            )
+        if not redirect_uri:
+            raise HTTPException(
+                status_code=500, 
+                detail="REDIRECT_URI not found in environment variables. Please add it to .env file."
+            )
+        
+        print(f"[Fyers Auth] Generating auth URL...")
+        
+        # Create Fyers session
         session = fyersModel.SessionModel(
             client_id=client_id,
             secret_key=secret_key,
@@ -72,32 +127,37 @@ async def get_fyers_auth_url():
         )
         
         auth_url = session.generate_authcode()
+        print(f"[Fyers Auth] Generated auth URL successfully")
         return {"url": auth_url}
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Fyers Auth] Error generating auth URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate auth URL: {str(e)}")
 
 @router.post("/fyers/token")
-async def generate_token(request: AuthCodeRequest):
+def generate_token(request: AuthCodeRequest):
     """
-    Exchange auth code for access token and save to file
+    Exchange auth code for access token and save to file.
+    Uses credentials from environment variables (.env file).
     """
     try:
-        # Reload keys
-        env_vars = {}
-        if os.path.exists(KEYS_FILE):
-             with open(KEYS_FILE) as f:
-                for line in f:
-                    if '=' in line and not line.startswith('#'):
-                        k, v = line.strip().split('=', 1)
-                        # Strip quotes and whitespace
-                        v = v.strip().strip('"').strip("'")
-                        env_vars[k] = v
-                        
-        client_id = env_vars.get("CLIENT_ID")
-        secret_key = env_vars.get("SECRET_KEY")
-        redirect_uri = env_vars.get("REDIRECT_URI")
-
+        # Read credentials from environment variables
+        client_id = os.getenv("CLIENT_ID")
+        secret_key = os.getenv("SECRET_KEY")
+        redirect_uri = os.getenv("REDIRECT_URI")
+        
+        # Validate credentials
+        if not all([client_id, secret_key, redirect_uri]):
+            raise HTTPException(
+                status_code=500, 
+                detail="Fyers credentials not found in environment variables. Please check .env file."
+            )
+        
+        print(f"[Fyers Auth] Exchanging auth code for access token...")
+        
+        # Create Fyers session
         session = fyersModel.SessionModel(
             client_id=client_id,
             secret_key=secret_key,
@@ -105,21 +165,34 @@ async def generate_token(request: AuthCodeRequest):
             response_type="code",
             grant_type="authorization_code"
         )
-
+        
+        # Exchange auth code for token
         session.set_token(request.auth_code)
         response = session.generate_token()
         
+        print(f"[Fyers Auth] Token generation response: {response.get('s', 'unknown')}")
+        
+        # Check if token generation was successful
         if response.get("s") == "ok" and "access_token" in response:
-             # Add client_id as per fyers_login.py logic
-             response["client_id"] = client_id
-             
-             os.makedirs(CONFIG_DIR, exist_ok=True)
-             with open(ACCESS_TOKEN_FILE, "w") as f:
-                 json.dump(response, f, indent=4)
-                 
-             return {"status": "success", "message": "Token generated and saved"}
+            # Add client_id to the response for later use
+            response["client_id"] = client_id
+            
+            # Ensure config directory exists
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            
+            # Save token to file
+            with open(ACCESS_TOKEN_FILE, "w") as f:
+                json.dump(response, f, indent=4)
+            
+            print(f"[Fyers Auth] Access token saved to {ACCESS_TOKEN_FILE}")
+            return {"status": "success", "message": "Token generated and saved successfully"}
         else:
-             raise HTTPException(status_code=400, detail=response.get("message", "Token generation failed"))
-
+            error_msg = response.get("message", "Token generation failed")
+            print(f"[Fyers Auth] Token generation failed: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Fyers Auth] Error during token exchange: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Token exchange failed: {str(e)}")

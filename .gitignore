@@ -68,11 +68,50 @@ openalgo/
 # Python
 # ============================================
 
-# Byte-compiled / optimized
+# Log files
+*.log
+backend/fyersApi.log
+backend/fyersRequests.log
+
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+
+# Environment
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Data cache
+backend/cache/
+data/_temp/ggs/
+.eggs/
+lib/
+!frontend/lib/
+lib64/
+parts/
+sdist/
 
 # Virtual Environments
 .venv/
@@ -84,14 +123,8 @@ ENV/
 # Distribution / packaging
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
 var/
 wheels/
 *.egg-info/
@@ -236,3 +269,22 @@ settings.local.json
 
 # Keep .gitkeep files
 !.gitkeep
+
+# ============================================
+# Prevent Future Contamination
+# ============================================
+
+# Temp & Debug Scripts (NEVER COMMIT)
+temp_*.py
+debug_*.py
+# test_*.py - REMOVED to allow tests
+!backend/tests/test_*.py  # Allow test files in tests directory
+!backend/scripts/*.py      # Allow all scripts
+!backend/utils/*.py        # Allow utils
+
+
+# Archive Folders
+archive/
+old/
+backup/
+deprecated/

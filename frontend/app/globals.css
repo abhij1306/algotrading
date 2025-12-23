@@ -4,47 +4,48 @@
 /* OBSIDIAN DESIGN SYSTEM - Raycast-Inspired Financial Dark Mode */
 /* ============================================================ */
 
-@theme {
+:root {
   /* Typography Stack */
   --font-ui: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-data: "JetBrains Mono", "Fira Code", monospace;
-  --font-display: "Inter", sans-serif;
-  --font-sans: "Inter", sans-serif;
 
-  /* Obsidian Base Layers */
-  --color-obsidian: #0F1115;
-  /* Deepest Void */
-  --color-obsidian-surface: #16191F;
-  /* Elevated Layer */
-  --color-obsidian-elevated: #1C1F26;
-  /* Hover/Active */
+  /* Strict Z-Index Scale (Raycast-Aligned) */
+  --z-toast: 100;
+  /* Level 5 */
+  --z-overlay: 50;
+  /* Level 4 */
+  --z-dropdown: 40;
+  /* Level 3 */
+  --z-sticky: 10;
+  /* Level 2 */
+  --z-content: 0;
+  /* Level 1 */
+  --z-base: auto;
 
-  /* Glass System */
-  --color-glass-border: rgba(255, 255, 255, 0.08);
-  --color-glass-highlight: rgba(255, 255, 255, 0.05);
-  --color-glass-strong: rgba(22, 25, 31, 0.8);
+  /* Neon Obsidian Palette */
+  --color-obsidian: #050505;
+  /* Deep Space */
+  --color-obsidian-surface: #0A0A0A;
+  /* Panel Background */
+  --color-glass-border: rgba(255, 255, 255, 0.05);
 
-  /* Financial Neon Colors */
+  /* Accents */
+  --color-cyan-500: #06B6D4;
+  --color-purple-600: #8B5CF6;
+
+  /* Status Colors */
   --color-profit: #00E396;
-  /* Neon Green */
-  --color-profit-muted: #00B377;
-  --color-profit-bg: rgba(0, 227, 150, 0.1);
   --color-loss: #FF4560;
-  /* Neon Red */
-  --color-loss-muted: #CC3750;
-  --color-loss-bg: rgba(255, 69, 96, 0.1);
 
-  /* Electric Accents */
+  /* Text */
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #9CA3AF;
+  /* gray-400 */
+  --color-text-tertiary: #4B5563;
+  /* gray-600 */
+
+  /* Electric Accents (Manual Definition for v4 fallback) */
   --color-electric-blue: #3B82F6;
-  --color-electric-purple: #8B5CF6;
-  --color-electric-cyan: #06B6D4;
-  --color-electric-amber: #F59E0B;
-
-  /* Text Hierarchy */
-  --color-text-primary: #F1F5F9;
-  --color-text-secondary: #94A3B8;
-  --color-text-tertiary: #64748B;
-  --color-text-disabled: #475569;
 }
 
 @layer base {
@@ -76,13 +77,17 @@
   input,
   textarea,
   select {
-    @apply bg-obsidian-surface border-glass-border text-text-primary;
+    background-color: var(--color-obsidian-surface);
+    border-color: var(--color-glass-border);
+    color: var(--color-text-primary);
   }
 
   input:focus,
   textarea:focus,
   select:focus {
-    @apply border-electric-blue ring-2 ring-electric-blue/20 outline-none;
+    border-color: var(--color-electric-blue);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
   }
 
   /* Smooth transitions */
@@ -211,7 +216,7 @@
   scrollbar-width: none;
 }
 
-/* Custom Scrollbar */
+/* Custom Scrollbar (Global) */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -233,69 +238,14 @@
 /* ============================================================ */
 /* ANIMATION UTILITIES */
 /* ============================================================ */
+/* ... (existing animations) ... */
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
+/* ============================================================ */
+/* DEEP SPACE GRADIENT (Standard Background) */
+/* ============================================================ */
 
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-20px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.animate-slide-in {
-  animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-slide-up {
-  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-@keyframes pulseGlow {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.animate-pulse-glow {
-  animation: pulseGlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.bg-deep-space {
+  background: radial-gradient(circle at top center, #111111 0%, #050505 60%, #000000 100%);
 }
 
 /* ============================================================ */

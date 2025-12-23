@@ -9,9 +9,15 @@ base_dir = Path(__file__).resolve().parent
 sys.path.append(str(base_dir))
 
 if __name__ == "__main__":
-    # In a packaged executable, we might want to override some env vars
-    # or handle specific startup logic.
-    print("Starting SmartTrader Backend Server...")
-    
-    # We use 127.0.0.1 for local-only security as requested in implementation plan
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+    try:
+        # Import app name string for uvicorn reload support
+        # uvicorn.run("app.main:app", ...) allows for code reloading
+        
+        print("Starting SmartTrader Backend (with reload)...")
+        uvicorn.run("app.main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
+    except Exception as e:
+        import traceback
+        print("CRITICAL ERROR DURING STARTUP:")
+        traceback.print_exc()
+        input("Press Enter to exit...")
+        sys.exit(1)

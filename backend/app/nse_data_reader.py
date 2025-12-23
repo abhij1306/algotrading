@@ -18,7 +18,7 @@ class NSEDataReader:
     - Supports date range queries and symbol filtering
     """
     
-    def __init__(self, data_dir: str = "nse_data/processed/equities_clean"):
+    def __init__(self, data_dir: str = "../nse_data/processed/equities_clean"):
         self.data_dir = Path(data_dir)
         if not self.data_dir.exists():
             raise ValueError(f"NSE data directory not found: {self.data_dir}")

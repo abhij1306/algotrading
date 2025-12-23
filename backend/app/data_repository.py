@@ -71,7 +71,7 @@ class DataRepository:
                         low=float(row['Low']),
                         close=float(row['Close']),
                         volume=int(row['Volume']),
-                        adj_close=float(row.get('Adj Close', row['Close'])),
+                        # adj_close removed as it's not in the model
                         source=source
                     )
                     self.db.add(price)
@@ -111,6 +111,17 @@ class DataRepository:
                                 # Save Trends
                                 latest_price.trend_7d = features.get('trend_7d')
                                 latest_price.trend_30d = features.get('trend_30d')
+                                
+                                # Save Advanced Indicators
+                                latest_price.macd = features.get('macd')
+                                latest_price.macd_signal = features.get('macd_signal')
+                                latest_price.adx = features.get('adx')
+                                latest_price.stoch_k = features.get('stoch_k')
+                                latest_price.stoch_d = features.get('stoch_d')
+                                latest_price.bb_upper = features.get('bb_upper')
+                                latest_price.bb_middle = features.get('bb_middle')
+                                latest_price.bb_lower = features.get('bb_lower')
+                                latest_price.obv = features.get('obv')
                                 
                                 self.db.commit()
                 except Exception as e:
@@ -350,15 +361,27 @@ class DataRepository:
             import os
             csv_path = None
             
-            if symbol == 'NIFTY50' and timeframe == 5:
-                csv_path = 'nse_data/raw/intraday/NIFTY50_5min_complete.csv'
-            elif symbol == 'BANKNIFTY' and timeframe == 5:
-                csv_path = 'nse_data/raw/intraday/BANKNIFTY_5min_complete.csv'
+            # Normalize symbol for CSV lookup
+            normalized_symbol = symbol.upper().replace(' ', '').replace('-', '')
+            
+            if 'NIFTY' in normalized_symbol and '50' in normalized_symbol and timeframe == 5:
+                # Use absolute path to ensure reliability
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # app/.. -> backend
+                project_root = os.path.dirname(base_dir) # backend/.. -> root
+                csv_path = os.path.join(project_root, 'nse_data', 'raw', 'intraday', 'NIFTY50_5min_complete.csv')
+            elif 'BANKNIFTY' in normalized_symbol and timeframe == 5:
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                project_root = os.path.dirname(base_dir)
+                csv_path = os.path.join(project_root, 'nse_data', 'raw', 'intraday', 'BANKNIFTY_5min_complete.csv')
             
             if csv_path and os.path.exists(csv_path):
                 print(f"[DATA] Reading intraday data from CSV: {csv_path}")
                 df = pd.read_csv(csv_path)
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                # Map 'datetime' from CSV to 'timestamp'
+                if 'datetime' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['datetime'])
+                elif 'timestamp' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
                 
                 # Filter by date range
                 if start_date:

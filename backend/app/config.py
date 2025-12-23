@@ -4,7 +4,8 @@ Configuration module for loading environment variables and settings
 import os
 import json
 from pathlib import Path
-from dotenv import load_dotenv
+# from dotenv import load_dotenv # Removed to fix PyInstaller build
+from .utils.env_loader import load_dotenv
 
 load_dotenv()
 

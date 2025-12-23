@@ -3,13 +3,15 @@ Database models for NSE Trading Screener
 Supports historical prices, financial data, and quarterly results
 Now using PostgreSQL instead of SQLite
 """
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, Text, ForeignKey, Index, JSON, func, text
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, Text, ForeignKey, Index, JSON, func, text, Enum
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from pathlib import Path
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
+from .utils.env_loader import load_dotenv
 
 import sys
 # Load environment variables with resilient path discovery
@@ -102,21 +104,27 @@ class HistoricalPrice(Base):
     close = Column(Float, nullable=False)
     volume = Column(BigInteger, nullable=False)
     
-    # Additional fields
-    adj_close = Column(Float)  # Adjusted close
-    trades = Column(BigInteger)  # Number of trades
+    # Delivery data
+    deliverable_qty = Column(BigInteger)
+    delivery_pct = Column(Float)
     
-    # Technical Indicators (calculated and stored)
-    ema_20 = Column(Float)  # 20-day EMA
-    ema_34 = Column(Float)  # 34-day EMA
-    ema_50 = Column(Float)  # 50-day EMA
-    rsi = Column(Float)  # 14-day RSI
-    atr = Column(Float)  # 14-day ATR
-    atr_pct = Column(Float)  # ATR as percentage of close
+    # Technical Indicators - Basic
+    ema_20 = Column(Float)
+    ema_50 = Column(Float)
+    rsi_14 = Column(Float)
+    atr_14 = Column(Float)
     
-    # Volume metrics
-    avg_volume = Column(Float)  # 20-day average volume
-    volume_percentile = Column(Float)  # Volume percentile (0-100)
+    # Technical Indicators - Advanced (NEW)
+    macd = Column(Float)  # MACD line
+    macd_signal = Column(Float)  # Signal line
+    macd_histogram = Column(Float)  # Histogram
+    stoch_k = Column(Float)  # Stochastic %K
+    stoch_d = Column(Float)  # Stochastic %D
+    bb_upper = Column(Float)  # Bollinger upper band
+    bb_middle = Column(Float)  # Bollinger middle band (20 SMA)
+    bb_lower = Column(Float)  # Bollinger lower band
+    adx = Column(Float)  # Average Directional Index
+    obv = Column(BigInteger)  # On-Balance Volume
     
     # Trend indicators
     high_20d = Column(Float)  # 20-day high
@@ -137,6 +145,83 @@ class HistoricalPrice(Base):
     __table_args__ = (
         Index('ix_company_date', 'company_id', 'date', unique=True),
     )
+
+
+# ==================== QUANT MODULE MODELS ====================
+
+class AllocationSensitivity(str, Enum):
+    LOW = "LOW"         # Slow reaction to volatility
+    MEDIUM = "MEDIUM"   # Balanced
+    HIGH = "HIGH"       # Fast cutbacks
+
+class CorrelationPenalty(str, Enum):
+    NONE = "NONE"       # Ignore correlation
+    LOW = "LOW"         # Light penalty
+    MODERATE = "MODERATE"
+    HIGH = "HIGH"       # Strict diversification
+
+class PortfolioStatus(str, Enum):
+    RESEARCH = "RESEARCH"
+    LIVE = "LIVE"
+    ARCHIVED = "ARCHIVED"
+
+class PortfolioPolicy(Base):
+    """
+    Risk Governance Rules (The 'Mortar')
+    Users define these rules to control how strategies are allocated.
+    """
+    __tablename__ = "portfolio_policies"
+
+    id = Column(String(50), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False)
+    
+    # Risk Limits
+    cash_reserve_percent = Column(Float, default=20.0)      # e.g., 20% always in Liquid Bees
+    daily_stop_loss_percent = Column(Float, default=2.0)    # e.g., Close all if down 2% in a day
+    max_equity_exposure_percent = Column(Float, default=80.0) # Max capital deployed
+    max_strategy_allocation_percent = Column(Float, default=25.0) # Max per strategy
+    
+    # Allocator Logic
+    allocation_sensitivity = Column(String(20), default="MEDIUM") # Enum stored as string
+    correlation_penalty = Column(String(20), default="MODERATE") # Enum stored as string
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    portfolios = relationship("ResearchPortfolio", back_populates="policy")
+
+class ResearchPortfolio(Base):
+    """
+    Immutable Strategy Composition (The 'Bricks')
+    A collection of strategies with target weights.
+    """
+    __tablename__ = "research_portfolios"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    
+    policy_id = Column(String(50), ForeignKey("portfolio_policies.id"), nullable=False)
+    status = Column(String(20), default="RESEARCH")
+    
+    # Metadata
+    description = Column(String(500))
+    benchmark = Column(String(50), default="NIFTY 50")
+    initial_capital = Column(Float, default=100000.0)
+
+    # Composition: List of {strategy_id: str, allocation_percent: float}
+    # Using JSONB for efficient querying if needed, falling back to JSON
+    composition = Column(JSON, nullable=False) 
+    
+    total_return = Column(Float, nullable=True)
+    max_drawdown = Column(Float, nullable=True)
+    sharpe_ratio = Column(Float, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    policy = relationship("PortfolioPolicy", back_populates="portfolios")
 
 
 class IntradayCandle(Base):
@@ -620,5 +705,213 @@ def get_or_create_company(db, symbol: str, **kwargs):
     return company
 
 
-# Initialize database on import
-init_db()
+# Initialize database on import (attempt only)
+try:
+    init_db()
+except Exception as e:
+    print(f"⚠️ Warning: Database initialization failed: {e}")
+    print("  (This is expected during tests or if DB is offline)")
+class Watchlist(Base):
+    __tablename__ = "watchlist"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, unique=True, index=True)
+    instrument_type = Column(String, default="EQ")
+    added_at = Column(DateTime, default=func.now())
+
+
+# --- Portfolio Backtesting System Models ---
+
+class StockUniverse(Base):
+    """Immutable stock universe definitions with historical membership"""
+    __tablename__ = "stock_universes"
+    
+    id = Column(String(50), primary_key=True)  # e.g. "NIFTY100_CORE"
+    description = Column(String(500))
+    # symbols_by_date: { "YYYY-MM-DD": ["SYM1", "SYM2", ...], ... }
+    # Only entries for dates where membership changes.
+    symbols_by_date = Column(JSON, nullable=False) 
+    rebalance_frequency = Column(String(20))  # MONTHLY | NONE
+    selection_rules = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class UserStockPortfolio(Base):
+    """User-defined explicit stock lists"""
+    __tablename__ = "user_stock_portfolios"
+    portfolio_id = Column(String(50), primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String)
+    symbols = Column(JSON, nullable=False)  # List of symbols
+    created_at = Column(DateTime, default=datetime.now)
+
+class BacktestRun(Base):
+    """Frozen snapshot of a backtest execution"""
+    __tablename__ = "backtest_runs"
+    
+    run_id = Column(String(50), primary_key=True)  # UUID
+    universe_id = Column(String(50), index=True)
+    strategy_configs = Column(JSON)  # List of strategy params
+    portfolio_config = Column(JSON)  # Allocation settings
+    capital_mode = Column(String(20)) # FIXED | PERCENT
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    
+    summary_metrics = Column(JSON) # { "cagr": ..., "sharpe": ..., "max_dd": ... }
+    
+    
+# ============================================================================
+# PORTFOLIO RESEARCH & LIVE MONITORING SYSTEM TABLES
+# ============================================================================
+
+class StrategyContract(Base):
+    """Read-only strategy-universe-timeframe contracts"""
+    __tablename__ = "strategy_contracts"
+    
+    strategy_id = Column(String(50), primary_key=True)
+    allowed_universes = Column(JSON, nullable=False)  # List of universe IDs
+    timeframe = Column(String(10), nullable=False)  # "5MIN" or "DAILY"
+    holding_period = Column(String(20), nullable=False)  # "INTRADAY" or "MULTI_DAY"
+    regime = Column(String(20), nullable=False)  # "TREND", "RANGE", "EVENT", "INDEX"
+    when_loses = Column(Text)  # Plain English explanation
+    description = Column(Text)
+    parameters = Column(JSON)  # Strategy parameters
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Lifecycle and Governance
+    lifecycle_state = Column(String(20), default="RESEARCH")  # "RESEARCH", "PAPER", "LIVE", "RETIRED"
+    state_since = Column(DateTime, default=datetime.now)
+    approved_at = Column(DateTime)
+    approved_by = Column(String(50))
+
+
+class PortfolioDailyState(Base):
+    """Daily snapshot of live portfolio state"""
+    __tablename__ = "portfolio_daily_state"
+    
+    date = Column(Date, primary_key=True)
+    run_id = Column(String(50))  # Links to active BacktestRun
+    equity = Column(Float, nullable=False)
+    drawdown = Column(Float)
+    volatility = Column(Float)
+    volatility_regime = Column(String(20))  # "LOW", "MODERATE", "HIGH"
+    risk_state = Column(String(20))  # "NORMAL", "CAUTIOUS", "DEFENSIVE"
+    risk_state_reason = Column(Text)
+    strategy_weights = Column(JSON)  # Dict of strategy: weight
+    created_at = Column(DateTime, default=datetime.now)
+
+class AllocatorDecision(Base):
+    """Audit trail of all allocator weight changes"""
+    __tablename__ = "allocator_decisions"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, nullable=False, index=True)
+    strategy_id = Column(String(50), nullable=False)
+    old_weight = Column(Float, nullable=False)
+    new_weight = Column(Float, nullable=False)
+    delta = Column(Float, nullable=False)
+    reason = Column(Text, nullable=False)  # Plain English
+    recovery_condition = Column(Text)  # What needs to happen to reverse
+    severity = Column(String(20))  # "NORMAL", "CAUTIOUS", "DEFENSIVE"
+    created_at = Column(DateTime, default=datetime.now)
+
+
+
+
+class BacktestDailyResult(Base):
+    """Daily normalized output for an individual strategy"""
+    __tablename__ = "backtest_daily_results"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(50), ForeignKey("backtest_runs.run_id", ondelete="CASCADE"), index=True)
+    date = Column(Date, nullable=False, index=True)
+    strategy_id = Column(String(50), nullable=False)
+    universe_id = Column(String(50))
+    
+    daily_return = Column(Float)
+    gross_pnl = Column(Float)
+    capital_allocated = Column(Float)
+    number_of_trades = Column(Integer)
+    max_intraday_drawdown = Column(Float)
+    win_rate = Column(Float)
+    regime_tag = Column(String(20)) # TREND|RANGE|EVENT|INDEX_RANGE
+    
+    __table_args__ = (
+        Index('ix_run_strat_date', 'run_id', 'strategy_id', 'date', unique=True),
+    )
+
+class PortfolioDailyResult(Base):
+    """Aggregated daily output for a multi-strategy portfolio"""
+    __tablename__ = "portfolio_daily_results"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(50), ForeignKey("backtest_runs.run_id", ondelete="CASCADE"), index=True)
+    date = Column(Date, nullable=False, index=True)
+    
+    portfolio_return = Column(Float)
+    cumulative_equity = Column(Float)
+    portfolio_drawdown = Column(Float)
+    strategy_weights = Column(JSON) # { "strat_id": weight }
+    
+    __table_args__ = (
+        Index('ix_portfolio_run_date', 'run_id', 'date', unique=True),
+    )
+
+
+# ============================================================================
+# QUANT LIVE MONITORING
+# ============================================================================
+
+class StrategyMetadata(Base):
+    """
+    Rich metadata for strategies (The 'Label')
+    Contains forensic analysis notes, risk profile, and lifecycle status.
+    """
+    __tablename__ = "strategy_metadata"
+    
+    strategy_id = Column(String(50), primary_key=True) # Matches class name e.g., 'MomentumStrategy'
+    display_name = Column(String(100))
+    description = Column(Text)
+    
+    # "When it Loses" - Forensic Analysis
+    regime_notes = Column(Text) # e.g. "Fails in chopping sideways markets"
+    
+    # Risk Profile (Cached)
+    # { "sharpe": 1.2, "max_dd": 15.0, "win_rate": 45, "calmar": 0.8 }
+    risk_profile = Column(JSON, default={}) 
+    
+    # Lifecycle
+    lifecycle_status = Column(String(20), default='RESEARCH') # RESEARCH, INCUBATION, LIVE, RETIRED
+    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LivePortfolioState(Base):
+    """
+    Real-time snapshot of portfolio health for Monitoring Dashboard.
+    Logged every minute or on-demand.
+    """
+    __tablename__ = "live_portfolio_states"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    portfolio_id = Column(Integer, ForeignKey('research_portfolios.id'), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Real-time Metrics
+    total_equity = Column(Float)       # Total Account Value
+    cash_balance = Column(Float)       # Available Cash
+    deployed_capital = Column(Float)   # Amount in strategies
+    current_drawdown_pct = Column(Float) # Calculated from Peak
+    
+    # Health Status
+    is_breached = Column(Boolean, default=False)
+    breach_details = Column(String(255)) # "Daily Stop Loss Exceeded (-2.5%)"
+    
+    # Strategy Performance Snapshot
+    # { "MomentumStrategy": { "pnl": 500, "allocation": 0.25, "equity": 250000 } }
+    strategy_performance = Column(JSON, default={})
+    
+    # Relationships
+    portfolio = relationship("ResearchPortfolio")
+
+
+

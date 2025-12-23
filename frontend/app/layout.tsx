@@ -19,6 +19,8 @@ export const metadata: Metadata = {
   description: 'Smart agentic trading platform for NSE with autonomous Screener, Analyst, Tester, and Trader agents.',
 }
 
+import AppLayout from '@/components/layout/AppLayout'
+
 export default function RootLayout({
   children,
 }: {
@@ -29,10 +31,11 @@ export default function RootLayout({
       <head>
         <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
       </head>
-      <body className="font-sans" suppressHydrationWarning>
+      <body className="font-sans bg-deep-space text-gray-200 h-screen flex flex-col overflow-hidden" suppressHydrationWarning>
         <ErrorBoundary>
-          <CommandPalette />
-          {children}
+          <AppLayout>
+            {children}
+          </AppLayout>
         </ErrorBoundary>
       </body>
     </html>

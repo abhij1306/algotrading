@@ -1,0 +1,10 @@
+Database initialized: PostgreSQL at localhost:5432/algotrading
+[DATA_FETCHER] AlgoTrading root at position 0: C:\AlgoTrading
+SYMBOL          | DB STATUS  | DB PRICE   | LIVE QUOTE      | LIVE VOL   | MSG
+--------------------------------------------------------------------------------
+ZOMATO          | FOUND      | 0.00       | 0               | 0          | Live Quote is 0 (Invalid?)
+TATAMOTORS      | FOUND      | 0.00       | 0               | 0          | Live Quote is 0 (Invalid?)
+UNITEDBNK       | FOUND      | 4.50       | 0               | 0          | Live Quote is 0 (Invalid?)
+TRICOM          | FOUND      | 0.50       | 0               | 0          | Live Quote is 0 (Invalid?)
+RELIANCE        | FOUND      | 1565.10    | 1573            | 1920246    | 
+SBIN            | FOUND      | 980.30     | 979.3           | 874042     | 

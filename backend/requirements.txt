@@ -14,3 +14,4 @@ pyyaml==6.0.1
 pytz==2024.1
 
 httpx==0.25.0
+fyers-apiv3==3.0.1

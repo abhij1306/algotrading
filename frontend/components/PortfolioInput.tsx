@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Search, Plus, X, Upload, TrendingUp } from 'lucide-react';
+import Portal from '@/components/ui/Portal'
 
 interface Position {
     symbol: string;
@@ -23,6 +24,7 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const inputRef = useRef<HTMLInputElement>(null);
 
     // Debounced search effect
     React.useEffect(() => {
@@ -40,9 +42,9 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
         }
 
         try {
-            const response = await fetch(`http://localhost:8000/api/symbols/search?q=${query}`);
+            const response = await fetch(`/api/market/search/?query=${query}`);
             const data = await response.json();
-            setSearchResults(data.symbols || []);
+            setSearchResults(data || []);
         } catch (err) {
             console.error('Search error:', err);
         }
@@ -106,7 +108,7 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
         setError('');
 
         try {
-            const response = await fetch('http://localhost:8000/api/portfolios', {
+            const response = await fetch('/api/portfolio/stocks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -198,6 +200,7 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
                                 <div className="relative">
                                     <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                                     <input
+                                        ref={inputRef}
                                         type="text"
                                         value={currentSymbol}
                                         onChange={(e) => setCurrentSymbol(e.target.value)}
@@ -206,23 +209,35 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
                                     />
                                 </div>
 
-                                {/* Search Results */}
-                                {searchResults.length > 0 && (
-                                    <div className="absolute z-[9999] w-full mt-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-40 overflow-y-auto">
-                                        {searchResults.map((result, idx) => (
-                                            <button
-                                                key={idx}
-                                                onClick={() => {
-                                                    setCurrentSymbol(result.symbol);
-                                                    setSearchResults([]);
-                                                }}
-                                                className="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                                            >
-                                                <div className="font-medium text-gray-900 dark:text-white text-sm">{result.symbol}</div>
-                                                <div className="text-xs text-gray-500 dark:text-gray-400">{result.name}</div>
-                                            </button>
-                                        ))}
-                                    </div>
+                                {/* Search Results (Portal) */}
+                                {searchResults.length > 0 && currentSymbol && (
+                                    <Portal>
+                                        <div
+                                            className="fixed z-[9999] bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 max-h-60 overflow-y-auto w-64"
+                                            style={{
+                                                top: (inputRef.current?.getBoundingClientRect().bottom || 0) + 8,
+                                                left: (inputRef.current?.getBoundingClientRect().left || 0),
+                                                width: (inputRef.current?.getBoundingClientRect().width || 0),
+                                            }}
+                                        >
+                                            {searchResults.map((result, idx) => (
+                                                <button
+                                                    key={idx}
+                                                    onClick={() => {
+                                                        setCurrentSymbol(result.symbol);
+                                                        setSearchResults([]);
+                                                    }}
+                                                    className="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-0"
+                                                >
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="font-bold text-gray-900 dark:text-white text-sm">{result.symbol}</span>
+                                                        <span className="text-[10px] bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-gray-500">{result.sector?.substring(0, 10)}</span>
+                                                    </div>
+                                                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">{result.name}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </Portal>
                                 )}
                             </div>
 
@@ -326,6 +341,6 @@ export default function PortfolioInput({ onPortfolioCreated }: PortfolioInputPro
                     )}
                 </div>
             </div>
-        </div>
+        </div >
     );
 }

@@ -35,6 +35,7 @@ interface Signal {
 }
 
 import TradingViewWidget from './charts/TradingViewWidget';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Terminal() {
     const [tradingMode, setTradingMode] = useState<'PAPER' | 'LIVE'>('PAPER');
@@ -58,45 +59,96 @@ export default function Terminal() {
     // Sidebar & Signals State
     const [sidebarMode, setSidebarMode] = useState<'watchlist' | 'signals' | 'actions'>('watchlist');
     const [signals, setSignals] = useState<Signal[]>([]);
+    const [loadingSignals, setLoadingSignals] = useState(false);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [showSearchDropdown, setShowSearchDropdown] = useState(false);
     const [showOrderModal, setShowOrderModal] = useState(false);
 
-    // Load watchlist from localStorage
+    // WebSocket
+    const { isConnected, lastMessage } = useWebSocket();
+
+    // Load watchlist from API
     useEffect(() => {
-        const saved = localStorage.getItem('terminal_watchlist');
-        if (saved) {
-            try {
-                const parsed = JSON.parse(saved);
-                setWatchlist(parsed);
-                if (parsed.length > 0) {
-                    setSelectedSymbol(parsed[0].symbol);
-                    setSelectedInstrumentType(parsed[0].instrument_type);
-                    setPrice(parsed[0].ltp);
-                    setSelectedLTP(parsed[0].ltp);
-                }
-            } catch { }
-        }
+        fetchWatchlist();
     }, []);
 
-    // Save watchlist
+    // Subscribe to watchlist symbols
     useEffect(() => {
-        if (watchlist.length > 0) {
-            localStorage.setItem('terminal_watchlist', JSON.stringify(watchlist));
-        } else {
-            localStorage.removeItem('terminal_watchlist');
+        if (isConnected && watchlist.length > 0) {
+            const symbols = watchlist.map(w => w.symbol);
+            const fyersSymbols = symbols.map(s => s.includes(':') ? s : `NSE:${s}-EQ`);
+
+            fetch('http://localhost:8000/api/websocket/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: fyersSymbols })
+            }).catch(console.error);
         }
-    }, [watchlist]);
+    }, [isConnected, watchlist.length]); // Re-sub if watchlist size changes or connected
+
+    // Handle Live Ticks
+    useEffect(() => {
+        if (lastMessage && lastMessage.symbol) {
+            const rawSym = lastMessage.symbol.replace('NSE:', '').replace('-EQ', '');
+
+            // Update Watchlist
+            setWatchlist(prev => prev.map(item => {
+                if (item.symbol === rawSym) {
+                    const ltp = lastMessage.ltp;
+                    // Calculate change
+                    // Fallback to prev logic if missing open/prev_close in stream
+                    // Usually Fyers sends 'prev_close_price' in 'SymbolUpdate' if mode is FULL, 
+                    // or we rely on initial snapshot. 
+                    // Assuming lastMessage has what we need or we update LTP only.
+
+                    const prevClose = item.ltp / (1 + item.change_pct / 100); // reverse calc or use stored
+                    const change = ltp - prevClose;
+                    const change_pct = (change / prevClose) * 100;
+
+                    return {
+                        ...item,
+                        ltp: ltp,
+                        change: lastMessage.ch || change, // Use streamed change if avail
+                        change_pct: lastMessage.chp || change_pct // Use streamed pct if avail
+                    };
+                }
+                return item;
+            }));
+
+            // Update Selected Symbol Price
+            if (rawSym === selectedSymbol) {
+                setSelectedLTP(lastMessage.ltp);
+                // Also update price input if in Market mode (optional, UX choice)
+                // setPrice(lastMessage.ltp); 
+            }
+        }
+    }, [lastMessage, selectedSymbol]);
+
+    const fetchWatchlist = async () => {
+        try {
+            const res = await fetch('http://localhost:8000/api/market/watchlist');
+            if (res.ok) {
+                const data = await res.json();
+                setWatchlist(data);
+                // Select first if none selected
+                if (data.length > 0 && !selectedSymbol) {
+                    selectSymbol(data[0]);
+                }
+            }
+        } catch (e) { console.error(e); }
+    };
 
     // Fetch Signals
     useEffect(() => {
         if (sidebarMode === 'signals') {
+            setLoadingSignals(true);
             fetch('http://localhost:8000/api/signals')
                 .then(res => res.json())
                 .then(data => setSignals(data.signals || []))
-                .catch(err => console.error("Failed to fetch signals", err));
+                .catch(err => console.error("Failed to fetch signals", err))
+                .finally(() => setLoadingSignals(false));
         }
     }, [sidebarMode]);
 
@@ -106,42 +158,11 @@ export default function Terminal() {
         return currentTime >= 555 && currentTime <= 930;
     };
 
-    const fetchWatchlistQuotes = async () => {
-        try {
-            const symbols = watchlist.map(w => w.symbol).join(',');
-            if (!symbols) return;
-
-            if (isMarketOpen()) {
-                const res = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbols}`);
-                const data = await res.json();
-                if (data.quotes) {
-                    setWatchlist(prev => prev.map(item => {
-                        const quote = data.quotes[item.symbol];
-                        return quote?.ltp > 0 ? { ...item, ltp: quote.ltp, change: quote.ltp - (quote.prev_close || quote.ltp), change_pct: quote.change_pct || 0 } : item;
-                    }));
-                }
-            } else {
-                const updatedWatchlist = await Promise.all(
-                    watchlist.map(async (item) => {
-                        if (item.instrument_type === 'EQ') {
-                            try {
-                                const res = await fetch(`http://localhost:8000/api/screener?symbol=${item.symbol}&limit=1`);
-                                const data = await res.json();
-                                if (data.data?.[0]) return { ...item, ltp: data.data[0].close || item.ltp, change: 0, change_pct: 0 };
-                            } catch { }
-                        }
-                        return item;
-                    })
-                );
-                setWatchlist(updatedWatchlist);
-            }
-        } catch { }
-    };
-
+    // Refresh quotes periodically (fallback for WS)
     useEffect(() => {
-        const interval = setInterval(fetchWatchlistQuotes, 5000);
+        const interval = setInterval(fetchWatchlist, 10000);
         return () => clearInterval(interval);
-    }, [watchlist]);
+    }, []);
 
     // Debounced Search
     useEffect(() => {
@@ -159,13 +180,14 @@ export default function Terminal() {
         if (selectedSymbol) {
             const item = watchlist.find(w => w.symbol === selectedSymbol && w.instrument_type === selectedInstrumentType);
             if (item && item.ltp > 0) {
+                // Only update if not zero, to avoid flashing 0
                 setPrice(item.ltp);
                 setSelectedLTP(item.ltp);
             }
         }
     }, [watchlist, selectedSymbol, selectedInstrumentType]);
 
-    // Fetch agent positions from Smart Trader
+    // Fetch agent positions from Smart Terminal
     const fetchAgentPositions = async () => {
         try {
             const response = await fetch('http://localhost:8000/api/smart-trader/positions');
@@ -211,49 +233,42 @@ export default function Terminal() {
             return;
         }
         try {
-            const res = await fetch(`http://localhost:8000/api/symbols/search?q=${query}`);
+            const res = await fetch(`http://localhost:8000/api/market/search/?query=${query}`);
             const data = await res.json();
-            setSearchResults(data.symbols || []);
-            setShowSearchDropdown(data.symbols?.length > 0);
+            // API returns array directly, not wrapped
+            const symbols = Array.isArray(data) ? data : (data.symbols || []);
+            setSearchResults(symbols);
+            setShowSearchDropdown(symbols.length > 0);
         } catch { }
     };
 
     const addToWatchlist = async (symbol: string, type: 'EQ' | 'FUT' | 'CE' | 'PE' = 'EQ') => {
-        if (watchlist.find(w => w.symbol === symbol && w.instrument_type === type)) return;
-
-        let ltp = 0, change_pct = 0;
-
-        if (isMarketOpen()) {
-            try {
-                const res = await fetch(`http://localhost:8000/api/quotes/live?symbols=${symbol}`);
-                const data = await res.json();
-                ltp = data.quotes?.[symbol]?.ltp || 0;
-                change_pct = data.quotes?.[symbol]?.change_pct || 0;
-            } catch { }
-        }
-
-        if (ltp === 0 && type === 'EQ') {
-            try {
-                const res = await fetch(`http://localhost:8000/api/screener?symbol=${symbol}&limit=1`);
-                const data = await res.json();
-                ltp = data.data?.[0]?.close || 0;
-            } catch { }
-        }
-
-        setWatchlist([...watchlist, { symbol, instrument_type: type, ltp, change: 0, change_pct }]);
-        setSearchQuery('');
-        setShowSearchDropdown(false);
+        try {
+            await fetch('http://localhost:8000/api/market/watchlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, instrument_type: type })
+            });
+            fetchWatchlist();
+            setSearchQuery('');
+            setShowSearchDropdown(false);
+        } catch (e) { console.error(e) }
     };
 
-    const removeFromWatchlist = (symbol: string, type: 'EQ' | 'FUT' | 'CE' | 'PE') => {
-        setWatchlist(watchlist.filter(w => !(w.symbol === symbol && w.instrument_type === type)));
-        if (selectedSymbol === symbol && selectedInstrumentType === type) {
-            setSelectedSymbol('');
-            setPrice(0);
-        }
+    const removeFromWatchlist = async (symbol: string, type: 'EQ' | 'FUT' | 'CE' | 'PE') => {
+        try {
+            await fetch(`http://localhost:8000/api/market/watchlist/${symbol}`, {
+                method: 'DELETE'
+            });
+            fetchWatchlist();
+            if (selectedSymbol === symbol) {
+                setSelectedSymbol('');
+            }
+        } catch (e) { console.error(e) }
     };
 
     const selectSymbol = (item: WatchlistItem) => {
+        console.log('[Terminal] Selecting symbol:', item.symbol);
         setSelectedSymbol(item.symbol);
         setSelectedInstrumentType(item.instrument_type);
         setPrice(item.ltp);
@@ -286,8 +301,9 @@ export default function Terminal() {
                     alert(`Paper Order Executed: ${data.message || 'Success'}`);
                     fetchAgentPositions(); // Refresh positions
                 } else {
-                    alert(`Order Failed: ${data.error}`);
+                    alert(`Order Failed: ${data.error || data.detail || 'Unknown Error'}`);
                 }
+
             } catch (e) {
                 alert('Network error placing order');
             }
@@ -350,36 +366,18 @@ export default function Terminal() {
         <div className="flex h-full gap-0 bg-background-dark max-w-full overflow-hidden relative">
             {/* Left Sidebar */}
             <div className="w-[350px] bg-card-dark border-r border-border-dark flex flex-col h-full overflow-visible shrink-0 relative z-[100]">
-                {/* Sidebar Mode Switch */}
-                <div className="flex items-center p-2 border-b border-border-dark gap-2">
-                    <button
-                        onClick={() => setSidebarMode('watchlist')}
-                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'watchlist' ? 'bg-white/10 text-white' : 'text-text-secondary hover:text-white hover:bg-white/5'
-                            }`}
-                    >
+                {/* Sidebar Header */}
+                <div className="flex items-center p-3 border-b border-border-dark gap-2">
+                    <div className="flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded bg-white/10 text-white flex items-center justify-center gap-2">
                         <List className="w-4 h-4" /> Watchlist
-                    </button>
-                    <button
-                        onClick={() => setSidebarMode('signals')}
-                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'signals' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'text-text-secondary hover:text-white hover:bg-white/5'
-                            }`}
-                    >
-                        <Zap className="w-4 h-4" /> Signals
-                    </button>
-                    <button
-                        onClick={() => setSidebarMode('actions')}
-                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 ${sidebarMode === 'actions' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 shadow-[0_0_10px_rgba(34,211,238,0.2)]' : 'text-text-secondary hover:text-white hover:bg-white/5'
-                            }`}
-                    >
-                        <ShieldCheck className="w-4 h-4" /> Actions
-                    </button>
+                    </div>
                 </div>
 
                 {sidebarMode === 'watchlist' ? (
                     <>
                         {/* Search Bar */}
-                        <div className="p-4 border-b border-border-dark">
-                            <div className="relative z-[50]">
+                        <div className="p-4 border-b border-border-dark relative z-[200]">
+                            <div className="relative z-[200]">
                                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-text-secondary" />
                                 <input
                                     type="text"
@@ -460,14 +458,22 @@ export default function Terminal() {
                 ) : sidebarMode === 'signals' ? (
                     // Signals Sidebar View
                     <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3 bg-background-dark/30">
-                        {signals.length === 0 ? (
+                        {loadingSignals ? (
                             <div className="flex flex-col items-center justify-center py-20 opacity-50">
                                 <div className="relative">
                                     <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full"></div>
-                                    <Zap className="w-12 h-12 text-purple-500 mb-4 relative z-10" />
+                                    <Zap className="w-12 h-12 text-purple-500 mb-4 relative z-10 animate-pulse" />
                                 </div>
                                 <h3 className="text-sm font-bold text-white">Scanning Markets...</h3>
                                 <p className="text-xs text-gray-400 text-center px-4 mt-2 leading-relaxed">AI agents are analyzing price action and volume patterns.</p>
+                            </div>
+                        ) : signals.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-20 opacity-40">
+                                <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mb-4">
+                                    <ShieldCheck className="w-6 h-6 text-gray-500" />
+                                </div>
+                                <h3 className="text-sm font-bold text-gray-300">No signals found</h3>
+                                <p className="text-xs text-gray-500 mt-1">Markets seem range-bound currently.</p>
                             </div>
                         ) : (
                             signals.map((signal) => (
@@ -571,6 +577,28 @@ export default function Terminal() {
                             </button>
                         </div>
 
+                        {/* Paper/Live Trading Mode Toggle */}
+                        <div className="flex items-center gap-2 px-3 py-1 bg-black/40 rounded-lg border border-white/10">
+                            <button
+                                onClick={() => setTradingMode('PAPER')}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition-all uppercase tracking-wide ${tradingMode === 'PAPER'
+                                    ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/30'
+                                    : 'text-gray-500 hover:text-white hover:bg-white/5'
+                                    }`}
+                            >
+                                Paper
+                            </button>
+                            <button
+                                onClick={() => setTradingMode('LIVE')}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition-all uppercase tracking-wide ${tradingMode === 'LIVE'
+                                    ? 'bg-red-600 text-white shadow-lg shadow-red-600/30'
+                                    : 'text-gray-500 hover:text-white hover:bg-white/5'
+                                    }`}
+                            >
+                                Live
+                            </button>
+                        </div>
+
                         {/* Total P&L Display */}
                         <div className="flex items-center gap-6 text-sm">
                             <div className="flex items-center gap-3 px-4 py-1.5 bg-black/30 rounded border border-white/5">
@@ -580,27 +608,8 @@ export default function Terminal() {
                                 </span>
                             </div>
 
-                            {/* Trade Source Filters */}
-                            <div className="flex items-center gap-3 border-l border-border-dark pl-6">
-                                <label className="flex items-center gap-2 cursor-pointer group">
-                                    <input
-                                        type="checkbox"
-                                        checked={showAgentTrades}
-                                        onChange={(e) => setShowAgentTrades(e.target.checked)}
-                                        className="w-3.5 h-3.5 accent-purple-500 rounded cursor-pointer"
-                                    />
-                                    <span className="text-text-secondary text-xs group-hover:text-purple-400 transition-colors">Agent</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer group">
-                                    <input
-                                        type="checkbox"
-                                        checked={showManualTrades}
-                                        onChange={(e) => setShowManualTrades(e.target.checked)}
-                                        className="w-3.5 h-3.5 accent-primary rounded cursor-pointer"
-                                    />
-                                    <span className="text-text-secondary text-xs group-hover:text-blue-400 transition-colors">Manual</span>
-                                </label>
-                            </div>
+                            {/* Trade Source Filters (Removed) */}
+                            {/* <div className="flex items-center gap-3 border-l border-border-dark pl-6"> ... </div> */}
                         </div>
                     </div>
 
@@ -611,7 +620,13 @@ export default function Terminal() {
 
                         {activeTab === 'chart' && (
                             <div className="h-full w-full relative z-10 glass-subtle rounded-xl overflow-hidden border border-white/5">
-                                <TradingViewWidget symbol={selectedSymbol} />
+                                {selectedSymbol ? (
+                                    <TradingViewWidget symbol={selectedSymbol} />
+                                ) : (
+                                    <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                                        Select a symbol from watchlist to view chart
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -739,15 +754,10 @@ export default function Terminal() {
                                     <span className="text-xs opacity-80 uppercase tracking-widest font-bold">LTP</span>
                                     <span className="text-xl font-mono font-bold">₹{selectedLTP.toLocaleString('en-IN')}</span>
                                 </div>
-                                <label className="flex items-center gap-3 cursor-pointer bg-black/20 px-3 py-1.5 rounded-lg border border-white/10">
-                                    <span className="text-xs font-bold uppercase tracking-wide">Paper</span>
-                                    <input
-                                        type="checkbox"
-                                        className="w-4 h-4 accent-white"
-                                        checked={tradingMode === 'PAPER'}
-                                        onChange={() => setTradingMode(tradingMode === 'LIVE' ? 'PAPER' : 'LIVE')}
-                                    />
-                                </label>
+                                <div className={`px-3 py-1.5 rounded-lg border border-white/20 text-xs font-bold uppercase tracking-wide ${tradingMode === 'PAPER' ? 'bg-cyan-500/20 text-cyan-300' : 'bg-red-500/20 text-red-300'
+                                    }`}>
+                                    {tradingMode} MODE
+                                </div>
                             </div>
                         </div>
 

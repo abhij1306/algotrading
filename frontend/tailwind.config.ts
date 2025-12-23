@@ -14,7 +14,7 @@ const config: Config = {
             colors: {
                 // Base Layers (The Void)
                 'obsidian': {
-                    DEFAULT: '#0F1115',      // Deepest Void - Base Layer
+                    DEFAULT: '#050505',      // Deepest Void - Base Layer
                     surface: '#16191F',      // Elevated Layer - Tables/Cards
                     elevated: '#1C1F26',     // Hover/Active States
                 },
@@ -59,10 +59,10 @@ const config: Config = {
             // TYPOGRAPHY SYSTEM
             // ============================================================
             fontFamily: {
-                'ui': ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-                'data': ['JetBrains Mono', 'Fira Code', 'monospace'],
-                'sans': ['Inter', 'sans-serif'],
-                'mono': ['JetBrains Mono', 'monospace'],
+                'ui': ['var(--font-inter)', 'sans-serif'],
+                'data': ['var(--font-jetbrains)', 'monospace'],
+                'sans': ['var(--font-inter)', 'sans-serif'],
+                'mono': ['var(--font-jetbrains)', 'monospace'],
             },
 
             // Font feature settings for Inter
@@ -134,6 +134,24 @@ const config: Config = {
                     '0%, 100%': { opacity: '1' },
                     '50%': { opacity: '0.5' },
                 },
+            },
+
+            // ============================================================
+            // Z-INDEX SCALE (Strict Layering)
+            // ============================================================
+            zIndex: {
+                'toast': '100',      // Level 5: Toasts/Notifications
+                'overlay': '50',     // Level 4: Modals, Command Palette
+                'dropdown': '40',    // Level 3: Dropdowns, Autocomplete
+                'sticky': '10',      // Level 2: Sticky Headers, Sidebars
+                'content': '0',      // Level 1: Standard Content
+            },
+
+            // ============================================================
+            // BACKGROUND IMAGE SYSTEM
+            // ============================================================
+            backgroundImage: {
+                'deep-space': 'linear-gradient(135deg, #050505 0%, #0A0A0A 50%, #050505 100%)',
             },
 
             // ============================================================

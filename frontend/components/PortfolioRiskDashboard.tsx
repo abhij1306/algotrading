@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import RiskAnalysisChart from '@/components/charts/RiskAnalysisChart';
 import { ChevronDown } from 'lucide-react';
 
 interface RiskDashboardProps {
@@ -29,18 +29,18 @@ export default function PortfolioRiskDashboard({ portfolioId, portfolios = [], o
         try {
             setLoading(true);
             setError('');
-            const portfolioRes = await fetch(`http://localhost:8000/api/portfolios/${portfolioId}`);
+            const portfolioRes = await fetch(`/api/portfolio/stocks/${portfolioId}`);
             if (!portfolioRes.ok) throw new Error('Failed to load portfolio');
             const portfolioData = await portfolioRes.json();
             setPortfolio(portfolioData);
 
             if (portfolioData.positions && portfolioData.positions.length > 0) {
                 const lookbackDays = timeRange === '1M' ? 30 : timeRange === '6M' ? 180 : 365;
-                const riskRes = await fetch(`http://localhost:8000/api/portfolios/${portfolioId}/analyze?lookback_days=${lookbackDays}`, {
+                const response = await fetch(`http://localhost:8000/api/portfolio/stocks/${portfolioId}/analyze?lookback_days=${lookbackDays}`, {
                     method: 'POST'
                 });
-                if (!riskRes.ok) throw new Error('Failed to analyze portfolio');
-                const riskData = await riskRes.json();
+                if (!response.ok) throw new Error('Failed to analyze portfolio');
+                const riskData = await response.json();
                 setRiskAnalysis(riskData);
 
                 // Process Chart Data
@@ -100,7 +100,7 @@ export default function PortfolioRiskDashboard({ portfolioId, portfolios = [], o
 
                 // Create new portfolio with these positions (or add to current if endpoint supported adding)
                 // For now, we'll create a NEW portfolio named "Imported Portfolio"
-                const res = await fetch('http://localhost:8000/api/portfolios', {
+                const res = await fetch('/api/portfolio/stocks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -208,10 +208,7 @@ export default function PortfolioRiskDashboard({ portfolioId, portfolios = [], o
                         <span className="material-symbols-outlined text-[14px]">file_upload</span>
                         IMPORT CSV
                     </button>
-                    <button className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 rounded-md text-white text-[10px] font-bold shadow-lg shadow-cyan-500/20 transition-all tracking-wide">
-                        <span className="material-symbols-outlined text-[14px]">add</span>
-                        ADD TRADE
-                    </button>
+                    {/* ADD TRADE button removed per user request */}
                 </div>
             </div>
 
@@ -267,67 +264,7 @@ export default function PortfolioRiskDashboard({ portfolioId, portfolios = [], o
                             </div>
                         </div>
                         <div className="flex-1 w-full h-full relative z-10">
-                            {chartData.length > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={chartData}>
-                                        <defs>
-                                            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                                                <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
-                                                <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
-                                            </linearGradient>
-                                        </defs>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                                        <XAxis
-                                            dataKey="date"
-                                            hide={false}
-                                            tick={{ fill: '#6b7280', fontSize: 10 }}
-                                            axisLine={false}
-                                            tickLine={false}
-                                            minTickGap={30}
-                                            tickFormatter={(val) => {
-                                                const d = new Date(val);
-                                                return `${d.getDate()} ${d.toLocaleString('default', { month: 'short' })}`;
-                                            }}
-                                        />
-                                        <YAxis
-                                            hide={false}
-                                            orientation="right"
-                                            tick={{ fill: '#6b7280', fontSize: 10 }}
-                                            axisLine={false}
-                                            tickLine={false}
-                                            tickFormatter={(val) => `${val.toFixed(0)}%`}
-                                        />
-                                        <Tooltip
-                                            contentStyle={{ backgroundColor: '#0A0A0A', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '8px' }}
-                                            itemStyle={{ color: '#fff', fontSize: '12px' }}
-                                            labelStyle={{ color: '#9ca3af', fontSize: '10px', marginBottom: '4px' }}
-                                            formatter={(value: any) => [`${parseFloat(value).toFixed(2)}%`, 'Return']}
-                                        />
-                                        <Area
-                                            type="monotone"
-                                            dataKey="value"
-                                            stroke="#06b6d4"
-                                            fillOpacity={1}
-                                            fill="url(#colorValue)"
-                                            strokeWidth={2}
-                                            name="Portfolio"
-                                        />
-                                        <Area
-                                            type="monotone"
-                                            dataKey="benchmark"
-                                            stroke="#6b7280"
-                                            fill="transparent"
-                                            strokeDasharray="5 5"
-                                            strokeWidth={1}
-                                            name="Nifty 50"
-                                        />
-                                    </AreaChart>
-                                </ResponsiveContainer>
-                            ) : (
-                                <div className="flex items-center justify-center h-full">
-                                    <p className="text-gray-600 text-[10px] font-mono">NO DATA AVAILABLE</p>
-                                </div>
-                            )}
+                            <RiskAnalysisChart data={chartData} />
                         </div>
                     </div>
 

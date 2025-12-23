@@ -1,0 +1,27 @@
+2025-12-22 09:46:17.174710: Received request: strategy_name='ORB' symbol='NIFTY50' start_date='2024-01-01' end_date='2024-01-10' timeframe='5min' initial_capital=100000.0 params={'stopLoss': 1.5, 'takeProfit': 3.0, 'riskPerTrade': 1.0}
+2025-12-22 09:46:17.175779: Starting try block
+2025-12-22 09:46:17.176593: Dates parsed: 2024-01-01 00:00:00 to 2024-01-10 00:00:00
+2025-12-22 09:46:17.176593: Fetching intraday data for NIFTY50
+2025-12-22 09:46:17.405874: Data fetched: 525 rows
+2025-12-22 09:46:17.405874: Initializing strategy
+2025-12-22 09:46:17.405874: Initializing config
+2025-12-22 09:46:17.407546: Running engine
+2025-12-22 09:46:17.705746: Backtest completed success
+2025-12-22 09:46:50.409146: Received request: strategy_name='ORB' symbol='NIFTY50' start_date='2024-01-01' end_date='2024-01-10' timeframe='5min' initial_capital=100000.0 params={'stopLoss': 1.5, 'takeProfit': 3.0, 'riskPerTrade': 1.0}
+2025-12-22 09:46:50.409763: Starting try block
+2025-12-22 09:46:50.410367: Dates parsed: 2024-01-01 00:00:00 to 2024-01-10 00:00:00
+2025-12-22 09:46:50.410367: Fetching intraday data for NIFTY50
+2025-12-22 09:46:50.772720: Data fetched: 525 rows
+2025-12-22 09:46:50.774461: Initializing strategy
+2025-12-22 09:46:50.774461: Initializing config
+2025-12-22 09:46:50.774461: Running engine
+2025-12-22 09:46:51.086559: Backtest completed success
+2025-12-22 09:47:25.338089: Received request: strategy_name='ORB' symbol='NIFTY50' start_date='2024-01-01' end_date='2024-01-10' timeframe='5min' initial_capital=100000.0 params={'stopLoss': 1.5, 'takeProfit': 3.0, 'riskPerTrade': 1.0}
+2025-12-22 09:47:25.338089: Starting try block
+2025-12-22 09:47:25.339522: Dates parsed: 2024-01-01 00:00:00 to 2024-01-10 00:00:00
+2025-12-22 09:47:25.339522: Fetching intraday data for NIFTY50
+2025-12-22 09:47:25.623696: Data fetched: 525 rows
+2025-12-22 09:47:25.625282: Initializing strategy
+2025-12-22 09:47:25.625282: Initializing config
+2025-12-22 09:47:25.625838: Running engine
+2025-12-22 09:47:25.920671: Backtest completed success

@@ -1,0 +1,11 @@
+Database initialized: PostgreSQL at localhost:5432/algotrading
+[DATA_FETCHER] AlgoTrading root at position 0: C:\
+SYMBOL          | DB STATUS  | DB PRICE   | LIVE QUOTE      | LIVE VOL   | MSG
+--------------------------------------------------------------------------------
+Error fetching Fyers quotes: No module named 'fyers'
+ZOMATO          | FOUND      | 0.00       | N/A             | N/A        | No Quote Returned
+TATAMOTORS      | FOUND      | 0.00       | N/A             | N/A        | No Quote Returned
+UNITEDBNK       | FOUND      | 4.50       | N/A             | N/A        | No Quote Returned
+TRICOM          | FOUND      | 0.50       | N/A             | N/A        | No Quote Returned
+RELIANCE        | FOUND      | 1565.10    | N/A             | N/A        | No Quote Returned
+SBIN            | FOUND      | 980.30     | N/A             | N/A        | No Quote Returned
