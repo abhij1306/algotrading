@@ -43,7 +43,7 @@ DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', '')
 
 # Use SQLite for local testing if Postgres is unavailable (env var check or try/except)
-if os.getenv("USE_SQLITE_TEST", "True") == "True":
+if os.getenv("USE_SQLITE_TEST", "False") == "True":
     DATABASE_URL = "sqlite:///./test_quant.db"
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:

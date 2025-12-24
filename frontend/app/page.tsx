@@ -7,7 +7,7 @@ export default function RootPage() {
   const router = useRouter()
 
   useEffect(() => {
-    router.push('/screener')
+    router.push('/dashboard')
   }, [router])
 
   return (

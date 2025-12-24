@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ArrowUp, ArrowDown, TrendingUp, TrendingDown, Minus, RefreshCw, AlertTriangle, Info, Activity } from 'lucide-react'
+import { TrendingUp, TrendingDown, Search, RefreshCw, Activity, Info } from 'lucide-react'
 
 // --- Types ---
 
@@ -16,58 +16,21 @@ interface MarketData {
     }[]
     sentiment: {
         us_fear_greed: { score: number; status: string }
-        india_sentiment: { score: number; status: string; vix: number }
+        india_sentiment: { score: number; status: string; vix?: number; source?: string }
     }
     condition: {
         status: string
         adx: number
-        trend_strength: string
-        technical_summary: string
     }
     timestamp: string
 }
 
+type FilterType = 'all' | 'indices' | 'commodities' | 'crypto'
+
 // --- Components ---
 
-const StatCard = ({ label, value, subValue, trend, loading }: any) => {
-    if (loading) {
-        return (
-            <div className="bg-[#0A0A0A] border border-white/5 rounded-xl p-4 animate-pulse">
-                <div className="h-4 w-24 bg-white/10 rounded mb-2" />
-                <div className="h-8 w-32 bg-white/10 rounded mb-1" />
-                <div className="h-4 w-16 bg-white/10 rounded" />
-            </div>
-        )
-    }
-
-    const isPositive = trend === 'POSITIVE'
-    const colorClass = isPositive ? 'text-green-400' : 'text-red-400'
-    const bgClass = isPositive ? 'bg-green-400/10' : 'bg-red-400/10'
-    const Icon = isPositive ? ArrowUp : ArrowDown
-
-    return (
-        <div className="bg-[#0A0A0A] border border-white/5 rounded-xl p-4 hover:border-white/10 transition-all">
-            <div className="flex justify-between items-start mb-2">
-                <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">{label}</span>
-                <div className={`p-1 rounded-full ${bgClass}`}>
-                    <Icon className={`w-3 h-3 ${colorClass}`} />
-                </div>
-            </div>
-            <div className="text-2xl font-bold text-white mb-1">
-                {typeof value === 'number' ? value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value}
-            </div>
-            <div className={`text-xs font-mono flex items-center gap-1 ${colorClass}`}>
-                <span>{subValue > 0 ? '+' : ''}{subValue.toFixed(2)}%</span>
-            </div>
-        </div>
-    )
-}
-
 const SentimentGauge = ({ title, score, status, subText }: any) => {
-    // Score 0-100.
-    // Map 0 (Extreme Fear) -> Red, 100 (Extreme Greed) -> Green
-    // Color stops: 0-25 Red, 25-45 Orange, 45-55 Gray, 55-75 Light Green, 75-100 Green
-
+    // Simple original design
     let color = 'text-gray-400'
     let progressColor = 'bg-gray-500'
 
@@ -76,8 +39,6 @@ const SentimentGauge = ({ title, score, status, subText }: any) => {
     else if (score <= 25) { color = 'text-red-500'; progressColor = 'bg-red-500'; }
     else if (score <= 45) { color = 'text-orange-500'; progressColor = 'bg-orange-500'; }
 
-    // Rotation for gauge needle (semi-circle)
-    // 0 -> -90deg, 100 -> 90deg
     const rotation = (score / 100) * 180 - 90
 
     return (
@@ -85,7 +46,7 @@ const SentimentGauge = ({ title, score, status, subText }: any) => {
             <h3 className="text-sm text-gray-400 mb-4 font-medium">{title}</h3>
 
             <div className="relative w-48 h-24 mb-2">
-                {/* Background Arc */}
+                {/* Simple arc */}
                 <div className="absolute w-full h-full rounded-t-full border-[12px] border-white/5 border-b-0" />
 
                 {/* Needle */}
@@ -105,81 +66,23 @@ const SentimentGauge = ({ title, score, status, subText }: any) => {
     )
 }
 
-const TechnicalWidget = ({ condition, adx }: any) => {
-    const isTrending = condition?.includes('Trend')
-    const isRange = condition?.includes('Range') || condition?.includes('Sideways')
-
-    return (
-        <div className="bg-[#0A0A0A] border border-white/5 rounded-xl p-6 relative overflow-hidden">
-             {/* Background glow */}
-            <div className={`absolute top-0 right-0 w-32 h-32 blur-[60px] opacity-20 rounded-full
-                ${isTrending ? 'bg-cyan-500' : 'bg-purple-500'}`} />
-
-            <div className="flex items-center gap-2 mb-6">
-                <Activity className="w-5 h-5 text-gray-400" />
-                <h3 className="text-sm text-gray-300 font-medium">Market Condition</h3>
-            </div>
-
-            <div className="space-y-6">
-                <div>
-                    <div className="text-xs text-gray-500 mb-1">Primary State</div>
-                    <div className={`text-2xl font-bold flex items-center gap-2
-                        ${isTrending ? 'text-cyan-400' : 'text-purple-400'}`}>
-                        {isTrending ? <TrendingUp className="w-6 h-6" /> : <Minus className="w-6 h-6" />}
-                        {condition}
-                    </div>
-                </div>
-
-                <div>
-                    <div className="flex justify-between items-end mb-1">
-                        <span className="text-xs text-gray-500">ADX Strength (14)</span>
-                        <span className="text-sm font-mono text-white">{adx}</span>
-                    </div>
-                    {/* ADX Bar */}
-                    <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
-                        <div
-                            className={`h-full rounded-full transition-all duration-1000 ${adx > 25 ? 'bg-cyan-500' : 'bg-purple-500'}`}
-                            style={{ width: `${Math.min(adx, 100)}%` }}
-                        />
-                    </div>
-                    <div className="flex justify-between mt-1 text-[10px] text-gray-600">
-                        <span>Weak (0)</span>
-                        <span>Strong (25+)</span>
-                        <span>Extreme (50+)</span>
-                    </div>
-                </div>
-
-                <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                    <div className="flex gap-2 items-start">
-                        <Info className="w-4 h-4 text-gray-400 mt-0.5" />
-                        <p className="text-xs text-gray-400 leading-relaxed">
-                            {adx > 25
-                                ? "Market is showing strong directional momentum. Trend-following strategies are favored."
-                                : "Market is non-directional / choppy. Mean reversion strategies are favored."}
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    )
-}
-
 export default function DashboardPage() {
     const [data, setData] = useState<MarketData | null>(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
+    const [filter, setFilter] = useState<FilterType>('all')
+    const [searchQuery, setSearchQuery] = useState('')
 
     const fetchData = async () => {
         setLoading(true)
         try {
-            // Use environment variable for API URL or default to localhost
             const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
             const res = await fetch(`${API_BASE}/api/market/overview`)
             if (!res.ok) throw new Error('Failed to fetch data')
             const json = await res.json()
             setData(json)
         } catch (err) {
-            setError('Unable to load market data. Backend may be offline.')
+            setError('Unable to load market data')
             console.error(err)
         } finally {
             setLoading(false)
@@ -188,117 +91,222 @@ export default function DashboardPage() {
 
     useEffect(() => {
         fetchData()
+
+        // Simple 30-second auto-refresh (reliable, no WebSocket errors)
+        const interval = setInterval(() => {
+            fetchData()
+        }, 30000)
+
+        return () => clearInterval(interval)
     }, [])
 
-    if (error) {
-        return (
-            <div className="h-full flex items-center justify-center flex-col gap-4 text-gray-500">
-                <AlertTriangle className="w-10 h-10 opacity-50" />
-                <p>{error}</p>
-                <button onClick={fetchData} className="px-4 py-2 bg-white/5 rounded hover:bg-white/10 text-sm text-white">
-                    Retry
-                </button>
-            </div>
-        )
+    // Filter logic
+    const getFilteredIndices = () => {
+        if (!data) return []
+
+        let filtered = data.indices
+
+        if (filter === 'indices') {
+            filtered = filtered.filter(i => ['Nifty 50', 'Bank Nifty', 'S&P 500', 'Nasdaq', 'Dow Jones'].includes(i.name))
+        } else if (filter === 'commodities') {
+            filtered = filtered.filter(i => ['Gold (Global)', 'Silver (Global)'].includes(i.name))
+        } else if (filter === 'crypto') {
+            filtered = []
+        }
+
+        if (searchQuery) {
+            filtered = filtered.filter(i =>
+                i.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                i.symbol.toLowerCase().includes(searchQuery.toLowerCase())
+            )
+        }
+
+        return filtered
     }
 
-    // Categorize indices
-    const usIndices = data?.indices.filter(i => ['S&P 500', 'Nasdaq', 'Dow Jones', 'VIX (US)'].includes(i.name)) || []
-    const inIndices = data?.indices.filter(i => ['Nifty 50', 'Bank Nifty', 'VIX (India)'].includes(i.name)) || []
-    const commodities = data?.indices.filter(i => ['Gold (Global)', 'Silver (Global)'].includes(i.name)) || []
+    const getCategory = (name: string) => {
+        if (['Nifty 50', 'Bank Nifty', 'VIX (India)'].includes(name)) return { label: 'INDIA', color: 'border-orange-500' }
+        if (['S&P 500', 'Nasdaq', 'Dow Jones', 'VIX (US)'].includes(name)) return { label: 'USA', color: 'border-blue-500' }
+        if (['Gold (Global)', 'Silver (Global)'].includes(name)) return { label: 'COMMODITY', color: 'border-yellow-500' }
+        if (name.includes('VIX')) return { label: 'VOLATILITY', color: 'border-purple-500' }
+        return { label: 'OTHER', color: 'border-gray-500' }
+    }
+
+    const filteredIndices = getFilteredIndices()
 
     return (
         <div className="h-full overflow-y-auto bg-[#050505] p-8">
-            <div className="max-w-7xl mx-auto space-y-8">
+            <div className="max-w-7xl mx-auto space-y-6">
 
-                {/* Header */}
-                <div className="flex justify-between items-end border-b border-white/10 pb-6">
-                    <div>
-                        <h1 className="text-3xl font-bold text-white mb-2">Market Overview</h1>
-                        <p className="text-gray-500 text-sm">Global snapshot and technical conditions</p>
-                    </div>
-                    <button
-                        onClick={fetchData}
-                        disabled={loading}
-                        className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-gray-300 transition-colors"
-                    >
-                        <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                        Refresh
-                    </button>
-                </div>
-
-                {/* Sentiment & Condition Section */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Sentiment Gauges */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <SentimentGauge
                         title="US Fear & Greed"
                         score={loading ? 0 : data?.sentiment.us_fear_greed.score}
                         status={loading ? 'Loading...' : data?.sentiment.us_fear_greed.status}
                         subText="Source: CNN Money"
                     />
-                     <SentimentGauge
+                    <SentimentGauge
                         title="India Sentiment"
                         score={loading ? 0 : data?.sentiment.india_sentiment.score}
                         status={loading ? 'Loading...' : data?.sentiment.india_sentiment.status}
-                        subText={`Based on India VIX: ${data?.sentiment.india_sentiment.vix || '--'}`}
+                        subText="Tickertape MMI"
                     />
-                    <TechnicalWidget
-                        condition={loading ? 'Analyzing...' : data?.condition.status}
-                        adx={loading ? 0 : data?.condition.adx}
-                    />
-                </div>
 
-                {/* Indices Grid */}
-                <div>
-                    <h2 className="text-sm font-bold text-gray-500 uppercase tracking-widest mb-4">Global Markets</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                        {loading
-                            ? Array(4).fill(0).map((_, i) => <StatCard key={i} loading={true} />)
-                            : usIndices.map(idx => (
-                                <StatCard
-                                    key={idx.symbol}
-                                    label={idx.name}
-                                    value={idx.price}
-                                    subValue={idx.change_pct}
-                                    trend={idx.status}
+                    {/* Market Condition */}
+                    <div className="bg-[#0A0A0A] border border-white/5 rounded-xl p-6">
+                        <div className="flex items-center gap-2 mb-4">
+                            <Activity className="w-4 h-4 text-gray-500" />
+                            <h3 className="text-sm text-gray-400 font-medium">Market Condition</h3>
+                        </div>
+
+                        <div className="text-2xl font-bold text-purple-400 mb-2">
+                            {loading ? 'Analyzing...' : data?.condition.status || 'Unavailable'}
+                        </div>
+
+                        <div className="mb-4">
+                            <div className="flex justify-between text-xs text-gray-500 mb-1">
+                                <span>ADX STRENGTH (14)</span>
+                                <span className="text-white font-mono">{loading ? 0 : data?.condition.adx}</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full transition-all duration-1000 ${(data?.condition.adx || 0) > 25 ? 'bg-cyan-500' : 'bg-purple-500'}`}
+                                    style={{ width: `${Math.min(data?.condition.adx || 0, 100)}%` }}
                                 />
-                            ))
-                        }
+                            </div>
+                            <div className="flex justify-between mt-1 text-[9px] text-gray-600">
+                                <span>Weak</span>
+                                <span>Strong</span>
+                            </div>
+                        </div>
+
+                        <div className="p-2 bg-white/5 rounded-lg border border-white/5 flex gap-2 items-start">
+                            <Info className="w-3 h-3 text-gray-500 mt-0.5 flex-shrink-0" />
+                            <p className="text-[10px] text-gray-500 leading-relaxed">
+                                {(data?.condition.adx || 0) > 25 ? "Strong momentum" : "Non-directional"}
+                            </p>
+                        </div>
                     </div>
                 </div>
 
-                <div>
-                    <h2 className="text-sm font-bold text-gray-500 uppercase tracking-widest mb-4">Indian Markets</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                        {loading
-                             ? Array(4).fill(0).map((_, i) => <StatCard key={i} loading={true} />)
-                             : inIndices.map(idx => (
-                                <StatCard
-                                    key={idx.symbol}
-                                    label={idx.name}
-                                    value={idx.price}
-                                    subValue={idx.change_pct}
-                                    trend={idx.status}
-                                />
-                            ))
-                        }
-                    </div>
-                </div>
+                {/* Table */}
+                <div className="bg-[#0A0A0A] border border-white/5 rounded-xl overflow-hidden">
+                    <div className="px-6 py-4 border-b border-white/5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-1 h-1 rounded-full bg-cyan-400"></div>
+                                <h2 className="text-sm font-bold text-white uppercase tracking-wider">Global Market Overview</h2>
+                            </div>
+                            <button onClick={fetchData} disabled={loading}
+                                className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-400">
+                                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                                Refresh
+                            </button>
+                        </div>
 
-                 <div>
-                    <h2 className="text-sm font-bold text-gray-500 uppercase tracking-widest mb-4">Commodities</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                        {loading
-                             ? Array(2).fill(0).map((_, i) => <StatCard key={i} loading={true} />)
-                             : commodities.map(idx => (
-                                <StatCard
-                                    key={idx.symbol}
-                                    label={idx.name}
-                                    value={idx.price}
-                                    subValue={idx.change_pct}
-                                    trend={idx.status}
+                        <div className="flex items-center justify-between mt-4">
+                            <div className="flex gap-2">
+                                {[
+                                    { key: 'all', label: 'All Assets' },
+                                    { key: 'indices', label: 'Indices' },
+                                    { key: 'commodities', label: 'Commodities' },
+                                    { key: 'crypto', label: 'Crypto' }
+                                ].map(({ key, label }) => (
+                                    <button key={key} onClick={() => setFilter(key as FilterType)}
+                                        className={`px-3 py-1.5 text-xs rounded-lg transition ${filter === key
+                                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                                            : 'bg-white/5 text-gray-500 hover:bg-white/10'
+                                            }`}>
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                                <input type="text" placeholder="Search..." value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="pl-9 pr-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500/50 w-48"
                                 />
-                            ))
-                        }
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                        <table className="w-full">
+                            <thead>
+                                <tr className="border-b border-white/5">
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instrument</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Region</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Price</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Change</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">% Change</th>
+                                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Trend</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5">
+                                {loading ? (
+                                    Array(8).fill(0).map((_, i) => (
+                                        <tr key={i} className="animate-pulse">
+                                            <td className="px-6 py-4"><div className="h-4 w-24 bg-white/5 rounded"></div></td>
+                                            <td className="px-6 py-4"><div className="h-4 w-16 bg-white/5 rounded"></div></td>
+                                            <td className="px-6 py-4"><div className="h-4 w-20 bg-white/5 rounded ml-auto"></div></td>
+                                            <td className="px-6 py-4"><div className="h-4 w-16 bg-white/5 rounded ml-auto"></div></td>
+                                            <td className="px-6 py-4"><div className="h-4 w-12 bg-white/5 rounded ml-auto"></div></td>
+                                            <td className="px-6 py-4"><div className="h-4 w-8 bg-white/5 rounded mx-auto"></div></td>
+                                        </tr>
+                                    ))
+                                ) : filteredIndices.length === 0 ? (
+                                    <tr><td colSpan={6} className="px-6 py-12 text-center text-sm text-gray-500">No instruments found</td></tr>
+                                ) : (
+                                    filteredIndices.map((idx) => {
+                                        const category = getCategory(idx.name)
+                                        const isPositive = idx.status === 'POSITIVE'
+
+                                        return (
+                                            <tr key={idx.symbol} className="hover:bg-white/5 transition">
+                                                <td className="px-6 py-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`w-1 h-8 rounded ${category.color}`}></div>
+                                                        <span className="text-sm font-medium text-white">{idx.name}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <span className="text-xs px-2 py-1 rounded bg-white/5 text-gray-400 font-mono">
+                                                        {category.label}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 text-right">
+                                                    <span className="text-sm font-mono text-white">
+                                                        {idx.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 text-right">
+                                                    <span className={`text-sm font-mono ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {isPositive ? '+' : ''}{idx.change.toFixed(2)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 text-right">
+                                                    <span className={`text-sm font-mono ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {isPositive ? '+' : ''}{idx.change_pct.toFixed(2)}%
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="flex justify-center">
+                                                        {isPositive ? (
+                                                            <TrendingUp className="w-4 h-4 text-green-400" />
+                                                        ) : (
+                                                            <TrendingDown className="w-4 h-4 text-red-400" />
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 

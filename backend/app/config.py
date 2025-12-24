@@ -27,7 +27,7 @@ class Config:
                 # Secret key not needed for API calls, only for login
                 FYERS_SECRET_KEY = 'loaded_from_token_file'
         except Exception as e:
-            print(f"Warning: Could not load Fyers token file: {e}")
+            pass  # Silently fall back to environment variables
     
     # Fallback to environment variables
     if not FYERS_CLIENT_ID:

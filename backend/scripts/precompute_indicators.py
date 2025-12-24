@@ -5,7 +5,7 @@ This eliminates N+1 query problem in the screener
 
 from app.database import SessionLocal, Company, HistoricalPrice
 from app.data_repository import DataRepository
-from app.screener import compute_features
+from app.indicators import compute_features
 import pandas as pd
 from datetime import datetime
 from sqlalchemy import and_, func
@@ -33,8 +33,11 @@ try:
             if hist is None or hist.empty:
                 continue
             
-            # Compute features
+            # Compute features using indicators.compute_features
             features = compute_features(company.symbol, hist)
+            
+            if features is None:
+                continue
             
             # Get latest date
             latest_date = hist.index.max()
@@ -48,12 +51,21 @@ try:
             ).first()
             
             if latest_price:
-                # Update indicators
+                # Update all technical indicators
                 latest_price.ema_20 = features.get('ema20')
                 latest_price.ema_50 = features.get('ema50')
                 latest_price.rsi = features.get('rsi')
+                latest_price.atr_14 = features.get('atr')
                 latest_price.atr_pct = features.get('atr_pct')
                 latest_price.volume_percentile = features.get('vol_percentile')
+                latest_price.macd = features.get('macd')
+                latest_price.macd_signal = features.get('macd_signal')
+                latest_price.adx = features.get('adx')
+                latest_price.stoch_k = features.get('stoch_k')
+                latest_price.stoch_d = features.get('stoch_d')
+                latest_price.bb_upper = features.get('bb_upper')
+                latest_price.bb_middle = features.get('bb_middle')
+                latest_price.bb_lower = features.get('bb_lower')
                 
                 total_updated += 1
                 
