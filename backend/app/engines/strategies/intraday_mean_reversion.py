@@ -1,6 +1,6 @@
 
-from app.engines.base_strategy import BaseStrategy
-from app.engines.data_provider import DataProvider
+from ...engines.base_strategy import BaseStrategy
+from ...engines.data_provider import DataProvider
 from datetime import date, time, datetime
 from typing import List, Dict, Any
 import pandas as pd
