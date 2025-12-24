@@ -28,6 +28,8 @@ from .snapshot_builder import SnapshotBuilder
 from .risk_agent import RiskAgent
 from .execution_agent import ExecutionAgent
 from .stock_scanner import StockScannerAgent
+from .options_scanner import OptionsScannerAgent
+from .models.signals import SignalFamily, Direction, ConfidenceLevel as Clvl
 
 # Import Fyers client for live data
 import sys
@@ -77,6 +79,7 @@ class NewOrchestratorAgent:
         
         # Stock scanner for getting symbols
         self.stock_scanner = StockScannerAgent(self.config)
+        self.options_scanner = OptionsScannerAgent(self.config)
         
         # State
         self.current_signals: List[CompositeSignal] = []
@@ -125,6 +128,7 @@ class NewOrchestratorAgent:
         
         all_composite_signals = []
         
+        # --- Stocks & Futures Scan ---
         for symbol in symbols:
             try:
                 # Step 1: Create MarketSnapshot
@@ -173,6 +177,46 @@ class NewOrchestratorAgent:
             except Exception as e:
                 print(f"Error processing {symbol}: {e}")
         
+        # --- Options Scan ---
+        try:
+            print(f"📊 Scanning Options (NIFTY/BANKNIFTY)...")
+            option_signals = self.options_scanner.scan()
+            print(f"  Found {len(option_signals)} option signals")
+
+            for osig in option_signals:
+                # Convert option dict to CompositeSignal
+                import uuid
+                # Map confidence string to Enum
+                conf_map = {"HIGH": Clvl.HIGH, "MEDIUM": Clvl.MEDIUM, "LOW": Clvl.LOW}
+                c_level = conf_map.get(osig.get('confidence', 'LOW'), Clvl.LOW)
+
+                # Only include HIGH/MEDIUM options
+                if c_level not in [Clvl.HIGH, Clvl.MEDIUM]:
+                     continue
+
+                composite = CompositeSignal(
+                    composite_id=str(uuid.uuid4()),
+                    symbol=osig['symbol'],
+                    timeframe="5m", # Options scanner usually runs on 5m or 15m context
+                    direction=Direction.LONG, # Buying the option is always LONG direction for the trade
+                    confluence_count=2, # Base
+                    aggregate_strength=osig['momentum_score'] / 100.0,
+                    signal_families=[SignalFamily.OPTIONS, SignalFamily.MOMENTUM],
+                    signal_names=["OPTION_MOMENTUM"],
+                    merged_reasons=osig['reasons'],
+                    merged_features=osig, # Store full option details here
+                    first_signal_time=datetime.now(),
+                    last_signal_time=datetime.now(),
+                    confidence_level=c_level,
+                    final_confidence_score=osig['momentum_score'] / 100.0
+                )
+                all_composite_signals.append(composite)
+
+        except Exception as e:
+            print(f"Error in Options Scan: {e}")
+            import traceback
+            traceback.print_exc()
+
         # Update current signals
         self.current_signals = all_composite_signals
         
@@ -258,7 +302,7 @@ class NewOrchestratorAgent:
     
     def _signal_to_dict(self, signal: CompositeSignal) -> Dict[str, Any]:
         """Convert CompositeSignal to dictionary"""
-        return {
+        base = {
             "id": signal.composite_id,
             "symbol": signal.symbol,
             "direction": signal.direction.value,
@@ -274,6 +318,12 @@ class NewOrchestratorAgent:
             "risk_flags": signal.llm_analysis.risk_flags if signal.llm_analysis else [],
             "timestamp": signal.last_signal_time.isoformat()
         }
+
+        # Enrich with option details if present
+        if SignalFamily.OPTIONS in signal.signal_families:
+             base['option_details'] = signal.merged_features # We stored the full option dict here
+
+        return base
     
     def execute_trade(self, signal_id: str) -> Dict[str, Any]:
         """Execute trade for a signal"""
@@ -283,27 +333,55 @@ class NewOrchestratorAgent:
             return {"success": False, "error": "Signal not found"}
         
         try:
-            # Get fresh snapshot
-            snapshot = self._create_snapshot(signal.symbol)
-            if not snapshot:
-                return {"success": False, "error": "Could not fetch current price"}
+            # Handle Options differently (no snapshot needed for simplified execution, or we need Option Snapshot)
+            is_option = SignalFamily.OPTIONS in signal.signal_families
             
-            # Step 6: Construct trade
-            trade_setup = self.trade_constructor.construct_trade(
-                signal,
-                snapshot,
-                signal.confidence_level
-            )
-            
-            # Step 7: LLM Review (optional)
-            try:
-                review = self.llm_reviewer.review(trade_setup)
-                trade_setup.llm_review = review
+            if is_option:
+                # Direct construction for options
+                from .models import TradeSetup
+                import uuid
                 
-                if review.recommendation == "WAIT":
-                    return {"success": False, "error": f"LLM suggests WAIT: {review.reasoning}"}
-            except Exception as e:
-                print(f"LLM Review failed: {e}")
+                opt_details = signal.merged_features
+                trade_setup = TradeSetup(
+                    trade_id=str(uuid.uuid4()),
+                    composite_signal=signal,
+                    entry_price=opt_details.get('premium', 0),
+                    stop_loss=opt_details.get('stop_loss', 0),
+                    target=opt_details.get('target', 0),
+                    quantity=opt_details.get('quantity', 50), # Default lot size
+                    risk_amount=0, # Calc later
+                    reward_amount=0,
+                    risk_reward_ratio=1.5,
+                    setup_method="OPTION_SCANNER",
+                    created_at=datetime.now()
+                )
+
+                # Skip LLM/Snapshot for Options currently (as it requires Option Chain data not in SnapshotBuilder)
+                # Just do Risk Check
+
+            else:
+                # Standard Equity Flow
+                # Get fresh snapshot
+                snapshot = self._create_snapshot(signal.symbol)
+                if not snapshot:
+                    return {"success": False, "error": "Could not fetch current price"}
+
+                # Step 6: Construct trade
+                trade_setup = self.trade_constructor.construct_trade(
+                    signal,
+                    snapshot,
+                    signal.confidence_level
+                )
+
+                # Step 7: LLM Review (optional)
+                try:
+                    review = self.llm_reviewer.review(trade_setup)
+                    trade_setup.llm_review = review
+
+                    if review.recommendation == "WAIT":
+                        return {"success": False, "error": f"LLM suggests WAIT: {review.reasoning}"}
+                except Exception as e:
+                    print(f"LLM Review failed: {e}")
             
             # Step 8: Risk Check
             risk_check = self.risk_agent.check_trade(trade_setup)

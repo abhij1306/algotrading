@@ -16,6 +16,7 @@ class SignalFamily(str, Enum):
     RANGE_EXPANSION = "RANGE_EXPANSION"
     REVERSAL = "REVERSAL"
     INDEX_ALIGNMENT = "INDEX_ALIGNMENT"
+    OPTIONS = "OPTIONS"
 
 
 @dataclass(frozen=True)
