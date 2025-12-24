@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { GlassCard } from "@/components/ui/GlassCard"
-import { ArrowUpRight, ArrowDownRight, Minus } from "lucide-react"
+import ScreenerTableRow from './ScreenerTableRow'
 
 interface Stock {
     symbol: string
@@ -48,7 +48,6 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
     const [sortKey, setSortKey] = useState<keyof Stock>('symbol')
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
     const [selectedIndex, setSelectedIndex] = useState(0)
-    const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
 
     // WebSocket Integration
     const { isConnected, lastMessage } = useWebSocket();
@@ -95,18 +94,20 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
         }
     }
 
-    const sortedData = [...data].sort((a, b) => {
-        const aVal = a[sortKey]
-        const bVal = b[sortKey]
+    const sortedData = useMemo(() => {
+        return [...data].sort((a, b) => {
+            const aVal = a[sortKey]
+            const bVal = b[sortKey]
 
-        if (typeof aVal === 'number' && typeof bVal === 'number') {
-            return sortDir === 'asc' ? aVal - bVal : bVal - aVal
-        }
+            if (typeof aVal === 'number' && typeof bVal === 'number') {
+                return sortDir === 'asc' ? aVal - bVal : bVal - aVal
+            }
 
-        const aStr = String(aVal)
-        const bStr = String(bVal)
-        return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr)
-    })
+            const aStr = String(aVal)
+            const bStr = String(bVal)
+            return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr)
+        })
+    }, [data, sortKey, sortDir])
 
     // Keyboard navigation
     useEffect(() => {
@@ -128,16 +129,6 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
         document.addEventListener('keydown', handleKeyDown)
         return () => document.removeEventListener('keydown', handleKeyDown)
     }, [sortedData])
-
-    const getScoreColor = (score: number) => {
-        if (score >= 80) return 'text-emerald-400 text-shadow-neon-emerald'
-        if (score >= 60) return 'text-cyan-400'
-        return 'text-gray-500'
-    }
-
-    const getChangePercent = (close: number, ema20: number) => {
-        return ((close - ema20) / ema20) * 100
-    }
 
     if (data.length === 0) {
         return (
@@ -177,7 +168,7 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
                             <div onClick={() => handleSort('pe_ratio')} className="col-span-1 text-right">P/E</div>
                             <div onClick={() => handleSort('roe')} className="col-span-1 text-right">ROE</div>
                             <div onClick={() => handleSort('eps')} className="col-span-1 text-right">EPS</div>
-                            <div onClick={() => handleSort('revenue')} className="col-span-2 text-right">Rev</div>
+                            <div onClick={() => handleSort('revenue')} className="col-span-3 text-right">Rev</div>
                             <div onClick={() => handleSort('debt_to_equity')} className="col-span-1 text-right">D/E</div>
                         </>
                     )}
@@ -186,99 +177,18 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
 
             {/* BODY */}
             <div className="overflow-y-auto flex-1 custom-scrollbar">
-                {sortedData.map((stock, i) => {
-                    const score = type === 'intraday' ? stock.intraday_score : stock.swing_score
-                    // Use live data if available
-                    const live = livePrices[stock.symbol]
-                    const displayPrice = live ? live.ltp : stock.close
-
-                    let changePercent = 0
-                    if (live) {
-                        changePercent = live.change
-                    } else {
-                        changePercent = getChangePercent(stock.close, stock.ema20)
-                    }
-
-                    const isSelected = i === selectedIndex
-
-                    return (
-                        <div
-                            key={stock.symbol}
-                            className={`grid grid-cols-12 gap-2 px-6 py-3 border-b border-white/[0.03] items-center cursor-pointer transition-all duration-200
-                                ${isSelected ? 'bg-white/[0.03] border-l-2 border-l-cyan-400' : 'border-l-2 border-l-transparent hover:bg-white/[0.02]'}
-                            `}
-                            onClick={() => setSelectedIndex(i)}
-                        >
-                            {/* Symbol */}
-                            <div className="col-span-2 flex items-center gap-2">
-                                <span className={`font-medium text-sm ${isSelected ? 'text-cyan-400' : 'text-white'}`}>
-                                    {stock.symbol}
-                                </span>
-                                {stock.is_20d_breakout && (
-                                    <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded font-bold">BO</span>
-                                )}
-                            </div>
-
-                            {/* Price */}
-                            <div className="col-span-1 text-right">
-                                <div className={`font-mono text-sm ${live ? 'text-white font-bold' : 'text-gray-200'}`}>
-                                    ₹{displayPrice.toFixed(2)}
-                                </div>
-                                <div className={`text-[10px] font-mono ${changePercent > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {changePercent > 0 ? '+' : ''}{changePercent.toFixed(1)}%
-                                </div>
-                            </div>
-
-                            {viewMode === 'technical' ? (
-                                <>
-                                    <div className="col-span-1 text-right font-mono text-sm text-gray-400">{stock.atr_pct?.toFixed(1)}%</div>
-                                    <div className={`col-span-1 text-right font-mono text-sm ${stock.rsi > 70 ? 'text-red-400' : stock.rsi < 30 ? 'text-emerald-400' : 'text-gray-400'}`}>
-                                        {stock.rsi?.toFixed(0)}
-                                    </div>
-                                    {/* MACD */}
-                                    <div className="col-span-1 text-right font-mono text-xs">
-                                        <span className={stock.macd > stock.macd_signal ? 'text-emerald-400' : 'text-red-400'}>
-                                            {stock.macd?.toFixed(1)}
-                                        </span>
-                                    </div>
-                                    {/* ADX */}
-                                    <div className="col-span-1 text-right font-mono text-xs text-gray-400">
-                                        {stock.adx?.toFixed(0)}
-                                    </div>
-                                    {/* Stoch */}
-                                    <div className="col-span-1 text-right font-mono text-xs text-gray-400">
-                                        {stock.stoch_k?.toFixed(0)}
-                                    </div>
-                                    {/* BBands */}
-                                    <div className="col-span-2 text-right font-mono text-[10px] text-gray-500">
-                                        {stock.bb_upper?.toFixed(0)}/{stock.bb_lower?.toFixed(0)}
-                                    </div>
-
-                                    <div className="col-span-1 text-right">
-                                        <div className={`font-mono text-xs ${(stock.trend_7d || 0) > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                            {(stock.trend_7d || 0).toFixed(1)}%
-                                        </div>
-                                    </div>
-
-                                    <div className="col-span-1 text-right">
-                                        <span className={`font-mono font-bold text-base ${getScoreColor(score || 0)}`}>
-                                            {(score || 0).toFixed(0)}
-                                        </span>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <div className="col-span-2 text-right font-mono text-xs text-gray-400">{stock.market_cap ? (stock.market_cap / 100).toFixed(0) : '-'}</div>
-                                    <div className="col-span-1 text-right font-mono text-xs text-gray-400">{stock.pe_ratio?.toFixed(1) || '-'}</div>
-                                    <div className={`col-span-1 text-right font-mono text-xs ${stock.roe && stock.roe > 15 ? 'text-emerald-400' : 'text-gray-400'}`}>{stock.roe?.toFixed(1)}%</div>
-                                    <div className="col-span-1 text-right font-mono text-xs text-gray-400">{stock.eps?.toFixed(1)}</div>
-                                    <div className="col-span-2 text-right font-mono text-xs text-gray-400">{stock.revenue ? (stock.revenue / 10000000).toFixed(0) : '-'}</div>
-                                    <div className={`col-span-1 text-right font-mono text-xs ${stock.debt_to_equity && stock.debt_to_equity > 1 ? 'text-red-400' : 'text-gray-400'}`}>{stock.debt_to_equity?.toFixed(2)}</div>
-                                </>
-                            )}
-                        </div>
-                    )
-                })}
+                {sortedData.map((stock, i) => (
+                    <ScreenerTableRow
+                        key={stock.symbol}
+                        stock={stock}
+                        index={i}
+                        isSelected={i === selectedIndex}
+                        viewMode={viewMode}
+                        type={type}
+                        liveData={livePrices[stock.symbol]}
+                        onSelect={setSelectedIndex}
+                    />
+                ))}
             </div>
         </GlassCard>
     )
