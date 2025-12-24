@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Target, TrendingUp, ArrowUpDown, BarChart3, ChevronDown, ChevronRight, Activity } from "lucide-react";
+import { Target, TrendingUp, ArrowUpDown, BarChart3, ChevronDown, ChevronRight, Activity, AlertTriangle } from "lucide-react";
 
 interface StrategyContract {
     strategy_id: string;
@@ -26,10 +26,10 @@ interface StrategyCardsProps {
 }
 
 const STRATEGY_ICONS: Record<string, any> = {
-    "INTRADAY_MOMENTUM": TrendingUp,
-    "INTRADAY_MEAN_REVERSION": Target,
-    "OVERNIGHT_GAP": ArrowUpDown,
-    "INDEX_MEAN_REVERSION": BarChart3
+    "NIFTY_VOL_CONTRACTION": TrendingUp,
+    "NIFTY_DARVAS_BOX": BarChart3,
+    "NIFTY_MTF_TREND": Activity,
+    "NIFTY_DUAL_MA": ArrowUpDown
 };
 
 export default function StrategyCards({ selection, onChange, compatibleStrategies = [] }: StrategyCardsProps) {
@@ -52,14 +52,6 @@ export default function StrategyCards({ selection, onChange, compatibleStrategie
             // Get default params from contract or use empty
             onChange([...selection, { id: strategyId, params: {}, enabled: true }]);
         }
-    };
-
-    const updateParam = (strategyId: string, key: string, value: number) => {
-        onChange(
-            selection.map((s) =>
-                s.id === strategyId ? { ...s, params: { ...s.params, [key]: value } } : s
-            )
-        );
     };
 
     const isCompatible = (strategyId: string) => {
@@ -102,61 +94,61 @@ export default function StrategyCards({ selection, onChange, compatibleStrategie
                             </div>
                             <div className={`w-4 h-4 rounded-sm border flex items-center justify-center text-[8px] ${isEnabled && compatible ? "bg-cyan-600 border-cyan-500 text-white" : "bg-[#050505] border-white/10 text-gray-700"
                                 }`}>
-                                {isEnabled && compatible ? "✓" : ""}
+                                {isEnabled && compatible ? "Γ£ô" : ""}
                             </div>
                         </div>
 
-                        {/* Timeframe & Holding (Read-only) */}
-                        <div className="flex gap-2 mb-2">
-                            <div className="flex-1 text-center py-1 bg-[#050505] border border-white/5 rounded">
+                        {/* Info Grid */}
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                            <div className="text-center py-1 bg-[#050505] border border-white/5 rounded">
                                 <div className="text-[7px] text-gray-700 uppercase">Timeframe</div>
                                 <div className="text-[9px] font-mono text-gray-400">{contract.timeframe}</div>
                             </div>
-                            <div className="flex-1 text-center py-1 bg-[#050505] border border-white/5 rounded">
+                            <div className="text-center py-1 bg-[#050505] border border-white/5 rounded">
                                 <div className="text-[7px] text-gray-700 uppercase">Holding</div>
                                 <div className="text-[9px] font-mono text-gray-400">{contract.holding_period.replace('_', '-')}</div>
                             </div>
                         </div>
 
-                        {/* Description */}
-                        <p className="text-[9px] text-gray-500 leading-tight mb-2">{contract.description}</p>
+                        {/* Description (Truncated/Small) */}
+                        <p className="text-[9px] text-gray-500 leading-tight mb-2 line-clamp-2" title={contract.description}>{contract.description}</p>
 
-                        {/* When it loses */}
+                        {/* Risk Warning (Collapsible/Tooltip-like) */}
                         {compatible && (
-                            <div className="p-2 bg-rose-900/10 border border-rose-500/20 rounded mb-2">
-                                <div className="text-[8px] text-rose-400 font-bold uppercase mb-1">When it typically loses:</div>
-                                <p className="text-[8px] text-rose-300 leading-tight">{contract.when_loses}</p>
+                            <div className="group relative">
+                                <div className="flex items-center gap-1 text-[8px] text-rose-400 font-bold uppercase cursor-help">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    Risk Factor
+                                </div>
+                                <div className="hidden group-hover:block absolute z-10 bottom-full left-0 w-full bg-rose-900/90 text-white text-[9px] p-2 rounded border border-rose-500 shadow-lg">
+                                    {contract.when_loses}
+                                </div>
                             </div>
                         )}
 
-                        {/* Advanced Parameters (Collapsed by default) */}
+                        {/* Advanced Parameters Toggle */}
                         {isEnabled && compatible && (
-                            <div className="pt-2 border-t border-white/5">
+                            <div className="pt-2 mt-2 border-t border-white/5">
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         setExpandedAdvanced(isAdvancedExpanded ? null : contract.strategy_id);
                                     }}
-                                    className="flex items-center gap-1 text-[9px] text-gray-600 hover:text-cyan-400 transition-colors uppercase tracking-wider font-semibold"
+                                    className="flex items-center gap-1 text-[9px] text-gray-600 hover:text-cyan-400 transition-colors uppercase tracking-wider font-semibold w-full justify-between"
                                 >
+                                    <span>Advanced Parameters</span>
                                     {isAdvancedExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                                    Advanced Parameters
                                 </button>
 
                                 {isAdvancedExpanded && (
                                     <div className="mt-2 space-y-1.5 p-2 bg-[#050505] border border-white/10 rounded" onClick={(e) => e.stopPropagation()}>
-                                        <div className="text-[8px] text-yellow-400 mb-1">⚠️ Do not change unless researching</div>
-                                        {/* Params would go here - for now showing placeholder */}
-                                        <div className="text-[8px] text-gray-600">Parameters loaded from contract defaults</div>
+                                        <div className="text-[8px] text-yellow-400 mb-1">ΓÜá∩╕Å Research Mode Only</div>
+                                        {/* Params Placeholder */}
+                                        <div className="text-[8px] text-gray-600">
+                                            Defaults: {JSON.stringify(selection.find(s => s.id === contract.strategy_id)?.params || {})}
+                                        </div>
                                     </div>
                                 )}
-                            </div>
-                        )}
-
-                        {/* Incompatible badge */}
-                        {!compatible && (
-                            <div className="mt-2 text-[8px] text-gray-700 text-center uppercase tracking-wider">
-                                Incompatible with selected universe
                             </div>
                         )}
                     </div>

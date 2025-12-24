@@ -2,168 +2,175 @@ import sys
 import os
 from datetime import datetime
 
-# Add the backend directory to sys.path to resolve imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Fix Path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal, StrategyContract, StrategyMetadata
+from app.database import SessionLocal, StrategyContract
 
-def seed_strategies():
-    """
-    Removes all existing strategies and seeds the 10 institutional strategies.
-    """
+def seed_nifty_strategies():
+    """Seed 10 institutional-grade NIFTY strategies"""
     db = SessionLocal()
     
-    try:
-        print("🔌 Connecting to database...")
-
-        # 1. Clear existing data
-        print("🧹 Clearing existing strategies...")
-        db.query(StrategyContract).delete()
-        db.query(StrategyMetadata).delete()
-        db.commit()
-
-        # 2. Define new strategies
-        new_strategies = [
-            {
-                "id": "NIFTY_VOL_CONTRACTION",
-                "name": "NIFTY Volatility Contraction Breakout",
-                "description": "Exploits breakouts from low-volatility coiling patterns.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails when volatility compressions falsify breakout",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_DARVAS_BOX",
-                "name": "NIFTY Darvas Box Structural Breakout",
-                "description": "Classic Darvas Box strategy focusing on new highs after consolidation.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails in choppy lateral markets",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_MTF_TREND",
-                "name": "NIFTY Multi-Timeframe Trend",
-                "description": "Aligns daily entries with weekly trend direction.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails when higher timeframe trend collapses",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_DUAL_MA",
-                "name": "NIFTY Dual MA Crossover",
-                "description": "Trend following using dual moving average crossovers with confirmation.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails in multi-cross whipsaws",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_VOL_SPIKE",
-                "name": "NIFTY Volume Spike Breakout",
-                "description": "Validates price breakouts with significant volume expansion.",
-                "timeframe": "DAILY",
-                "regime": "EVENT",
-                "when_loses": "Fails with low follow-through breakouts",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_TREND_ENVELOPE",
-                "name": "NIFTY Trend Envelope",
-                "description": "Momentum strategy trading breakouts of calculated price envelopes.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails on mean-reversion days",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_REGIME_MOM",
-                "name": "NIFTY Regime Filtered Momentum",
-                "description": "Momentum strategy that activates only in favorable market regimes.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails when regime flips abruptly",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_ATR_BREAK",
-                "name": "NIFTY ATR Breakout",
-                "description": "Volatility expansion strategy using ATR bands.",
-                "timeframe": "DAILY",
-                "regime": "TREND",
-                "when_loses": "Fails on false volatility accelerations",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_MA_RIBBON",
-                "name": "NIFTY MA Ribbon",
-                "description": "Multiple moving average alignment strategy.",
-                "timeframe": "WEEKLY",
-                "regime": "TREND",
-                "when_loses": "Fails when ribbon order collapses",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            },
-            {
-                "id": "NIFTY_MACRO_BREAK",
-                "name": "NIFTY Macro Breakout",
-                "description": "Long-term breakout strategy with macro risk overlays.",
-                "timeframe": "WEEKLY",
-                "regime": "TREND",
-                "when_loses": "Fails under rising risk regimes",
-                "allowed_universes": ["NIFTY50"],
-                "holding_period": "MULTI_DAY"
-            }
-        ]
-
-        # 3. Insert new records
-        print(f"🌱 Seeding {len(new_strategies)} strategies...")
-
-        for s in new_strategies:
-            # Contract
-            contract = StrategyContract(
-                strategy_id=s['id'],
-                allowed_universes=s['allowed_universes'],
-                timeframe=s['timeframe'],
-                holding_period=s['holding_period'],
-                regime=s['regime'],
-                when_loses=s['when_loses'],
-                description=s['description'],
-                parameters={}, # Locked parameters
-                lifecycle_state="RESEARCH",
-                state_since=datetime.utcnow()
+    nifty_strategies = [
+        {
+            "strategy_id": "NIFTY_VOL_CONTRACTION",
+            "allowed_universes": ["NIFTY50", "NIFTY100"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "LOW_VOL_TREND",
+            "description": "Volatility Contraction Breakout - Enters when ATR contracts below historical average and price breaks out with volume.",
+            "when_loses": "False breakouts in choppy, range-bound markets without clear direction.",
+            "parameters": {"volatility_lookback": 60, "contraction_threshold": 0.7, "volume_filter": 1.2},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_DARVAS_BOX",
+            "allowed_universes": ["NIFTY50", "NIFTY100"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "STRONG_TREND",
+            "description": "Darvas Box Breakout - Trades new 50-day highs confirmed by volume surge above 1.1x average.",
+            "when_loses": "Whipsaws and false breakouts during sideways consolidation phases.",
+            "parameters": {"highs_period": 50, "min_volume_spike": 1.1},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_MTF_TREND",
+            "allowed_universes": ["NIFTY50"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "SUSTAINED_BULL",
+            "description": "Multi-Timeframe Trend - Price above 150-day SMA with momentum confirmation for long-term trends.",
+            "when_loses": "Late entries in exhausted trends or sudden reversals in bull markets.",
+            "parameters": {"sma_period": 150, "momentum_threshold": 0.02},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_DUAL_MA",
+            "allowed_universes": ["NIFTY50", "NIFTY100"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "TRENDING",
+            "description": "Dual MA Crossover - 50 EMA crosses above 200 SMA with momentum filter for trend changes.",
+            "when_loses": "Choppy sideways markets generating frequent false crossover signals.",
+            "parameters": {"fast_period": 50, "slow_period": 200},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_VOL_SPIKE",
+            "allowed_universes": ["NIFTY50"],
+            "timeframe": "DAILY",
+            "holding_period": "INTRADAY",
+            "regime": "HIGH_MOMENTUM",
+            "description": "Volume Spike Breakout - 90-day high breakout with volume 1.5x above average for momentum trades.",
+            "when_loses": "Volume spikes on distribution or profit-taking at resistance levels.",
+            "parameters": {"breakout_period": 90, "volume_multiplier": 1.5},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_TREND_ENVELOPE",
+            "allowed_universes": ["NIFTY50", "NIFTY100"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "EXPANSION",
+            "description": "Bollinger Band Breakout - Closes above upper BB (20, 2.0) indicating strong momentum expansion.",
+            "when_loses": "Mean reversion in ranging markets or failed breakouts above resistance.",
+            "parameters": {"bb_period": 20, "bb_std": 2.0},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_REGIME_MOM",
+            "allowed_universes": ["NIFTY50"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "ADAPTIVE",
+            "description": "Regime-Based Momentum - Adapts to market regime (bull/bear/neutral) using correlation and volatility metrics.",
+            "when_loses": "Regime mis-classification during transition periods or structural market changes.",
+            "parameters": {"regime_lookback": 60},
+            "lifecycle_state": "RESEARCH",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_ATR_BREAK",
+            "allowed_universes": ["NIFTY50", "NIFTY100"],
+            "timeframe": "DAILY",
+            "holding_period": "INTRADAY",
+            "regime": "VOLATILE_TREND",
+            "description": "ATR Breakout - Price breaks above 20-MA + (1.8 × ATR) envelope confirming strong momentum move.",
+            "when_loses": "False breakouts in low volatility environments or mean-reverting markets.",
+            "parameters": {"ma_period": 20, "atr_multiplier": 1.8},
+            "lifecycle_state": "LIVE",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_MA_RIBBON",
+            "allowed_universes": ["NIFTY50"],
+            "timeframe": "DAILY",
+            "holding_period": "MULTI_DAY",
+            "regime": "SUSTAINED_TREND",
+            "description": "MA Ribbon - All short-term MAs aligned above long-term MAs indicating strong trend alignment.",
+            "when_loses": "Lagging signals in fast-moving markets or sudden trend reversals.",
+            "parameters": {"ribbon_periods": [10, 20, 30, 50, 100]},
+            "lifecycle_state": "RESEARCH",
+            "approved_by": "Quant Team"
+        },
+        {
+            "strategy_id": "NIFTY_MACRO_BREAK",
+            "allowed_universes": ["NIFTY50"],
+            "timeframe": "WEEKLY",
+            "holding_period": "MULTI_MONTH",
+            "regime": "BULL_ONSET",
+            "description": "Macro Breakout - Quarterly/yearly high breakouts capturing major structural trend changes.",
+            "when_loses": "Rare signals with long holding periods; sensitive to macro shocks.",
+            "parameters": {"breakout_period": 252},  # ~1 year
+            "lifecycle_state": "RESEARCH",
+            "approved_by": "Quant Team"
+        }
+    ]
+    
+    print("🔄 Seeding 10 NIFTY Quant Strategies...")
+    added_count = 0
+    skipped_count = 0
+    
+    for s_data in nifty_strategies:
+        existing = db.query(StrategyContract).filter(
+            StrategyContract.strategy_id == s_data["strategy_id"]
+        ).first()
+        
+        if not existing:
+            strat = StrategyContract(
+                strategy_id=s_data["strategy_id"],
+                allowed_universes=s_data["allowed_universes"],
+                timeframe=s_data["timeframe"],
+                holding_period=s_data["holding_period"],
+                regime=s_data["regime"],
+                description=s_data["description"],
+                when_loses=s_data["when_loses"],
+                parameters=s_data["parameters"],
+                lifecycle_state=s_data["lifecycle_state"],
+                approved_by=s_data["approved_by"],
+                approved_at=datetime.utcnow()
             )
-            db.add(contract)
-
-            # Metadata
-            meta = StrategyMetadata(
-                strategy_id=s['id'],
-                display_name=s['name'],
-                description=s['description'],
-                regime_notes=s['when_loses'],
-                lifecycle_status="RESEARCH",
-                risk_profile={} # Empty initial profile
-            )
-            db.add(meta)
-
-        db.commit()
-        print("✅ Strategies seeded successfully!")
-
-    except Exception as e:
-        print(f"❌ Error seeding strategies: {e}")
-        db.rollback()
-    finally:
-        db.close()
+            db.add(strat)
+            print(f"  ✅ Added: {s_data['strategy_id']}")
+            added_count += 1
+        else:
+            print(f"  ⏭️  Skipped: {s_data['strategy_id']} (Already exists)")
+            skipped_count += 1
+    
+    db.commit()
+    db.close()
+    
+    print(f"\n✨ Seeding Complete!")
+    print(f"   Added: {added_count} strategies")
+    print(f"   Skipped: {skipped_count} strategies")
+    print(f"   Total: {len(nifty_strategies)} strategies\n")
 
 if __name__ == "__main__":
-    seed_strategies()
+    seed_nifty_strategies()
