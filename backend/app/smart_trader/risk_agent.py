@@ -1,10 +1,10 @@
 """
 Risk Management Agent - Validates trades against risk rules
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from .utils import calculate_position_size, round_to_lot_size, get_lot_size
-
+from .models import TradeSetup, RiskCheckResult
 
 class RiskAgent:
     """Validates trades against risk management rules"""
@@ -23,6 +23,39 @@ class RiskAgent:
         
         # Track recent trades for cooldown
         self.recent_trades = {}
+
+    def check_trade(self, trade_setup: TradeSetup) -> RiskCheckResult:
+        """
+        Validate trade against all risk rules (Adapter for new model)
+        """
+        # For Paper Trading, we assume a default capital if not provided
+        # In a real scenario, this should come from the ExecutionAgent/Broker
+        default_capital = 100000.0
+
+        signal_dict = {
+            "symbol": trade_setup.composite_signal.symbol,
+            "entry_price": trade_setup.entry_price,
+            "stop_loss": trade_setup.stop_loss,
+            "target": trade_setup.target,
+            "instrument_type": "STOCK" # Default
+        }
+
+        result = self.validate_trade(signal_dict, default_capital)
+
+        # Convert to RiskCheckResult
+        approved = result.get('approved', False)
+        reasons = []
+        if not approved:
+             reasons.append(result.get('rejection_reason', 'Unknown reason'))
+        else:
+             reasons.append("All checks passed")
+
+        return RiskCheckResult(
+            approved=approved,
+            reasons=reasons,
+            limits_checked={"RR": True, "Capital": True},
+            timestamp=datetime.now()
+        )
     
     def validate_trade(
         self, 
@@ -31,13 +64,6 @@ class RiskAgent:
     ) -> Dict[str, Any]:
         """
         Validate trade against all risk rules
-        
-        Args:
-            signal: Trading signal
-            capital: Current available capital
-            
-        Returns:
-            Validation result with approval status and position details
         """
         # 1. Check daily trade limit
         if self.journal_agent:
