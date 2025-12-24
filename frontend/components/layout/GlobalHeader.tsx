@@ -3,7 +3,6 @@
 import { usePathname } from 'next/navigation';
 import MarketStatus from '../MarketStatus';
 import LoginButton from '../LoginButton';
-import { SidebarTrigger } from 'lucide-react'; // Placeholder if we needed a mobile trigger, but we'll stick to desktop focus
 
 export default function GlobalHeader() {
     const pathname = usePathname();

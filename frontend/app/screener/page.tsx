@@ -23,6 +23,19 @@ interface Stock {
     is_20d_breakout: boolean
     trend_7d?: number
     trend_30d?: number
+    // Advanced Indicators
+    macd: number
+    macd_signal: number
+    adx: number
+    stoch_k: number
+    stoch_d: number
+    bb_upper: number
+    bb_middle: number
+    bb_lower: number
+    net_income?: number
+    eps?: number
+    roe?: number
+    debt_to_equity?: number
     // Financials
     market_cap?: number
     pe_ratio?: number
@@ -37,8 +50,17 @@ export default function ScreenerPage() {
     // Filters
     const [selectedIndex, setSelectedIndex] = useState('NIFTY50')
     const [selectedSymbol, setSelectedSymbol] = useState('')
+    const [debouncedSymbol, setDebouncedSymbol] = useState('') // Debounced value for API calls
     const [selectedSector, setSelectedSector] = useState('all')
     const [scannerFilter, setScannerFilter] = useState('ALL')
+
+    // Debounce Effect
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setDebouncedSymbol(selectedSymbol)
+        }, 500)
+        return () => clearTimeout(handler)
+    }, [selectedSymbol])
 
     // Autocomplete State
     const [searchResults, setSearchResults] = useState<{ symbol: string, name: string, sector: string }[]>([])
@@ -140,13 +162,13 @@ export default function ScreenerPage() {
             let url = `http://localhost:8000${endpoint}?page=${page}&limit=${limit}&index=${selectedIndex || 'ALL'}`
 
             if (scannerFilter !== 'ALL') url += `&filter_type=${scannerFilter}`
-            if (selectedSymbol) url += `&symbol=${selectedSymbol}`
+            if (debouncedSymbol) url += `&symbol=${debouncedSymbol}`
             if (selectedSector && selectedSector !== 'all') url += `&sector=${encodeURIComponent(selectedSector)}`
             if (viewMode === 'financial') url += `&view=financial`
 
             // Skip cache for live updates
             if (!silent) {
-                const cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${selectedSymbol}_${selectedSector}_${scannerFilter}_${viewMode}`
+                const cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${debouncedSymbol}_${selectedSector}_${scannerFilter}_${viewMode}`
                 const cached = localStorage.getItem(cacheKey)
                 if (cached) {
                     try {
@@ -179,7 +201,7 @@ export default function ScreenerPage() {
                 throw new Error("Invalid structure returned from backend")
             }
 
-            let cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${selectedSymbol}_${selectedSector}_${scannerFilter}_${viewMode}`
+            let cacheKey = `screener_cache_${endpoint}_${page}_${limit}_${debouncedSymbol}_${selectedSector}_${scannerFilter}_${viewMode}`
             if (json.data) {
                 setStocks(json.data)
                 if (json.meta) setTotalRecords(json.meta.total || 0)
@@ -206,7 +228,7 @@ export default function ScreenerPage() {
         fetchData()
         const interval = setInterval(() => fetchData(true), 5000) // 5s poll
         return () => clearInterval(interval)
-    }, [page, selectedIndex, selectedSymbol, selectedSector, scannerFilter, viewMode])
+    }, [page, selectedIndex, debouncedSymbol, selectedSector, scannerFilter, viewMode])
 
 
     return (
