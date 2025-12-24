@@ -39,12 +39,14 @@ def get_db():
 @router.get("/strategy-contracts")
 def get_strategy_contracts(db: Session = Depends(get_db)):
     """
-    Get all hard-coded strategy contracts.
+    Get all strategy contracts from database.
     Returns contract information for UI display.
     """
-    contracts_list = []
+    # Fetch all contracts from database
+    db_contracts = db.query(DBStrategyContract).all()
     
-    for strategy_id, contract in STRATEGY_CONTRACTS.items():
+    contracts_list = []
+    for contract in db_contracts:
         contracts_list.append({
             "strategy_id": contract.strategy_id,
             "allowed_universes": contract.allowed_universes,
