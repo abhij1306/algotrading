@@ -13,12 +13,14 @@ import {
     Grid3x3,
     Shield,
     Activity,
-    Zap
+    Zap,
+    LayoutDashboard
 } from 'lucide-react'
 
 import SmartTraderLogo from './brand/SmartTraderLogo'
 
 const navigation = [
+    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, description: 'Market Overview' },
     { name: 'Screener', href: '/screener', icon: Search, description: 'Live market scanning' },
     { name: 'Analyst', href: '/analyst', icon: TrendingUp, description: 'Portfolio analysis' },
     {
