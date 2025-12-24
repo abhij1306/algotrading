@@ -1,10 +1,14 @@
 """
 Risk Management Agent - Validates trades against risk rules
+Includes Circuit Breaker and Kill Switch logic.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from .utils import calculate_position_size, round_to_lot_size, get_lot_size
+from .models import TradeSetup, RiskCheckResult
 
+# Import Fyers Client to check API health
+from ..services.fyers_client import get_fyers_client
 
 class RiskAgent:
     """Validates trades against risk management rules"""
@@ -23,7 +27,81 @@ class RiskAgent:
         
         # Track recent trades for cooldown
         self.recent_trades = {}
+
+    def check_trade(self, trade_setup: TradeSetup) -> RiskCheckResult:
+        """
+        Validate trade against all risk rules (Adapter for new model)
+        """
+        # 0. Check System Kill Switch / Circuit Breaker
+        cb_status = self.check_circuit_breaker()
+        if not cb_status['active']:
+            return RiskCheckResult(
+                approved=False,
+                reasons=[f"KILL SWITCH ACTIVE: {cb_status['reason']}"],
+                limits_checked={"System": True},
+                timestamp=datetime.now()
+            )
+
+        # For Paper Trading, we assume a default capital if not provided
+        # In a real scenario, this should come from the ExecutionAgent/Broker
+        default_capital = 100000.0
+
+        signal_dict = {
+            "symbol": trade_setup.composite_signal.symbol,
+            "entry_price": trade_setup.entry_price,
+            "stop_loss": trade_setup.stop_loss,
+            "target": trade_setup.target,
+            "instrument_type": "STOCK" # Default, logic inside validate_trade handles Options if passed
+        }
+
+        # Pass option specific data if available
+        if hasattr(trade_setup.composite_signal, 'merged_features'):
+             feat = trade_setup.composite_signal.merged_features
+             if 'instrument_type' in feat:
+                 signal_dict['instrument_type'] = feat['instrument_type']
+             if 'lot_size' in feat:
+                 signal_dict['lot_size'] = feat['lot_size']
+
+
+        result = self.validate_trade(signal_dict, default_capital)
+
+        # Convert to RiskCheckResult
+        approved = result.get('approved', False)
+        reasons = []
+        if not approved:
+             reasons.append(result.get('rejection_reason', 'Unknown reason'))
+        else:
+             reasons.append("All checks passed")
+
+        return RiskCheckResult(
+            approved=approved,
+            reasons=reasons,
+            limits_checked={"RR": True, "Capital": True, "DailyLimit": True},
+            timestamp=datetime.now()
+        )
     
+    def check_circuit_breaker(self) -> Dict[str, Any]:
+        """
+        Check if system should be halted.
+        Checks:
+        1. API Health (Circuit Breaker in FyersClient)
+        2. Global PnL (Max Daily Loss)
+        """
+        # 1. API Health
+        client = get_fyers_client()
+        if client.circuit_open:
+            return {"active": False, "reason": "API Rate Limit / Circuit Open"}
+
+        # 2. Global PnL Lock
+        if self.journal_agent:
+            today_pnl = self.journal_agent.get_today_pnl()
+            # Hardcoded absolute limit for safety example, ideally dynamic
+            # If loss > 10% of theoretical capital (e.g. 10k on 1L), kill it.
+            if today_pnl < -10000:
+                 return {"active": False, "reason": "Global Daily Loss Limit Breached"}
+
+        return {"active": True, "reason": "Normal"}
+
     def validate_trade(
         self, 
         signal: Dict[str, Any], 

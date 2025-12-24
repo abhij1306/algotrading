@@ -48,7 +48,7 @@ class PortfolioConstructor:
         if not results:
             # Check if ANY results exist for this run_id
             all_for_run = self.db.query(BacktestDailyResult).filter(BacktestDailyResult.run_id == run_id).count()
-            logger.error(f"[PortfolioConstructor  No results found for requested strategies {strategy_ids}")
+            logger.error(f"[PortfolioConstructor] No results found for requested strategies {strategy_ids}")
             logger.error(f"[PortfolioConstructor] Total results for run_id: {all_for_run}")
             logger.error(f"[PortfolioConstructor] Strategies that exist: {existing_strategy_ids}")
             return

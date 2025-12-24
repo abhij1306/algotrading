@@ -4,9 +4,10 @@ Handles live market data streaming using fyers-apiv3 WebSocket
 """
 import os
 import json
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 from datetime import datetime
 import asyncio
+import threading
 from ..utils.ws_manager import manager as Manager
 
 try:
@@ -26,15 +27,25 @@ class FyersWebSocketService:
         self.subscribed_symbols = set()
         self.callbacks: Dict[str, List[Callable]] = {}
         
+        # Capture the main event loop for thread-safe broadcasting
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = None
+            print("[FyersWS] Warning: No running event loop captured during init.")
+
     def connect(self):
         """Initialize WebSocket connection using access token"""
         if not data_ws:
             raise Exception("fyers-apiv3 not installed")
         
         # Load access token from file
-        token_file = os.path.join(os.path.dirname(__file__), "..", "..", "fyers_access_token.json")
+        token_file = os.path.join(os.path.dirname(__file__), "..", "..", "fyers", "config", "access_token.json")
         if not os.path.exists(token_file):
-            raise Exception("Fyers access token not found. Please login first.")
+            # Try alternate path
+            token_file = os.path.join(os.getcwd(), "fyers", "config", "access_token.json")
+            if not os.path.exists(token_file):
+                raise Exception("Fyers access token not found. Please login first.")
         
         with open(token_file, 'r') as f:
             token_data = json.load(f)
@@ -62,6 +73,13 @@ class FyersWebSocketService:
         # Connect
         self.ws.connect()
         print("[FyersWS] WebSocket connected")
+
+        # Update loop if not set (e.g., if connect called from main thread later)
+        if self.loop is None:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
     
     def subscribe(self, symbols: List[str], callback: Callable = None):
         """
@@ -100,11 +118,6 @@ class FyersWebSocketService:
             if symbol in self.callbacks:
                 del self.callbacks[symbol]
     
-    async def _broadcast_to_clients(self, message):
-        """Helper to broadcast async from sync callback"""
-        if Manager:
-            await Manager.broadcast(message)
-
     def _on_message(self, message):
         """Handle incoming WebSocket message"""
         try:
@@ -120,39 +133,19 @@ class FyersWebSocketService:
                         print(f"[FyersWS] Callback error: {e}")
             
             # 2. PROD: Broadcast to frontend clients via WebSocket Manager
-            # We need to run async broadcast from this sync callback
-            if Manager:
-                try:
-                    # Create task for broadcasting to avoid blocking
-                    # Note: Fyers WS runs in its own thread, usually. 
-                    # We need an event loop to run async manager.broadcast
-                    
-                    # Simplest approach for production-grade bridge:
-                    # Fire-and-forget broadcast slightly separated
-                    
-                    # Using asyncio.run_coroutine_threadsafe if loop is available,
-                    # or creating a new loop if needed.
-                    # Since this runs inside FastAPI (mostly), we can try finding running loop.
-                    
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            loop.create_task(Manager.broadcast(message))
-                        else:
-                            # Fallback just in case
-                            loop.run_until_complete(Manager.broadcast(message))
-                    except RuntimeError:
-                        # If no loop in this thread
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        new_loop.run_until_complete(Manager.broadcast(message))
-                        
-                except Exception as e:
-                    print(f"[FyersWS] Broadcast error: {e}")
+            if Manager and self.loop:
+                # Thread-safe broadcast
+                asyncio.run_coroutine_threadsafe(Manager.broadcast(message), self.loop)
+            elif Manager:
+                 # Fallback: if no loop captured (rare in FastAPI), try to get one or warn
+                 # This part is risky but kept for edge cases
+                 try:
+                     loop = asyncio.get_event_loop()
+                     if loop.is_running():
+                         loop.create_task(Manager.broadcast(message))
+                 except Exception:
+                     pass # Fail silently to avoid crashing the socket thread
 
-            # Print for debugging (optional - reduce noise in prod)
-            # print(f"[FyersWS] {symbol}: LTP={message.get('ltp')}")
-        
         except Exception as e:
             print(f"[FyersWS] Error processing message: {e}")
 
