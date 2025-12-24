@@ -258,9 +258,26 @@ def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
     if not config.HAS_FYERS:
         return None
     
-    # TODO: Implement Fyers pre-open API integration
-    # Fyers doesn't have a direct pre-open API
-    # We can use market depth or quotes during pre-open hours
+    try:
+        # Use direct integration to bypass potential import issues and reuse logic
+        from . import fyers_direct
+
+        # We use standard quotes as they reflect the equilibrium price during pre-open
+        quotes = fyers_direct.get_fyers_quotes([symbol])
+
+        if symbol in quotes:
+            q = quotes[symbol]
+            return {
+                'symbol': symbol,
+                'price': q.get('ltp', 0),
+                'volume': q.get('volume', 0),
+                'timestamp': pd.Timestamp.now(),
+                'source': 'fyers_preopen'
+            }
+
+    except Exception as e:
+        print(f"Error fetching pre-open data for {symbol}: {e}")
+
     return None
 
 def get_enhanced_quote(symbol: str, hist_data: pd.DataFrame) -> Dict:
