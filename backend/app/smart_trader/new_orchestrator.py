@@ -4,10 +4,9 @@ Refactored Orchestrator - New signal generation flow
 import asyncio
 import threading
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import pytz
 import pandas as pd
-from sqlalchemy import desc
 
 from .config import config
 from .models import MarketSnapshot, CompositeSignal, TradeSetup, ConfidenceLevel
@@ -29,29 +28,28 @@ from .snapshot_builder import SnapshotBuilder
 from .risk_agent import RiskAgent
 from .execution_agent import ExecutionAgent
 from .stock_scanner import StockScannerAgent
-from ..database import SessionLocal, IntradayCandle, SmartTraderSignal, get_or_create_company
 
-# Import Consolidated Fyers client
-from ..services.fyers_client import get_fyers_client
+# Import Fyers client for live data
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+from fyers.fyers_client import get_historical_data
 
-def is_market_open_ist() -> bool:
-    """Check if current time is within NSE market hours (9:15 AM - 3:30 PM IST)"""
-    tz = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(tz)
-
-    # Weekends check
-    if now.weekday() >= 5: # Sat=5, Sun=6
-        return False
-
-    market_start = time(9, 15)
-    market_end = time(15, 30)
-    current_time = now.time()
-
-    return market_start <= current_time <= market_end
 
 class NewOrchestratorAgent:
     """
     Refactored orchestrator with deterministic signal generation + LLM enhancement.
+
+    Flow:
+    1. MarketSnapshot Creation
+    2. Signal Generation (deterministic)
+    3. Aggregation
+    4. LLM Analysis (optional)
+    5. Confidence Scoring
+    6. Trade Construction
+    7. LLM Review (optional)
+    8. Risk Check
+    9. Execution
     """
     
     def __init__(self, custom_config: Optional[Dict[str, Any]] = None):
@@ -109,12 +107,6 @@ class NewOrchestratorAgent:
         
         while self.is_running:
             try:
-                # Market Hours Guard
-                if not is_market_open_ist():
-                   print("💤 Market closed. Sleeping...")
-                   time.sleep(60)
-                   continue
-
                 self._scan_cycle()
                 time.sleep(self.config.get('scan_interval', 60))
             except Exception as e:
@@ -135,7 +127,7 @@ class NewOrchestratorAgent:
         
         for symbol in symbols:
             try:
-                # Step 1: Create MarketSnapshot with Incremental Fetch
+                # Step 1: Create MarketSnapshot
                 snapshot = self._create_snapshot(symbol)
                 if not snapshot:
                     continue
@@ -177,10 +169,6 @@ class NewOrchestratorAgent:
                     print(f"    → {composite.direction.value} signal: {confidence_level.value} confidence ({final_confidence:.2f})")
                     
                     all_composite_signals.append(composite)
-
-                    # Auto-execute if High Confidence (Paper Mode)
-                    if confidence_level.value == "HIGH":
-                       self.execute_trade_from_signal(composite)
             
             except Exception as e:
                 print(f"Error processing {symbol}: {e}")
@@ -188,9 +176,6 @@ class NewOrchestratorAgent:
         # Update current signals
         self.current_signals = all_composite_signals
         
-        # Persist Signals to DB
-        self._persist_signals(all_composite_signals)
-
         print(f"\n✅ Scan Complete: {len(all_composite_signals)} composite signals generated")
         print(f"{'='*60}\n")
     
@@ -203,127 +188,58 @@ class NewOrchestratorAgent:
         return universe[:20] if len(universe) > 20 else universe
     
     def _create_snapshot(self, symbol: str) -> Optional[MarketSnapshot]:
-        """
-        Create MarketSnapshot for symbol using Fyers 5m intraday data.
-        Implements INCREMENTAL FETCH + DB CACHE.
-        """
-        db = SessionLocal()
+        """Create MarketSnapshot for symbol using Fyers 5m intraday data"""
         try:
-            # 1. Get Company ID
-            company = get_or_create_company(db, symbol)
-
-            # 2. Check last cached candle
-            last_candle = db.query(IntradayCandle).filter(
-                IntradayCandle.company_id == company.id,
-                IntradayCandle.timeframe == 5
-            ).order_by(desc(IntradayCandle.timestamp)).first()
-
+            # Calculate date range (last 7 days)
             to_date = datetime.now()
+            from_date = to_date - timedelta(days=7)
             
-            # Determine range to fetch
-            if last_candle:
-                # Fetch from last candle timestamp
-                from_date = last_candle.timestamp
-                # If last fetch was very recent (within 5 mins), skip fetch unless forcing
-                if (to_date - from_date).total_seconds() < 300:
-                    # Just load from DB
-                    pass
-            else:
-                # First time: fetch 7 days
-                from_date = to_date - timedelta(days=7)
-
-            # Fetch new data only if needed
+            # Format dates for Fyers API
             range_from = from_date.strftime("%Y-%m-%d")
             range_to = to_date.strftime("%Y-%m-%d")
             
-            # Only fetch if dates are different or forced
-            if range_from != range_to or not last_candle:
-                 self._fetch_and_cache_candles(db, company, symbol, range_from, range_to)
-
-            # 3. Load full 7 days from DB
-            cutoff = to_date - timedelta(days=7)
-            db_candles = db.query(IntradayCandle).filter(
-                IntradayCandle.company_id == company.id,
-                IntradayCandle.timeframe == 5,
-                IntradayCandle.timestamp >= cutoff
-            ).order_by(IntradayCandle.timestamp).all()
+            # Convert symbol to Fyers format (e.g., RELIANCE -> NSE:RELIANCE-EQ)
+            fyers_symbol = f"NSE:{symbol}-EQ"
             
-            if not db_candles or len(db_candles) < 50:
-                 # Fallback: Try fetch again if DB is empty
-                 self._fetch_and_cache_candles(db, company, symbol, range_from, range_to)
-                 db_candles = db.query(IntradayCandle).filter(
-                    IntradayCandle.company_id == company.id,
-                    IntradayCandle.timeframe == 5,
-                    IntradayCandle.timestamp >= cutoff
-                 ).order_by(IntradayCandle.timestamp).all()
+            # Fetch 5m intraday data from Fyers
+            print(f"📡 Fetching 5m data for {symbol} from Fyers...")
+            data = get_historical_data(
+                symbol=fyers_symbol,
+                timeframe="5",  # 5 minutes
+                range_from=range_from,
+                range_to=range_to
+            )
             
-            if not db_candles:
+            if not data or 'candles' not in data or not data['candles']:
+                print(f"⚠️ {symbol}: No data returned from Fyers")
                 return None
-
-            # Convert to DataFrame
-            data = []
-            for c in db_candles:
-                data.append({
-                    'timestamp': c.timestamp,
-                    'open': c.open,
-                    'high': c.high,
-                    'low': c.low,
-                    'close': c.close,
-                    'volume': c.volume
-                })
             
-            df = pd.DataFrame(data)
+            # Convert to DataFrame
+            candles = data['candles']
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
             df.set_index('timestamp', inplace=True)
             
-            # Build snapshot
+            if df.empty or len(df) < 50:
+                print(f"⚠️ {symbol}: Insufficient candles ({len(df)})")
+                return None
+
+            print(f"✅ {symbol}: Fetched {len(df)} candles")
+
+            # Build snapshot with computed indicators
             snapshot = SnapshotBuilder.from_dataframe(
                 symbol=symbol,
                 df=df,
                 timeframe="5m"
             )
+
             return snapshot
 
         except Exception as e:
-            print(f"Error creating snapshot for {symbol}: {e}")
+            print(f"❌ {symbol}: Error creating snapshot: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-        finally:
-            db.close()
-
-    def _fetch_and_cache_candles(self, db, company, symbol: str, range_from, range_to):
-        """Fetch from Fyers and save to DB"""
-        fyers = get_fyers_client()
-        fyers_symbol = f"NSE:{symbol}-EQ"
-
-        # print(f"  Fetching {symbol} {range_from} to {range_to}")
-        data = fyers.get_historical_data(fyers_symbol, "5", range_from, range_to)
-
-        if data and 'candles' in data:
-            candles = data['candles']
-            new_records = 0
-            for c in candles:
-                # Fyers returns [timestamp_epoch, open, high, low, close, volume]
-                ts = datetime.fromtimestamp(c[0])
-
-                # Check exist (or use upsert logic if supported, but here plain check)
-                exists = db.query(IntradayCandle).filter(
-                    IntradayCandle.company_id == company.id,
-                    IntradayCandle.timeframe == 5,
-                    IntradayCandle.timestamp == ts
-                ).first()
-
-                if not exists:
-                    rec = IntradayCandle(
-                        company_id=company.id,
-                        timestamp=ts,
-                        timeframe=5,
-                        open=c[1], high=c[2], low=c[3], close=c[4], volume=c[5]
-                    )
-                    db.add(rec)
-                    new_records += 1
-
-            if new_records > 0:
-                db.commit()
-                # print(f"  Saved {new_records} candles for {symbol}")
 
     def get_current_signals(self) -> List[Dict[str, Any]]:
         """Get current signals (sorted by confidence)"""
@@ -416,48 +332,6 @@ class NewOrchestratorAgent:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    def _persist_signals(self, signals: List[CompositeSignal]):
-        """Save signals to database"""
-        db = SessionLocal()
-        try:
-            for s in signals:
-                # Check if exists
-                exists = db.query(SmartTraderSignal).filter_by(composite_id=s.composite_id).first()
-                if exists: continue
-
-                db_signal = SmartTraderSignal(
-                    composite_id=s.composite_id,
-                    symbol=s.symbol,
-                    timeframe=s.timeframe,
-                    direction=s.direction.value,
-                    signal_families=str([f.value for f in s.signal_families]), # Simple stringify
-                    signal_names=str(s.signal_names),
-                    confluence_count=s.confluence_count,
-                    aggregate_strength=s.aggregate_strength,
-                    base_confidence=0.0, # Not strictly tracked in CompositeSignal yet
-                    final_confidence=s.final_confidence_score,
-                    confidence_level=s.confidence_level.value,
-                    first_signal_time=s.last_signal_time,
-                    last_signal_time=s.last_signal_time
-                )
-                db.add(db_signal)
-            db.commit()
-        except Exception as e:
-            print(f"Error saving signals to DB: {e}")
-        finally:
-            db.close()
-
-    def execute_trade_from_signal(self, signal: CompositeSignal):
-         """Helper to execute trade from internal loop (auto-trade)"""
-         # This method is used when auto-trading High confidence signals
-         try:
-            snapshot = self._create_snapshot(signal.symbol)
-            trade_setup = self.trade_constructor.construct_trade(signal, snapshot, signal.confidence_level)
-            risk_check = self.risk_agent.check_trade(trade_setup)
-            if risk_check.approved:
-                self.execution_agent.execute_paper_trade(trade_setup)
-         except Exception as e:
-             print(f"Auto-trade failed for {signal.symbol}: {e}")
 
 # Global instance
 _orchestrator_instance = None

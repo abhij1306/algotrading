@@ -32,14 +32,6 @@ interface Signal {
     reasoning: string;
     timestamp: string;
     signal_family: string;
-    option_details?: {
-        symbol: string;
-        option_type: 'CE' | 'PE';
-        strike: number;
-        premium: number;
-        quantity: number;
-    };
-    confidence_level: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
 import TradingViewWidget from './charts/TradingViewWidget';
@@ -151,39 +143,14 @@ export default function Terminal() {
     // Fetch Signals
     useEffect(() => {
         if (sidebarMode === 'signals') {
-            refreshSignals();
+            setLoadingSignals(true);
+            fetch('http://localhost:8000/api/signals')
+                .then(res => res.json())
+                .then(data => setSignals(data.signals || []))
+                .catch(err => console.error("Failed to fetch signals", err))
+                .finally(() => setLoadingSignals(false));
         }
     }, [sidebarMode]);
-
-    const refreshSignals = () => {
-        setLoadingSignals(true);
-        // Force scan via endpoint or just fetch latest?
-        // Let's trigger a scan first if needed, but usually we just fetch.
-        // For "on demand" feel, we might want to hit scan endpoint, but let's stick to get first.
-        fetch('http://localhost:8000/api/signals?limit=50')
-            .then(res => res.json())
-            .then(data => {
-                // Filter High/Medium on client side or rely on backend (backend does sorting but returns all currently)
-                // User requirement: "relevant only high and medium accuracy signals"
-                const filtered = (data.signals || []).filter((s: Signal) =>
-                    ['HIGH', 'MEDIUM'].includes(s.confidence_level)
-                );
-                setSignals(filtered);
-            })
-            .catch(err => console.error("Failed to fetch signals", err))
-            .finally(() => setLoadingSignals(false));
-    };
-
-    const triggerScan = async () => {
-        setLoadingSignals(true);
-        try {
-            await fetch('http://localhost:8000/api/smart-trader/scan', { method: 'POST' });
-            setTimeout(refreshSignals, 2000); // Wait a bit for scan to populate
-        } catch (e) {
-            console.error("Scan trigger failed", e);
-            setLoadingSignals(false);
-        }
-    };
 
     const isMarketOpen = () => {
         const now = new Date();
@@ -400,23 +367,10 @@ export default function Terminal() {
             {/* Left Sidebar */}
             <div className="w-[350px] bg-card-dark border-r border-border-dark flex flex-col h-full overflow-visible shrink-0 relative z-[100]">
                 {/* Sidebar Header */}
-                <div className="grid grid-cols-2 p-3 border-b border-border-dark gap-2">
-                    <button
-                        onClick={() => setSidebarMode('watchlist')}
-                        className={`py-2 text-xs font-bold uppercase tracking-wider rounded flex items-center justify-center gap-2 transition-all ${
-                            sidebarMode === 'watchlist' ? 'bg-white/10 text-white shadow-sm' : 'text-gray-500 hover:text-white hover:bg-white/5'
-                        }`}
-                    >
+                <div className="flex items-center p-3 border-b border-border-dark gap-2">
+                    <div className="flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded bg-white/10 text-white flex items-center justify-center gap-2">
                         <List className="w-4 h-4" /> Watchlist
-                    </button>
-                    <button
-                        onClick={() => setSidebarMode('signals')}
-                        className={`py-2 text-xs font-bold uppercase tracking-wider rounded flex items-center justify-center gap-2 transition-all ${
-                            sidebarMode === 'signals' ? 'bg-purple-500/20 text-purple-300 shadow-sm' : 'text-gray-500 hover:text-white hover:bg-white/5'
-                        }`}
-                    >
-                        <Zap className="w-4 h-4" /> Signals
-                    </button>
+                    </div>
                 </div>
 
                 {sidebarMode === 'watchlist' ? (
@@ -503,124 +457,69 @@ export default function Terminal() {
                     </>
                 ) : sidebarMode === 'signals' ? (
                     // Signals Sidebar View
-                    <div className="flex flex-col h-full bg-background-dark/30">
-                        {/* Scan Button Header */}
-                        <div className="p-3 border-b border-white/5 flex justify-between items-center">
-                            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">High Accuracy Signals</span>
-                            <button
-                                onClick={triggerScan}
-                                disabled={loadingSignals}
-                                className="text-xs bg-purple-600/20 hover:bg-purple-600 text-purple-300 hover:text-white px-3 py-1.5 rounded transition-all flex items-center gap-1.5 disabled:opacity-50"
-                            >
-                                <Zap className={`w-3 h-3 ${loadingSignals ? 'animate-spin' : ''}`} /> Scan
-                            </button>
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3">
-                            {loadingSignals ? (
-                                <div className="flex flex-col items-center justify-center py-20 opacity-50">
-                                    <div className="relative">
-                                        <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full"></div>
-                                        <Zap className="w-12 h-12 text-purple-500 mb-4 relative z-10 animate-pulse" />
-                                    </div>
-                                    <h3 className="text-sm font-bold text-white">Scanning Markets...</h3>
-                                    <p className="text-xs text-gray-400 text-center px-4 mt-2 leading-relaxed">AI agents are analyzing price action, volume, and options flow.</p>
+                    <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3 bg-background-dark/30">
+                        {loadingSignals ? (
+                            <div className="flex flex-col items-center justify-center py-20 opacity-50">
+                                <div className="relative">
+                                    <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full"></div>
+                                    <Zap className="w-12 h-12 text-purple-500 mb-4 relative z-10 animate-pulse" />
                                 </div>
-                            ) : signals.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center py-20 opacity-40">
-                                    <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mb-4">
-                                        <ShieldCheck className="w-6 h-6 text-gray-500" />
-                                    </div>
-                                    <h3 className="text-sm font-bold text-gray-300">No signals found</h3>
-                                    <p className="text-xs text-gray-500 mt-1">Markets seem range-bound currently.</p>
+                                <h3 className="text-sm font-bold text-white">Scanning Markets...</h3>
+                                <p className="text-xs text-gray-400 text-center px-4 mt-2 leading-relaxed">AI agents are analyzing price action and volume patterns.</p>
+                            </div>
+                        ) : signals.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-20 opacity-40">
+                                <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mb-4">
+                                    <ShieldCheck className="w-6 h-6 text-gray-500" />
                                 </div>
-                            ) : (
-                                signals.map((signal) => (
-                                    <div key={signal.id} className="bg-card-dark border border-white/10 rounded-xl p-3 hover:border-purple-500/50 transition-all group relative overflow-hidden hover:shadow-[0_0_15px_rgba(168,85,247,0.1)]">
-                                        <div className={`absolute left-0 top-0 bottom-0 w-1 ${signal.direction === 'LONG' ? 'bg-blue-500' : 'bg-red-500'}`} />
+                                <h3 className="text-sm font-bold text-gray-300">No signals found</h3>
+                                <p className="text-xs text-gray-500 mt-1">Markets seem range-bound currently.</p>
+                            </div>
+                        ) : (
+                            signals.map((signal) => (
+                                <div key={signal.id} className="bg-card-dark border border-white/10 rounded-xl p-3 hover:border-purple-500/50 transition-all group relative overflow-hidden hover:shadow-[0_0_15px_rgba(168,85,247,0.1)]">
+                                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${signal.direction === 'LONG' ? 'bg-blue-500' : 'bg-red-500'}`} />
 
-                                        {/* Header */}
-                                        <div className="flex justify-between items-start mb-2 pl-2">
-                                            <div>
-                                                <div className="flex items-center gap-2">
-                                                    <h4 className="text-sm font-bold text-white tracking-tight">{signal.symbol}</h4>
-                                                    {signal.option_details && (
-                                                        <span className="text-[10px] font-mono bg-white/10 px-1 rounded text-yellow-400">
-                                                            {signal.option_details.strike} {signal.option_details.option_type}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${signal.direction === 'LONG'
-                                                        ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-                                                        : 'bg-red-500/10 border-red-500/30 text-red-400'
-                                                        }`}>
-                                                        {signal.direction}
-                                                    </span>
-                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${signal.confidence_level === 'HIGH'
-                                                        ? 'bg-green-500/10 border-green-500/30 text-green-400'
-                                                        : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'}`}>
-                                                        {signal.confidence_level}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            <div className="text-right">
-                                                <div className="text-sm font-bold text-white">{Math.round(signal.confidence * 100)}%</div>
-                                                <div className="text-[9px] text-gray-500 uppercase">Score</div>
+                                    <div className="flex justify-between items-start mb-2 pl-2">
+                                        <div>
+                                            <h4 className="text-sm font-bold text-white tracking-tight">{signal.symbol}</h4>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${signal.direction === 'LONG'
+                                                    ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                                                    : 'bg-red-500/10 border-red-500/30 text-red-400'
+                                                    }`}>
+                                                    {signal.direction}
+                                                </span>
+                                                <span className="text-[9px] text-gray-500 font-mono">{signal.signal_family}</span>
                                             </div>
                                         </div>
-
-                                        {/* Option Specifics */}
-                                        {signal.option_details && (
-                                            <div className="grid grid-cols-2 gap-2 mb-2 ml-1 p-2 bg-black/40 rounded border border-white/5">
-                                                <div>
-                                                    <div className="text-[9px] text-gray-500 uppercase">Premium</div>
-                                                    <div className="text-xs font-mono text-white">₹{signal.option_details.premium}</div>
-                                                </div>
-                                                <div>
-                                                    <div className="text-[9px] text-gray-500 uppercase">Lot Size</div>
-                                                    <div className="text-xs font-mono text-white">{signal.option_details.quantity}</div>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* Reasoning */}
-                                        <div className="bg-black/20 rounded p-2 mb-3 ml-1">
-                                            {signal.reasoning && (
-                                                 <p className="text-[10px] text-gray-400 leading-relaxed line-clamp-2 italic">
-                                                    "{Array.isArray(signal.reasoning) ? signal.reasoning[0] : signal.reasoning}"
-                                                </p>
-                                            )}
+                                        <div className="text-right">
+                                            <div className="text-sm font-bold text-white">{Math.round(signal.confidence * 100)}%</div>
+                                            <div className="text-[9px] text-gray-500 uppercase">Conf</div>
                                         </div>
-
-                                        {/* Execute Button */}
-                                        <button
-                                            onClick={() => {
-                                                if (signal.option_details) {
-                                                    // For options, use the option symbol and details
-                                                    setSelectedSymbol(signal.option_details.symbol);
-                                                    setOrderType('BUY'); // Buying Options is Long
-                                                    setPrice(signal.option_details.premium);
-                                                    setQuantity(signal.option_details.quantity);
-                                                    setSelectedInstrumentType(signal.option_details.option_type === 'CE' ? 'CE' : 'PE');
-                                                } else {
-                                                    setSelectedSymbol(signal.symbol);
-                                                    setOrderType(signal.direction as any);
-                                                    setPrice(0); // Market
-                                                    setQuantity(1); // Default
-                                                    setSelectedInstrumentType('EQ');
-                                                }
-                                                setOrderMode('MARKET');
-                                                setShowOrderModal(true);
-                                            }}
-                                            className="w-full ml-1 py-1.5 bg-gradient-to-r from-purple-600/20 to-purple-600/10 hover:from-purple-600 hover:to-purple-500 text-purple-300 hover:text-white border border-purple-500/30 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 group-hover:shadow-lg shadow-purple-900/20"
-                                        >
-                                            <Zap className="w-3 h-3 group-hover:fill-current" /> Execute Trade
-                                        </button>
                                     </div>
-                                ))
-                            )}
-                        </div>
+
+                                    <div className="bg-black/20 rounded p-2 mb-3 ml-1">
+                                        <p className="text-[10px] text-gray-400 leading-relaxed line-clamp-2 italic">
+                                            "{signal.reasoning}"
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            setSelectedSymbol(signal.symbol);
+                                            setOrderType(signal.direction as any);
+                                            setPrice(0);
+                                            setOrderMode('MARKET');
+                                            setShowOrderModal(true);
+                                        }}
+                                        className="w-full ml-1 py-1.5 bg-gradient-to-r from-purple-600/20 to-purple-600/10 hover:from-purple-600 hover:to-purple-500 text-purple-300 hover:text-white border border-purple-500/30 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 group-hover:shadow-lg shadow-purple-900/20"
+                                    >
+                                        <Zap className="w-3 h-3 group-hover:fill-current" /> Execute Trade
+                                    </button>
+                                </div>
+                            ))
+                        )}
                     </div>
                 ) : (
                     // Action Center Sidebar View

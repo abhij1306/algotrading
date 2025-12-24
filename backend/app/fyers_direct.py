@@ -7,13 +7,8 @@ from fyers_apiv3 import fyersModel
 
 def load_fyers_credentials():
     """Load Fyers credentials from access_token.json"""
-    # Try lowercase fyers
     token_file = os.path.join(os.path.dirname(__file__), '..', '..', 'fyers', 'config', 'access_token.json')
     
-    # Try uppercase Fyers if lowercase doesn't exist
-    if not os.path.exists(token_file):
-        token_file = os.path.join(os.path.dirname(__file__), '..', '..', 'Fyers', 'config', 'access_token.json')
-
     if not os.path.exists(token_file):
         return None, None
     

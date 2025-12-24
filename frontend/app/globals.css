@@ -341,7 +341,3 @@
   background: rgba(255, 255, 255, 0.05);
   margin: 0.5rem 0;
 }
-/* Utilities */
-.text-shadow-neon-emerald {
-  text-shadow: 0 0 10px #34d399;
-}

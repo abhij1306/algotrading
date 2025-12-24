@@ -15,8 +15,3 @@ pytz==2024.1
 
 httpx==0.25.0
 fyers-apiv3==3.0.1
-
-# Market Data & Analysis
-yfinance
-pandas_ta
-beautifulsoup4

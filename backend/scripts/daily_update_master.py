@@ -82,30 +82,25 @@ def update_indices():
     db = SessionLocal()
     repo = DataRepository(db)
     
-    # Use yfinance ticker symbols for Indian indices
     indices = [
-        "^NSEI",      # NIFTY 50
-        "^NSEBANK",   # BANK NIFTY  
-        "^NSEFI",     # FIN NIFTY
-        "^CNX100",    # NIFTY 100
-        "^CNX200",    # NIFTY 200
-        "^CNXIT",     # NIFTY IT
-        "^CNXAUTO",   # NIFTY AUTO
-        "^CNXPHARMA", # NIFTY PHARMA
-        "^CNXFMCG",   # NIFTY FMCG
-        "^CNXMETAL",  # NIFTY METAL
-        "^CNXENERGY", # NIFTY ENERGY
-        "^CNXREALTY", # NIFTY REALTY
+        "NIFTY 50",
+        "NIFTY BANK",
+        "NIFTY IT",
+        "NIFTY AUTO",
+        "NIFTY PHARMA",
+        "NIFTY FMCG",
+        "NIFTY METAL",
+        "NIFTY INFRA"
     ]
     
     try:
-        for symbol in indices:
+        for index_name in indices:
             try:
-                logger.info(f"Updating {symbol}...")
-                df = fetch_historical_data(symbol, days=5)
+                logger.info(f"Updating {index_name}...")
+                df = fetch_historical_data(index_name, days=5)
                 
                 if df is not None and not df.empty:
-                    records = repo.save_historical_prices(symbol, df, source='yfinance')
+                    records = repo.save_historical_prices(index_name, df, source='fyers')
                     logger.info(f"  ✓ Added {records} records")
                 else:
                     logger.warning(f"  ✗ No data received")

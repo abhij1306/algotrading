@@ -39,7 +39,7 @@ export default function UnifiedSidebar() {
     }, [pathname]);
 
     const MAIN_NAV = [
-        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/quant' },
         { id: 'screener', label: 'Screener', icon: LayoutGrid, path: '/screener' },
         { id: 'analyst', label: 'Analyst', icon: PieChart, path: '/analyst' },
         { id: 'terminal', label: 'Terminal', icon: Zap, path: '/terminal' },
