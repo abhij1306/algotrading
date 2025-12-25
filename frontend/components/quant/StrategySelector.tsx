@@ -16,7 +16,7 @@ export default function StrategySelector({ onSelect }: { onSelect: (strategy: an
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch('http://localhost:8000/api/portfolio/strategies/available')
+        fetch('http://localhost:9000/api/portfolio/strategies/available')
             .then(res => res.json())
             .then(data => {
                 setStrategies(data);

@@ -16,7 +16,7 @@ export default function PolicyList() {
 
     useEffect(() => {
         // Fetch policies
-        fetch('http://localhost:8000/api/portfolio/strategies/policy')
+        fetch('http://localhost:9000/api/portfolio/strategies/policy')
             .then(res => res.json())
             .then(data => setPolicies(data))
             .catch(err => console.error("Failed to fetch policies", err));
@@ -37,7 +37,7 @@ export default function PolicyList() {
                     onSave={(policy: any) => {
                         console.log("Saving policy:", policy);
                         // Save to API
-                        fetch('http://localhost:8000/api/portfolio/strategies/policy', {
+                        fetch('http://localhost:9000/api/portfolio/strategies/policy', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(policy)

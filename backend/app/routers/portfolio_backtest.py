@@ -2,54 +2,29 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import date, datetime
-import uuid
 import logging
+import uuid
 
 from ..database import (
-    get_db, # Keep existing get_db
-    SessionLocal, 
+    get_db, 
     StockUniverse, 
     UserStockPortfolio, 
-    BacktestRun,
-    BacktestDailyResult,
-    PortfolioDailyResult,
-    StrategyContract as DBStrategyContract
+    BacktestRun
 )
-from ..engines.universe_manager import UniverseManager
-from ..engines.strategy_executor import StrategyExecutor
+from ..engines.backtest.quant_wrapper import QuantBacktestRunner
 from ..engines.portfolio_constructor import PortfolioConstructor
-from ..engines.metrics_calculator import MetricsCalculator
-from ..engines.strategy_contracts import (
-    validate_backtest_config,
-    get_compatible_strategies,
-    get_contract,
-    STRATEGY_CONTRACTS,
-    ContractViolationError
-)
-
-# Import all strategy classes
-from ..engines.strategies import (
-    IntradayMomentumStrategy,
-    IntradayMeanReversionStrategy,
-    OvernightGapReversionStrategy,
-    IndexMeanReversionStrategy
-)
-import pandas as pd
+from ..engines.strategies import STRATEGY_REGISTRY
 
 router = APIRouter(prefix="/api/portfolio-backtest", tags=["Portfolio Backtest"])
 logger = logging.getLogger(__name__)
 
-# Strategy Mapping
-STRATEGIES = {
-    "INTRADAY_MOMENTUM": IntradayMomentumStrategy,
-    "INTRADAY_MEAN_REVERSION": IntradayMeanReversionStrategy,
-    "OVERNIGHT_GAP": OvernightGapReversionStrategy,
-    "INDEX_MEAN_REVERSION": IndexMeanReversionStrategy
-}
-
 @router.get("/universes")
 async def get_universes(db: Session = Depends(get_db)):
+    """Fetch available universes for backtesting."""
     universes = db.query(StockUniverse).all()
+    # Explicitly check for NIFTY indices which might not be in StockUniverse table yet if they are conceptual
+    # But usually seed script adds them.
+    # We also include User Portfolios if any
     portfolios = db.query(UserStockPortfolio).all()
     
     return {
@@ -59,133 +34,96 @@ async def get_universes(db: Session = Depends(get_db)):
 
 @router.post("/run")
 async def run_portfolio_backtest(
-    config: Dict[str, Any], 
+    request: dict,
     db: Session = Depends(get_db)
 ):
     """
-    Runs a multi-strategy backtest.
-    Expected Config:
-    {
-        "universe_id": "NIFTY100_CORE",
-        "strategies": [
-            {"id": "INTRADAY_MOMENTUM", "params": {...}},
-            ...
-        ],
-        "allocation_method": "EQUAL_WEIGHT",
-        "start_date": "2024-01-01",
-        "end_date": "2024-12-31",
-        "capital": 1000000
-    }
+    Execute a portfolio backtest using the QuantBacktestRunner.
+    
+    Args:
+        request: {
+            "universe_id": str,
+            "strategies": [{"id": str, "params": dict}],
+            "start_date": str,
+            "end_date": str,
+            "allocation_method": str,
+            "lookback": int,
+            "policy_settings": dict
+        }
     """
     try:
-        universe_id = config.get("universe_id")
-        strategies = config.get("strategies")
-        allocation_method = config.get("allocation_method")
-        lookback = config.get("lookback")
-        start_date = config.get("start_date")
-        end_date = config.get("end_date")
+        # Extract parameters
+        universe_id = request.get("universe_id")
+        strategies_config = request.get("strategies", [])
+        start_date = datetime.strptime(request.get("start_date", "2024-01-01"), "%Y-%m-%d").date()
+        end_date = datetime.strptime(request.get("end_date", "2024-12-31"), "%Y-%m-%d").date()
+        allocation_method = request.get("allocation_method", "INVERSE_VOLATILITY")
+        lookback = request.get("lookback", 30)
         
-        validate_backtest_config(config)
-    except ContractViolationError as e:
-        logger.error(f"Contract violation: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    try:
+        if not universe_id or not strategies_config:
+            raise HTTPException(status_code=400, detail="Universe and Strategies are required")
+
+        # 1. Create Run Record
         run_id = str(uuid.uuid4())
+        logger.info(f"Starting Backtest Run {run_id} for {universe_id}")
         
-        # Create frozen snapshot
         backtest_run = BacktestRun(
             run_id=run_id,
             universe_id=universe_id,
-            strategy_configs=strategies,
-            portfolio_config={
-                "allocation_method": allocation_method,
-                "lookback": lookback
-            },
-            capital_mode="FIXED",
-            start_date=datetime.strptime(start_date, "%Y-%m-%d").date(),
-            end_date=datetime.strptime(end_date, "%Y-%m-%d").date()
+            start_date=start_date,
+            end_date=end_date,
+            strategy_configs=strategies_config  # Correct column name
         )
         db.add(backtest_run)
         db.commit()
         
-        # Execute each strategy with its CONTRACT-DEFINED timeframe
-        strategy_mapping = {
-            "INTRADAY_MOMENTUM": IntradayMomentumStrategy,
-            "INTRADAY_MEAN_REVERSION": IntradayMeanReversionStrategy,
-            "OVERNIGHT_GAP": OvernightGapReversionStrategy,
-            "INDEX_MEAN_REVERSION": IndexMeanReversionStrategy
-        }
+        # 2. Initialize Runner
+        runner = QuantBacktestRunner(db)
+        strategy_results = {}
         
-        for strat_config in strategies:
-            strategy_id = strat_config["id"]
-            params = strat_config.get("params", {})
+        # 3. Run Each Strategy
+        for strat in strategies_config:
+            s_id = strat.get("id")
+            s_params = strat.get("params", {})
             
-            # Get contract to determine timeframe
-            contract = get_contract(strategy_id)
-            timeframe = 5 if contract.timeframe == "5MIN" else 1440
-            
-            logger.info(
-                f"Executing {strategy_id} with contract timeframe: {contract.timeframe} "
-                f"({timeframe} min)"
-            )
-            
-            strategy_class = strategy_mapping.get(strategy_id)
-            if not strategy_class:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unknown strategy: {strategy_id}"
-                )
-            
-            strategy_instance = strategy_class(db, **params)
-            executor = StrategyExecutor(db, strategy_instance)
-            
-            executor.run_backtest(
+            logger.info(f"Executing Strategy: {s_id}")
+            result = runner.run_strategy_backtest(
+                strategy_id=s_id,
                 universe_id=universe_id,
-                start_date=backtest_run.start_date,
-                end_date=backtest_run.end_date,
-                run_id=run_id
+                start_date=start_date,
+                end_date=end_date,
+                run_id=run_id,
+                params=s_params
             )
-    
-        # Portfolio construction
+            
+            strategy_results[s_id] = result
+            
+        # 4. Construct Portfolio (Allocation & Risk Policy)
+        # We invoke the constructor to combine strategy results into a master equity curve
         constructor = PortfolioConstructor(db)
         constructor.construct_portfolio(
             run_id=run_id,
+            strategy_ids=[s.get("id") for s in strategies_config],
             allocation_method=allocation_method,
-            lookback_window=lookback
+            lookback_window=lookback,
+            policy_id=request.get("policy_id")
         )
         
-        # 3. Calculate Summary Metrics
-        # Fetch portfolio results
-        port_results = db.query(PortfolioDailyResult).filter(PortfolioDailyResult.run_id == run_id).order_by(PortfolioDailyResult.date).all()
-        if port_results:
-            returns = pd.Series([r.portfolio_return for r in port_results])
-            summary = MetricsCalculator.calculate_all(returns)
-            backtest_run.summary_metrics = summary # Use backtest_run instead of master_run
-            db.commit()
-
-        return {"run_id": run_id, "status": "COMPLETED"}
+        # Mark run complete by updating summary
+        backtest_run.summary_metrics = {
+            "strategies_executed": len(strategies_config),
+            "allocation_method": allocation_method,
+            "lookback": lookback,
+            "completed_at": datetime.now().isoformat()
+        }
+        db.commit()
+        
+        return {
+            "run_id": run_id,
+            "status": "COMPLETED",
+            "message": f"Successfully ran {len(strategies_config)} strategies and constructed portfolio."
+        }
 
     except Exception as e:
-        import traceback
-        print(traceback.format_exc())
+        logger.error(f"Backtest Failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/{run_id}/results")
-async def get_run_results(run_id: str, db: Session = Depends(get_db)):
-    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-        
-    portfolio_daily = db.query(PortfolioDailyResult).filter(PortfolioDailyResult.run_id == run_id).order_by(PortfolioDailyResult.date).all()
-    
-    return {
-        "config": {
-            "universe_id": run.universe_id,
-            "start_date": run.start_date.isoformat(),
-            "end_date": run.end_date.isoformat(),
-            "capital_mode": run.capital_mode
-        },
-        "metrics": run.summary_metrics,
-        "equity_curve": [{"date": r.date.isoformat(), "equity": r.cumulative_equity, "drawdown": r.portfolio_drawdown} for r in portfolio_daily]
-    }

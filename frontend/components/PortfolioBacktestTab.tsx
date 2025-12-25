@@ -4,11 +4,7 @@ import React, { useState, useEffect } from "react";
 import UniverseSelector from "@/components/backtest/UniverseSelector";
 import StrategyCards from "@/components/backtest/StrategyCards";
 import AllocationConfig from "@/components/backtest/AllocationConfig";
-import PortfolioHealth from "@/components/backtest/PortfolioHealth";
-import StrategyTrustMap from "@/components/backtest/StrategyTrustMap";
-import AllocatorExplanation from "@/components/backtest/AllocatorExplanation";
-import ResearchDashboard from "@/components/backtest/ResearchDashboard";
-import { PlayCircle, Loader, TestTube, Activity, BarChart3 } from "lucide-react";
+import { Play, Loader2, Layers, Zap, Settings2, ShieldCheck, ChevronRight, LayoutDashboard, Terminal, Calendar } from "lucide-react";
 
 interface StrategyConfig {
     id: string;
@@ -23,43 +19,42 @@ interface PolicySettings {
     defensiveAction: string;
 }
 
-type InternalTab = "tester" | "live_monitor" | "research";
-
 export default function PortfolioResearchSystem() {
-    // Internal navigation (Tester | Live Monitor | Research)
-    const [activeTab, setActiveTab] = useState<InternalTab>("tester");
-    const [runId, setRunId] = useState<string | null>(null);
-    const [liveData, setLiveData] = useState<any>(null);
-
-    // Setup/Tester state
+    // Core State
     const [universeId, setUniverseId] = useState("");
     const [compatibleStrategies, setCompatibleStrategies] = useState<string[]>([]);
     const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
+
+    // Config State
     const [allocationMethod, setAllocationMethod] = useState("INVERSE_VOLATILITY");
     const [lookback, setLookback] = useState(30);
-    const [policySettings, setPolicySettings] = useState<PolicySettings>({
-        correlationPenalty: "medium",
-        cautiousThreshold: -8,
-        defensiveThreshold: -15,
-        defensiveAction: "scale_60"
-    });
-    const [showConfirmModal, setShowConfirmModal] = useState(false);
-    const [loading, setLoading] = useState(false);
+    const [policies, setPolicies] = useState<any[]>([]);
+    const [selectedPolicyId, setSelectedPolicyId] = useState<string>("");
 
-    // Fetch live state when runId exists and on Live Monitor tab
     useEffect(() => {
-        if (runId && activeTab === "live_monitor") {
-            fetch(`http://localhost:8000/api/portfolio/live-state?run_id=${runId}`)
-                .then(res => {
-                    if (!res.ok) throw new Error("Failed to fetch live state");
-                    return res.json();
-                })
-                .then(data => setLiveData(data))
-                .catch(err => console.error(err));
-        }
-    }, [runId, activeTab]);
+        fetch("http://localhost:9000/api/portfolio/strategies/policy")
+            .then(res => res.json())
+            .then(data => {
+                setPolicies(data);
+                if (data.length > 0) setSelectedPolicyId(data[0].id);
+            })
+            .catch(err => console.error("Failed to fetch policies", err));
+    }, []);
 
-    const executeBacktest = () => {
+    // Date Range State
+    const [startDate, setStartDate] = useState(() => {
+        const d = new Date();
+        d.setFullYear(d.getFullYear() - 1);
+        return d.toISOString().split("T")[0];
+    });
+    const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
+
+    // Execution State
+    const [runId, setRunId] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [activeSection, setActiveSection] = useState<"universe" | "strategy" | "config">("universe");
+
+    const runBacktest = async () => {
         if (!universeId) {
             alert("Please select a universe first.");
             return;
@@ -69,18 +64,11 @@ export default function PortfolioResearchSystem() {
             alert("Please enable at least one strategy.");
             return;
         }
-        // Show confirmation modal
-        setShowConfirmModal(true);
-    };
 
-    const runBacktest = async () => {
-        setShowConfirmModal(false);
         setLoading(true);
 
-        const enabledStrats = strategies.filter((s) => s.enabled);
-
         try {
-            const response = await fetch("http://localhost:8000/api/portfolio-backtest/run", {
+            const response = await fetch("http://localhost:9000/api/portfolio-backtest/run", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -88,16 +76,17 @@ export default function PortfolioResearchSystem() {
                     strategies: enabledStrats.map((s) => ({ id: s.id, params: s.params })),
                     allocation_method: allocationMethod,
                     lookback: lookback,
-                    policy_settings: policySettings,
-                    start_date: "2024-01-01",
-                    end_date: "2024-12-31"
+                    policy_id: selectedPolicyId,
+                    start_date: startDate,
+                    end_date: endDate
                 })
             });
 
             const data = await response.json();
             if (data.run_id) {
                 setRunId(data.run_id);
-                setActiveTab("live_monitor"); // Auto-switch to Live Monitor
+                // In a real app, we might redirect to a results page here
+                alert(`Backtest Started! Run ID: ${data.run_id}`);
             }
         } catch (err) {
             console.error("Backtest failed", err);
@@ -107,250 +96,239 @@ export default function PortfolioResearchSystem() {
         }
     };
 
-    const internalTabs = [
-        { id: "tester" as InternalTab, label: "Tester", icon: TestTube, description: "Backtest + Replay" },
-        { id: "live_monitor" as InternalTab, label: "Live Monitor", icon: Activity, description: "Default Daily View" },
-        { id: "research" as InternalTab, label: "Research", icon: BarChart3, description: "Analysis Only" }
-    ];
-
     return (
-        <div className="h-full flex flex-col bg-[#050505] text-gray-200">
-            {/* Internal Tab Navigation (Tester | Live Monitor | Research) */}
-            <div className="flex items-center gap-1 px-6 py-3 bg-[#0A0A0A] border-b border-white/5">
-                {internalTabs.map((tab) => {
-                    const Icon = tab.icon;
-                    return (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`px-4 py-2.5 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${activeTab === tab.id
-                                ? "bg-white/10 text-white border border-white/10"
-                                : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-                                }`}
-                        >
-                            <Icon className="w-4 h-4" />
-                            <div className="flex flex-col items-start">
-                                <span className="uppercase tracking-wide">{tab.label}</span>
-                                <span className="text-[9px] opacity-60 font-normal">{tab.description}</span>
-                            </div>
-                        </button>
-                    );
-                })}
-
-                {runId && (
-                    <div className="ml-auto px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-full font-mono">
-                        Active Run: {runId.slice(0, 8)}
-                    </div>
-                )}
-            </div>
-
-            {/* Tab Content */}
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-
-                {/* TESTER TAB */}
-                {activeTab === "tester" && (
-                    <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in duration-300">
-                        {/* Header */}
+        <div className="h-screen overflow-y-auto bg-[#000000] text-gray-200 font-sans selection:bg-cyan-500/30">
+            {/* 1. Ultra-Minimal Header */}
+            <header className="px-12 py-5 border-b border-white/5 bg-black/50 backdrop-blur-md sticky top-0 z-50">
+                <div className="flex items-center justify-between max-w-[1920px] mx-auto">
+                    <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-900/40 to-black border border-white/10 flex items-center justify-center">
+                            <Terminal className="w-5 h-5 text-cyan-400" />
+                        </div>
                         <div>
-                            <h2 className="text-xl font-medium text-white mb-2">Backtest Setup</h2>
-                            <p className="text-sm text-gray-500">
-                                Create one frozen experiment to understand behavior — not to tune.
+                            <h1 className="text-xl font-bold tracking-tight text-white">
+                                Quant Lab <span className="text-cyan-500">.Pro</span>
+                            </h1>
+                            <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-gray-500 font-medium">
+                                <span>Build</span>
+                                <span className="text-gray-700">•</span>
+                                <span>Test</span>
+                                <span className="text-gray-700">•</span>
+                                <span>Deploy</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/5">
+                            <div className={`w-1.5 h-1.5 rounded-full ${universeId ? 'bg-emerald-500' : 'bg-gray-600'}`}></div>
+                            <span className="text-xs font-mono text-gray-400">{universeId || "NO UNIVERSE"}</span>
+                        </div>
+                        <div className="h-8 w-px bg-white/10"></div>
+                        <div className="text-right">
+                            <div className="text-[10px] text-gray-500 uppercase">System Status</div>
+                            <div className="text-xs text-emerald-500 font-mono font-bold">ONLINE</div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <main className="max-w-[1920px] mx-auto p-12 space-y-16 pb-40">
+
+                {/* 2. Universe Selection */}
+                <section>
+                    <div className="flex items-end justify-between mb-8">
+                        <div>
+                            <h2 className="text-3xl font-light text-white mb-2">Investment <span className="font-bold text-gray-500">Universe</span></h2>
+                            <p className="text-sm text-gray-500 max-w-xl">
+                                Select the asset pool for your strategy. The universe defines the constituent stocks and benchmark index for performance comparison.
                             </p>
                         </div>
-
-                        {/* A. Universe Selection */}
-                        <section className="space-y-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400 text-sm font-bold">
-                                    1
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-medium text-gray-200">Universe Selection</h3>
-                                    <p className="text-xs text-gray-600">Selecting a universe filters strategies. Incompatible strategies never appear.</p>
-                                </div>
-                            </div>
-                            <UniverseSelector
-                                onSelect={(id) => setUniverseId(id)}
-                                selectedId={universeId}
-                                onCompatibleStrategiesUpdate={setCompatibleStrategies}
-                            />
-                        </section>
-
-                        {/* B. Strategy Selection */}
-                        <section className="space-y-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400 text-sm font-bold">
-                                    2
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-medium text-gray-200">Strategy Selection</h3>
-                                    <p className="text-xs text-gray-600">
-                                        Card-based tiles with mandatory "WHEN IT LOSES" warnings. Simple toggle only.
-                                    </p>
-                                </div>
-                            </div>
-                            <StrategyCards
-                                selection={strategies}
-                                onChange={setStrategies}
-                                compatibleStrategies={compatibleStrategies}
-                            />
-                        </section>
-
-                        {/* C. Portfolio Policy */}
-                        <section className="space-y-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400 text-sm font-bold">
-                                    3
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-medium text-gray-200">Portfolio Policy</h3>
-                                    <p className="text-xs text-gray-600">
-                                        Allocation method and risk thresholds. This is the only place to adjust behavior.
-                                    </p>
-                                </div>
-                            </div>
-                            <AllocationConfig
-                                method={allocationMethod}
-                                onChange={setAllocationMethod}
-                                lookback={lookback}
-                                onLookbackChange={setLookback}
-                            />
-                        </section>
-
-                        {/* D. Execute Backtest */}
-                        <div className="flex justify-center pt-6 border-t border-white/5">
-                            <button
-                                onClick={runBacktest}
-                                disabled={loading}
-                                className={`px-8 py-3 rounded-md font-medium text-sm flex items-center gap-2 transition-all shadow-lg uppercase tracking-wide ${loading
-                                    ? "bg-white/5 text-gray-500 cursor-not-allowed"
-                                    : "bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-900/20"
-                                    }`}
-                            >
-                                {loading ? <Loader className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />}
-                                {loading ? "Executing..." : "Execute Backtest"}
-                            </button>
+                        <div className="text-right hidden xl:block">
+                            <div className="text-[10px] uppercase tracking-widest text-gray-600 mb-1">Available Universes</div>
+                            <div className="text-2xl font-mono text-white">12</div>
                         </div>
                     </div>
-                )}
 
-                {/* LIVE MONITOR TAB */}
-                {activeTab === "live_monitor" && (
-                    <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
-                        {!runId ? (
-                            /* No Active Run */
-                            <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
-                                <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center">
-                                    <Activity className="w-10 h-10 text-gray-600" />
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-medium text-gray-300">No Active Run</h3>
-                                    <p className="text-sm text-gray-500 mt-1 max-w-md">
-                                        Execute a backtest from the Tester tab to populate Live Monitor.
-                                    </p>
-                                </div>
+                    <UniverseSelector
+                        onSelect={(id) => setUniverseId(id)}
+                        selectedId={universeId}
+                        onCompatibleStrategiesUpdate={setCompatibleStrategies}
+                    />
+                </section>
+
+                {/* 2.5 Time Horizon Selection */}
+                <section className="pt-8 border-t border-white/5">
+                    <div className="flex items-end justify-between mb-8">
+                        <div>
+                            <h2 className="text-3xl font-light text-white mb-2">Time <span className="font-bold text-gray-500">Horizon</span></h2>
+                            <p className="text-sm text-gray-500 max-w-xl">
+                                Define the temporal window for the simulation. Longer horizons provide better statistical significance, while shorter ones isolate recent market regimes.
+                            </p>
+                        </div>
+                        <div className="flex gap-2">
+                            {['3M', '6M', '1Y', 'YTD', 'MAX'].map((preset) => (
                                 <button
-                                    onClick={() => setActiveTab("tester")}
-                                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium rounded-md transition-colors"
+                                    key={preset}
+                                    onClick={() => {
+                                        const end = new Date();
+                                        const start = new Date();
+                                        if (preset === '3M') start.setMonth(start.getMonth() - 3);
+                                        else if (preset === '6M') start.setMonth(start.getMonth() - 6);
+                                        else if (preset === '1Y') start.setFullYear(start.getFullYear() - 1);
+                                        else if (preset === 'YTD') start.setMonth(0, 1);
+                                        else if (preset === 'MAX') start.setFullYear(start.getFullYear() - 5);
+
+                                        setStartDate(start.toISOString().split("T")[0]);
+                                        setEndDate(end.toISOString().split("T")[0]);
+                                    }}
+                                    className="px-4 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] font-bold tracking-widest uppercase hover:bg-white/10 hover:border-white/20 transition-all text-gray-400 hover:text-white"
                                 >
-                                    Go to Tester
+                                    {preset}
                                 </button>
-                            </div>
-                        ) : !liveData ? (
-                            /* Loading */
-                            <div className="flex items-center justify-center h-[60vh]">
-                                <Loader className="w-8 h-8 text-cyan-500 animate-spin" />
-                            </div>
-                        ) : (
-                            /* Live Monitor Content */
-                            <>
-                                {/* Header */}
-                                <div className="flex items-center justify-between mb-4">
-                                    <div>
-                                        <h2 className="text-xl font-medium text-white">Live Monitor</h2>
-                                        <div className="flex items-center gap-2 text-sm text-gray-500 mt-1">
-                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                            Mode: Backtest • Last Updated: {liveData.portfolio_health.date}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                    {/* Left: Portfolio Health */}
-                                    <div className="space-y-6">
-                                        <PortfolioHealth
-                                            equity={liveData.portfolio_health.equity}
-                                            drawdown={liveData.portfolio_health.drawdown}
-                                            volatilityRegime={liveData.portfolio_health.volatility_regime}
-                                            riskState={liveData.portfolio_health.risk_state}
-                                        />
-
-                                        {/* Market Context (if available) */}
-                                        {liveData.market_context && Object.keys(liveData.market_context).length > 1 && (
-                                            <div className="bg-[#0A0A0A] border border-white/5 rounded-lg p-5">
-                                                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">
-                                                    Market Context
-                                                </h3>
-                                                <div className="space-y-3">
-                                                    <div className="flex justify-between items-center text-sm">
-                                                        <span className="text-gray-400">Volatility Regime</span>
-                                                        <span className="font-mono font-medium text-white">
-                                                            {liveData.market_context.volatility_regime}
-                                                        </span>
-                                                    </div>
-                                                    <div className="h-px bg-white/5"></div>
-                                                    <p className="text-xs text-gray-600 italic">
-                                                        Context only — not signals.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Right: Trust Map & Allocator Explanation */}
-                                    <div className="lg:col-span-2 space-y-6">
-                                        <StrategyTrustMap
-                                            data={Object.entries(liveData.strategy_weights || {}).map(([id, weight]: [string, any]) => ({
-                                                strategy: id,
-                                                weight: weight,
-                                                return_30d: 0, // Placeholder as liveData format is unknown
-                                                drawdown: 0,   // Placeholder
-                                                status: "normal",
-                                                reason: liveData.allocator_decisions?.[id] || "Active"
-                                            }))}
-                                        />
-                                        <AllocatorExplanation
-                                            changes={liveData.allocator_decisions}
-                                            date={liveData.portfolio_health.date}
-                                        />
-                                    </div>
-                                </div>
-                            </>
-                        )}
+                            ))}
+                        </div>
                     </div>
-                )}
 
-                {/* RESEARCH TAB */}
-                {activeTab === "research" && (
-                    <div className="max-w-7xl mx-auto animate-in fade-in duration-300">
-                        {!runId ? (
-                            <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
-                                <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center">
-                                    <BarChart3 className="w-10 h-10 text-gray-600" />
-                                </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#050505] border border-white/5 rounded-2xl p-8">
+                        <div className="space-y-2">
+                            <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold flex items-center gap-2">
+                                <Calendar className="w-3 h-3 text-cyan-500" />
+                                Start Date
+                            </label>
+                            <input
+                                type="date"
+                                value={startDate}
+                                onChange={(e) => setStartDate(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500/50 transition-all font-mono"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold flex items-center gap-2">
+                                <Calendar className="w-3 h-3 text-emerald-500" />
+                                End Date
+                            </label>
+                            <input
+                                type="date"
+                                value={endDate}
+                                onChange={(e) => setEndDate(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50 transition-all font-mono"
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                {/* 3. Strategy Composition */}
+                <section>
+                    <div className="flex items-end justify-between mb-8 pt-8 border-t border-white/5">
+                        <div>
+                            <h2 className="text-3xl font-light text-white mb-2">Alpha <span className="font-bold text-gray-500">Composition</span></h2>
+                            <p className="text-sm text-gray-500 max-w-xl">
+                                Construct your portfolio by selecting from independent alpha sources. Strategies are automatically filtered for compatibility with the selected universe.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-6">
+                            <div className="flex items-center gap-4">
                                 <div>
-                                    <h3 className="text-lg font-medium text-gray-300">No Research Data</h3>
-                                    <p className="text-sm text-gray-500 mt-1 max-w-md">
-                                        Execute a backtest to populate research analytics.
-                                    </p>
+                                    <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Risk Policy</div>
+                                    <select
+                                        value={selectedPolicyId}
+                                        onChange={(e) => setSelectedPolicyId(e.target.value)}
+                                        className="bg-black border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
+                                    >
+                                        {policies.map(p => (
+                                            <option key={p.id} value={p.id}>{p.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="h-10 w-px bg-white/5"></div>
+                                <div>
+                                    <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Active Strategies</div>
+                                    <div className="text-2xl font-mono text-cyan-400">{strategies.filter(s => s.enabled).length}</div>
                                 </div>
                             </div>
-                        ) : (
-                            <ResearchDashboard runId={runId} />
-                        )}
+                        </div>
                     </div>
-                )}
-            </div>
-        </div>
+
+                    <StrategyCards
+                        selection={strategies}
+                        onChange={setStrategies}
+                        compatibleStrategies={compatibleStrategies}
+                    />
+                </section>
+
+                {/* 4. Configuration Panel */}
+                <section className="pt-8 border-t border-white/5">
+                    <div className="bg-[#050505] border border-white/5 rounded-2xl p-8 transition-all hover:border-white/10">
+                        <div className="flex items-start gap-6">
+                            <div className="p-3 rounded-xl bg-purple-900/10 border border-purple-500/20 text-purple-400">
+                                <Settings2 className="w-6 h-6" />
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-xl font-bold text-white mb-2">Portfolio Construction Policy</h3>
+                                <p className="text-sm text-gray-500 mb-6">
+                                    Define how capital is allocated across selected strategies and set risk management constraints.
+                                </p>
+                                <AllocationConfig
+                                    method={allocationMethod}
+                                    onChange={setAllocationMethod}
+                                    lookback={lookback}
+                                    onLookbackChange={setLookback}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* 5. Execution & Summary */}
+                <section className="pt-8 border-t border-white/5 pb-20">
+                    <div className="flex items-center justify-between bg-[#111] p-6 rounded-2xl border border-white/10">
+                        <div className="flex items-center gap-12">
+                            <div>
+                                <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Target Universe</div>
+                                <div className="text-lg font-mono text-white font-bold">{universeId ? universeId.replace(/_/g, ' ') : "---"}</div>
+                            </div>
+                            <div>
+                                <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Active Strategies</div>
+                                <div className="text-lg font-mono text-white font-bold">{strategies.filter(s => s.enabled).length} <span className="text-sm font-normal text-gray-600">/ {strategies.length}</span></div>
+                            </div>
+                            <div className="h-10 w-px bg-white/5"></div>
+                            <div>
+                                <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Period</div>
+                                <div className="text-lg font-mono text-white font-bold">
+                                    {startDate} <span className="text-xs text-gray-600 mx-1">TO</span> {endDate}
+                                </div>
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={runBacktest}
+                            disabled={loading || !universeId || strategies.filter(s => s.enabled).length === 0}
+                            className={`
+                                relative overflow-hidden group px-12 py-4 rounded-xl font-bold uppercase tracking-widest transition-all duration-300
+                                ${loading || !universeId || strategies.filter(s => s.enabled).length === 0
+                                    ? "bg-white/5 text-gray-600 cursor-not-allowed"
+                                    : "bg-emerald-500 text-black hover:scale-[1.02] shadow-[0_0_30px_-5px_rgba(16,185,129,0.4)]"
+                                }
+                            `}
+                        >
+                            <div className="relative z-10 flex items-center gap-3">
+                                {loading ? (
+                                    <>
+                                        <Loader2 className="w-5 h-5 animate-spin" />
+                                        <span>Running Engine...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>Execute Simulation</span>
+                                        <Play className="w-5 h-5 fill-current" />
+                                    </>
+                                )}
+                            </div>
+                        </button>
+                    </div>
+                </section>
+            </main>
+        </div >
     );
 }

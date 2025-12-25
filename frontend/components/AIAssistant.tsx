@@ -27,7 +27,7 @@ export default function AIAssistant() {
         setLoading(true)
 
         try {
-            const res = await fetch('http://localhost:8000/api/llm/ask', {
+            const res = await fetch('http://localhost:9000/api/llm/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message: userMsg })

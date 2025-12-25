@@ -36,7 +36,7 @@ export default function PortfolioRiskDashboard({ portfolioId, portfolios = [], o
 
             if (portfolioData.positions && portfolioData.positions.length > 0) {
                 const lookbackDays = timeRange === '1M' ? 30 : timeRange === '6M' ? 180 : 365;
-                const response = await fetch(`http://localhost:8000/api/portfolio/stocks/${portfolioId}/analyze?lookback_days=${lookbackDays}`, {
+                const response = await fetch(`http://localhost:9000/api/portfolio/stocks/${portfolioId}/analyze?lookback_days=${lookbackDays}`, {
                     method: 'POST'
                 });
                 if (!response.ok) throw new Error('Failed to analyze portfolio');

@@ -32,7 +32,7 @@ export default function ResearchDashboard({ runId }: ResearchDashboardProps) {
         if (!runId) return;
 
         setLoading(true);
-        fetch(`http://localhost:8000/api/portfolio/research-data/${runId}`)
+        fetch(`http://localhost:9000/api/portfolio/research-data/${runId}`)
             .then(res => res.json())
             .then(json => {
                 setData(json);

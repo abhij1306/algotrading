@@ -44,7 +44,7 @@ export default function BacktestHUD() {
     useEffect(() => {
         const timer = setTimeout(() => {
             if (config.symbol && config.symbol.length > 0) {
-                fetch(`http://localhost:8000/api/market/search/?query=${config.symbol}`)
+                fetch(`http://localhost:9000/api/market/search/?query=${config.symbol}`)
                     .then(res => res.json())
                     .then(data => {
                         const symbols = Array.isArray(data) ? data : (data.symbols || []);
@@ -68,7 +68,7 @@ export default function BacktestHUD() {
         setError(null)
 
         try {
-            const response = await fetch('http://localhost:8000/api/strategies/backtest', {
+            const response = await fetch('http://localhost:9000/api/strategies/backtest', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

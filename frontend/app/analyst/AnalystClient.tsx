@@ -8,6 +8,7 @@ import Portal from '@/components/ui/Portal'
 import EmptyState from '@/components/ui/EmptyState'
 import { GlassCard } from "@/components/ui/GlassCard"
 import { GlassSelect } from "@/components/ui/GlassSelect"
+import { Button, Input, Label, Badge } from '@/components/design-system/atoms'
 
 interface DraftPosition {
     symbol: string;
@@ -188,27 +189,23 @@ export default function AnalystClient() {
             <div className="h-16 shrink-0 border-b border-white/5 bg-[#0A0A0A]/30 flex items-center justify-between px-8 backdrop-blur-sm z-30">
 
                 {/* Left: Mode Switcher */}
-                <div className="flex items-center bg-white/5 p-1 rounded-lg border border-white/5">
-                    <button
+                <div className="flex bg-white/5 p-1 rounded-lg border border-white/5 gap-1">
+                    <Button
                         onClick={() => setActiveTab('PORTFOLIO')}
-                        className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'PORTFOLIO'
-                            ? 'bg-cyan-500/20 text-cyan-400 shadow-sm'
-                            : 'text-gray-500 hover:text-gray-300'
-                            }`}
+                        variant={activeTab === 'PORTFOLIO' ? 'secondary' : 'ghost'}
+                        size="sm"
+                        icon={<PieChart className="w-3.5 h-3.5" />}
                     >
-                        <PieChart className="w-3.5 h-3.5" />
                         RISK ANALYSIS
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                         onClick={() => setActiveTab('BACKTEST')}
-                        className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'BACKTEST'
-                            ? 'bg-purple-500/20 text-purple-400 shadow-sm'
-                            : 'text-gray-500 hover:text-gray-300'
-                            }`}
+                        variant={activeTab === 'BACKTEST' ? 'secondary' : 'ghost'}
+                        size="sm"
+                        icon={<FlaskConical className="w-3.5 h-3.5" />}
                     >
-                        <FlaskConical className="w-3.5 h-3.5" />
                         STRATEGY LAB
-                    </button>
+                    </Button>
                 </div>
 
                 {/* Center/Right: Portfolio Context (Only in Risk Mode) */}
@@ -232,13 +229,15 @@ export default function AnalystClient() {
                         </div>
 
                         {(selectedPortfolioId || portfolios.length > 0) && (
-                            <button
+                            <Button
                                 onClick={() => setSelectedPortfolioId(null)}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500 hover:text-white text-cyan-400 rounded-lg border border-cyan-500/20 transition-all text-[10px] font-bold tracking-wider uppercase ml-2"
+                                variant="primary"
+                                size="sm"
+                                icon={<Plus className="w-3 h-3" />}
+                                className="ml-2"
                             >
-                                <Plus className="w-3 h-3" />
                                 NEW
-                            </button>
+                            </Button>
                         )}
                     </div>
                 )}
@@ -278,13 +277,12 @@ export default function AnalystClient() {
                                     {/* Name & Desc */}
                                     <div className="space-y-6">
                                         <div className="space-y-2">
-                                            <label className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest ml-1">Portfolio Name</label>
-                                            <input
-                                                type="text"
+                                            <Label>Portfolio Name</Label>
+                                            <Input
                                                 value={portfolioName}
                                                 onChange={(e) => setPortfolioName(e.target.value)}
                                                 placeholder="e.g., 'Tech Growth Q4'"
-                                                className="w-full bg-transparent text-3xl font-light text-white placeholder-gray-700 border-none focus:ring-0 px-0 py-2 border-b border-white/10 focus:border-cyan-500/50 transition-colors"
+                                                className="text-2xl font-light py-6"
                                                 autoFocus
                                             />
                                         </div>
@@ -308,10 +306,8 @@ export default function AnalystClient() {
                                                 </label>
                                                 <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4 hover:border-white/20 transition-colors">
                                                     <div className="relative group z-20">
-                                                        <Search className="absolute left-3 top-3 w-4 h-4 text-gray-500 group-focus-within:text-cyan-500 transition-colors" />
-                                                        <input
+                                                        <Input
                                                             ref={searchInputRef}
-                                                            type="text"
                                                             value={searchQuery}
                                                             onChange={(e) => setSearchQuery(e.target.value)}
                                                             onKeyDown={(e) => {
@@ -320,7 +316,7 @@ export default function AnalystClient() {
                                                                 }
                                                             }}
                                                             placeholder="SEARCH SYMBOL (e.g. RELIANCE)"
-                                                            className="w-full bg-black/40 border border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-xs text-white uppercase font-bold tracking-wider focus:border-cyan-500/40 focus:bg-black/60 focus:outline-none transition-all shadow-inner"
+                                                            icon={<Search className="w-4 h-4 text-gray-500" />}
                                                         />
                                                         {/* Search Results Portal */}
                                                         {searchResults.length > 0 && searchQuery && (
@@ -458,14 +454,28 @@ export default function AnalystClient() {
                                     >
                                         CLEAR FORM
                                     </button>
-                                    <button
+                                    <Button
+                                        onClick={() => {
+                                            setPortfolioName('');
+                                            setDescription('');
+                                            setDraftPositions([]);
+                                        }}
+                                        variant="ghost"
+                                        size="md"
+                                    >
+                                        CLEAR FORM
+                                    </Button>
+                                    <Button
                                         onClick={handleCreateAndAnalyze}
                                         disabled={creating || !portfolioName.trim() || draftPositions.length === 0}
-                                        className="px-8 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-black tracking-widest shadow-[0_0_20px_rgba(6,182,212,0.3)] disabled:opacity-50 disabled:shadow-none flex items-center gap-2 transform active:scale-95 transition-all"
+                                        variant="primary"
+                                        size="md"
+                                        loading={creating}
+                                        icon={!creating && <BarChart3 className="w-3.5 h-3.5" />}
+                                        className="shadow-[0_0_20px_rgba(6,182,212,0.3)]"
                                     >
-                                        {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
                                         RUN ANALYSIS
-                                    </button>
+                                    </Button>
                                 </div>
                             </GlassCard>
                         </div>

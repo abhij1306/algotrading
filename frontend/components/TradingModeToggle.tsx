@@ -10,7 +10,7 @@ const TradingModeToggle = () => {
 
     const fetchStatus = async () => {
         try {
-            const res = await fetch('http://localhost:8000/api/unified/status');
+            const res = await fetch('http://localhost:9000/api/unified/status');
             const data = await res.json();
             setMode(data.mode);
         } catch (e) {
@@ -26,7 +26,7 @@ const TradingModeToggle = () => {
         setLoading(true);
         const newMode = mode === 'PAPER' ? 'LIVE' : 'PAPER';
         try {
-            const res = await fetch('http://localhost:8000/api/unified/toggle-mode', {
+            const res = await fetch('http://localhost:9000/api/unified/toggle-mode', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ mode: newMode })

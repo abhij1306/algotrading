@@ -140,36 +140,39 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
 
     return (
         <GlassCard className="h-full overflow-hidden flex flex-col">
-            {/* HEADER */}
-            <div className="sticky top-0 z-10 bg-[#0A0A0A]/90 backdrop-blur-md border-b border-white/5">
-                <div className="grid grid-cols-12 gap-2 px-6 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                    <div onClick={() => handleSort('symbol')} className="col-span-2 cursor-pointer hover:text-cyan-400 transition-colors flex items-center gap-1">
-                        Sym {sortKey === 'symbol' && <span className="text-cyan-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
+            {/* HEADER - Progressive Blur */}
+            {/* HEADER - Progressive Blur */}
+            <div className="sticky top-0 z-10 glass-progressive border-b border-white/10">
+                <div className="grid grid-cols-12 gap-2 px-6 py-3">
+                    <div onClick={() => handleSort('symbol')} className="col-span-2 cursor-pointer group hover:bg-white/5 rounded px-1 -ml-1 flex items-center gap-1 transition-colors">
+                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest group-hover:text-cyan-400">Sym</span>
+                        {sortKey === 'symbol' && <span className="text-cyan-400 text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>}
                         {isConnected && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-2" title="Live Feed Active"></div>}
                     </div>
-                    <div onClick={() => handleSort('close')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 transition-colors">
-                        Price {sortKey === 'close' && <span className="text-cyan-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
+                    <div onClick={() => handleSort('close')} className="col-span-1 text-right cursor-pointer group hover:bg-white/5 rounded px-1 -mr-1 transition-colors">
+                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest group-hover:text-cyan-400">Price</span>
+                        {sortKey === 'close' && <span className="text-cyan-400 text-[10px] ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>}
                     </div>
 
                     {viewMode === 'technical' ? (
                         <>
-                            <div onClick={() => handleSort('atr_pct')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">ATR%</div>
-                            <div onClick={() => handleSort('rsi')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">RSI</div>
-                            <div onClick={() => handleSort('macd')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">MACD</div>
-                            <div onClick={() => handleSort('adx')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">ADX</div>
-                            <div onClick={() => handleSort('stoch_k')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">Stoch</div>
-                            <div onClick={() => handleSort('bb_upper')} className="col-span-2 text-right cursor-pointer hover:text-cyan-400">BBands</div>
-                            <div className="col-span-1 text-right">Trend 7D</div>
-                            <div onClick={() => handleSort(type === 'intraday' ? 'intraday_score' : 'swing_score')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">Score</div>
+                            <div onClick={() => handleSort('atr_pct')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">ATR%</div>
+                            <div onClick={() => handleSort('rsi')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">RSI</div>
+                            <div onClick={() => handleSort('macd')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">MACD</div>
+                            <div onClick={() => handleSort('adx')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">ADX</div>
+                            <div onClick={() => handleSort('stoch_k')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">Stoch</div>
+                            <div onClick={() => handleSort('bb_upper')} className="col-span-2 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">BBands</div>
+                            <div className="col-span-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest">Trend 7D</div>
+                            <div onClick={() => handleSort(type === 'intraday' ? 'intraday_score' : 'swing_score')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-colors">Score</div>
                         </>
                     ) : (
                         <>
-                            <div onClick={() => handleSort('market_cap')} className="col-span-2 text-right">Mkt Cap</div>
-                            <div onClick={() => handleSort('pe_ratio')} className="col-span-1 text-right">P/E</div>
-                            <div onClick={() => handleSort('roe')} className="col-span-1 text-right">ROE</div>
-                            <div onClick={() => handleSort('eps')} className="col-span-1 text-right">EPS</div>
-                            <div onClick={() => handleSort('revenue')} className="col-span-3 text-right">Rev</div>
-                            <div onClick={() => handleSort('debt_to_equity')} className="col-span-1 text-right">D/E</div>
+                            <div onClick={() => handleSort('market_cap')} className="col-span-2 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">Mkt Cap</div>
+                            <div onClick={() => handleSort('pe_ratio')} className="col-span-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">P/E</div>
+                            <div onClick={() => handleSort('roe')} className="col-span-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">ROE</div>
+                            <div onClick={() => handleSort('eps')} className="col-span-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">EPS</div>
+                            <div onClick={() => handleSort('revenue')} className="col-span-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">Rev</div>
+                            <div onClick={() => handleSort('debt_to_equity')} className="col-span-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:text-cyan-400 transition-colors">D/E</div>
                         </>
                     )}
                 </div>

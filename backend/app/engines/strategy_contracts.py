@@ -29,7 +29,7 @@ class StrategyContract:
 STRATEGY_CONTRACTS = {
     "INTRADAY_MOMENTUM": StrategyContract(
         strategy_id="INTRADAY_MOMENTUM",
-        allowed_universes=["NIFTY100_LIQUID_50"],
+        allowed_universes=["NIFTY100_CORE"],
         timeframe="5MIN",
         holding_period="INTRADAY",
         regime="TREND",
@@ -41,7 +41,7 @@ STRATEGY_CONTRACTS = {
     
     "INTRADAY_MEAN_REVERSION": StrategyContract(
         strategy_id="INTRADAY_MEAN_REVERSION",
-        allowed_universes=["NIFTY100_MEAN_REV"],
+        allowed_universes=["NIFTY100_CORE"],
         timeframe="5MIN",
         holding_period="INTRADAY",
         regime="RANGE",
@@ -53,7 +53,7 @@ STRATEGY_CONTRACTS = {
     
     "OVERNIGHT_GAP": StrategyContract(
         strategy_id="OVERNIGHT_GAP",
-        allowed_universes=["NIFTY50_ONLY"],
+        allowed_universes=["NIFTY50_CORE"],
         timeframe="DAILY",
         holding_period="MULTI_DAY",
         regime="EVENT",
@@ -65,7 +65,7 @@ STRATEGY_CONTRACTS = {
     
     "INDEX_MEAN_REVERSION": StrategyContract(
         strategy_id="INDEX_MEAN_REVERSION",
-        allowed_universes=["NIFTY-INDEX", "BANKNIFTY-INDEX"],
+        allowed_universes=["NIFTY50_CORE"],
         timeframe="5MIN",
         holding_period="INTRADAY",
         regime="INDEX",
@@ -73,6 +73,108 @@ STRATEGY_CONTRACTS = {
                    "Indices can trend persistently on macro news.",
         description="Fades index VWAP deviations. Intraday mean reversion "
                    "specific to Nifty/BankNifty indices."
+    ),
+
+    # --- NIFTY INSTITUTIONAL STRATEGIES ---
+
+    "NIFTY_VOL_CONTRACTION": StrategyContract(
+        strategy_id="NIFTY_VOL_CONTRACTION",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE", "NIFTY_MIDCAP_100"],
+        timeframe="DAILY",
+        holding_period="MULTI_DAY",
+        regime="LOW_VOL_TREND",
+        when_loses="False breakouts in choppy, range-bound markets without clear direction.",
+        description="Volatility Contraction Breakout - Enters when ATR contracts below historical average and price breaks out with volume."
+    ),
+
+    "NIFTY_DARVAS_BOX": StrategyContract(
+        strategy_id="NIFTY_DARVAS_BOX",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE", "NIFTY_MIDCAP_100"],
+        timeframe="DAILY",
+        holding_period="MULTI_DAY",
+        regime="STRONG_TREND",
+        when_loses="Whipsaws and false breakouts during sideways consolidation phases.",
+        description="Darvas Box Breakout - Trades new 50-day highs confirmed by volume surge above 1.1x average."
+    ),
+
+    "NIFTY_MTF_TREND": StrategyContract(
+        strategy_id="NIFTY_MTF_TREND",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE"],
+        timeframe="DAILY",
+        holding_period="MULTI_DAY",
+        regime="SUSTAINED_BULL",
+        when_loses="Late entries in exhausted trends or sudden reversals in bull markets.",
+        description="Multi-Timeframe Trend - Price above 150-day SMA with momentum confirmation for long-term trends."
+    ),
+
+    "NIFTY_DUAL_MA": StrategyContract(
+        strategy_id="NIFTY_DUAL_MA",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE", "NIFTY_MIDCAP_100", "NIFTY_SMALLCAP_100"],
+        timeframe="DAILY",
+        holding_period="MULTI_DAY",
+        regime="TRENDING",
+        when_loses="Sideways markets where moving averages constantly cross over (whipsaw).",
+        description="Dual Moving Average Crossover - Classic trend following using 50 EMA and 200 SMA golden cross."
+    ),
+
+    "NIFTY_VOL_SPIKE": StrategyContract(
+        strategy_id="NIFTY_VOL_SPIKE",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE"],
+        timeframe="DAILY",
+        holding_period="SWING",
+        regime="HIGH_MOMENTUM",
+        when_loses="Volume spikes at market tops (climax run) followed by immediate reversal.",
+        description="Volume Spike Breakout - Enters on 90-day high with Volume > 1.5x average volume."
+    ),
+
+    "NIFTY_TREND_ENVELOPE": StrategyContract(
+        strategy_id="NIFTY_TREND_ENVELOPE",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE"],
+        timeframe="DAILY",
+        holding_period="SWING",
+        regime="EXPANSION",
+        when_loses="Mean reversion markets where price touches bands but fails to trend.",
+        description="Bollinger Breakout - Trades close above upper Bollinger Band (20, 2) indicating expansion."
+    ),
+
+    "NIFTY_REGIME_MOM": StrategyContract(
+        strategy_id="NIFTY_REGIME_MOM",
+        allowed_universes=["NIFTY50_CORE"],
+        timeframe="DAILY",
+        holding_period="MULTI_DAY",
+        regime="BULL_REGIME",
+        when_loses="Bear markets or deep corrections where RSI stays oversold despite price drops.",
+        description="Regime Momentum - Only trades if price > 200 SMA (Bull Regime) and RSI > 50 (Momentum)."
+    ),
+
+    "NIFTY_ATR_BREAK": StrategyContract(
+        strategy_id="NIFTY_ATR_BREAK",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE", "NIFTY_MIDCAP_100"],
+        timeframe="DAILY",
+        holding_period="SWING",
+        regime="VOL_EXPANSION",
+        when_loses="Low volatility drift where price grinds up without breaking ATR bands.",
+        description="Keltner-like Breakout - Long if Close > 20 SMA + 2 * ATR."
+    ),
+
+    "NIFTY_MA_RIBBON": StrategyContract(
+        strategy_id="NIFTY_MA_RIBBON",
+        allowed_universes=["NIFTY50_CORE", "NIFTY100_CORE"],
+        timeframe="DAILY",
+        holding_period="POSITIONAL",
+        regime="STRONG_TREND",
+        when_loses="Choppy consolidation periods where the ribbon alignment flickers.",
+        description="MA Ribbon - Enters when 20 > 50 > 100 > 200 MAs are perfectly aligned."
+    ),
+
+    "NIFTY_MACRO_BREAK": StrategyContract(
+        strategy_id="NIFTY_MACRO_BREAK",
+        allowed_universes=["NIFTY50_CORE"],
+        timeframe="DAILY",
+        holding_period="LONG_TERM",
+        regime="BREAKOUT",
+        when_loses="False breakouts of major yearly levels (bull traps).",
+        description="Macro Breakout - Enters on new 52-week (252-day) High."
     )
 }
 

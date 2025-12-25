@@ -3,7 +3,7 @@
  * Provides unified error handling, loading states, and retry logic
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:9000';
 
 export interface APIError {
     code: string;

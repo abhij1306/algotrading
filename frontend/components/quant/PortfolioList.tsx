@@ -24,7 +24,7 @@ export default function PortfolioList() {
     }, []);
 
     const fetchPortfolios = () => {
-        fetch('http://localhost:8000/api/portfolio/strategies')
+        fetch('http://localhost:9000/api/portfolio/strategies')
             .then(res => res.json())
             .then(data => setPortfolios(data))
             .catch(err => console.error("Failed to fetch portfolios", err));
@@ -32,7 +32,7 @@ export default function PortfolioList() {
 
     const handleCreate = async (portfolio: any) => {
         try {
-            const res = await fetch('http://localhost:8000/api/portfolio/strategies', {
+            const res = await fetch('http://localhost:9000/api/portfolio/strategies', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(portfolio)

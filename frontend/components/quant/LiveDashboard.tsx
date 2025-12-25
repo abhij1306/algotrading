@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Activity, ShieldCheck, TrendingUp, TrendingDown, AlertCircle, CheckCircle2, Info, ChevronRight, BarChart3, Zap, Cpu, Server } from 'lucide-react'
 import MonitoringEquityChart from '@/components/charts/MonitoringEquityChart'
 import { GlassCard } from "@/components/ui/GlassCard"
+import { Button } from '@/components/design-system/atoms'
 
 interface HealthState {
     date: string
@@ -199,12 +200,15 @@ export default function MonitoringClient() {
                         Please promote a research portfolio to 'Live' status to begin monitoring.
                     </p>
                 </div>
-                <button
-                    onClick={() => window.location.href = '/quant/research'}
-                    className="w-full py-4 bg-white/5 hover:bg-white/10 text-white text-xs font-bold uppercase tracking-widest rounded-xl transition-all border border-white/10"
-                >
-                    Initialize Portfolio
-                </button>
+                <div className="w-full">
+                    <Button
+                        onClick={() => window.location.href = '/quant/research'}
+                        variant="ghost"
+                        className="w-full py-6 uppercase tracking-widest text-xs font-bold border border-white/10 hover:border-white/20"
+                    >
+                        Initialize Portfolio
+                    </Button>
+                </div>
             </div>
         </div>
     )

@@ -26,7 +26,7 @@ export default function StrategyAllocation({ onCompositionChange, onValidationCo
 
     // Fetch Library
     useEffect(() => {
-        fetch('http://localhost:8000/api/portfolio/strategies/available')
+        fetch('http://localhost:9000/api/portfolio/strategies/available')
             .then(res => res.json())
             .then(data => setLibrary(data))
             .catch(console.error);
@@ -34,7 +34,7 @@ export default function StrategyAllocation({ onCompositionChange, onValidationCo
 
     // Fetch Policies
     useEffect(() => {
-        fetch('http://localhost:8000/api/portfolio/strategies/policy')
+        fetch('http://localhost:9000/api/portfolio/strategies/policy')
             .then(res => res.json())
             .then(data => {
                 setPolicies(data);
@@ -52,7 +52,7 @@ export default function StrategyAllocation({ onCompositionChange, onValidationCo
         }
 
         const ids = selected.map(s => s.strategy_id);
-        fetch('http://localhost:8000/api/portfolio/strategies/correlation', {
+        fetch('http://localhost:9000/api/portfolio/strategies/correlation', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ strategy_ids: ids })
@@ -91,7 +91,7 @@ export default function StrategyAllocation({ onCompositionChange, onValidationCo
                 end_date: "2024-12-31"
             };
 
-            const res = await fetch('http://localhost:8000/api/portfolio/strategies/backtest', {
+            const res = await fetch('http://localhost:9000/api/portfolio/strategies/backtest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

@@ -26,9 +26,9 @@ from .routers import (
     websocket,
 )
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup logging with rotation
+from .utils.logging_config import setup_logging
+logger = setup_logging("smarttrader", "logs")
 
 # Load environment variables
 load_dotenv()
@@ -73,7 +73,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:4000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -24,7 +24,7 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
         const timeoutId = setTimeout(() => controller.abort(), 5000) // Reduced to 5s for faster feedback
 
         try {
-            const res = await fetch('http://localhost:8000/api/auth/fyers/status', {
+            const res = await fetch('http://localhost:9000/api/auth/fyers/status', {
                 signal: controller.signal
             })
             if (!res.ok) throw new Error('Backend error')
@@ -52,7 +52,7 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
 
         setLoading(true)
         try {
-            const res = await fetch('http://localhost:8000/api/auth/fyers/disconnect', { method: 'POST' })
+            const res = await fetch('http://localhost:9000/api/auth/fyers/disconnect', { method: 'POST' })
             if (res.ok) {
                 setConnected(false)
                 setUserId('')
@@ -77,7 +77,7 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
 
         try {
             console.log('[Fyers] Fetching auth URL from backend...')
-            const res = await fetch('http://localhost:8000/api/auth/fyers/url')
+            const res = await fetch('http://localhost:9000/api/auth/fyers/url')
             const data = await res.json()
 
             if (res.ok && data.url) {
@@ -109,7 +109,7 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
         setStatus('idle')
 
         try {
-            const res = await fetch('http://localhost:8000/api/auth/fyers/token', {
+            const res = await fetch('http://localhost:9000/api/auth/fyers/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ auth_code: authCode })

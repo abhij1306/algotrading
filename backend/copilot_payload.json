@@ -1,4 +1,0 @@
-{
-    "query": "Find oversold stocks with RSI < 30",
-    "limit": 3
-}

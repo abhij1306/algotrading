@@ -22,7 +22,7 @@ export default function NewsTicker() {
     const fetchNews = async () => {
         try {
             setLoading(true);
-            const response = await fetch('http://localhost:8000/api/news/latest?limit=50');
+            const response = await fetch('http://localhost:9000/api/news/latest?limit=50');
             const data = await response.json();
 
             if (data.success) {
@@ -40,7 +40,7 @@ export default function NewsTicker() {
         try {
             setLoading(true);
             // Trigger news fetch from sources
-            await fetch('http://localhost:8000/api/news/refresh', { method: 'POST' });
+            await fetch('http://localhost:9000/api/news/refresh', { method: 'POST' });
             // Then fetch latest
             await fetchNews();
         } catch (error) {

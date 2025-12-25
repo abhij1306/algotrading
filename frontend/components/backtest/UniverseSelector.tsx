@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Database, Droplets, Activity, TrendingUp, Target, AlertCircle, Check, Info, Calendar, Layers } from "lucide-react";
+import { Database, TrendingUp, Target, Activity, Layers, Check, Info } from "lucide-react";
 
 interface Universe {
     id: string;
@@ -15,12 +15,12 @@ interface UniverseSelectorProps {
     onCompatibleStrategiesUpdate?: (strategies: string[]) => void;
 }
 
-// Enhanced universe profiles with comprehensive metadata
+// Enhanced universe profiles
 const UNIVERSE_PROFILES: Record<string, {
     liquidity: string;
-    liquidityScore: number; // 0-100
+    liquidityScore: number;
     volatility: string;
-    volatilityScore: number; // 0-100
+    volatilityScore: number;
     rebalance: string;
     designedFor: string;
     icon: any;
@@ -38,7 +38,7 @@ const UNIVERSE_PROFILES: Record<string, {
         icon: TrendingUp,
         color: "cyan",
         constituents: 50,
-        avgMarketCap: "₹45,000 Cr"
+        avgMarketCap: "₹45k Cr"
     },
     "NIFTY100_MEAN_REV": {
         liquidity: "MODERATE",
@@ -46,11 +46,11 @@ const UNIVERSE_PROFILES: Record<string, {
         volatility: "LOW",
         volatilityScore: 25,
         rebalance: "MONTHLY",
-        designedFor: "Mean Reversion",
+        designedFor: "Mean Rev",
         icon: Target,
         color: "purple",
         constituents: 50,
-        avgMarketCap: "₹28,000 Cr"
+        avgMarketCap: "₹28k Cr"
     },
     "NIFTY50_ONLY": {
         liquidity: "HIGH",
@@ -58,11 +58,11 @@ const UNIVERSE_PROFILES: Record<string, {
         volatility: "MODERATE",
         volatilityScore: 40,
         rebalance: "NONE",
-        designedFor: "Gap Reversion",
+        designedFor: "Gap Rev",
         icon: Activity,
         color: "emerald",
         constituents: 50,
-        avgMarketCap: "₹1,20,000 Cr"
+        avgMarketCap: "₹120k Cr"
     },
     "NIFTY-INDEX": {
         liquidity: "VERY HIGH",
@@ -70,7 +70,7 @@ const UNIVERSE_PROFILES: Record<string, {
         volatility: "MODERATE",
         volatilityScore: 38,
         rebalance: "NONE",
-        designedFor: "Index Strategies",
+        designedFor: "Index",
         icon: Database,
         color: "blue",
         constituents: 1,
@@ -82,11 +82,36 @@ const UNIVERSE_PROFILES: Record<string, {
         volatility: "HIGH",
         volatilityScore: 65,
         rebalance: "NONE",
-        designedFor: "Index Strategies",
+        designedFor: "Index",
         icon: Database,
         color: "orange",
         constituents: 1,
         avgMarketCap: "Index"
+    },
+    // Adding entry for seeded indices to use defaults gracefully or add specific ones
+    "NIFTY_MIDCAP_100": {
+        liquidity: "MED",
+        liquidityScore: 60,
+        volatility: "HIGH",
+        volatilityScore: 70,
+        rebalance: "SEMI",
+        designedFor: "Growth",
+        icon: TrendingUp,
+        color: "orange",
+        constituents: 100,
+        avgMarketCap: "₹30k Cr"
+    },
+    "NIFTY_SMALLCAP_100": {
+        liquidity: "LOW",
+        liquidityScore: 40,
+        volatility: "V.HIGH",
+        volatilityScore: 90,
+        rebalance: "SEMI",
+        designedFor: "Aggressive",
+        icon: TrendingUp,
+        color: "rose",
+        constituents: 100,
+        avgMarketCap: "₹10k Cr"
     }
 };
 
@@ -100,221 +125,128 @@ export default function UniverseSelector({
         user_portfolios: Universe[];
     }>({ system_universes: [], user_portfolios: [] });
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        fetch("http://localhost:8000/api/portfolio-backtest/universes")
-            .then((res) => {
-                if (!res.ok) throw new Error(`API Error: ${res.status}`);
-                return res.json();
-            })
-            .then((json) => {
-                if (json.system_universes) {
-                    setData(json);
-                } else {
-                    throw new Error("Invalid response format");
-                }
+        fetch("http://localhost:9000/api/portfolio-backtest/universes")
+            .then(res => res.json())
+            .then(json => {
+                if (json.system_universes) setData(json);
                 setLoading(false);
             })
-            .catch((err) => {
-                console.error("Failed to fetch universes", err);
-                setError(err.message);
-                setLoading(false);
-            });
+            .catch(console.error);
     }, []);
 
     useEffect(() => {
         if (selectedId) {
-            fetch(`http://localhost:8000/api/portfolio/compatible-strategies/${selectedId}`)
-                .then((res) => res.json())
-                .then((data) => {
+            fetch(`http://localhost:9000/api/portfolio/compatible-strategies/${selectedId}`)
+                .then(res => res.json())
+                .then(data => {
                     const compatible = data.compatible_strategies || [];
-                    if (onCompatibleStrategiesUpdate) {
-                        onCompatibleStrategiesUpdate(compatible);
-                    }
+                    if (onCompatibleStrategiesUpdate) onCompatibleStrategiesUpdate(compatible);
                 })
-                .catch((err) => console.error("Failed to fetch compatible strategies", err));
+                .catch(console.error);
         }
     }, [selectedId, onCompatibleStrategiesUpdate]);
 
+    const allUniverses = [...data.system_universes, ...(data.user_portfolios || [])];
+
     if (loading) return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[1, 2, 3].map(i => (
-                <div key={i} className="h-40 bg-[#0A0A0A] border border-white/5 rounded-lg animate-pulse"></div>
+        <div className="flex gap-4 overflow-hidden">
+            {[1, 2, 3, 4].map(i => (
+                <div key={i} className="min-w-[240px] h-32 bg-[#0A0A0A] border border-white/5 rounded-xl animate-pulse"></div>
             ))}
         </div>
     );
 
-    if (error) return (
-        <div className="px-4 py-3 bg-red-900/10 border border-red-500/20 rounded-lg text-red-400 text-sm flex items-center gap-2">
-            <AlertCircle className="w-4 h-4" />
-            Failed to load universes: {error}
-        </div>
-    );
-
-    const allUniverses = [...data.system_universes, ...(data.user_portfolios || [])];
-
-    if (allUniverses.length === 0) {
-        return (
-            <div className="px-4 py-6 bg-yellow-900/10 border border-yellow-500/20 rounded-lg text-yellow-400 text-sm flex items-center gap-2">
-                <Info className="w-4 h-4" />
-                No universes available. Please seed universes first.
-            </div>
-        );
-    }
-
     return (
-        <div className="space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="w-full overflow-x-auto pb-6 [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-white/20 transition-colors">
+            <div className="flex gap-4 min-w-max px-1">
                 {allUniverses.map((universe) => {
                     const profile = UNIVERSE_PROFILES[universe.id];
                     const Icon = profile?.icon || Database;
                     const isSelected = selectedId === universe.id;
-                    const colorMap: Record<string, { border: string; bg: string; text: string; icon: string }> = {
-                        cyan: { border: "border-cyan-500/30", bg: "bg-cyan-600/10", text: "text-cyan-400", icon: "bg-cyan-500/20" },
-                        purple: { border: "border-purple-500/30", bg: "bg-purple-600/10", text: "text-purple-400", icon: "bg-purple-500/20" },
-                        emerald: { border: "border-emerald-500/30", bg: "bg-emerald-600/10", text: "text-emerald-400", icon: "bg-emerald-500/20" },
-                        blue: { border: "border-blue-500/30", bg: "bg-blue-600/10", text: "text-blue-400", icon: "bg-blue-500/20" },
-                        orange: { border: "border-orange-500/30", bg: "bg-orange-600/10", text: "text-orange-400", icon: "bg-orange-500/20" }
+                    const colorMap: Record<string, string> = {
+                        cyan: "text-cyan-400 bg-cyan-950/30 border-cyan-500/50",
+                        purple: "text-purple-400 bg-purple-950/30 border-purple-500/50",
+                        emerald: "text-emerald-400 bg-emerald-950/30 border-emerald-500/50",
+                        blue: "text-blue-400 bg-blue-950/30 border-blue-500/50",
+                        orange: "text-orange-400 bg-orange-950/30 border-orange-500/50",
+                        rose: "text-rose-400 bg-rose-950/30 border-rose-500/50",
                     };
-                    const colors = profile ? colorMap[profile.color] : colorMap.cyan;
+                    const theme = profile ? colorMap[profile.color] || colorMap.cyan : colorMap.cyan;
 
                     return (
                         <button
                             key={universe.id}
                             onClick={() => onSelect(universe.id)}
-                            className={`group relative p-5 rounded-lg border-2 transition-all text-left overflow-hidden ${isSelected
-                                ? profile
-                                    ? `${colors.border} ${colors.bg} shadow-lg ring-1 ring-white/10`
-                                    : "border-cyan-500/30 bg-cyan-600/10 shadow-lg ring-1 ring-white/10"
-                                : "bg-[#0A0A0A] border-white/5 hover:border-white/10 hover:bg-white/5"
-                                }`}
+                            className={`
+                                group relative w-[280px] flex-shrink-0 p-5 rounded-2xl border transition-all duration-300 text-left flex flex-col justify-between h-[160px]
+                                ${isSelected
+                                    ? `bg-[#0A0A0A] ${theme.split(' ')[2]} shadow-[0_0_30px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/10`
+                                    : "bg-black/40 border-white/5 hover:border-white/20 hover:bg-white/5"
+                                }
+                            `}
                         >
-                            {/* Header with Icon */}
-                            <div className="flex items-start justify-between mb-4">
+                            {/* Header */}
+                            <div className="flex items-start justify-between w-full">
                                 <div className="flex items-center gap-3">
-                                    <div className={`w-12 h-12 rounded-lg flex items-center justify-center transition-all ${isSelected ? (profile ? colors.icon : "bg-cyan-500/20") : "bg-white/5"
-                                        }`}>
-                                        <Icon className={`w-6 h-6 ${isSelected ? (profile ? colors.text : "text-cyan-400") : "text-gray-600"}`} />
+                                    <div className={`p-2 rounded-lg transition-colors ${isSelected ? theme.split(' ')[1] : "bg-white/5"}`}>
+                                        <Icon className={`w-5 h-5 ${isSelected ? theme.split(' ')[0] : "text-gray-500"}`} />
                                     </div>
                                     <div>
-                                        <div className={`text-sm font-bold uppercase tracking-wide transition-colors ${isSelected ? (profile ? colors.text : "text-cyan-400") : "text-gray-300"
-                                            }`}>
+                                        <div className={`text-xs font-bold text-white uppercase tracking-wider truncate max-w-[140px] ${isSelected ? "text-white" : "text-gray-400"}`}>
                                             {universe.name.replace(/_/g, ' ')}
                                         </div>
-                                        {profile ? (
-                                            <div className="flex items-center gap-1.5 mt-1">
-                                                <Layers className="w-3 h-3 text-gray-600" />
-                                                <span className="text-[10px] text-gray-500">{profile.constituents} stocks</span>
-                                            </div>
-                                        ) : (
-                                            <div className="text-[10px] text-gray-600 mt-1">System Universe</div>
-                                        )}
+                                        <div className="text-[10px] text-gray-600 font-mono mt-0.5">
+                                            {profile?.constituents || 1} Constituents
+                                        </div>
                                     </div>
                                 </div>
-                                {isSelected && (
-                                    <div className={`w-6 h-6 rounded-full border flex items-center justify-center ${profile ? `${colors.bg} ${colors.border}` : "bg-cyan-600/10 border-cyan-500/30"
-                                        }`}>
-                                        <Check className={`w-4 h-4 ${profile ? colors.text : "text-cyan-400"}`} />
-                                    </div>
-                                )}
+                                {isSelected && <div className={`w-5 h-5 rounded-full flex items-center justify-center ${theme.split(' ')[1]}`}><Check className={`w-3 h-3 ${theme.split(' ')[0]}`} /></div>}
                             </div>
 
-                            {/* Profile Metrics */}
-                            {profile && (
-                                <div className="space-y-3">
-                                    {/* Liquidity Bar */}
-                                    <div>
-                                        <div className="flex justify-between items-center mb-1.5">
-                                            <span className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold">Liquidity Profile</span>
-                                            <span className={`text-[10px] font-mono font-bold ${isSelected ? colors.text : "text-gray-400"}`}>
-                                                {profile.liquidity}
-                                            </span>
-                                        </div>
-                                        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                                            <div
-                                                className={`h-full rounded-full transition-all ${isSelected ? colors.bg.replace('/10', '/30') : "bg-white/10"}`}
-                                                style={{ width: `${profile.liquidityScore}%` }}
-                                            ></div>
-                                        </div>
-                                    </div>
-
-                                    {/* Volatility Bar */}
-                                    <div>
-                                        <div className="flex justify-between items-center mb-1.5">
-                                            <span className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold">Volatility Profile</span>
-                                            <span className={`text-[10px] font-mono font-bold ${isSelected ? colors.text : "text-gray-400"}`}>
-                                                {profile.volatility}
-                                            </span>
-                                        </div>
-                                        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                                            <div
-                                                className={`h-full rounded-full transition-all ${isSelected ? "bg-rose-500/30" : "bg-rose-500/10"}`}
-                                                style={{ width: `${profile.volatilityScore}%` }}
-                                            ></div>
-                                        </div>
-                                    </div>
-
-                                    {/* Additional Info Grid */}
-                                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5">
-                                        <div>
-                                            <div className="text-[8px] text-gray-600 uppercase tracking-wider mb-0.5 flex items-center gap-1">
-                                                <Calendar className="w-2.5 h-2.5" /> Rebalance
-                                            </div>
-                                            <div className={`text-[10px] font-medium ${isSelected ? "text-white" : "text-gray-300"}`}>
-                                                {profile.rebalance}
+                            {/* Metrics Strip */}
+                            {profile ? (
+                                <div className="space-y-3 mt-4">
+                                    {/* Liquidity/Vol Mini Bars */}
+                                    <div className="flex flex-col gap-1.5">
+                                        <div className="flex justify-between items-center text-[9px] uppercase tracking-wider text-gray-500">
+                                            <span>Liq</span>
+                                            <div className="w-16 h-1 bg-white/10 rounded-full overflow-hidden">
+                                                <div className={`h-full ${theme.split(' ')[0].replace('text-', 'bg-')}`} style={{ width: `${profile.liquidityScore}%` }}></div>
                                             </div>
                                         </div>
-                                        <div>
-                                            <div className="text-[8px] text-gray-600 uppercase tracking-wider mb-0.5">Avg Mkt Cap</div>
-                                            <div className={`text-[10px] font-medium font-mono ${isSelected ? "text-white" : "text-gray-300"}`}>
-                                                {profile.avgMarketCap}
+                                        <div className="flex justify-between items-center text-[9px] uppercase tracking-wider text-gray-500">
+                                            <span>Vol</span>
+                                            <div className="w-16 h-1 bg-white/10 rounded-full overflow-hidden">
+                                                <div className="h-full bg-gray-500" style={{ width: `${profile.volatilityScore}%` }}></div>
                                             </div>
                                         </div>
                                     </div>
 
-                                    {/* Designed For Badge */}
-                                    <div className={`mt-3 px-2.5 py-1.5 rounded-md text-center border ${isSelected
-                                        ? `${colors.border} ${colors.bg}`
-                                        : "border-white/10 bg-white/5"
-                                        }`}>
-                                        <div className="text-[8px] text-gray-600 uppercase tracking-wider mb-0.5">Optimized For</div>
-                                        <div className={`text-[11px] font-bold ${isSelected ? colors.text : "text-gray-300"}`}>
+                                    <div className="flex items-center gap-2 pt-3 border-t border-white/5">
+                                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${theme.split(' ')[1]} ${theme.split(' ')[0]}`}>
                                             {profile.designedFor}
+                                        </span>
+                                        <div className="ml-auto text-[10px] text-gray-500 font-mono">
+                                            {profile.avgMarketCap}
                                         </div>
                                     </div>
                                 </div>
-                            )}
-
-                            {/* No Profile - Show Basic Info */}
-                            {!profile && (
-                                <div className="mt-3">
-                                    <div className="px-3 py-2 bg-white/5 border border-white/10 rounded-md text-center">
-                                        <div className="text-[10px] text-gray-500">
-                                            {universe.description || "Universe available for selection"}
-                                        </div>
-                                    </div>
+                            ) : (
+                                <div className="mt-auto">
+                                    <p className="text-[10px] text-gray-600 line-clamp-2">
+                                        {universe.description || "System generated universe."}
+                                    </p>
                                 </div>
                             )}
 
-                            {/* Selected Glow Effect */}
-                            {isSelected && (
-                                <div className={`absolute inset-0 ${colors.bg} opacity-5 pointer-events-none`}></div>
-                            )}
+                            {/* Hover Glow */}
+                            <div className={`absolute inset-0 rounded-2xl transition-opacity duration-300 opacity-0 group-hover:opacity-100 pointer-events-none ${isSelected ? "hidden" : "radial-gradient-glow"}`}></div>
                         </button>
                     );
                 })}
             </div>
-
-            {/* Selection Summary */}
-            {selectedId && (
-                <div className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg">
-                    <Check className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs text-gray-400">Selected:</span>
-                    <span className="text-sm font-medium text-white">{selectedId.replace(/_/g, ' ')}</span>
-                    <span className="text-xs text-gray-600 ml-auto">Compatible strategies will load below</span>
-                </div>
-            )}
         </div>
     );
 }

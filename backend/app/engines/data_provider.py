@@ -1,6 +1,6 @@
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from ..database import IntradayCandle, Company, HistoricalPrice
@@ -121,3 +121,35 @@ class DataProvider:
         except Exception as e:
             logger.error(f"Error fetching daily data: {str(e)}", exc_info=True)
             return {}
+
+    def get_history(self, symbol: str, timeframe: str, end_date: date, days: int) -> pd.DataFrame:
+        """
+        Unified method to get historical data for a single symbol.
+        Used by Nifty Strategies.
+        """
+        start_date = end_date - timedelta(days=days * 2) # Fetch extra to account for weekends/holidays
+        # Trim later based on actual count if needed, but for now simple range
+        
+        if timeframe == "1D":
+            data_dict = self.get_daily_data([symbol], start_date, end_date)
+        else:
+            # Fallback for intraday - simpler logic for now, assumes 'days' means calendar days back
+            # Note: get_intraday_data takes a single target_date currently. 
+            # If strategies need history of intraday, we might need a loop.
+            # But Nifty strategies generally use 1D for logic or 5MIN for execution.
+            # Let's support 1D primarily.
+            logger.warning(f"get_history Not fully implemented for timeframe {timeframe}, falling back to daily logic or empty")
+            return pd.DataFrame()
+            
+        df = data_dict.get(symbol, pd.DataFrame())
+        
+        # Ensure standard columns [Open, High, Low, Close, Volume]
+        # Rename if necessary. get_daily_data returns lower case columns.
+        if not df.empty:
+            # Capitalize columns to match typical strategy expectations (Open, High, Low, Close, Volume)
+            df.columns = [c.capitalize() for c in df.columns]
+            
+            # Slice to requested days (approx)
+            return df.tail(days)
+            
+        return df

@@ -79,9 +79,13 @@ class QuantBacktestRunner:
         if not strategy_class:
             raise ValueError(f"Strategy implementation not found for {strategy_id}")
         
-        # Initialize strategy
+        # Initialize strategy correctly as per BaseStrategy contract
         merged_params = {**(contract.parameters or {}), **(params or {})}
-        strategy = strategy_class(self.db, **merged_params)
+        strategy = strategy_class(
+            strategy_id=strategy_id,
+            universe_id=universe_id,
+            parameters=merged_params
+        )
         
         # Get symbols for universe
         symbols = self._get_universe_symbols(universe_id)
@@ -101,6 +105,7 @@ class QuantBacktestRunner:
         losing_trades = 0
         gross_profit = 0.0
         gross_loss = 0.0
+        current_position = 0.0  # -1 (Short), 0 (Flat), 1 (Long)
         
         current_date = start_date
         while current_date <= end_date:
@@ -109,20 +114,49 @@ class QuantBacktestRunner:
                 current_date += timedelta(days=1)
                 continue
             
-            # Execute strategy for this day
+            # Execute strategy for this day to get SIGNAL
             try:
+                # Get Today's Data
+                # Optimally this should be passed in or cached, but fetching for simplicity of refill
+                # In real vectorization, we'd pre-fetch. Here we rely on the provider's cache.
+                
+                # Run strategy to get signal (-1, 0, 1)
                 day_result = strategy.run_day(
                     current_date=current_date,
                     symbols=symbols,
                     data_provider=self.data_provider
                 )
                 
-                # Extract metrics
-                daily_return = day_result.get('daily_return', 0.0)
-                daily_pnl = day_result.get('gross_pnl', 0.0)
-                trades = day_result.get('trades', 0)
-                win_rate = day_result.get('win_rate', 0.0)
+                signal = day_result.get('signal', 0)
                 
+                # Fetch price for PnL calculation (Close to Close)
+                # We need yesterday's close and today's close.
+                # DataProvider.get_history should be efficient.
+                hist = self.data_provider.get_history(symbols[0], timeframe="1D", end_date=current_date, days=2)
+                
+                if len(hist) >= 2:
+                    today_close = hist['Close'].iloc[-1]
+                    prev_close = hist['Close'].iloc[-2]
+                    market_return = (today_close - prev_close) / prev_close
+                else:
+                    market_return = 0.0
+
+                # Calculate Daily PnL based on YESTERDAY'S signal (assuming entry at yesterday close/today open)
+                # For simplicity in this loop ID, we apply *current* signal to *next* day, 
+                # OR we assume we act on Close.
+                # Standard Daily Loop: Position held FROM prev_date TO current_date
+                # We need to track 'current_position' state variable outside the loop.
+                
+                # PnL = Position (from yesterday) * Market Return
+                daily_pct_return = current_position * market_return
+                daily_pnl = cumulative_equity * daily_pct_return
+                
+                # Update Position for TOMORROW
+                # If signal changes, we trade.
+                if signal != current_position:
+                    trades += 1
+                current_position = signal
+
                 # Update cumulative metrics
                 cumulative_pnl += daily_pnl
                 cumulative_equity += daily_pnl
@@ -134,21 +168,19 @@ class QuantBacktestRunner:
                 current_drawdown = (peak_equity - cumulative_equity) / peak_equity if peak_equity > 0 else 0.0
                 max_drawdown = max(max_drawdown, current_drawdown)
                 
-                # Track trades
-                total_trades += trades
+                # Track trades (simplified stats)
                 if daily_pnl > 0:
-                    winning_trades += trades
                     gross_profit += daily_pnl
                 elif daily_pnl < 0:
-                    losing_trades += trades
                     gross_loss += abs(daily_pnl)
+
                 
                 # Save to database
                 daily_record = BacktestDailyResult(
                     run_id=run_id,
                     strategy_id=strategy_id,
                     date=current_date,
-                    daily_return=daily_return,
+                    daily_return=daily_pct_return,
                     cumulative_return=(cumulative_equity - 100000) / 100000,
                     gross_pnl=daily_pnl,
                     net_pnl=daily_pnl * 0.997,  # After 0.3% costs

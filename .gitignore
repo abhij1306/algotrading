@@ -10,6 +10,10 @@ nse_data/raw/
 nse_data/processed/
 nse_data/backups/
 
+# Historical Data Module (NEVER COMMIT)
+backend/modules/historical-data/
+modules/historical-data/
+
 # Historical Data
 data/
 historical_data/
@@ -288,3 +292,5 @@ archive/
 old/
 backup/
 deprecated/
+
+!debug_run.py

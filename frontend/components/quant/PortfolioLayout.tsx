@@ -18,7 +18,7 @@ export default function PortfolioLayout() {
 
     const fetchPortfolios = () => {
         setLoading(true);
-        fetch('http://localhost:8000/api/portfolio/strategies')
+        fetch('http://localhost:9000/api/portfolio/strategies')
             .then(res => res.json())
             .then(data => {
                 setPortfolios(data);
@@ -35,7 +35,7 @@ export default function PortfolioLayout() {
 
     const handleCreate = async (portfolio: any) => {
         try {
-            const res = await fetch('http://localhost:8000/api/portfolio/strategies', {
+            const res = await fetch('http://localhost:9000/api/portfolio/strategies', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(portfolio)
@@ -69,8 +69,11 @@ export default function PortfolioLayout() {
         ],
         "NIFTY 100": ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC"], // Simplified for display
         "NIFTY 200": ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"], // Simplified
-        "MIDCAP NIFTY": ["TATAELXSI", "PAGEIND", "TRENT", "PIIND"], // Simplified
-        "SMALLCAP NIFTY": ["CDSL", "BSE", "IEX", "MCX"] // Simplified
+        "NIFTY_MIDCAP_100": ["TRENT", "BEL", "TATAELXSI", "INDHOTEL", "COFORGE", "PERSISTENT", "PAGEIND", "PIIND", "L&TFH", "VOLTAS"],
+        "NIFTY_FIN_SERVICE": ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "BAJFINANCE", "BAJAJFINSV", "HDFCLIFE", "SBILIFE", "PFC"],
+        "NIFTY_AUTO": ["MARUTI", "M&M", "TATAMOTORS", "HEROMOTOCO", "EICHERMOT", "BAJAJ-AUTO", "TVSMOTOR", "ASHOKLEY", "BHARATFORG", "MRF"],
+        "NIFTY_FMCG": ["ITC", "HUL", "NESTLEIND", "BRITANNIA", "TATACONSUM", "VBL", "GODREJCP", "DABUR", "MARICO", "COLPAL"],
+        "NIFTY_SMALLCAP_100": ["CDSL", "BSE", "IEX", "MCX", "KEI", "TANLA", "SUZLON", "KPITTECH", "IDFC"]
     };
 
     // Mock Index Portfolio object if selected

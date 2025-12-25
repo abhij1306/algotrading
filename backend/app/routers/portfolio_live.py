@@ -54,7 +54,8 @@ def get_strategy_contracts(db: Session = Depends(get_db)):
             "holding_period": contract.holding_period,
             "regime": contract.regime,
             "when_loses": contract.when_loses,
-            "description": contract.description
+            "description": contract.description,
+            "lifecycle_status": getattr(contract, "lifecycle_state", "RESEARCH") # Use getattr safely or map column name
         })
     
     return {"contracts": contracts_list}

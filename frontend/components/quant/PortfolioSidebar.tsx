@@ -42,7 +42,7 @@ export default function PortfolioSidebar({ portfolios, selectedId, onSelect, onC
                 <div className="mb-6">
                     <h3 className="px-2 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Market Indices</h3>
                     <div className="space-y-0.5">
-                        {['NIFTY 50', 'BANKNIFTY', 'NIFTY 100', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY AUTO', 'NIFTY FMCG', 'MIDCAP NIFTY', 'SMALLCAP NIFTY'].map(idx => (
+                        {['NIFTY 50', 'BANKNIFTY', 'NIFTY 100', 'NIFTY_MIDCAP_100', 'NIFTY_SMALLCAP_100', 'NIFTY_FIN_SERVICE', 'NIFTY_AUTO', 'NIFTY_FMCG', 'NIFTY IT', 'NIFTY PHARMA'].map(idx => (
                             <button
                                 key={idx}
                                 onClick={() => onSelect(`INDEX:${idx}`)}

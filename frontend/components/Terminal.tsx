@@ -88,7 +88,7 @@ export default function Terminal() {
             const symbols = watchlist.map(w => w.symbol);
             const fyersSymbols = symbols.map(s => s.includes(':') ? s : `NSE:${s}-EQ`);
 
-            fetch('http://localhost:8000/api/websocket/subscribe', {
+            fetch('http://localhost:9000/api/websocket/subscribe', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ symbols: fyersSymbols })
@@ -136,7 +136,7 @@ export default function Terminal() {
 
     const fetchWatchlist = async () => {
         try {
-            const res = await fetch('http://localhost:8000/api/market/watchlist');
+            const res = await fetch('http://localhost:9000/api/market/watchlist');
             if (res.ok) {
                 const data = await res.json();
                 setWatchlist(data);
@@ -160,7 +160,7 @@ export default function Terminal() {
         // Force scan via endpoint or just fetch latest?
         // Let's trigger a scan first if needed, but usually we just fetch.
         // For "on demand" feel, we might want to hit scan endpoint, but let's stick to get first.
-        fetch('http://localhost:8000/api/signals?limit=50')
+        fetch('http://localhost:9000/api/signals?limit=50')
             .then(res => res.json())
             .then(data => {
                 // Filter High/Medium on client side or rely on backend (backend does sorting but returns all currently)
@@ -177,7 +177,7 @@ export default function Terminal() {
     const triggerScan = async () => {
         setLoadingSignals(true);
         try {
-            await fetch('http://localhost:8000/api/smart-trader/scan', { method: 'POST' });
+            await fetch('http://localhost:9000/api/smart-trader/scan', { method: 'POST' });
             setTimeout(refreshSignals, 2000); // Wait a bit for scan to populate
         } catch (e) {
             console.error("Scan trigger failed", e);
@@ -223,7 +223,7 @@ export default function Terminal() {
     // Fetch agent positions from Smart Terminal
     const fetchAgentPositions = async () => {
         try {
-            const response = await fetch('http://localhost:8000/api/smart-trader/positions');
+            const response = await fetch('http://localhost:9000/api/smart-trader/positions');
             const data = await response.json();
 
             if (data.positions && Array.isArray(data.positions)) {
@@ -244,7 +244,7 @@ export default function Terminal() {
             }
 
             // Fetch P&L
-            const pnlResponse = await fetch('http://localhost:8000/api/smart-trader/pnl');
+            const pnlResponse = await fetch('http://localhost:9000/api/smart-trader/pnl');
             const pnlData = await pnlResponse.json();
             setAgentPnL(pnlData.total_pnl || 0);
         } catch (error) {
@@ -266,7 +266,7 @@ export default function Terminal() {
             return;
         }
         try {
-            const res = await fetch(`http://localhost:8000/api/market/search/?query=${query}`);
+            const res = await fetch(`http://localhost:9000/api/market/search/?query=${query}`);
             const data = await res.json();
             // API returns array directly, not wrapped
             const symbols = Array.isArray(data) ? data : (data.symbols || []);
@@ -277,7 +277,7 @@ export default function Terminal() {
 
     const addToWatchlist = async (symbol: string, type: 'EQ' | 'FUT' | 'CE' | 'PE' = 'EQ') => {
         try {
-            await fetch('http://localhost:8000/api/market/watchlist', {
+            await fetch('http://localhost:9000/api/market/watchlist', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ symbol, instrument_type: type })
@@ -290,7 +290,7 @@ export default function Terminal() {
 
     const removeFromWatchlist = async (symbol: string, type: 'EQ' | 'FUT' | 'CE' | 'PE') => {
         try {
-            await fetch(`http://localhost:8000/api/market/watchlist/${symbol}`, {
+            await fetch(`http://localhost:9000/api/market/watchlist/${symbol}`, {
                 method: 'DELETE'
             });
             fetchWatchlist();
@@ -318,7 +318,7 @@ export default function Terminal() {
 
         if (tradingMode === 'PAPER') {
             try {
-                const res = await fetch('http://localhost:8000/api/trading/paper/order', {
+                const res = await fetch('http://localhost:9000/api/trading/paper/order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -356,7 +356,7 @@ export default function Terminal() {
 
     const closeAgentPosition = async (posId: string) => {
         try {
-            const response = await fetch('http://localhost:8000/api/smart-trader/close-position', {
+            const response = await fetch('http://localhost:9000/api/smart-trader/close-position', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ trade_id: posId })
