@@ -1,10 +1,11 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Activity, ShieldCheck, TrendingUp, TrendingDown, AlertCircle, CheckCircle2, Info, ChevronRight, BarChart3, Zap, Cpu, Server } from 'lucide-react'
+import { Activity, ShieldCheck, TrendingUp, AlertCircle, CheckCircle2, Info, ChevronRight, BarChart3, Zap, Cpu, Server } from 'lucide-react'
 import MonitoringEquityChart from '@/components/charts/MonitoringEquityChart'
 import { GlassCard } from "@/components/ui/GlassCard"
-import { Button } from '@/components/design-system/atoms'
+import { Button, Heading, Text, Data, Badge, Label } from '@/components/design-system/atoms'
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 interface HealthState {
     date: string
@@ -35,18 +36,30 @@ interface AllocatorDecision {
     severity: string
 }
 
-import { useWebSocket } from '@/hooks/useWebSocket';
+interface SystemHealth {
+    status: string
+    latency_ms: number
+    cpu_usage: number
+    memory_usage: number
+    uptime_days: number
+}
+
+interface LiveData {
+    portfolio_health: HealthState
+    trust_map: Record<string, TrustStrategy>
+    allocator_decisions: AllocatorDecision[]
+}
 
 export default function MonitoringClient() {
-    const [liveData, setLiveData] = useState<any>(null)
-    const [historyData, setHistoryData] = useState<any[]>([])
+    const [liveData, setLiveData] = useState<LiveData | null>(null)
+    const [historyData, setHistoryData] = useState<{ date: string; equity: number; drawdown: number }[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
     const [marketClosed, setMarketClosed] = useState(false)
-    const [systemHealth, setSystemHealth] = useState<any>(null)
+    const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null)
 
     // WebSocket Integration
-    const { isConnected, lastMessage, sendMessage } = useWebSocket();
+    const { isConnected, lastMessage } = useWebSocket();
 
     // Handle incoming tick data
     useEffect(() => {
@@ -84,7 +97,8 @@ export default function MonitoringClient() {
             }
 
             // Select first portfolio for display
-            const p = portfolios[0];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const p: any = portfolios[0];
 
             // Map to UI Structure
             const health: HealthState = {
@@ -99,6 +113,7 @@ export default function MonitoringClient() {
 
             const trustMapData: Record<string, TrustStrategy> = {};
             if (p.strategies) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 Object.entries(p.strategies).forEach(([sid, stats]: [string, any]) => {
                     trustMapData[sid] = {
                         strategy_id: sid,
@@ -135,21 +150,13 @@ export default function MonitoringClient() {
 
             setError(null);
 
-            // Subscribe to relevant symbols via WS if needed
-            // if (isConnected) sendMessage({ type: 'subscribe', symbols: [...] });
-
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (e: any) {
             console.error("Monitoring fetch error:", e);
             setError(e.message);
         } finally {
             setLoading(false);
         }
-    };
-
-    const handleRefresh = async () => {
-        setLoading(true);
-        await fetch('/api/portfolio/strategies/monitor/refresh', { method: 'POST' });
-        await fetchMonitoringData();
     };
 
     useEffect(() => {
@@ -162,7 +169,7 @@ export default function MonitoringClient() {
         <div className="h-full flex items-center justify-center bg-[#050505]">
             <div className="flex flex-col items-center gap-4">
                 <div className="w-12 h-12 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin"></div>
-                <p className="text-gray-500 font-mono text-xs tracking-widest uppercase">Initializing Quantum Monitoring</p>
+                <Text variant="small" className="uppercase tracking-widest">Initializing Quantum Monitoring</Text>
             </div>
         </div>
     )
@@ -174,14 +181,14 @@ export default function MonitoringClient() {
                     <Activity className="w-8 h-8 text-gray-400" />
                 </div>
                 <div className="space-y-4">
-                    <h2 className="text-2xl font-black text-white tracking-tight">Market Offline</h2>
+                    <Heading level="h2" className="text-2xl font-black text-white tracking-tight">Market Offline</Heading>
                     <p className="text-gray-400 text-sm leading-relaxed">
                         Live monitoring is only available during market hours.<br />
                         <span className="text-cyan-400 font-mono mt-2 block">09:15 - 15:30 IST</span>
                     </p>
                 </div>
                 <div className="pt-4 border-t border-white/5">
-                    <span className="text-[10px] uppercase tracking-widest text-gray-600 font-bold">System Standby Mode</span>
+                    <Text variant="tiny" className="uppercase tracking-widest text-gray-600 font-bold">System Standby Mode</Text>
                 </div>
             </GlassCard>
         </div>
@@ -194,7 +201,7 @@ export default function MonitoringClient() {
                     <AlertCircle className="w-8 h-8 text-amber-500" />
                 </div>
                 <div className="space-y-2">
-                    <h2 className="text-xl font-bold text-white">No Active Portfolio Found</h2>
+                    <Heading level="h3" className="text-xl font-bold text-white">No Active Portfolio Found</Heading>
                     <p className="text-gray-500 text-sm leading-relaxed">
                         The monitoring engine is dormant because no live portfolio has been initialized.
                         Please promote a research portfolio to 'Live' status to begin monitoring.
@@ -224,30 +231,30 @@ export default function MonitoringClient() {
                 <div className="flex items-center gap-6">
                     <div className="flex items-center gap-2">
                         <div className={`w-2 h-2 rounded-full ${systemHealth?.status === 'ACTIVE' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] anime-pulse' : 'bg-red-500'}`}></div>
-                        <span className="text-[10px] font-black text-white uppercase tracking-widest">
+                        <Text variant="tiny" className="font-black text-white uppercase tracking-widest">
                             System: {systemHealth?.status || 'OFFLINE'}
-                        </span>
+                        </Text>
                     </div>
                     <div className="h-4 w-[1px] bg-white/10"></div>
                     <div className="flex items-center gap-4 text-[9px] font-bold text-gray-500 uppercase tracking-widest">
                         <div className="flex items-center gap-1.5">
                             <Zap className="w-3 h-3 text-cyan-400" />
-                            Latency: <span className="text-white font-mono">{systemHealth?.latency_ms || '--'}ms</span>
+                            Latency: <Data value={systemHealth?.latency_ms || '--'} suffix="ms" className="text-white" />
                         </div>
                         <div className="flex items-center gap-1.5">
                             <Cpu className="w-3 h-3 text-purple-400" />
-                            CPU: <span className="text-white font-mono">{systemHealth?.cpu_usage || '--'}%</span>
+                            CPU: <Data value={systemHealth?.cpu_usage || '--'} suffix="%" className="text-white" />
                         </div>
                         <div className="flex items-center gap-1.5">
                             <Server className="w-3 h-3 text-amber-400" />
-                            Memory: <span className="text-white font-mono">{systemHealth?.memory_usage || '--'}%</span>
+                            Memory: <Data value={systemHealth?.memory_usage || '--'} suffix="%" className="text-white" />
                         </div>
                     </div>
                 </div>
 
                 <div className="flex items-center gap-4">
                     <div className="text-[9px] text-gray-600 font-bold uppercase tracking-widest">
-                        Uptime: <span className="text-gray-400 font-mono">{systemHealth?.uptime_days || '--'}d</span>
+                        Uptime: <Data value={systemHealth?.uptime_days || '--'} suffix="d" className="text-gray-400" />
                     </div>
                 </div>
             </GlassCard>
@@ -261,23 +268,23 @@ export default function MonitoringClient() {
                             <Activity className="w-6 h-6 text-cyan-400" />
                         </div>
                         <div>
-                            <h1 className="text-xl font-black text-white tracking-tight">System Monitor <span className="text-gray-600 ml-2">[{health?.date || 'LIVE'}]</span></h1>
+                            <Heading level="h1" className="text-xl font-black text-white tracking-tight">System Monitor <span className="text-gray-600 ml-2">[{health?.date || 'LIVE'}]</span></Heading>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                                <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest">Active Execution Feed</p>
+                                <Text variant="tiny" className="text-emerald-500 font-bold uppercase tracking-widest">Active Execution Feed</Text>
                             </div>
                         </div>
                     </div>
 
                     <div className="flex gap-4">
                         <GlassCard className="px-4 py-2">
-                            <span className="text-[10px] text-gray-500 block uppercase font-bold mb-1">Risk Regime</span>
+                            <Label size="sm" className="block uppercase font-bold mb-1">Risk Regime</Label>
                             <span className={`text-xs font-black ${health?.risk_state === 'NORMAL' ? 'text-cyan-400' : 'text-amber-400'}`}>
                                 {health?.risk_state || 'STABLE'}
                             </span>
                         </GlassCard>
                         <GlassCard className="px-4 py-2">
-                            <span className="text-[10px] text-gray-500 block uppercase font-bold mb-1">Vol Regime</span>
+                            <Label size="sm" className="block uppercase font-bold mb-1">Vol Regime</Label>
                             <span className="text-xs font-black text-purple-400">
                                 {health?.volatility_regime || 'LOW'}
                             </span>
@@ -293,10 +300,12 @@ export default function MonitoringClient() {
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <TrendingUp className="w-5 h-5 text-cyan-400" />
-                                    <h2 className="text-sm font-bold text-white uppercase tracking-widest">Live Portfolio Equity</h2>
+                                    <Heading level="h4" className="text-sm font-bold text-white uppercase tracking-widest">Live Portfolio Equity</Heading>
                                 </div>
                                 <div className="text-right">
-                                    <div className="text-2xl font-black text-white font-mono">₹{health?.equity.toLocaleString('en-IN') || '--'}</div>
+                                    <div className="text-2xl font-black text-white font-data">
+                                        <Data value={health?.equity.toLocaleString('en-IN') || '--'} prefix="₹" />
+                                    </div>
                                     <div className={`text-[10px] font-bold ${health?.drawdown > -2 ? 'text-emerald-400' : 'text-red-400'}`}>
                                         {health?.drawdown.toFixed(2)}% DD Peak-to-Trough
                                     </div>
@@ -311,9 +320,9 @@ export default function MonitoringClient() {
                         {/* Trust Map Grid */}
                         <div className="space-y-4">
                             <div className="flex items-center justify-between">
-                                <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+                                <Heading level="h4" className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
                                     <ShieldCheck className="w-4 h-4" /> Strategy Trust Map
-                                </h2>
+                                </Heading>
                                 <Info className="w-3 h-3 text-gray-600 cursor-help" />
                             </div>
 
@@ -322,7 +331,7 @@ export default function MonitoringClient() {
                                     <GlassCard key={strat.strategy_id} className="p-5 hover:bg-white/[0.02] transition-all group">
                                         <div className="flex items-center justify-between mb-4">
                                             <div>
-                                                <h3 className="text-xs font-black text-white group-hover:text-cyan-400 transition-colors">{strat.strategy_id}</h3>
+                                                <h3 className="text-xs font-black text-white group-hover:text-cyan-400 transition-colors font-inter">{strat.strategy_id}</h3>
                                                 <p className="text-[10px] text-gray-500 uppercase font-bold mt-0.5 tracking-tighter">{strat.regime} Regime</p>
                                             </div>
                                             <div className={`px-2 py-0.5 rounded text-[9px] font-black tracking-tighter border ${strat.status === 'STABLE' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
@@ -335,8 +344,8 @@ export default function MonitoringClient() {
 
                                         <div className="space-y-3">
                                             <div className="flex justify-between items-end">
-                                                <div className="text-[10px] text-gray-500 font-bold uppercase">Drift vs Benchmark</div>
-                                                <div className="text-sm font-black text-white font-mono">{(strat.drift_ratio * 100).toFixed(1)}%</div>
+                                                <Label size="sm" className="font-bold uppercase">Drift vs Benchmark</Label>
+                                                <Data value={(strat.drift_ratio * 100).toFixed(1)} suffix="%" className="text-sm font-black text-white" />
                                             </div>
                                             <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
                                                 <div
@@ -347,8 +356,8 @@ export default function MonitoringClient() {
                                                 ></div>
                                             </div>
                                             <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                                <div className="text-gray-600">Current DD: <span className="text-gray-300 font-mono">{strat.current_drawdown}%</span></div>
-                                                <div className="text-gray-600 text-right">Target DD: <span className="text-gray-300 font-mono">{strat.expected_max_dd}%</span></div>
+                                                <div className="text-gray-600">Current DD: <Data value={strat.current_drawdown} suffix="%" className="text-gray-300" /></div>
+                                                <div className="text-gray-600 text-right">Target DD: <Data value={strat.expected_max_dd} suffix="%" className="text-gray-300" /></div>
                                             </div>
                                         </div>
                                     </GlassCard>
@@ -365,7 +374,7 @@ export default function MonitoringClient() {
                             <div className="p-5 border-b border-white/5 bg-white/[0.02]">
                                 <div className="flex items-center gap-3">
                                     <BarChart3 className="w-4 h-4 text-purple-400" />
-                                    <h3 className="text-xs font-bold text-white uppercase tracking-widest">Decision Ledger</h3>
+                                    <Heading level="h4" className="text-xs font-bold text-white uppercase tracking-widest">Decision Ledger</Heading>
                                 </div>
                             </div>
 
@@ -403,7 +412,7 @@ export default function MonitoringClient() {
                                 <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
                                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                                 </div>
-                                <h3 className="text-xs font-bold text-white uppercase tracking-widest">Compliance</h3>
+                                <Heading level="h4" className="text-xs font-bold text-white uppercase tracking-widest">Compliance</Heading>
                             </div>
                             <ul className="space-y-3">
                                 {[
@@ -412,7 +421,7 @@ export default function MonitoringClient() {
                                     { label: 'Sector Exposure', status: 'COMPLIANT' }
                                 ].map((rule, i) => (
                                     <li key={i} className="flex items-center justify-between text-[11px]">
-                                        <span className="text-gray-500 font-medium">{rule.label}</span>
+                                        <span className="text-gray-500 font-medium font-inter">{rule.label}</span>
                                         <span className="text-emerald-500 font-mono text-[9px] font-bold">{rule.status}</span>
                                     </li>
                                 ))}

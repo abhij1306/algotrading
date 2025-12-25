@@ -3,7 +3,9 @@
 export function useWebSocket() {
     return {
         isConnected: false,
-        lastMessage: null,
+        // cast to any to prevent TS errors in consumers expecting a message object
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        lastMessage: null as any,
         sendMessage: () => { }
     }
 }

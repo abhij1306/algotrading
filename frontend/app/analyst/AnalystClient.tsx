@@ -1,14 +1,14 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, Loader2, Search, TrendingUp, ChevronRight, BarChart3, PieChart, ShieldAlert, FlaskConical, Briefcase } from 'lucide-react'
+import { Plus, Trash2, Loader2, Search, TrendingUp, BarChart3, PieChart, FlaskConical, Briefcase } from 'lucide-react'
 import PortfolioRiskDashboard from '@/components/PortfolioRiskDashboard'
 import BacktestInterface from '@/components/BacktestInterface'
 import Portal from '@/components/ui/Portal'
 import EmptyState from '@/components/ui/EmptyState'
 import { GlassCard } from "@/components/ui/GlassCard"
 import { GlassSelect } from "@/components/ui/GlassSelect"
-import { Button, Input, Label, Badge } from '@/components/design-system/atoms'
+import { Button, Input, Label, Badge, Heading, Text, Data } from '@/components/design-system/atoms'
 
 interface DraftPosition {
     symbol: string;
@@ -22,7 +22,7 @@ export default function AnalystClient() {
     const [activeTab, setActiveTab] = useState<'PORTFOLIO' | 'BACKTEST'>('PORTFOLIO')
 
     // Portfolios List
-    const [portfolios, setPortfolios] = useState<any[]>([])
+    const [portfolios, setPortfolios] = useState<{ id: number; portfolio_name: string; positions?: any[] }[]>([])
     const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null)
     const [loading, setLoading] = useState(true)
 
@@ -33,7 +33,7 @@ export default function AnalystClient() {
 
     // Search & Add State
     const [searchQuery, setSearchQuery] = useState('')
-    const [searchResults, setSearchResults] = useState<any[]>([])
+    const [searchResults, setSearchResults] = useState<{ symbol: string; name?: string }[]>([])
     const [currentQty, setCurrentQty] = useState('100')
     const [currentPrice, setCurrentPrice] = useState('')
     const [isSearching, setIsSearching] = useState(false)
@@ -176,7 +176,7 @@ export default function AnalystClient() {
             <div className="h-full w-full bg-deep-space flex items-center justify-center">
                 <div className="flex flex-col items-center gap-4">
                     <Loader2 className="w-10 h-10 text-cyan-500 animate-spin" />
-                    <span className="text-cyan-500 font-mono text-sm tracking-widest uppercase">Initializing Analyst Hub</span>
+                    <Text variant="small" className="tracking-widest uppercase">Initializing Analyst Hub</Text>
                 </div>
             </div>
         )
@@ -213,7 +213,7 @@ export default function AnalystClient() {
                     <div className="flex items-center gap-4">
                         <div className="relative group flex items-center gap-3">
                             {/* Portfolio Selector (Glass Select) */}
-                            <span className="text-[10px] text-gray-500 font-bold tracking-widest uppercase">Active Portfolio:</span>
+                            <Label size="sm" className="hidden sm:block uppercase tracking-widest text-[#666]">Active Portfolio:</Label>
                             <div className="min-w-[240px]">
                                 <GlassSelect
                                     options={portfolios.map(p => ({
@@ -257,19 +257,19 @@ export default function AnalystClient() {
                             />
                         </div>
                     ) : (
-                        // ================= CREATE PORTFOLIO FORM (Centered full view) =================
+                        // ================= CREATE PORTFOLIO FORM =================
                         <div className="min-h-full flex items-center justify-center p-8 pb-32 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-cyan-900/5 via-[#050505] to-[#050505]">
                             <GlassCard className="w-full max-w-3xl p-0 overflow-hidden shadow-2xl shadow-black/80 border border-white/10 ring-1 ring-white/5">
                                 {/* Header */}
                                 <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
                                     <div className="space-y-1">
-                                        <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                                        <Heading level="h3" className="flex items-center gap-3 text-white">
                                             <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
                                                 <Briefcase className="w-4 h-4 text-cyan-400" />
                                             </div>
                                             New Portfolio Analysis
-                                        </h2>
-                                        <p className="text-xs text-gray-500 pl-11">Create a new portfolio to analyze risk, exposure, and performance.</p>
+                                        </Heading>
+                                        <Text variant="small" className="pl-11">Create a new portfolio to analyze risk, exposure, and performance.</Text>
                                     </div>
                                 </div>
 
@@ -282,28 +282,28 @@ export default function AnalystClient() {
                                                 value={portfolioName}
                                                 onChange={(e) => setPortfolioName(e.target.value)}
                                                 placeholder="e.g., 'Tech Growth Q4'"
-                                                className="text-2xl font-light py-6"
+                                                className="text-xl font-light py-6"
                                                 autoFocus
                                             />
                                         </div>
 
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4">
                                             <div className="space-y-3">
-                                                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1">Strategy Description</label>
+                                                <Label size="sm" className="uppercase tracking-wider ml-1">Strategy Description</Label>
                                                 <textarea
                                                     value={description}
                                                     onChange={(e) => setDescription(e.target.value)}
                                                     placeholder="Define the core thesis..."
                                                     rows={5}
-                                                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl p-4 text-sm text-gray-300 focus:border-cyan-500/30 focus:bg-white/[0.05] focus:outline-none resize-none placeholder:text-gray-700 transition-all shadow-inner"
+                                                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl p-4 text-sm text-gray-300 focus:border-cyan-500/30 focus:bg-white/[0.05] focus:outline-none resize-none placeholder:text-gray-700 transition-all shadow-inner font-ui"
                                                 />
                                             </div>
 
                                             {/* Quick Add Asset */}
                                             <div className="space-y-3 relative">
-                                                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1 flex items-center gap-2">
+                                                <Label size="sm" className="uppercase tracking-wider ml-1 flex items-center gap-2">
                                                     <Search className="w-3 h-3" /> Quick Add Position
-                                                </label>
+                                                </Label>
                                                 <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4 hover:border-white/20 transition-colors">
                                                     <div className="relative group z-20">
                                                         <Input
@@ -350,7 +350,7 @@ export default function AnalystClient() {
                                                                             }}
                                                                             className="w-full px-4 py-3 text-left hover:bg-cyan-500/10 flex items-center justify-between group border-b border-white/5 last:border-0 transition-colors"
                                                                         >
-                                                                            <span className="text-xs font-bold text-gray-200 group-hover:text-cyan-400">{s.symbol}</span>
+                                                                            <span className="text-xs font-bold text-gray-200 group-hover:text-cyan-400 font-inter">{s.symbol}</span>
                                                                             <span className="text-[10px] text-gray-500 font-mono">{s.name ? s.name.substring(0, 15) : ''}...</span>
                                                                         </button>
                                                                     ))}
@@ -366,7 +366,7 @@ export default function AnalystClient() {
                                                                 type="number"
                                                                 value={currentQty}
                                                                 onChange={e => setCurrentQty(e.target.value)}
-                                                                className="w-full bg-black/40 border border-white/10 rounded-lg pl-10 pr-3 py-2 text-xs text-white text-right font-mono focus:border-cyan-500/40 focus:outline-none transition-colors"
+                                                                className="w-full bg-black/40 border border-white/10 rounded-lg pl-10 pr-3 py-2 text-xs text-white text-right font-data focus:border-cyan-500/40 focus:outline-none transition-colors"
                                                                 placeholder="0"
                                                             />
                                                         </div>
@@ -376,7 +376,7 @@ export default function AnalystClient() {
                                                                 type="number"
                                                                 value={currentPrice}
                                                                 onChange={e => setCurrentPrice(e.target.value)}
-                                                                className="w-full bg-black/40 border border-white/10 rounded-lg pl-8 pr-3 py-2 text-xs text-white text-right font-mono focus:border-cyan-500/40 focus:outline-none transition-colors"
+                                                                className="w-full bg-black/40 border border-white/10 rounded-lg pl-8 pr-3 py-2 text-xs text-white text-right font-data focus:border-cyan-500/40 focus:outline-none transition-colors"
                                                                 placeholder="0.00"
                                                             />
                                                         </div>
@@ -398,9 +398,9 @@ export default function AnalystClient() {
                                             <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
                                                 <TrendingUp className="w-3 h-3" /> Composition
                                             </span>
-                                            <span className="text-sm font-mono text-cyan-400 font-bold tracking-tight bg-cyan-500/10 px-3 py-1 rounded-md border border-cyan-500/20">
-                                                ₹{totalInvested.toLocaleString()}
-                                            </span>
+                                            <div className="text-sm font-data text-cyan-400 font-bold tracking-tight bg-cyan-500/10 px-3 py-1 rounded-md border border-cyan-500/20">
+                                                <Data value={totalInvested.toLocaleString()} prefix="₹" />
+                                            </div>
                                         </div>
                                         <div className="max-h-48 overflow-y-auto min-h-[120px] custom-scrollbar bg-black/20">
                                             {draftPositions.length === 0 ? (
@@ -408,7 +408,7 @@ export default function AnalystClient() {
                                                     <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
                                                         <BarChart3 className="w-4 h-4 text-gray-600" />
                                                     </div>
-                                                    <p className="text-[10px] font-bold uppercase tracking-widest text-gray-600">No Assets Added</p>
+                                                    <Text variant="tiny" className="uppercase tracking-widest font-bold">No Assets Added</Text>
                                                 </div>
                                             ) : (
                                                 <table className="w-full text-left border-collapse">
@@ -424,10 +424,18 @@ export default function AnalystClient() {
                                                     <tbody className="text-xs">
                                                         {draftPositions.map((p, idx) => (
                                                             <tr key={idx} className="border-b border-white/5 last:border-0 group hover:bg-white/5 transition-colors">
-                                                                <td className="px-6 py-2.5 text-white font-bold">{p.symbol}</td>
-                                                                <td className="px-4 py-2.5 text-gray-400 text-right font-mono">{p.quantity}</td>
-                                                                <td className="px-4 py-2.5 text-gray-400 text-right font-mono">₹{p.avg_buy_price}</td>
-                                                                <td className="px-4 py-2.5 text-cyan-100 text-right font-mono font-bold">₹{p.invested_value.toLocaleString()}</td>
+                                                                <td className="px-6 py-2.5">
+                                                                    <Text className="font-bold text-white" as="span">{p.symbol}</Text>
+                                                                </td>
+                                                                <td className="px-4 py-2.5 text-right text-gray-400">
+                                                                    <Data value={p.quantity} />
+                                                                </td>
+                                                                <td className="px-4 py-2.5 text-right text-gray-400">
+                                                                    <Data value={p.avg_buy_price} prefix="₹" />
+                                                                </td>
+                                                                <td className="px-4 py-2.5 text-cyan-100 text-right font-bold">
+                                                                    <Data value={p.invested_value.toLocaleString()} prefix="₹" />
+                                                                </td>
                                                                 <td className="px-4 py-2.5 text-right">
                                                                     <button onClick={() => removeDraftPosition(idx)} className="text-gray-600 hover:text-red-400 transition-colors">
                                                                         <Trash2 className="w-3.5 h-3.5" />
@@ -444,16 +452,6 @@ export default function AnalystClient() {
 
                                 {/* Footer Actions */}
                                 <div className="p-6 bg-[#111]/90 border-t border-white/10 flex justify-end gap-3 z-10 relative">
-                                    <button
-                                        onClick={() => {
-                                            setPortfolioName('');
-                                            setDescription('');
-                                            setDraftPositions([]);
-                                        }}
-                                        className="px-5 py-2.5 rounded-lg text-xs font-bold text-gray-500 hover:text-white transition-colors hover:bg-white/5"
-                                    >
-                                        CLEAR FORM
-                                    </button>
                                     <Button
                                         onClick={() => {
                                             setPortfolioName('');

@@ -71,7 +71,7 @@ export default function ScreenerTable({ data, type, viewMode = 'technical' }: Pr
 
     // Update live prices on tick
     useEffect(() => {
-        if (lastMessage && lastMessage.symbol) {
+        if (lastMessage && typeof lastMessage.symbol === 'string') {
             const rawSym = lastMessage.symbol.replace('NSE:', '').replace('-EQ', '');
             setLivePrices(prev => ({
                 ...prev,
