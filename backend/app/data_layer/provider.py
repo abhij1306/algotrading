@@ -36,6 +36,35 @@ class DataProvider:
         self.db = db
         self.repo = DataRepository(db)
     
+    def _parse_timeframe(self, timeframe: str) -> int:
+        """
+        Convert string timeframe to minutes
+        Supported: 1MIN, 5MIN, 15MIN, 30MIN, 1H, 60MIN
+        """
+        tf_map = {
+            "1MIN": 1,
+            "5MIN": 5,
+            "15MIN": 15,
+            "30MIN": 30,
+            "60MIN": 60,
+            "1H": 60
+        }
+
+        upper_tf = timeframe.upper()
+        if upper_tf in tf_map:
+            return tf_map[upper_tf]
+
+        # Try to parse "XMIN" or "XH"
+        try:
+            if upper_tf.endswith("MIN"):
+                return int(upper_tf.replace("MIN", ""))
+            elif upper_tf.endswith("H"):
+                return int(upper_tf.replace("H", "")) * 60
+        except ValueError:
+            pass
+
+        raise ValueError(f"Unsupported timeframe format: {timeframe}")
+
     def get_history(
         self,
         symbol: str,
@@ -89,10 +118,52 @@ class DataProvider:
         
         # Intraday data: Use IntradayCandle table or Parquet
         else:
-            # TODO: Implement intraday fetch from IntradayCandle table
-            raise NotImplementedError(
-                f"Timeframe '{timeframe}' not yet supported. Use '1D' for daily data."
+            try:
+                minutes = self._parse_timeframe(timeframe)
+            except ValueError:
+                raise NotImplementedError(
+                    f"Timeframe '{timeframe}' not yet supported. Use '1D', '5MIN', '15MIN', or '1H'."
+                )
+
+            df = self.repo.get_intraday_candles(
+                symbol=symbol,
+                timeframe=minutes,
+                start_date=start_date,
+                end_date=end_date,
+                days=days
             )
+
+            if df is None or df.empty:
+                raise DataNotFoundError(
+                    symbol,
+                    f"No intraday data ({timeframe}) available for {symbol}"
+                )
+
+            # Format DataFrame to match daily data contract
+            # Rename columns to Capitalized
+            column_map = {
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume'
+            }
+            df = df.rename(columns=column_map)
+
+            # Ensure index is datetime and named 'Date'
+            if 'timestamp' in df.columns:
+                df = df.set_index('timestamp')
+
+            df.index = pd.to_datetime(df.index)
+            df.index.name = 'Date'
+
+            # Select only required columns
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            # Only keep columns that exist (in case repo returns extra)
+            available_cols = [c for c in required_cols if c in df.columns]
+            df = df[available_cols]
+
+            return df
     
     def get_fundamentals(self, symbol: str) -> Dict:
         """
