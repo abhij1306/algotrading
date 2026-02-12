@@ -3,6 +3,9 @@
 import { useState } from 'react'
 import { cn, formatPrice, formatPercent } from '@/lib/utils'
 import { TrendingUp, TrendingDown, Minus, ExternalLink } from 'lucide-react'
+import {
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell
+} from '@/components/ui/table'
 
 // Types
 interface Stock {
@@ -39,47 +42,15 @@ interface Stock {
 
 interface ScreenerTableProps {
   data: Stock[]
-  type: 'intraday' | 'swing' | 'positional'
+  type?: 'intraday' | 'swing' | 'positional'
   viewMode?: 'technical' | 'financial'
 }
-
-// Column definitions
-const technicalColumns = [
-  { key: 'symbol', label: 'Symbol', width: 'w-24' },
-  { key: 'close', label: 'Price', width: 'w-20' },
-  { key: 'change_pct', label: 'Change', width: 'w-20' },
-  { key: 'rsi', label: 'RSI', width: 'w-16' },
-  { key: 'ema20_50', label: 'EMA 20/50', width: 'w-24' },
-  { key: 'atr_pct', label: 'ATR %', width: 'w-16' },
-  { key: 'vol_percentile', label: 'Vol %', width: 'w-16' },
-  { key: 'score', label: 'Score', width: 'w-16' },
-  { key: 'trend', label: 'Trend', width: 'w-20' },
-  { key: 'breakout', label: 'Breakout', width: 'w-20' },
-]
-
-const financialColumns = [
-  { key: 'symbol', label: 'Symbol', width: 'w-24' },
-  { key: 'close', label: 'Price', width: 'w-20' },
-  { key: 'change_pct', label: 'Change', width: 'w-20' },
-  { key: 'market_cap', label: 'Mkt Cap', width: 'w-24' },
-  { key: 'pe_ratio', label: 'P/E', width: 'w-16' },
-  { key: 'eps', label: 'EPS', width: 'w-16' },
-  { key: 'roe', label: 'ROE', width: 'w-16' },
-  { key: 'debt_to_equity', label: 'D/E', width: 'w-16' },
-  { key: 'revenue', label: 'Revenue', width: 'w-24' },
-]
 
 // Helper functions
 function getChangeClass(change: number): string {
   if (change > 0) return 'text-[var(--color-profit)]'
   if (change < 0) return 'text-[var(--color-loss)]'
   return 'text-[var(--text-secondary)]'
-}
-
-function getChangeBg(change: number): string {
-  if (change > 0) return 'bg-[var(--color-profit-bg)]'
-  if (change < 0) return 'bg-[var(--color-loss-bg)]'
-  return 'bg-[var(--color-elevated)]'
 }
 
 function getRsiClass(rsi: number): string {
@@ -101,134 +72,157 @@ function getScoreColor(score: number | undefined): string {
   return 'text-[var(--text-secondary)]'
 }
 
-export default function ScreenerTable({ data, type, viewMode = 'technical' }: ScreenerTableProps) {
+export default function ScreenerTable({ data, type = 'intraday', viewMode = 'technical' }: ScreenerTableProps) {
   const [hoveredRow, setHoveredRow] = useState<string | null>(null)
-  const columns = viewMode === 'financial' ? financialColumns : technicalColumns
 
   return (
-    <div className="w-full overflow-auto">
-      {/* Header */}
-      <div className="grid gap-2 px-4 py-2 border-b border-[var(--border-subtle)] bg-[var(--color-elevated)] sticky top-0 z-10" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
-        {columns.map((col) => (
-          <div key={col.key} className={cn("text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wide", col.width === 'w-24' ? 'text-left' : 'text-right')}>
-            {col.label}
-          </div>
-        ))}
-      </div>
+    <Table>
+      <TableHeader>
+        <TableRow variant="ghost">
+          <TableHead className="w-24 sticky left-0 bg-[var(--color-base)] z-20">Symbol</TableHead>
+          <TableHead numeric className="w-20">Price</TableHead>
+          <TableHead numeric className="w-20">Change</TableHead>
+          {viewMode === 'financial' ? (
+            <>
+              <TableHead numeric className="w-24">Mkt Cap</TableHead>
+              <TableHead numeric className="w-16">P/E</TableHead>
+              <TableHead numeric className="w-16">EPS</TableHead>
+              <TableHead numeric className="w-16">ROE</TableHead>
+              <TableHead numeric className="w-16">D/E</TableHead>
+              <TableHead numeric className="w-24">Revenue</TableHead>
+            </>
+          ) : (
+            <>
+              <TableHead numeric className="w-16">RSI</TableHead>
+              <TableHead numeric className="w-28">EMA 20/50</TableHead>
+              <TableHead numeric className="w-16">ATR %</TableHead>
+              <TableHead numeric className="w-16">Vol %</TableHead>
+              <TableHead numeric className="w-16">Score</TableHead>
+              <TableHead numeric className="w-20">Trend</TableHead>
+              <TableHead numeric className="w-20">Breakout</TableHead>
+            </>
+          )}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data.map((stock) => (
+          <TableRow
+            key={stock.symbol}
+            variant="ghost"
+            onMouseEnter={() => setHoveredRow(stock.symbol)}
+            onMouseLeave={() => setHoveredRow(null)}
+            className="cursor-pointer"
+            onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=NSE:${stock.symbol}`, '_blank')}
+          >
+            {/* Symbol */}
+            <TableCell className="font-semibold sticky left-0 bg-[var(--color-base)] z-10">
+              <div className="flex items-center gap-1.5">
+                {stock.symbol}
+                {hoveredRow === stock.symbol && (
+                  <ExternalLink className="w-3 h-3 text-[var(--text-tertiary)]" />
+                )}
+              </div>
+            </TableCell>
 
-      {/* Rows */}
-      {data.map((stock) => (
-        <div
-          key={stock.symbol}
-          className="grid gap-2 px-4 py-2.5 border-b border-[var(--border-subtle)] hover:bg-[var(--color-elevated)] transition-colors cursor-pointer items-center"
-          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
-          onMouseEnter={() => setHoveredRow(stock.symbol)}
-          onMouseLeave={() => setHoveredRow(null)}
-          onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=NSE:${stock.symbol}`, '_blank')}
-        >
-          {/* Symbol */}
-          <div className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-            {stock.symbol}
-            {hoveredRow === stock.symbol && (
-              <ExternalLink className="w-3 h-3 text-[var(--text-tertiary)]" />
+            {/* Close Price */}
+            <TableCell numeric>
+              {formatPrice(stock.close)}
+            </TableCell>
+
+            {/* Change % */}
+            <TableCell numeric>
+              <span className={cn("font-medium", getChangeClass(stock.change_pct || 0))}>
+                {stock.change_pct ? formatPercent(stock.change_pct) : '-'}
+              </span>
+            </TableCell>
+
+            {/* View Mode: Financial */}
+            {viewMode === 'financial' && (
+              <>
+                <TableCell numeric>
+                  {stock.market_cap ? formatPrice(stock.market_cap) : '-'}
+                </TableCell>
+                <TableCell numeric>
+                  {stock.pe_ratio ? stock.pe_ratio.toFixed(1) : '-'}
+                </TableCell>
+                <TableCell numeric>
+                  {stock.eps ? formatPrice(stock.eps) : '-'}
+                </TableCell>
+                <TableCell numeric>
+                  {stock.roe ? formatPercent(stock.roe) : '-'}
+                </TableCell>
+                <TableCell numeric>
+                  {stock.debt_to_equity ? stock.debt_to_equity.toFixed(2) : '-'}
+                </TableCell>
+                <TableCell numeric>
+                  {stock.revenue ? formatPrice(stock.revenue) : '-'}
+                </TableCell>
+              </>
             )}
-          </div>
 
-          {/* Close Price */}
-          <div className="text-right font-mono text-sm text-[var(--text-primary)]">
-            {formatPrice(stock.close)}
-          </div>
+            {/* View Mode: Technical */}
+            {viewMode === 'technical' && (
+              <>
+                {/* RSI */}
+                <TableCell numeric className={getRsiClass(stock.rsi)}>
+                  {stock.rsi ? stock.rsi.toFixed(1) : '-'}
+                </TableCell>
 
-          {/* Change % */}
-          <div className="text-right">
-            <span className={cn("font-mono text-sm font-medium", getChangeClass(stock.change_pct || 0))}>
-              {stock.change_pct ? formatPercent(stock.change_pct) : '-'}
-            </span>
-          </div>
-
-          {/* View Mode: Financial */}
-          {viewMode === 'financial' && (
-            <>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.market_cap ? formatPrice(stock.market_cap) : '-'}
-              </div>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.pe_ratio ? stock.pe_ratio.toFixed(1) : '-'}
-              </div>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.eps ? formatPrice(stock.eps) : '-'}
-              </div>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.roe ? formatPercent(stock.roe) : '-'}
-              </div>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.debt_to_equity ? stock.debt_to_equity.toFixed(2) : '-'}
-              </div>
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.revenue ? formatPrice(stock.revenue) : '-'}
-              </div>
-            </>
-          )}
-
-          {/* View Mode: Technical */}
-          {viewMode === 'technical' && (
-            <>
-              {/* RSI */}
-              <div className={cn("text-right font-mono text-sm font-medium", getRsiClass(stock.rsi))}>
-                {stock.rsi ? stock.rsi.toFixed(1) : '-'}
-              </div>
-
-              {/* EMA 20/50 */}
-              <div className="text-right font-mono text-xs text-[var(--text-secondary)]">
-                {stock.ema20 && stock.ema50 ? (
-                  <div className="flex flex-col items-end">
-                    <span>{formatPrice(stock.ema20)}</span>
-                    <span className={stock.ema20 > stock.ema50 ? 'text-[var(--color-profit)]' : 'text-[var(--color-loss)]'}>
-                      {formatPrice(stock.ema50)}
+                {/* EMA 20/50 - All on one line */}
+                <TableCell numeric>
+                  {stock.ema20 && stock.ema50 ? (
+                    <span>
+                      <span className="text-[var(--text-primary)]">{formatPrice(stock.ema20)}</span>
+                      <span className="mx-1 text-[var(--text-muted)]">/</span>
+                      <span className={stock.ema20 > stock.ema50 ? 'text-[var(--color-profit)]' : 'text-[var(--color-loss)]'}>
+                        {formatPrice(stock.ema50)}
+                      </span>
                     </span>
+                  ) : '-'}
+                </TableCell>
+
+                {/* ATR % */}
+                <TableCell numeric>
+                  {stock.atr_pct ? stock.atr_pct.toFixed(1) : '-'}%
+                </TableCell>
+
+                {/* Volume Percentile */}
+                <TableCell numeric>
+                  {stock.vol_percentile ? Math.round(stock.vol_percentile).toString() : '-'}
+                </TableCell>
+
+                {/* Score */}
+                <TableCell numeric className={cn("font-bold", getScoreColor(stock.intraday_score || stock.swing_score))}>
+                  {stock.intraday_score || stock.swing_score || '-'}
+                </TableCell>
+
+                {/* Trend */}
+                <TableCell numeric>
+                  <div className="flex items-center justify-end gap-1">
+                    {getTrendIcon(stock.trend_7d)}
+                    {stock.trend_7d !== undefined && (
+                      <span>
+                        {stock.trend_7d > 0 ? '+' : ''}{stock.trend_7d.toFixed(1)}%
+                      </span>
+                    )}
                   </div>
-                ) : '-'}
-              </div>
+                </TableCell>
 
-              {/* ATR % */}
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.atr_pct ? stock.atr_pct.toFixed(1) : '-'}%
-              </div>
-
-              {/* Volume Percentile */}
-              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
-                {stock.vol_percentile ? Math.round(stock.vol_percentile).toString() : '-'}
-              </div>
-
-              {/* Score */}
-              <div className={cn("text-right font-mono text-sm font-bold", getScoreColor(stock.intraday_score || stock.swing_score))}>
-                {stock.intraday_score || stock.swing_score || '-'}
-              </div>
-
-              {/* Trend */}
-              <div className="flex items-center justify-end gap-1">
-                {getTrendIcon(stock.trend_7d)}
-                {stock.trend_7d !== undefined && (
-                  <span className="text-xs text-[var(--text-tertiary)]">
-                    {stock.trend_7d > 0 ? '+' : ''}{stock.trend_7d.toFixed(1)}%
-                  </span>
-                )}
-              </div>
-
-              {/* Breakout */}
-              <div className="text-right">
-                {stock.is_20d_breakout ? (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--color-profit-bg)] text-[var(--color-profit)]">
-                    Yes
-                  </span>
-                ) : (
-                  <span className="text-xs text-[var(--text-tertiary)]">-</span>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      ))}
-    </div>
+                {/* Breakout */}
+                <TableCell numeric>
+                  {stock.is_20d_breakout ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--color-profit-bg)] text-[var(--color-profit)]">
+                      Yes
+                    </span>
+                  ) : (
+                    <span>-</span>
+                  )}
+                </TableCell>
+              </>
+            )}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   )
 }

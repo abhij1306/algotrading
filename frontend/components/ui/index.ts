@@ -6,10 +6,10 @@
  */
 
 // Core Components
-export { Button, buttonVariants } from "./button";
+export { Button } from "./button";
 export { Badge, badgeVariants, StatusBadge, ChangeBadge } from "./badge";
 export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent, MetricCard } from "./card";
-export { Input, NumberInput, SearchInput } from "./input";
+export { Input } from "./input";
 export { Label } from "./label";
 export { Textarea } from "./textarea";
 
@@ -41,3 +41,5 @@ export { ScrollArea, ScrollBar } from "./scroll-area";
 
 // Utility Components
 export { default as Portal } from "./Portal";
+export { GlassSelect } from "./GlassSelect";
+export { GlassCard } from "./GlassCard";

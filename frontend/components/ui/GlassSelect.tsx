@@ -15,51 +15,40 @@ interface GlassSelectProps {
     onChange: (value: any) => void;
     placeholder?: string;
     className?: string;
+    position?: 'down' | 'up';
 }
 
-export function GlassSelect({ options, value, onChange, placeholder = 'Select...', className = '' }: GlassSelectProps) {
+export function GlassSelect({ options, value, onChange, placeholder = 'Select...', className = '', position = 'down' }: GlassSelectProps) {
     const [isOpen, setIsOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const [coords, setCoords] = useState({ top: 0, left: 0, width: 0 });
 
     const selectedOption = options.find(o => o.value === value);
 
-    const toggleOpen = () => {
-        if (triggerRef.current) {
-            const rect = triggerRef.current.getBoundingClientRect();
-            setCoords({
-                top: rect.bottom + window.scrollY + 8,
-                left: rect.left + window.scrollX,
-                width: rect.width
-            });
-        }
-        setIsOpen(!isOpen);
-    };
-
-    // Close on click outside
     useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (triggerRef.current && !triggerRef.current.contains(event.target as Node)) {
-                // We don't check the dropdown because it's in a portal, 
-                // but usually clicking outside the portal overlay (if exists) or just document click works.
-                // For a portal implementation without overlay, we might need a ref for the dropdown content too.
-                // But simplified: checking if click is NOT on the trigger. 
-                // If it's in the dropdown, the dropdown items will handle closing.
-                // However, clicking "elsewhere" should close it.
-                // Since the dropdown is in a portal, looking for .glass-select-dropdown might work,
-                // or simpler: just use a transparent overlay in the portal.
+        if (isOpen && triggerRef.current) {
+            const rect = triggerRef.current.getBoundingClientRect();
+            if (position === 'up') {
+                setCoords({
+                    top: rect.top - 8,
+                    left: rect.left,
+                    width: rect.width
+                });
+            } else {
+                setCoords({
+                    top: rect.bottom + 8,
+                    left: rect.left,
+                    width: rect.width
+                });
             }
-        };
-
-        // Better Portal approach: The portal usually renders at document root.
-        // We can just add a full-screen transparent click handler in the Portal when open.
-    }, []);
+        }
+    }, [isOpen, position]);
 
     return (
         <>
             <button
                 ref={triggerRef}
-                onClick={toggleOpen}
+                onClick={() => setIsOpen(!isOpen)}
                 className={`flex items-center justify-between gap-3 px-3 py-1.5 bg-black/40 border border-white/10 rounded-lg text-white text-xs font-medium hover:border-cyan-500/50 transition-all ${className} ${isOpen ? 'border-cyan-500/50 ring-1 ring-cyan-500/20' : ''}`}
             >
                 <span className={`truncate ${!selectedOption ? 'text-gray-500' : ''}`}>
@@ -76,9 +65,9 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
                     <div
                         className="fixed z-[9999] bg-[#1a1d24] border border-white/10 rounded-lg shadow-2xl overflow-hidden glass-select-dropdown animate-in fade-in zoom-in-95 duration-100"
                         style={{
-                            top: coords.top,
-                            left: coords.left,
-                            width: coords.width,
+                            top: `${coords.top}px`,
+                            left: `${coords.left}px`,
+                            width: `${coords.width}px`,
                             maxHeight: '300px'
                         }}
                     >

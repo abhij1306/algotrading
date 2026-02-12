@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
  * Table Component System
  * 
  * High-density data tables optimized for trading terminals.
- * Supports dense rows, sorting, and financial data display.
+ * Supports sticky headers, consistent typography, and financial data display.
  */
 
 const Table = React.forwardRef<
@@ -29,7 +29,8 @@ const TableHeader = React.forwardRef<
   <thead
     ref={ref}
     className={cn(
-      "[&_tr]:border-b border-[var(--border-default)]",
+      "sticky top-0 z-10 bg-[var(--color-base)]",
+      "[&_tr]:border-b-0",
       className
     )}
     {...props}
@@ -43,7 +44,7 @@ const TableBody = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <tbody
     ref={ref}
-    className={cn("[&_tr:last-child]:border-0", className)}
+    className={cn("[&_tr]:border-b-0", className)}
     {...props}
   />
 ));
@@ -56,7 +57,7 @@ const TableFooter = React.forwardRef<
   <tfoot
     ref={ref}
     className={cn(
-      "border-t border-[var(--border-default)] bg-[var(--color-elevated)] font-medium [&>tr]:last:border-b-0",
+      "border-t border-[var(--border-subtle)] bg-[var(--color-surface)] font-medium",
       className
     )}
     {...props}
@@ -72,7 +73,7 @@ const TableRow = React.forwardRef<
 >(({ className, variant = "default", ...props }, ref) => {
   const variants = {
     default: "border-b border-[var(--border-subtle)] hover:bg-[var(--glass-highlight)]",
-    ghost: "row-ghost",
+    ghost: "row-ghost hover:bg-[var(--glass-highlight)]",
     active: "bg-[var(--color-primary-bg)] border-[var(--color-primary)]/20",
   };
 
@@ -80,7 +81,7 @@ const TableRow = React.forwardRef<
     <tr
       ref={ref}
       className={cn(
-        "transition-colors",
+        "transition-colors h-11",
         variants[variant],
         className
       )}
@@ -93,20 +94,23 @@ TableRow.displayName = "TableRow";
 const TableHead = React.forwardRef<
   HTMLTableCellElement,
   React.ThHTMLAttributes<HTMLTableCellElement> & {
+    numeric?: boolean;
     sortable?: boolean;
     sorted?: "asc" | "desc" | null;
   }
->(({ className, sortable, sorted, children, ...props }, ref) => (
+>(({ className, numeric, sortable, sorted, children, ...props }, ref) => (
   <th
     ref={ref}
     className={cn(
-      "h-10 px-4 text-left align-middle font-medium text-[var(--text-secondary)] [&:has([role=checkbox])]:pr-0",
+      "h-10 px-3 text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide text-left align-middle",
+      "[&:has([role=checkbox])]:pr-0",
+      numeric && "text-right font-mono tabular-nums",
       sortable && "cursor-pointer select-none hover:text-[var(--text-primary)]",
       className
     )}
     {...props}
   >
-    <div className="flex items-center gap-2">
+    <div className={cn("flex items-center gap-2", numeric && "justify-end")}>
       {children}
       {sortable && sorted && (
         <span className="text-[var(--text-muted)]">
@@ -129,7 +133,8 @@ const TableCell = React.forwardRef<
   <td
     ref={ref}
     className={cn(
-      "p-4 align-middle [&:has([role=checkbox])]:pr-0",
+      "px-3 py-2 align-middle text-sm text-[var(--text-primary)]",
+      "[&:has([role=checkbox])]:pr-0",
       numeric && "font-mono tabular-nums text-right",
       profit && "text-[var(--color-profit)]",
       loss && "text-[var(--color-loss)]",
