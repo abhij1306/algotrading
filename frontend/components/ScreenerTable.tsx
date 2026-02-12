@@ -1,195 +1,234 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
-import { GlassCard } from "@/components/ui/GlassCard"
-import ScreenerTableRow from './ScreenerTableRow'
+import { useState } from 'react'
+import { cn, formatPrice, formatPercent } from '@/lib/utils'
+import { TrendingUp, TrendingDown, Minus, ExternalLink } from 'lucide-react'
 
+// Types
 interface Stock {
-    symbol: string
-    close: number
-    ema20: number
-    ema50: number
-    atr_pct: number
-    rsi: number
-    vol_percentile: number
-    // Advanced Indicators
-    macd: number
-    macd_signal: number
-    adx: number
-    stoch_k: number
-    stoch_d: number
-    bb_upper: number
-    bb_middle: number
-    bb_lower: number
-    // Scores
-    intraday_score?: number
-    swing_score?: number
-    is_20d_breakout: boolean
-    trend_7d?: number
-    // Financials
-    market_cap?: number
-    revenue?: number
-    net_income?: number
-    eps?: number
-    pe_ratio?: number
-    roe?: number
-    debt_to_equity?: number
+  symbol: string
+  close: number
+  volume: number
+  ema20: number
+  ema50: number
+  atr_pct: number
+  rsi: number
+  vol_percentile: number
+  change_pct?: number
+  intraday_score?: number
+  swing_score?: number
+  is_20d_breakout: boolean
+  trend_7d?: number
+  trend_30d?: number
+  macd: number
+  macd_signal: number
+  adx: number
+  stoch_k: number
+  stoch_d: number
+  bb_upper: number
+  bb_middle: number
+  bb_lower: number
+  net_income?: number
+  eps?: number
+  roe?: number
+  debt_to_equity?: number
+  market_cap?: number
+  pe_ratio?: number
+  revenue?: number
 }
 
-interface Props {
-    data: Stock[]
-    type: 'intraday' | 'swing' | 'combined'
-    viewMode?: 'technical' | 'financial'
+interface ScreenerTableProps {
+  data: Stock[]
+  type: 'intraday' | 'swing' | 'positional'
+  viewMode?: 'technical' | 'financial'
 }
 
-import { useWebSocket } from '@/hooks/useWebSocket';
+// Column definitions
+const technicalColumns = [
+  { key: 'symbol', label: 'Symbol', width: 'w-24' },
+  { key: 'close', label: 'Price', width: 'w-20' },
+  { key: 'change_pct', label: 'Change', width: 'w-20' },
+  { key: 'rsi', label: 'RSI', width: 'w-16' },
+  { key: 'ema20_50', label: 'EMA 20/50', width: 'w-24' },
+  { key: 'atr_pct', label: 'ATR %', width: 'w-16' },
+  { key: 'vol_percentile', label: 'Vol %', width: 'w-16' },
+  { key: 'score', label: 'Score', width: 'w-16' },
+  { key: 'trend', label: 'Trend', width: 'w-20' },
+  { key: 'breakout', label: 'Breakout', width: 'w-20' },
+]
 
-export default function ScreenerTable({ data, type, viewMode = 'technical' }: Props) {
-    const [sortKey, setSortKey] = useState<keyof Stock>('symbol')
-    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-    const [selectedIndex, setSelectedIndex] = useState(0)
+const financialColumns = [
+  { key: 'symbol', label: 'Symbol', width: 'w-24' },
+  { key: 'close', label: 'Price', width: 'w-20' },
+  { key: 'change_pct', label: 'Change', width: 'w-20' },
+  { key: 'market_cap', label: 'Mkt Cap', width: 'w-24' },
+  { key: 'pe_ratio', label: 'P/E', width: 'w-16' },
+  { key: 'eps', label: 'EPS', width: 'w-16' },
+  { key: 'roe', label: 'ROE', width: 'w-16' },
+  { key: 'debt_to_equity', label: 'D/E', width: 'w-16' },
+  { key: 'revenue', label: 'Revenue', width: 'w-24' },
+]
 
-    // WebSocket Integration
-    const { isConnected, lastMessage } = useWebSocket();
+// Helper functions
+function getChangeClass(change: number): string {
+  if (change > 0) return 'text-[var(--color-profit)]'
+  if (change < 0) return 'text-[var(--color-loss)]'
+  return 'text-[var(--text-secondary)]'
+}
 
-    // Live Data State
-    const [livePrices, setLivePrices] = useState<Record<string, { ltp: number, change: number }>>({});
+function getChangeBg(change: number): string {
+  if (change > 0) return 'bg-[var(--color-profit-bg)]'
+  if (change < 0) return 'bg-[var(--color-loss-bg)]'
+  return 'bg-[var(--color-elevated)]'
+}
 
-    // Subscribe to visible symbols when data changes or connection opens
-    useEffect(() => {
-        if (isConnected && data.length > 0) {
-            const symbols = data.slice(0, 50).map(s => s.symbol);
-            const fyersSymbols = symbols.map(s => s.includes(':') ? s : `NSE:${s}-EQ`);
+function getRsiClass(rsi: number): string {
+  if (rsi >= 70) return 'text-[var(--color-loss)]'
+  if (rsi <= 30) return 'text-[var(--color-profit)]'
+  return 'text-[var(--text-secondary)]'
+}
 
-            fetch('/api/websocket/subscribe', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: fyersSymbols })
-            }).catch(console.error);
-        }
-    }, [isConnected, data]);
+function getTrendIcon(trend: number | undefined) {
+  if (!trend) return <Minus className="w-3.5 h-3.5 text-[var(--text-tertiary)]" />
+  if (trend > 0) return <TrendingUp className="w-3.5 h-3.5 text-[var(--color-profit)]" />
+  return <TrendingDown className="w-3.5 h-3.5 text-[var(--color-loss)]" />
+}
 
-    // Update live prices on tick
-    useEffect(() => {
-        if (lastMessage && lastMessage.symbol) {
-            const rawSym = lastMessage.symbol.replace('NSE:', '').replace('-EQ', '');
-            setLivePrices(prev => ({
-                ...prev,
-                [rawSym]: {
-                    ltp: lastMessage.ltp,
-                    change: lastMessage.ltp && lastMessage.open_price
-                        ? ((lastMessage.ltp - lastMessage.open_price) / lastMessage.open_price * 100)
-                        : (lastMessage.chp || 0)
-                }
-            }));
-        }
-    }, [lastMessage]);
+function getScoreColor(score: number | undefined): string {
+  if (!score) return 'text-[var(--text-tertiary)]'
+  if (score >= 70) return 'text-[var(--color-profit)]'
+  if (score >= 50) return 'text-[var(--color-accent-yellow)]'
+  return 'text-[var(--text-secondary)]'
+}
 
-    const handleSort = (key: keyof Stock) => {
-        if (sortKey === key) {
-            setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-        } else {
-            setSortKey(key)
-            setSortDir('desc')
-        }
-    }
+export default function ScreenerTable({ data, type, viewMode = 'technical' }: ScreenerTableProps) {
+  const [hoveredRow, setHoveredRow] = useState<string | null>(null)
+  const columns = viewMode === 'financial' ? financialColumns : technicalColumns
 
-    const sortedData = useMemo(() => {
-        return [...data].sort((a, b) => {
-            const aVal = a[sortKey]
-            const bVal = b[sortKey]
+  return (
+    <div className="w-full overflow-auto">
+      {/* Header */}
+      <div className="grid gap-2 px-4 py-2 border-b border-[var(--border-subtle)] bg-[var(--color-elevated)] sticky top-0 z-10" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
+        {columns.map((col) => (
+          <div key={col.key} className={cn("text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wide", col.width === 'w-24' ? 'text-left' : 'text-right')}>
+            {col.label}
+          </div>
+        ))}
+      </div>
 
-            if (typeof aVal === 'number' && typeof bVal === 'number') {
-                return sortDir === 'asc' ? aVal - bVal : bVal - aVal
-            }
+      {/* Rows */}
+      {data.map((stock) => (
+        <div
+          key={stock.symbol}
+          className="grid gap-2 px-4 py-2.5 border-b border-[var(--border-subtle)] hover:bg-[var(--color-elevated)] transition-colors cursor-pointer items-center"
+          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+          onMouseEnter={() => setHoveredRow(stock.symbol)}
+          onMouseLeave={() => setHoveredRow(null)}
+          onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=NSE:${stock.symbol}`, '_blank')}
+        >
+          {/* Symbol */}
+          <div className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+            {stock.symbol}
+            {hoveredRow === stock.symbol && (
+              <ExternalLink className="w-3 h-3 text-[var(--text-tertiary)]" />
+            )}
+          </div>
 
-            const aStr = String(aVal)
-            const bStr = String(bVal)
-            return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr)
-        })
-    }, [data, sortKey, sortDir])
+          {/* Close Price */}
+          <div className="text-right font-mono text-sm text-[var(--text-primary)]">
+            {formatPrice(stock.close)}
+          </div>
 
-    // Keyboard navigation
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+          {/* Change % */}
+          <div className="text-right">
+            <span className={cn("font-mono text-sm font-medium", getChangeClass(stock.change_pct || 0))}>
+              {stock.change_pct ? formatPercent(stock.change_pct) : '-'}
+            </span>
+          </div>
 
-            switch (e.key) {
-                case 'ArrowUp':
-                    e.preventDefault()
-                    setSelectedIndex((prev) => Math.max(0, prev - 1))
-                    break
-                case 'ArrowDown':
-                    e.preventDefault()
-                    setSelectedIndex((prev) => Math.min(sortedData.length - 1, prev + 1))
-                    break
-            }
-        }
+          {/* View Mode: Financial */}
+          {viewMode === 'financial' && (
+            <>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.market_cap ? formatPrice(stock.market_cap) : '-'}
+              </div>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.pe_ratio ? stock.pe_ratio.toFixed(1) : '-'}
+              </div>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.eps ? formatPrice(stock.eps) : '-'}
+              </div>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.roe ? formatPercent(stock.roe) : '-'}
+              </div>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.debt_to_equity ? stock.debt_to_equity.toFixed(2) : '-'}
+              </div>
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.revenue ? formatPrice(stock.revenue) : '-'}
+              </div>
+            </>
+          )}
 
-        document.addEventListener('keydown', handleKeyDown)
-        return () => document.removeEventListener('keydown', handleKeyDown)
-    }, [sortedData])
+          {/* View Mode: Technical */}
+          {viewMode === 'technical' && (
+            <>
+              {/* RSI */}
+              <div className={cn("text-right font-mono text-sm font-medium", getRsiClass(stock.rsi))}>
+                {stock.rsi ? stock.rsi.toFixed(1) : '-'}
+              </div>
 
-    if (data.length === 0) {
-        return (
-            <div className="flex items-center justify-center p-20 border border-dashed border-white/10 rounded-xl text-gray-500 font-mono text-xs uppercase tracking-widest">
-                No stocks match the current filters
-            </div>
-        )
-    }
+              {/* EMA 20/50 */}
+              <div className="text-right font-mono text-xs text-[var(--text-secondary)]">
+                {stock.ema20 && stock.ema50 ? (
+                  <div className="flex flex-col items-end">
+                    <span>{formatPrice(stock.ema20)}</span>
+                    <span className={stock.ema20 > stock.ema50 ? 'text-[var(--color-profit)]' : 'text-[var(--color-loss)]'}>
+                      {formatPrice(stock.ema50)}
+                    </span>
+                  </div>
+                ) : '-'}
+              </div>
 
-    return (
-        <GlassCard className="h-full overflow-hidden flex flex-col">
-            {/* HEADER */}
-            <div className="sticky top-0 z-10 bg-[#0A0A0A]/90 backdrop-blur-md border-b border-white/5">
-                <div className="grid grid-cols-12 gap-2 px-6 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                    <div onClick={() => handleSort('symbol')} className="col-span-2 cursor-pointer hover:text-cyan-400 transition-colors flex items-center gap-1">
-                        Sym {sortKey === 'symbol' && <span className="text-cyan-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-                        {isConnected && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-2" title="Live Feed Active"></div>}
-                    </div>
-                    <div onClick={() => handleSort('close')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400 transition-colors">
-                        Price {sortKey === 'close' && <span className="text-cyan-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-                    </div>
+              {/* ATR % */}
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.atr_pct ? stock.atr_pct.toFixed(1) : '-'}%
+              </div>
 
-                    {viewMode === 'technical' ? (
-                        <>
-                            <div onClick={() => handleSort('atr_pct')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">ATR%</div>
-                            <div onClick={() => handleSort('rsi')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">RSI</div>
-                            <div onClick={() => handleSort('macd')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">MACD</div>
-                            <div onClick={() => handleSort('adx')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">ADX</div>
-                            <div onClick={() => handleSort('stoch_k')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">Stoch</div>
-                            <div onClick={() => handleSort('bb_upper')} className="col-span-2 text-right cursor-pointer hover:text-cyan-400">BBands</div>
-                            <div className="col-span-1 text-right">Trend 7D</div>
-                            <div onClick={() => handleSort(type === 'intraday' ? 'intraday_score' : 'swing_score')} className="col-span-1 text-right cursor-pointer hover:text-cyan-400">Score</div>
-                        </>
-                    ) : (
-                        <>
-                            <div onClick={() => handleSort('market_cap')} className="col-span-2 text-right">Mkt Cap</div>
-                            <div onClick={() => handleSort('pe_ratio')} className="col-span-1 text-right">P/E</div>
-                            <div onClick={() => handleSort('roe')} className="col-span-1 text-right">ROE</div>
-                            <div onClick={() => handleSort('eps')} className="col-span-1 text-right">EPS</div>
-                            <div onClick={() => handleSort('revenue')} className="col-span-3 text-right">Rev</div>
-                            <div onClick={() => handleSort('debt_to_equity')} className="col-span-1 text-right">D/E</div>
-                        </>
-                    )}
-                </div>
-            </div>
+              {/* Volume Percentile */}
+              <div className="text-right font-mono text-sm text-[var(--text-secondary)]">
+                {stock.vol_percentile ? Math.round(stock.vol_percentile).toString() : '-'}
+              </div>
 
-            {/* BODY */}
-            <div className="overflow-y-auto flex-1 custom-scrollbar">
-                {sortedData.map((stock, i) => (
-                    <ScreenerTableRow
-                        key={stock.symbol}
-                        stock={stock}
-                        index={i}
-                        isSelected={i === selectedIndex}
-                        viewMode={viewMode}
-                        type={type}
-                        liveData={livePrices[stock.symbol]}
-                        onSelect={setSelectedIndex}
-                    />
-                ))}
-            </div>
-        </GlassCard>
-    )
+              {/* Score */}
+              <div className={cn("text-right font-mono text-sm font-bold", getScoreColor(stock.intraday_score || stock.swing_score))}>
+                {stock.intraday_score || stock.swing_score || '-'}
+              </div>
+
+              {/* Trend */}
+              <div className="flex items-center justify-end gap-1">
+                {getTrendIcon(stock.trend_7d)}
+                {stock.trend_7d !== undefined && (
+                  <span className="text-xs text-[var(--text-tertiary)]">
+                    {stock.trend_7d > 0 ? '+' : ''}{stock.trend_7d.toFixed(1)}%
+                  </span>
+                )}
+              </div>
+
+              {/* Breakout */}
+              <div className="text-right">
+                {stock.is_20d_breakout ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--color-profit-bg)] text-[var(--color-profit)]">
+                    Yes
+                  </span>
+                ) : (
+                  <span className="text-xs text-[var(--text-tertiary)]">-</span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }

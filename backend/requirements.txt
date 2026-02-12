@@ -20,3 +20,4 @@ fyers-apiv3==3.0.1
 yfinance
 pandas_ta
 beautifulsoup4
+psutil

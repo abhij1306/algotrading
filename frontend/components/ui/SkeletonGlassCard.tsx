@@ -1,25 +1,30 @@
-import { GlassCard } from "@/components/ui/GlassCard";
+"use client"
+
+import { Skeleton } from "./skeleton";
+import { cn } from "@/lib/utils";
 
 interface SkeletonGlassCardProps {
-    className?: string;
+  lines?: number;
+  className?: string;
 }
 
-export const SkeletonGlassCard = ({ className = "" }: SkeletonGlassCardProps) => {
-    return (
-        <GlassCard className={`relative overflow-hidden ${className}`}>
-            <div className="animate-pulse flex flex-col h-full w-full p-4 space-y-4">
-                {/* Header Line */}
-                <div className="h-4 bg-white/5 rounded w-1/3"></div>
-
-                {/* Content Block */}
-                <div className="flex-1 bg-white/5 rounded w-full opacity-50"></div>
-
-                {/* Footer Line */}
-                <div className="h-3 bg-white/5 rounded w-1/4"></div>
-            </div>
-
-            {/* Shimmer Effect */}
-            <div className="absolute inset-0 -translate-x-full animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/5 to-transparent"></div>
-        </GlassCard>
-    );
-};
+export function SkeletonGlassCard({ lines = 3, className }: SkeletonGlassCardProps) {
+  return (
+    <div
+      className={cn(
+        "rounded-xl p-4",
+        "bg-[var(--glass-bg)] backdrop-blur-xl",
+        "border border-[var(--glass-border)]",
+        className
+      )}
+    >
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-1/3" />
+        <Skeleton className="h-6 w-full" />
+        {Array.from({ length: lines - 2 }).map((_, i) => (
+          <Skeleton key={i} className="h-3 w-4/5" />
+        ))}
+      </div>
+    </div>
+  );
+}

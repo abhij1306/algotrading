@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Command } from 'cmdk'
 import * as Dialog from '@radix-ui/react-dialog'
-import './CommandPalette.css'
 
 export function CommandPalette() {
     const [open, setOpen] = useState(false)
