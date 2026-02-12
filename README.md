@@ -19,7 +19,41 @@ SmartTrader 3.0 is a **quantitative trading platform** for the Indian NSE market
 
 ---
 
-## 🚀 Recent Improvements (Dec 2025)
+## 🎨 Design System (Feb 2026)
+
+A consistent, professional design system for the trading interface:
+
+### Design Tokens
+- **Font Pair:** Inter (UI) + JetBrains Mono (data/prices)
+- **Color System:** Dark theme with semantic colors
+  - Primary: `#3B82F6` (blue)
+  - Profit: `#22C55E` (green)
+  - Loss: `#EF4444` (red)
+  - Text: Primary `#FAFAFA`, Secondary `#A1A1AA`, Muted `#52525B`
+- **Components:** `.card`, `.btn`, `.input`, `.table`, `.price`, `.badge`
+
+### Standardized Pages
+- **Dashboard:** Overview cards, indices, watchlist
+- **Screener:** Data table with sticky header, consistent typography
+- **Terminal:** Trading interface with glass morphism
+- **Analyst:** Portfolio creation workflow
+- **Quant:** Backtesting, signals, governance pages
+
+### Files
+- [`frontend/app/globals.css`](frontend/app/globals.css) - Design tokens
+- [`frontend/components/ui/`](frontend/components/ui/) - Reusable components
+
+---
+
+## 🚀 Recent Improvements (Feb 2026)
+
+### Frontend Design System
+- ✅ Defined CSS design tokens for colors, typography, spacing
+- ✅ Standardized UI components (Button, Input, Table, GlassCard)
+- ✅ Applied consistent dark theme across all pages
+- ✅ Fixed ScreenerTable: sticky header, consistent typography
+- ✅ Replaced inline styles with design token variables
+- ✅ Updated Quant platform pages (backtest, signals, governance)
 
 ### Backend
 - ✅ Consolidated 4 redundant routers into unified `/api/portfolio/*` structure
@@ -215,9 +249,10 @@ npm run dev
 
 ### Frontend
 - **Framework:** Next.js 14 (React)
-- **Styling:** Tailwind CSS
+- **Styling:** Tailwind CSS + Design System
 - **Charts:** Recharts
 - **State:** React Hooks
+- **Icons:** Lucide React
 
 ### Infrastructure
 - **Deployment:** Ubuntu 20.04+
