@@ -222,7 +222,7 @@ export default function PortfolioResearchSystem() {
                         <div className="flex justify-center pt-6 border-t border-[var(--border-subtle)]">
                             <Button
                                 variant="primary"
-                                onClick={runBacktest}
+                                onClick={executeBacktest}
                                 disabled={loading}
                                 className="px-8 py-3"
                             >

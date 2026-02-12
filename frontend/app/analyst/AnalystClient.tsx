@@ -5,6 +5,7 @@ import { Plus, Trash2, Loader2, Search, BarChart3, PieChart, Briefcase } from 'l
 import { Button } from '@/components/ui/button'
 import { GlassSelect } from '@/components/ui/GlassSelect'
 import Portal from '@/components/ui/Portal'
+import { useErrorToast } from '@/components/Toast'
 
 interface DraftPosition {
   symbol: string
@@ -39,6 +40,8 @@ export default function AnalystClient() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const skipSearch = useRef(false)
 
+  const toast = useErrorToast()
+
   useEffect(() => {
     fetchPortfolios()
   }, [])
@@ -63,7 +66,7 @@ export default function AnalystClient() {
       return
     }
     try {
-      const res = await fetch(`/api/market/search?query=${query}&exclude_indices=true`)
+      const res = await fetch(`/api/market/search?query=${encodeURIComponent(query)}&exclude_indices=true`)
       if (res.ok) {
         const data = await res.json()
         setSearchResults(Array.isArray(data) ? data : [])
@@ -129,7 +132,14 @@ export default function AnalystClient() {
         setPortfolioName('')
         setDescription('')
         setDraftPositions([])
+      } else {
+        const errorText = await res.text()
+        toast(errorText || 'Failed to create portfolio')
+        return
       }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Network error occurred')
+      return
     } finally {
       setCreating(false)
     }

@@ -8,13 +8,14 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'sm' | 'md' | 'lg'
 }
 
-export function Button({
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
   className,
   variant = 'secondary',
   size = 'md',
   children,
+  disabled,
   ...props
-}: ButtonProps) {
+}, ref) => {
   const variants = {
     primary: 'bg-[var(--color-primary)] text-white border-transparent hover:bg-[#2563EB]',
     secondary: 'bg-[var(--color-surface)] text-[var(--text-primary)] border-[var(--border-default)] hover:bg-[var(--color-elevated)] hover:border-[rgba(255,255,255,0.1)]',
@@ -31,10 +32,13 @@ export function Button({
 
   return (
     <button
+      ref={ref}
+      disabled={disabled}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-all cursor-pointer',
+        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-all cursor-pointer border',
         variants[variant],
         sizes[size],
+        disabled && 'opacity-50 cursor-not-allowed',
         className
       )}
       {...props}
@@ -42,4 +46,6 @@ export function Button({
       {children}
     </button>
   )
-}
+})
+
+Button.displayName = 'Button'

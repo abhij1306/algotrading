@@ -1,4 +1,5 @@
 import AnalystClient from './AnalystClient'
+import { ToastProvider } from '@/components/Toast'
 
 export const metadata = {
     title: 'Analyst | SmartTrader',
@@ -6,5 +7,9 @@ export const metadata = {
 }
 
 export default function AnalystPage() {
-    return <AnalystClient />
+    return (
+        <ToastProvider>
+            <AnalystClient />
+        </ToastProvider>
+    )
 }

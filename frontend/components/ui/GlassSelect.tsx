@@ -12,7 +12,7 @@ interface Option {
 interface GlassSelectProps {
     options: Option[];
     value: string | number | null;
-    onChange: (value: any) => void;
+    onChange: (value: string | number) => void;
     placeholder?: string;
     className?: string;
     position?: 'down' | 'up';
@@ -21,7 +21,7 @@ interface GlassSelectProps {
 export function GlassSelect({ options, value, onChange, placeholder = 'Select...', className = '', position = 'down' }: GlassSelectProps) {
     const [isOpen, setIsOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
-    const [coords, setCoords] = useState({ top: 0, left: 0, width: 0 });
+    const [coords, setCoords] = useState({ top: 0, left: 0, width: 0, positionAnchor: 'bottom' as 'top' | 'bottom' });
 
     const selectedOption = options.find(o => o.value === value);
 
@@ -30,18 +30,49 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
             const rect = triggerRef.current.getBoundingClientRect();
             if (position === 'up') {
                 setCoords({
-                    top: rect.top - 8,
+                    top: rect.top,
                     left: rect.left,
-                    width: rect.width
+                    width: rect.width,
+                    positionAnchor: 'top'
                 });
             } else {
                 setCoords({
                     top: rect.bottom + 8,
                     left: rect.left,
-                    width: rect.width
+                    width: rect.width,
+                    positionAnchor: 'bottom'
                 });
             }
         }
+
+        const handleResize = () => {
+            if (isOpen && triggerRef.current) {
+                const rect = triggerRef.current.getBoundingClientRect();
+                if (position === 'up') {
+                    setCoords({
+                        top: rect.top,
+                        left: rect.left,
+                        width: rect.width,
+                        positionAnchor: 'top'
+                    });
+                } else {
+                    setCoords({
+                        top: rect.bottom + 8,
+                        left: rect.left,
+                        width: rect.width,
+                        positionAnchor: 'bottom'
+                    });
+                }
+            }
+        };
+
+        window.addEventListener('resize', handleResize);
+        window.addEventListener('scroll', handleResize, true);
+
+        return () => {
+            window.removeEventListener('resize', handleResize);
+            window.removeEventListener('scroll', handleResize, true);
+        };
     }, [isOpen, position]);
 
     return (
@@ -68,7 +99,8 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
                             top: `${coords.top}px`,
                             left: `${coords.left}px`,
                             width: `${coords.width}px`,
-                            maxHeight: '300px'
+                            maxHeight: '300px',
+                            transform: coords.positionAnchor === 'top' ? 'translateY(-100%) translateY(-8px)' : undefined
                         }}
                     >
                         <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-1">

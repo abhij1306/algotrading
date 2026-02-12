@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Search, Layers, RefreshCw, ChevronLeft, ChevronRight, AlertTriangle, Loader2, ChevronDown } from 'lucide-react'
 import ScreenerTable from '@/components/ScreenerTable'
 import ZeroStateScreener from '@/components/ZeroStateScreener'
@@ -48,6 +48,9 @@ export default function ScreenerPage() {
   const [selectedIndex, setSelectedIndex] = useState('NIFTY50')
   const [selectedSymbol, setSelectedSymbol] = useState('')
   const [debouncedSymbol, setDebouncedSymbol] = useState('')
+
+  // For debouncing
+  const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedSector, setSelectedSector] = useState('all')
   const [scannerFilter, setScannerFilter] = useState('ALL')
   const [viewMode, setViewMode] = useState<'technical' | 'financial'>('technical')
@@ -79,7 +82,8 @@ export default function ScreenerPage() {
       }
       setIsSearching(true)
       try {
-        const res = await fetch(`http://localhost:8000/api/market/search?query=${selectedSymbol}`)
+        const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+        const res = await fetch(`${API_BASE}/api/market/search?query=${encodeURIComponent(selectedSymbol)}`)
         if (res.ok) {
           const data = await res.json()
           if (Array.isArray(data)) {
@@ -109,7 +113,8 @@ export default function ScreenerPage() {
       setError(null)
     }
     try {
-      let url = `http://localhost:8000/api/screener/?page=${page}&limit=${limit}&index=${selectedIndex}`
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      let url = `${API_BASE}/api/screener/?page=${page}&limit=${limit}&index=${selectedIndex}`
       if (scannerFilter !== 'ALL') url += `&filter_type=${scannerFilter}`
       if (debouncedSymbol) url += `&symbol=${debouncedSymbol}`
       if (selectedSector !== 'all') url += `&sector=${encodeURIComponent(selectedSector)}`
@@ -126,9 +131,9 @@ export default function ScreenerPage() {
       } else if (Array.isArray(json)) {
         setStocks(json)
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (!silent) {
-        setError(e.message || 'Failed to load data')
+        setError(e instanceof Error ? e.message : 'Failed to load data')
         setStocks([])
       }
     } finally {
@@ -139,7 +144,10 @@ export default function ScreenerPage() {
   useEffect(() => {
     fetchData()
     const interval = setInterval(() => fetchData(true), 5000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current)
+    }
   }, [page, selectedIndex, debouncedSymbol, selectedSector, scannerFilter, limit])
 
   return (
@@ -158,7 +166,9 @@ export default function ScreenerPage() {
               setShowDropdown(true)
             }}
             onFocus={() => setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+            onBlur={() => {
+              blurTimeoutRef.current = setTimeout(() => setShowDropdown(false), 200)
+            }}
             className="w-full pl-10 pr-3 py-2 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
           />
           {showDropdown && searchResults.length > 0 && (
@@ -252,7 +262,7 @@ export default function ScreenerPage() {
         <div className="h-10 flex items-center justify-between px-4 border-t border-[var(--border-subtle)] bg-[var(--color-surface)]">
           <div className="flex items-center gap-3">
             <span className="text-xs text-[var(--text-tertiary)]">
-              {(page - 1) * limit + 1}-{Math.min(page * limit, totalRecords)} of {totalRecords}
+              {totalRecords === 0 ? '0 of 0' : `${(page - 1) * limit + 1}-${Math.min(page * limit, totalRecords)} of ${totalRecords}`}
             </span>
             <div className="relative">
               <select

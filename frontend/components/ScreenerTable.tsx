@@ -20,6 +20,7 @@ interface Stock {
   change_pct?: number
   intraday_score?: number
   swing_score?: number
+  positional_score?: number
   is_20d_breakout: boolean
   trend_7d?: number
   trend_30d?: number
@@ -109,6 +110,13 @@ export default function ScreenerTable({ data, type = 'intraday', viewMode = 'tec
           <TableRow
             key={stock.symbol}
             variant="ghost"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                window.open(`https://www.tradingview.com/chart/?symbol=NSE:${stock.symbol}`, '_blank')
+              }
+            }}
             onMouseEnter={() => setHoveredRow(stock.symbol)}
             onMouseLeave={() => setHoveredRow(null)}
             className="cursor-pointer"
@@ -183,7 +191,7 @@ export default function ScreenerTable({ data, type = 'intraday', viewMode = 'tec
 
                 {/* ATR % */}
                 <TableCell numeric>
-                  {stock.atr_pct ? stock.atr_pct.toFixed(1) : '-'}%
+                  {typeof stock.atr_pct === 'number' && Number.isFinite(stock.atr_pct) ? `${stock.atr_pct.toFixed(1)}%` : '-'}
                 </TableCell>
 
                 {/* Volume Percentile */}
@@ -192,8 +200,8 @@ export default function ScreenerTable({ data, type = 'intraday', viewMode = 'tec
                 </TableCell>
 
                 {/* Score */}
-                <TableCell numeric className={cn("font-bold", getScoreColor(stock.intraday_score || stock.swing_score))}>
-                  {stock.intraday_score || stock.swing_score || '-'}
+                <TableCell numeric className={cn("font-bold", getScoreColor(stock.intraday_score || stock.swing_score || stock.positional_score || 0))}>
+                  {type === 'intraday' ? stock.intraday_score : type === 'swing' ? stock.swing_score : stock.positional_score || '-'}
                 </TableCell>
 
                 {/* Trend */}

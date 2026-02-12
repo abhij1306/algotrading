@@ -55,19 +55,26 @@ function SentimentGauge({ title, score, status }: { title: string; score: number
 export default function DashboardPage() {
   const [data, setData] = useState<MarketData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterType>('all')
   const [searchQuery, setSearchQuery] = useState('')
 
   const fetchData = async () => {
     setLoading(true)
+    setError(null)
     try {
       const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
       const res = await fetch(`${API_BASE}/api/market/overview`)
       if (res.ok) {
         const json = await res.json()
         setData(json)
+      } else {
+        setError('Failed to fetch market data')
+        setData(null)
       }
-    } catch {
+    } catch (err) {
+      console.error('Error fetching market data:', err)
+      setError(err instanceof Error ? err.message : 'Network error occurred')
       setData(null)
     } finally {
       setLoading(false)
@@ -107,8 +114,8 @@ export default function DashboardPage() {
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Sentiment Gauges */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <SentimentGauge title="US Fear & Greed" score={data?.sentiment.us_fear_greek?.score || 0} status={data?.sentiment.us_fear_greek?.status || 'Loading'} />
-          <SentimentGauge title="India Sentiment" score={data?.sentiment.india_sentiment?.score || 0} status={data?.sentiment.india_sentiment?.status || 'Loading'} />
+          <SentimentGauge title="US Fear & Greed" score={data?.sentiment?.us_fear_greek?.score ?? 0} status={data?.sentiment?.us_fear_greek?.status ?? 'Loading'} />
+          <SentimentGauge title="India Sentiment" score={data?.sentiment?.india_sentiment?.score ?? 0} status={data?.sentiment?.india_sentiment?.status ?? 'Loading'} />
           
           {/* Market Condition */}
           <GlassCard className="p-6">
@@ -117,17 +124,17 @@ export default function DashboardPage() {
               <h3 className="text-sm text-[var(--text-secondary)] font-medium">Market Condition</h3>
             </div>
             <div className="text-xl font-bold text-[var(--color-secondary)] mb-3">
-              {loading ? 'Analyzing...' : data?.condition.status || 'Unavailable'}
+              {loading ? 'Analyzing...' : data?.condition?.status || 'Unavailable'}
             </div>
             <div className="mb-3">
               <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
                 <span>ADX (14)</span>
-                <span className="font-mono">{data?.condition.adx || 0}</span>
+                <span className="font-mono">{data?.condition?.adx || 0}</span>
               </div>
               <div className="h-1.5 w-full bg-[var(--border-subtle)] rounded-full overflow-hidden">
                 <div 
-                  className={`h-full rounded-full transition-all ${(data?.condition.adx || 0) > 25 ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-secondary)]'}`}
-                  style={{ width: `${Math.min(data?.condition.adx || 0, 100)}%` }}
+                  className={`h-full rounded-full transition-all ${(data?.condition?.adx || 0) > 25 ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-secondary)]'}`}
+                  style={{ width: `${Math.min(data?.condition?.adx || 0, 100)}%` }}
                 />
               </div>
             </div>
