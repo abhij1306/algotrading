@@ -1,11 +1,14 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Search, Layers, RefreshCw, ChevronLeft, ChevronRight, AlertTriangle, Loader2, ChevronDown } from 'lucide-react'
+import { Search, Layers, RefreshCw, ChevronLeft, ChevronRight, AlertTriangle, Loader2 } from 'lucide-react'
 import ScreenerTable from '@/components/ScreenerTable'
 import ZeroStateScreener from '@/components/ZeroStateScreener'
 import { Button } from '@/components/ui/button'
-import { GlassCard } from '@/components/ui/GlassCard'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { GlassSelect } from '@/components/ui/GlassSelect'
+import { apiClient } from '@/lib/api-client'
 
 // Types
 interface Stock {
@@ -81,30 +84,30 @@ export default function ScreenerPage() {
         return
       }
       setIsSearching(true)
-      try {
-        const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-        const res = await fetch(`${API_BASE}/api/market/search?query=${encodeURIComponent(selectedSymbol)}`)
-        if (res.ok) {
-          const data = await res.json()
-          if (Array.isArray(data)) {
-            setSearchResults(data)
-            setShowDropdown(true)
-          }
-        }
-      } finally {
-        setIsSearching(false)
+      const result = await apiClient.get<any[]>(`/api/market/search?query=${encodeURIComponent(selectedSymbol)}`)
+      if (result.data) {
+        setSearchResults(result.data)
+        setShowDropdown(true)
       }
+      setIsSearching(false)
     }
     const timeout = setTimeout(fetchSearch, 300)
     return () => clearTimeout(timeout)
   }, [selectedSymbol])
 
   const availableIndices = [
-    { id: 'NIFTY50', name: 'NIFTY 50' },
-    { id: 'NIFTY100', name: 'NIFTY 100' },
-    { id: 'NIFTY500', name: 'NIFTY 500' },
-    { id: 'BANKNIFTY', name: 'BANK NIFTY' },
-    { id: 'NIFTYMIDCAP', name: 'NIFTY MIDCAP' },
+    { value: 'NIFTY50', label: 'NIFTY 50' },
+    { value: 'NIFTY100', label: 'NIFTY 100' },
+    { value: 'NIFTY500', label: 'NIFTY 500' },
+    { value: 'BANKNIFTY', label: 'BANK NIFTY' },
+    { value: 'NIFTYMIDCAP', label: 'NIFTY MIDCAP' },
+  ]
+
+  const scannerFilters = [
+    { value: 'ALL', label: 'All Stocks' },
+    { value: 'VOLUME_SHOCKER', label: 'Volume Shockers' },
+    { value: 'PRICE_SHOCKER', label: 'Price Shockers' },
+    { value: '52W_HIGH', label: '52W High' },
   ]
 
   const fetchData = async (silent = false) => {
@@ -113,23 +116,22 @@ export default function ScreenerPage() {
       setError(null)
     }
     try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      let url = `${API_BASE}/api/screener/?page=${page}&limit=${limit}&index=${selectedIndex}`
-      if (scannerFilter !== 'ALL') url += `&filter_type=${scannerFilter}`
-      if (debouncedSymbol) url += `&symbol=${debouncedSymbol}`
-      if (selectedSector !== 'all') url += `&sector=${encodeURIComponent(selectedSector)}`
+      let endpoint = `/api/screener/?page=${page}&limit=${limit}&index=${selectedIndex}`
+      if (scannerFilter !== 'ALL') endpoint += `&filter_type=${scannerFilter}`
+      if (debouncedSymbol) endpoint += `&symbol=${debouncedSymbol}`
+      if (selectedSector !== 'all') endpoint += `&sector=${encodeURIComponent(selectedSector)}`
 
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`API Error: ${res.status}`)
+      const result = await apiClient.get<any>(endpoint)
       
-      const text = await res.text()
-      const json = JSON.parse(text)
-      
-      if (json.data) {
-        setStocks(json.data)
-        if (json.meta) setTotalRecords(json.meta.total || 0)
-      } else if (Array.isArray(json)) {
-        setStocks(json)
+      if (result.data) {
+        if (result.data.data) {
+          setStocks(result.data.data)
+          if (result.data.meta) setTotalRecords(result.data.meta.total || 0)
+        } else if (Array.isArray(result.data)) {
+          setStocks(result.data)
+        }
+      } else if (result.error) {
+        throw new Error(result.error.message)
       }
     } catch (e: unknown) {
       if (!silent) {
@@ -153,12 +155,11 @@ export default function ScreenerPage() {
   return (
     <div className="h-full flex flex-col gap-4 p-6">
       {/* Control Bar */}
-      <GlassCard className="flex items-center px-4 py-2 gap-3">
+      <Card variant="glass" className="flex items-center px-4 py-2 gap-4">
         {/* Search */}
         <div className="relative w-64">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-          <input
-            type="text"
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)] z-10" />
+          <Input
             placeholder="Search symbol..."
             value={selectedSymbol}
             onChange={(e) => {
@@ -169,7 +170,7 @@ export default function ScreenerPage() {
             onBlur={() => {
               blurTimeoutRef.current = setTimeout(() => setShowDropdown(false), 200)
             }}
-            className="w-full pl-10 pr-3 py-2 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
+            className="pl-10"
           />
           {showDropdown && searchResults.length > 0 && (
             <div className="absolute top-full left-0 w-full mt-1 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg shadow-lg z-50 overflow-hidden">
@@ -191,30 +192,20 @@ export default function ScreenerPage() {
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-2 flex-1">
-          <div className="relative">
-            <Layers className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--color-primary)]" />
-            <select
-              value={selectedIndex}
-              onChange={(e) => setSelectedIndex(e.target.value)}
-              className="pl-8 pr-8 py-2 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none"
-            >
-              {availableIndices.map(idx => (
-                <option key={idx.id} value={idx.id}>{idx.name}</option>
-              ))}
-            </select>
-          </div>
+        <div className="flex items-center gap-3 flex-1">
+          <GlassSelect
+            options={availableIndices}
+            value={selectedIndex}
+            onChange={(val) => setSelectedIndex(val as string)}
+            className="min-w-[140px]"
+          />
 
-          <select
+          <GlassSelect
+            options={scannerFilters}
             value={scannerFilter}
-            onChange={(e) => setScannerFilter(e.target.value)}
-            className="px-3 py-2 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none"
-          >
-            <option value="ALL">All Stocks</option>
-            <option value="VOLUME_SHOCKER">Volume Shockers</option>
-            <option value="PRICE_SHOCKER">Price Shockers</option>
-            <option value="52W_HIGH">52W High</option>
-          </select>
+            onChange={(val) => setScannerFilter(val as string)}
+            className="min-w-[150px]"
+          />
 
           <Button variant="ghost" size="sm" onClick={() => { setSelectedSymbol(''); setScannerFilter('ALL'); }}>
             <RefreshCw className="w-3.5 h-3.5" />
@@ -222,24 +213,28 @@ export default function ScreenerPage() {
         </div>
 
         {/* View Toggle */}
-        <div className="flex bg-[var(--color-surface)] rounded-lg p-0.5 border border-[var(--border-default)]">
-          <button
+        <div className="flex bg-[var(--color-surface)] rounded-lg p-1 border border-[var(--border-default)]">
+          <Button
+            variant={viewMode === 'technical' ? 'primary' : 'ghost'}
+            size="sm"
             onClick={() => setViewMode('technical')}
-            className={`px-3 py-1 text-xs font-medium rounded-md transition ${viewMode === 'technical' ? 'bg-[var(--color-primary)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+            className="h-7 px-3 text-xs"
           >
             Technical
-          </button>
-          <button
+          </Button>
+          <Button
+            variant={viewMode === 'financial' ? 'primary' : 'ghost'}
+            size="sm"
             onClick={() => setViewMode('financial')}
-            className={`px-3 py-1 text-xs font-medium rounded-md transition ${viewMode === 'financial' ? 'bg-[var(--color-primary)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+            className="h-7 px-3 text-xs"
           >
             Financial
-          </button>
+          </Button>
         </div>
-      </GlassCard>
+      </Card>
 
       {/* Table Container */}
-      <GlassCard className="flex-1 overflow-hidden flex flex-col min-h-0">
+      <Card variant="glass" className="flex-1 overflow-hidden flex flex-col min-h-0 p-0">
         <div className="flex-1 overflow-auto">
           {loading && stocks.length === 0 ? (
             <div className="h-full flex items-center justify-center">
@@ -259,36 +254,36 @@ export default function ScreenerPage() {
         </div>
 
         {/* Footer */}
-        <div className="h-10 flex items-center justify-between px-4 border-t border-[var(--border-subtle)] bg-[var(--color-surface)]">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-[var(--text-tertiary)]">
+        <div className="h-12 flex items-center justify-between px-6 border-t border-[var(--border-subtle)] bg-[var(--color-surface)]">
+          <div className="flex items-center gap-4">
+            <span className="text-xs text-[var(--text-tertiary)] font-medium">
               {totalRecords === 0 ? '0 of 0' : `${(page - 1) * limit + 1}-${Math.min(page * limit, totalRecords)} of ${totalRecords}`}
             </span>
-            <div className="relative">
-              <select
-                value={limit}
-                onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
-                className="pl-2 pr-6 py-1 bg-[var(--color-base)] border border-[var(--border-default)] rounded text-xs text-[var(--text-secondary)] appearance-none cursor-pointer"
-              >
-                <option value="10">10</option>
-                <option value="25">25</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-              </select>
-              <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-muted)] pointer-events-none" />
-            </div>
+            <GlassSelect
+              options={[
+                { value: '10', label: '10 / page' },
+                { value: '25', label: '25 / page' },
+                { value: '50', label: '50 / page' },
+                { value: '100', label: '100 / page' },
+              ]}
+              value={limit.toString()}
+              onChange={(val) => { setLimit(Number(val)); setPage(1); }}
+              className="w-32"
+            />
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
               <ChevronLeft className="w-4 h-4" />
             </Button>
-            <span className="text-xs text-[var(--text-secondary)] px-2">{page} / {totalPages}</span>
+            <span className="text-xs font-mono font-medium text-[var(--text-secondary)] px-2">
+              PAGE {page} <span className="text-[var(--text-muted)]">/</span> {totalPages}
+            </span>
             <Button variant="ghost" size="sm" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}>
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>
         </div>
-      </GlassCard>
+      </Card>
     </div>
   )
 }

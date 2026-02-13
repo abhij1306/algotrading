@@ -80,12 +80,12 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
             <button
                 ref={triggerRef}
                 onClick={() => setIsOpen(!isOpen)}
-                className={`flex items-center justify-between gap-3 px-3 py-1.5 bg-black/40 border border-white/10 rounded-lg text-white text-xs font-medium hover:border-cyan-500/50 transition-all ${className} ${isOpen ? 'border-cyan-500/50 ring-1 ring-cyan-500/20' : ''}`}
+                className={`flex items-center justify-between gap-3 px-3 py-1.5 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-[var(--text-primary)] text-xs font-medium hover:border-[var(--color-primary)] transition-all ${className} ${isOpen ? 'border-[var(--color-primary)] ring-1 ring-[var(--color-primary-bg)]' : ''}`}
             >
-                <span className={`truncate ${!selectedOption ? 'text-gray-500' : ''}`}>
+                <span className={`truncate ${!selectedOption ? 'text-[var(--text-muted)]' : ''}`}>
                     {selectedOption ? selectedOption.label : placeholder}
                 </span>
-                <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-transform ${isOpen ? 'rotate-180 text-cyan-500' : ''}`} />
+                <ChevronDown className={`w-3.5 h-3.5 text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180 text-[var(--color-primary)]' : ''}`} />
             </button>
 
             {isOpen && (
@@ -94,7 +94,7 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
                     <div className="fixed inset-0 z-[9998]" onClick={() => setIsOpen(false)} />
 
                     <div
-                        className="fixed z-[9999] bg-[#1a1d24] border border-white/10 rounded-lg shadow-2xl overflow-hidden glass-select-dropdown animate-in fade-in zoom-in-95 duration-100"
+                        className="fixed z-[9999] bg-[var(--color-elevated)] border border-[var(--border-default)] rounded-lg shadow-2xl overflow-hidden glass-select-dropdown animate-in fade-in zoom-in-95 duration-100"
                         style={{
                             top: `${coords.top}px`,
                             left: `${coords.left}px`,
@@ -112,16 +112,16 @@ export function GlassSelect({ options, value, onChange, placeholder = 'Select...
                                         setIsOpen(false);
                                     }}
                                     className={`w-full text-left px-3 py-2 rounded-md text-xs font-medium flex items-center justify-between group transition-colors ${option.value === value
-                                            ? 'bg-cyan-500/10 text-cyan-400'
-                                            : 'text-gray-300 hover:bg-white/5 hover:text-white'
+                                            ? 'bg-[var(--color-primary-bg)] text-[var(--color-primary)]'
+                                            : 'text-[var(--text-secondary)] hover:bg-[var(--glass-highlight)] hover:text-[var(--text-primary)]'
                                         }`}
                                 >
                                     <span className="truncate">{option.label}</span>
-                                    {option.value === value && <Check className="w-3 h-3 text-cyan-500" />}
+                                    {option.value === value && <Check className="w-3 h-3 text-[var(--color-primary)]" />}
                                 </button>
                             ))}
                             {options.length === 0 && (
-                                <div className="px-3 py-2 text-xs text-gray-500 italic text-center">No options</div>
+                                <div className="px-3 py-2 text-xs text-[var(--text-muted)] italic text-center">No options</div>
                             )}
                         </div>
                     </div>

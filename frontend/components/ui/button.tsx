@@ -17,11 +17,11 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
   ...props
 }, ref) => {
   const variants = {
-    primary: 'bg-[var(--color-primary)] text-white border-transparent hover:bg-[#2563EB]',
-    secondary: 'bg-[var(--color-surface)] text-[var(--text-primary)] border-[var(--border-default)] hover:bg-[var(--color-elevated)] hover:border-[rgba(255,255,255,0.1)]',
-    ghost: 'bg-transparent text-[var(--text-secondary)] border-transparent hover:bg-[var(--glass-highlight)] hover:text-[var(--text-primary)]',
-    profit: 'bg-[var(--color-profit-bg)] text-[var(--color-profit)] border-transparent',
-    loss: 'bg-[var(--color-loss-bg)] text-[var(--color-loss)] border-transparent',
+    primary: 'btn-primary',
+    secondary: 'btn-secondary',
+    ghost: 'btn-ghost',
+    profit: 'bg-[var(--color-profit-bg)] text-[var(--color-profit)] border-transparent hover:bg-[var(--color-profit)] hover:text-white',
+    loss: 'bg-[var(--color-loss-bg)] text-[var(--color-loss)] border-transparent hover:bg-[var(--color-loss)] hover:text-white',
   }
 
   const sizes = {
@@ -35,7 +35,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
       ref={ref}
       disabled={disabled}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-all cursor-pointer border',
+        'btn',
         variants[variant],
         sizes[size],
         disabled && 'opacity-50 cursor-not-allowed',

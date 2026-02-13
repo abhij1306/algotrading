@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+@theme {
+  --color-background-dark: var(--color-base);
+  --color-card-dark: var(--color-surface);
+  --color-border-dark: var(--border-default);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-primary: var(--color-primary);
+  --color-deep-space: var(--color-void);
+}
+
 /* ============================================================
    TRADING TERMINAL DESIGN SYSTEM v3.0
    Simplified, consistent design for financial applications
@@ -38,6 +48,10 @@
   --color-loss: #EF4444;
   --color-loss-bg: rgba(239, 68, 68, 0.1);
   
+  /* Warning / Neutral */
+  --color-warning: #F97316;
+  --color-warning-bg: rgba(249, 115, 22, 0.1);
+
   /* Primary Brand */
   --color-primary: #3B82F6;
   --color-primary-bg: rgba(59, 130, 246, 0.1);
@@ -114,16 +128,18 @@
    ============================================================ */
 @layer components {
   /* Glass Card - Primary container */
-  .card {
+  .card, .glass-card {
     background: var(--glass-bg);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-xl);
+    transition: all var(--transition-base);
   }
   
-  .card:hover {
+  .card:hover, .glass-card:hover {
     border-color: rgba(255, 255, 255, 0.1);
+    background: var(--color-surface);
   }
   
   /* Button Variants */
@@ -170,17 +186,6 @@
   .btn-secondary:hover {
     background: var(--color-elevated);
     border-color: rgba(255, 255, 255, 0.1);
-  }
-  
-  .btn-ghost {
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid transparent;
-  }
-  
-  .btn-ghost:hover {
-    background: var(--glass-highlight);
-    color: var(--text-primary);
   }
   
   .btn-ghost {

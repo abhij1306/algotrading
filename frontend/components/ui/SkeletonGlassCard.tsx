@@ -12,9 +12,7 @@ export function SkeletonGlassCard({ lines = 3, className }: SkeletonGlassCardPro
   return (
     <div
       className={cn(
-        "rounded-xl p-4",
-        "bg-[var(--glass-bg)] backdrop-blur-xl",
-        "border border-[var(--glass-border)]",
+        "glass-card p-4",
         className
       )}
     >

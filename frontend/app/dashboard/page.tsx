@@ -3,7 +3,19 @@
 import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown, Search, RefreshCw, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { GlassCard } from '@/components/ui/GlassCard'
+import { Card, CardHeader, CardTitle, MetricCard } from '@/components/ui/card'
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell
+} from '@/components/ui/table'
+import { Input } from '@/components/ui/input'
+import { SkeletonTable } from '@/components/ui/skeleton'
+import { apiClient } from '@/lib/api-client'
+import { Price, PriceChange } from '@/components/ui/price'
 
 // Types
 interface MarketData {
@@ -31,24 +43,25 @@ type FilterType = 'all' | 'indices' | 'commodities'
 // Sentiment Gauge Component
 function SentimentGauge({ title, score, status }: { title: string; score: number; status: string }) {
   const rotation = (score / 100) * 180 - 90
-  const color = score >= 75 ? 'text-[var(--color-profit)]' : score <= 25 ? 'text-[var(--color-loss)]' : 'text-[var(--color-warning)]'
+  const color = score >= 75 ? 'text-[var(--color-profit)]' : score <= 25 ? 'text-[var(--color-loss)]' : 'text-[var(--color-primary)]'
+  const strokeColor = score >= 75 ? 'var(--color-profit)' : score <= 25 ? 'var(--color-loss)' : 'var(--color-primary)'
   
   return (
-    <GlassCard className="flex flex-col items-center justify-center p-6">
-      <h3 className="text-sm text-[var(--text-secondary)] mb-4 font-medium">{title}</h3>
+    <Card variant="glass" className="flex flex-col items-center justify-center p-6">
+      <h3 className="text-sm text-[var(--text-secondary)] mb-4 font-medium uppercase tracking-wider">{title}</h3>
       <div className="relative w-48 h-24 mb-2">
         <div className="absolute w-full h-full rounded-t-full border-[12px] border-[var(--border-subtle)]" />
         <div 
           className="absolute bottom-0 left-1/2 w-1 h-full origin-bottom transition-transform duration-1000"
           style={{ transform: `translateX(-50%) rotate(${rotation}deg)` }}
         >
-          <div className={`w-full h-full ${color} rounded-t-full`} />
+          <div className="w-full h-full rounded-t-full" style={{ backgroundColor: strokeColor }} />
           <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-white rounded-full" />
         </div>
       </div>
       <div className={`text-3xl font-bold ${color}`}>{score}</div>
       <div className={`text-sm font-medium uppercase tracking-wide opacity-80 ${color}`}>{status}</div>
-    </GlassCard>
+    </Card>
   )
 }
 
@@ -62,23 +75,14 @@ export default function DashboardPage() {
   const fetchData = async () => {
     setLoading(true)
     setError(null)
-    try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const res = await fetch(`${API_BASE}/api/market/overview`)
-      if (res.ok) {
-        const json = await res.json()
-        setData(json)
-      } else {
-        setError('Failed to fetch market data')
-        setData(null)
-      }
-    } catch (err) {
-      console.error('Error fetching market data:', err)
-      setError(err instanceof Error ? err.message : 'Network error occurred')
+    const result = await apiClient.get<MarketData>('/api/market/overview')
+    if (result.data) {
+      setData(result.data)
+    } else {
+      setError(result.error?.message || 'Failed to fetch market data')
       setData(null)
-    } finally {
-      setLoading(false)
     }
+    setLoading(false)
   }
 
   useEffect(() => {
@@ -118,12 +122,12 @@ export default function DashboardPage() {
           <SentimentGauge title="India Sentiment" score={data?.sentiment?.india_sentiment?.score ?? 0} status={data?.sentiment?.india_sentiment?.status ?? 'Loading'} />
           
           {/* Market Condition */}
-          <GlassCard className="p-6">
+          <Card variant="glass" className="p-6">
             <div className="flex items-center gap-2 mb-4">
               <Activity className="w-4 h-4 text-[var(--text-tertiary)]" />
-              <h3 className="text-sm text-[var(--text-secondary)] font-medium">Market Condition</h3>
+              <h3 className="text-sm text-[var(--text-secondary)] font-medium uppercase tracking-wider">Market Condition</h3>
             </div>
-            <div className="text-xl font-bold text-[var(--color-secondary)] mb-3">
+            <div className="text-xl font-bold text-[var(--text-primary)] mb-3">
               {loading ? 'Analyzing...' : data?.condition?.status || 'Unavailable'}
             </div>
             <div className="mb-3">
@@ -133,16 +137,16 @@ export default function DashboardPage() {
               </div>
               <div className="h-1.5 w-full bg-[var(--border-subtle)] rounded-full overflow-hidden">
                 <div 
-                  className={`h-full rounded-full transition-all ${(data?.condition?.adx || 0) > 25 ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-secondary)]'}`}
+                  className={`h-full rounded-full transition-all ${(data?.condition?.adx || 0) > 25 ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-warning)]'}`}
                   style={{ width: `${Math.min(data?.condition?.adx || 0, 100)}%` }}
                 />
               </div>
             </div>
-          </GlassCard>
+          </Card>
         </div>
 
         {/* Table */}
-        <GlassCard className="overflow-hidden">
+        <Card variant="glass" className="overflow-hidden">
           <div className="px-6 py-4 border-b border-[var(--border-subtle)]">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-wider">Market Overview</h2>
@@ -154,85 +158,87 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between mt-4">
               <div className="flex gap-2">
                 {(['all', 'indices', 'commodities'] as FilterType[]).map(key => (
-                  <button
+                  <Button
                     key={key}
+                    variant={filter === key ? 'primary' : 'ghost'}
+                    size="sm"
                     onClick={() => setFilter(key)}
-                    className={`px-3 py-1.5 text-xs rounded-lg transition ${
-                      filter === key
-                        ? 'bg-[var(--color-primary-bg)] text-[var(--color-primary)]'
-                        : 'bg-[var(--glass-highlight)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                    }`}
+                    className={filter === key ? '' : 'bg-[var(--glass-highlight)]'}
                   >
                     {key === 'all' ? 'All' : key.charAt(0).toUpperCase() + key.slice(1)}
-                  </button>
+                  </Button>
                 ))}
               </div>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-muted)]" />
-                <input
-                  type="text"
-                  placeholder="Search..."
+              <div className="relative w-64">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-muted)] z-10" />
+                <Input
+                  placeholder="Search indices..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 pr-3 py-1.5 bg-[var(--color-surface)] border border-[var(--border-default)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--color-primary)] w-48"
+                  className="pl-9"
                 />
               </div>
             </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-[var(--border-subtle)]">
-                  <th className="px-6 py-3 text-left text-xs font-medium text-[var(--text-tertiary)] uppercase">Instrument</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-[var(--text-tertiary)] uppercase">Price</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-[var(--text-tertiary)] uppercase">Change</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-[var(--text-tertiary)] uppercase">Trend</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)]">
-                {loading ? (
-                  Array(6).fill(0).map((_, i) => (
-                    <tr key={i} className="animate-pulse">
-                      <td className="px-6 py-4"><div className="h-4 w-24 bg-[var(--glass-highlight)] rounded" /></td>
-                      <td className="px-6 py-4"><div className="h-4 w-20 bg-[var(--glass-highlight)] rounded ml-auto" /></td>
-                      <td className="px-6 py-4"><div className="h-4 w-16 bg-[var(--glass-highlight)] rounded ml-auto" /></td>
-                      <td className="px-6 py-4"><div className="h-4 w-8 bg-[var(--glass-highlight)] rounded mx-auto" /></td>
-                    </tr>
-                  ))
-                ) : filteredIndices.length === 0 ? (
-                  <tr><td colSpan={4} className="px-6 py-12 text-center text-sm text-[var(--text-muted)]">No data found</td></tr>
-                ) : (
-                  filteredIndices.map(idx => {
-                    const isPositive = idx.status === 'POSITIVE'
-                    return (
-                      <tr key={idx.symbol} className="hover:bg-[var(--glass-highlight)] transition">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-1 h-8 rounded ${getRegionColor(idx.name)}`} />
-                            <span className="text-sm font-medium text-[var(--text-primary)]">{idx.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <span className="text-sm font-mono text-[var(--text-primary)]">
-                            {idx.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <span className={`text-sm font-mono ${isPositive ? 'text-[var(--color-profit)]' : 'text-[var(--color-loss)]'}`}>
-                            {isPositive ? '+' : ''}{idx.change.toFixed(2)} ({isPositive ? '+' : ''}{idx.change_pct.toFixed(2)}%)
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          {isPositive ? <TrendingUp className="w-4 h-4 text-[var(--color-profit)] mx-auto" /> : <TrendingDown className="w-4 h-4 text-[var(--color-loss)] mx-auto" />}
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </GlassCard>
+
+          <Table>
+            <TableHeader>
+              <TableRow variant="ghost">
+                <TableHead>Instrument</TableHead>
+                <TableHead numeric>Price</TableHead>
+                <TableHead numeric>Change</TableHead>
+                <TableHead className="text-center">Trend</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading && filteredIndices.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="p-0">
+                    <SkeletonTable rows={5} columns={4} />
+                  </TableCell>
+                </TableRow>
+              ) : error ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="px-6 py-12 text-center text-sm text-[var(--color-loss)]">
+                    {error}
+                  </TableCell>
+                </TableRow>
+              ) : filteredIndices.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="px-6 py-12 text-center text-sm text-[var(--text-muted)]">
+                    No data found
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredIndices.map(idx => (
+                  <TableRow key={idx.symbol}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <div className={`w-1 h-6 rounded ${getRegionColor(idx.name)}`} />
+                        <span className="font-medium">{idx.name}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell numeric>
+                      <Price value={idx.price} />
+                    </TableCell>
+                    <TableCell numeric>
+                      <PriceChange change={idx.change} changePercent={idx.change_pct} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-center">
+                        {idx.status === 'POSITIVE' ? (
+                          <TrendingUp className="w-4 h-4 text-[var(--color-profit)]" />
+                        ) : (
+                          <TrendingDown className="w-4 h-4 text-[var(--color-loss)]" />
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
       </div>
     </div>
   )
