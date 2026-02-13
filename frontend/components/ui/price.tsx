@@ -36,6 +36,10 @@ const Price = React.forwardRef<HTMLSpanElement, PriceProps>(
     };
 
     const formatValue = () => {
+      // Handle undefined/null values
+      if (value === undefined || value === null || !Number.isFinite(value)) {
+        return "-";
+      }
       if (format === "compact") {
         return value >= 1000000 
           ? `${(value / 1000000).toFixed(1)}M`
@@ -59,7 +63,7 @@ const Price = React.forwardRef<HTMLSpanElement, PriceProps>(
         )}
         {...props}
       >
-        {showSign && value >= 0 && "+"}
+        {showSign && value !== undefined && value !== null && value >= 0 && "+"}
         {formatValue()}
       </span>
     );
@@ -86,7 +90,10 @@ const PriceChange = React.forwardRef<HTMLDivElement, PriceChangeProps>(
     className,
     ...props 
   }, ref) => {
-    const isPositive = change >= 0;
+    // Handle undefined/null values
+    const safeChange = change ?? 0;
+    const safeValue = value ?? 0;
+    const isPositive = safeChange >= 0;
     const colorClass = isPositive 
       ? "text-[var(--color-profit)]" 
       : "text-[var(--color-loss)]";
@@ -100,14 +107,14 @@ const PriceChange = React.forwardRef<HTMLDivElement, PriceChangeProps>(
     return (
       <div ref={ref} className={cn("flex flex-col gap-0.5", className)} {...props}>
         <Price 
-          value={value} 
+          value={safeValue} 
           size={size === "lg" ? "xl" : size === "sm" ? "sm" : "lg"} 
         />
         <div className={cn("flex items-center gap-2", sizes[size].change)}>
           <span className={cn("font-mono tabular-nums", colorClass)}>
-            {isPositive ? "+" : ""}{change.toFixed(2)}
+            {isPositive ? "+" : ""}{safeChange.toFixed(2)}
           </span>
-          {showPercent && changePercent !== undefined && (
+          {showPercent && changePercent !== undefined && changePercent !== null && (
             <span className={cn("font-mono tabular-nums", colorClass)}>
               ({isPositive ? "+" : ""}{changePercent.toFixed(2)}%)
             </span>
@@ -130,7 +137,11 @@ interface TickerPriceProps extends React.HTMLAttributes<HTMLDivElement> {
 
 const TickerPrice = React.forwardRef<HTMLDivElement, TickerPriceProps>(
   ({ symbol, price, change, changePercent, volume, className, ...props }, ref) => {
-    const isPositive = change >= 0;
+    // Handle undefined/null values
+    const safePrice = price ?? 0;
+    const safeChange = change ?? 0;
+    const safeChangePercent = changePercent ?? 0;
+    const isPositive = safeChange >= 0;
     const bgClass = isPositive 
       ? "bg-[var(--color-profit-bg)]" 
       : "bg-[var(--color-loss-bg)]";
@@ -149,10 +160,10 @@ const TickerPrice = React.forwardRef<HTMLDivElement, TickerPriceProps>(
         {...props}
       >
         <span className="font-semibold text-[var(--text-primary)]">{symbol}</span>
-        <Price value={price} size="default" />
+        <Price value={safePrice} size="default" />
         <div className={cn("flex items-center gap-1 font-mono tabular-nums text-sm", textClass)}>
           <span>{isPositive ? "▲" : "▼"}</span>
-          <span>{Math.abs(changePercent).toFixed(2)}%</span>
+          <span>{Math.abs(safeChangePercent).toFixed(2)}%</span>
         </div>
         {volume && (
           <span className="text-xs text-[var(--text-muted)]">Vol: {volume}</span>

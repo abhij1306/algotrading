@@ -136,13 +136,15 @@ function ChangeBadge({
   className,
   ...props 
 }: ChangeBadgeProps) {
-  const isPositive = value >= 0;
-  const variant = value === 0 ? "neutral" : isPositive ? "profit" : "loss";
+  // Handle undefined/null values
+  const safeValue = value ?? 0;
+  const isPositive = safeValue >= 0;
+  const variant = safeValue === 0 ? "neutral" : isPositive ? "profit" : "loss";
 
   return (
     <Badge variant={variant} className={cn("font-mono tabular-nums", className)} {...props}>
       {showSign && (isPositive ? "+" : "")}
-      {value.toFixed(2)}
+      {safeValue.toFixed(2)}
       {suffix && <span className="text-[var(--text-muted)]">{suffix}</span>}
     </Badge>
   );

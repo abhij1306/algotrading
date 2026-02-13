@@ -137,9 +137,9 @@ const MetricCard = React.forwardRef<HTMLDivElement, MetricCardProps>(
             <p className="text-2xl font-semibold font-mono tabular-nums">
               {value}
             </p>
-            {change !== undefined && (
+            {change !== undefined && change !== null && (
               <p className={cn("text-sm font-medium", changeColor)}>
-                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+                {change >= 0 ? "+" : ""}{(change ?? 0).toFixed(2)}%
                 {changeLabel && <span className="text-[var(--text-muted)] ml-1">{changeLabel}</span>}
               </p>
             )}
