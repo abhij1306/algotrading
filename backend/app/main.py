@@ -41,11 +41,18 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize Live Market Service
     try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+
+        # Set loop for WebSocket manager
+        from .utils.ws_manager import manager
+        manager.set_loop(loop)
+
+        # Initialize Live Market Service with captured loop
         from .services.live_market_service import live_market
-        # We don't call connect() here to avoid blocking and because
-        # it checks market hours, but we ensure it's ready.
-        # It will be connected on demand via /connect or /subscribe
-        logger.info("🚀 Live Market Service initialized")
+        live_market.connect(loop=loop)
+
+        logger.info("🚀 Live Market Service initialized with event loop")
     except Exception as e:
         logger.error(f"Failed to initialize Live Market Service: {e}")
 

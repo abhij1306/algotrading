@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, and_
+from sqlalchemy import desc, func, and_, or_
 from ..database import get_db, SessionLocal, Company, HistoricalPrice, FinancialStatement
+from ..models.index_membership import IndexMembership
 from ..data_repository import DataRepository
 from ..indicators import compute_features
 from ..data_fetcher import fetch_fyers_quotes
@@ -124,10 +126,21 @@ def get_screener(
         
         # Filter by INDEX (NIFTY50, BANKNIFTY, etc.)
         if index and index != 'ALL':
-             # Resolve symbols from index definition
-             if index in STOCK_INDICES:
-                 target_symbols = STOCK_INDICES[index]['symbols']
-                 companies_query = companies_query.filter(Company.symbol.in_(target_symbols))
+            # Use IndexMembership table for filtering
+            current_date = datetime.now().date()
+            index_symbols_subquery = (
+                db.query(IndexMembership.symbol)
+                .filter(
+                    IndexMembership.index_name == index,
+                    IndexMembership.start_date <= current_date,
+                    or_(
+                        IndexMembership.end_date.is_(None),
+                        IndexMembership.end_date >= current_date
+                    )
+                )
+                .subquery()
+            )
+            companies_query = companies_query.filter(Company.symbol.in_(index_symbols_subquery))
         
         if symbol:
             companies_query = companies_query.filter(Company.symbol.ilike(f"{symbol.upper()}%"))

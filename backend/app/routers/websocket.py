@@ -73,18 +73,47 @@ async def websocket_endpoint(websocket: WebSocket):
     Connect to: ws://localhost:8000/api/websocket/stream
     """
     await manager.connect(websocket)
+    from ..services.live_market_service import live_market
+    import json
+
     try:
         while True:
             # Keep connection open and listen for client messages (e.g. ping/subscribe)
-            # Currently only server->client broadcasting is primary
             data = await websocket.receive_text()
             
-            # Simple pong or ack
-            if data == "ping":
-                await websocket.send_text('{"type":"pong"}')
+            try:
+                message = json.loads(data)
+                action = message.get("action")
+
+                if action == "subscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.subscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "subscribe",
+                            "count": len(symbols)
+                        })
+
+                elif action == "unsubscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.unsubscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "unsubscribe",
+                            "count": len(symbols)
+                        })
                 
+                elif action == "ping" or data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+            except json.JSONDecodeError:
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        # print(f"WebSocket error: {e}")
+        # logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
