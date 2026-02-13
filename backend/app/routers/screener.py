@@ -9,20 +9,56 @@ from ..indicators import compute_features
 from ..data_fetcher import fetch_fyers_quotes
 from ..services.symbol_master import symbol_master
 from ..constants.indices import STOCK_INDICES, DEFAULT_SCREENER_UNIVERSE, TREND_FILTER_UNIVERSE
+from ..services.index_universe_loader import index_universe_loader
 import math  # For NaN/inf filtering
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.get("/indices")
 def get_indices():
-    """Get available index filters for screener"""
-    return {
-        "indices": [
-            {"id": key, "name": val["name"], "description": val["description"]}
-            for key, val in STOCK_INDICES.items()
-        ],
-        "default": DEFAULT_SCREENER_UNIVERSE
-    }
+    """
+    Get available index filters for screener.
+    FIXED: Returns actual loaded indices from CSV files via IndexUniverseLoader.
+    """
+    try:
+        # Get available indices from loader
+        available_indices = index_universe_loader.get_available_indices()
+        
+        # Build response
+        indices = []
+        for index_id in available_indices:
+            description = index_universe_loader.get_index_description(index_id)
+            universe = index_universe_loader.get_index_universe(index_id)
+            
+            indices.append({
+                "id": index_id,
+                "name": description,
+                "count": len(universe) if universe else 0,
+                "description": description
+            })
+        
+        # Sort by name
+        indices.sort(key=lambda x: x['name'])
+        
+        return {
+            "indices": indices,
+            "default": "NIFTY50",
+            "total_loaded": len(indices)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting indices: {e}")
+        # Fallback to hardcoded indices
+        return {
+            "indices": [
+                {"id": key, "name": val["name"], "description": val["description"]}
+                for key, val in STOCK_INDICES.items()
+            ],
+            "default": DEFAULT_SCREENER_UNIVERSE,
+            "error": str(e)
+        }
 
 # Helper function
 def calculate_technical_score(features: dict) -> int:
@@ -126,22 +162,30 @@ def get_screener(
         # 1. Apply Search Filters
         
         # Filter by INDEX (NIFTY50, BANKNIFTY, etc.)
+        # FIXED: Use IndexUniverseLoader for accurate constituent lists
         if index and index != 'ALL':
-            # Use IndexMembership table for filtering
-            current_date = datetime.now().date()
-            index_symbols_subquery = (
-                db.query(IndexMembership.symbol)
-                .filter(
-                    IndexMembership.index_name == index,
-                    IndexMembership.start_date <= current_date,
-                    or_(
-                        IndexMembership.end_date.is_(None),
-                        IndexMembership.end_date >= current_date
+            # Try IndexUniverseLoader first (CSV-based)
+            index_symbols = index_universe_loader.get_index_symbols(index)
+            
+            if index_symbols:
+                # Use CSV-based symbols
+                companies_query = companies_query.filter(Company.symbol.in_(index_symbols))
+            else:
+                # Fallback to IndexMembership table
+                current_date = datetime.now().date()
+                index_symbols_subquery = (
+                    db.query(IndexMembership.symbol)
+                    .filter(
+                        IndexMembership.index_name == index,
+                        IndexMembership.start_date <= current_date,
+                        or_(
+                            IndexMembership.end_date.is_(None),
+                            IndexMembership.end_date >= current_date
+                        )
                     )
+                    .subquery()
                 )
-                .subquery()
-            )
-            companies_query = companies_query.filter(Company.symbol.in_(index_symbols_subquery))
+                companies_query = companies_query.filter(Company.symbol.in_(index_symbols_subquery))
         
         if symbol:
             # Standardize symbol search

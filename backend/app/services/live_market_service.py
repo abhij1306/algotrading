@@ -93,38 +93,43 @@ class LiveMarketService:
 
     def connect(self, loop=None):
         """Connect to external data provider if market is open"""
-        # Capture the running loop for thread-safe operations
+        # FIXED: Properly capture and set event loop
         if loop:
             self.loop = loop
         else:
             try:
-                 self.loop = asyncio.get_running_loop()
+                self.loop = asyncio.get_running_loop()
             except RuntimeError:
-                 logger.warning("LiveMarketService connected outside async loop context? Broadcasts might fail.")
+                logger.warning("LiveMarketService connected outside async loop context")
+                self.loop = None
 
         if self.is_market_open():
             logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
             
             # Start flush loop if not running
-            if self.broadcast_task is None or self.broadcast_task.done():
+            if self.loop and (self.broadcast_task is None or self.broadcast_task.done()):
                 self.broadcast_task = self.loop.create_task(self._flush_loop())
 
             try:
                 self.ws_service = get_websocket_service()
                 
-                # Register Global Handler
-                # Support both naming conventions used by other agents
-                self.ws_service.message_handler = self.handle_tick_incoming
+                # CRITICAL FIX: Set event loop for WebSocket BEFORE connecting
+                if self.loop:
+                    self.ws_service.set_loop(self.loop)
+                    logger.info("✅ Event loop set for WebSocket service")
+                
+                # Register handlers
                 self.ws_service.on_tick_handler = self.handle_tick_incoming
 
                 # Check if already connected
                 if self.ws_service.ws and hasattr(self.ws_service.ws, 'is_connected') and self.ws_service.ws.is_connected():
-                     logger.info("Fyers WebSocket already connected.")
+                    logger.info("✅ WebSocket already connected")
                 else:
-                     # Run connection in a separate thread to avoid blocking startup
-                     import threading
-                     threading.Thread(target=self.ws_service.connect, daemon=True).start()
-                     
+                    # Run connection in a separate thread to avoid blocking startup
+                    import threading
+                    threading.Thread(target=self.ws_service.connect, daemon=True).start()
+                    logger.info("🚀 WebSocket connection started in background thread")
+                      
             except Exception as e:
                 logger.error(f"Failed to connect to Fyers: {e}")
         else:

@@ -8,9 +8,23 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# Lazy import for index universe loader
+_index_universe_loader = None
+
+def _get_index_universe_loader():
+    """Lazy load the index universe loader."""
+    global _index_universe_loader
+    if _index_universe_loader is None:
+        from ..services.index_universe_loader import index_universe_loader
+        _index_universe_loader = index_universe_loader
+    return _index_universe_loader
+
+
 class UniverseManager:
     """
     Manages stock universes, handles historical membership, and derives universes.
+    
+    Integrates with IndexUniverseLoader for accurate index constituent data.
     """
     
     def __init__(self, db: Session):
@@ -19,6 +33,9 @@ class UniverseManager:
     def get_universe_symbols(self, universe_id: str, target_date: date) -> List[str]:
         """
         Returns the list of symbols in a universe as of a specific date.
+        
+        First checks user portfolios, then system universes in DB,
+        then falls back to IndexUniverseLoader for standard indices.
         """
         # First check User Portfolios
         user_portfolio = self.db.query(UserStockPortfolio).filter(
@@ -32,29 +49,53 @@ class UniverseManager:
             StockUniverse.id == universe_id
         ).first()
         
-        if not universe:
-            logger.error(f"Universe {universe_id} not found.")
-            return []
-
-        # Find the symbols_by_date entry that is <= target_date
-        sorted_dates = sorted(universe.symbols_by_date.keys())
-        active_date = None
-        for d_str in sorted_dates:
-            if d_str <= target_date.isoformat():
-                active_date = d_str
-            else:
-                break
+        if universe:
+            # Find the symbols_by_date entry that is <= target_date
+            sorted_dates = sorted(universe.symbols_by_date.keys())
+            active_date = None
+            for d_str in sorted_dates:
+                if d_str <= target_date.isoformat():
+                    active_date = d_str
+                else:
+                    break
+            
+            if not active_date:
+                # Fallback to the earliest available date
+                active_date = sorted_dates[0] if sorted_dates else None
+            
+            return universe.symbols_by_date.get(active_date, []) if active_date else []
         
-        if not active_date:
-            # Fallback to the earliest available date
-            active_date = sorted_dates[0] if sorted_dates else None
+        # Fallback to IndexUniverseLoader for standard indices
+        try:
+            loader = _get_index_universe_loader()
+            symbols = loader.get_symbols_by_date(universe_id, target_date)
+            if symbols:
+                return symbols
+        except Exception as e:
+            logger.debug(f"Could not load from IndexUniverseLoader: {e}")
         
-        return universe.symbols_by_date.get(active_date, []) if active_date else []
+        logger.error(f"Universe {universe_id} not found.")
+        return []
 
-    def seed_default_universes(self, nifty50_symbols: List[str], nifty100_symbols: List[str]):
+    def seed_default_universes(self, nifty50_symbols: List[str] = None, nifty100_symbols: List[str] = None):
         """
         Seeds the initial system universes if they don't exist.
+        
+        Uses IndexUniverseLoader for accurate symbol lists if not provided.
         """
+        # Load from IndexUniverseLoader if symbols not provided
+        if nifty50_symbols is None or nifty100_symbols is None:
+            try:
+                loader = _get_index_universe_loader()
+                if nifty50_symbols is None:
+                    nifty50_symbols = loader.get_index_symbols("NIFTY50")
+                if nifty100_symbols is None:
+                    nifty100_symbols = loader.get_index_symbols("NIFTY100")
+            except Exception as e:
+                logger.warning(f"Could not load from IndexUniverseLoader: {e}")
+                nifty50_symbols = nifty50_symbols or []
+                nifty100_symbols = nifty100_symbols or []
+        
         created = []
         # NIFTY100_CORE
         if not self.db.query(StockUniverse).filter(StockUniverse.id == "NIFTY100_CORE").first():
@@ -81,6 +122,36 @@ class UniverseManager:
 
         self.db.commit()        
         logger.info(f"Seeded default universes: {created}")
+    
+    def seed_all_indices(self):
+        """
+        Seed all available indices from IndexUniverseLoader.
+        """
+        try:
+            loader = _get_index_universe_loader()
+            created = []
+            
+            for index_id in loader.get_available_indices():
+                if not self.db.query(StockUniverse).filter(StockUniverse.id == index_id).first():
+                    symbols = loader.get_index_symbols(index_id)
+                    description = loader.get_index_description(index_id)
+                    
+                    universe = StockUniverse(
+                        id=index_id,
+                        description=description,
+                        symbols_by_date={date.today().isoformat(): symbols},
+                        rebalance_frequency="QUARTERLY",
+                        selection_rules="NSE Official Index List"
+                    )
+                    self.db.add(universe)
+                    created.append(index_id)
+            
+            self.db.commit()
+            logger.info(f"Seeded {len(created)} index universes: {created}")
+            return created
+        except Exception as e:
+            logger.error(f"Failed to seed indices: {e}")
+            return []
     
     def create_custom_portfolio(self, portfolio_id: str, name: str, description: str, symbols: list):
         """

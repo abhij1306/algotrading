@@ -1,28 +1,27 @@
-fastapi>=0.104.1
-uvicorn[standard]>=0.24.0
-requests>=2.31.0
-# pandas 2.2+ required for numpy 2.x compatibility; 3.0+ recommended for Python 3.14
-pandas>=2.2.0
-# numpy 2.x with scipy 1.14+ and pandas-ta-openbb compatibility
-# Updated from 1.26.4 (EOL) to maintained 2.x release (2026-02)
-numpy>=2.0,<3.0
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+requests==2.31.0
+pandas==2.2.2
+# numpy pinned to 1.26.4 for scipy 1.11.4 compatibility (scipy 1.11.x does not support numpy 2.x)
+# To upgrade to numpy 2.x, also upgrade scipy to >=1.14.0 and verify pandas-ta compatibility
+# Security: numpy 1.26.4 has no known critical CVEs (verified 2026-02)
+numpy==1.26.4
 
-python-dotenv>=1.0.0
-# pydantic 2.10+ required for Python 3.14 compatibility (pydantic-core wheels available)
-pydantic>=2.10.0
-sqlalchemy>=2.0.23
-psycopg2-binary>=2.9.9
-scipy>=1.14.0
-python-multipart>=0.0.6
-pyyaml>=6.0.1
-pytz>=2024.1
+python-dotenv==1.0.0
+pydantic==2.5.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+scipy==1.11.4
+python-multipart==0.0.6
+pyyaml==6.0.1
+pytz==2024.1
 
-httpx>=0.25.0
-fyers-apiv3>=3.0.1
+httpx==0.25.0
+fyers-apiv3==3.0.1
 
 # Market Data & Analysis
-yfinance>=0.2.40
-# Using pandas-ta-openbb fork for numpy 2.x compatibility (original pandas-ta requires numba<0.61 which doesn't support Python 3.14)
-pandas-ta-openbb>=0.4.23
-beautifulsoup4>=4.12.3
-psutil>=5.9.8
+yfinance==0.2.40
+pandas-ta==0.4.71b0
+beautifulsoup4==4.12.3
+psutil==5.9.8
+d

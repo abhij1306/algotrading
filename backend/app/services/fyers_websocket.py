@@ -1,13 +1,13 @@
 """
 Fyers WebSocket Service
 Handles live market data streaming using fyers-apiv3 WebSocket
+
+FIXED: Thread-safe message handling with event loop integration
 """
-import os
-import json
-from typing import Dict, List, Callable, Optional
-from datetime import datetime
 import asyncio
 import threading
+from typing import Dict, List, Callable, Optional, Any, Set
+from collections import deque
 
 try:
     from fyers_apiv3.FyersWebsocket import data_ws
@@ -15,10 +15,17 @@ except ImportError:
     data_ws = None
     print("[FyersWS] fyers-apiv3 not installed. WebSocket features unavailable.")
 
+
 class FyersWebSocketService:
     """
     Manages Fyers WebSocket connections for live tick data
+    
+    FIXED: Thread-safe message queueing and event loop integration
     """
+    
+    # Class-level message queue for thread safety
+    _message_queue: deque = deque(maxlen=1000)
+    _queue_lock = threading.Lock()
     
     def __init__(self):
         self.ws = None
@@ -26,6 +33,24 @@ class FyersWebSocketService:
         self.subscribed_symbols = set()
         self.callbacks: Dict[str, List[Callable]] = {}
         self.on_tick_handler: Optional[Callable] = None
+        
+        # ADDED: Event loop for async operations
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        """
+        Set event loop for thread-safe broadcasting
+        CRITICAL: Call this from main async context before starting WebSocket
+        
+        Args:
+            loop: The asyncio event loop from the main thread
+        """
+        self.loop = loop
+        print(f"[FyersWS] Event loop set: {loop is not None}")
+        
+        # Process any queued messages
+        if loop and not loop.is_closed():
+            self._process_queued_messages()
 
     def connect(self):
         """Initialize WebSocket connection using access token"""
@@ -47,34 +72,30 @@ class FyersWebSocketService:
         
         # Create WebSocket instance
         self.access_token = f"{client_id}:{access_token}"
+        
+        # Prevent log spam by using empty log path
         self.ws = data_ws.FyersDataSocket(
             access_token=self.access_token,
             log_path="",
-            litemode=False  # Full mode for OHLCV data
+            litemode=False,
+            write_to_file=False,
+            reconnect=True,
+            reconnect_retry=10,
+            on_connect=self._on_open,
+            on_close=self._on_close,
+            on_error=self._on_error,
+            on_message=self._on_message
         )
         
-        # Assign callbacks
-        self.ws.on_message = self._on_message
-        self.ws.on_error = self._on_error
-        self.ws.on_close = self._on_close
-        self.ws.on_open = self._on_open
-        
-        # Connect
+        # Connect (blocking call - should be run in thread)
         self.ws.connect()
         print("[FyersWS] WebSocket connected")
-
-        # Update loop if not set (e.g., if connect called from main thread later)
-        if self.loop is None:
-            try:
-                self.loop = asyncio.get_running_loop()
-            except RuntimeError:
-                pass
     
     def subscribe(self, symbols: List[str], callback: Callable = None):
         """
         Subscribe to symbols for live data
         Args:
-            symbols: List of symbols in Fyers format (e.g., ["NSE:SBIN-EQ", "NSE:INFY-EQ"])
+            symbols: List of symbols in Fyers format (e.g., ["NSE:SBIN-EQ"])
             callback: Optional callback function to receive tick data
         """
         if not self.ws:
@@ -108,12 +129,14 @@ class FyersWebSocketService:
                 del self.callbacks[symbol]
     
     def _on_message(self, message):
-        """Handle incoming WebSocket message"""
+        """
+        Handle incoming WebSocket message (called from WebSocket thread)
+        FIXED: Thread-safe queueing instead of direct async calls
+        """
         try:
-            # message format: {"symbol": "NSE:SBIN-EQ", "ltp": 500.0, "ch": 2.5, ...}
             symbol = message.get("symbol")
             
-            # 1. Call registered internal callbacks (Strategies)
+            # 1. Call registered callbacks (Strategy-specific)
             if symbol in self.callbacks:
                 for callback in self.callbacks[symbol]:
                     try:
@@ -121,15 +144,44 @@ class FyersWebSocketService:
                     except Exception as e:
                         print(f"[FyersWS] Callback error: {e}")
             
-            # 2. Call global handler (LiveMarketService)
+            # 2. Queue message for async processing (LiveMarketService)
             if self.on_tick_handler:
-                try:
-                    self.on_tick_handler(message)
-                except Exception as e:
-                    print(f"[FyersWS] Tick handler error: {e}")
+                if self.loop and not self.loop.is_closed():
+                    # Schedule handler in the event loop (thread-safe)
+                    asyncio.run_coroutine_threadsafe(
+                        self._async_tick_handler(message),
+                        self.loop
+                    )
+                else:
+                    # Queue for later if loop not available
+                    with FyersWebSocketService._queue_lock:
+                        FyersWebSocketService._message_queue.append(message)
+                        print(f"[FyersWS] Message queued (loop unavailable). Queue size: {len(FyersWebSocketService._message_queue)}")
 
         except Exception as e:
             print(f"[FyersWS] Error processing message: {e}")
+    
+    async def _async_tick_handler(self, message):
+        """Async wrapper for tick handler (runs in event loop)"""
+        try:
+            if self.on_tick_handler:
+                self.on_tick_handler(message)
+        except Exception as e:
+            print(f"[FyersWS] Tick handler error: {e}")
+    
+    def _process_queued_messages(self):
+        """Process any queued messages when loop becomes available"""
+        with FyersWebSocketService._queue_lock:
+            queued = list(FyersWebSocketService._message_queue)
+            FyersWebSocketService._message_queue.clear()
+        
+        if queued and self.loop and not self.loop.is_closed():
+            for msg in queued:
+                asyncio.run_coroutine_threadsafe(
+                    self._async_tick_handler(msg),
+                    self.loop
+                )
+            print(f"[FyersWS] Processed {len(queued)} queued messages")
 
     def _on_error(self, error):
         """Handle WebSocket error"""
@@ -141,7 +193,7 @@ class FyersWebSocketService:
     
     def _on_open(self):
         """Handle WebSocket open"""
-        print("[FyersWS] Connection opened")
+        print("[FyersWS] ✅ Connection opened")
     
     def disconnect(self):
         """Close WebSocket connection"""

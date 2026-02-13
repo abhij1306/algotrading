@@ -11,21 +11,37 @@ CANONICAL FORMATS:
 WHY THIS EXISTS:
 Prevents symbol format hell by centralizing all conversions.
 No more ad-hoc conversions scattered across the codebase.
+
+INDEX UNIVERSE INTEGRATION:
+Uses IndexUniverseLoader for accurate index constituent mappings.
 """
 
-from typing import Dict, Optional, List
-from dataclasses import dataclass
+from typing import Dict, List
+from dataclasses import dataclass, field
 from enum import Enum
 import re
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Lazy import to avoid circular dependencies
+_index_universe_loader = None
+
+def _get_index_universe_loader():
+    """Lazy load the index universe loader to avoid circular imports."""
+    global _index_universe_loader
+    if _index_universe_loader is None:
+        from .index_universe_loader import index_universe_loader
+        _index_universe_loader = index_universe_loader
+    return _index_universe_loader
+
+
 class SymbolFormat(Enum):
     """Supported symbol formats"""
     DB_FORMAT = "DB"           # SBIN
     FYERS_FORMAT = "FYERS"     # NSE:SBIN-EQ
     DISPLAY_FORMAT = "DISPLAY" # SBIN (same as DB)
+
 
 @dataclass
 class SymbolInfo:
@@ -35,6 +51,7 @@ class SymbolInfo:
     series: str = "EQ"       # Series (default EQ - equity, INDEX - index)
     company_name: str = ""   # Full company name
     sector: str = ""         # Sector classification
+    indices: List[str] = field(default_factory=list)  # List of indices this symbol belongs to
 
     @property
     def db_format(self) -> str:
@@ -50,6 +67,7 @@ class SymbolInfo:
     def display_format(self) -> str:
         """Returns: SBIN"""
         return self.ticker
+
 
 class SymbolMaster:
     """
@@ -68,12 +86,26 @@ class SymbolMaster:
         # Get info
         info = symbol_master.get_info("SBIN")
         print(info.fyers_format)  # NSE:SBIN-EQ
+        print(info.indices)  # ["NIFTY50", "NIFTY100", "NIFTYBANK"]
     """
+
+    # Known index symbols (tradeable indices)
+    INDEX_SYMBOLS = {
+        "NIFTY50": "NIFTY 50 Index",
+        "BANKNIFTY": "NIFTY Bank Index",
+        "FINNIFTY": "NIFTY Financial Services Index",
+        "MIDCPNIFTY": "NIFTY Midcap Select Index",
+        "NIFTYNEXT50": "NIFTY Next 50 Index",
+        "NIFTY100": "NIFTY 100 Index",
+        "NIFTY200": "NIFTY 200 Index",
+        "NIFTY500": "NIFTY 500 Index",
+        "NIFTYIT": "NIFTY IT Index",
+        "NIFTYAUTO": "NIFTY Auto Index",
+        "NIFTYREALTY": "NIFTY Realty Index",
+    }
 
     def __init__(self):
         self._cache: Dict[str, SymbolInfo] = {}
-        # Simple predefined list for common indices
-        self._indices = ["NIFTY50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNEXT50"]
         self._load_symbol_master()
 
     def _load_symbol_master(self):
@@ -81,9 +113,14 @@ class SymbolMaster:
         Load symbol master from database and index universe.
         This runs once at startup.
         """
-        # In a real implementation, this would query the DB.
-        # For now, we use a lazy loading approach in get_info.
-        pass
+        # Pre-populate cache with known index symbols
+        for symbol, description in self.INDEX_SYMBOLS.items():
+            self._cache[symbol] = SymbolInfo(
+                ticker=symbol,
+                series="INDEX",
+                company_name=description,
+                sector="Index"
+            )
 
     def to_fyers(self, symbol: str) -> str:
         """
@@ -130,7 +167,7 @@ class SymbolMaster:
         # Support special characters in tickers like M&M or BAJAJ-AUTO
         match = re.match(r'([A-Z]+):([A-Z0-9_&-]+)-(EQ|INDEX|BE|BZ|SM|ST)', symbol)
         if match:
-            exchange, ticker, series = match.groups()
+            _exchange, ticker, _series = match.groups()
             return ticker
 
         # Fallback for some weird formats if any
@@ -152,7 +189,7 @@ class SymbolMaster:
             symbol: Any format
 
         Returns:
-            SymbolInfo with all details
+            SymbolInfo with all details including index membership
         """
         ticker = self.to_db(symbol)
 
@@ -160,12 +197,38 @@ class SymbolMaster:
         if ticker in self._cache:
             return self._cache[ticker]
 
-        # Determine series
+        # Determine series - check if it's a known index
         series = "EQ"
-        if ticker in self._indices or "NIFTY" in ticker:
+        if ticker in self.INDEX_SYMBOLS:
             series = "INDEX"
+        
+        # Get index membership and company info from IndexUniverseLoader
+        company_name = ""
+        sector = ""
+        indices = []
+        
+        try:
+            loader = _get_index_universe_loader()
+            # Get indices this symbol belongs to
+            indices = loader.get_symbol_indices(ticker)
+            
+            # Try to get company info from any index constituent data
+            for index_id in indices:
+                constituent = loader.get_constituent(ticker, index_id)
+                if constituent:
+                    company_name = constituent.company_name
+                    sector = constituent.industry
+                    break
+        except Exception as e:
+            logger.debug(f"Could not load index info for {ticker}: {e}")
 
-        info = SymbolInfo(ticker=ticker, series=series)
+        info = SymbolInfo(
+            ticker=ticker,
+            series=series,
+            company_name=company_name,
+            sector=sector,
+            indices=indices
+        )
         self._cache[ticker] = info
         return info
 
@@ -193,6 +256,41 @@ class SymbolMaster:
         """Convert multiple symbols to DB format"""
         return [self.to_db(s) for s in symbols]
 
+    def get_index_symbols(self, index_id: str) -> List[str]:
+        """
+        Get all symbols in an index.
+        
+        Args:
+            index_id: Index identifier (e.g., "NIFTY50", "NIFTYBANK")
+            
+        Returns:
+            List of symbols in DB format
+        """
+        try:
+            loader = _get_index_universe_loader()
+            return loader.get_index_symbols(index_id)
+        except Exception as e:
+            logger.error(f"Failed to get index symbols for {index_id}: {e}")
+            return []
+
+    def is_index_constituent(self, symbol: str, index_id: str) -> bool:
+        """
+        Check if a symbol is a constituent of a specific index.
+        
+        Args:
+            symbol: Symbol in any format
+            index_id: Index identifier (e.g., "NIFTY50")
+            
+        Returns:
+            True if symbol is in the index
+        """
+        try:
+            loader = _get_index_universe_loader()
+            return loader.is_symbol_in_index(symbol, index_id)
+        except Exception as e:
+            logger.debug(f"Failed to check index membership: {e}")
+            return False
+
     def _is_fyers_format(self, symbol: str) -> bool:
         """Check if symbol is in Fyers format (NSE:SBIN-EQ)"""
         return bool(re.match(r'^[A-Z]+:[A-Z0-9_&-]+-[A-Z]+$', symbol))
@@ -200,6 +298,12 @@ class SymbolMaster:
     def _is_valid_ticker(self, ticker: str) -> bool:
         """Check if ticker is valid (alphanumeric, uppercase, include & and -)"""
         return bool(re.match(r'^[A-Z0-9_&-]+$', ticker)) and len(ticker) <= 20
+
+    def refresh_cache(self) -> None:
+        """Clear cache and reload symbol master."""
+        self._cache.clear()
+        self._load_symbol_master()
+
 
 # Singleton instance
 symbol_master = SymbolMaster()
