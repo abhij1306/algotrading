@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from pathlib import Path
 import os
+import uuid
 # from dotenv import load_dotenv
 from .utils.env_loader import load_dotenv
 

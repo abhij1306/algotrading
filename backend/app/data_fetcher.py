@@ -7,15 +7,7 @@ import os
 from typing import Optional, Dict
 from .config import config
 
-# Add AlgoTrading root directory to path to import Fyers module
-# Get the path: backend/app/data_fetcher.py -> go up 3 levels to AlgoTrading/
-algotrading_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-
-# Remove if already exists and insert at position 0 to ensure it's searched first
-if algotrading_root in sys.path:
-    sys.path.remove(algotrading_root)
-sys.path.insert(0, algotrading_root)
-print(f"[DATA_FETCHER] AlgoTrading root at position 0: {algotrading_root}")
+from .services.fyers_client import get_fyers_client
 
 def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
     """
@@ -32,7 +24,7 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
         return None
     
     try:
-        from fyers import fyers_client
+        fyers_client = get_fyers_client()
         from datetime import datetime, timedelta
         
         # Calculate date range
@@ -126,7 +118,7 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                 # Fetch only missing days
                 if config.HAS_FYERS:
                     try:
-                        from fyers import fyers_client
+                        fyers_client = get_fyers_client()
                         
                         fyers_symbol = f"NSE:{symbol}-EQ"
                         start_date = latest_date + timedelta(days=1)
@@ -208,15 +200,13 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
         return {}
     
     try:
-        # Import fyers client (sys.path already set at module level)
-        from fyers import fyers_client
+        fyers_client = get_fyers_client()
         
         # Format symbols for Fyers (NSE:SYMBOL-EQ)
         fyers_symbols = [f"NSE:{sym}-EQ" for sym in symbols]
-        symbols_str = ",".join(fyers_symbols)
         
         # Get quotes
-        response = fyers_client.get_quotes(symbols_str)
+        response = fyers_client.get_quotes(fyers_symbols)
         
         if response.get('s') != 'ok' or 'd' not in response:
             print(f"Fyers API error: {response}")
