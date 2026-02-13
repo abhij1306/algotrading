@@ -14,11 +14,17 @@ class ConnectionManager:
     def __init__(self):
         # List of active websocket connections
         self.active_connections: List[WebSocket] = []
+        self.loop = None
         
         # Subscriptions mapping: symbol -> list of websockets (optimization)
         # For now, we'll broadcast all to all (simple pub-sub) for simplicity
         # Optimization can be added if traffic becomes huge
         
+    def set_loop(self, loop):
+        """Set event loop for thread-safe broadcasting"""
+        self.loop = loop
+        logger.info(f"[WSManager] Event loop set: {loop is not None}")
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)

@@ -13,27 +13,25 @@ class SubscribeRequest(BaseModel):
     symbols: List[str]
 
 @router.post("/connect")
-def connect_websocket():
+async def connect_websocket():
     """Initialize Fyers WebSocket connection"""
     try:
-        from ..services.fyers_websocket import get_websocket_service
-        ws_service = get_websocket_service()
-        ws_service.connect()
-        return {"status": "connected", "message": "WebSocket initialized"}
+        from ..services.live_market_service import live_market
+        live_market.connect()
+        return {"status": "connected", "message": "WebSocket initialization triggered"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/subscribe")
-def subscribe_symbols(request: SubscribeRequest):
+async def subscribe_symbols(request: SubscribeRequest):
     """Subscribe to symbols for live tick data"""
     try:
-        from ..services.fyers_websocket import get_websocket_service
-        ws_service = get_websocket_service()
+        from ..services.live_market_service import live_market
         
         # Convert symbols to Fyers format using Symbol Master
         fyers_symbols = symbol_master.batch_to_fyers(request.symbols)
         
-        ws_service.subscribe(fyers_symbols)
+        await live_market.subscribe(fyers_symbols)
         return {"status": "subscribed", "symbols": fyers_symbols}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -53,12 +51,8 @@ def disconnect_websocket():
 def get_websocket_status():
     """Check WebSocket connection status"""
     try:
-        from ..services.fyers_websocket import get_websocket_service
-        ws_service = get_websocket_service()
-        return {
-            "connected": ws_service.ws is not None,
-            "subscribed_symbols": list(ws_service.subscribed_symbols)
-        }
+        from ..services.live_market_service import live_market
+        return live_market.get_status()
     except Exception as e:
         return {"connected": False, "error": str(e)}
 
@@ -75,18 +69,47 @@ async def websocket_endpoint(websocket: WebSocket):
     Connect to: ws://localhost:8000/api/websocket/stream
     """
     await manager.connect(websocket)
+    from ..services.live_market_service import live_market
+    import json
+
     try:
         while True:
             # Keep connection open and listen for client messages (e.g. ping/subscribe)
-            # Currently only server->client broadcasting is primary
             data = await websocket.receive_text()
             
-            # Simple pong or ack
-            if data == "ping":
-                await websocket.send_text('{"type":"pong"}')
+            try:
+                message = json.loads(data)
+                action = message.get("action")
+
+                if action == "subscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.subscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "subscribe",
+                            "count": len(symbols)
+                        })
+
+                elif action == "unsubscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.unsubscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "unsubscribe",
+                            "count": len(symbols)
+                        })
                 
+                elif action == "ping" or data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+            except json.JSONDecodeError:
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        # print(f"WebSocket error: {e}")
+        # logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)

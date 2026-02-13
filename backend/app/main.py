@@ -7,7 +7,7 @@ from .smart_trader_api import router as smart_trader_router
 from .ai_insight_api import router as ai_insight_router
 from .exceptions import SmartTraderException
 from sqlalchemy import text
-import logging
+from .utils.logger import setup_logging, get_logger
 
 # Import consolidated routers
 from .routers import (
@@ -17,7 +17,8 @@ from .routers import (
     actions,
     auth,
     admin,
-    portfolio,
+    portfolio_analyst,
+    portfolio_quant,
     backtest,
     portfolio_backtest,
     portfolio_live,
@@ -28,17 +29,52 @@ from .routers import (
 )
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger("main")
 
 # Load environment variables
 load_dotenv()
 
 # Initialize App
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize Live Market Service
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+
+        # Set loop for WebSocket manager
+        from .utils.ws_manager import manager
+        manager.set_loop(loop)
+
+        # Initialize Live Market Service with captured loop
+        from .services.live_market_service import live_market
+        live_market.connect(loop=loop)
+
+        logger.info("🚀 Live Market Service initialized with event loop")
+    except Exception as e:
+        logger.error(f"Failed to initialize Live Market Service: {e}")
+
+    yield
+
+    # Shutdown: Cleanup
+    try:
+        from .services.live_market_service import live_market
+        if live_market.broadcast_task:
+            live_market.broadcast_task.cancel()
+        if live_market.ws_service:
+            live_market.ws_service.disconnect()
+        logger.info("🛑 Live Market Service cleaned up")
+    except Exception as e:
+        logger.error(f"Error during shutdown cleanup: {e}")
+
 app = FastAPI(
     title="SmartTrader 3.0 API",
     version="3.0.0",
-    description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading"
+    description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading",
+    lifespan=lifespan
 )
 
 # ============================================
@@ -119,7 +155,10 @@ app.add_middleware(
 # Initialize Database
 # ============================================
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    logger.warning(f"Database creation failed during startup: {e}")
 
 # ============================================
 # Register Routers
@@ -148,7 +187,8 @@ app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"]
 
 # Consolidated Portfolio & Backtest
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin & Data"])
-app.include_router(portfolio.router)  # /api/portfolio with stocks and strategies
+app.include_router(portfolio_analyst.router)
+app.include_router(portfolio_quant.router)
 app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtesting"])
 app.include_router(portfolio_backtest.router)
 app.include_router(portfolio_live.router)

@@ -185,6 +185,10 @@ class SymbolMaster:
         """Convert multiple symbols to Fyers format"""
         return [self.to_fyers(s) for s in symbols]
 
+    def to_fyers_list(self, symbols: List[str]) -> List[str]:
+        """Alias for batch_to_fyers (compatibility)"""
+        return self.batch_to_fyers(symbols)
+
     def batch_to_db(self, symbols: List[str]) -> List[str]:
         """Convert multiple symbols to DB format"""
         return [self.to_db(s) for s in symbols]

@@ -91,5 +91,7 @@ try:
     if os.getenv("INIT_DB_ON_IMPORT", "True") == "True":
         Base.metadata.create_all(bind=engine)
 except Exception as e:
-    # Silent fail for test/offline environments
-    pass
+    import logging
+    logging.getLogger(__name__).warning(
+        f"Could not initialize database tables on import: {e}"
+    )

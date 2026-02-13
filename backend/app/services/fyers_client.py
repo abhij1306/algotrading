@@ -5,13 +5,13 @@ Handles authentication, token management, and data fetching.
 import os
 import sys
 import json
-import logging
 import datetime
 from typing import Dict, Any, Optional, List
 from fyers_apiv3 import fyersModel
+from ..utils.logger import get_logger
 
 # Setup Logging
-logger = logging.getLogger(__name__)
+logger = get_logger("services.fyers_client")
 
 # Constants
 FYERS_TOKEN_PATH = os.path.join(os.getcwd(), "fyers", "config", "access_token.json")

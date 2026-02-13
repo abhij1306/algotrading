@@ -8,7 +8,6 @@ from typing import Dict, List, Callable, Optional
 from datetime import datetime
 import asyncio
 import threading
-from ..utils.ws_manager import manager as Manager
 
 try:
     from fyers_apiv3.FyersWebsocket import data_ws
@@ -26,13 +25,7 @@ class FyersWebSocketService:
         self.access_token = None
         self.subscribed_symbols = set()
         self.callbacks: Dict[str, List[Callable]] = {}
-        
-        # Capture the main event loop for thread-safe broadcasting
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = None
-            print("[FyersWS] Warning: No running event loop captured during init.")
+        self.on_tick_handler: Optional[Callable] = None
 
     def connect(self):
         """Initialize WebSocket connection using access token"""
@@ -43,6 +36,9 @@ class FyersWebSocketService:
         from .fyers_client import get_fyers_client
         fyers_client = get_fyers_client()
         
+        if fyers_client is None:
+            raise Exception("Fyers credentials not found. Please login first.")
+
         client_id = fyers_client.client_id
         access_token = fyers_client.access_token
         
@@ -125,19 +121,12 @@ class FyersWebSocketService:
                     except Exception as e:
                         print(f"[FyersWS] Callback error: {e}")
             
-            # 2. PROD: Broadcast to frontend clients via WebSocket Manager
-            if Manager and self.loop:
-                # Thread-safe broadcast
-                asyncio.run_coroutine_threadsafe(Manager.broadcast(message), self.loop)
-            elif Manager:
-                 # Fallback: if no loop captured (rare in FastAPI), try to get one or warn
-                 # This part is risky but kept for edge cases
-                 try:
-                     loop = asyncio.get_event_loop()
-                     if loop.is_running():
-                         loop.create_task(Manager.broadcast(message))
-                 except Exception:
-                     pass # Fail silently to avoid crashing the socket thread
+            # 2. Call global handler (LiveMarketService)
+            if self.on_tick_handler:
+                try:
+                    self.on_tick_handler(message)
+                except Exception as e:
+                    print(f"[FyersWS] Tick handler error: {e}")
 
         except Exception as e:
             print(f"[FyersWS] Error processing message: {e}")

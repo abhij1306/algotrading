@@ -26,6 +26,7 @@ class LiveMarketService:
         self.ws_service: Optional[FyersWebSocketService] = None
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
+        self.latest_values = {}
         self.loop = None
         self.broadcast_task = None
         self.dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
@@ -52,6 +53,7 @@ class LiveMarketService:
         # Symbol is already converted to DB format by handle_tick_incoming
         symbol = tick.get("symbol")
         self.tick_buffer[symbol] = tick
+        self.latest_values[symbol] = tick
 
     async def _flush_loop(self):
         """Background task to flush buffered ticks every 1s"""
@@ -89,13 +91,16 @@ class LiveMarketService:
             except Exception as e:
                 logger.error(f"Error processing incoming tick: {e}")
 
-    def connect(self):
+    def connect(self, loop=None):
         """Connect to external data provider if market is open"""
         # Capture the running loop for thread-safe operations
-        try:
-             self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-             logger.warning("LiveMarketService connected outside async loop context? Broadcasts might fail.")
+        if loop:
+            self.loop = loop
+        else:
+            try:
+                 self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                 logger.warning("LiveMarketService connected outside async loop context? Broadcasts might fail.")
 
         if self.is_market_open():
             logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
@@ -108,10 +113,12 @@ class LiveMarketService:
                 self.ws_service = get_websocket_service()
                 
                 # Register Global Handler
+                # Support both naming conventions used by other agents
                 self.ws_service.message_handler = self.handle_tick_incoming
+                self.ws_service.on_tick_handler = self.handle_tick_incoming
 
                 # Check if already connected
-                if self.ws_service.ws and self.ws_service.ws.is_connected():
+                if self.ws_service.ws and hasattr(self.ws_service.ws, 'is_connected') and self.ws_service.ws.is_connected():
                      logger.info("Fyers WebSocket already connected.")
                 else:
                      # Run connection in a separate thread to avoid blocking startup
@@ -172,6 +179,21 @@ class LiveMarketService:
             "fyers_connected": (self.ws_service is not None and 
                                 self.ws_service.ws is not None and 
                                 self.ws_service.ws.is_connected())
+        }
+
+    def get_latest_tick(self, symbol: str) -> Optional[dict]:
+        """
+        Get latest tick for symbol
+        Returns cached live tick if available.
+        """
+        return self.latest_values.get(symbol)
+
+    def get_latest_ticks(self, symbols: List[str]) -> dict:
+        """Get latest ticks for multiple symbols"""
+        return {
+            symbol: self.latest_values.get(symbol)
+            for symbol in symbols
+            if symbol in self.latest_values
         }
 
 # Singleton

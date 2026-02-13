@@ -177,7 +177,7 @@ class LivePortfolioState(Base):
     breach_details = Column(String(255))
 
     # Strategy Performance Snapshot
-    strategy_performance = Column(JSON, default={})
+    strategy_performance = Column(JSON, default=dict)
 
     # Relationships
     portfolio = relationship("ResearchPortfolio")
