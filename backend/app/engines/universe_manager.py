@@ -3,7 +3,9 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 from ..database import StockUniverse, UserStockPortfolio, Company, HistoricalPrice, engine
+from ..models.index_membership import IndexMembership
 import json
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,9 @@ class UniverseManager:
     Integrates with IndexUniverseLoader for accurate index constituent data.
     """
     
+    # Static cache to avoid redundant DB queries across multiple instances (e.g. in backtest loops)
+    _symbols_cache: Dict[str, List[str]] = {}
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -34,17 +39,26 @@ class UniverseManager:
         """
         Returns the list of symbols in a universe as of a specific date.
         
-        First checks user portfolios, then system universes in DB,
-        then falls back to IndexUniverseLoader for standard indices.
+        Resolution Priority:
+        1. User Portfolios (UserStockPortfolio)
+        2. System Universes (StockUniverse)
+        3. Index Membership History (IndexMembership)
+        4. Current Index Files (IndexUniverseLoader fallback)
         """
-        # First check User Portfolios
+        # Check cache first
+        cache_key = f"{universe_id}_{target_date.isoformat()}"
+        if cache_key in self._symbols_cache:
+            return self._symbols_cache[cache_key]
+
+        # 1. First check User Portfolios
         user_portfolio = self.db.query(UserStockPortfolio).filter(
             UserStockPortfolio.portfolio_id == universe_id
         ).first()
         if user_portfolio:
+            self._symbols_cache[cache_key] = user_portfolio.symbols
             return user_portfolio.symbols
 
-        # Then check System Universes
+        # 2. Then check System Universes (JSON-based history)
         universe = self.db.query(StockUniverse).filter(
             StockUniverse.id == universe_id
         ).first()
@@ -63,18 +77,41 @@ class UniverseManager:
                 # Fallback to the earliest available date
                 active_date = sorted_dates[0] if sorted_dates else None
             
-            return universe.symbols_by_date.get(active_date, []) if active_date else []
+            if active_date:
+                symbols = universe.symbols_by_date.get(active_date, [])
+                self._symbols_cache[cache_key] = symbols
+                return symbols
         
-        # Fallback to IndexUniverseLoader for standard indices
+        # 3. Then check IndexMembership for historical tracking
+        # We look for records that were active on the target_date
+        try:
+            membership_symbols = self.db.query(IndexMembership.symbol).filter(
+                IndexMembership.index_name == universe_id,
+                IndexMembership.start_date <= target_date,
+                or_(
+                    IndexMembership.end_date.is_(None),
+                    IndexMembership.end_date >= target_date
+                )
+            ).all()
+
+            if membership_symbols:
+                symbols = [s[0] for s in membership_symbols]
+                self._symbols_cache[cache_key] = symbols
+                return symbols
+        except Exception as e:
+            logger.error(f"Error querying IndexMembership for {universe_id}: {e}")
+
+        # 4. Fallback to IndexUniverseLoader for standard current indices
         try:
             loader = _get_index_universe_loader()
             symbols = loader.get_symbols_by_date(universe_id, target_date)
             if symbols:
+                self._symbols_cache[cache_key] = symbols
                 return symbols
         except Exception as e:
             logger.debug(f"Could not load from IndexUniverseLoader: {e}")
         
-        logger.error(f"Universe {universe_id} not found.")
+        logger.error(f"Universe {universe_id} not found or has no constituents for {target_date}.")
         return []
 
     def seed_default_universes(self, nifty50_symbols: List[str] = None, nifty100_symbols: List[str] = None):

@@ -10,6 +10,7 @@ from ..data_fetcher import fetch_fyers_quotes
 from ..services.symbol_master import symbol_master
 from ..constants.indices import STOCK_INDICES, DEFAULT_SCREENER_UNIVERSE, TREND_FILTER_UNIVERSE
 from ..services.index_universe_loader import index_universe_loader
+from ..engines.universe_manager import UniverseManager
 import math  # For NaN/inf filtering
 import logging
 
@@ -17,25 +18,33 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 @router.get("/indices")
-def get_indices():
+def get_indices(db: Session = Depends(get_db)):
     """
     Get available index filters for screener.
-    FIXED: Returns actual loaded indices from CSV files via IndexUniverseLoader.
+    Combines indices from static CSV files and historical IndexMembership table.
     """
     try:
-        # Get available indices from loader
-        available_indices = index_universe_loader.get_available_indices()
+        # 1. Get available indices from loader (Static CSVs)
+        available_indices = set(index_universe_loader.get_available_indices())
+
+        # 2. Get available indices from IndexMembership (Database)
+        db_indices = db.query(IndexMembership.index_name).distinct().all()
+        for row in db_indices:
+            available_indices.add(row[0])
         
         # Build response
         indices = []
         for index_id in available_indices:
-            description = index_universe_loader.get_index_description(index_id)
-            universe = index_universe_loader.get_index_universe(index_id)
+            description = index_universe_loader.get_index_description(index_id) or index_id
+
+            # Count constituents (use current date)
+            univ_mgr = UniverseManager(db)
+            symbols = univ_mgr.get_universe_symbols(index_id, datetime.now().date())
             
             indices.append({
                 "id": index_id,
                 "name": description,
-                "count": len(universe) if universe else 0,
+                "count": len(symbols),
                 "description": description
             })
         
@@ -123,15 +132,14 @@ def get_screener(
     sector: str = None,
     view: str = 'technical', # 'technical' or 'financial'
     filter_type: str = 'ALL', # 'ALL', 'VOLUME_SHOCKER', '52W_HIGH', '52W_LOW', 'PRICE_SHOCKER'
-    index: str = 'NIFTY50'
+    index: str = 'NIFTY50',
+    db: Session = Depends(get_db)
 ):
     """
     Returns paginated list of companies with technical indicators or financial data.
     Also supports sorting and filtering by symbol, sector, and predefined technical scans.
     """
-    db = None  # Initialize to prevent UnboundLocalError in exception handler
     try:
-        db = SessionLocal()
         repo = DataRepository(db)
         
         # Get latest date for each company's historical prices
@@ -162,30 +170,14 @@ def get_screener(
         # 1. Apply Search Filters
         
         # Filter by INDEX (NIFTY50, BANKNIFTY, etc.)
-        # FIXED: Use IndexUniverseLoader for accurate constituent lists
+        # Use UniverseManager for robust, versioned index constituent lookup
         if index and index != 'ALL':
-            # Try IndexUniverseLoader first (CSV-based)
-            index_symbols = index_universe_loader.get_index_symbols(index)
+            univ_mgr = UniverseManager(db)
+            current_date = datetime.now().date()
+            index_symbols = univ_mgr.get_universe_symbols(index, current_date)
             
             if index_symbols:
-                # Use CSV-based symbols
                 companies_query = companies_query.filter(Company.symbol.in_(index_symbols))
-            else:
-                # Fallback to IndexMembership table
-                current_date = datetime.now().date()
-                index_symbols_subquery = (
-                    db.query(IndexMembership.symbol)
-                    .filter(
-                        IndexMembership.index_name == index,
-                        IndexMembership.start_date <= current_date,
-                        or_(
-                            IndexMembership.end_date.is_(None),
-                            IndexMembership.end_date >= current_date
-                        )
-                    )
-                    .subquery()
-                )
-                companies_query = companies_query.filter(Company.symbol.in_(index_symbols_subquery))
         
         if symbol:
             # Standardize symbol search
@@ -397,8 +389,6 @@ def get_screener(
                     'swing_score': 50
                 })
         
-        db.close()
-        
         return {
             'data': computed_list,
             'meta': {
@@ -411,8 +401,6 @@ def get_screener(
         }
         
     except Exception as e:
-        if db:
-            db.close()
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -424,12 +412,12 @@ def get_financials_screener(
     sort_by: str = 'symbol', 
     sort_order: str = 'asc', 
     symbol: str = None,
-    sector: str = None
+    sector: str = None,
+    db: Session = Depends(get_db)
 ):
     """
     Returns paginated list of companies with latest financial data
     """
-    db = SessionLocal()
     try:
         offset = (page - 1) * limit
         
@@ -488,8 +476,6 @@ def get_financials_screener(
                 'period_end': fs.period_end.isoformat()
             })
             
-        db.close()
-        
         return {
             'data': data,
             'meta': {

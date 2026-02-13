@@ -20,6 +20,7 @@ from ...database import (
 )
 from ..strategies import STRATEGY_REGISTRY
 from ..data_provider import DataProvider
+from ..universe_manager import UniverseManager
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +84,7 @@ class QuantBacktestRunner:
         merged_params = {**(contract.parameters or {}), **(params or {})}
         strategy = strategy_class(self.db, **merged_params)
         
-        # Get symbols for universe
-        symbols = self._get_universe_symbols(universe_id)
-        if not symbols:
-            raise ValueError(f"No symbols found for universe {universe_id}")
-        
-        logger.info(f"Running {strategy_id} on {len(symbols)} symbols from {start_date} to {end_date}")
+        logger.info(f"Starting {strategy_id} backtest on universe {universe_id} from {start_date} to {end_date}")
         
         # Run vectorized daily loop
         daily_results = []
@@ -109,7 +105,13 @@ class QuantBacktestRunner:
                 current_date += timedelta(days=1)
                 continue
             
-            # Execute strategy for this day
+            # 1. Get Universe for this specific date
+            symbols = self._get_universe_symbols(universe_id, current_date)
+            if not symbols:
+                current_date += timedelta(days=1)
+                continue
+
+            # 2. Execute strategy for this day
             try:
                 day_result = strategy.run_day(
                     current_date=current_date,
@@ -194,14 +196,21 @@ class QuantBacktestRunner:
             "daily_results": daily_results
         }
     
-    def _get_universe_symbols(self, universe_id: str) -> List[str]:
-        """Get symbols for a universe."""
-        # For NIFTY strategies, just return the index
-        if universe_id in ["NIFTY50", "NIFTY100", "BANKNIFTY"]:
-            return [universe_id]
+    def _get_universe_symbols(self, universe_id: str, target_date: Optional[date] = None) -> List[str]:
+        """
+        Get symbols for a universe.
+        Uses UniverseManager for historical constituent reconstruction.
+        """
+        univ_mgr = UniverseManager(self.db)
+        symbols = univ_mgr.get_universe_symbols(universe_id, target_date or date.today())
         
-        # TODO: Implement proper universe lookup from database
-        return [universe_id]
+        if not symbols:
+            # Fallback for index tickers themselves if they are not in membership table
+            # but are known index symbols
+            if universe_id in ["NIFTY50", "NIFTY100", "BANKNIFTY", "NIFTYIT", "NIFTYBANK"]:
+                return [universe_id]
+
+        return symbols
     
     def _calculate_sharpe(self, daily_results: List) -> float:
         """Calculate Sharpe ratio from daily results."""
