@@ -84,7 +84,7 @@ class FyersClient:
 
     def get_quotes(self, symbols: List[str]) -> Dict[str, Any]:
         """
-        Fetch quotes for a list of symbols
+        Fetch raw quotes for a list of symbols
         symbols: List like ['NSE:RELIANCE-EQ', 'NSE:TCS-EQ']
         """
         if not self.fyers:
@@ -98,6 +98,44 @@ class FyersClient:
         except Exception as e:
             logger.error(f"Error fetching quotes: {e}")
             return {}
+
+    def get_parsed_quotes(self, symbols: List[str]) -> Dict[str, Dict]:
+        """
+        Fetch and parse quotes into a standardized format
+        symbols: List like ['NSE:RELIANCE-EQ', 'NSE:TCS-EQ']
+        Returns mapping of symbol name (unprefixed) to quote data
+        """
+        response = self.get_quotes(symbols)
+        if response.get('s') != 'ok' or 'd' not in response:
+            return {}
+
+        quotes_dict = {}
+        for quote in response['d']:
+            # Handle both formats: NSE:RELIANCE-EQ or NSE:NIFTY50-INDEX
+            symbol_raw = quote['n']
+            symbol = symbol_raw.replace('NSE:', '').replace('-EQ', '').replace('-INDEX', '')
+            v = quote.get('v', {})
+
+            ltp = v.get('lp', 0)
+            prev_close = v.get('prev_close_price', ltp)
+
+            # Calculate percentage change
+            if prev_close and prev_close > 0:
+                change_pct = ((ltp - prev_close) / prev_close) * 100
+            else:
+                change_pct = 0
+
+            quotes_dict[symbol] = {
+                'ltp': ltp,
+                'volume': v.get('volume', 0),
+                'high': v.get('high_price', 0),
+                'low': v.get('low_price', 0),
+                'open': v.get('open_price', 0),
+                'prev_close': prev_close,
+                'change_pct': round(change_pct, 2),
+            }
+
+        return quotes_dict
 
     def get_historical_data(self, symbol: str, timeframe: str, range_from: str, range_to: str) -> Dict[str, Any]:
         """

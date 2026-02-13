@@ -24,7 +24,6 @@ def calculate_trending_stocks(
     """
     Get trending stocks using LIVE market data + Historical Baselines
     """
-    from .fyers_direct import get_fyers_quotes
     
     # 1. Get Historical Baselines (Avg Volume, 52W High, etc.)
     # -------------------------------------------------------

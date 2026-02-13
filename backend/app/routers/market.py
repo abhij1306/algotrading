@@ -26,16 +26,13 @@ def get_live_quotes(symbols: str, db: Session = Depends(get_db)):
         )
     
     try:
-        symbol_list = [s.strip() for s in symbols.split(',')]
+        symbol_list = [f"NSE:{s.strip()}-EQ" for s in symbols.split(',')]
         
-        # Fetch live quotes from Fyers
-        try:
-            from ..fyers_direct import get_fyers_quotes
-            quotes = get_fyers_quotes(symbol_list)
-            return {"quotes": quotes}
-        except ImportError:
-            print("Warning: fyers_direct module not found")
-            return {"quotes": {}}
+        # Fetch live quotes from Fyers using unified service
+        from ..services.fyers_client import get_fyers_client
+        fyers = get_fyers_client()
+        quotes = fyers.get_parsed_quotes(symbol_list)
+        return {"quotes": quotes}
             
     except Exception as e:
         print(f"Error fetching live quotes: {str(e)}")

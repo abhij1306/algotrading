@@ -3,18 +3,7 @@ import os
 from typing import Dict, Any, List, Optional
 from ..base import IBroker, OrderResponse, Position, BrokerFunds
 
-# Add project root to sys.path to access 'fyers' module
-# Current: backend/app/brokers/plugins/fyers.py
-# Root: c:/AlgoTrading
-# Path: ../../../../..
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
-
-try:
-    from fyers.fyers_client import load_fyers
-except ImportError:
-    load_fyers = None
+from ...services.fyers_client import get_fyers_client
 
 class FyersBroker(IBroker):
     """
@@ -28,8 +17,8 @@ class FyersBroker(IBroker):
     def connect(self):
         """Attempt to load authenticated client"""
         try:
-            if load_fyers:
-                self.client = load_fyers()
+            fyers_service = get_fyers_client()
+            self.client = fyers_service.fyers
         except Exception as e:
             print(f"Fyers Broker: Not connected ({e})")
             self.client = None
