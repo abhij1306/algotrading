@@ -5,6 +5,11 @@ import requests
 import json
 
 def test_dashboard():
+    """
+    Run simple smoke tests against local market dashboard endpoints and print parsed response details.
+    
+    Sends GET requests to /api/market/market-overview and /api/market/top-gainers (limit=5, index=NIFTY50). For each endpoint prints the HTTP status; if the status is 200, parses JSON and prints key fields: market status and indices (name, price, source) for market-overview; is_live, count, and each top-gainer's symbol, price, change_pct, and source for top-gainers. Any exceptions raised during requests are caught and printed.
+    """
     base_url = "http://localhost:8000/api/market"
 
     print("🔍 Testing /market-overview...")

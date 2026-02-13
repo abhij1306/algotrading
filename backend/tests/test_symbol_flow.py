@@ -61,7 +61,11 @@ def test_invalid_symbol_rejection():
 
 @pytest.mark.asyncio
 async def test_websocket_symbol_mapping():
-    """Test that LiveMarketService correctly maps symbols in ticks"""
+    """
+    Verify LiveMarketService maps an incoming Fyers tick to the expected DB symbol and buffers its data.
+    
+    Asserts that a simulated Fyers tick with symbol "NSE:SBIN-EQ" is mapped to "SBIN" in the service's tick_buffer and that the buffered entry contains the original last traded price.
+    """
     # Create service
     service = LiveMarketService()
     service.loop = asyncio.get_running_loop()

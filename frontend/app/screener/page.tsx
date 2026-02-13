@@ -43,6 +43,15 @@ interface Stock {
   revenue?: number
 }
 
+/**
+ * Renders the stock screener page with search, filtering, live updates, and paginated results.
+ *
+ * Displays a control bar with symbol autocomplete, index/sector/filter selectors, refresh and view-mode toggles;
+ * fetches and paginates screener data from the API, refreshes periodically, and applies real-time price updates via WebSocket;
+ * shows loading, error, data table, or empty states as appropriate.
+ *
+ * @returns The Screener page React element containing search controls, filter controls, the results table (or zero/error states), and pagination footer.
+ */
 export default function ScreenerPage() {
   const [stocks, setStocks] = useState<Stock[]>([])
   const [loading, setLoading] = useState(false)

@@ -38,17 +38,32 @@ class SymbolInfo:
 
     @property
     def db_format(self) -> str:
-        """Returns: SBIN"""
+        """
+        Return the canonical database representation of the symbol.
+        
+        Returns:
+            The ticker string used as the DB format (e.g., "SBIN").
+        """
         return self.ticker
 
     @property
     def fyers_format(self) -> str:
-        """Returns: NSE:SBIN-EQ or NSE:NIFTY50-INDEX"""
+        """
+        Get the symbol in FYERS format (EXCHANGE:TICKER-SERIES).
+        
+        Returns:
+            fyers (str): Symbol formatted as "EXCHANGE:TICKER-SERIES", for example "NSE:SBIN-EQ" or "NSE:NIFTY50-INDEX".
+        """
         return f"{self.exchange}:{self.ticker}-{self.series}"
 
     @property
     def display_format(self) -> str:
-        """Returns: SBIN"""
+        """
+        Display representation of the symbol.
+        
+        Returns:
+            str: Ticker string used for display (e.g., "SBIN").
+        """
         return self.ticker
 
 class SymbolMaster:
@@ -71,6 +86,11 @@ class SymbolMaster:
     """
 
     def __init__(self):
+        """
+        Initialize the SymbolMaster internal state.
+        
+        Creates an empty cache for SymbolInfo objects, sets a small predefined list of common index tickers, and invokes the loader to populate any initial symbol data.
+        """
         self._cache: Dict[str, SymbolInfo] = {}
         # Simple predefined list for common indices
         self._indices = ["NIFTY50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNEXT50"]
@@ -78,8 +98,9 @@ class SymbolMaster:
 
     def _load_symbol_master(self):
         """
-        Load symbol master from database and index universe.
-        This runs once at startup.
+        Initialize symbol master data at application startup.
+        
+        This method is a startup hook intended to load symbol master information (e.g., from a database or index universe). In the current implementation it performs no action because symbol information is populated lazily by get_info.
         """
         # In a real implementation, this would query the DB.
         # For now, we use a lazy loading approach in get_info.
@@ -87,16 +108,16 @@ class SymbolMaster:
 
     def to_fyers(self, symbol: str) -> str:
         """
-        Convert any format to Fyers format.
-
-        Args:
-            symbol: Can be "SBIN" or "NSE:SBIN-EQ" (idempotent)
-
+        Convert a symbol to FYERS format (e.g., "NSE:SBIN-EQ" or "NSE:NIFTY50-INDEX").
+        
+        Parameters:
+            symbol (str): Input symbol in DB format (e.g., "SBIN") or already in FYERS format (e.g., "NSE:SBIN-EQ").
+        
         Returns:
-            "NSE:SBIN-EQ" or "NSE:NIFTY50-INDEX"
-
+            str: Symbol in FYERS format.
+        
         Raises:
-            ValueError: If symbol is invalid
+            ValueError: If the input ticker is not a valid ticker.
         """
         # If already in Fyers format, return as-is
         if self._is_fyers_format(symbol):
@@ -114,13 +135,15 @@ class SymbolMaster:
 
     def to_db(self, symbol: str) -> str:
         """
-        Convert any format to DB format.
-
-        Args:
-            symbol: Can be "SBIN" or "NSE:SBIN-EQ" (idempotent)
-
+        Convert a symbol string into the DB format (ticker only).
+        
+        Accepts inputs such as "SBIN", "NSE:SBIN-EQ", or "NSE:NIFTY50-INDEX" and returns the base ticker in uppercase. Handles tickers containing characters like "&" or "-" (e.g., "M&M", "BAJAJ-AUTO").
+        
+        Parameters:
+            symbol (str): Input symbol in any supported form.
+        
         Returns:
-            "SBIN"
+            str: The ticker portion in DB format (e.g., "SBIN" or "NIFTY50").
         """
         # If already in DB format (no colon, and no dash except for tickers like BAJAJ-AUTO), return as-is
         if ':' not in symbol and not symbol.endswith(('-EQ', '-INDEX')):
@@ -139,20 +162,26 @@ class SymbolMaster:
 
     def to_display(self, symbol: str) -> str:
         """
-        Convert any format to display format.
-        Currently same as DB format.
+        Convert a symbol to display format (ticker-only).
+        
+        Accepts symbols in DB format (e.g., "SBIN") or FYERS format (e.g., "NSE:SBIN-EQ") and returns the ticker in uppercase.
+        
+        Returns:
+            display (str): Ticker in display format (ticker-only, uppercase).
         """
         return self.to_db(symbol)
 
     def get_info(self, symbol: str) -> SymbolInfo:
         """
-        Get complete symbol information.
-
-        Args:
-            symbol: Any format
-
+        Retrieve the canonical SymbolInfo for a given symbol.
+        
+        Accepts a symbol in any supported format, normalizes it to the DB ticker, and returns a cached or newly created SymbolInfo. The returned info uses series "INDEX" for known indices or tickers containing "NIFTY", otherwise "EQ".
+        
+        Parameters:
+            symbol (str): Symbol in any supported format (e.g., "SBIN", "NSE:SBIN-EQ").
+        
         Returns:
-            SymbolInfo with all details
+            SymbolInfo: Symbol information containing ticker, exchange, series, company_name, and sector.
         """
         ticker = self.to_db(symbol)
 
@@ -170,7 +199,16 @@ class SymbolMaster:
         return info
 
     def is_valid(self, symbol: str, format: SymbolFormat) -> bool:
-        """Validate symbol format"""
+        """
+        Check whether a symbol conforms to the specified symbol format.
+        
+        Parameters:
+            symbol (str): The symbol string to validate (e.g., "SBIN" or "NSE:SBIN-EQ").
+            format (SymbolFormat): The expected symbol format to validate against.
+        
+        Returns:
+            `true` if the symbol matches the provided format, `false` otherwise. Returns `false` if an internal error occurs during validation.
+        """
         try:
             if format == SymbolFormat.DB_FORMAT:
                 return self._is_valid_ticker(symbol)
@@ -182,23 +220,60 @@ class SymbolMaster:
             return False
 
     def batch_to_fyers(self, symbols: List[str]) -> List[str]:
-        """Convert multiple symbols to Fyers format"""
+        """
+        Convert a list of symbols to FYERS format.
+        
+        Parameters:
+            symbols (List[str]): Input symbols in any supported format (e.g., "SBIN", "NSE:SBIN-EQ").
+        
+        Returns:
+            List[str]: Symbols converted to FYERS format, in the same order as the input.
+        """
         return [self.to_fyers(s) for s in symbols]
 
     def to_fyers_list(self, symbols: List[str]) -> List[str]:
-        """Alias for batch_to_fyers (compatibility)"""
+        """
+        Convert a list of symbols to FYERS format.
+        
+        Parameters:
+            symbols (List[str]): Symbols to convert; each may be in any supported input format.
+        
+        Returns:
+            List[str]: Symbols converted to FYERS format (e.g., "NSE:SBIN-EQ").
+        """
         return self.batch_to_fyers(symbols)
 
     def batch_to_db(self, symbols: List[str]) -> List[str]:
-        """Convert multiple symbols to DB format"""
+        """
+        Convert a sequence of symbols into DB format (ticker-only).
+        
+        Parameters:
+            symbols (List[str]): Symbols in any supported format (for example "SBIN" or "NSE:SBIN-EQ").
+        
+        Returns:
+            List[str]: List of symbols normalized to DB format (ticker only, uppercase).
+        """
         return [self.to_db(s) for s in symbols]
 
     def _is_fyers_format(self, symbol: str) -> bool:
-        """Check if symbol is in Fyers format (NSE:SBIN-EQ)"""
+        """
+        Determine whether a symbol matches the FYERS pattern EXCHANGE:TICKER-SERIES (e.g., NSE:SBIN-EQ).
+        
+        Returns:
+            True if the symbol matches the FYERS pattern, False otherwise.
+        """
         return bool(re.match(r'^[A-Z]+:[A-Z0-9_&-]+-[A-Z]+$', symbol))
 
     def _is_valid_ticker(self, ticker: str) -> bool:
-        """Check if ticker is valid (alphanumeric, uppercase, include & and -)"""
+        """
+        Validate a ticker string for allowed characters and maximum length.
+        
+        Parameters:
+            ticker (str): Ticker to validate; expected uppercase and may include letters, digits, underscore (`_`), ampersand (`&`), and hyphen (`-`).
+        
+        Returns:
+            bool: `true` if `ticker` contains only the allowed characters and is at most 20 characters long, `false` otherwise.
+        """
         return bool(re.match(r'^[A-Z0-9_&-]+$', ticker)) and len(ticker) <= 20
 
 # Singleton instance

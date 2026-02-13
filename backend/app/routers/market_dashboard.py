@@ -45,16 +45,29 @@ def get_market_sentiment_endpoint(db: Session = Depends(get_db)):
 @router.get("/indices")
 def get_index_performance():
     """
-    Legacy/Specific indices endpoint.
+    Provide performance data for global market indices.
+    
+    Returns:
+        dict: Performance information for global indices, typically including fields such as symbol, price, change_pct, and timestamp.
     """
     return MarketDataService.get_global_indices()
 
 @router.get("/market-overview")
 def get_market_overview_v2(db: Session = Depends(get_db)):
     """
-    Get market overview with live/delayed data
-    During market hours: Live data from Fyers
-    Post-market: Delayed data from yfinance
+    Assemble a market overview combining live data (when market is open), delayed yfinance data, and a database fallback.
+    
+    The returned dictionary contains:
+    - market_status: current market status string from the live market service.
+    - is_live: `True` when live market data was used or market is open, `False` otherwise.
+    - indices: mapping of index symbol to its data. Each index entry contains:
+        - price (float): latest available price.
+        - change_pct (float): percentage change (0 if unavailable from fallback).
+        - source (str): one of `"live"`, `"yfinance"`, or `"database"` indicating the data source.
+        - date (str, optional): ISO-formatted date of the database price when the database was used.
+    
+    Returns:
+        dict: Market overview as described above.
     """
     # Key indices to track
     indices = ['NIFTY50', 'BANKNIFTY']
@@ -113,7 +126,20 @@ def get_top_gainers(
     index: str = "NIFTY50",
     db: Session = Depends(get_db)
 ):
-    """Get top gainers with live/delayed data"""
+    """
+    Return the top gaining constituents for a given index using live market data when available and falling back to delayed quotes.
+    
+    Parameters:
+        limit (int): Maximum number of gainers to return.
+        index (str): Index name whose constituents will be evaluated (e.g., "NIFTY50").
+    
+    Returns:
+        dict: A dictionary containing:
+            - data (list): List of gainers where each item contains `symbol`, `price`, `change_pct`, and `source` ('live' or 'yfinance').
+            - is_live (bool): True if live market data was used (market open), False otherwise.
+            - count (int): Number of gainers found.
+            - message (str, optional): Present when no constituents are found for the given index.
+    """
     current_date = datetime.now().date()
 
     # Query index constituents

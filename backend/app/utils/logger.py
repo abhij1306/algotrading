@@ -17,7 +17,13 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def setup_logging(name: str = "smarttrader"):
     """
-    Set up centralized logging with rotation and console output.
+    Configure and return a logger that writes to stdout and to a rotating file.
+    
+    Parameters:
+        name (str): Base logger name and the filename (without extension) used for the rotating log file.
+    
+    Returns:
+        logging.Logger: A logger configured with a console StreamHandler and a RotatingFileHandler writing to LOG_DIR/<name>.log. If the logger already has handlers configured, the existing logger is returned unchanged.
     """
     logger = logging.getLogger(name)
     logger.setLevel(LOG_LEVEL)
@@ -50,6 +56,12 @@ logger = setup_logging()
 
 def get_logger(module_name: str):
     """
-    Get a logger for a specific module, inheriting from the base configuration.
+    Return a module-specific logger that uses the "smarttrader.<module_name>" logger namespace.
+    
+    Parameters:
+        module_name (str): Module identifier appended to the "smarttrader" namespace.
+    
+    Returns:
+        logging.Logger: Logger named "smarttrader.<module_name>".
     """
     return logging.getLogger(f"smarttrader.{module_name}")

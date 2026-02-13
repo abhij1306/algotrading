@@ -11,14 +11,16 @@ from .services.fyers_client import get_fyers_client
 
 def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
     """
-    Fetch historical data from Fyers API
+    Retrieve daily OHLCV historical data for a symbol from the Fyers API.
     
-    Args:
-        symbol: Stock symbol (without NSE: prefix)
-        days: Number of days of history (default: 365)
-        
+    Requests daily data covering the past `days` days up to the current date and returns it as a pandas DataFrame indexed by date.
+    
+    Parameters:
+        symbol (str): Stock symbol without exchange prefix (e.g., "RELIANCE"); this will be converted to Fyers format internally.
+        days (int): Number of days of history to retrieve (default 365).
+    
     Returns:
-        DataFrame with OHLCV data or None if error
+        pd.DataFrame or None: DataFrame indexed by date with columns `Open`, `High`, `Low`, `Close`, `Volume`, or `None` if data is unavailable or an error occurs.
     """
     if not config.HAS_FYERS:
         return None
@@ -78,14 +80,16 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
 
 def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
     """
-    Fetch historical data - uses database for persistence
+    Retrieve historical OHLCV prices for a symbol, using the local database and falling back to Fyers or local NSE data when needed.
     
-    Args:
-        symbol: Stock symbol
-        days: Number of days to fetch (default: 365)
-        
+    Checks the database for existing price history and either updates missing recent days or performs a full fetch. Fetched data is persisted to the database when obtained from an external source.
+    
+    Parameters:
+        symbol (str): Stock symbol (database/normalized form).
+        days (int): Number of days of history to return (lookback window).
+    
     Returns:
-        DataFrame with OHLCV data
+        pd.DataFrame | None: DataFrame indexed by date containing columns `Open`, `High`, `Low`, `Close`, `Volume`, or `None` if data could not be retrieved.
     """
     from .database import SessionLocal
     from .data_repository import DataRepository
@@ -188,13 +192,20 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
 
 def fetch_fyers_quotes(symbols: list) -> Dict:
     """
-    Fetch real-time quotes from Fyers API
+    Fetch real-time market quotes for a list of symbols from the Fyers API.
     
-    Args:
-        symbols: List of stock symbols (without NSE: prefix)
-        
+    Parameters:
+        symbols (list): List of stock symbols without exchange prefix (e.g., "RELIANCE").
+    
     Returns:
-        Dictionary of symbol -> quote data
+        dict: Mapping from symbol to a quote dictionary with the following keys:
+            - ltp (float): Last traded price.
+            - volume (int): Traded volume.
+            - high (float): Session high price.
+            - low (float): Session low price.
+            - open (float): Session open price.
+            - prev_close (float): Previous session close price.
+        Missing numeric values are returned as 0.
     """
     if not config.HAS_FYERS:
         return {}
@@ -237,13 +248,15 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
 
 def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
     """
-    Fetch pre-open data from Fyers API
+    Return pre-open quote data for a symbol from Fyers.
     
-    Args:
-        symbol: Stock symbol
-        
+    Fetches the pre-open equilibrium price and traded volume for the given symbol and returns a dictionary with the symbol, price, volume, timestamp, and source. If Fyers is disabled, the symbol is not present in the response, or an error occurs, returns None.
+    
+    Parameters:
+        symbol (str): Ticker symbol in local database format.
+    
     Returns:
-        Dictionary with pre-open data or None
+        dict: {'symbol': str, 'price': float, 'volume': int, 'timestamp': pandas.Timestamp, 'source': 'fyers_preopen'} if pre-open data is available, otherwise None.
     """
     if not config.HAS_FYERS:
         return None

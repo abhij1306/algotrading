@@ -58,6 +58,13 @@ interface Signal {
     confidence_level: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
+/**
+ * Renders the trading terminal UI for viewing a watchlist, real-time market ticks, signals, positions, and placing orders.
+ *
+ * Manages watchlist and position state, initializes and subscribes to backend live data, fetches signals and agent positions, provides search and watchlist management, and exposes order placement and position-closing actions. The UI includes a left sidebar (watchlist/signals/actions), a main area with chart/positions/orders/history tabs, and an order modal.
+ *
+ * @returns The React element for the Terminal trading interface.
+ */
 export default function Terminal() {
     const [tradingMode, setTradingMode] = useState<'PAPER' | 'LIVE'>('PAPER');
     const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);

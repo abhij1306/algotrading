@@ -90,8 +90,23 @@ def get_screener(
     index: str = 'NIFTY50'
 ):
     """
-    Returns paginated list of companies with technical indicators or financial data.
-    Also supports sorting and filtering by symbol, sector, and predefined technical scans.
+    Return a paginated list of companies with either technical indicators or latest annual financial metrics, optionally filtered, sorted, and augmented with live quotes.
+    
+    Parameters:
+        page (int): 1-based page number for pagination.
+        limit (int): Number of items per page.
+        sort_by (str): Field to sort by (e.g., 'symbol', 'close', 'volume', 'change_pct', 'market_cap', or financial fields like 'pe_ratio', 'roe').
+        sort_order (str): 'asc' or 'desc' ordering for the sort field.
+        symbol (str | None): Partial symbol search; input is normalized before matching.
+        sector (str | None): Sector filter; 'all' (case-insensitive) disables sector filtering.
+        view (str): 'technical' to return technical indicators, 'financial' to include latest annual financial statement fields.
+        filter_type (str): Predefined technical scans: 'ALL', 'VOLUME_SHOCKER', '52W_HIGH', '52W_LOW', 'PRICE_SHOCKER'. 'ALL' applies standard sorting.
+        index (str): Index name to restrict symbols (e.g., 'NIFTY50'); 'ALL' disables index filtering.
+    
+    Returns:
+        dict: A dictionary with two keys:
+            - 'data' (list): Page of feature dictionaries for each company. Each feature dict contains symbol mappings ('symbol', 'symbol_fyers'), price and technical fields (e.g., 'close', 'open', 'high', 'low', 'volume', 'ema20', 'ema50', 'rsi', 'atr_pct', 'macd', 'adx', 'bb_upper', etc.), computed scores ('intraday_score', 'swing_score'), and when view == 'financial' additional financial fields ('revenue', 'net_income', 'eps', 'pe_ratio', 'roe', 'debt_to_equity', 'period', 'market_cap') where available.
+            - 'meta' (dict): Pagination and status info with keys 'page', 'limit', 'total', 'total_pages', and 'applied_filter' (the effective filter used; may be 'FALLBACK_ALL' if a special filter produced no results).
     """
     db = None  # Initialize to prevent UnboundLocalError in exception handler
     try:
@@ -383,7 +398,37 @@ def get_financials_screener(
     sector: str = None
 ):
     """
-    Returns paginated list of companies with latest financial data
+    Return a paginated list of companies paired with their latest annual financial statement.
+    
+    Parameters:
+        page (int): Page number (1-indexed).
+        limit (int): Maximum items per page.
+        sort_by (str): Field to sort results by; accepts 'symbol' or any attribute name of FinancialStatement.
+        sort_order (str): 'asc' or 'desc' sort direction.
+        symbol (str, optional): Filter by company symbol; input is normalized via symbol_master.to_db before matching.
+        sector (str, optional): Filter by company sector.
+    
+    Returns:
+        dict: {
+            'data': list of dicts, each containing:
+                'symbol' (str): Display symbol,
+                'symbol_fyers' (str): Fyers-compatible symbol,
+                'market_cap' (float): Company market capitalization (0 if unavailable),
+                'revenue' (float): Revenue from the latest annual statement (0 if unavailable),
+                'net_income' (float): Net income from the latest annual statement (0 if unavailable),
+                'eps' (float): Earnings per share from the latest annual statement (0 if unavailable),
+                'roe' (float): Return on equity from the latest annual statement (0 if unavailable),
+                'debt_to_equity' (float): Debt-to-equity from the latest annual statement (0 if unavailable),
+                'pe_ratio' (float): Price-to-earnings from the latest annual statement (0 if unavailable),
+                'period_end' (str): ISO-8601 date string of the financial period end
+            ,
+            'meta': {
+                'page' (int),
+                'limit' (int),
+                'total' (int): total matching records,
+                'total_pages' (int)
+            }
+        }
     """
     db = SessionLocal()
     try:

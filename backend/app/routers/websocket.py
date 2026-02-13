@@ -14,7 +14,15 @@ class SubscribeRequest(BaseModel):
 
 @router.post("/connect")
 async def connect_websocket():
-    """Initialize Fyers WebSocket connection"""
+    """
+    Trigger initialization of the Fyers live-market WebSocket connection.
+    
+    Returns:
+        dict: A status object containing `status` (e.g., "connected") and `message` describing the result.
+    
+    Raises:
+        HTTPException: If connection initialization fails; the exception detail contains the underlying error message.
+    """
     try:
         from ..services.live_market_service import live_market
         live_market.connect()
@@ -24,7 +32,20 @@ async def connect_websocket():
 
 @router.post("/subscribe")
 async def subscribe_symbols(request: SubscribeRequest):
-    """Subscribe to symbols for live tick data"""
+    """
+    Subscribe the given symbols to the live market feed.
+    
+    Parameters:
+    	request (SubscribeRequest): Request containing `symbols` in client format; symbols are converted to Fyers format before subscribing.
+    
+    Returns:
+    	response (dict): Dictionary with keys:
+    		- "status": the string "subscribed"
+    		- "symbols": list of subscribed symbols in Fyers format
+    
+    Raises:
+    	HTTPException: If subscribing fails; raised with status_code 500 and the error detail.
+    """
     try:
         from ..services.live_market_service import live_market
         
@@ -49,7 +70,14 @@ def disconnect_websocket():
 
 @router.get("/status")
 def get_websocket_status():
-    """Check WebSocket connection status"""
+    """
+    Return the current WebSocket connection status.
+    
+    Returns:
+        status (dict): A mapping containing:
+            - "connected" (bool): `True` if the WebSocket is connected, `False` otherwise.
+            - "error" (str): Error message when unable to retrieve status; present only if an error occurred.
+    """
     try:
         from ..services.live_market_service import live_market
         return live_market.get_status()
@@ -65,8 +93,18 @@ from ..utils.ws_manager import manager
 @router.websocket("/stream")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint for frontend clients (Terminal, Screener).
-    Connect to: ws://localhost:8000/api/websocket/stream
+    Handle a WebSocket connection that accepts subscription commands and pings from frontend clients.
+    
+    Supports incoming messages in either JSON or plain text:
+    - JSON messages with an "action" field:
+      - "subscribe" with "symbols": list[str] — subscribes to the provided symbols and sends an acknowledgment JSON: {"type": "ack", "action": "subscribe", "count": <n>}.
+      - "unsubscribe" with "symbols": list[str] — unsubscribes the provided symbols and sends an acknowledgment JSON: {"type": "ack", "action": "unsubscribe", "count": <n>}.
+      - "ping" — responds with {"type": "pong"}.
+    - Plain text "ping" — responds with {"type": "pong"}.
+    
+    Side effects:
+    - Calls into the live market service to perform subscribe/unsubscribe operations.
+    - Registers and deregisters the WebSocket connection with the connection manager on connect/disconnect.
     """
     await manager.connect(websocket)
     from ..services.live_market_service import live_market

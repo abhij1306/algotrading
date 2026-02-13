@@ -46,7 +46,15 @@ class BacktestRequest(BaseModel):
 
 @router.post("/policy", status_code=status.HTTP_201_CREATED)
 def create_policy(policy: PortfolioPolicyCreate, db: Session = Depends(get_db)):
-    """Create a new portfolio risk policy"""
+    """
+    Create a new portfolio risk policy.
+    
+    Parameters:
+        policy (PortfolioPolicyCreate): Payload defining the policy fields (name, cash and exposure limits, stop loss, allocation sensitivity, correlation penalty).
+    
+    Returns:
+        PortfolioPolicy: The newly created and persisted PortfolioPolicy instance.
+    """
     new_policy = PortfolioPolicy(**policy.dict())
     db.add(new_policy)
     db.commit()
@@ -55,7 +63,12 @@ def create_policy(policy: PortfolioPolicyCreate, db: Session = Depends(get_db)):
 
 @router.get("/policy")
 def list_policies(db: Session = Depends(get_db)):
-    """List available policies"""
+    """
+    List all portfolio policies.
+    
+    Returns:
+        list[PortfolioPolicy]: All PortfolioPolicy records from the database (empty list if none).
+    """
     return db.query(PortfolioPolicy).all()
 
 @router.get("/available")
@@ -75,7 +88,21 @@ def list_available_strategies(db: Session = Depends(get_db)):
 
 @router.patch("/{strategy_id}")
 def update_strategy_metadata(strategy_id: str, updates: StrategyMetadataUpdate, db: Session = Depends(get_db)):
-    """Update strategy notes and lifecycle"""
+    """
+    Update the regime notes and lifecycle status for a strategy identified by `strategy_id`.
+    
+    Only fields provided (non-None) in `updates` are applied; unspecified fields are left unchanged.
+    
+    Parameters:
+        strategy_id (str): Identifier of the strategy to update.
+        updates (StrategyMetadataUpdate): Fields to update; `regime_notes` and/or `lifecycle_status`.
+    
+    Returns:
+        StrategyMetadata: The updated strategy metadata object.
+    
+    Raises:
+        HTTPException: 404 if no strategy with `strategy_id` exists.
+    """
     strat = db.query(StrategyMetadata).filter(StrategyMetadata.strategy_id == strategy_id).first()
     if not strat:
         raise HTTPException(status_code=404, detail="Strategy not found")
@@ -91,8 +118,16 @@ def update_strategy_metadata(strategy_id: str, updates: StrategyMetadataUpdate, 
 @router.post("/correlation")
 def calculate_correlation(payload: dict):
     """
-    Calculate correlation matrix for selected strategies.
-    Payload: {"strategy_ids": ["STRAT_A", "STRAT_B"]}
+    Compute a simple correlation summary for the provided strategy IDs.
+    
+    Parameters:
+        payload (dict): Request payload containing the key "strategy_ids" with a list of strategy identifier strings.
+    
+    Returns:
+        dict: A dictionary with:
+            - "max_correlation" (float): 0.0 if fewer than two strategy IDs are provided; otherwise 0.85 when both
+              "TREND_FOLLOWING_V1" and "VOLATILITY_BREAKOUT" are present in the list, and 0.2 for all other multi-strategy inputs.
+            - "matrix" (list): Correlation matrix as a list (may be empty in current implementation).
     """
     ids = payload.get("strategy_ids", [])
     if len(ids) < 2:
@@ -105,7 +140,20 @@ def calculate_correlation(payload: dict):
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_strategy_portfolio(portfolio: StrategyPortfolioCreate, db: Session = Depends(get_db)):
-    """Create a new research/strategy portfolio"""
+    """
+    Create a new research strategy portfolio using the provided payload.
+    
+    Validates that the referenced PortfolioPolicy exists; if not, raises HTTP 404. On success, persists the new ResearchPortfolio and returns the created record.
+    
+    Parameters:
+        portfolio (StrategyPortfolioCreate): Payload with portfolio fields (name, optional description, policy_id, composition).
+    
+    Returns:
+        ResearchPortfolio: The persisted portfolio record with database-assigned fields populated.
+    
+    Raises:
+        HTTPException: 404 if the specified policy_id does not correspond to an existing PortfolioPolicy.
+    """
     policy = db.query(PortfolioPolicy).filter(PortfolioPolicy.id == portfolio.policy_id).first()
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -122,7 +170,22 @@ def list_strategy_portfolios(db: Session = Depends(get_db)):
     return db.query(ResearchPortfolio).all()
 
 async def _run_backtest_logic(db, policy, portfolio, start_date_str, end_date_str):
-    """Shared helper for portfolio backtest"""
+    """
+    Run a portfolio backtest using PortfolioBacktestCore.
+    
+    Parameters:
+        db: Database session used by the backtest engine.
+        policy: PortfolioPolicy instance that defines portfolio rules and constraints.
+        portfolio: ResearchPortfolio or simulation-like object describing strategy composition.
+        start_date_str (str): Start date in "YYYY-MM-DD" format.
+        end_date_str (str): End date in "YYYY-MM-DD" format.
+    
+    Returns:
+        The backtest result object produced by PortfolioBacktestCore.run_backtest (structure depends on the engine; typically includes metrics, timeseries, and trade data).
+    
+    Raises:
+        HTTPException: with status code 500 when an internal error occurs while running the backtest.
+    """
     try:
         from ..engines.quant.portfolio_backtest_core import PortfolioBacktestCore
 
@@ -139,7 +202,22 @@ async def _run_backtest_logic(db, policy, portfolio, start_date_str, end_date_st
 
 @router.post("/backtest")
 async def backtest_strategy_portfolio(request: BacktestRequest, db: Session = Depends(get_db)):
-    """Run backtest on a strategy portfolio"""
+    """
+    Run a backtest for an existing research portfolio or a simulated portfolio built from a policy and strategy list.
+    
+    Parameters:
+        request: BacktestRequest containing either:
+            - portfolio_id: ID of an existing ResearchPortfolio to backtest (uses its policy), or
+            - policy_id and strategy_ids: to construct a temporary simulated portfolio with equal allocations.
+            The request also supplies start_date and end_date for the backtest period.
+    
+    Returns:
+        dict: Backtest results; may include a "metrics" key with aggregated metrics which will be persisted to the portfolio when an existing portfolio_id is used.
+    
+    Raises:
+        HTTPException: 404 if a referenced portfolio or policy is not found.
+        HTTPException: 400 if a portfolio is missing a policy or if neither (portfolio_id) nor (policy_id + strategy_ids) are provided.
+    """
 
     if request.portfolio_id:
         portfolio = db.query(ResearchPortfolio).filter(ResearchPortfolio.id == request.portfolio_id).first()
@@ -179,7 +257,11 @@ async def backtest_strategy_portfolio(request: BacktestRequest, db: Session = De
 
 @router.get("/monitor")
 def monitor_live_strategies(db: Session = Depends(get_db)):
-    """Get live monitoring data for strategy portfolios"""
+    """
+    Return a live monitoring dashboard for strategy portfolios.
+    
+    When the market (Asia/Kolkata) is open between 09:15 and 15:30, returns a list of dashboard entries for portfolios with status "LIVE". Each entry contains `id`, `name`, `equity`, and `drawdown`. When the market is closed, returns a dictionary with `status` set to `"market_closed"` and an empty `portfolios` list. On internal error, returns an empty list.
+    """
     try:
         tz = pytz.timezone('Asia/Kolkata')
         now = datetime.now(tz)
@@ -206,7 +288,16 @@ def monitor_live_strategies(db: Session = Depends(get_db)):
 
 @router.post("/monitor/refresh")
 def refresh_live_monitor(db: Session = Depends(get_db)):
-    """Force refresh of live monitor"""
+    """
+    Trigger an immediate refresh of monitoring data for all active live portfolios.
+    
+    Invokes the live monitoring service to update state for active portfolios and returns a summary of the operation.
+    
+    Returns:
+        result (dict): A dictionary with keys:
+            - "status": the string "refreshed".
+            - "updates": the number of portfolios that were updated.
+    """
     from ..services.live_monitor import LiveMonitorService
 
     service = LiveMonitorService(db)

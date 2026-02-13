@@ -41,6 +41,11 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize Live Market Service
+    """
+    Manage application lifespan by initializing the Live Market Service on startup and cleaning it up on shutdown.
+    
+    On startup, captures the current event loop, assigns it to the WebSocket manager, and connects the Live Market Service. On shutdown, cancels any running broadcast task and disconnects the Live Market Service's WebSocket client. Exceptions during startup or shutdown are logged.
+    """
     try:
         import asyncio
         loop = asyncio.get_running_loop()
@@ -84,8 +89,9 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_validation():
     """
-    Validate system state on startup
-    Fails fast if critical issues detected
+    Validate critical system state at application startup.
+    
+    Performs checks for symbol master mappings and a simple database connectivity test; raises any exception encountered to abort startup.
     """
     logger.info("🚀 Running startup validation...")
 

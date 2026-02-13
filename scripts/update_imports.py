@@ -23,7 +23,17 @@ IMPORT_MAPPINGS = {
 }
 
 def update_file_imports(filepath: Path):
-    """Update imports in a single file"""
+    """
+    Update import statements in the given Python file using IMPORT_MAPPINGS.
+    
+    Reads the file at `filepath`, replaces occurrences of keys in IMPORT_MAPPINGS with their mapped values, and writes the file back only if changes were made.
+    
+    Parameters:
+        filepath (Path): Path to the Python file to update.
+    
+    Returns:
+        bool: `True` if the file was modified and written, `False` otherwise.
+    """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -47,7 +57,11 @@ def update_file_imports(filepath: Path):
     return False
 
 def main():
-    """Update all Python files"""
+    """
+    Update import statements in Python files under the repository's target directories.
+    
+    Scans the backend, data_platform, and scripts directories recursively, applies import mappings to each Python file, writes any changed files, and prints a summary with the count of files updated.
+    """
     search_dirs = [Path("backend"), Path("data_platform"), Path("scripts")]
     updated_count = 0
 

@@ -21,6 +21,16 @@ class FyersWebSocketService:
     """
     
     def __init__(self):
+        """
+        Initialize the FyersWebSocketService instance and its internal state.
+        
+        Attributes:
+            ws: WebSocket client instance or `None` until connected.
+            access_token: Authentication token string used for the WebSocket or `None`.
+            subscribed_symbols: Set of symbol strings currently subscribed for tick data.
+            callbacks: Mapping from symbol string to list of per-symbol callback callables invoked on incoming ticks.
+            on_tick_handler: Optional global callable invoked for every received tick message.
+        """
         self.ws = None
         self.access_token = None
         self.subscribed_symbols = set()
@@ -28,7 +38,14 @@ class FyersWebSocketService:
         self.on_tick_handler: Optional[Callable] = None
 
     def connect(self):
-        """Initialize WebSocket connection using access token"""
+        """
+        Establishes a Fyers WebSocket connection using stored client credentials.
+        
+        Creates and connects a FyersDataSocket with an access token derived from the unified Fyers client, assigns internal message/error/open/close handlers, stores the socket on self.ws and the token on self.access_token, and may capture the running asyncio loop on self.loop if available.
+        
+        Raises:
+            Exception: if the fyers-apiv3 client library is not available, or if Fyers credentials (client_id or access_token) are missing.
+        """
         if not data_ws:
             raise Exception("fyers-apiv3 not installed")
         
@@ -108,7 +125,15 @@ class FyersWebSocketService:
                 del self.callbacks[symbol]
     
     def _on_message(self, message):
-        """Handle incoming WebSocket message"""
+        """
+        Process an incoming WebSocket tick message and dispatch it to registered handlers.
+        
+        Parameters:
+            message (dict): Tick payload (e.g., {"symbol": "NSE:SBIN-EQ", "ltp": 500.0, ...}). The "symbol" key is used to route the message to symbol-specific callbacks.
+        
+        Description:
+            Invokes each callback registered for the message's symbol and then invokes the optional global on_tick_handler. Exceptions raised by individual callbacks or the global handler are caught and printed; exceptions during overall processing are also caught and printed.
+        """
         try:
             # message format: {"symbol": "NSE:SBIN-EQ", "ltp": 500.0, "ch": 2.5, ...}
             symbol = message.get("symbol")

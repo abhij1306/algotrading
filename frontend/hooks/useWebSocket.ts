@@ -16,6 +16,16 @@ interface WebSocketHookReturn {
   sendMessage: (message: any) => void;
 }
 
+/**
+ * Creates and manages a persistent WebSocket connection to the backend stream and exposes connection state, the latest received message, and a send helper.
+ *
+ * Manages automatic reconnects and a heartbeat ping; incoming JSON messages are parsed and stored as the latest message while raw `{"type":"pong"}` pings are ignored.
+ *
+ * @returns An object containing the WebSocket hook state and helpers:
+ * - `isConnected`: `true` when the socket is open, `false` otherwise.
+ * - `lastMessage`: the most recently received and parsed WebSocket message, or `null` if none.
+ * - `sendMessage`: a function that sends a string or serializable value over the socket.
+ */
 export function useWebSocket(): WebSocketHookReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);

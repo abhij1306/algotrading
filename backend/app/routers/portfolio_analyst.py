@@ -33,7 +33,18 @@ class StockPortfolioCreate(BaseModel):
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_stock_portfolio(portfolio: StockPortfolioCreate, db: Session = Depends(get_db)):
-    """Create a new user stock portfolio (Analyst Mode)"""
+    """
+    Create and persist a new user stock portfolio from the provided positions.
+    
+    Creates a UserPortfolio and associated PortfolioPosition records linked to existing Company entries, computes each position's allocation percentage relative to the total invested value, and commits them to the database.
+    
+    Returns:
+        dict: Contains the new portfolio's `id` and a success `message`.
+    
+    Raises:
+        HTTPException: 404 if any provided symbol is not found.
+        HTTPException: 500 if a database error or other server-side error occurs.
+    """
     try:
         new_portfolio = UserPortfolio(
             portfolio_name=portfolio.portfolio_name,
@@ -72,7 +83,17 @@ async def create_stock_portfolio(portfolio: StockPortfolioCreate, db: Session = 
 
 @router.get("")
 async def list_stock_portfolios(db: Session = Depends(get_db)):
-    """List all stock portfolios"""
+    """
+    Return a list of all user stock portfolios with basic metadata.
+    
+    Returns:
+        dict: A mapping with key "portfolios" containing a list of portfolio summaries. Each summary is a dict with:
+            - id (int): Portfolio database identifier.
+            - portfolio_name (str): Name of the portfolio.
+            - description (str | None): Optional portfolio description.
+            - created_at (str | None): ISO 8601 timestamp string of creation time, or None if not set.
+            - num_positions (int): Number of positions associated with the portfolio.
+    """
     portfolios = db.query(UserPortfolio).all()
     return {
         "portfolios": [
@@ -89,7 +110,29 @@ async def list_stock_portfolios(db: Session = Depends(get_db)):
 
 @router.get("/{portfolio_id}")
 async def get_stock_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
-    """Get details of a specific stock portfolio"""
+    """
+    Retrieve detailed information for a specific stock portfolio.
+    
+    Parameters:
+        portfolio_id (int): ID of the portfolio to fetch.
+    
+    Returns:
+        dict: Portfolio details with keys:
+            - id (int): Portfolio ID.
+            - portfolio_name (str): Portfolio name.
+            - description (str | None): Portfolio description.
+            - positions (list[dict]): List of positions, each containing:
+                - symbol (str)
+                - company_name (str)
+                - invested_value (float)
+                - quantity (float | None)
+                - avg_buy_price (float | None)
+                - allocation_pct (float)
+            - total_invested (float): Sum of invested_value for all positions.
+    
+    Raises:
+        HTTPException: 404 if the portfolio is not found.
+    """
     portfolio = db.query(UserPortfolio).filter(UserPortfolio.id == portfolio_id).first()
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -115,7 +158,15 @@ async def get_stock_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_stock_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
-    """Delete a stock portfolio"""
+    """
+    Delete the user stock portfolio identified by `portfolio_id`.
+    
+    Parameters:
+        portfolio_id (int): ID of the portfolio to delete.
+    
+    Raises:
+        HTTPException: 404 if no portfolio exists with the given `portfolio_id`.
+    """
     portfolio = db.query(UserPortfolio).filter(UserPortfolio.id == portfolio_id).first()
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -124,7 +175,20 @@ async def delete_stock_portfolio(portfolio_id: int, db: Session = Depends(get_db
 
 @router.post("/{portfolio_id}/analyze")
 async def analyze_stock_portfolio(portfolio_id: int, lookback_days: int = 252, db: Session = Depends(get_db)):
-    """Run risk analysis on stock portfolio"""
+    """
+    Run a risk analysis for the specified stock portfolio and return analysis results including market risk metrics and chart data.
+    
+    Parameters:
+        portfolio_id (int): ID of the portfolio to analyze.
+        lookback_days (int): Number of historical days to use for price and risk calculations (default 252).
+    
+    Returns:
+        dict: Analysis result containing computed risk metrics (including a 'market_risk' mapping), chart-ready data under 'charts' (performance dates, portfolio and benchmark cumulative returns, and sector allocations), and other engine-produced analysis fields.
+    
+    Raises:
+        HTTPException: 404 if the portfolio does not exist.
+        HTTPException: 400 if the portfolio has no positions or if no historical price data is available for any position.
+    """
     repo = DataRepository(db)
 
     portfolio = db.query(UserPortfolio).filter(UserPortfolio.id == portfolio_id).first()

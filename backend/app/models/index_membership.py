@@ -24,4 +24,10 @@ class IndexMembership(Base):
     )
 
     def __repr__(self):
+        """
+        Return a concise string representation of the IndexMembership instance for debugging.
+        
+        Returns:
+            str: A string in the form "<IndexMembership(index=<index_name>, symbol=<symbol>, active=<True if end_date is None else False>)>" where `active` is True when `end_date` is None.
+        """
         return f"<IndexMembership(index={self.index_name}, symbol={self.symbol}, active={self.end_date is None})>"

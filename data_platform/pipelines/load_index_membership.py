@@ -16,6 +16,11 @@ from app.models.index_membership import IndexMembership
 from app.constants.indices import STOCK_INDICES
 
 def load_index_membership():
+    """
+    Load current index constituents into the index_membership database table.
+    
+    Attempts to read a clean snapshot CSV (if present) to determine historical intervals; if the CSV logic is not applied, falls back to the in-memory STOCK_INDICES constant to obtain current constituents. For each constituent, inserts an active IndexMembership row when no open (end_date is NULL) membership exists. Commits the transaction on success; rolls back on error and always closes the database session. New memberships created by this function use a start date of 2020-01-01 and no end date.
+    """
     db = SessionLocal()
     try:
         # 1. Path to clean snapshots (if available)

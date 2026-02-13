@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import datetime
@@ -23,6 +22,18 @@ class LiveMarketService:
     """
     
     def __init__(self):
+        """
+        Initialize LiveMarketService instance and set up its internal state.
+        
+        Attributes:
+            ws_service: Optional FyersWebSocketService used to manage the websocket connection; None until connected.
+            _market_status (str): Current market status label, initialized to "UNKNOWN".
+            tick_buffer (dict): Temporary in-memory buffer mapping symbol -> latest tick pending broadcast.
+            latest_values (dict): Cache mapping symbol -> most recent tick received (DB-formatted symbol keys).
+            loop: Reference to the asyncio event loop used for scheduling tasks; None until set.
+            broadcast_task: Background asyncio Task that flushes tick_buffer; None until started.
+            dev_mode (bool): True when running in development mode (controlled by DEV_MODE env var).
+        """
         self.ws_service: Optional[FyersWebSocketService] = None
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
@@ -49,14 +60,23 @@ class LiveMarketService:
         return is_open
 
     async def _update_buffer(self, tick):
-        """Async method to update buffer on main loop"""
+        """
+        Store an incoming tick in the in-memory buffer and update the latest-tick cache.
+        
+        Parameters:
+            tick (dict): Market tick object containing a `symbol` key (expected in DB format). The tick will be placed into the per-symbol buffer and recorded as the most recent value for that symbol.
+        """
         # Symbol is already converted to DB format by handle_tick_incoming
         symbol = tick.get("symbol")
         self.tick_buffer[symbol] = tick
         self.latest_values[symbol] = tick
 
     async def _flush_loop(self):
-        """Background task to flush buffered ticks every 1s"""
+        """
+        Continuously flushes buffered ticks once per second and broadcasts each tick.
+        
+        Runs an infinite loop that, every second, atomically swaps out the current tick buffer and broadcasts each tick as a message of the form `{"type": "ticker", "data": <tick>}` via `manager.broadcast`. The loop runs until cancelled; cancellation is handled gracefully by logging a shutdown message.
+        """
         try:
             while True:
                 await asyncio.sleep(1)
@@ -78,7 +98,12 @@ class LiveMarketService:
             logger.error(f"Error in flush loop: {e}")
 
     def handle_tick_incoming(self, tick):
-        """Entry point for ticks from Fyers Thread"""
+        """
+        Handle an incoming tick from the Fyers thread, convert its symbol to DB format, and schedule it for buffering.
+        
+        Parameters:
+            tick (dict): Tick payload received from Fyers; expected to include a "symbol" key with the Fyers-format symbol.
+        """
         if self.loop and not self.loop.is_closed():
             try:
                 # Convert symbol to DB_FORMAT before buffering
@@ -92,7 +117,19 @@ class LiveMarketService:
                 logger.error(f"Error processing incoming tick: {e}")
 
     def connect(self, loop=None):
-        """Connect to external data provider if market is open"""
+        """
+        Ensure the service is connected to the external market data provider when the market is open.
+        
+        If a running event loop is provided or found, the method uses it for scheduling background tasks. When the market is open this will:
+        - start the internal broadcast flush loop if not already running,
+        - obtain and configure the WebSocket service, registering the instance's tick handler,
+        - initiate the WebSocket connection in a background thread if not already connected.
+        
+        If the market is closed the method will skip connecting and cancel the broadcast task if it is running.
+        
+        Parameters:
+            loop (asyncio.AbstractEventLoop | None): Optional event loop to use for scheduling background tasks; if None the method will try to use the currently running loop and will log a warning if none is available.
+        """
         # Capture the running loop for thread-safe operations
         if loop:
             self.loop = loop
@@ -135,7 +172,14 @@ class LiveMarketService:
                 self.broadcast_task.cancel()
 
     async def subscribe(self, symbols: List[str]):
-        """Subscribe to symbols non-blocking"""
+        """
+        Subscribe to a list of symbols on the Fyers websocket service.
+        
+        Converts the provided symbols to Fyers format and issues a non-blocking subscription request on the websocket. If the market is closed the method returns without subscribing. If the websocket is not connected the subscription is not sent and a warning is logged.
+        
+        Parameters:
+            symbols (List[str]): Symbols to subscribe for (in DB/internal format); they will be converted to Fyers format before subscribing.
+        """
         if not self.ws_service:
             if self.is_market_open():
                 self.connect()
@@ -161,7 +205,15 @@ class LiveMarketService:
             logger.warning("Fyers WebSocket not connected. Subscription queued.")
 
     async def unsubscribe(self, symbols: List[str]):
-        """Unsubscribe non-blocking"""
+        """
+        Unsubscribe the provided symbols from the Fyers WebSocket feed without blocking the event loop.
+        
+        Parameters:
+            symbols (List[str]): List of symbols (in DB/standard symbol format expected by the service) to unsubscribe.
+        
+        Notes:
+            If the WebSocket is not connected the function does nothing. Errors during unsubscription are logged.
+        """
         if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():
             try:
                 fyers_symbols = symbol_master.batch_to_fyers(symbols)
@@ -174,6 +226,14 @@ class LiveMarketService:
                 logger.error(f"Fyers unsubscription failed: {e}")
 
     def get_status(self):
+        """
+        Return current service status including market state and WebSocket connection.
+        
+        Returns:
+            status (dict): Mapping with keys:
+                - "market_status": Current market status string.
+                - "fyers_connected": `True` if a Fyers WebSocket instance exists and its underlying websocket reports connected, `False` otherwise.
+        """
         return {
             "market_status": self._market_status,
             "fyers_connected": (self.ws_service is not None and 
@@ -183,13 +243,23 @@ class LiveMarketService:
 
     def get_latest_tick(self, symbol: str) -> Optional[dict]:
         """
-        Get latest tick for symbol
-        Returns cached live tick if available.
+        Retrieve the most recent cached tick for a symbol.
+        
+        Returns:
+            dict: The latest tick for the given symbol, or `None` if no tick is cached.
         """
         return self.latest_values.get(symbol)
 
     def get_latest_ticks(self, symbols: List[str]) -> dict:
-        """Get latest ticks for multiple symbols"""
+        """
+        Return the cached latest tick for each requested symbol that is available.
+        
+        Parameters:
+            symbols (List[str]): Sequence of symbol identifiers to query (keys expected in the service's cache).
+        
+        Returns:
+            dict: Mapping from each requested symbol (only those present in the cache) to its latest tick dictionary.
+        """
         return {
             symbol: self.latest_values.get(symbol)
             for symbol in symbols

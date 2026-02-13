@@ -8,7 +8,14 @@ import json
 import time
 
 async def test_websocket_ticks():
-    """Test WebSocket tick delivery"""
+    """
+    Validate end-to-end WebSocket tick delivery from the local stream endpoint.
+    
+    Connects to ws://localhost:8000/api/websocket/stream, subscribes to a preset list of symbols, waits for an acknowledgement, and listens for ticker messages for up to 10 seconds to verify the subscription and message flow. Prints status to stdout during execution.
+    
+    Returns:
+        True if the test completed its flow attempt (subscription and listening), False if an exception occurred during the test.
+    """
 
     # Connect to WebSocket
     uri = "ws://localhost:8000/api/websocket/stream"
