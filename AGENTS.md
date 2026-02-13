@@ -1,153 +1,157 @@
 # SMARTTRADER 3.0 - SYSTEM BIBLE & AGENT GUIDE
 
-This document serves as the comprehensive technical reference for the SmartTrader 3.0 backend. It outlines the architecture, module responsibilities, data flow, and interaction protocols.
+This document serves as the comprehensive technical reference and "System Bible" for SmartTrader 3.0. It documents the entire system's capabilities, architecture, data flows, and identified discrepancies.
 
 ---
 
-## 🏗️ SYSTEM ARCHITECTURE OVERVIEW
+## 🎯 1. SYSTEM OVERVIEW & PHILOSOPHY
 
-SmartTrader 3.0 is a modular, agentic quantitative trading platform. The backend is built with **FastAPI** (Python 3.12+) and uses **PostgreSQL** as the single source of truth for all persistent state.
+SmartTrader 3.0 is a modular, agentic quantitative trading platform designed for the Indian NSE market.
 
-### Core Architecture Layers:
-1.  **API Layer (FastAPI)**: Handles request routing, validation, and global exception handling.
-2.  **Agentic Layer (Smart Trader)**: An autonomous system of specialized agents (Orchestrator, Risk, Execution, LLM Analyst).
-3.  **Engine Layer (Quant & Research)**: High-performance logic for backtesting, strategy execution, and portfolio construction.
-4.  **Service Layer**: Infrastructure services for market data, broker connectivity (Fyers), and paper trading.
-5.  **Data Layer (SQLAlchemy)**: Manages persistence of historical data, signals, orders, and portfolio state.
+### Core Philosophy:
+*   **Research explains risk — not returns**: The system prioritizes understanding and managing downside risk over chasing performance.
+*   **Database as Single Source of Truth**: No critical state (positions, orders, results) is kept solely in memory. All state is persisted to PostgreSQL.
+*   **Agentic Orchestration**: Specialized agents handle specific tasks (Scanning, Risk, LLM Analysis, Execution) coordinated by a central Orchestrator.
+*   **Incremental Data Fetching**: Efficiency is achieved by checking the database cache before falling back to external APIs (Fyers/yFinance).
 
 ---
 
-## 📦 CORE BACKEND MODULES
+## 🏗️ 2. ARCHITECTURAL LAYERS
 
-### 1. Smart Trader (Agentic Brain)
-Located in `backend/app/smart_trader/`. This is the system's "active" component.
+The system is organized into five distinct layers:
 
-*   **`NewOrchestratorAgent`**: The central coordinator.
-    *   Runs a `_scanner_loop` during market hours.
-    *   Triggers `_scan_cycle` which iterates through symbols.
-    *   Coordinates the flow from Snapshot → Deterministic Generators → Aggregator → LLM Analysis → Confidence Scoring → Execution.
-*   **Generators (`generators/`)**: Deterministic technical signal generators.
-    *   `MomentumGenerator`, `VolumeAnomalyGenerator`, `RangeExpansionGenerator`, etc.
+1.  **Layer 1: Data Storage (`nse_data/`, PostgreSQL)**:
+    *   Historical price data, company metadata, signals, and trading records.
+2.  **Layer 2: Data Pipelines (`data_platform/`)**:
+    *   Scripts and processors for EOD updates, intraday candle ingestion, and index membership management.
+3.  **Layer 3: Backend Services (`backend/app/services/`, `engines/`, `smart_trader/`)**:
+    *   The "Brain" of the system. Logic for strategy execution, risk management, and agentic workflows.
+4.  **Layer 4: API Layer (`backend/app/routers/`)**:
+    *   FastAPI endpoints providing data and control to the frontend.
+5.  **Layer 5: Frontend (`frontend/`)**:
+    *   Next.js 16 (App Router) interface for monitoring, research, and trading.
+
+---
+
+## 📦 3. MODULE DEEP DIVE
+
+### 3.1 Smart Trader (Agentic Brain)
+Located in `backend/app/smart_trader/`.
+
+*   **`NewOrchestratorAgent`**: The central coordinator. Manages the `_scanner_loop` during market hours (9:15 AM - 3:30 PM IST).
+*   **Generators (`generators/`)**: Deterministic technical signal generators (Momentum, Volume Anomaly, Range Expansion, Reversal, Index Alignment).
 *   **Specialized Agents (`agents/`)**:
-    *   `LLMSignalAnalyst`: Enhances signals with narrative reasoning.
-    *   `ConfidenceEngine`: Combines deterministic and LLM inputs into a final score.
-    *   `TradeConstructionAgent`: Calculates entry, SL, and target levels.
-*   **`RiskAgent`**: The mandatory gatekeeper.
-    *   Validates every trade against: Daily trade limits, Daily loss limits, Symbol cooldown, and Risk/Reward ratios.
-    *   Calculates dynamic position sizing based on account capital and risk % per trade.
-*   **`ExecutionAgent`**: The broker abstraction.
-    *   Handles the lifecycle of orders.
-    *   Supports `PAPER` and `LIVE` modes.
-    *   Delegates to `PaperBroker` (persists to DB) or `FyersBroker` (Live API).
+    *   `LLMSignalAnalyst`: Adds narrative reasoning to signals using LLMs (Groq/OpenAI).
+    *   `ConfidenceEngine`: Scores signals (0.0 to 1.0) based on deterministic and LLM inputs.
+    *   `TradeConstructionAgent`: Builds entry, SL, and target setups.
+*   **`RiskAgent`**: Validates every trade against daily limits, loss thresholds, and risk/reward ratios.
+*   **`ExecutionAgent`**: Dispatches orders to the active broker (`PaperBroker` or `FyersBroker`).
 
-### 2. Research & Quant Engines
+### 3.2 Research & Quant Engines
 Located in `backend/app/engines/`.
 
-*   **`StrategyExecutor`**:
-    *   Runs a backtest loop over a specific `StockUniverse` and date range.
-    *   Enforces capital constraints and persists `BacktestDailyResult` (equity, drawdown, returns).
-*   **`PortfolioConstructor`**:
-    *   Aggregates strategy-level results into a master portfolio.
-    *   Implements allocation methods: `EQUAL_WEIGHT`, `INVERSE_VOLATILITY`, `CORRELATION_PENALIZED`.
-    *   Enforces `PortfolioPolicy` (max exposure, cash reserves).
-*   **`UniverseManager`**: Manages immutable stock universe definitions with historical membership tracking.
+*   **`StrategyExecutor`**: Runs backtests over a stock universe.
+*   **`PortfolioConstructor`**: Aggregates backtest results into portfolios using various allocation methods (Equal Weight, Inv Vol, etc.).
+*   **`UniverseManager`**: Handles stock universes and historical membership.
 
-### 3. API Routers
-Located in `backend/app/routers/`.
-
-*   **`unified.py`**: A simplified, high-level API for placing orders and checking status across any broker mode.
-*   **`portfolio_live.py`**: Powers the Monitoring UI. Provides "Live State", "Trust Maps" (drift analysis), and "Risk Summaries".
-*   **`market.py` / `market_dashboard.py`**: Real-time market overview, sentiment, and global indices.
-*   **`screener.py`**: High-performance stock screening based on 15+ technical and financial indicators.
-
-### 4. Infrastructure Services
+### 3.3 Infrastructure Services
 Located in `backend/app/services/`.
 
-*   **`MarketDataService`**: Centralized fetching for global indices, CNN Fear & Greed, and India Sentiment (Tickertape/VIX).
-*   **`FyersClient`**: Singleton adapter for the Fyers API v3.
-*   **`LiveMarketService`**: Subscribes to WebSockets for real-time price updates.
+*   **`MarketDataService`**: Aggregates market overview, sentiment, and global indices.
+*   **`FyersClient`**: Singleton adapter for Fyers API v3.
+*   **`LiveMarketService`**: Broadcasts live ticks via WebSockets.
+*   **`SymbolMaster`**: Standardizes symbols between `DB_FORMAT` (Ticker) and `FYERS_FORMAT` (Exchange:Ticker-Series).
 
 ---
 
-## 🗄️ DATABASE SCHEMA (THE SOURCE OF TRUTH)
+## 🗄️ 4. DATABASE SCHEMA
 
-The system enforces a **Database-First** philosophy. No critical state (positions, orders, results) is kept solely in memory.
-
-### Master Tables:
-*   **`companies`**: Master list of NSE stocks.
-*   **`historical_prices`**: Daily OHLCV + Technical Indicators.
-*   **`intraday_candles`**: 5-minute candles for backtesting and agent snapshots.
-
-### Trading & Agent Tables:
-*   **`smart_trader_signals`**: Comprehensive log of every signal generated, including LLM narrative and confidence scores.
-*   **`paper_orders` / `paper_trades` / `paper_positions`**: Full ledger for simulated trading.
-*   **`agent_audit_logs`**: Step-by-step trace of agent decisions for transparency.
-*   **`action_center`**: Actions requiring human intervention (e.g., high-risk order approval).
-
-### Quant & Governance Tables:
-*   **`strategy_contracts`**: Defines the "Contract" for a strategy (Allowed universes, timeframe, regime).
-*   **`portfolio_policies`**: Governance rules (e.g., "Max 80% Equity Exposure").
-*   **`backtest_runs`**: Snapshots of backtest configurations and aggregate results.
-*   **`backtest_daily_results`**: Normalized daily output for individual strategies.
-*   **`portfolio_daily_results`**: Aggregated daily output for multi-strategy portfolios.
+### Key Tables:
+*   **`companies`**: Master list of stocks.
+*   **`historical_prices`**: Daily OHLCV + 15+ Technical Indicators (RSI, EMA, ATR, MACD, ADX, etc.).
+*   **`intraday_candles`**: 5-minute candles used for scanning and backtesting.
+*   **`smart_trader_signals`**: Log of all agent-generated signals and LLM narratives.
+*   **`paper_orders` / `paper_trades` / `paper_positions`**: Full ledger for paper trading.
+*   **`strategy_contracts`**: Definitions and governance rules for institutional strategies.
+*   **`backtest_daily_results` / `portfolio_daily_results`**: Persistent results for research.
 
 ---
 
-## 🔄 CORE INTERACTION FLOWS
+## 🔄 5. INTERACTION FLOWS & DATA LIFECYCLE
 
-### 1. Signal-to-Trade Flow (Live/Paper)
-1.  `Orchestrator` fetches 5m data (check DB cache → fallback Fyers API).
-2.  `Generators` produce raw signals.
-3.  `LLMSignalAnalyst` adds "why" narrative.
-4.  `ConfidenceEngine` scores the signal (0.0 to 1.0).
-5.  If High Confidence → `TradeConstructor` builds the setup (Entry/SL/Target).
-6.  `RiskAgent` validates the setup against current portfolio risk.
-7.  `ExecutionAgent` dispatches to Broker.
-8.  Result is persisted to `smart_trader_signals` and `paper_trades` (if Paper).
+### 5.1 Signal-to-Trade Flow
+1.  **Scanner** triggers → **Snapshot** built (DB -> Fyers fallback).
+2.  **Generators** produce raw signals → **Aggregator** merges into Composite Signals.
+3.  **LLM Analyst** adds "Why" → **Confidence Engine** scores (HIGH/MEDIUM/LOW).
+4.  If **HIGH** → **TradeConstructor** builds setup → **RiskAgent** validates.
+5.  **ExecutionAgent** places order via **Broker** → State persisted to DB.
 
-### 2. Quant Research Flow
-1.  User selects a `StockUniverse` and multiple strategies.
-2.  `StrategyExecutor` runs daily backtests for each strategy; results saved to `backtest_daily_results`.
-3.  `PortfolioConstructor` reads those results and applies a `PortfolioPolicy` to calculate optimal weights and aggregate equity.
-4.  Final results saved to `portfolio_daily_results` for UI charting.
+### 5.2 Daily Update Process (4:00 PM IST)
+1.  Fetch EOD prices for all companies.
+2.  Update Index historical data.
+3.  **Precompute Indicators**: Recalculate ATR, RSI, etc., for the entire universe (Crucial for Screener accuracy).
 
 ---
 
-## 🔐 GLOBAL CODE REVIEW PROTOCOL
+## 🎨 6. FRONTEND ARCHITECTURE & DESIGN SYSTEM
 
-You are a senior software engineer and security reviewer. Conduct rigorous, practical, and context-aware code reviews.
+### Tech Stack:
+*   Next.js 16 (App Router), React 19, Tailwind CSS 4.
 
-### Objectives:
-→ Improve correctness, security, maintainability, and scalability.
-→ Minimize unnecessary refactoring.
-→ Produce actionable feedback.
+### Design System (Tokens):
+*   Defined in `globals.css` using CSS variables (e.g., `--color-primary`, `--color-profit`).
+*   **Base Colors**: Dark theme (#0A0A0B background).
+*   **Glass Morphism**: Used for Cards and Modals (`.glass-card`).
 
-### Mandatory Review Dimensions:
-1.  **Security**: Secrets, injections, auth/authz, sensitive data exposure.
-2.  **Logic & Correctness**: Boundary conditions, state consistency, concurrency, idempotency.
-3.  **Architecture**: SRP, dependency direction, layer isolation, API contracts.
-4.  **Testing**: Coverage, failure modes, mock realism.
-5.  **Maintainability**: Cognitive complexity, naming, documentation, config centralization.
-6.  **Performance**: I/O efficiency, caching, memory lifecycle, resource cleanup.
+### Core Components (`components/ui/`):
+*   `Card`: Flexible container with glass variants.
+*   `Button`: Standardized variants (Primary, Secondary, Profit, Loss).
+*   `Table`: High-density data tables with sticky headers.
+*   `MetricCard`: Specialized for displaying trading metrics.
 
-### Finding Format:
-```markdown
-### [Severity: High | Medium | Low] <Title>
-**Location:** path/file.ts:L42-L58
-**Category:** <Category>
-**Problem:** Concise technical description.
-**Impact:** System/User/Data impact.
-**Recommendation:**
-```ts
-// Fix example
-```
-Rationale: Engineering justification.
-```
+---
 
-### Risk Scoring:
-| Dimension | Risk Level |
-|-----------|------------|
-| Security  | Low/Med/High |
-| Stability | Low/Med/High |
-| Maintainability | Low/Med/High |
-| Scalability | Low/Med/High |
+## 🔐 7. PROTOCOLS & STANDARDS
+
+### 7.1 Global Code Review Protocol
+Mandatory dimensions for all PRs: Security, Logic & Correctness, Architecture, Testing, Maintainability, Performance.
+
+### 7.2 Symbol Format Rules
+*   **`DB_FORMAT`**: "SBIN" (Internal storage, searches).
+*   **`FYERS_FORMAT`**: "NSE:SBIN-EQ" (External API calls).
+*   **Rule**: Always use `symbol_master.to_db()` before storing and `symbol_master.to_fyers()` before calling Fyers.
+
+---
+
+## ⚠️ 8. AUDIT FINDINGS & DISCREPANCIES
+
+The following inconsistencies and technical debt were identified during the Feb 2026 audit:
+
+1.  **File Organization**:
+    *   `backend/app/smart_trader_api.py` and `backend/app/ai_insight_api.py` are located in the root of `backend/app/` instead of `backend/app/routers/`.
+    *   Several legacy-style files (`screener.py`, `models.py`, `strategies.py`) remain in `backend/app/`, containing logic that has been partially superseded by newer services.
+2.  **Redundant Logic**:
+    *   `backend/app/database.py` and `backend/app/main.py` both contain logic for `Base.metadata.create_all()`.
+3.  **Broker State**:
+    *   `ExecutionAgent` in `update_positions` notes that `stop_loss` and `target` are not yet persisted in the `PaperPosition` table, relying on the strategy loop or manual exit for now.
+4.  **Symbol Master Loading**:
+    *   `SymbolMaster` uses a lazy-loading approach for `get_info` but the `_load_symbol_master` method is currently a placeholder.
+
+---
+
+## 🚀 9. DEVELOPER GUIDE
+
+### Quick Start:
+1.  **Backend**: `cd backend && python run_entry.py`
+2.  **Frontend**: `cd frontend && npm run dev`
+3.  **Full Stack**: `python start_dev.py`
+
+### Critical Scripts:
+*   `run_daily_update.bat`: Master script for daily data maintenance.
+*   `backend/scripts/seed_strategies.py`: Populates the database with institutional strategies.
+*   `backend/scripts/migrate_add_constraints.py`: Ensures database integrity constraints are applied.
+
+---
+**Version:** 3.0.0 (Agent Bible v1.0)
+**Last Updated:** February 2026
+**Status:** ✅ Audit Complete - Documentation Finalized
