@@ -6,6 +6,7 @@ from .database import Base, engine
 from .smart_trader_api import router as smart_trader_router
 from .ai_insight_api import router as ai_insight_router
 from .exceptions import SmartTraderException
+from sqlalchemy import text
 import logging
 
 # Import consolidated routers
@@ -39,6 +40,41 @@ app = FastAPI(
     version="3.0.0",
     description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading"
 )
+
+# ============================================
+# Startup Validation
+# ============================================
+
+@app.on_event("startup")
+async def startup_validation():
+    """
+    Validate system state on startup
+    Fails fast if critical issues detected
+    """
+    logger.info("🚀 Running startup validation...")
+
+    # 1. Validate symbol master loaded
+    try:
+        from .services.symbol_master import symbol_master
+        test_symbols = ["SBIN", "RELIANCE", "TCS"]
+        for symbol in test_symbols:
+            fyers_format = symbol_master.to_fyers(symbol)
+            assert fyers_format.startswith("NSE:")
+            assert symbol_master.to_db(fyers_format) == symbol
+        logger.info("✅ Symbol master validated")
+    except Exception as e:
+        logger.error(f"❌ Symbol master validation failed: {e}")
+        raise
+
+    # 2. Validate database connection
+    try:
+        from .database import engine
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("✅ Database connection validated")
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}")
+        raise
 
 # ============================================
 # Global Exception Handler

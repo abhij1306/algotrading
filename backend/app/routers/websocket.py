@@ -5,6 +5,7 @@ Allows frontend to connect/disconnect/subscribe to live data
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
+from ..services.symbol_master import symbol_master
 
 router = APIRouter()
 
@@ -29,13 +30,8 @@ def subscribe_symbols(request: SubscribeRequest):
         from ..services.fyers_websocket import get_websocket_service
         ws_service = get_websocket_service()
         
-        # Convert symbols to Fyers format if needed (e.g., SBIN -> NSE:SBIN-EQ)
-        fyers_symbols = []
-        for symbol in request.symbols:
-            if ":" not in symbol:  # Not in Fyers format
-                fyers_symbols.append(f"NSE:{symbol}-EQ")
-            else:
-                fyers_symbols.append(symbol)
+        # Convert symbols to Fyers format using Symbol Master
+        fyers_symbols = symbol_master.batch_to_fyers(request.symbols)
         
         ws_service.subscribe(fyers_symbols)
         return {"status": "subscribed", "symbols": fyers_symbols}
