@@ -4,9 +4,9 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import logging
+from ..utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("services.market_data")
 
 class MarketDataService:
     @staticmethod

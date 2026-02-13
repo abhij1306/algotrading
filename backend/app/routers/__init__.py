@@ -1,5 +1,4 @@
 # Router exports for clean imports in main.py
-# This allows: from .routers import portfolio, market, etc.
 
 from . import (
     unified,
@@ -9,7 +8,8 @@ from . import (
     actions,
     auth,
     admin,
-    portfolio,
+    portfolio_analyst,
+    portfolio_quant,
     backtest,
     portfolio_live,
     research,
@@ -26,7 +26,8 @@ __all__ = [
     "actions",
     "auth",
     "admin",
-    "portfolio",
+    "portfolio_analyst",
+    "portfolio_quant",
     "backtest",
     "portfolio_backtest",
     "portfolio_live",

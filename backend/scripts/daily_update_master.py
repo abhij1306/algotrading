@@ -9,26 +9,15 @@ import os
 from datetime import datetime
 import logging
 
-# Setup logging
-log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f'daily_update_{datetime.now().strftime("%Y%m%d")}.log')
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
-
 # Add backend to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.utils.logger import setup_logging, get_logger
 from app.database import SessionLocal, Company
+
+# Setup logging
+setup_logging("daily_update")
+logger = get_logger("daily_update")
 from app.data_repository import DataRepository
 from app.data_fetcher import fetch_historical_data
 from concurrent.futures import ThreadPoolExecutor, as_completed
