@@ -6,7 +6,7 @@ import sys
 import os
 from typing import Optional, Dict
 from .config import config
-
+from .services.symbol_master import symbol_master
 from .services.fyers_client import get_fyers_client
 
 def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFrame]:
@@ -32,7 +32,7 @@ def fetch_fyers_historical(symbol: str, days: int = 365) -> Optional[pd.DataFram
         start_date = end_date - timedelta(days=days)
         
         # Format for Fyers
-        fyers_symbol = f"NSE:{symbol}-EQ"
+        fyers_symbol = symbol_master.to_fyers(symbol)
         range_from = start_date.strftime("%Y-%m-%d")
         range_to = end_date.strftime("%Y-%m-%d")
         
@@ -120,7 +120,7 @@ def fetch_historical_data(symbol: str, days: int = 365) -> Optional[pd.DataFrame
                     try:
                         fyers_client = get_fyers_client()
                         
-                        fyers_symbol = f"NSE:{symbol}-EQ"
+                        fyers_symbol = symbol_master.to_fyers(symbol)
                         start_date = latest_date + timedelta(days=1)
                         
                         response = fyers_client.get_historical_data(
@@ -202,8 +202,8 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
     try:
         fyers_client = get_fyers_client()
         
-        # Format symbols for Fyers (NSE:SYMBOL-EQ)
-        fyers_symbols = [f"NSE:{sym}-EQ" for sym in symbols]
+        # Format symbols for Fyers using Symbol Master
+        fyers_symbols = symbol_master.batch_to_fyers(symbols)
         
         # Get quotes
         response = fyers_client.get_quotes(fyers_symbols)
@@ -215,8 +215,8 @@ def fetch_fyers_quotes(symbols: list) -> Dict:
         # Parse response into dict
         quotes_dict = {}
         for quote in response['d']:
-            # Extract symbol name (remove NSE: and -EQ)
-            symbol = quote['n'].replace('NSE:', '').replace('-EQ', '')
+            # Extract symbol name using Symbol Master
+            symbol = symbol_master.to_db(quote['n'])
             v = quote.get('v', {})
             quotes_dict[symbol] = {
                 'ltp': v.get('lp', 0),  # Last price
@@ -250,7 +250,7 @@ def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
     
     try:
         fyers_client = get_fyers_client()
-        fyers_symbol = f"NSE:{symbol}-EQ"
+        fyers_symbol = symbol_master.to_fyers(symbol)
 
         # We use standard quotes as they reflect the equilibrium price during pre-open
         quotes = fyers_client.get_parsed_quotes([fyers_symbol])

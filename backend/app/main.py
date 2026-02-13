@@ -6,6 +6,7 @@ from .database import Base, engine
 from .smart_trader_api import router as smart_trader_router
 from .ai_insight_api import router as ai_insight_router
 from .exceptions import SmartTraderException
+from sqlalchemy import text
 from .utils.logger import setup_logging, get_logger
 
 # Import consolidated routers
@@ -41,11 +42,18 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize Live Market Service
     try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+
+        # Set loop for WebSocket manager
+        from .utils.ws_manager import manager
+        manager.set_loop(loop)
+
+        # Initialize Live Market Service with captured loop
         from .services.live_market_service import live_market
-        # We don't call connect() here to avoid blocking and because
-        # it checks market hours, but we ensure it's ready.
-        # It will be connected on demand via /connect or /subscribe
-        logger.info("🚀 Live Market Service initialized")
+        live_market.connect(loop=loop)
+
+        logger.info("🚀 Live Market Service initialized with event loop")
     except Exception as e:
         logger.error(f"Failed to initialize Live Market Service: {e}")
 
@@ -68,6 +76,41 @@ app = FastAPI(
     description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading",
     lifespan=lifespan
 )
+
+# ============================================
+# Startup Validation
+# ============================================
+
+@app.on_event("startup")
+async def startup_validation():
+    """
+    Validate system state on startup
+    Fails fast if critical issues detected
+    """
+    logger.info("🚀 Running startup validation...")
+
+    # 1. Validate symbol master loaded
+    try:
+        from .services.symbol_master import symbol_master
+        test_symbols = ["SBIN", "RELIANCE", "TCS"]
+        for symbol in test_symbols:
+            fyers_format = symbol_master.to_fyers(symbol)
+            assert fyers_format.startswith("NSE:")
+            assert symbol_master.to_db(fyers_format) == symbol
+        logger.info("✅ Symbol master validated")
+    except Exception as e:
+        logger.error(f"❌ Symbol master validation failed: {e}")
+        raise
+
+    # 2. Validate database connection
+    try:
+        from .database import engine
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("✅ Database connection validated")
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}")
+        raise
 
 # ============================================
 # Global Exception Handler

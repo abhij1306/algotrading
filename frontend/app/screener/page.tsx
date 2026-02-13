@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Search, Layers, RefreshCw, ChevronLeft, ChevronRight, AlertTriangle, Loader2 } from 'lucide-react'
 import ScreenerTable from '@/components/ScreenerTable'
 import ZeroStateScreener from '@/components/ZeroStateScreener'
@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { GlassSelect } from '@/components/ui/GlassSelect'
 import { apiClient } from '@/lib/api-client'
+import { useWebSocket } from '@/hooks/useWebSocket'
 
 // Types
 interface Stock {
@@ -45,6 +46,7 @@ interface Stock {
 export default function ScreenerPage() {
   const [stocks, setStocks] = useState<Stock[]>([])
   const [loading, setLoading] = useState(false)
+  const { isConnected, lastMessage, sendMessage } = useWebSocket()
   const [error, setError] = useState<string | null>(null)
 
   // Filters
@@ -145,12 +147,40 @@ export default function ScreenerPage() {
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(() => fetchData(true), 5000)
+    // Reduce polling frequency when WebSocket is used, or keep as fallback
+    const interval = setInterval(() => fetchData(true), 10000)
     return () => {
       clearInterval(interval)
       if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current)
     }
   }, [page, selectedIndex, debouncedSymbol, selectedSector, scannerFilter, limit])
+
+  // WebSocket Subscriptions
+  useEffect(() => {
+    if (isConnected && stocks.length > 0) {
+      const symbols = stocks.map(s => s.symbol)
+      sendMessage({
+        action: 'subscribe',
+        symbols: symbols
+      })
+    }
+  }, [isConnected, stocks.map(s => s.symbol).join(','), sendMessage])
+
+  // Handle incoming ticks
+  useEffect(() => {
+    if (lastMessage?.type === 'ticker') {
+      const tick = lastMessage.data
+      setStocks(prev => prev.map(s =>
+        s.symbol === tick.symbol
+          ? {
+              ...s,
+              close: tick.ltp || tick.price || s.close,
+              change_pct: tick.chp !== undefined ? tick.chp : (tick.change_pct !== undefined ? tick.change_pct : s.change_pct)
+            }
+          : s
+      ))
+    }
+  }, [lastMessage])
 
   return (
     <div className="h-full flex flex-col gap-4 p-6">

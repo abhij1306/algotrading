@@ -6,6 +6,7 @@ import logging
 from typing import List, Optional
 import pytz
 from .fyers_websocket import get_websocket_service, FyersWebSocketService
+from .symbol_master import symbol_master
 from ..utils.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class LiveMarketService:
         self.ws_service: Optional[FyersWebSocketService] = None
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
+        self.latest_values = {}
         self.loop = None
         self.broadcast_task = None
         self.dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
@@ -48,10 +50,10 @@ class LiveMarketService:
 
     async def _update_buffer(self, tick):
         """Async method to update buffer on main loop"""
+        # Symbol is already converted to DB format by handle_tick_incoming
         symbol = tick.get("symbol")
-        # Optimization: storing raw tick. 
-        # Ideally calculate Change% here if missing.
         self.tick_buffer[symbol] = tick
+        self.latest_values[symbol] = tick
 
     async def _flush_loop(self):
         """Background task to flush buffered ticks every 1s"""
@@ -78,15 +80,27 @@ class LiveMarketService:
     def handle_tick_incoming(self, tick):
         """Entry point for ticks from Fyers Thread"""
         if self.loop and not self.loop.is_closed():
-            asyncio.run_coroutine_threadsafe(self._update_buffer(tick), self.loop)
+            try:
+                # Convert symbol to DB_FORMAT before buffering
+                fyers_symbol = tick.get("symbol")
+                if fyers_symbol:
+                    db_symbol = symbol_master.to_db(fyers_symbol)
+                    tick_db = tick.copy()
+                    tick_db["symbol"] = db_symbol
+                    asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
+            except Exception as e:
+                logger.error(f"Error processing incoming tick: {e}")
 
-    def connect(self):
+    def connect(self, loop=None):
         """Connect to external data provider if market is open"""
         # Capture the running loop for thread-safe operations
-        try:
-             self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-             logger.warning("LiveMarketService connected outside async loop context? Broadcasts might fail.")
+        if loop:
+            self.loop = loop
+        else:
+            try:
+                 self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                 logger.warning("LiveMarketService connected outside async loop context? Broadcasts might fail.")
 
         if self.is_market_open():
             logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
@@ -99,6 +113,8 @@ class LiveMarketService:
                 self.ws_service = get_websocket_service()
                 
                 # Register Global Handler
+                # Support both naming conventions used by other agents
+                self.ws_service.message_handler = self.handle_tick_incoming
                 self.ws_service.on_tick_handler = self.handle_tick_incoming
 
                 # Check if already connected
@@ -129,13 +145,16 @@ class LiveMarketService:
 
         if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():
             try:
+                # Convert to Fyers format
+                fyers_symbols = symbol_master.batch_to_fyers(symbols)
+
                 # CRITICAL FIX: Run blocking SDK call in executor
                 await asyncio.get_running_loop().run_in_executor(
                     None, 
                     self.ws_service.subscribe, 
-                    symbols
+                    fyers_symbols
                 )
-                logger.info(f"Subscribed to {len(symbols)} symbols")
+                logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
             except Exception as e:
                 logger.error(f"Fyers subscription failed: {e}")
         else:
@@ -144,11 +163,15 @@ class LiveMarketService:
     async def unsubscribe(self, symbols: List[str]):
         """Unsubscribe non-blocking"""
         if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():
-            await asyncio.get_running_loop().run_in_executor(
-                None, 
-                self.ws_service.unsubscribe, 
-                symbols
-            )
+            try:
+                fyers_symbols = symbol_master.batch_to_fyers(symbols)
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    self.ws_service.unsubscribe,
+                    fyers_symbols
+                )
+            except Exception as e:
+                logger.error(f"Fyers unsubscription failed: {e}")
 
     def get_status(self):
         return {
@@ -156,6 +179,21 @@ class LiveMarketService:
             "fyers_connected": (self.ws_service is not None and 
                                 self.ws_service.ws is not None and 
                                 self.ws_service.ws.is_connected())
+        }
+
+    def get_latest_tick(self, symbol: str) -> Optional[dict]:
+        """
+        Get latest tick for symbol
+        Returns cached live tick if available.
+        """
+        return self.latest_values.get(symbol)
+
+    def get_latest_ticks(self, symbols: List[str]) -> dict:
+        """Get latest ticks for multiple symbols"""
+        return {
+            symbol: self.latest_values.get(symbol)
+            for symbol in symbols
+            if symbol in self.latest_values
         }
 
 # Singleton

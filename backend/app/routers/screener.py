@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, and_
+from sqlalchemy import desc, func, and_, or_
 from ..database import get_db, SessionLocal, Company, HistoricalPrice, FinancialStatement
+from ..models.index_membership import IndexMembership
 from ..data_repository import DataRepository
 from ..indicators import compute_features
 from ..data_fetcher import fetch_fyers_quotes
+from ..services.symbol_master import symbol_master
 from ..constants.indices import STOCK_INDICES, DEFAULT_SCREENER_UNIVERSE, TREND_FILTER_UNIVERSE
 import math  # For NaN/inf filtering
 
@@ -124,13 +127,26 @@ def get_screener(
         
         # Filter by INDEX (NIFTY50, BANKNIFTY, etc.)
         if index and index != 'ALL':
-             # Resolve symbols from index definition
-             if index in STOCK_INDICES:
-                 target_symbols = STOCK_INDICES[index]['symbols']
-                 companies_query = companies_query.filter(Company.symbol.in_(target_symbols))
+            # Use IndexMembership table for filtering
+            current_date = datetime.now().date()
+            index_symbols_subquery = (
+                db.query(IndexMembership.symbol)
+                .filter(
+                    IndexMembership.index_name == index,
+                    IndexMembership.start_date <= current_date,
+                    or_(
+                        IndexMembership.end_date.is_(None),
+                        IndexMembership.end_date >= current_date
+                    )
+                )
+                .subquery()
+            )
+            companies_query = companies_query.filter(Company.symbol.in_(index_symbols_subquery))
         
         if symbol:
-            companies_query = companies_query.filter(Company.symbol.ilike(f"{symbol.upper()}%"))
+            # Standardize symbol search
+            standard_symbol = symbol_master.to_db(symbol)
+            companies_query = companies_query.filter(Company.symbol.ilike(f"{standard_symbol}%"))
         
         if sector and sector.lower() != 'all':
             companies_query = companies_query.filter(Company.sector == sector)
@@ -230,7 +246,8 @@ def get_screener(
                 # Direct mapping from HistoricalPrice columns (already fetched)
                 # We verified these columns exist and have data
                 features = {
-                    'symbol': company.symbol,
+                    'symbol': symbol_master.to_display(company.symbol),
+                    'symbol_fyers': symbol_master.to_fyers(company.symbol),
                     'close': float(hist_price.close or 0),
                     'open': float(hist_price.open or 0),
                     'high': float(hist_price.high or 0),
@@ -322,7 +339,8 @@ def get_screener(
                 if math.isnan(change_pct) or math.isinf(change_pct): change_pct = 0
                 
                 computed_list.append({
-                    'symbol': company.symbol,
+                    'symbol': symbol_master.to_display(company.symbol),
+                    'symbol_fyers': symbol_master.to_fyers(company.symbol),
                     'close': float(close_val),
                     'change_pct': round(change_pct, 2),
                     'volume': int(hist_price.volume or 0),
@@ -387,7 +405,7 @@ def get_financials_screener(
         
         # Add symbol filter if provided
         if symbol:
-            query = query.filter(Company.symbol == symbol.upper())
+            query = query.filter(Company.symbol == symbol_master.to_db(symbol))
         
         # Add sector filter if provided
         if sector:
@@ -414,7 +432,8 @@ def get_financials_screener(
         data = []
         for company, fs in results:
             data.append({
-                'symbol': company.symbol,
+                'symbol': symbol_master.to_display(company.symbol),
+                'symbol_fyers': symbol_master.to_fyers(company.symbol),
                 'market_cap': float(company.market_cap) if company.market_cap else 0,
                 'revenue': float(fs.revenue) if fs.revenue else 0,
                 'net_income': float(fs.net_income) if fs.net_income else 0,

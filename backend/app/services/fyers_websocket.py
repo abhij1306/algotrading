@@ -38,7 +38,7 @@ class FyersWebSocketService:
         
         if fyers_client is None:
             raise Exception("Fyers credentials not found. Please login first.")
-        
+
         client_id = fyers_client.client_id
         access_token = fyers_client.access_token
         

@@ -5,6 +5,7 @@ Allows frontend to connect/disconnect/subscribe to live data
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
+from ..services.symbol_master import symbol_master
 
 router = APIRouter()
 
@@ -27,13 +28,8 @@ async def subscribe_symbols(request: SubscribeRequest):
     try:
         from ..services.live_market_service import live_market
         
-        # Convert symbols to Fyers format if needed (e.g., SBIN -> NSE:SBIN-EQ)
-        fyers_symbols = []
-        for symbol in request.symbols:
-            if ":" not in symbol:  # Not in Fyers format
-                fyers_symbols.append(f"NSE:{symbol}-EQ")
-            else:
-                fyers_symbols.append(symbol)
+        # Convert symbols to Fyers format using Symbol Master
+        fyers_symbols = symbol_master.batch_to_fyers(request.symbols)
         
         await live_market.subscribe(fyers_symbols)
         return {"status": "subscribed", "symbols": fyers_symbols}
@@ -73,18 +69,47 @@ async def websocket_endpoint(websocket: WebSocket):
     Connect to: ws://localhost:8000/api/websocket/stream
     """
     await manager.connect(websocket)
+    from ..services.live_market_service import live_market
+    import json
+
     try:
         while True:
             # Keep connection open and listen for client messages (e.g. ping/subscribe)
-            # Currently only server->client broadcasting is primary
             data = await websocket.receive_text()
             
-            # Simple pong or ack
-            if data == "ping":
-                await websocket.send_text('{"type":"pong"}')
+            try:
+                message = json.loads(data)
+                action = message.get("action")
+
+                if action == "subscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.subscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "subscribe",
+                            "count": len(symbols)
+                        })
+
+                elif action == "unsubscribe":
+                    symbols = message.get("symbols", [])
+                    if symbols:
+                        await live_market.unsubscribe(symbols)
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "unsubscribe",
+                            "count": len(symbols)
+                        })
                 
+                elif action == "ping" or data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+            except json.JSONDecodeError:
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        # print(f"WebSocket error: {e}")
+        # logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)

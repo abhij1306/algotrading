@@ -10,6 +10,7 @@ from .backtest import BacktestRun, BacktestDailyResult, PortfolioDailyResult
 from .strategy import StrategyConfig, StrategyContract, StrategyMetadata
 from .order import PaperOrder, PaperTrade, PaperPosition, PaperFund, ActionCenter
 from .market import MarketNews, Watchlist, StockUniverse
+from .index_membership import IndexMembership
 from .signal import SmartTraderSignal, AgentAuditLog
 from .log import DataUpdateLog, AllocatorDecision
 
@@ -25,6 +26,7 @@ __all__ = [
     'StrategyConfig', 'StrategyContract', 'StrategyMetadata',
     'PaperOrder', 'PaperTrade', 'PaperPosition', 'PaperFund', 'ActionCenter',
     'MarketNews', 'Watchlist', 'StockUniverse',
+    'IndexMembership',
     'SmartTraderSignal', 'AgentAuditLog',
     'DataUpdateLog', 'AllocatorDecision'
 ]
