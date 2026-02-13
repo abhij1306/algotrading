@@ -6,7 +6,7 @@ from .database import Base, engine
 from .smart_trader_api import router as smart_trader_router
 from .ai_insight_api import router as ai_insight_router
 from .exceptions import SmartTraderException
-import logging
+from .utils.logger import setup_logging, get_logger
 
 # Import consolidated routers
 from .routers import (
@@ -16,7 +16,8 @@ from .routers import (
     actions,
     auth,
     admin,
-    portfolio,
+    portfolio_analyst,
+    portfolio_quant,
     backtest,
     portfolio_backtest,
     portfolio_live,
@@ -27,8 +28,8 @@ from .routers import (
 )
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger("main")
 
 # Load environment variables
 load_dotenv()
@@ -112,7 +113,8 @@ app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"]
 
 # Consolidated Portfolio & Backtest
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin & Data"])
-app.include_router(portfolio.router)  # /api/portfolio with stocks and strategies
+app.include_router(portfolio_analyst.router)
+app.include_router(portfolio_quant.router)
 app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtesting"])
 app.include_router(portfolio_backtest.router)
 app.include_router(portfolio_live.router)
