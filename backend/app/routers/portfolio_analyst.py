@@ -191,6 +191,11 @@ async def analyze_stock_portfolio(portfolio_id: int, lookback_days: int = 252, d
         lookback_days=lookback_days
     )
 
+    # Clear old metrics before storing new ones
+    db.query(ComputedRiskMetric).filter(
+        ComputedRiskMetric.portfolio_id == portfolio_id
+    ).delete()
+
     for metric_name, metric_value in analysis['market_risk'].items():
         if isinstance(metric_value, (int, float)):
             metric = ComputedRiskMetric(

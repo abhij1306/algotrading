@@ -15,7 +15,7 @@ class MarketNews(Base):
     url = Column(Text)
 
     # Timing
-    published_at = Column(DateTime, nullable=False, index=True)
+    published_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Stock symbols mentioned

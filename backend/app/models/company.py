@@ -24,7 +24,7 @@ class Company(Base):
     historical_prices = relationship("HistoricalPrice", back_populates="company", cascade="all, delete-orphan")
     financial_statements = relationship("FinancialStatement", back_populates="company", cascade="all, delete-orphan")
     quarterly_results = relationship("QuarterlyResult", back_populates="company", cascade="all, delete-orphan")
-    learning_artifacts = relationship("LearningArtifact", back_populates="company", cascade="all, delete-orphan")
+    learning_artifacts = relationship("LearningArtifact", back_populates="company", cascade="all")
 
 class LearningArtifact(Base):
     __tablename__ = "learning_artifacts"

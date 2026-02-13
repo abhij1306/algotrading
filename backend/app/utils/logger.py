@@ -5,7 +5,9 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 # Logging configuration
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+_VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_env_level = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = _env_level if _env_level in _VALID_LEVELS else "INFO"
 LOG_DIR = os.path.join(os.getcwd(), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 

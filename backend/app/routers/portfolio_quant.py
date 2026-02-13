@@ -185,7 +185,7 @@ def monitor_live_strategies(db: Session = Depends(get_db)):
         now = datetime.now(tz)
 
         if not (time(9, 15) <= now.time() <= time(15, 30)):
-            pass
+            return {"status": "market_closed", "portfolios": []}
 
         live_portfolios = db.query(ResearchPortfolio).filter(ResearchPortfolio.status == "LIVE").all()
         dashboard = []

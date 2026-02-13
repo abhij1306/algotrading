@@ -36,6 +36,9 @@ class FyersWebSocketService:
         from .fyers_client import get_fyers_client
         fyers_client = get_fyers_client()
         
+        if fyers_client is None:
+            raise Exception("Fyers credentials not found. Please login first.")
+        
         client_id = fyers_client.client_id
         access_token = fyers_client.access_token
         

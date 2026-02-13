@@ -25,11 +25,11 @@ class StrategyContract(Base):
     when_loses = Column(Text)
     description = Column(Text)
     parameters = Column(JSON)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     # Lifecycle and Governance
     lifecycle_state = Column(String(20), default="RESEARCH")
-    state_since = Column(DateTime, default=datetime.now)
+    state_since = Column(DateTime, default=datetime.utcnow)
     approved_at = Column(DateTime)
     approved_by = Column(String(50))
 
