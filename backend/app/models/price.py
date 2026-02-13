@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from ..base import Base
 
 class HistoricalPrice(Base):
@@ -50,7 +50,7 @@ class HistoricalPrice(Base):
 
     # Data source tracking
     source = Column(String(20))  # 'fyers', 'yfinance', etc.
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     company = relationship("Company", back_populates="historical_prices")
@@ -76,14 +76,14 @@ class IntradayCandle(Base):
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(Integer, nullable=False)
+    volume = Column(BigInteger, nullable=False)  # Use BigInteger to match HistoricalPrice and handle high-volume intraday data
 
     # Additional fields
     trades = Column(Integer)  # Number of trades in this candle
 
     # Data source tracking
     source = Column(String(20), default='fyers')  # 'fyers', 'zerodha', etc.
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     company = relationship("Company")

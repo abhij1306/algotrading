@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Index, JSON, Text, func
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from ..base import Base
 
@@ -24,8 +24,8 @@ class PortfolioPolicy(Base):
     allocation_sensitivity = Column(String(20), default="MEDIUM")
     correlation_penalty = Column(String(20), default="MODERATE")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     portfolios = relationship("ResearchPortfolio", back_populates="policy")
@@ -55,8 +55,8 @@ class ResearchPortfolio(Base):
     max_drawdown = Column(Float, nullable=True)
     sharpe_ratio = Column(Float, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     policy = relationship("PortfolioPolicy", back_populates="portfolios")
@@ -72,8 +72,8 @@ class UserPortfolio(Base):
     description = Column(Text)
 
     # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     positions = relationship("PortfolioPosition", back_populates="portfolio", cascade="all, delete-orphan")
@@ -95,8 +95,8 @@ class PortfolioPosition(Base):
     allocation_pct = Column(Float)
 
     # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     portfolio = relationship("UserPortfolio", back_populates="positions")
@@ -121,7 +121,7 @@ class ComputedRiskMetric(Base):
     metric_metadata = Column(Text)
 
     # Timestamp
-    computed_at = Column(DateTime, default=datetime.utcnow)
+    computed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     portfolio = relationship("UserPortfolio", back_populates="risk_metrics")
@@ -138,7 +138,7 @@ class UserStockPortfolio(Base):
     name = Column(String, nullable=False)
     description = Column(String)
     symbols = Column(JSON, nullable=False)  # List of symbols
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class PortfolioDailyState(Base):
     """Daily snapshot of live portfolio state"""
@@ -153,7 +153,7 @@ class PortfolioDailyState(Base):
     risk_state = Column(String(20))
     risk_state_reason = Column(Text)
     strategy_weights = Column(JSON)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class LivePortfolioState(Base):
     """
@@ -164,7 +164,7 @@ class LivePortfolioState(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     portfolio_id = Column(Integer, ForeignKey('research_portfolios.id'), nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Real-time Metrics
     total_equity = Column(Float)

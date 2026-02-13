@@ -2,6 +2,9 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 requests==2.31.0
 pandas==2.2.2
+# numpy pinned to 1.26.4 for scipy 1.11.4 compatibility (scipy 1.11.x does not support numpy 2.x)
+# To upgrade to numpy 2.x, also upgrade scipy to >=1.14.0 and verify pandas-ta compatibility
+# Security: numpy 1.26.4 has no known critical CVEs (verified 2026-02)
 numpy==1.26.4
 
 python-dotenv==1.0.0

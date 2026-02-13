@@ -31,6 +31,15 @@ def get_live_quotes(symbols: str, db: Session = Depends(get_db)):
         # Fetch live quotes from Fyers using unified service
         from ..services.fyers_client import get_fyers_client
         fyers = get_fyers_client()
+        
+        # Validate the Fyers client before using it
+        if fyers is None:
+            print("Error: Fyers client is not available (None)")
+            raise HTTPException(
+                status_code=503,
+                detail="Fyers client is not available. Please check broker configuration."
+            )
+        
         quotes = fyers.get_parsed_quotes(symbol_list)
         return {"quotes": quotes}
             

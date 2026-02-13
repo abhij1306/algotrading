@@ -255,6 +255,8 @@ def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
         # We use standard quotes as they reflect the equilibrium price during pre-open
         quotes = fyers_client.get_parsed_quotes([fyers_symbol])
 
+        # get_parsed_quotes normalizes keys to bare symbols (strips NSE:/BSE: and -EQ/-INDEX)
+        # So we check for the bare symbol first, then fallback to fyers_symbol for safety
         if symbol in quotes:
             q = quotes[symbol]
             return {
@@ -264,6 +266,19 @@ def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
                 'timestamp': pd.Timestamp.now(),
                 'source': 'fyers_preopen'
             }
+        elif fyers_symbol in quotes:
+            # Fallback: check for full fyers_symbol key if normalization didn't happen
+            q = quotes[fyers_symbol]
+            return {
+                'symbol': symbol,
+                'price': q.get('ltp', 0),
+                'volume': q.get('volume', 0),
+                'timestamp': pd.Timestamp.now(),
+                'source': 'fyers_preopen'
+            }
+        else:
+            # Verbose log if neither key format is present
+            print(f"Warning: No quote data found for {symbol} (fyers_symbol={fyers_symbol}). Available keys: {list(quotes.keys())}")
 
     except Exception as e:
         print(f"Error fetching pre-open data for {symbol}: {e}")

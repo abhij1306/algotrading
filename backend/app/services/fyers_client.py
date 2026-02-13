@@ -112,8 +112,14 @@ class FyersClient:
         quotes_dict = {}
         for quote in response['d']:
             # Handle both formats: NSE:RELIANCE-EQ or NSE:NIFTY50-INDEX
-            symbol_raw = quote['n']
-            symbol = symbol_raw.replace('NSE:', '').replace('-EQ', '').replace('-INDEX', '')
+            # Use .get() to avoid KeyError if 'n' is missing
+            symbol_raw = quote.get('n')
+            if not symbol_raw:
+                # Skip quotes without a valid symbol
+                continue
+            
+            # Strip both NSE: and BSE: prefixes, and -EQ or -INDEX suffixes
+            symbol = symbol_raw.replace('NSE:', '').replace('BSE:', '').replace('-EQ', '').replace('-INDEX', '')
             v = quote.get('v', {})
 
             ltp = v.get('lp', 0)
