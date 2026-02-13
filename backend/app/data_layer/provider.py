@@ -201,9 +201,9 @@ class DataProvider:
         
         # Check Fyers
         try:
-            from ..fyers_direct import get_fyers_client
+            from ..services.fyers_client import get_fyers_client
             client = get_fyers_client()
-            profile = client.get_profile()
+            profile = client.fyers.get_profile()
             status["fyers"] = "OK"
         except Exception as e:
             if "token" in str(e).lower() or "401" in str(e):

@@ -249,11 +249,11 @@ def fetch_fyers_preopen(symbol: str) -> Optional[dict]:
         return None
     
     try:
-        # Use direct integration to bypass potential import issues and reuse logic
-        from . import fyers_direct
+        fyers_client = get_fyers_client()
+        fyers_symbol = f"NSE:{symbol}-EQ"
 
         # We use standard quotes as they reflect the equilibrium price during pre-open
-        quotes = fyers_direct.get_fyers_quotes([symbol])
+        quotes = fyers_client.get_parsed_quotes([fyers_symbol])
 
         if symbol in quotes:
             q = quotes[symbol]

@@ -31,56 +31,88 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal, Company
 from app.data_repository import DataRepository
 from app.data_fetcher import fetch_historical_data
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def update_eod_prices():
-    """Update End-of-Day prices for all active stocks"""
+def update_single_company(symbol: str):
+    """Worker function to update a single company"""
+    db = SessionLocal()
+    repo = DataRepository(db)
+    try:
+        # Fetch last 5 days (to catch any missed days)
+        df = fetch_historical_data(symbol, days=5)
+
+        if df is not None and not df.empty:
+            records = repo.save_historical_prices(symbol, df, source='fyers')
+            return True, records
+        else:
+            return False, "No data received"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        db.close()
+
+def update_eod_prices(max_workers=10):
+    """Update End-of-Day prices for all active stocks in parallel"""
     logger.info("=" * 70)
-    logger.info("STEP 1: Updating EOD Prices from Fyers")
+    logger.info(f"STEP 1: Updating EOD Prices from Fyers (Parallel, workers={max_workers})")
     logger.info("=" * 70)
     
     db = SessionLocal()
-    repo = DataRepository(db)
-    
     try:
         companies = db.query(Company).filter(Company.is_active == True).all()
         total = len(companies)
+        symbols = [c.symbol for c in companies]
         logger.info(f"Found {total} active companies")
         
         success = 0
         errors = 0
+        total_records = 0
         
-        for i, company in enumerate(companies, 1):
-            try:
-                logger.info(f"[{i}/{total}] Updating {company.symbol}...")
-                
-                # Fetch last 5 days (to catch any missed days)
-                df = fetch_historical_data(company.symbol, days=5)
-                
-                if df is not None and not df.empty:
-                    records = repo.save_historical_prices(company.symbol, df, source='fyers')
-                    logger.info(f"  ✓ Added {records} new records")
-                    success += 1
-                else:
-                    logger.warning(f"  ✗ No data received")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_symbol = {executor.submit(update_single_company, sym): sym for sym in symbols}
+
+            for i, future in enumerate(as_completed(future_to_symbol), 1):
+                symbol = future_to_symbol[future]
+                try:
+                    is_ok, result = future.result()
+                    if is_ok:
+                        success += 1
+                        total_records += result
+                        if i % 50 == 0 or i == total:
+                            logger.info(f"Progress: [{i}/{total}] updated. Total new records: {total_records}")
+                    else:
+                        errors += 1
+                        logger.warning(f"  ✗ {symbol}: {result}")
+                except Exception as e:
                     errors += 1
-                    
-            except Exception as e:
-                logger.error(f"  ✗ Error: {str(e)}")
-                errors += 1
+                    logger.error(f"  ✗ {symbol} generated an exception: {e}")
         
-        logger.info(f"\nEOD Update Complete: Success={success}, Errors={errors}")
+        logger.info(f"\nEOD Update Complete: Success={success}, Errors={errors}, Total Records={total_records}")
         
     finally:
         db.close()
 
-def update_indices():
-    """Update index data (NIFTY50, BANKNIFTY, etc.)"""
-    logger.info("\n" + "=" * 70)
-    logger.info("STEP 2: Updating Index Data")
-    logger.info("=" * 70)
-    
+def update_single_index(symbol: str):
+    """Worker function to update a single index"""
     db = SessionLocal()
     repo = DataRepository(db)
+    try:
+        df = fetch_historical_data(symbol, days=5)
+        if df is not None and not df.empty:
+            records = repo.save_historical_prices(symbol, df, source='yfinance')
+            return True, records
+        else:
+            return False, "No data received"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        db.close()
+
+def update_indices(max_workers=5):
+    """Update index data (NIFTY50, BANKNIFTY, etc.) in parallel"""
+    logger.info("\n" + "=" * 70)
+    logger.info(f"STEP 2: Updating Index Data (Parallel, workers={max_workers})")
+    logger.info("=" * 70)
     
     # Use yfinance ticker symbols for Indian indices
     indices = [
@@ -98,25 +130,27 @@ def update_indices():
         "^CNXREALTY", # NIFTY REALTY
     ]
     
-    try:
-        for symbol in indices:
+    success = 0
+    errors = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {executor.submit(update_single_index, sym): sym for sym in indices}
+
+        for future in as_completed(future_to_index):
+            symbol = future_to_index[future]
             try:
-                logger.info(f"Updating {symbol}...")
-                df = fetch_historical_data(symbol, days=5)
-                
-                if df is not None and not df.empty:
-                    records = repo.save_historical_prices(symbol, df, source='yfinance')
-                    logger.info(f"  ✓ Added {records} records")
+                is_ok, result = future.result()
+                if is_ok:
+                    success += 1
+                    logger.info(f"  ✓ {symbol}: Added {result} records")
                 else:
-                    logger.warning(f"  ✗ No data received")
-                    
+                    errors += 1
+                    logger.warning(f"  ✗ {symbol}: {result}")
             except Exception as e:
-                logger.error(f"  ✗ Error: {str(e)}")
-        
-        logger.info("Index update complete")
-        
-    finally:
-        db.close()
+                errors += 1
+                logger.error(f"  ✗ {symbol} generated an exception: {e}")
+
+    logger.info(f"Index update complete: Success={success}, Errors={errors}")
 
 def precompute_indicators():
     """Recalculate technical indicators for all stocks"""

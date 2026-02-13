@@ -39,22 +39,15 @@ class FyersWebSocketService:
         if not data_ws:
             raise Exception("fyers-apiv3 not installed")
         
-        # Load access token from file
-        token_file = os.path.join(os.path.dirname(__file__), "..", "..", "fyers", "config", "access_token.json")
-        if not os.path.exists(token_file):
-            # Try alternate path
-            token_file = os.path.join(os.getcwd(), "fyers", "config", "access_token.json")
-            if not os.path.exists(token_file):
-                raise Exception("Fyers access token not found. Please login first.")
+        # Load access token from unified client
+        from .fyers_client import get_fyers_client
+        fyers_client = get_fyers_client()
         
-        with open(token_file, 'r') as f:
-            token_data = json.load(f)
-        
-        client_id = token_data.get("client_id")
-        access_token = token_data.get("access_token")
+        client_id = fyers_client.client_id
+        access_token = fyers_client.access_token
         
         if not client_id or not access_token:
-            raise Exception("Invalid token data")
+            raise Exception("Fyers credentials not found. Please login first.")
         
         # Create WebSocket instance
         self.access_token = f"{client_id}:{access_token}"

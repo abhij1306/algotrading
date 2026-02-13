@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-# Add AlgoTrading root to path for fyers import
-sys.path.insert(0, r'C:\AlgoTrading')
+from ..services.fyers_client import get_fyers_client
 
 class LivePriceService:
     """Service to fetch and cache live prices for scanner"""
@@ -35,10 +34,11 @@ class LivePriceService:
         
         # Fetch fresh prices
         try:
-            from backend.app.fyers_direct import get_fyers_quotes
+            fyers = get_fyers_client()
             
             print(f"[LIVE PRICE SERVICE] Fetching live prices for {len(symbols)} symbols...")
-            quotes = get_fyers_quotes(symbols)
+            fyers_symbols = [f"NSE:{s}-EQ" for s in symbols]
+            quotes = fyers.get_parsed_quotes(fyers_symbols)
             
             if quotes:
                 # Update cache
