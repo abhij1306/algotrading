@@ -83,7 +83,8 @@ A consistent, professional design system for the trading interface:
 **Start Here:**
 1. **PROJECT_DOCUMENTATION.md** - Complete technical reference
 2. **walkthrough.md** (in `.gemini/antigravity/brain/...`) - Recent improvements guide  
-3. **audit_sheet.md** - System audit findings
+3. **SYSTEM_HARDENING_AUDIT_2026.md** - Global System Hardening Audit (Latest)
+4. **audit_sheet.md** - Historical system audit findings
 
 **Technical Docs** (in `docs/` folder):
 - MASTER_PROMPT.md - System philosophy
