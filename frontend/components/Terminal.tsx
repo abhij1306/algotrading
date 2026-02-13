@@ -160,38 +160,65 @@ export default function Terminal() {
         fetchWatchlist();
     }, []);
 
+    // Handle Live Ticks from WebSocket
     useEffect(() => {
-        if (isConnected && watchlist.length > 0) {
-            const symbols = watchlist.map(w => w.symbol);
-            const fyersSymbols = symbols.map(s => s.includes(':') ? s : `NSE:${s}-EQ`);
-            apiClient.post('/api/websocket/subscribe', { symbols: fyersSymbols }).catch(console.error);
-        }
-    }, [isConnected, watchlist.length]);
+        if (!lastMessage) return;
 
-    useEffect(() => {
-        if (lastMessage && lastMessage.symbol && lastMessage.ltp) {
-            const rawSym = lastMessage.symbol.replace('NSE:', '').replace('-EQ', '');
+        // Backend wraps ticks in {type: 'ticker', data: tick}
+        let tick = lastMessage;
+        if (lastMessage.type === 'ticker' && lastMessage.data) {
+            tick = lastMessage.data;
+        }
+
+        if (tick.symbol && tick.ltp) {
+            const rawSym = tick.symbol.replace('NSE:', '').replace('-EQ', '');
+
             setWatchlist(prev => prev.map(item => {
                 if (item.symbol === rawSym) {
-                    const ltp = lastMessage.ltp!;
-                    const prevClose = item.ltp / (1 + item.change_pct / 100);
+                    const ltp = tick.ltp!;
+                    // Estimate prevClose if we don't have it explicitly to keep change % stable
+                    const prevClose = item.ltp / (1 + (item.change_pct || 0) / 100);
                     const change = ltp - prevClose;
-                    const change_pct = (change / prevClose) * 100;
+                    const change_pct = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+
                     return {
                         ...item,
                         ltp: ltp,
-                        change: lastMessage.ch ?? change,
-                        change_pct: lastMessage.chp ?? change_pct
+                        change: tick.ch ?? change,
+                        change_pct: tick.chp ?? change_pct
                     };
                 }
                 return item;
             }));
 
             if (rawSym === selectedSymbol) {
-                setSelectedLTP(lastMessage.ltp);
+                setSelectedLTP(tick.ltp);
             }
         }
     }, [lastMessage, selectedSymbol]);
+
+    // Ensure Backend WebSocket is connected and subscribed
+    useEffect(() => {
+        if (isConnected && watchlist.length > 0) {
+            const triggerConnection = async () => {
+                try {
+                    // 1. Trigger backend connection to Fyers if needed
+                    await apiClient.post('/api/websocket/connect');
+
+                    // 2. Subscribe to current watchlist symbols
+                    const symbols = watchlist.map(w => w.symbol);
+                    const fyersSymbols = symbols.map(s => s.includes(':') ? s : `NSE:${s}-EQ`);
+                    await apiClient.post('/api/websocket/subscribe', { symbols: fyersSymbols });
+
+                    console.log('[Terminal] Live data initialized');
+                } catch (err) {
+                    console.error('[Terminal] Failed to initialize live data:', err);
+                }
+            };
+
+            triggerConnection();
+        }
+    }, [isConnected, watchlist.length]);
 
     useEffect(() => {
         if (sidebarMode === 'signals') {

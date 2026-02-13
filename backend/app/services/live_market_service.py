@@ -99,10 +99,10 @@ class LiveMarketService:
                 self.ws_service = get_websocket_service()
                 
                 # Register Global Handler
-                self.ws_service.message_handler = self.handle_tick_incoming
+                self.ws_service.on_tick_handler = self.handle_tick_incoming
 
                 # Check if already connected
-                if self.ws_service.ws and self.ws_service.ws.is_connected():
+                if self.ws_service.ws and hasattr(self.ws_service.ws, 'is_connected') and self.ws_service.ws.is_connected():
                      logger.info("Fyers WebSocket already connected.")
                 else:
                      # Run connection in a separate thread to avoid blocking startup

@@ -35,10 +35,38 @@ logger = get_logger("main")
 load_dotenv()
 
 # Initialize App
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize Live Market Service
+    try:
+        from .services.live_market_service import live_market
+        # We don't call connect() here to avoid blocking and because
+        # it checks market hours, but we ensure it's ready.
+        # It will be connected on demand via /connect or /subscribe
+        logger.info("🚀 Live Market Service initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize Live Market Service: {e}")
+
+    yield
+
+    # Shutdown: Cleanup
+    try:
+        from .services.live_market_service import live_market
+        if live_market.broadcast_task:
+            live_market.broadcast_task.cancel()
+        if live_market.ws_service:
+            live_market.ws_service.disconnect()
+        logger.info("🛑 Live Market Service cleaned up")
+    except Exception as e:
+        logger.error(f"Error during shutdown cleanup: {e}")
+
 app = FastAPI(
     title="SmartTrader 3.0 API",
     version="3.0.0",
-    description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading"
+    description="Algorithmic Trading Platform with Backtesting, Portfolio Management, and Live Trading",
+    lifespan=lifespan
 )
 
 # ============================================
@@ -84,7 +112,10 @@ app.add_middleware(
 # Initialize Database
 # ============================================
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    logger.warning(f"Database creation failed during startup: {e}")
 
 # ============================================
 # Register Routers
