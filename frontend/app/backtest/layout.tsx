@@ -7,7 +7,7 @@ export const metadata = {
 
 export default function BacktestLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
       {children}
     </div>
   );

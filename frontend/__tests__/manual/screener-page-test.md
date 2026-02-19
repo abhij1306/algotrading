@@ -332,7 +332,7 @@ _______________________________________________________________________
 
 **Steps:**
 1. Inspect price column
-2. Verify font-family includes monospace (JetBrains Mono)
+2. Verify font-family includes monospace (DM Mono)
 3. Verify tabular-nums is applied
 4. Check all numeric columns use monospace
 5. Verify rupee symbol uses correct size

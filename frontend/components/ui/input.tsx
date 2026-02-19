@@ -12,29 +12,29 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>((props, ref) => {
   const { className, label, error, id: providedId, ...rest } = props;
   const generatedId = React.useId();
   const id = providedId || generatedId;
+  const inputClass = cn(
+    "h-9 w-full rounded-md border border-border bg-background-tertiary px-3 py-2 text-sm font-medium text-foreground transition-colors placeholder:text-foreground-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50",
+    error && "border-loss focus-visible:ring-loss/20",
+    className
+  );
+
+  if (!label && !error) {
+    return <input ref={ref} id={id} className={inputClass} {...rest} />;
+  }
 
   return (
-    <div className="space-y-1.5 w-full">
+    <div className="w-full space-y-1">
       {label && (
         <label
           htmlFor={id}
-          className="block text-xxs font-black text-foreground-tertiary uppercase tracking-wider ml-1"
+          className="block text-xs font-medium text-foreground-secondary"
         >
           {label}
         </label>
       )}
-      <input
-        ref={ref}
-        id={id}
-        className={cn(
-          "flex h-12 w-full rounded-xl bg-elevated px-4 py-3 text-sm font-semibold text-foreground transition-all placeholder:text-foreground-muted/50 focus-visible:outline-none focus-visible:bg-elevated focus-visible:ring-2 focus-visible:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-50 border border-border shadow-sm",
-          error && "bg-loss-bg/10 focus-visible:ring-loss/20 border-loss",
-          className
-        )}
-        {...rest}
-      />
+      <input ref={ref} id={id} className={inputClass} {...rest} />
       {error && (
-        <p className="text-xxs font-semibold text-loss mt-1 ml-1 uppercase tracking-wider">
+        <p className="mt-1 text-xs font-medium text-loss">
           {error}
         </p>
       )}

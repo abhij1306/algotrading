@@ -40,8 +40,8 @@ const layoutPath = path.join(__dirname, '..', 'app', 'layout.tsx');
 const layoutContent = fs.readFileSync(layoutPath, 'utf-8');
 
 const hasFontImport = layoutContent.includes('next/font') || layoutContent.includes('@next/font');
-const hasInterFont = layoutContent.includes('Inter') || layoutContent.includes('inter');
-const hasMonoFont = layoutContent.includes('JetBrains') || layoutContent.includes('Mono');
+const hasSansFont = layoutContent.includes('IBM_Plex_Sans') || layoutContent.includes('IBM Plex Sans');
+const hasMonoFont = layoutContent.includes('DM_Mono') || layoutContent.includes('DM Mono');
 const hasFontDisplay = layoutContent.includes('display:') || layoutContent.includes('swap');
 
 const fontIssues = [];
@@ -53,10 +53,10 @@ if (hasFontImport) {
   fontIssues.push('No font imports found');
 }
 
-if (hasInterFont) {
-  fontPasses.push('Inter font configured');
+if (hasSansFont) {
+  fontPasses.push('IBM Plex Sans configured');
 } else {
-  fontIssues.push('Inter font not configured');
+  fontIssues.push('IBM Plex Sans not configured');
 }
 
 if (hasMonoFont) {

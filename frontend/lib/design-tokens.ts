@@ -137,8 +137,8 @@ export type ShadowVariable = `var(--shadow-${ShadowToken})`;
  * Font family tokens.
  *
  * @example
- * 'sans' - Inter font for general UI text
- * 'mono' - JetBrains Mono for financial data and code
+ * 'sans' - IBM Plex Sans for general UI text
+ * 'mono' - DM Mono for financial data and code
  */
 export type FontFamily = 'sans' | 'mono';
 

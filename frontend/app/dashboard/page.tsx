@@ -43,7 +43,7 @@ interface BackendMarketStatusResponse {
 
 const QUICK_ACTIONS = [
   { icon: Zap, label: 'Trade', path: '/terminal' },
-  { icon: Target, label: 'Backtest', path: '/backtest/new' },
+  { icon: Target, label: 'Backtest', path: '/backtest' },
   { icon: BarChart3, label: 'Screener', path: '/screener' },
 ];
 

@@ -4,17 +4,19 @@
 Single operational reference for building and maintaining Phase-1 datasets using only trusted inputs.
 
 ## Authoritative Intent
-Daily backtest snapshots must be reproducible from exactly three source pillars:
-1. Universe truth: monthly index weightage files.
-2. Corporate-action truth: single NSE corporate actions file.
-3. Price truth: NSE bhavcopy only.
+Two data lanes are intentionally separate:
+1. Universe index backtesting: direct Fyers index series, consolidated once.
+2. Stock backtesting: monthly universe + corporate actions + bhavcopy pipeline.
 
-Everything else is non-trusted for Phase-1 and must stay out of active build/runtime paths.
+Do not mix these lanes.
 
 ## Canonical Root
 - `data_system/`
 
 ## Canonical Inputs
+1. Fyers index universe prices (consolidated):
+- `data_system/01_sources/fyers_index_prices/universe_index_price_daily.parquet`
+
 1. Bhavcopy files:
 - `data_system/01_sources/nse_bhavcopy/*.csv`
 
@@ -24,7 +26,7 @@ Everything else is non-trusted for Phase-1 and must stay out of active build/run
 3. Monthly index weightage PDFs:
 - `data_system/01_sources/nse_index_weights_pdf/**/NIFTY_50_*.pdf`
 
-4. Parsed monthly universe CSVs (already extracted from monthly reports):
+5. Parsed monthly universe CSVs (already extracted from monthly reports):
 - `data_system/03_universe/monthly_universe_raw/<month>/<universe>.csv`
 
 ## Canonical Outputs
@@ -36,7 +38,11 @@ Everything else is non-trusted for Phase-1 and must stay out of active build/run
 - `data_system/04_curated/phase1/snapshot_stock_daily.parquet`
 - `data_system/04_curated/phase1/snapshot_<universe>_daily.parquet`
 
-2. Metadata:
+2. Universe index cache:
+- `data_system/01_sources/fyers_index_prices/universe_index_price_daily.parquet`
+- `data_system/01_sources/fyers_index_prices/universe_index_price_summary.json`
+
+3. Metadata:
 - `data_system/05_metadata/phase1/source_manifest.json`
 - `data_system/05_metadata/phase1/checksums.json`
 - `data_system/05_metadata/phase1/validation_report.json`
@@ -73,10 +79,10 @@ python -m data_platform.pipelines.phase1_build publish --start-date YYYY-MM-DD -
 
 ## Source Policy
 1. Universe membership and weights come only from monthly weightage data.
-2. OHLCV comes only from bhavcopy.
-3. Adjusted prices come only from corporate actions file + raw OHLCV.
-4. No fallback to historical cached parquet outputs.
-5. No fallback to broker historical download in Phase-1 canonical flow.
+2. Universe index prices come from Fyers and are stored once in the consolidated index dataset.
+3. Stock OHLCV comes only from bhavcopy.
+4. Adjusted stock prices come only from corporate actions file + raw OHLCV.
+5. No fallback to dummy/proxy index construction.
 
 ## Coverage Semantics
 1. If bhavcopy is missing for a day, that day remains a price-coverage gap.

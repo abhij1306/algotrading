@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, DM_Mono } from "next/font/google";
+import { IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AppShell } from "@/components/layout";
@@ -9,15 +9,6 @@ const ibmPlexSans = IBM_Plex_Sans({
   subsets: ["latin"],
   variable: "--font-sans",
   weight: ["400", "500", "600", "700"],
-  display: "swap",
-  adjustFontFallback: true,
-});
-
-// DM Mono for financial data - pure oval zero, no dot/slash, designed for data
-const dmMono = DM_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-  weight: ["400", "500"],
   display: "swap",
   adjustFontFallback: true,
 });
@@ -37,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body
-        className={`${ibmPlexSans.variable} ${dmMono.variable} font-sans antialiased h-screen`}
+        className={`${ibmPlexSans.variable} font-sans antialiased h-screen`}
       >
         <ErrorBoundary>
           <AppShell>

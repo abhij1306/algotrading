@@ -13,6 +13,7 @@ an options historical dataset is onboarded.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -22,9 +23,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CURATED_ROOT = PROJECT_ROOT / "data_system" / "04_curated" / "phase1"
+INDEX_PRICE_DATASET_PATH = (
+    PROJECT_ROOT / "data_system" / "01_sources" / "fyers_index_prices" / "universe_index_price_daily.parquet"
+)
 
 UNIVERSE_SNAPSHOT_MAP: dict[str, Path] = {
     "NIFTY50": CURATED_ROOT / "snapshot_nifty50_daily.parquet",
@@ -114,6 +120,27 @@ class Phase1BacktestService:
         df = df.dropna(subset=["date", "symbol", "price"])
         return df
 
+    def _load_universe_index_dataset(self, universe: str, start: date, end: date) -> pd.DataFrame:
+        """Load index-level daily closes from the consolidated local index dataset."""
+        universe_id = universe.upper().strip()
+        if not INDEX_PRICE_DATASET_PATH.exists():
+            raise ValueError(
+                f"Index dataset missing: {INDEX_PRICE_DATASET_PATH}. "
+                "Download and consolidate index prices first."
+            )
+        df = pd.read_parquet(INDEX_PRICE_DATASET_PATH)
+        required = {"date", "universe_id", "close"}
+        if not required.issubset(set(df.columns)):
+            raise ValueError("Index dataset schema mismatch: expected date, universe_id, close")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        df["universe_id"] = df["universe_id"].astype(str).str.upper()
+        scoped = df[(df["universe_id"] == universe_id) & (df["date"] >= start) & (df["date"] <= end)].copy()
+        scoped["price"] = pd.to_numeric(scoped["close"], errors="coerce")
+        scoped = scoped.dropna(subset=["date", "price"])
+        if scoped.empty:
+            raise ValueError(f"No index dataset rows for universe={universe_id} in range {start}..{end}")
+        return scoped[["date", "price"]].assign(symbol=universe_id)[["date", "symbol", "price"]].sort_values("date")
+
     def _load_symbol_snapshot(self, symbols: list[str]) -> pd.DataFrame:
         if not STOCK_SNAPSHOT_PATH.exists():
             raise FileNotFoundError(f"Missing artifact: {STOCK_SNAPSHOT_PATH}")
@@ -167,6 +194,8 @@ class Phase1BacktestService:
         raise ValueError(f"Unsupported strategy: {strategy_id}")
 
     def _signal_to_returns(self, signal: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
+        # T+1 execution: shift signals by 1 day to prevent look-ahead bias
+        # Signal on day D is used to calculate returns on day D+1
         shifted = signal.shift(1).fillna(0.0)
         denom = shifted.sum(axis=1).replace(0.0, np.nan)
         weights = shifted.div(denom, axis=0).fillna(0.0)
@@ -243,8 +272,35 @@ class Phase1BacktestService:
 
     def get_status(self) -> dict[str, Any]:
         equity_ranges: dict[str, dict[str, Any]] = {}
-        for universe, path in UNIVERSE_SNAPSHOT_MAP.items():
-            if not path.exists():
+        index_df: pd.DataFrame | None = None
+        universe_ids: list[str] = []
+        if INDEX_PRICE_DATASET_PATH.exists():
+            try:
+                index_df = pd.read_parquet(INDEX_PRICE_DATASET_PATH)
+                index_df["date"] = pd.to_datetime(index_df["date"], errors="coerce").dt.date
+                index_df["universe_id"] = index_df["universe_id"].astype(str).str.upper()
+                universe_ids = sorted(index_df["universe_id"].dropna().unique().tolist())
+            except Exception:
+                index_df = None
+
+        # Prefer universes from consolidated index dataset.
+        # Fallback to legacy fixed map if dataset is unavailable.
+        scan_universes = universe_ids or list(UNIVERSE_SNAPSHOT_MAP.keys())
+
+        for universe in scan_universes:
+            path = UNIVERSE_SNAPSHOT_MAP.get(universe)
+            if index_df is not None:
+                udf = index_df[index_df["universe_id"] == universe].copy()
+                if not udf.empty:
+                    equity_ranges[universe] = {
+                        "available": True,
+                        "min_date": udf["date"].min().isoformat(),
+                        "max_date": udf["date"].max().isoformat(),
+                        "rows": int(len(udf)),
+                    }
+                    continue
+
+            if path is None or not path.exists():
                 equity_ranges[universe] = {"available": False, "min_date": None, "max_date": None, "rows": 0}
                 continue
             df = self._load_universe_snapshot(universe)
@@ -342,8 +398,8 @@ class Phase1BacktestService:
         mode = str(selection.get("mode", "universe")).lower()
         if mode == "universe":
             universe = str(selection.get("universe", "NIFTY50")).upper()
-            df = self._load_universe_snapshot(universe)
-            scope_label = universe
+            df = self._load_universe_index_dataset(universe, start, end)
+            scope_label = f"{universe}:INDEX_DATASET"
         elif mode == "symbols":
             symbols = selection.get("symbols") or []
             if not isinstance(symbols, list):
@@ -381,6 +437,13 @@ class Phase1BacktestService:
             params = strategy_cfg["params"]
 
             signal = self._build_signal(prices, sid, params)
+
+            # Validate signal generation
+            signal_count = int(signal.sum().sum())
+            logger.info(f"Strategy {sid}: generated {signal_count} total signals")
+            if signal_count == 0:
+                logger.warning(f"Strategy {sid}: NO SIGNALS GENERATED - check parameters")
+
             strat_ret = self._signal_to_returns(signal, returns)
             strat_equity = initial_capital * (1.0 + strat_ret).cumprod()
             strategy_returns.append(strat_ret * weight)
@@ -399,10 +462,27 @@ class Phase1BacktestService:
             combined_trades.extend(self._build_trade_log(signal, prices))
 
         portfolio_ret = pd.concat(strategy_returns, axis=1).sum(axis=1)
-        benchmark_ret = returns.mean(axis=1).fillna(0.0)
+
+        # Calculate benchmark using buy-and-hold index prices for universe mode
+        if mode == "universe":
+            # Load index price data for benchmark calculation
+            index_df = self._load_universe_index_dataset(universe, start, end)
+            index_prices = index_df.set_index("date")["price"]
+            index_prices.index = pd.to_datetime(index_prices.index)
+
+            # Align index prices with portfolio returns dates using forward fill
+            aligned_index = index_prices.reindex(portfolio_ret.index, method='ffill')
+
+            # Buy-and-hold: (current_price / initial_price) - 1
+            initial_index_price = aligned_index.iloc[0]
+            benchmark_ret = (aligned_index / initial_index_price) - 1.0
+            benchmark_equity = initial_capital * (1.0 + benchmark_ret)
+        else:
+            # Fallback to equal-weight for symbol mode
+            benchmark_ret = returns.mean(axis=1).fillna(0.0)
+            benchmark_equity = initial_capital * (1.0 + benchmark_ret).cumprod()
 
         equity = initial_capital * (1.0 + portfolio_ret).cumprod()
-        benchmark_equity = initial_capital * (1.0 + benchmark_ret).cumprod()
         drawdown = (equity / equity.cummax()) - 1.0
 
         metrics = self._compute_metrics(equity, portfolio_ret, drawdown, combined_trades, initial_capital)

@@ -15,25 +15,25 @@ console.log('🔍 Verifying Font Loading Configuration...\n');
 
 let allPassed = true;
 
-// Check Inter font import
-const hasInterImport = /import.*Inter.*from.*next\/font\/google/.test(layoutContent);
-console.log(`${hasInterImport ? '✅' : '❌'} Inter font imported from next/font/google`);
-if (!hasInterImport) allPassed = false;
+// Check IBM Plex Sans font import
+const hasSansImport = /import.*IBM_Plex_Sans.*from.*next\/font\/google/.test(layoutContent);
+console.log(`${hasSansImport ? '✅' : '❌'} IBM Plex Sans imported from next/font/google`);
+if (!hasSansImport) allPassed = false;
 
-// Check JetBrains Mono font import
-const hasJetBrainsImport = /import.*JetBrains_Mono.*from.*next\/font\/google/.test(layoutContent);
-console.log(`${hasJetBrainsImport ? '✅' : '❌'} JetBrains Mono font imported from next/font/google`);
-if (!hasJetBrainsImport) allPassed = false;
+// Check DM Mono font import
+const hasMonoImport = /import.*DM_Mono.*from.*next\/font\/google/.test(layoutContent);
+console.log(`${hasMonoImport ? '✅' : '❌'} DM Mono imported from next/font/google`);
+if (!hasMonoImport) allPassed = false;
 
-// Check Inter configuration
-const hasInterConfig = /variable:\s*["']--font-sans["']/.test(layoutContent);
-console.log(`${hasInterConfig ? '✅' : '❌'} Inter configured with --font-sans variable`);
-if (!hasInterConfig) allPassed = false;
+// Check sans configuration
+const hasSansConfig = /variable:\s*["']--font-sans["']/.test(layoutContent);
+console.log(`${hasSansConfig ? '✅' : '❌'} Sans font configured with --font-sans variable`);
+if (!hasSansConfig) allPassed = false;
 
-// Check JetBrains Mono configuration
-const hasJetBrainsConfig = /variable:\s*["']--font-mono["']/.test(layoutContent);
-console.log(`${hasJetBrainsConfig ? '✅' : '❌'} JetBrains Mono configured with --font-mono variable`);
-if (!hasJetBrainsConfig) allPassed = false;
+// Check mono configuration
+const hasMonoConfig = /variable:\s*["']--font-mono["']/.test(layoutContent);
+console.log(`${hasMonoConfig ? '✅' : '❌'} Mono font configured with --font-mono variable`);
+if (!hasMonoConfig) allPassed = false;
 
 // Check display: swap
 const hasDisplaySwap = /display:\s*["']swap["']/.test(layoutContent);

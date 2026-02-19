@@ -38,6 +38,7 @@
 
 ## Data Architecture (Consolidated)
 ### Active Inputs (Phase-1)
+- `data_system/01_sources/fyers_index_prices/universe_index_price_daily.parquet` (index universe prices for backtesting)
 - `data_system/01_sources/nse_bhavcopy/*.csv`
 - `data_system/01_sources/nse_corporate_actions/*.csv`
 - `data_system/01_sources/nse_index_weights_pdf/**/NIFTY_50_*.pdf`
@@ -57,6 +58,7 @@
 - Entrypoint: `data_platform/pipelines/phase1_build.py`
 - Modes: `--mode full|incremental`
 - Contract: 2025-01-01 onward only in active runtime
+- Scope: stock pipeline only (bhavcopy/corporate actions/universe membership); index universe prices are managed separately via consolidated Fyers dataset.
 
 ## Symbol Boundary Rules
 - Storage + internal logic: DB format (`SBIN`, `NIFTY50`)

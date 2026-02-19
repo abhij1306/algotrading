@@ -1,141 +1,149 @@
-# Backtest Implementation Prompt (Phase-1 Canonical)
+# Stitch Prompt: SmartTrader Backtest UI (Design-System Strict)
 
-Use this prompt with any coding agent to complete pending Backtest functionality in SmartTrader Phase-1.
+Use this prompt in Stitch to generate HTML for SmartTrader Backtest screens.
+Goal: produce clean, compact layouts that match existing SmartTrader UI patterns, then map 1:1 into current React components.
 
-## Role
-You are the implementation agent for SmartTrader Backtest Phase-1.
-Deliver PRD-compliant Backtest B2 and B3 with real data only, no mock paths.
+## Prompt to Feed Stitch
 
-## Non-Negotiable Source of Truth
-Follow these docs in this order:
-1. `SMARTTRADER_PRD_v2.md` (Backtest section: Phase-1 expectations, required endpoints, acceptance criteria).
-2. `docs/execution/phase1-master-plan.md` (Backtest: B2, B3 pending).
-3. `docs/execution/api-canonical-map.md` (canonical API contract).
-4. `docs/DATABASE_MANAGEMENT_PLAYBOOK.md` (historical data policy: bhavcopy/corporate-actions/weightage only).
-5. `docs/ARCHITECTURE.md` (current canonical architecture + data roots).
+You are designing **two pages** for SmartTrader:
+1. **Backtest Builder** (`/backtest`) - single-page run setup and recent runs
+2. **Backtest Results** (`/backtest/results/{runId}`) - run output only
 
-## Phase-1 Backtest Scope (Implement Now)
-1. API endpoints (canonical only):
-- `GET /api/backtest/status`
-- `POST /api/backtest/run`
-- `GET /api/backtest/result/{job_id}`
+### Hard Constraints
+- Use **existing SmartTrader design system only**.
+- Do **not** introduce new font families, color systems, spacing scales, radii, shadows, or component styles.
+- Keep layout **compact and dense** (similar to Dashboard/Screener/Terminal).
+- No oversized hero sections, no excessive vertical whitespace.
+- Desktop-first, responsive down to tablet/mobile without redesigning component language.
 
-2. Strategy scope:
-- Fixed EMA20/EMA50 crossover only (Phase-1).
-- Universe: NIFTY50 only.
-- Date range: 2025 onward (bounded by available curated snapshot dates).
+### Design System Rules (must follow)
+- Typography:
+  - Single app typography stack from SmartTrader (already defined globally).
+  - Numeric values use mono/tabular style only where needed (metrics, prices, percentages, run IDs).
+- Tokens:
+  - Use semantic token-driven styling (background/surface/border/foreground/profit/loss/warning).
+- Component language:
+  - Card, CardHeader, CardContent, Button, Input, Select, Badge, Table, Tabs, Empty/Error states.
+  - Keep controls visually consistent with existing form controls in app.
 
-3. UI behavior:
-- Backtest page must not be blank or "Coming Soon".
-- If data missing: explicit blocked state with instruction to run pipeline.
-- If data available: allow run, show status, show result with:
-  - equity curve
-  - drawdown
-  - trade log
-  - benchmark overlay
+### Page 1: Backtest Builder (`/backtest`)
 
-## Mandatory File Targets
-Start from these files and remove/replace legacy paths in touched scope.
+#### Header Row (compact)
+- Left: title `Backtest` only (no subtitle)
+- Right: small status badges
+  - `Data Ready` / `Data Not Ready`
+  - `Options Enabled` / `Options Blocked`
 
-### Backend
-- `backend/app/main.py`
-  - Resolve dual-router drift (`backtest` + `backtest_v2`) for active Phase-1 behavior.
-- `backend/app/routers/backtest.py`
-  - Make this canonical contract for `/status`, `/run`, `/result/{job_id}`.
-- `backend/app/routers/backtest_v2.py`
-  - Keep only if needed for compatibility; do not let it be canonical for Phase-1 UI.
-- `backend/app/routers/data_snapshot.py`
-  - Reuse for dataset availability/range checks where possible.
-- `backend/app/engines/backtest_engine.py`
-  - Remove assumptions tied to legacy `historical_prices`/old universe tables for Phase-1 route.
-  - Either adapt engine or create dedicated Phase-1 engine/service.
-- Optional new service file (recommended):
-  - `backend/app/services/backtest_phase1_service.py`
+#### Section A: Run Configuration (single card)
+Fields:
+- Run Name (optional text)
+- Instrument (select): `Equity`, `Options`
+- Initial Capital (number)
+- Start Date (date)
+- End Date (date)
+- Selection Mode (select): `Index Universe (index price only)`, `Specific Symbols`
+- Conditional field:
+  - If universe mode: Universe select (NIFTY50, BANKNIFTY, and available universes)
+  - If symbols mode: comma-separated symbols input
 
-### Frontend
-- `frontend/app/backtest/page.tsx`
-  - Show real status from `/api/backtest/status`.
-- `frontend/app/backtest/new/page.tsx`
-  - Remove `mockBacktestAPI` usage and call canonical `/api/backtest/run`.
-- `frontend/app/backtest/results/runId/page.tsx`
-  - Poll/read `/api/backtest/result/{job_id}`; do not use session mock-only path.
-- `frontend/lib/backtest/api.ts`
-  - Align to canonical backtest endpoints.
-- `frontend/lib/backtest/mock-api.ts`
-  - Remove from active runtime paths (delete if unused after migration in touched scope).
+Layout:
+- Tight 2-3 column grid on desktop, stacked on mobile
+- Uniform control heights, compact label spacing
 
-## Data Contract for Phase-1 Backtest Engine
-Use curated artifacts only under `data_system/04_curated/phase1/`:
-- `snapshot_nifty50_daily.parquet` (universe + weights + adjusted fields)
-- `snapshot_stock_daily.parquet` (if needed for cross-checks)
+#### Section B: Strategy Portfolio (inside same card or adjacent compact card)
+Rows for strategies:
+- Checkbox enable/disable
+- Strategy name
+- Weight input
+- Strategy ID badge
 
-Do not source backtest from:
-- `historical_prices` fallback logic
-- Fyers historical fetch
-- legacy processed files outside canonical `data_system/`
+Default strategies shown:
+- EMA20/EMA50 Crossover
+- 2-Day Momentum
+- 3-Day Mean Reversion
 
-## Implementation Requirements
-1. Deterministic run behavior:
-- same inputs => same outputs.
+Footer row:
+- Left: `Selected strategies: N`
+- Right: primary CTA `Run Backtest`
 
-2. `GET /api/backtest/status` must return:
-- data_ready boolean
-- min_date, max_date
-- universe support (`NIFTY50`)
-- message string for blocked state
+#### Section C: Recent Runs (table card)
+Columns:
+- Run ID
+- Status (badge: running/completed/failed)
+- Instrument
+- Date Range
+- Scope (Universe/Symbols)
+- Action (`View`)
 
-3. `POST /api/backtest/run` must:
-- validate input range against available data
-- accept minimal params (`start_date`, `end_date`, `initial_capital`)
-- return `job_id` and initial `status`
+Behavioral states to visualize:
+- Empty: `No runs yet`
+- Loading skeleton style
+- Inline error strip (non-blocking)
 
-4. `GET /api/backtest/result/{job_id}` must:
-- return `status` (`queued|running|completed|failed`)
-- when completed: metrics + equity curve + drawdown series + trade log + benchmark series
+### Page 2: Backtest Results (`/backtest/results/{runId}`)
 
-5. Benchmark:
-- Use NIFTY50 universe-level benchmark derived from same snapshot data window.
+#### Header Row
+- Title: `Backtest Result`
+- Subtext: run ID
+- Actions:
+  - `New Run` (to `/backtest`)
+  - `Back` (to `/backtest`)
 
-6. Error semantics:
-- explicit 4xx for invalid range/unavailable data
-- explicit 404 for unknown job_id
-- explicit failed status payload for runtime errors
+#### Meta Strip
+- Status badge
+- Instrument
+- Range
+- Selection scope
 
-## Acceptance Tests (Must Pass)
-1. No-data scenario:
-- API status says not ready
-- UI shows clear "Historical data not loaded" message
+#### KPI Row (compact cards)
+- Total Return %
+- Final Equity
+- Sharpe
+- Max Drawdown %
+- Trades
+- Win Rate %
 
-2. Valid run scenario:
-- `/run` returns `job_id`
-- `/result/{job_id}` transitions to completed
-- result includes non-empty equity curve and benchmark series
+#### Charts
+- Card 1: `Equity Curve vs Benchmark`
+- Card 2: `Drawdown Curve`
+- Compact chart containers (no tall empty area)
 
-3. Contract compliance:
-- Endpoint names and payloads match canonical map
-- No mock/dummy values in touched backtest paths
+#### Trade Log Table
+Columns:
+- Symbol
+- Entry Date
+- Exit Date
+- Entry Px
+- Exit Px
+- Return %
 
-4. Quality gate:
-- `cd backend && ruff check . && pytest -o addopts=""`
-- `cd frontend && npm run lint && npm run type-check && npm run build`
+States:
+- No trades message
+- Failed run error card
+- Running state card (`Backtest executing...`)
 
-## Explicit Cleanup Rules in This Slice
-1. Remove active runtime references to:
-- `frontend/lib/backtest/mock-api.ts`
-- `/api/backtest/v2/*` from active Phase-1 pages
+### UX Details to Enforce
+- Preserve visual rhythm from existing pages:
+  - small section gaps
+  - compact card paddings
+  - no giant margins
+- Keep button hierarchy clear:
+  - one dominant primary CTA per page area
+- Always show deterministic empty/loading/error states.
 
-2. Keep deletions safe:
-- If compatibility path must remain, mark as deprecated and ensure not used by current UI route.
+### Output Format Required from Stitch
+Return:
+1. Semantic HTML structure for both pages.
+2. Class naming aligned with token-based utility style (SmartTrader style naming).
+3. Clear section comments so it can be converted directly into:
+   - `frontend/app/backtest/page.tsx`
+   - `frontend/app/backtest/results/[runId]/page.tsx`
+4. Do not include custom fonts or external style libraries.
 
-## PR/Commit Output Requirements
-Agent must provide:
-1. Files changed with one-line purpose.
-2. API request/response examples for all 3 canonical endpoints.
-3. Test/build command results.
-4. Remaining risks/gaps (if any), especially data coverage constraints.
-
-## Do Not Do
-1. Do not introduce new universes for Phase-1.
-2. Do not re-enable Fyers historical ingestion.
-3. Do not keep mock API in active backtest UI path.
-4. Do not use legacy data roots outside `data_system/`.
+## Component Mapping Notes (for conversion after Stitch)
+- Header/status strip -> `Card` or bordered container + `Badge`
+- Form controls -> `Input` + native/select component wrappers
+- Strategy rows -> compact grid rows inside bordered block
+- Recent runs + trade log -> `Table` primitives
+- Result metrics -> small `Card` tiles
+- Charts -> existing chart containers (Recharts wrappers in app)

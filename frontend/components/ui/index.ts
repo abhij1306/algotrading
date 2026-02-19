@@ -18,6 +18,7 @@ export {
   MetricCard,
 } from "./card";
 export { Input } from "./input";
+export { Select } from "./select";
 export { default as EmptyState } from "./EmptyState";
 export { PageContainer } from "./PageContainer";
 

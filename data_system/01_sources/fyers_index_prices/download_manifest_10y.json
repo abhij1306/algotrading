@@ -1,0 +1,273 @@
+{
+  "generated_at_utc": "2026-02-19T18:19:46.993583+00:00",
+  "asof": "2026-02-19",
+  "start_date": "2016-02-22",
+  "total_universes": 33,
+  "ok_count": 10,
+  "failed_count": 23,
+  "results": [
+    {
+      "universe_id": "NIFTY50",
+      "canonical_symbol": "NIFTY50",
+      "fyers_symbol": "NSE:NIFTY50-INDEX",
+      "status": "ok",
+      "rows": 2478,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\nifty50_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\nifty50_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTY100",
+      "canonical_symbol": "NIFTY100",
+      "fyers_symbol": "NSE:NIFTY100-INDEX",
+      "status": "ok",
+      "rows": 2473,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\nifty100_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\nifty100_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTY200",
+      "canonical_symbol": "NIFTY200",
+      "fyers_symbol": "NSE:NIFTY200-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\nifty200_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\nifty200_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTY500",
+      "canonical_symbol": "NIFTY500",
+      "fyers_symbol": "NSE:NIFTY500-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\nifty500_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\nifty500_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYNEXT50",
+      "canonical_symbol": "NIFTYNEXT50",
+      "fyers_symbol": "NSE:NIFTYNEXT50-INDEX",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYTOTALMARKET",
+      "canonical_symbol": "NIFTYTOTALMARKET",
+      "fyers_symbol": "NSE:NIFTYTOTALMARKET-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYSMALLCAP500",
+      "canonical_symbol": "NIFTYSMALLCAP500",
+      "fyers_symbol": "NSE:NIFTYSMALLCAP500-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYBANK",
+      "canonical_symbol": "BANKNIFTY",
+      "fyers_symbol": "NSE:NIFTYBANK-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftybank_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftybank_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYIT",
+      "canonical_symbol": "NIFTYIT",
+      "fyers_symbol": "NSE:NIFTYIT-INDEX",
+      "status": "ok",
+      "rows": 2477,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftyit_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftyit_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYAUTO",
+      "canonical_symbol": "NIFTYAUTO",
+      "fyers_symbol": "NSE:NIFTYAUTO-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftyauto_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftyauto_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYFINANCE",
+      "canonical_symbol": "NIFTYFINANCE",
+      "fyers_symbol": "NSE:NIFTYFINANCE-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYREALTY",
+      "canonical_symbol": "NIFTYREALTY",
+      "fyers_symbol": "NSE:NIFTYREALTY-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftyrealty_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftyrealty_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYPHARMA",
+      "canonical_symbol": "NIFTYPHARMA",
+      "fyers_symbol": "NSE:NIFTYPHARMA-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftypharma_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftypharma_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYMETAL",
+      "canonical_symbol": "NIFTYMETAL",
+      "fyers_symbol": "NSE:NIFTYMETAL-INDEX",
+      "status": "ok",
+      "rows": 2476,
+      "min_date": "2016-02-22",
+      "max_date": "2026-02-19",
+      "csv": "data_system\\01_sources\\fyers_index_prices_10y\\niftymetal_index_price_10y.csv",
+      "parquet": "data_system\\01_sources\\fyers_index_prices_10y\\niftymetal_index_price_10y.parquet"
+    },
+    {
+      "universe_id": "NIFTYFMCG",
+      "canonical_symbol": "NIFTYFMCG",
+      "fyers_symbol": "NSE:NIFTYFMCG-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYOILGAS",
+      "canonical_symbol": "NIFTYOILGAS",
+      "fyers_symbol": "NSE:NIFTYOILGAS-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYHEALTHCARE",
+      "canonical_symbol": "NIFTYHEALTHCARE",
+      "fyers_symbol": "NSE:NIFTYHEALTHCARE-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMEDIA",
+      "canonical_symbol": "NIFTYMEDIA",
+      "fyers_symbol": "NSE:NIFTYMEDIA-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYCONSUMERDURABLES",
+      "status": "failed",
+      "reason": "mapping_error:Invalid symbol format: NIFTYCONSUMERDURABLES"
+    },
+    {
+      "universe_id": "NIFTYCHEMICALS",
+      "canonical_symbol": "NIFTYCHEMICALS",
+      "fyers_symbol": "NSE:NIFTYCHEMICALS-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYPSUBANK",
+      "canonical_symbol": "NIFTYPSUBANK",
+      "fyers_symbol": "NSE:NIFTYPSUBANK-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDCAP150",
+      "canonical_symbol": "NIFTYMIDCAP150",
+      "fyers_symbol": "NSE:NIFTYMIDCAP150-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDCAP100",
+      "canonical_symbol": "NIFTYMIDCAP100",
+      "fyers_symbol": "NSE:NIFTYMIDCAP100-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDCAP50",
+      "canonical_symbol": "NIFTYMIDCAP50",
+      "fyers_symbol": "NSE:NIFTYMIDCAP50-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDCAPSELECT",
+      "canonical_symbol": "NIFTYMIDCAPSELECT",
+      "fyers_symbol": "NSE:NIFTYMIDCAPSELECT-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYSMALLCAP250",
+      "canonical_symbol": "NIFTYSMALLCAP250",
+      "fyers_symbol": "NSE:NIFTYSMALLCAP250-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYLARGEMIDCAP250",
+      "canonical_symbol": "NIFTYLARGEMIDCAP250",
+      "fyers_symbol": "NSE:NIFTYLARGEMIDCAP250-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMICROCAP250",
+      "canonical_symbol": "NIFTYMICROCAP250",
+      "fyers_symbol": "NSE:NIFTYMICROCAP250-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDSMALLCAP400",
+      "canonical_symbol": "NIFTYMIDSMALLCAP400",
+      "fyers_symbol": "NSE:NIFTYMIDSMALLCAP400-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYPRIVATEBANK",
+      "canonical_symbol": "NIFTYPRIVATEBANK",
+      "fyers_symbol": "NSE:NIFTYPRIVATEBANK-EQ",
+      "status": "failed",
+      "reason": "history_error:{'code': -300, 'message': 'Invalid symbol provided', 's': 'error'}"
+    },
+    {
+      "universe_id": "NIFTYMIDSMALLFINANCIALSERVICES",
+      "status": "failed",
+      "reason": "mapping_error:Invalid symbol format: NIFTYMIDSMALLFINANCIALSERVICES"
+    },
+    {
+      "universe_id": "NIFTYMIDSMALLHEALTHCARE",
+      "status": "failed",
+      "reason": "mapping_error:Invalid symbol format: NIFTYMIDSMALLHEALTHCARE"
+    },
+    {
+      "universe_id": "NIFTYMIDSMALLITANDTELECOM",
+      "status": "failed",
+      "reason": "mapping_error:Invalid symbol format: NIFTYMIDSMALLITANDTELECOM"
+    }
+  ]
+}

@@ -40,9 +40,9 @@
   --color-warning: #b45309;
   --color-warning-bg: #fef3c7;
 
-  /* Typography */
-  --font-sans: var(--font-sans), "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  --font-mono: var(--font-mono), "DM Mono", "Consolas", monospace;
+  /* Typography fallback stacks (primary faces are injected by next/font vars) */
+  --font-sans-fallback: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono-fallback: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
 
   /* Font Sizes */
   --text-xxs: 10px;
@@ -161,10 +161,6 @@
   --color-warning: var(--color-warning);
   --color-warning-bg: var(--color-warning-bg);
 
-  /* Typography */
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
-
   /* Spacing */
   --spacing-1: var(--spacing-1);
   --spacing-2: var(--spacing-2);
@@ -202,7 +198,7 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-    font-family: var(--font-sans);
+    font-family: var(--font-sans), var(--font-sans-fallback);
     /* Enable OpenType features for better typography */
     font-feature-settings:
       "cv02",  /* Alternate characters */
@@ -243,7 +239,7 @@
 
   /* Financial Data Text */
   .mono-num {
-    font-family: var(--font-mono);
+    font-family: var(--font-sans), var(--font-sans-fallback);
     /* Enable tabular numbers for aligned columns */
     font-variant-numeric: tabular-nums;
     /* Tighter letter spacing for numbers */
@@ -395,11 +391,11 @@
 
   /* Font Family Utilities */
   .font-sans {
-    font-family: var(--font-sans);
+    font-family: var(--font-sans), var(--font-sans-fallback);
   }
 
   .font-mono {
-    font-family: var(--font-mono);
+    font-family: var(--font-sans), var(--font-sans-fallback);
   }
 
   /* Font Weight Utilities */

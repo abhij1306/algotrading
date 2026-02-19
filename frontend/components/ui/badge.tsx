@@ -10,7 +10,7 @@ import { formatPercent } from "@/lib/utils";
  * Includes financial-specific variants for profit/loss/neutral states.
  */
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors border",
+  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors border",
   {
     variants: {
       variant: {
@@ -42,10 +42,10 @@ const badgeVariants = cva(
         muted: "bg-background-secondary text-foreground-muted border-transparent",
       },
       size: {
-        xs: "px-1.5 py-0 text-xxs",
-        sm: "px-1.5 py-0.5 text-xs",
-        default: "px-2 py-0.5 text-xs",
-        lg: "px-2.5 py-1 text-sm",
+        xs: "h-4 px-1.5 text-xxs",
+        sm: "h-5 px-2 text-xs",
+        default: "h-5 px-2 text-xs",
+        lg: "h-6 px-2.5 text-sm",
       },
     },
     defaultVariants: {
