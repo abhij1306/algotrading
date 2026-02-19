@@ -67,7 +67,13 @@ class DataProvider:
 
         # Daily data: Use PostgreSQL
         if timeframe == "1D":
-            df = self.repo.get_historical_prices(symbol, days=days)
+            effective_days = days if (start_date is None and end_date is None) else None
+            df = self.repo.get_historical_prices(
+                symbol,
+                days=effective_days,
+                start_date=start_date.date() if start_date else None,
+                end_date=end_date.date() if end_date else None,
+            )
             if df is None or df.empty:
                 raise DataNotFoundError(
                     symbol,

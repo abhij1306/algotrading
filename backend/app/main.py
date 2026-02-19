@@ -25,7 +25,6 @@ from .routers import (
     activity,
     auth,
     backtest,
-    backtest_v2,
     data_snapshot,
     market,
     market_dashboard,
@@ -217,7 +216,6 @@ app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"]
 app.include_router(universe.router, prefix="/api/universe", tags=["Universe"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
-app.include_router(backtest_v2.router, prefix="/api/backtest", tags=["Backtest V2"])
 app.include_router(data_snapshot.router)
 app.include_router(terminal.router)
 app.include_router(trading.router)

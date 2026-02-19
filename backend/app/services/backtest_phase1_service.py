@@ -1,0 +1,462 @@
+"""
+Phase-1 backtest service.
+
+Capabilities now exposed for PRD-aligned rebuild:
+- Universe/symbol scoped runs (equity)
+- Single or portfolio strategy allocation
+- Real equity/benchmark/drawdown curves from curated parquet data
+- In-memory run store for immediate retrieval
+
+Options contracts are accepted at API boundary but intentionally blocked until
+an options historical dataset is onboarded.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+CURATED_ROOT = PROJECT_ROOT / "data_system" / "04_curated" / "phase1"
+
+UNIVERSE_SNAPSHOT_MAP: dict[str, Path] = {
+    "NIFTY50": CURATED_ROOT / "snapshot_nifty50_daily.parquet",
+    "BANKNIFTY": CURATED_ROOT / "snapshot_banknifty_daily.parquet",
+}
+STOCK_SNAPSHOT_PATH = CURATED_ROOT / "snapshot_stock_daily.parquet"
+
+SUPPORTED_INSTRUMENTS = ("equity", "options")
+SUPPORTED_STRATEGIES = {
+    "EMA20_EMA50_CROSSOVER": "EMA20/EMA50 Crossover",
+    "MOMENTUM_2D": "2-Day Momentum",
+    "MEAN_REVERSION_3D": "3-Day Mean Reversion",
+}
+
+
+@dataclass
+class BacktestJob:
+    job_id: str
+    status: str
+    created_at: str
+    params: dict[str, Any]
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class Phase1BacktestService:
+    def __init__(self) -> None:
+        self._jobs: dict[str, BacktestJob] = {}
+
+    @staticmethod
+    def _parse_date(value: str) -> date:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _normalize_weight_allocations(strategies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        active = [s for s in strategies if bool(s.get("enabled", True))]
+        if not active:
+            raise ValueError("At least one enabled strategy is required")
+
+        weight_sum = sum(float(s.get("weight", 0.0)) for s in active)
+        if weight_sum <= 0:
+            raise ValueError("Total strategy weight must be greater than 0")
+
+        normalized: list[dict[str, Any]] = []
+        for s in active:
+            strategy_id = str(s.get("strategy_id", "")).upper()
+            if strategy_id not in SUPPORTED_STRATEGIES:
+                raise ValueError(f"Unsupported strategy: {strategy_id}")
+            normalized.append(
+                {
+                    "strategy_id": strategy_id,
+                    "weight": float(s.get("weight", 0.0)) / weight_sum,
+                    "params": s.get("params") or {},
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _price_column(df: pd.DataFrame) -> pd.Series:
+        adj = pd.to_numeric(df.get("adj_close"), errors="coerce")
+        close = pd.to_numeric(df.get("close"), errors="coerce")
+        return adj.fillna(close)
+
+    def _load_universe_snapshot(self, universe: str) -> pd.DataFrame:
+        universe_id = universe.upper().strip()
+        path = UNIVERSE_SNAPSHOT_MAP.get(universe_id)
+        if path is None:
+            supported = ", ".join(sorted(UNIVERSE_SNAPSHOT_MAP.keys()))
+            raise ValueError(f"Unsupported universe '{universe_id}'. Supported: {supported}")
+        if not path.exists():
+            raise FileNotFoundError(f"Missing artifact: {path}")
+
+        df = pd.read_parquet(path)
+        if "date" not in df.columns or "symbol" not in df.columns:
+            raise ValueError(f"Invalid universe snapshot schema: {path.name}")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        if "in_universe" in df.columns:
+            df = df[df["in_universe"] == True].copy()  # noqa: E712
+        df["price"] = self._price_column(df)
+        df = df.dropna(subset=["date", "symbol", "price"])
+        return df
+
+    def _load_symbol_snapshot(self, symbols: list[str]) -> pd.DataFrame:
+        if not STOCK_SNAPSHOT_PATH.exists():
+            raise FileNotFoundError(f"Missing artifact: {STOCK_SNAPSHOT_PATH}")
+        if not symbols:
+            raise ValueError("At least one symbol is required when selection mode='symbols'")
+
+        normalized = sorted({s.strip().upper() for s in symbols if s and s.strip()})
+        if not normalized:
+            raise ValueError("No valid symbols provided")
+
+        df = pd.read_parquet(STOCK_SNAPSHOT_PATH)
+        if "date" not in df.columns or "symbol" not in df.columns:
+            raise ValueError(f"Invalid stock snapshot schema: {STOCK_SNAPSHOT_PATH.name}")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        df = df[df["symbol"].str.upper().isin(normalized)].copy()
+        df["price"] = self._price_column(df)
+        df = df.dropna(subset=["date", "symbol", "price"])
+
+        existing = set(df["symbol"].str.upper().unique().tolist())
+        missing = [s for s in normalized if s not in existing]
+        if missing:
+            raise ValueError(f"Symbols missing in snapshot_stock_daily: {', '.join(missing[:10])}")
+        return df
+
+    def _build_signal(self, prices: pd.DataFrame, strategy_id: str, params: dict[str, Any]) -> pd.DataFrame:
+        sid = strategy_id.upper()
+        if sid == "EMA20_EMA50_CROSSOVER":
+            fast = int(params.get("fast_period", 20))
+            slow = int(params.get("slow_period", 50))
+            if fast <= 0 or slow <= 0 or fast >= slow:
+                raise ValueError("EMA strategy requires 0 < fast_period < slow_period")
+            ema_fast = prices.ewm(span=fast, adjust=False).mean()
+            ema_slow = prices.ewm(span=slow, adjust=False).mean()
+            return (ema_fast > ema_slow).astype(int)
+
+        if sid == "MOMENTUM_2D":
+            lookback = int(params.get("lookback_days", 2))
+            if lookback < 1:
+                raise ValueError("Momentum lookback_days must be >= 1")
+            mom = prices.pct_change(periods=lookback)
+            return (mom > 0).astype(int)
+
+        if sid == "MEAN_REVERSION_3D":
+            lookback = int(params.get("lookback_days", 3))
+            threshold = float(params.get("threshold_pct", -2.0)) / 100.0
+            if lookback < 1:
+                raise ValueError("Mean-reversion lookback_days must be >= 1")
+            change = prices.pct_change(periods=lookback)
+            return (change <= threshold).astype(int)
+
+        raise ValueError(f"Unsupported strategy: {strategy_id}")
+
+    def _signal_to_returns(self, signal: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
+        shifted = signal.shift(1).fillna(0.0)
+        denom = shifted.sum(axis=1).replace(0.0, np.nan)
+        weights = shifted.div(denom, axis=0).fillna(0.0)
+        series = (weights * returns).sum(axis=1).fillna(0.0)
+        series.index = pd.to_datetime(series.index)
+        return series
+
+    def _build_trade_log(self, signal: pd.DataFrame, prices: pd.DataFrame) -> list[dict[str, Any]]:
+        trades: list[dict[str, Any]] = []
+        for symbol in signal.columns:
+            s = signal[symbol].fillna(0).astype(int)
+            p = prices[symbol]
+            prev = s.shift(1).fillna(0).astype(int)
+            entries = s[(s == 1) & (prev == 0)].index
+            exits = s[(s == 0) & (prev == 1)].index
+            exit_iter = iter(exits)
+            next_exit = next(exit_iter, None)
+            for entry_date in entries:
+                while next_exit is not None and next_exit <= entry_date:
+                    next_exit = next(exit_iter, None)
+                if next_exit is None:
+                    break
+                entry_price = self._safe_float(p.loc[entry_date], np.nan)
+                exit_price = self._safe_float(p.loc[next_exit], np.nan)
+                if np.isnan(entry_price) or np.isnan(exit_price) or entry_price <= 0:
+                    continue
+                ret = (exit_price / entry_price) - 1.0
+                trades.append(
+                    {
+                        "symbol": symbol,
+                        "entry_date": pd.Timestamp(entry_date).date().isoformat(),
+                        "exit_date": pd.Timestamp(next_exit).date().isoformat(),
+                        "entry_price": round(entry_price, 4),
+                        "exit_price": round(exit_price, 4),
+                        "return_pct": round(ret * 100.0, 4),
+                    }
+                )
+        return trades
+
+    def _compute_metrics(
+        self,
+        equity: pd.Series,
+        portfolio_ret: pd.Series,
+        drawdown: pd.Series,
+        trades: list[dict[str, Any]],
+        initial_capital: float,
+    ) -> dict[str, Any]:
+        final_equity = float(equity.iloc[-1]) if len(equity) else initial_capital
+        total_return = (final_equity / initial_capital) - 1.0 if initial_capital > 0 else 0.0
+
+        ret_std = float(portfolio_ret.std(ddof=0))
+        sharpe = 0.0
+        if ret_std > 0:
+            sharpe = float((portfolio_ret.mean() / ret_std) * np.sqrt(252))
+
+        max_dd = float(drawdown.min()) if len(drawdown) else 0.0
+
+        trade_returns = [t["return_pct"] / 100.0 for t in trades]
+        wins = len([x for x in trade_returns if x > 0])
+        losses = len([x for x in trade_returns if x <= 0])
+        win_rate = (wins / len(trade_returns)) if trade_returns else 0.0
+
+        return {
+            "initial_capital": round(initial_capital, 2),
+            "final_equity": round(final_equity, 2),
+            "total_return_pct": round(total_return * 100.0, 4),
+            "sharpe_ratio": round(sharpe, 4),
+            "max_drawdown_pct": round(max_dd * 100.0, 4),
+            "total_trades": len(trades),
+            "winning_trades": wins,
+            "losing_trades": losses,
+            "win_rate_pct": round(win_rate * 100.0, 4),
+        }
+
+    def get_status(self) -> dict[str, Any]:
+        equity_ranges: dict[str, dict[str, Any]] = {}
+        for universe, path in UNIVERSE_SNAPSHOT_MAP.items():
+            if not path.exists():
+                equity_ranges[universe] = {"available": False, "min_date": None, "max_date": None, "rows": 0}
+                continue
+            df = self._load_universe_snapshot(universe)
+            if df.empty:
+                equity_ranges[universe] = {"available": False, "min_date": None, "max_date": None, "rows": 0}
+                continue
+            equity_ranges[universe] = {
+                "available": True,
+                "min_date": df["date"].min().isoformat(),
+                "max_date": df["date"].max().isoformat(),
+                "rows": int(len(df)),
+            }
+
+        stock_range = {"available": False, "min_date": None, "max_date": None, "rows": 0}
+        if STOCK_SNAPSHOT_PATH.exists():
+            sdf = pd.read_parquet(STOCK_SNAPSHOT_PATH)
+            if "date" in sdf.columns and len(sdf):
+                d = pd.to_datetime(sdf["date"], errors="coerce").dt.date.dropna()
+                if len(d):
+                    stock_range = {
+                        "available": True,
+                        "min_date": d.min().isoformat(),
+                        "max_date": d.max().isoformat(),
+                        "rows": int(len(sdf)),
+                    }
+
+        any_equity = any(v["available"] for v in equity_ranges.values()) or stock_range["available"]
+        return {
+            "data_ready": any_equity,
+            "instrument_capabilities": {
+                "equity": {"enabled": any_equity, "note": "Backtest ready from curated snapshots"},
+                "options": {"enabled": False, "note": "Options historical dataset not onboarded yet"},
+            },
+            "universe_ranges": equity_ranges,
+            "stock_range": stock_range,
+            "supported_strategies": [
+                {"id": k, "name": v}
+                for k, v in SUPPORTED_STRATEGIES.items()
+            ],
+        }
+
+    def list_strategies(self) -> dict[str, Any]:
+        return {
+            "strategies": [
+                {
+                    "id": "EMA20_EMA50_CROSSOVER",
+                    "name": "EMA20/EMA50 Crossover",
+                    "default_weight": 1.0,
+                    "params_schema": {"fast_period": 20, "slow_period": 50},
+                },
+                {
+                    "id": "MOMENTUM_2D",
+                    "name": "2-Day Momentum",
+                    "default_weight": 1.0,
+                    "params_schema": {"lookback_days": 2},
+                },
+                {
+                    "id": "MEAN_REVERSION_3D",
+                    "name": "3-Day Mean Reversion",
+                    "default_weight": 1.0,
+                    "params_schema": {"lookback_days": 3, "threshold_pct": -2.0},
+                },
+            ]
+        }
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        items = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+        return [
+            {
+                "job_id": j.job_id,
+                "status": j.status,
+                "created_at": j.created_at,
+                "params": j.params,
+            }
+            for j in items
+        ]
+
+    def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        instrument_type = str(payload.get("instrument_type", "equity")).lower()
+        if instrument_type not in SUPPORTED_INSTRUMENTS:
+            raise ValueError(f"Unsupported instrument_type='{instrument_type}'")
+        if instrument_type == "options":
+            raise ValueError("Options backtest is not available until options historical dataset is onboarded")
+
+        start = self._parse_date(str(payload["start_date"]))
+        end = self._parse_date(str(payload["end_date"]))
+        if start > end:
+            raise ValueError("start_date cannot be after end_date")
+
+        initial_capital = float(payload.get("initial_capital", 1_000_000.0))
+        if initial_capital <= 0:
+            raise ValueError("initial_capital must be > 0")
+
+        selection = payload.get("selection") or {}
+        mode = str(selection.get("mode", "universe")).lower()
+        if mode == "universe":
+            universe = str(selection.get("universe", "NIFTY50")).upper()
+            df = self._load_universe_snapshot(universe)
+            scope_label = universe
+        elif mode == "symbols":
+            symbols = selection.get("symbols") or []
+            if not isinstance(symbols, list):
+                raise ValueError("selection.symbols must be a list")
+            df = self._load_symbol_snapshot([str(s) for s in symbols])
+            scope_label = f"SYMBOLS:{','.join(sorted(set(str(s).upper() for s in symbols if s)))}"
+        else:
+            raise ValueError("selection.mode must be 'universe' or 'symbols'")
+
+        min_date = df["date"].min()
+        max_date = df["date"].max()
+        if start < min_date or end > max_date:
+            raise ValueError(f"Requested range outside available data: {min_date} to {max_date}")
+
+        df = df[(df["date"] >= start) & (df["date"] <= end)].copy()
+        if df.empty:
+            raise ValueError("No rows available for requested date range")
+
+        prices = df.pivot(index="date", columns="symbol", values="price").sort_index()
+        prices.index = pd.to_datetime(prices.index)
+        returns = prices.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        strategies = payload.get("strategies") or []
+        if not isinstance(strategies, list) or not strategies:
+            raise ValueError("At least one strategy must be provided")
+        strategy_allocations = self._normalize_weight_allocations(strategies)
+
+        strategy_curves: list[dict[str, Any]] = []
+        strategy_returns: list[pd.Series] = []
+        combined_trades: list[dict[str, Any]] = []
+
+        for strategy_cfg in strategy_allocations:
+            sid = strategy_cfg["strategy_id"]
+            weight = float(strategy_cfg["weight"])
+            params = strategy_cfg["params"]
+
+            signal = self._build_signal(prices, sid, params)
+            strat_ret = self._signal_to_returns(signal, returns)
+            strat_equity = initial_capital * (1.0 + strat_ret).cumprod()
+            strategy_returns.append(strat_ret * weight)
+
+            strategy_curves.append(
+                {
+                    "strategy_id": sid,
+                    "name": SUPPORTED_STRATEGIES[sid],
+                    "weight": round(weight, 6),
+                    "equity_curve": [
+                        {"date": d.date().isoformat(), "equity": round(float(v), 4)}
+                        for d, v in strat_equity.items()
+                    ],
+                }
+            )
+            combined_trades.extend(self._build_trade_log(signal, prices))
+
+        portfolio_ret = pd.concat(strategy_returns, axis=1).sum(axis=1)
+        benchmark_ret = returns.mean(axis=1).fillna(0.0)
+
+        equity = initial_capital * (1.0 + portfolio_ret).cumprod()
+        benchmark_equity = initial_capital * (1.0 + benchmark_ret).cumprod()
+        drawdown = (equity / equity.cummax()) - 1.0
+
+        metrics = self._compute_metrics(equity, portfolio_ret, drawdown, combined_trades, initial_capital)
+        combined_trades.sort(key=lambda x: (x["entry_date"], x["symbol"]))
+
+        return {
+            "instrument_type": instrument_type,
+            "selection": {"mode": mode, "scope": scope_label},
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+            "metrics": metrics,
+            "equity_curve": [{"date": d.date().isoformat(), "equity": round(float(v), 4)} for d, v in equity.items()],
+            "benchmark_curve": [{"date": d.date().isoformat(), "equity": round(float(v), 4)} for d, v in benchmark_equity.items()],
+            "drawdown_curve": [
+                {"date": d.date().isoformat(), "drawdown_pct": round(float(v) * 100.0, 4)}
+                for d, v in drawdown.items()
+            ],
+            "strategy_curves": strategy_curves,
+            "trade_log": combined_trades,
+        }
+
+    def create_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        job_id = f"BT-{uuid.uuid4().hex[:10].upper()}"
+        job = BacktestJob(
+            job_id=job_id,
+            status="running",
+            created_at=datetime.utcnow().isoformat(),
+            params=payload,
+        )
+        self._jobs[job_id] = job
+
+        try:
+            result = self.run(payload)
+            job.status = "completed"
+            job.result = result
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+        return {"job_id": job_id, "status": job.status}
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return None
+        payload: dict[str, Any] = {
+            "job_id": job.job_id,
+            "status": job.status,
+            "created_at": job.created_at,
+            "params": job.params,
+        }
+        if job.status == "failed":
+            payload["error"] = job.error
+        if job.status == "completed":
+            payload["result"] = job.result
+        return payload
+
+
+backtest_phase1_service = Phase1BacktestService()

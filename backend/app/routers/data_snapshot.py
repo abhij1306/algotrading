@@ -3,6 +3,7 @@ Phase-1 snapshot read APIs backed by curated parquet artifacts.
 """
 
 import json
+import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from ..services.symbol_master import symbol_master
 
 router = APIRouter(prefix="/api/data", tags=["Data Snapshots"])
 DB_DEPENDENCY = Depends(get_db)
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PHASE1_ROOT = PROJECT_ROOT / "data_system"
@@ -150,7 +152,15 @@ def get_snapshot_status(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
             if line.strip()
         ]
         if lines:
-            status["latest_run_log"] = json.loads(lines[-1])
+            parsed_entry: dict[str, Any] | None = None
+            for idx in range(len(lines) - 1, -1, -1):
+                try:
+                    parsed_entry = json.loads(lines[idx])
+                    break
+                except json.JSONDecodeError as exc:
+                    logger.warning("Skipping malformed run_log.jsonl line at index %s: %s", idx, exc)
+            if parsed_entry is not None:
+                status["latest_run_log"] = parsed_entry
 
     latest = db.query(DatasetRun).order_by(DatasetRun.started_at.desc()).first()
     if latest:

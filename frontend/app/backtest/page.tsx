@@ -1,155 +1,202 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useState, useEffect, memo } from 'react';
-import { Plus, Clock, CheckCircle2, XCircle, ChevronRight, BarChart3, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui';
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from '@/components/ui';
 import { apiClient } from '@/lib/api-client';
 
-interface BacktestRun {
-  id: string;
-  name: string;
-  status: 'completed' | 'running' | 'failed' | 'pending';
+type BacktestStatus = {
+  data_ready: boolean;
+  instrument_capabilities: Record<string, { enabled: boolean; note: string }>;
+  universe_ranges: Record<string, { available: boolean; min_date: string | null; max_date: string | null; rows: number }>;
+  stock_range: { available: boolean; min_date: string | null; max_date: string | null; rows: number };
+  supported_strategies: Array<{ id: string; name: string }>;
+};
+
+type BacktestRunItem = {
+  job_id: string;
+  status: 'running' | 'completed' | 'failed';
   created_at: string;
-  total_return?: number;
-  sharpe_ratio?: number;
-  max_drawdown?: number;
-}
-
-const StatusIcon = memo(function StatusIcon({ status }: { status: string }) {
-  switch (status) {
-    case 'completed': return <CheckCircle2 className="w-4 h-4 text-profit" />;
-    case 'running': return <Loader2 className="w-4 h-4 text-primary animate-spin" />;
-    case 'failed': return <XCircle className="w-4 h-4 text-loss" />;
-    default: return <Clock className="w-4 h-4 text-foreground-muted" />;
-  }
-});
-
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
-}
+  params: {
+    name?: string;
+    instrument_type?: string;
+    start_date?: string;
+    end_date?: string;
+    selection?: { mode?: string; universe?: string };
+    strategies?: Array<{ strategy_id: string; weight: number }>;
+  };
+};
 
 export default function BacktestPage() {
   const router = useRouter();
-  const [recentBacktests, setRecentBacktests] = useState<BacktestRun[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [status, setStatus] = useState<BacktestStatus | null>(null);
+  const [runs, setRuns] = useState<BacktestRunItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchBacktests = async () => {
-      setIsLoading(true);
-      const res = await apiClient.get('/api/backtest/runs?limit=10');
-      if (res.data) {
-        setRecentBacktests(res.data.runs || []);
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      const [statusRes, runsRes] = await Promise.all([
+        apiClient.get<BacktestStatus>('/api/backtest/status'),
+        apiClient.get<{ runs: BacktestRunItem[] }>('/api/backtest/runs'),
+      ]);
+
+      if (statusRes.error) {
+        setError(statusRes.error.message);
+      } else {
+        setStatus(statusRes.data ?? null);
       }
-      setIsLoading(false);
+
+      if (!runsRes.error && runsRes.data?.runs) {
+        setRuns(runsRes.data.runs.slice(0, 10));
+      }
+      setLoading(false);
     };
-    fetchBacktests();
+    load();
   }, []);
 
-  return (
-    <div className="flex flex-col h-screen">
-      {/* Header */}
-      <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
-        <h1 className="text-base font-semibold">Backtest</h1>
-        <Button onClick={() => router.push('/backtest/new')} size="sm">
-          <Plus className="w-4 h-4 mr-1" />
-          New
-        </Button>
-      </header>
+  const universes = useMemo(() => Object.entries(status?.universe_ranges ?? {}), [status]);
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <Loader2 className="w-5 h-5 animate-spin text-foreground-muted" />
-          </div>
-        ) : recentBacktests.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <BarChart3 className="w-10 h-10 mx-auto text-foreground-muted mb-3" />
-              <h2 className="text-base font-medium mb-1">No Backtests</h2>
-              <p className="text-sm text-foreground-muted mb-4">Create your first backtest</p>
-              <Button onClick={() => router.push('/backtest/new')} size="sm">
-                <Plus className="w-4 h-4 mr-1" />
-                New Backtest
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <table className="w-full">
-            <thead className="text-xs text-foreground-muted border-b border-border bg-surface">
-              <tr>
-                <th className="py-2 pl-4 text-left font-normal">Backtest</th>
-                <th className="py-2 text-right font-normal">Return</th>
-                <th className="py-2 text-right font-normal">Sharpe</th>
-                <th className="py-2 text-right font-normal">Max DD</th>
-                <th className="py-2 pr-4"></th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {recentBacktests.map((backtest) => (
-                <tr
-                  key={backtest.id}
-                  onClick={() => router.push(`/backtest/results/${backtest.id}`)}
-                  className="cursor-pointer hover:bg-surface transition-colors border-b border-border"
-                >
-                  <td className="py-2.5 pl-4">
-                    <div className="flex items-center gap-2">
-                      <StatusIcon status={backtest.status} />
-                      <div>
-                        <div className="font-medium">{backtest.name}</div>
-                        <div className="text-xs text-foreground-muted">
-                          {backtest.id} • {backtest.status} • {formatDate(backtest.created_at)}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  {backtest.status === 'completed' ? (
-                    <>
-                      <td className={`py-2.5 text-right tabular-nums ${(backtest.total_return ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                        {(backtest.total_return ?? 0) >= 0 ? '+' : ''}{(backtest.total_return ?? 0).toFixed(1)}%
-                      </td>
-                      <td className="py-2.5 text-right tabular-nums">
-                        {(backtest.sharpe_ratio ?? 0).toFixed(2)}
-                      </td>
-                      <td className="py-2.5 text-right tabular-nums text-loss">
-                        {(backtest.max_drawdown ?? 0).toFixed(1)}%
-                      </td>
-                    </>
-                  ) : (
-                    <>
-                      <td className="py-2.5 text-right text-foreground-muted">--</td>
-                      <td className="py-2.5 text-right text-foreground-muted">--</td>
-                      <td className="py-2.5 text-right text-foreground-muted">--</td>
-                    </>
-                  )}
-                  <td className="py-2.5 pr-4 text-right">
-                    <ChevronRight className="w-4 h-4 text-foreground-muted inline" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Backtest Lab</h1>
+          <p className="text-sm text-foreground-secondary mt-1">
+            Build and run single or portfolio strategy backtests across universe/symbol scopes.
+          </p>
+        </div>
+        <Button onClick={() => router.push('/backtest/new')}>New Run</Button>
       </div>
 
-      {/* Footer */}
-      {!isLoading && recentBacktests.length > 0 && (
-        <div className="px-4 py-2 border-t border-border bg-surface">
-          <Button onClick={() => router.push('/backtest/runs')} variant="ghost" size="sm" className="w-full">
-            View All <ChevronRight className="w-4 h-4 ml-1" />
-          </Button>
-        </div>
+      {loading && <div className="text-sm text-foreground-secondary">Loading backtest capabilities...</div>}
+      {error && <div className="text-sm text-loss">{error}</div>}
+
+      {!loading && status && (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Equity Capability</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm">
+                <Badge variant={status.instrument_capabilities.equity?.enabled ? 'default' : 'outline'}>
+                  {status.instrument_capabilities.equity?.enabled ? 'Enabled' : 'Disabled'}
+                </Badge>
+                <div className="mt-2 text-foreground-secondary">{status.instrument_capabilities.equity?.note}</div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Options Capability</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm">
+                <Badge variant={status.instrument_capabilities.options?.enabled ? 'default' : 'outline'}>
+                  {status.instrument_capabilities.options?.enabled ? 'Enabled' : 'Blocked'}
+                </Badge>
+                <div className="mt-2 text-foreground-secondary">{status.instrument_capabilities.options?.note}</div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Stock Snapshot Range</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm">
+                {status.stock_range.available ? (
+                  <div>
+                    <div>{status.stock_range.min_date} to {status.stock_range.max_date}</div>
+                    <div className="text-foreground-secondary mt-1">{status.stock_range.rows} rows</div>
+                  </div>
+                ) : (
+                  <div className="text-foreground-secondary">Unavailable</div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Universe Coverage</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {universes.length === 0 ? (
+                <div className="text-sm text-foreground-secondary">No universe snapshots available.</div>
+              ) : (
+                universes.map(([name, meta]) => (
+                  <div key={name} className="flex items-center justify-between border border-border rounded px-3 py-2 text-sm">
+                    <div className="font-medium">{name}</div>
+                    <div className="text-foreground-secondary">
+                      {meta.available ? `${meta.min_date} to ${meta.max_date} (${meta.rows} rows)` : 'Unavailable'}
+                    </div>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Strategy Catalog</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              {status.supported_strategies.map((s) => (
+                <Badge key={s.id} variant="outline">{s.name}</Badge>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Recent Runs</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {runs.length === 0 ? (
+                <div className="text-sm text-foreground-secondary">No runs yet.</div>
+              ) : (
+                <div className="overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-foreground-secondary">
+                        <th className="py-2 pr-2">Run</th>
+                        <th className="py-2 pr-2">Status</th>
+                        <th className="py-2 pr-2">Instrument</th>
+                        <th className="py-2 pr-2">Range</th>
+                        <th className="py-2 pr-2">Scope</th>
+                        <th className="py-2 pr-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runs.map((r) => (
+                        <tr key={r.job_id} className="border-t border-border">
+                          <td className="py-2 pr-2 font-mono text-xs">{r.job_id}</td>
+                          <td className="py-2 pr-2">
+                            <Badge variant={r.status === 'completed' ? 'profit' : r.status === 'failed' ? 'loss' : 'outline'}>
+                              {r.status}
+                            </Badge>
+                          </td>
+                          <td className="py-2 pr-2">{(r.params.instrument_type || 'equity').toUpperCase()}</td>
+                          <td className="py-2 pr-2">{r.params.start_date} to {r.params.end_date}</td>
+                          <td className="py-2 pr-2">
+                            {r.params.selection?.mode === 'symbols' ? 'Symbols' : (r.params.selection?.universe || 'NIFTY50')}
+                          </td>
+                          <td className="py-2 pr-2 text-right">
+                            <Button size="sm" variant="outline" onClick={() => router.push(`/backtest/results/${r.job_id}`)}>
+                              View
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
       )}
     </div>
   );

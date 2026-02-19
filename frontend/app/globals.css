@@ -516,18 +516,14 @@
     animation: scaleIn 0.15s ease-out;
   }
 
-  .screener-flash-up,
-  .screener-flash-up-a,
-  .screener-flash-up-b {
+  .screener-flash-up {
     display: inline-block;
     animation: screenerGlowUp 650ms ease-out;
     will-change: transform, text-shadow;
     color: var(--color-profit);
   }
 
-  .screener-flash-down,
-  .screener-flash-down-a,
-  .screener-flash-down-b {
+  .screener-flash-down {
     display: inline-block;
     animation: screenerGlowDown 650ms ease-out;
     will-change: transform, text-shadow;

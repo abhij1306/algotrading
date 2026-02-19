@@ -1,13 +1,7 @@
 {
-  "generated_at_utc": "2026-02-19T16:44:35.637299+00:00",
-  "run_id": "phase1-20260219164435-217b958d",
+  "generated_at_utc": "2026-02-19T17:34:17.415901+00:00",
+  "run_id": "phase1-20260219173417-e9aae041",
   "anomalies": [
-    {
-      "month": "2025-01",
-      "type": "constituent_count",
-      "message": "Expected 50 constituents, found 51",
-      "source": "repo_raw_csv_primary"
-    },
     {
       "month": "2026-01",
       "type": "weight_sum",

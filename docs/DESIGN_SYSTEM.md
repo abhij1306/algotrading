@@ -97,10 +97,17 @@ This file is the single design-system reference for colors, typography, spacing,
 - `--radius-full`: `9999px`
 
 ## Shadows
+### Light
 - `--shadow-sm`: `0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px 0 rgba(0, 0, 0, 0.04)`
 - `--shadow-md`: `0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04)`
 - `--shadow-lg`: `0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04)`
 - `--shadow-xl`: `0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04)`
+
+### Dark
+- `--shadow-sm`: `0 1px 2px 0 rgba(0, 0, 0, 0.3)`
+- `--shadow-md`: `0 4px 6px -1px rgba(0, 0, 0, 0.4)`
+- `--shadow-lg`: `0 10px 15px -3px rgba(0, 0, 0, 0.5)`
+- `--shadow-xl`: `0 20px 25px -5px rgba(0, 0, 0, 0.6)`
 
 ## Implementation Rules
 1. Use token-backed classes/utilities only; no hardcoded colors/sizes in app UI.

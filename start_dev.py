@@ -76,10 +76,18 @@ def is_backend_healthy(port: int) -> bool:
         return False
 
 
-def wait_for_service(port: int, name: str, timeout: int = 60) -> bool:
+def wait_for_service(
+    port: int,
+    name: str,
+    timeout: int = 60,
+    process: subprocess.Popen | None = None,
+) -> bool:
     print(f"Waiting for {name} on port {port}...")
     start = time.time()
     while time.time() - start < timeout:
+        if process is not None and process.poll() is not None:
+            print(f"{name} process exited while waiting (code={process.returncode})")
+            return False
         if is_port_in_use(port):
             print(f"{name} is running on port {port}")
             return True
@@ -153,6 +161,12 @@ def main() -> None:
             env=backend_env,
             creationflags=create_console_flag,
         )
+        if backend_proc.poll() is not None:
+            backend_script_path = Path("backend") / "start_server.py"
+            raise RuntimeError(
+                f"Backend process exited immediately with code {backend_proc.returncode}. "
+                f"Run '{python_cmd[0]} {backend_script_path}' to see traceback."
+            )
 
     print(f"Launching frontend on http://127.0.0.1:{frontend_port}")
     subprocess.Popen(
@@ -162,11 +176,16 @@ def main() -> None:
         creationflags=create_console_flag,
     )
 
-    backend_ok = True if not launch_backend else wait_for_service(backend_port, "Backend", timeout=90)
+    backend_ok = (
+        True
+        if not launch_backend
+        else wait_for_service(backend_port, "Backend", timeout=90, process=backend_proc)
+    )
     if launch_backend and backend_proc is not None and backend_proc.poll() is not None:
+        backend_script_path = Path("backend") / "start_server.py"
         raise RuntimeError(
             f"Backend process exited immediately with code {backend_proc.returncode}. "
-            "Run '.\\venv\\Scripts\\python.exe backend\\start_server.py' to see traceback."
+            f"Run '{python_cmd[0]} {backend_script_path}' to see traceback."
         )
     frontend_ok = wait_for_service(frontend_port, "Frontend", timeout=120)
 

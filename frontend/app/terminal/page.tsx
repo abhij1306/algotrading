@@ -257,10 +257,14 @@ export default function TerminalPage() {
       return;
     }
 
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
         setSearchLoading(true);
-        const response = await fetch(`/api/market/search?query=${encodeURIComponent(watchlistQuery.trim())}&exclude_indices=true`);
+        const response = await fetch(
+          `/api/market/search?query=${encodeURIComponent(watchlistQuery.trim())}&exclude_indices=true`,
+          { signal: controller.signal }
+        );
         if (!response.ok) {
           setSearchResults([]);
           return;
@@ -277,14 +281,22 @@ export default function TerminalPage() {
               .filter((row) => row.symbol.length > 0)
           : [];
         setSearchResults(normalized.slice(0, 8));
-      } catch {
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
         setSearchResults([]);
       } finally {
-        setSearchLoading(false);
+        if (!controller.signal.aborted) {
+          setSearchLoading(false);
+        }
       }
     }, 250);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [watchlistQuery]);
 
   useEffect(() => {

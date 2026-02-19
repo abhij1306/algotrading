@@ -92,17 +92,18 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: In
         apiClient.get('/api/market/top-movers?index=NIFTY50&limit=5'),
         apiClient.get('/api/market/sector-performance')
       ]);
+      const moversData = (moversRes.data ?? {}) as Record<string, unknown>;
 
-      const gainers = Array.isArray(moversRes.data?.gainers)
-        ? (moversRes.data.gainers as Array<Record<string, unknown>>).map((row) => ({
+      const gainers = Array.isArray(moversData.gainers)
+        ? (moversData.gainers as Array<Record<string, unknown>>).map((row) => ({
             symbol: String(row.symbol ?? ''),
             name: String(row.name ?? row.symbol ?? ''),
             price: typeof row.price === 'number' ? row.price : 0,
             changePercent: typeof row.changePercent === 'number' ? row.changePercent : 0,
           }))
         : [];
-      const losers = Array.isArray(moversRes.data?.losers)
-        ? (moversRes.data.losers as Array<Record<string, unknown>>).map((row) => ({
+      const losers = Array.isArray(moversData.losers)
+        ? (moversData.losers as Array<Record<string, unknown>>).map((row) => ({
             symbol: String(row.symbol ?? ''),
             name: String(row.name ?? row.symbol ?? ''),
             price: typeof row.price === 'number' ? row.price : 0,

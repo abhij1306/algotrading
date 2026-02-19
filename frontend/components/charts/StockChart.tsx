@@ -1,22 +1,17 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
 import { formatPrice, formatPercent, formatCompact } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/type-guards";
-import { ChartSkeleton } from "./ChartSkeleton";
-
-// Code-split Recharts for better performance
-const LineChart = dynamic(() => import("recharts").then((mod) => mod.LineChart), {
-  ssr: false,
-  loading: () => <ChartSkeleton height={400} />
-});
-const Line = dynamic(() => import("recharts").then((mod) => mod.Line), { ssr: false });
-const XAxis = dynamic(() => import("recharts").then((mod) => mod.XAxis), { ssr: false });
-const YAxis = dynamic(() => import("recharts").then((mod) => mod.YAxis), { ssr: false });
-const Tooltip = dynamic(() => import("recharts").then((mod) => mod.Tooltip), { ssr: false });
-const ResponsiveContainer = dynamic(() => import("recharts").then((mod) => mod.ResponsiveContainer), { ssr: false });
-const CartesianGrid = dynamic(() => import("recharts").then((mod) => mod.CartesianGrid), { ssr: false });
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 interface StockChartProps {
   symbol: string;
@@ -161,7 +156,7 @@ export default function StockChart({ symbol }: StockChartProps) {
               }}
               labelStyle={{ color: "var(--color-foreground)", marginBottom: "8px" }}
               itemStyle={{ color: "var(--color-primary)" }}
-              formatter={(value: number) => [`₹${formatPrice(value)}`, "Close"]}
+              formatter={(value) => [`₹${formatPrice(Number(value) || 0)}`, "Close"]}
               labelFormatter={(label) => {
                 const d = new Date(label);
                 return d.toLocaleDateString("en-IN", {

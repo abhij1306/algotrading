@@ -13,7 +13,7 @@
     "build:clean": "cmd /c if exist .next rmdir /s /q .next && next build",
     "start": "next start",
     "lint": "eslint",
-    "type-check": "tsc --noEmit",
+    "type-check": "next typegen && tsc --noEmit --incremental false",
     "electron-dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "electron-build": "npm run build && electron-builder"
   },

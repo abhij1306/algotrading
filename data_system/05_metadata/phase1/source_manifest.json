@@ -1,21 +1,196 @@
 {
-  "generated_at_utc": "2026-02-19T16:44:35.476231+00:00",
-  "phase_start": "2025-01-01",
+  "generated_at_utc": "2026-02-19T17:34:17.375861+00:00",
+  "phase_start": "2026-01-01",
   "asof": "2026-02-19",
   "entries": [
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_01012026.csv",
+      "size_bytes": 348845,
+      "sha256": "bcd90549fbd10ee0eabe644d81bad50519cba186d0adce24cf48c454d8805de1",
+      "modified_at_utc": "2026-02-19T17:29:14.568285+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_02012026.csv",
+      "size_bytes": 349931,
+      "sha256": "47f53a7892b498789ac72d73be8628e879fdd5d1a01d65b67fccffd0439ad336",
+      "modified_at_utc": "2026-02-19T17:29:12.041507+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_02022026.csv",
+      "size_bytes": 352360,
+      "sha256": "bb4f282a5b59034d6c767526fa4717af22eca6203dac8f2e2587c75afa7350bd",
+      "modified_at_utc": "2026-02-19T17:26:13.509016+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_03022026.csv",
+      "size_bytes": 357071,
+      "sha256": "9212a0a4ffaee43a49b24b4d6ba3de432c150270715d5cfae7e87003988c6146",
+      "modified_at_utc": "2026-02-19T17:26:10.653558+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_04022026.csv",
+      "size_bytes": 353946,
+      "sha256": "beb729e3e9f9c7da7b550586982ca9dca43f2df7d050f6480342a41ebb3f8e30",
+      "modified_at_utc": "2026-02-19T17:26:07.817211+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_05012026.csv",
+      "size_bytes": 353349,
+      "sha256": "b2f8fcb58029ff0574c095945f6c86e56d10a67e540130330b462a842d079b89",
+      "modified_at_utc": "2026-02-19T17:29:09.151916+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_05022026.csv",
+      "size_bytes": 350963,
+      "sha256": "3e0a4556e27e16fc1144fcfc804ef35f99cae533f891e50cd56a1c97c4adab75",
+      "modified_at_utc": "2026-02-19T17:26:05.349051+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_06012026.csv",
+      "size_bytes": 350300,
+      "sha256": "a414dfe55a9c63b0832f46625c4add68d223db7095f24af9cbf1d3d89552edbe",
+      "modified_at_utc": "2026-02-19T17:29:06.224240+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_06022026.csv",
+      "size_bytes": 348962,
+      "sha256": "c66ebacf6d5c719b22ed1850fdac9fad395286a77fba7103f44802b70ba56e0c",
+      "modified_at_utc": "2026-02-19T17:26:02.544218+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_07012026.csv",
+      "size_bytes": 351557,
+      "sha256": "f96b479df55f8f6bee4e8c49fc9713849000491d74d5ffc37c9c94737fe979b1",
+      "modified_at_utc": "2026-02-19T17:29:03.411920+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_08012026.csv",
+      "size_bytes": 352479,
+      "sha256": "2f4d6de130c35d51ccf612f3a413687dd299df6c41809c78d2bbab050ca2839c",
+      "modified_at_utc": "2026-02-19T17:29:01.068379+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_08022026.csv",
+      "size_bytes": 348962,
+      "sha256": "c66ebacf6d5c719b22ed1850fdac9fad395286a77fba7103f44802b70ba56e0c",
+      "modified_at_utc": "2026-02-19T17:25:56.459756+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_09012026.csv",
+      "size_bytes": 351036,
+      "sha256": "f799f829e78ed52977d389591e84d5398f990eeeb8e8403af27621d4e0967991",
+      "modified_at_utc": "2026-02-19T17:28:58.128060+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_09022026.csv",
+      "size_bytes": 356710,
+      "sha256": "91934e2cc8a179c884560255740d3324eaa3ead77efeb66cbdea48e713443deb",
+      "modified_at_utc": "2026-02-19T17:25:53.290763+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_10022026.csv",
+      "size_bytes": 354576,
+      "sha256": "165a242a7e6eba66a87fb42627527055b0fc39e5eb32cc170c310c51a606e65b",
+      "modified_at_utc": "2026-02-19T17:25:50.490092+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_11022026.csv",
+      "size_bytes": 352518,
+      "sha256": "76cc16dc85f34b4c897a4d04126c73c820688ab160f7fbf1c23f149919b61c35",
+      "modified_at_utc": "2026-02-19T17:25:47.944404+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_12012026.csv",
+      "size_bytes": 352294,
+      "sha256": "6d153d9dbceb04d5feb650c9b5a189c0ad229364afeec55f61728f5fdb47ac85",
+      "modified_at_utc": "2026-02-19T17:28:54.543448+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_12022026.csv",
+      "size_bytes": 353112,
+      "sha256": "7c76d0aef0b64d81c1e583486ca59d50953502656192032ea6e53d3c9900a0ac",
+      "modified_at_utc": "2026-02-19T17:25:45.020010+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_13012026.csv",
+      "size_bytes": 350079,
+      "sha256": "9b489015c4b7710c5000e3ffaab6eea7a230bdf4ce312ad2a9a3925c6eb16ed4",
+      "modified_at_utc": "2026-02-19T17:28:51.441997+00:00"
+    },
     {
       "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_13022026.csv",
       "size_bytes": 351817,
       "sha256": "cfea76e512e44d6f61a33bf0f018243289a316c4de7efdf3aa8e3fb247f09642",
-      "modified_at_utc": "2026-02-13T12:58:40.626698+00:00"
+      "modified_at_utc": "2026-02-19T17:25:41.765784+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_14012026.csv",
+      "size_bytes": 349993,
+      "sha256": "fa0151eaf94481f0e03d3d80051f03d1c3a20067791447ff345a470595b9db49",
+      "modified_at_utc": "2026-02-19T17:28:48.667453+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_15012026.csv",
+      "size_bytes": 349993,
+      "sha256": "fa0151eaf94481f0e03d3d80051f03d1c3a20067791447ff345a470595b9db49",
+      "modified_at_utc": "2026-02-19T17:28:45.461973+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_15022026.csv",
+      "size_bytes": 351817,
+      "sha256": "cfea76e512e44d6f61a33bf0f018243289a316c4de7efdf3aa8e3fb247f09642",
+      "modified_at_utc": "2026-02-19T17:25:34.722564+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_16012026.csv",
+      "size_bytes": 352472,
+      "sha256": "057224e266627e97dda9584346fbb37369d0b7ea60b7f4489e4cf56edf4694a4",
+      "modified_at_utc": "2026-02-19T17:28:42.387275+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_16022026.csv",
+      "size_bytes": 354118,
+      "sha256": "1453d16937d80b88ad3d158afbb27fdaf0e75256fa497272eb5b44c6a3ee2372",
+      "modified_at_utc": "2026-02-19T17:25:31.917916+00:00"
     },
     {
       "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_17022026.csv",
       "size_bytes": 351780,
       "sha256": "ed336d940992aaac01369512b82e979f6ef2afc60a724a93b61e2362989abb8a",
-      "modified_at_utc": "2026-02-18T04:14:28.883289+00:00"
+      "modified_at_utc": "2026-02-19T17:25:28.276022+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_18012026.csv",
+      "size_bytes": 352472,
+      "sha256": "057224e266627e97dda9584346fbb37369d0b7ea60b7f4489e4cf56edf4694a4",
+      "modified_at_utc": "2026-02-19T17:28:36.524133+00:00"
     },
     {
       "category": "bhavcopy",
@@ -23,6 +198,90 @@
       "size_bytes": 354490,
       "sha256": "7e90742c866dcf83c2f4b65a2d8f48a6a22e572f7ae9ab531208d7d2e8f13655",
       "modified_at_utc": "2026-02-19T05:07:40.435251+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_19012026.csv",
+      "size_bytes": 353808,
+      "sha256": "29d7d98080bcbb71c2be3e9181307f528781127a489c748c7c09cde7fbdc5c13",
+      "modified_at_utc": "2026-02-19T17:28:33.803255+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_19022026.csv",
+      "size_bytes": 353361,
+      "sha256": "6e391930e2ac94aa2876d4f9e6aa8fb05e94bcc60dae96d552c521b3d1125ba1",
+      "modified_at_utc": "2026-02-19T17:31:08.176919+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_20012026.csv",
+      "size_bytes": 355897,
+      "sha256": "01f134c4cd18367fb7bef1e5648c64bc5bbccae4fb6b26ad18d4b1f071ba6e86",
+      "modified_at_utc": "2026-02-19T17:28:30.377825+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_21012026.csv",
+      "size_bytes": 355921,
+      "sha256": "9ad1a708abff8c83f60f9536f043a02d167c9fcbbcda3f33a4e75ca4a087c91e",
+      "modified_at_utc": "2026-02-19T17:28:27.382117+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_22012026.csv",
+      "size_bytes": 352384,
+      "sha256": "ac2a31ab5326717e289e4c1dcfbd34c279017a77feba3d5d93a7b90b2d0cfe08",
+      "modified_at_utc": "2026-02-19T17:28:24.257385+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_23012026.csv",
+      "size_bytes": 352669,
+      "sha256": "2f55894dc6181ef567f539213c094ebad650db690e9fb7aedda1bc7c2059a818",
+      "modified_at_utc": "2026-02-19T17:28:20.753391+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_25012026.csv",
+      "size_bytes": 352669,
+      "sha256": "2f55894dc6181ef567f539213c094ebad650db690e9fb7aedda1bc7c2059a818",
+      "modified_at_utc": "2026-02-19T17:28:12.591945+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_26012026.csv",
+      "size_bytes": 352669,
+      "sha256": "2f55894dc6181ef567f539213c094ebad650db690e9fb7aedda1bc7c2059a818",
+      "modified_at_utc": "2026-02-19T17:28:09.922605+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_27012026.csv",
+      "size_bytes": 355793,
+      "sha256": "de2356d0ad8a94bcacb2dcd2791499d607799e42195a019d5b28f6c8ebcf6335",
+      "modified_at_utc": "2026-02-19T17:28:07.322554+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_28012026.csv",
+      "size_bytes": 352974,
+      "sha256": "f3cfc6dedb30ec636f7d6927c01fcc201d83a84cc50948cfbdf0f42860d52258",
+      "modified_at_utc": "2026-02-19T17:28:04.299822+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_29012026.csv",
+      "size_bytes": 355168,
+      "sha256": "aea98127c7dc7fe55b9d15ffc44d33bc1834cc912ea0a56c8fef846125d6dc83",
+      "modified_at_utc": "2026-02-19T17:28:01.553638+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_30012026.csv",
+      "size_bytes": 353417,
+      "sha256": "2ed37c0ab8179f5c56fd09fee56a4626feafad0204900252b2aba715742d99c7",
+      "modified_at_utc": "2026-02-19T17:27:58.675816+00:00"
     },
     {
       "category": "corporate_actions",
@@ -129,6 +388,6 @@
       "corporate_actions": 0,
       "index_weights": 0
     },
-    "total_entries": 17
+    "total_entries": 54
   }
 }

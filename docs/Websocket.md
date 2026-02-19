@@ -26,6 +26,7 @@
 ```json
 {"action":"subscribe","symbols":["SBIN","NSE:RELIANCE-EQ"]}
 ```
+Note: subscribe symbols can be short (`"SBIN"`) or exchange-prefixed (`"NSE:RELIANCE-EQ"`); both are normalized to DB format in backend via `symbol_master.to_db`.
 - Unsubscribe:
 ```json
 {"action":"unsubscribe","symbols":["SBIN"]}
@@ -45,10 +46,27 @@
 ```json
 {"type":"ticker","data":{"symbol":"SBIN","ltp":...,"change":...,"change_pct":...,"volume":...}}
 ```
+- Tick batch:
+```json
+{"type":"ticker_batch","data":[{"symbol":"SBIN","ltp":...},{"symbol":"RELIANCE","ltp":...}]}
+```
+`ticker_batch` contains multiple tick payloads in one frame; `ticker` contains exactly one payload.
 - Pong:
 ```json
 {"type":"pong"}
 ```
+- Error:
+```json
+{"type":"error","message":"Invalid symbol: XYZ","code":"INVALID_SYMBOL","retry_after":null}
+```
+
+### Error codes
+- `INVALID_SYMBOL`: symbol rejected during subscribe/unsubscribe normalization/validation.
+- `MALFORMED_REQUEST`: missing or invalid `action`/`symbols` shape.
+- `RATE_LIMIT_EXCEEDED`: request burst throttled; `retry_after` may be provided (seconds).
+
+When `subscribe`/`unsubscribe` requests fail, server returns an `error` message instead of `ack`.
+Malformed `ping`/`pong` and invalid control frames also use the same `error` envelope.
 
 ## Market-Hours Behavior
 Implemented in `backend/app/services/live_market_service.py`:
@@ -69,7 +87,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 - URL resolution:
   - `NEXT_PUBLIC_WS_URL`, else derived from `NEXT_PUBLIC_API_URL`, else `ws://127.0.0.1:8000/api/websocket/stream`
 - Heartbeat every 30s
-- Reconnect backoff with max retries
+- Reconnect backoff with `max_retries=10`
 - `registerCallback()` for low-rerender high-frequency consumption
 - Supports `ticker` and `ticker_batch` messages (batch currently optional)
 

@@ -5,13 +5,6 @@ Re-export all models for convenient importing.
 """
 
 from .backtest import BacktestDailyResult, BacktestRun, PortfolioDailyResult
-from .backtest_v2 import (
-    BacktestComparison,
-    BacktestEquityPoint,
-    BacktestRunV2,
-    BacktestTrade,
-    SavedBacktestConfig,
-)
 from .company import Company
 from .data_snapshot import DatasetArtifact, DatasetRun, SnapshotIndexStock, SnapshotIndexUniverse
 from .fundamental import FinancialStatement, QuarterlyResult
@@ -47,13 +40,6 @@ __all__ = [
     'BacktestRun',
     'BacktestDailyResult',
     'PortfolioDailyResult',
-
-    # Backtest V2
-    'BacktestRunV2',
-    'BacktestEquityPoint',
-    'BacktestTrade',
-    'SavedBacktestConfig',
-    'BacktestComparison',
 
     # Strategy
     'StrategyConfig',

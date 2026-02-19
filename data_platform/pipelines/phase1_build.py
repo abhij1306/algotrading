@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -40,6 +41,8 @@ from backend.app.database import (  # noqa: E402
     SnapshotIndexUniverse,
 )
 from backend.app.services.symbol_master import symbol_master  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 PHASE_START_DATE = date(2025, 1, 1)
 DEFAULT_INDEX_WEIGHTS_SOURCE = DATA_ROOT / "01_sources" / "nse_index_weights_pdf"
@@ -386,7 +389,8 @@ class Phase1Builder:
         for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
             try:
                 bhav = pd.read_csv(bhav_file)
-            except Exception:
+            except Exception as exc:
+                logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
                 continue
             bhav.columns = [c.strip().upper() for c in bhav.columns]
             if "SYMBOL" not in bhav.columns or "SERIES" not in bhav.columns:
@@ -400,7 +404,8 @@ class Phase1Builder:
         for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
             try:
                 bhav = pd.read_csv(bhav_file)
-            except Exception:
+            except Exception as exc:
+                logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
                 continue
             bhav.columns = [c.strip().upper() for c in bhav.columns]
             required = {"SYMBOL", "SERIES", "OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE", "CLOSE_PRICE", "TTL_TRD_QNTY"}
@@ -1097,7 +1102,6 @@ class Phase1Builder:
                 SnapshotIndexStock.snapshot_date >= self.start_date,
                 SnapshotIndexStock.snapshot_date <= self.asof,
             ).delete(synchronize_session=False)
-            db.commit()
             stock_records = [
                 {
                     "snapshot_date": row.date,
@@ -1111,7 +1115,7 @@ class Phase1Builder:
             chunk_size = 5000
             for i in range(0, len(stock_records), chunk_size):
                 db.bulk_insert_mappings(SnapshotIndexStock, stock_records[i : i + chunk_size])
-                db.commit()
+            db.commit()
 
             for universe_id in self.universes:
                 spec = self._get_universe_spec(universe_id)
