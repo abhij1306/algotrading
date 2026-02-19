@@ -46,7 +46,7 @@ def system_health_check(db: Session = DB_DEPENDENCY):
         recommendations.append("Fyers API unavailable. Screener will use cached data only.")
 
     if health["last_update"] is None:
-        recommendations.append("No historical data found. Run daily_maintenance scripts.")
+        recommendations.append("No historical data found. Run canonical bhavcopy + phase1 pipeline.")
 
     return {
         "status": status,

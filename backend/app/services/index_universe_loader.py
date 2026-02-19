@@ -50,7 +50,7 @@ def _get_symbol_master():
 
 # Use project-relative path - GitHub compatible
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-NSE_DATA_PATH = PROJECT_ROOT / "nse_data" / "index_universe" / "constituents"
+NSE_DATA_PATH = PROJECT_ROOT / "data_system" / "03_universe" / "constituents"
 
 # Set data path - will log warning if not found
 DATA_PATH = NSE_DATA_PATH

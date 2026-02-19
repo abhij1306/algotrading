@@ -14,10 +14,14 @@ from .base import Base
 from .models import (
     Company,
     DataUpdateLog,
+    DatasetArtifact,
+    DatasetRun,
     FinancialStatement,
     HistoricalPrice,
     IntradayCandle,
     QuarterlyResult,
+    SnapshotIndexStock,
+    SnapshotIndexUniverse,
     Watchlist,
 )
 from .utils.env_loader import load_dotenv
@@ -26,6 +30,10 @@ MODELS_IMPORTED = models
 MODEL_EXPORTS = (
     Company,
     DataUpdateLog,
+    DatasetRun,
+    DatasetArtifact,
+    SnapshotIndexStock,
+    SnapshotIndexUniverse,
     FinancialStatement,
     HistoricalPrice,
     IntradayCandle,

@@ -5,6 +5,7 @@ from . import (
     auth,
     backtest,
     backtest_v2,
+    data_snapshot,
     market,
     market_dashboard,
     portfolio,
@@ -29,6 +30,7 @@ __all__ = [
     "upload",
     "backtest",
     "backtest_v2",
+    "data_snapshot",
     "portfolio",
     "terminal",
     "activity"

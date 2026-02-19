@@ -13,7 +13,7 @@ if sys.platform == "win32" and sys.version_info >= (3, 14):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     print("[INFO] Set WindowsSelectorEventLoopPolicy for Python 3.14 compatibility")
 
-os.environ.setdefault("DEV_MODE", "true")
+os.environ.setdefault("DEV_MODE", "false")
 
 
 def _env_bool(key: str, default: bool) -> bool:

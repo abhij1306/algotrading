@@ -60,3 +60,27 @@
 ### D-015: Terminal Panel Data Contract
 - Decision: Terminal bottom panels poll positions/orderbook via trading APIs and render explicit LIVE/PAPER labels; websocket ticks update live position LTP/P&L in-place.
 - Rationale: ensures T3 trustworthiness by combining stable polling with low-latency tick updates and explicit mode separation.
+
+### D-016: Phase-1 Data Canonical Root
+- Decision: use `data_system/` as canonical Phase-1 root with explicit `01_sources/`, `04_curated/phase1/`, and `05_metadata/phase1/` boundaries.
+- Rationale: isolates trusted Phase-1 datasets from legacy folders and enables deterministic rebuilds.
+
+### D-017: Single Data Orchestrator
+- Decision: standardize Phase-1 build on `python -m data_platform.pipelines.phase1_build` with idempotent subcommands.
+- Rationale: removes multi-script drift and makes ingestion, curation, validation, and publish repeatable.
+
+### D-018: NIFTY50 Source Priority Lock
+- Decision: monthly NIFTY50 weights use Downloads PDFs as primary source, then repo raw CSV fallback, then clean snapshot fallback, with anomaly logging.
+- Rationale: preserves freshest monthly source while preventing pipeline halts on missing/corrupt files.
+
+### D-019: Snapshot Serving Contract
+- Decision: add Phase-1 snapshot APIs (`/api/data/snapshot/stock`, `/api/data/snapshot/universe`, `/api/data/snapshot/status`) backed by curated parquet artifacts.
+- Rationale: creates direct day-level retrieval path for backend and future UI surfaces without re-running transforms.
+
+### D-020: Archive-First Legacy Data Consolidation
+- Decision: move legacy duplicate/non-canonical data trees out of active runtime paths into `archive/data-legacy/2026-02-19/` and keep only canonical/runtime-required datasets under `data_system/`.
+- Rationale: enforces single active data layout, reduces accidental reads from stale artifacts, and keeps rollback safety via archive retention.
+
+### D-021: Remove Broker-Historical Price Backfill from Canonical Pipeline
+- Decision: deprecate `fetch-fyers-ohlcv` from canonical Phase-1 build; keep only bhavcopy + corporate actions + monthly weightage as trusted inputs.
+- Rationale: historical broker-derived OHLCV is now treated as non-trusted for Phase-1 reproducibility and must not influence canonical artifacts.

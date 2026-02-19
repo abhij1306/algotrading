@@ -6,7 +6,7 @@ Categorizes stocks into broad-based and sector indices from CSV files.
 Usage:
     python scripts/categorize_stocks.py
 
-This reads from: nse_data/index_universe/constituents/
+This reads from: data_system/03_universe/constituents/
 Maps stocks to:
 - broad_market: NIFTY50, NIFTY100, NIFTY200, NIFTY500, NIFTYNEXT50, etc.
 - sector_index: NIFTYIT, NIFTYBANK, NIFTYAUTO, NIFTYPHARMA, etc.
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Path to constituents CSV files
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-CSV_PATH = PROJECT_ROOT / "nse_data" / "index_universe" / "constituents"
+CSV_PATH = PROJECT_ROOT / "data_system" / "03_universe" / "constituents"
 
 # Broad-based indices
 BROAD_INDICES = {

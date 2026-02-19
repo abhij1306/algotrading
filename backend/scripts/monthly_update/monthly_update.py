@@ -55,7 +55,7 @@ class MonthlyUpdateConfig:
 
     @property
     def data_dir(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "nse_data" / "index_universe" / "raw" / self.month
+        return Path(__file__).resolve().parents[2] / "data_system" / "03_universe" / "monthly_universe_raw" / self.month
 
 
 class MonthlyUpdateOrchestrator:

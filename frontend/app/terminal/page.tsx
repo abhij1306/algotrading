@@ -33,6 +33,12 @@ interface ChartResponse {
   source: string;
   candles: CandlePoint[];
 }
+interface SearchResultItem {
+  symbol: string;
+  name: string;
+  type?: string;
+  instrument_type?: string;
+}
 
 type TradingMode = 'PAPER' | 'LIVE';
 type OrderType = 'MARKET' | 'LIMIT' | 'SL';
@@ -135,6 +141,10 @@ export default function TerminalPage() {
   const [liveOrders, setLiveOrders] = useState<OrderItem[]>([]);
   const [paperOrders, setPaperOrders] = useState<OrderItem[]>([]);
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [watchlistQuery, setWatchlistQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [watchlistActionError, setWatchlistActionError] = useState<string | null>(null);
   const subscribedSymbolsKeyRef = useRef('');
 
   useEffect(() => {
@@ -241,6 +251,43 @@ export default function TerminalPage() {
   }, [selectedSymbol, selectedTimeframe]);
 
   useEffect(() => {
+    if (watchlistQuery.trim().length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        setSearchLoading(true);
+        const response = await fetch(`/api/market/search?query=${encodeURIComponent(watchlistQuery.trim())}&exclude_indices=true`);
+        if (!response.ok) {
+          setSearchResults([]);
+          return;
+        }
+        const data = (await response.json()) as Array<Record<string, unknown>>;
+        const normalized = Array.isArray(data)
+          ? data
+              .map((row) => ({
+                symbol: String(row.symbol ?? '').trim(),
+                name: String(row.name ?? row.symbol ?? '').trim(),
+                type: typeof row.type === 'string' ? row.type : undefined,
+                instrument_type: typeof row.instrument_type === 'string' ? row.instrument_type : undefined,
+              }))
+              .filter((row) => row.symbol.length > 0)
+          : [];
+        setSearchResults(normalized.slice(0, 8));
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [watchlistQuery]);
+
+  useEffect(() => {
     if (!isConnected) {
       subscribedSymbolsKeyRef.current = '';
     }
@@ -278,7 +325,7 @@ export default function TerminalPage() {
   // Handle live ticks
   useEffect(() => {
     if (lastMessage?.type === 'ticker' && lastMessage.data) {
-      const tick = lastMessage.data as { symbol?: string; ltp?: number; change_pct?: number; change?: number };
+      const tick = lastMessage.data as { symbol?: string; ltp?: number; change_pct?: number; change?: number; volume?: number };
       if (tick.symbol) {
         setWatchlist(prev => prev.map(item =>
           item.symbol === tick.symbol
@@ -311,6 +358,47 @@ export default function TerminalPage() {
       }
     }
   }, [lastMessage, selectedSymbol]);
+
+  const addSymbolToWatchlist = async (item: SearchResultItem) => {
+    const symbol = item.symbol.trim().toUpperCase();
+    if (!symbol) return;
+
+    try {
+      setWatchlistActionError(null);
+      const response = await fetch('/api/market/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol,
+          instrument_type: item.instrument_type || (item.type === 'PE' || item.type === 'CE' ? item.type : 'EQ'),
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(data?.detail || 'Failed to add symbol');
+      }
+
+      setWatchlist((prev) => {
+        if (prev.some((w) => w.symbol === symbol)) return prev;
+        return [
+          {
+            symbol,
+            name: item.name || symbol,
+            price: null,
+            change: null,
+            ltp: null,
+          },
+          ...prev,
+        ];
+      });
+      setSelectedSymbol(symbol);
+      setWatchlistQuery('');
+      setSearchResults([]);
+    } catch (err) {
+      setWatchlistActionError(err instanceof Error ? err.message : 'Failed to add symbol');
+    }
+  };
 
   useEffect(() => {
     const pollPanels = async () => {
@@ -514,11 +602,55 @@ export default function TerminalPage() {
               <Search className="w-4 h-4 text-foreground-muted" />
               <input
                 type="text"
+                value={watchlistQuery}
+                onChange={(event) => setWatchlistQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && searchResults[0]) {
+                    event.preventDefault();
+                    void addSymbolToWatchlist(searchResults[0]);
+                  }
+                }}
                 placeholder="Search..."
                 className="flex-1 bg-transparent outline-none text-sm"
               />
-              <Plus className="w-4 h-4 text-foreground-muted" />
+              <button
+                type="button"
+                className="text-foreground-muted hover:text-foreground disabled:opacity-50"
+                disabled={!searchResults[0]}
+                onClick={() => {
+                  if (searchResults[0]) {
+                    void addSymbolToWatchlist(searchResults[0]);
+                  }
+                }}
+                aria-label="Add symbol to watchlist"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
+            {watchlistActionError && (
+              <div className="mt-1 text-xs text-loss">{watchlistActionError}</div>
+            )}
+            {watchlistQuery.trim().length >= 2 && (
+              <div className="mt-1 rounded border border-border bg-surface max-h-44 overflow-y-auto">
+                {searchLoading ? (
+                  <div className="px-2 py-2 text-xs text-foreground-muted">Searching...</div>
+                ) : searchResults.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-foreground-muted">No matches</div>
+                ) : (
+                  searchResults.map((item) => (
+                    <button
+                      key={`${item.symbol}-${item.type || 'EQ'}`}
+                      type="button"
+                      className="w-full text-left px-2 py-1.5 hover:bg-background-secondary border-b border-border last:border-b-0"
+                      onClick={() => { void addSymbolToWatchlist(item); }}
+                    >
+                      <div className="text-sm font-medium">{item.symbol}</div>
+                      <div className="text-xs text-foreground-muted truncate">{item.name}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
           </div>
 
           {/* Watchlist */}

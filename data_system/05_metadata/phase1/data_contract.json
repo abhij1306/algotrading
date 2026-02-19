@@ -1,0 +1,91 @@
+{
+  "version": "phase1-v1",
+  "generated_at": "2026-02-19T16:44:35.460426+00:00",
+  "datasets": {
+    "equity_ohlcv": [
+      "trade_date",
+      "symbol",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "turnover",
+      "source"
+    ],
+    "nifty50_membership_daily": [
+      "date",
+      "symbol",
+      "in_universe",
+      "source_file",
+      "source_priority"
+    ],
+    "nifty50_weights_monthly": [
+      "month",
+      "symbol",
+      "weight",
+      "source_file",
+      "source_priority",
+      "parse_confidence"
+    ],
+    "snapshot_stock_daily": [
+      "date",
+      "symbol",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "turnover",
+      "adj_open",
+      "adj_high",
+      "adj_low",
+      "adj_close",
+      "adj_volume",
+      "corporate_action_flag"
+    ],
+    "snapshot_nifty50_daily": [
+      "date",
+      "universe_id",
+      "symbol",
+      "in_universe",
+      "weight",
+      "open",
+      "high",
+      "low",
+      "close",
+      "adj_close",
+      "volume",
+      "corporate_action_flag"
+    ],
+    "banknifty_weights_monthly": [
+      "month",
+      "symbol",
+      "weight",
+      "source_file",
+      "source_priority",
+      "parse_confidence"
+    ],
+    "banknifty_membership_daily": [
+      "date",
+      "symbol",
+      "in_universe",
+      "source_file",
+      "source_priority"
+    ],
+    "snapshot_banknifty_daily": [
+      "date",
+      "universe_id",
+      "symbol",
+      "in_universe",
+      "weight",
+      "open",
+      "high",
+      "low",
+      "close",
+      "adj_close",
+      "volume",
+      "corporate_action_flag"
+    ]
+  }
+}

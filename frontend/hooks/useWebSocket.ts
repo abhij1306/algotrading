@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isTickerData } from '@/lib/type-guards';
+import { isObject, isTickerData } from '@/lib/type-guards';
 
 interface WebSocketMessage {
   type?: string;
@@ -55,6 +55,24 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
     }
 
     return 'ws://127.0.0.1:8000/api/websocket/stream';
+  }, []);
+
+  const normalizeTicker = useCallback((value: unknown): Record<string, unknown> | null => {
+    if (!isObject(value)) return null;
+    const symbol = typeof value.symbol === 'string' ? value.symbol : null;
+    if (!symbol) return null;
+
+    const ltpRaw = value.ltp ?? value.lp;
+    const changePctRaw = value.change_pct ?? value.chp ?? value.changePercent;
+    const volumeRaw = value.volume ?? value.v ?? value.vol_traded_today;
+
+    return {
+      ...value,
+      symbol,
+      ltp: typeof ltpRaw === 'number' ? ltpRaw : undefined,
+      change_pct: typeof changePctRaw === 'number' ? changePctRaw : undefined,
+      volume: typeof volumeRaw === 'number' ? volumeRaw : undefined,
+    };
   }, []);
 
   // Single effect for connection lifecycle - runs once on mount
@@ -132,10 +150,16 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
 
             if (message.type === 'ticker_batch' && Array.isArray(message.data)) {
               message.data.forEach((tick: unknown) => {
-                if (isTickerData(tick)) {
+                const normalized = normalizeTicker(tick);
+                if (normalized) {
+                  handleMsg({ type: 'ticker', data: normalized });
+                } else if (isTickerData(tick)) {
                   handleMsg({ type: 'ticker', data: tick });
                 }
               });
+            } else if (message.type === 'ticker' && message.data) {
+              const normalized = normalizeTicker(message.data);
+              handleMsg(normalized ? { ...message, data: normalized } : message);
             } else {
               handleMsg(message);
             }
@@ -192,7 +216,7 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [getWsUrl]);
+  }, [getWsUrl, normalizeTicker]);
 
   const sendMessage = useCallback((message: unknown) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {

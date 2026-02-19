@@ -185,10 +185,9 @@ def load_bhavcopy(csv_path: str, target_date: date = None) -> dict:
 
 def find_latest_bhavcopy() -> str:
     """Find the latest bhavcopy file in the bhavcopy directory."""
-    # Try both possible locations
+    # Canonical location
     possible_paths = [
-        Path(__file__).parent.parent / 'nse_data' / 'bhavcopy',
-        Path(__file__).parent.parent.parent / 'nse_data' / 'bhavcopy',
+        Path(__file__).parent.parent.parent / 'data_system' / '01_sources' / 'nse_bhavcopy',
     ]
 
     bhavcopy_dir = None

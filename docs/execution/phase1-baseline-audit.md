@@ -7,7 +7,7 @@ Baseline inventory and PRD gap snapshot before module-by-module rebuild.
 
 ## Keep/Delete Inventory
 ## Keep
-- `nse_data/` (required for backtest pipeline)
+- `data_system/` (required for backtest pipeline)
 - `backend/app/` core services and routers (to be validated/refactored per slice)
 - `frontend/app/{dashboard,screener,terminal,backtest}` scaffolding
 - shared infrastructure: startup scripts, env handling, websocket core, symbol conversion, index loader

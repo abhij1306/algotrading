@@ -4,14 +4,15 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
+import yfinance as yf
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_
 
+from ..data_repository import DataRepository
 from ..database import SessionLocal
 from ..models import Company, HistoricalPrice, LiveOrder
 from ..services.symbol_master import symbol_master
-from ..data_repository import DataRepository
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ INTRADAY_TIMEFRAME_MAP = {
     "15m": 15,
     "30m": 30,
     "1h": 60,
+}
+INDEX_YF_MAP = {
+    "NIFTY50": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
 }
 
 class PaperOrderRequest(BaseModel):
@@ -52,6 +57,66 @@ def _prepare_candle_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _load_index_yfinance_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
+    yf_symbol = INDEX_YF_MAP.get(symbol)
+    if not yf_symbol:
+        return pd.DataFrame()
+
+    tf = timeframe.strip().lower()
+    interval = "1d"
+    period = "1y"
+    if tf == "1m":
+        interval, period = "1m", "7d"
+    elif tf == "5m":
+        interval, period = "5m", "60d"
+    elif tf == "15m":
+        interval, period = "15m", "60d"
+    elif tf == "30m":
+        interval, period = "30m", "60d"
+    elif tf == "1h":
+        interval, period = "60m", "730d"
+    elif tf == "w":
+        interval, period = "1wk", "5y"
+    elif tf == "m":
+        interval, period = "1mo", "10y"
+
+    try:
+        data = yf.download(
+            yf_symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
+        if data is None or data.empty:
+            return pd.DataFrame()
+
+        # yfinance can return MultiIndex columns (field, ticker) even for one symbol.
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        data = data.reset_index()
+        time_col = "Datetime" if "Datetime" in data.columns else "Date"
+        candles = pd.DataFrame(
+            {
+                "ts": pd.to_datetime(data[time_col]),
+                "open": pd.to_numeric(data["Open"], errors="coerce").fillna(0.0),
+                "high": pd.to_numeric(data["High"], errors="coerce").fillna(0.0),
+                "low": pd.to_numeric(data["Low"], errors="coerce").fillna(0.0),
+                "close": pd.to_numeric(data["Close"], errors="coerce").fillna(0.0),
+                "volume": (
+                    pd.to_numeric(data.get("Volume", 0), errors="coerce")
+                    .fillna(0.0)
+                    .astype(int)
+                ),
+            }
+        )
+        return candles.tail(limit).reset_index(drop=True)
+    except Exception as exc:
+        logger.warning("Index yfinance fallback failed for %s: %s", symbol, exc)
+        return pd.DataFrame()
+
+
 @router.get("/chart")
 def get_chart_data(
     symbol: str = Query(..., min_length=1),
@@ -65,9 +130,11 @@ def get_chart_data(
         repo = DataRepository(db)
 
         db_symbol = symbol_master.to_db(symbol)
-        company = db.query(Company).filter(and_(Company.symbol == db_symbol, Company.is_active.is_(True))).first()
-        if not company:
-            raise HTTPException(status_code=404, detail=f"Symbol not found: {symbol}")
+        company = (
+            db.query(Company)
+            .filter(and_(Company.symbol == db_symbol, Company.is_active.is_(True)))
+            .first()
+        )
 
         normalized_tf = timeframe.strip().lower()
         candles_df = pd.DataFrame()
@@ -86,7 +153,7 @@ def get_chart_data(
                 # Fallback to daily data if intraday candles not available
                 normalized_tf = "d"
 
-        if normalized_tf in {"d", "w", "m"}:
+        if normalized_tf in {"d", "w", "m"} and company:
             rows = (
                 db.query(HistoricalPrice)
                 .filter(HistoricalPrice.company_id == company.id)
@@ -138,6 +205,18 @@ def get_chart_data(
                 source = "historical_prices"
 
             candles_df = candles_df.tail(limit).reset_index(drop=True)
+
+        if candles_df.empty and not company:
+            candles_df = _load_index_yfinance_candles(db_symbol, normalized_tf, limit)
+            source = "yfinance_index_fallback"
+
+        if candles_df.empty:
+            return {
+                "symbol": db_symbol,
+                "timeframe": timeframe,
+                "source": source,
+                "candles": [],
+            }
 
         candles_df = _prepare_candle_frame(candles_df)
 

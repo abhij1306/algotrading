@@ -5,14 +5,13 @@ Single point of access for all market data (Historical, Fundamental, Live Quotes
 Architecture:
 - PostgreSQL: Metadata, Financial Statements, Historical Prices
 - Parquet: Heavy time-series data (future optimization)
-- Fyers API v3: Live quotes, missing historical data
+- Fyers API v3: Live quotes only
 """
 from datetime import datetime
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from ..data_fetcher import fetch_historical_data
 from ..data_repository import DataRepository
 from ..database import Company, FinancialStatement, HistoricalPrice
 from .exceptions import (
@@ -27,7 +26,7 @@ class DataProvider:
     """
     Unified data access layer enforcing:
     1. Single Source of Truth (PostgreSQL/Parquet)
-    2. Fyers as secondary source (fallback)
+    2. Fyers for live quotes only
     3. Standard exception handling
     4. No direct Fyers access from UI components
     """
@@ -69,21 +68,11 @@ class DataProvider:
         # Daily data: Use PostgreSQL
         if timeframe == "1D":
             df = self.repo.get_historical_prices(symbol, days=days)
-
             if df is None or df.empty:
-                # Fallback: Try fetching from Fyers
-                try:
-                    df = fetch_historical_data(symbol, days=days)
-                    if df is None or df.empty:
-                        raise DataNotFoundError(
-                            symbol,
-                            f"No historical data available for {symbol}"
-                        )
-                except Exception as e:
-                    raise DataSourceUnavailableError(
-                        "Fyers",
-                        f"Failed to fetch data for {symbol}: {str(e)}"
-                    ) from e
+                raise DataNotFoundError(
+                    symbol,
+                    f"No historical data available for {symbol}"
+                )
 
             return df
 

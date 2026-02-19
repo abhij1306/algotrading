@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo, useRef, type CSSProperties } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search,
@@ -42,6 +42,10 @@ interface TickData {
   ltp?: number;
   change_pct?: number;
   volume?: number;
+  lp?: number;
+  chp?: number;
+  v?: number;
+  vol_traded_today?: number;
 }
 
 type SortField = 'symbol' | 'price' | 'change' | 'volume' | 'marketCap' | 'rsi' | 'macd' | 'adx';
@@ -53,7 +57,7 @@ const RPP_OPTIONS = [25, 50, 100];
 const TICK_FLUSH_MS = 200;
 const FALLBACK_POLL_MS = 3000;
 const WS_STALE_MS = 5000;
-const FLASH_DURATION_MS = 450;
+const FLASH_DURATION_MS = 900;
 
 function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -72,14 +76,28 @@ function formatMarketCap(value: number): string {
   return `${Math.round(value)} Cr`;
 }
 
+function getFlashStyle(direction?: FlashDirection): CSSProperties {
+  const base: CSSProperties = {
+    transition: 'color 900ms ease-out, text-shadow 900ms ease-out, transform 350ms ease-out',
+    display: 'inline-block',
+  };
+  if (!direction) return base;
+  return {
+    ...base,
+    color: direction === 'up' ? 'var(--color-profit)' : 'var(--color-loss)',
+    textShadow: direction === 'up' ? '0 0 10px rgba(34, 197, 94, 0.65)' : '0 0 10px rgba(239, 68, 68, 0.65)',
+    transform: 'scale(1.03)',
+  };
+}
+
 const StockRow = memo(function StockRow({
   stock,
   onClick,
-  flashClassByField,
+  flashDirectionByField,
 }: {
   stock: ScreenerResult;
   onClick: () => void;
-  flashClassByField: Partial<Record<FlashField, string>>;
+  flashDirectionByField: Partial<Record<FlashField, FlashDirection>>;
 }) {
   const isUp = toNumber(stock.change) >= 0;
   const rsi = toNumber(stock.rsi);
@@ -95,16 +113,16 @@ const StockRow = memo(function StockRow({
         <span className="text-xs px-1.5 py-0.5 rounded bg-background-tertiary">{stock.sector}</span>
       </td>
       <td className="py-2 text-right tabular-nums">
-        <span className={flashClassByField.price ?? ''}>{toNumber(stock.price).toFixed(2)}</span>
+        <span style={getFlashStyle(flashDirectionByField.price)}>{toNumber(stock.price).toFixed(2)}</span>
       </td>
       <td className={`py-2 text-right tabular-nums ${isUp ? 'text-profit' : 'text-loss'}`}>
         <div className="flex items-center justify-end gap-1">
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          <span className={flashClassByField.change ?? ''}>{formatPercentage(toNumber(stock.change))}</span>
+          <span style={getFlashStyle(flashDirectionByField.change)}>{formatPercentage(toNumber(stock.change))}</span>
         </div>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
-        <span className={flashClassByField.volume ?? ''}>{formatVolume(toNumber(stock.volume))}</span>
+        <span style={getFlashStyle(flashDirectionByField.volume)}>{formatVolume(toNumber(stock.volume))}</span>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">{formatMarketCap(toNumber(stock.marketCap))}</td>
       <td className={`py-2 text-right tabular-nums ${rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : ''}`}>
@@ -293,35 +311,24 @@ export default function ScreenerPage() {
 
   const applyFlashes = useCallback((flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>) => {
     if (flashes.length === 0) return;
-
     const entries: Record<string, FlashDirection> = {};
     for (const flash of flashes) {
       const key = `${flash.symbol}:${flash.field}`;
       entries[key] = flash.direction;
     }
 
-    // Remove active flash keys first, then re-apply in next tick so CSS animation restarts.
-    setFlashByCell((prev) => {
-      const next = { ...prev };
-      for (const key of Object.keys(entries)) {
-        delete next[key];
-      }
-      return next;
-    });
-    setTimeout(() => {
-      setFlashByCell((prev) => ({ ...prev, ...entries }));
-    }, 0);
+    setFlashByCell((prev) => ({ ...prev, ...entries }));
 
-    for (const key of Object.keys(entries)) {
+    for (const [key, direction] of Object.entries(entries)) {
       const existing = flashTimeoutsRef.current[key];
       if (existing) clearTimeout(existing);
 
       flashTimeoutsRef.current[key] = setTimeout(() => {
-        setFlashByCell((prev) => {
-          if (!(key in prev)) return prev;
-          const next = { ...prev };
-          delete next[key];
-          return next;
+        setFlashByCell((current) => {
+          if (current[key] !== direction) return current;
+          const updated = { ...current };
+          delete updated[key];
+          return updated;
         });
         delete flashTimeoutsRef.current[key];
       }, FLASH_DURATION_MS);
@@ -331,9 +338,17 @@ export default function ScreenerPage() {
   useEffect(() => {
     const unregister = registerCallback((message) => {
       if (message?.type !== 'ticker' || !message.data) return;
-      const tick = message.data as TickData;
-      if (!tick.symbol) return;
-      pendingTicksRef.current[tick.symbol] = tick;
+      const raw = message.data as TickData;
+      if (!raw.symbol) return;
+
+      const normalized: TickData = {
+        symbol: raw.symbol,
+        ltp: typeof raw.ltp === 'number' ? raw.ltp : (typeof raw.lp === 'number' ? raw.lp : undefined),
+        change_pct: typeof raw.change_pct === 'number' ? raw.change_pct : (typeof raw.chp === 'number' ? raw.chp : undefined),
+        volume: typeof raw.volume === 'number' ? raw.volume : (typeof raw.v === 'number' ? raw.v : (typeof raw.vol_traded_today === 'number' ? raw.vol_traded_today : undefined)),
+      };
+
+      pendingTicksRef.current[raw.symbol] = normalized;
       lastTickAtRef.current = Date.now();
     });
 
@@ -568,17 +583,17 @@ export default function ScreenerPage() {
               const priceKey = `${stock.symbol}:price`;
               const changeKey = `${stock.symbol}:change`;
               const volumeKey = `${stock.symbol}:volume`;
-              const flashClassByField: Partial<Record<FlashField, string>> = {
-                price: flashByCell[priceKey] ? `screener-flash-${flashByCell[priceKey]}` : '',
-                change: flashByCell[changeKey] ? `screener-flash-${flashByCell[changeKey]}` : '',
-                volume: flashByCell[volumeKey] ? `screener-flash-${flashByCell[volumeKey]}` : '',
+              const flashDirectionByField: Partial<Record<FlashField, FlashDirection>> = {
+                price: flashByCell[priceKey],
+                change: flashByCell[changeKey],
+                volume: flashByCell[volumeKey],
               };
 
               return (
                 <StockRow
                   key={stock.symbol}
                   stock={stock}
-                  flashClassByField={flashClassByField}
+                  flashDirectionByField={flashDirectionByField}
                   onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
                 />
               );

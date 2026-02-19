@@ -1,0 +1,30 @@
+{
+  "generated_at_utc": "2026-02-19T16:44:35.476670+00:00",
+  "items": [
+    {
+      "path": "data_platform/pipelines/phase1_build.py",
+      "status": "active",
+      "reason": "canonical Phase-1 orchestrator"
+    },
+    {
+      "path": "archive/data-legacy/2026-02-19/data_platform/pipelines/consolidate.py",
+      "status": "archived",
+      "reason": "references deprecated non-canonical raw source folders"
+    },
+    {
+      "path": "archive/data-legacy/2026-02-19/data_platform/processors/master_store_builder.py",
+      "status": "archived",
+      "reason": "legacy merge flow for deprecated source topology"
+    },
+    {
+      "path": "archive/data-legacy/2026-02-19/data_platform/pipelines/load_index_membership.py",
+      "status": "archived",
+      "reason": "fallback logic with placeholder intervals"
+    },
+    {
+      "path": "scripts/README.md",
+      "status": "legacy",
+      "reason": "documents deprecated yahoo pipeline scripts"
+    }
+  ]
+}

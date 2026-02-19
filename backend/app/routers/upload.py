@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 BHAVCOPY_FILE = File(...)
 
 # Upload directory
-UPLOAD_DIR = Path(__file__).parent.parent.parent / "nse_data" / "bhavcopy"
+UPLOAD_DIR = Path(__file__).parent.parent.parent / "data_system" / "01_sources" / "nse_bhavcopy"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -9,6 +9,17 @@
 nse_data/raw/
 nse_data/processed/
 nse_data/backups/
+nse_data/phase1/sources/
+nse_data/phase1/staging/
+nse_data/phase1/curated/
+nse_data/phase1/metadata/run_log.jsonl
+nse_data/phase1/metadata/checksums.json
+nse_data/phase1/metadata/source_manifest.json
+nse_data/phase1/metadata/validation_report.json
+nse_data/phase1/metadata/anomaly_report.json
+nse_data/phase1/metadata/corporate_action_audit.csv
+nse_data/phase1/metadata/data_contract.json
+nse_data/phase1/metadata/legacy_inventory.json
 
 # Historical Data
 data/

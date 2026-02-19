@@ -34,3 +34,38 @@
 - Mitigation: confine changes to tracked slice scope and avoid reverting unrelated edits.
 - Owner: All contributors
 - Status: Open
+
+## R-006: External Source Path Drift
+- Severity: High
+- Description: external monthly weight source files outside canonical repo layout can change unexpectedly.
+- Mitigation: materialize required source files into `data_system/01_sources/nse_index_weights_pdf` with checksums and manifest.
+- Owner: Data pipeline
+- Status: Mitigated
+
+## R-007: NIFTY50 Monthly Constituents Inconsistency
+- Severity: High
+- Description: some monthly sources can produce non-50 constituent snapshots.
+- Mitigation: enforce anomaly report + validation warning + fallback chain with source priority tagging.
+- Owner: Data pipeline
+- Status: Open
+
+## R-008: Legacy Script Reactivation
+- Severity: Medium
+- Description: old data scripts can be used accidentally and reintroduce stale outputs.
+- Mitigation: document `phase1_build.py` as canonical entrypoint and maintain archive candidate inventory.
+- Owner: Maintainers
+- Status: Mitigated
+
+## R-009: Legacy Data Shadowing Canonical Artifacts
+- Severity: High
+- Description: stale legacy folders can be read accidentally by scripts/services and create inconsistent outputs.
+- Mitigation: archive-first relocation of non-canonical trees under `archive/data-legacy/2026-02-19/`, retain only active canonical/runtime folders in `data_system/`.
+- Owner: Data pipeline
+- Status: Mitigated
+
+## R-010: Bhavcopy Coverage Gaps for Phase-1 Window
+- Severity: High
+- Description: canonical price ingestion now depends only on bhavcopy files; missing daily bhavcopy files produce snapshot price gaps.
+- Mitigation: enforce daily bhavcopy ingestion cadence and keep validation/anomaly reporting strict on missing price coverage.
+- Owner: Data pipeline + operator
+- Status: Open

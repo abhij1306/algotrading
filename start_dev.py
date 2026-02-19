@@ -136,16 +136,18 @@ def main() -> None:
     backend_env["BACKEND_HOST"] = "127.0.0.1"
     backend_env["BACKEND_PORT"] = str(backend_port)
     backend_env.setdefault("BACKEND_RELOAD", "true")
-    backend_env.setdefault("DEV_MODE", "true")
+    # Keep market-hours behavior real by default; set DEV_MODE=true explicitly when needed.
+    backend_env.setdefault("DEV_MODE", "false")
 
     frontend_env = os.environ.copy()
     frontend_env["PORT"] = str(frontend_port)
     frontend_env["NEXT_PUBLIC_API_URL"] = f"http://127.0.0.1:{backend_port}"
     frontend_env["NEXT_PUBLIC_WS_URL"] = f"ws://127.0.0.1:{backend_port}/api/websocket/stream"
 
+    backend_proc = None
     if launch_backend:
         print(f"Launching backend on http://127.0.0.1:{backend_port}")
-        subprocess.Popen(
+        backend_proc = subprocess.Popen(
             python_cmd + ["backend/start_server.py"],
             cwd=project_root,
             env=backend_env,
@@ -161,6 +163,11 @@ def main() -> None:
     )
 
     backend_ok = True if not launch_backend else wait_for_service(backend_port, "Backend", timeout=90)
+    if launch_backend and backend_proc is not None and backend_proc.poll() is not None:
+        raise RuntimeError(
+            f"Backend process exited immediately with code {backend_proc.returncode}. "
+            "Run '.\\venv\\Scripts\\python.exe backend\\start_server.py' to see traceback."
+        )
     frontend_ok = wait_for_service(frontend_port, "Frontend", timeout=120)
 
     if backend_ok and frontend_ok:
@@ -177,6 +184,8 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\nStartup interrupted by user.")
     except Exception as error:
         print(f"Startup failed: {error}")
         if platform.system() == "Windows":

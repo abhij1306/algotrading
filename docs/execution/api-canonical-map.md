@@ -32,6 +32,11 @@ This file defines the canonical endpoint surface to be preserved during PRD v2 P
 - `POST /api/backtest/run`
 - `GET /api/backtest/result/{job_id}`
 
+## Data Snapshot (Phase-1 Pipeline)
+- `GET /api/data/snapshot/stock`
+- `GET /api/data/snapshot/universe`
+- `GET /api/data/snapshot/status`
+
 ## Deviation Policy
 - Any endpoint outside this surface is considered legacy unless explicitly justified in `decision-log.md`.
 - Legacy paths may remain temporarily only if required by existing UI during migration slices.

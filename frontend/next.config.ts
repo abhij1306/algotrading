@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
 import path from "path";
 
+const allowedDevOrigins = Array.from({ length: 51 }, (_, index) => 3000 + index).flatMap((port) => [
+  `http://127.0.0.1:${port}`,
+  `http://localhost:${port}`,
+]);
+
 const nextConfig: NextConfig = {
+  allowedDevOrigins,
   images: {
     unoptimized: true,
   },

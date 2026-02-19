@@ -1,0 +1,134 @@
+{
+  "generated_at_utc": "2026-02-19T16:44:35.476231+00:00",
+  "phase_start": "2025-01-01",
+  "asof": "2026-02-19",
+  "entries": [
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_13022026.csv",
+      "size_bytes": 351817,
+      "sha256": "cfea76e512e44d6f61a33bf0f018243289a316c4de7efdf3aa8e3fb247f09642",
+      "modified_at_utc": "2026-02-13T12:58:40.626698+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_17022026.csv",
+      "size_bytes": 351780,
+      "sha256": "ed336d940992aaac01369512b82e979f6ef2afc60a724a93b61e2362989abb8a",
+      "modified_at_utc": "2026-02-18T04:14:28.883289+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_18022026.csv",
+      "size_bytes": 354490,
+      "sha256": "7e90742c866dcf83c2f4b65a2d8f48a6a22e572f7ae9ab531208d7d2e8f13655",
+      "modified_at_utc": "2026-02-19T05:07:40.435251+00:00"
+    },
+    {
+      "category": "corporate_actions",
+      "relative_path": "01_sources/nse_corporate_actions/CF-CA-equities-01-01-2016-to-19-02-2026.csv",
+      "size_bytes": 2902310,
+      "sha256": "9e3f3b46a1fa04da13b4695c2703a7ae617344d16485d20007d6ef39228c8f06",
+      "modified_at_utc": "2026-02-19T09:42:49.930446+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataApr2025/NIFTY_50_Apr2025.pdf",
+      "size_bytes": 133576,
+      "sha256": "517c4b9371976d4595f8e0f6c525d358b4d5032f5ed51f065a2a0791c0173003",
+      "modified_at_utc": "2026-02-11T14:38:04.767586+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataAug2025/NIFTY_50_Aug2025.pdf",
+      "size_bytes": 133580,
+      "sha256": "530d3a03a1e5127aac4d611c8c30616972eaa8ab02473c08d31c64a77da9eed6",
+      "modified_at_utc": "2026-02-11T14:37:40.766357+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataDec2025/NIFTY_50_Dec2025.pdf",
+      "size_bytes": 133725,
+      "sha256": "03e76f777a6120a1d2d2a636243a5d58ac86087dfffc2ef7661c0ace27948376",
+      "modified_at_utc": "2026-02-11T14:37:13.227592+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2025/NIFTY_50_Feb2025.pdf",
+      "size_bytes": 133577,
+      "sha256": "c10f2919bf94b3ffeef7718be68d624ae5ab9daaa1c5113a6902ca8f2eed2037",
+      "modified_at_utc": "2026-02-11T14:38:16.595285+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataJan2025/NIFTY_50_Jan2025.pdf",
+      "size_bytes": 133724,
+      "sha256": "043197ff8f3e4a2144ecfcf78369bb573cb41bc4df5fbd5bfed1fd9129f064a8",
+      "modified_at_utc": "2026-02-11T14:38:23.576087+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataJan2026/NIFTY_50_Jan2026.pdf",
+      "size_bytes": 133737,
+      "sha256": "149a49301c0b117b4c67168a74d825b3feaffced494ccba47d95e92e7beaeeda",
+      "modified_at_utc": "2026-02-11T12:20:28.652500+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataJul2025/NIFTY_50_Jul2025.pdf",
+      "size_bytes": 133578,
+      "sha256": "41ca1e29207a22c7671b41570420903b100634bc1e7761ba405f9c7136666a2e",
+      "modified_at_utc": "2026-02-11T14:37:46.898656+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataJun2025/NIFTY_50_Jun2025.pdf",
+      "size_bytes": 133592,
+      "sha256": "9ac94863fac1fd97e5bdcd906e0dc903f13dda76517a350ebc460e5e49b1d9af",
+      "modified_at_utc": "2026-02-11T14:37:53.485327+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataMar2025/NIFTY_50_Mar2025.pdf",
+      "size_bytes": 133597,
+      "sha256": "f7bb86d91eda8b35824fa9573c5cab8bf854a2ec777cd30907da4577921666d2",
+      "modified_at_utc": "2026-02-11T14:38:10.608066+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataMay2025/NIFTY_50_May2025.pdf",
+      "size_bytes": 133585,
+      "sha256": "b046a04718befd52eed6b06fe863ddffa5ef396f83640d326308ac9b85002a41",
+      "modified_at_utc": "2026-02-11T14:37:59.249300+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataNov2025/NIFTY_50_Nov2025.pdf",
+      "size_bytes": 133596,
+      "sha256": "d987b326c8c7c8d80b922f6a44f48fc75803309587c6089b7bacbbe8442a0325",
+      "modified_at_utc": "2026-02-11T14:37:20.707010+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataOct2025/NIFTY_50_Oct2025.pdf",
+      "size_bytes": 133715,
+      "sha256": "d8abbaccc179ce1a352512ec940e300caf0ef31eae88803f9f2791d104a90a5d",
+      "modified_at_utc": "2026-02-11T14:37:27.637699+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataSep2025/NIFTY_50_Sep2025.pdf",
+      "size_bytes": 133590,
+      "sha256": "45584aef5366e89dfcb5106ae66e83ddb1c0032319c5a0d0afd17cfba01aed24",
+      "modified_at_utc": "2026-02-11T14:37:34.306586+00:00"
+    }
+  ],
+  "summary": {
+    "copied_counts": {
+      "bhavcopy": 0,
+      "corporate_actions": 0,
+      "index_weights": 0
+    },
+    "total_entries": 17
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "generated_at_utc": "2026-02-19T16:44:35.723957+00:00",
+  "run_id": "phase1-20260219164435-217b958d",
+  "anomalies": [
+    {
+      "month": "2026-02",
+      "type": "missing_month",
+      "message": "No source available for month"
+    }
+  ]
+}

@@ -26,6 +26,7 @@ Rebuild SmartTrader to align strictly with `SMARTTRADER_PRD_v2.md`, using vertic
 - Decision log: `docs/execution/decision-log.md`
 - Risk register: `docs/execution/risk-register.md`
 - Baseline audit: `docs/execution/phase1-baseline-audit.md`
+- Data operations playbook: `docs/DATABASE_MANAGEMENT_PLAYBOOK.md`
 - Work tracker: `todos/`
 
 ## Slice Map
@@ -61,3 +62,16 @@ Rebuild SmartTrader to align strictly with `SMARTTRADER_PRD_v2.md`, using vertic
 - `T3` complete
 - `B1` ready
 - `B2-B3` pending
+
+## Phase-1 Data Consolidation (Implemented 2026-02-19)
+- Canonical data root created: `data_system/`
+- Canonical orchestrator implemented: `data_platform/pipelines/phase1_build.py`
+- Canonical metadata artifacts in place:
+  - `data_system/05_metadata/phase1/source_manifest.json`
+  - `data_system/05_metadata/phase1/checksums.json`
+  - `data_system/05_metadata/phase1/validation_report.json`
+  - `data_system/05_metadata/phase1/run_log.jsonl`
+- Backend snapshot APIs added:
+  - `GET /api/data/snapshot/stock`
+  - `GET /api/data/snapshot/universe`
+  - `GET /api/data/snapshot/status`

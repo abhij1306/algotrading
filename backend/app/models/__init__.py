@@ -13,6 +13,7 @@ from .backtest_v2 import (
     SavedBacktestConfig,
 )
 from .company import Company
+from .data_snapshot import DatasetArtifact, DatasetRun, SnapshotIndexStock, SnapshotIndexUniverse
 from .fundamental import FinancialStatement, QuarterlyResult
 from .live_order import LiveOrder
 from .live_position import LivePosition
@@ -79,6 +80,12 @@ __all__ = [
     # Logging
     'DataUpdateLog',
     'AllocatorDecision',
+
+    # Phase-1 Data Snapshot
+    'DatasetRun',
+    'DatasetArtifact',
+    'SnapshotIndexStock',
+    'SnapshotIndexUniverse',
 
     # Symbol & Universe
     'SymbolHistory',

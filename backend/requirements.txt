@@ -1,30 +1,26 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.128.6
+uvicorn[standard]==0.40.0
 requests==2.31.0
-pandas==2.2.2
-# numpy pinned to 1.26.4 for scipy 1.11.4 compatibility (scipy 1.11.x does not support numpy 2.x)
-# To upgrade to numpy 2.x, also upgrade scipy to >=1.14.0 and verify pandas-ta compatibility
-# Security: numpy 1.26.4 has no known critical CVEs (verified 2026-02)
-numpy==1.26.4
+pandas==3.0.0
+numpy==2.4.2
+scipy==1.17.0
+pyarrow==22.0.0
+pypdf==5.2.0
+python-dotenv==1.2.1
+pydantic==2.12.5
+sqlalchemy==2.0.46
+psycopg2-binary==2.9.11
+python-multipart==0.0.22
+pyyaml==6.0.3
+pytz==2025.2
+httpx==0.28.1
 
-python-dotenv==1.0.0
-pydantic==2.5.0
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-scipy==1.11.4
-python-multipart==0.0.6
-pyyaml==6.0.1
-pytz==2024.1
+# Market data and analysis
+yfinance==1.1.0
+pandas-ta-openbb==0.4.23
+beautifulsoup4==4.14.3
+psutil==7.2.2
 
-httpx==0.25.0
-fyers-apiv3==3.0.1
-
-# Market Data & Analysis
-yfinance==0.2.40
-pandas-ta==0.4.70
-beautifulsoup4==4.12.3
-psutil==5.9.8
-
-# Code Quality Tools
-ruff==0.1.9
-pre-commit==3.6.0
+# Code quality tools
+ruff==0.13.0
+pre-commit==4.5.0

@@ -1,0 +1,23 @@
+{
+  "generated_at_utc": "2026-02-19T16:44:35.637299+00:00",
+  "run_id": "phase1-20260219164435-217b958d",
+  "anomalies": [
+    {
+      "month": "2025-01",
+      "type": "constituent_count",
+      "message": "Expected 50 constituents, found 51",
+      "source": "repo_raw_csv_primary"
+    },
+    {
+      "month": "2026-01",
+      "type": "weight_sum",
+      "message": "Weight sum 97.4900 deviates from 100",
+      "source": "repo_raw_csv_primary"
+    },
+    {
+      "month": "2026-02",
+      "type": "missing_month",
+      "message": "No source available for month"
+    }
+  ]
+}

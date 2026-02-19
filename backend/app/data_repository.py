@@ -51,7 +51,7 @@ class DataRepository:
 
     # ==================== HISTORICAL PRICE OPERATIONS ====================
 
-    def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = 'fyers'):
+    def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = 'bhavcopy'):
         """Save historical prices from DataFrame and calculate technical indicators"""
         try:
             company = self.get_or_create_company(symbol)
@@ -289,15 +289,7 @@ class DataRepository:
         if df is not None and not df.empty:
             return df
 
-        # Fallback to NSE Parquet files
-        try:
-            from .nse_data_reader import NSEDataReader
-            reader = NSEDataReader()
-            nse_df = reader.get_historical_data(symbol, start_date, end_date)
-            return nse_df
-        except Exception as e:
-            print(f"NSE fallback failed for {symbol}: {e}")
-            return None
+        return None
 
     def get_latest_price(self, symbol: str) -> float | None:
         """Get latest closing price for a symbol"""
@@ -364,15 +356,15 @@ class DataRepository:
             # Normalize symbol for CSV lookup
             normalized_symbol = symbol.upper().replace(' ', '').replace('-', '')
 
-            if 'NIFTY' in normalized_symbol and '50' in normalized_symbol and timeframe == 5:
-                # Use absolute path to ensure reliability
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # app/.. -> backend
-                project_root = os.path.dirname(base_dir) # backend/.. -> root
-                csv_path = os.path.join(project_root, 'nse_data', 'raw', 'intraday', 'NIFTY50_5min_complete.csv')
-            elif 'BANKNIFTY' in normalized_symbol and timeframe == 5:
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                project_root = os.path.dirname(base_dir)
-                csv_path = os.path.join(project_root, 'nse_data', 'raw', 'intraday', 'BANKNIFTY_5min_complete.csv')
+            if timeframe == 5:
+                # Canonical intraday fallback source under data_system.
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # app/.. -> backend
+                project_root = os.path.dirname(base_dir)  # backend/.. -> root
+                intraday_root = os.path.join(project_root, 'data_system', '01_sources', 'nse_intraday')
+                if 'NIFTY' in normalized_symbol and '50' in normalized_symbol:
+                    csv_path = os.path.join(intraday_root, 'NIFTY50_5min_complete.csv')
+                elif 'BANKNIFTY' in normalized_symbol:
+                    csv_path = os.path.join(intraday_root, 'BANKNIFTY_5min_complete.csv')
 
             if csv_path and os.path.exists(csv_path):
                 print(f"[DATA] Reading intraday data from CSV: {csv_path}")
