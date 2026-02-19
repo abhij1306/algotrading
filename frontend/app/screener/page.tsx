@@ -1,0 +1,625 @@
+'use client';
+
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Search,
+  TrendingUp,
+  TrendingDown,
+  Loader2,
+  Radio,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+} from 'lucide-react';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { screenerAPI, apiClient } from '@/lib/api-client';
+import { debounce } from '@/lib/debounce';
+import { Button } from '@/components/ui';
+import { formatPercentage } from '@/lib/utils';
+
+interface ScreenerResult {
+  symbol: string;
+  name: string;
+  sector: string;
+  marketCap: number;
+  change: number;
+  price: number;
+  volume: number;
+  rsi: number;
+  macd: number;
+  adx: number;
+}
+
+interface IndexItem {
+  id: string;
+  name: string;
+  count: number;
+}
+
+interface TickData {
+  symbol?: string;
+  ltp?: number;
+  change_pct?: number;
+  volume?: number;
+}
+
+type SortField = 'symbol' | 'price' | 'change' | 'volume' | 'marketCap' | 'rsi' | 'macd' | 'adx';
+type SortDirection = 'asc' | 'desc';
+type FlashDirection = 'up' | 'down';
+type FlashField = 'price' | 'change' | 'volume';
+
+const RPP_OPTIONS = [25, 50, 100];
+const TICK_FLUSH_MS = 200;
+const FALLBACK_POLL_MS = 3000;
+const WS_STALE_MS = 5000;
+const FLASH_DURATION_MS = 450;
+
+function toNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function formatVolume(value: number): string {
+  if (value >= 10000000) return `${(value / 10000000).toFixed(1)}Cr`;
+  if (value >= 100000) return `${(value / 100000).toFixed(1)}L`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return Math.round(value).toLocaleString('en-IN');
+}
+
+function formatMarketCap(value: number): string {
+  if (value >= 100000) return `${(value / 100000).toFixed(0)}L Cr`;
+  if (value >= 1000) return `${(value / 1000).toFixed(0)}K Cr`;
+  return `${Math.round(value)} Cr`;
+}
+
+const StockRow = memo(function StockRow({
+  stock,
+  onClick,
+  flashClassByField,
+}: {
+  stock: ScreenerResult;
+  onClick: () => void;
+  flashClassByField: Partial<Record<FlashField, string>>;
+}) {
+  const isUp = toNumber(stock.change) >= 0;
+  const rsi = toNumber(stock.rsi);
+  const macd = toNumber(stock.macd);
+
+  return (
+    <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors border-b border-border">
+      <td className="py-2 pl-4">
+        <div className="font-medium">{stock.symbol}</div>
+        <div className="text-xs text-foreground-muted truncate max-w-[120px]">{stock.name}</div>
+      </td>
+      <td className="py-2">
+        <span className="text-xs px-1.5 py-0.5 rounded bg-background-tertiary">{stock.sector}</span>
+      </td>
+      <td className="py-2 text-right tabular-nums">
+        <span className={flashClassByField.price ?? ''}>{toNumber(stock.price).toFixed(2)}</span>
+      </td>
+      <td className={`py-2 text-right tabular-nums ${isUp ? 'text-profit' : 'text-loss'}`}>
+        <div className="flex items-center justify-end gap-1">
+          {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          <span className={flashClassByField.change ?? ''}>{formatPercentage(toNumber(stock.change))}</span>
+        </div>
+      </td>
+      <td className="py-2 text-right tabular-nums text-foreground-muted">
+        <span className={flashClassByField.volume ?? ''}>{formatVolume(toNumber(stock.volume))}</span>
+      </td>
+      <td className="py-2 text-right tabular-nums text-foreground-muted">{formatMarketCap(toNumber(stock.marketCap))}</td>
+      <td className={`py-2 text-right tabular-nums ${rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : ''}`}>
+        {rsi > 0 ? rsi.toFixed(1) : '--'}
+      </td>
+      <td className={`py-2 pr-4 text-right tabular-nums ${macd > 0 ? 'text-profit' : macd < 0 ? 'text-loss' : 'text-foreground-muted'}`}>
+        {macd !== 0 ? macd.toFixed(2) : '--'}
+      </td>
+    </tr>
+  );
+});
+
+export default function ScreenerPage() {
+  const router = useRouter();
+  const { isConnected, sendMessage, registerCallback } = useWebSocket({ skipStateUpdates: true });
+
+  const [indices, setIndices] = useState<IndexItem[]>([]);
+  const [selectedUniverse, setSelectedUniverse] = useState('NIFTY50');
+  const [indicesError, setIndicesError] = useState<string | null>(null);
+  const [isIndicesLoading, setIsIndicesLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+
+  const [results, setResults] = useState<ScreenerResult[]>([]);
+  const [totalResults, setTotalResults] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [sortField, setSortField] = useState<SortField>('symbol');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  const requestIdRef = useRef(0);
+  const subscribedSymbolsKeyRef = useRef('');
+  const pendingTicksRef = useRef<Record<string, TickData>>({});
+  const lastTickAtRef = useRef(0);
+  const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [flashByCell, setFlashByCell] = useState<Record<string, FlashDirection>>({});
+
+  const debouncedSetQuery = useMemo(
+    () =>
+      debounce((value: unknown) => {
+        const nextQuery = String(value ?? '');
+        setDebouncedQuery(nextQuery);
+        setCurrentPage(1);
+      }, 300),
+    []
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadIndices() {
+      setIsIndicesLoading(true);
+      setIndicesError(null);
+      const response = await screenerAPI.getIndices();
+      const indicesPayload = (response.data ?? {}) as { indices?: Array<{ id: string; name: string; count: number }> };
+      if (cancelled) return;
+
+      if (response.error || !indicesPayload.indices) {
+        setIndices([]);
+        setIndicesError(response.error?.message || 'Failed to load universes');
+        setIsIndicesLoading(false);
+        return;
+      }
+
+      const list = indicesPayload.indices.map((item) => ({
+        id: item.id,
+        name: item.name,
+        count: item.count,
+      }));
+
+      list.sort((a, b) => {
+        if (a.id === 'NIFTY50') return -1;
+        if (b.id === 'NIFTY50') return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      setIndices(list);
+      if (list.length > 0) {
+        setSelectedUniverse((current) => (list.some((index) => index.id === current) ? current : list[0].id));
+      }
+      setIsIndicesLoading(false);
+    }
+
+    void loadIndices();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const requestId = ++requestIdRef.current;
+    let cancelled = false;
+
+    async function loadResults() {
+      if (!selectedUniverse) {
+        setResults([]);
+        setTotalResults(0);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      const params: Record<string, string> = {
+        universe: selectedUniverse,
+        page: String(currentPage),
+        limit: String(itemsPerPage),
+        sort_by: sortField,
+        sort_order: sortDirection,
+      };
+
+      if (debouncedQuery) params.query = debouncedQuery;
+
+      const response = await screenerAPI.getStocks(params);
+      const screenerPayload = (response.data ?? {}) as { results?: ScreenerResult[]; total?: number };
+      if (cancelled || requestId !== requestIdRef.current) return;
+
+      if (response.error) {
+        setResults([]);
+        setTotalResults(0);
+        setError(response.error?.message || 'Failed to load screener results');
+        setIsLoading(false);
+        return;
+      }
+
+      setResults(screenerPayload.results || []);
+      setTotalResults(screenerPayload.total || 0);
+      setIsLoading(false);
+    }
+
+    void loadResults();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedUniverse, currentPage, itemsPerPage, debouncedQuery, sortField, sortDirection]);
+
+  const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const visibleSymbolsKey = useMemo(() => {
+    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort();
+    return symbols.join(',');
+  }, [results]);
+
+  useEffect(() => {
+    if (!isConnected) {
+      subscribedSymbolsKeyRef.current = '';
+    }
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!isConnected || !visibleSymbolsKey) return;
+    if (visibleSymbolsKey === subscribedSymbolsKeyRef.current) return;
+
+    if (subscribedSymbolsKeyRef.current) {
+      sendMessage({ action: 'unsubscribe', symbols: subscribedSymbolsKeyRef.current.split(',') });
+    }
+
+    sendMessage({ action: 'subscribe', symbols: visibleSymbolsKey.split(',') });
+    subscribedSymbolsKeyRef.current = visibleSymbolsKey;
+  }, [isConnected, visibleSymbolsKey, sendMessage]);
+
+  useEffect(() => {
+    return () => {
+      if (!subscribedSymbolsKeyRef.current) return;
+      sendMessage({ action: 'unsubscribe', symbols: subscribedSymbolsKeyRef.current.split(',') });
+      subscribedSymbolsKeyRef.current = '';
+    };
+  }, [sendMessage]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(flashTimeoutsRef.current).forEach((timer) => clearTimeout(timer));
+      flashTimeoutsRef.current = {};
+    };
+  }, []);
+
+  const applyFlashes = useCallback((flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>) => {
+    if (flashes.length === 0) return;
+
+    const entries: Record<string, FlashDirection> = {};
+    for (const flash of flashes) {
+      const key = `${flash.symbol}:${flash.field}`;
+      entries[key] = flash.direction;
+    }
+
+    // Remove active flash keys first, then re-apply in next tick so CSS animation restarts.
+    setFlashByCell((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(entries)) {
+        delete next[key];
+      }
+      return next;
+    });
+    setTimeout(() => {
+      setFlashByCell((prev) => ({ ...prev, ...entries }));
+    }, 0);
+
+    for (const key of Object.keys(entries)) {
+      const existing = flashTimeoutsRef.current[key];
+      if (existing) clearTimeout(existing);
+
+      flashTimeoutsRef.current[key] = setTimeout(() => {
+        setFlashByCell((prev) => {
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        delete flashTimeoutsRef.current[key];
+      }, FLASH_DURATION_MS);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unregister = registerCallback((message) => {
+      if (message?.type !== 'ticker' || !message.data) return;
+      const tick = message.data as TickData;
+      if (!tick.symbol) return;
+      pendingTicksRef.current[tick.symbol] = tick;
+      lastTickAtRef.current = Date.now();
+    });
+
+    return unregister;
+  }, [registerCallback]);
+
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      if (!visibleSymbolsKey) return;
+
+      const now = Date.now();
+      const wsStale = !lastTickAtRef.current || (now - lastTickAtRef.current > WS_STALE_MS);
+      if (!wsStale) return;
+
+      try {
+        const response = await apiClient.get(`/api/market/quotes/live?symbols=${encodeURIComponent(visibleSymbolsKey)}`);
+        const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
+        for (const [symbol, quote] of Object.entries(quoteMap)) {
+          const ltp = typeof quote.ltp === 'number' ? quote.ltp : undefined;
+          const changePct =
+            typeof quote.change_pct === 'number'
+              ? quote.change_pct
+              : (typeof quote.change === 'number' ? quote.change : undefined);
+          const volume = typeof quote.volume === 'number' ? quote.volume : undefined;
+
+          if (ltp === undefined && changePct === undefined && volume === undefined) continue;
+          pendingTicksRef.current[symbol] = {
+            symbol,
+            ltp,
+            change_pct: changePct,
+            volume,
+          };
+        }
+      } catch {
+        // Keep silent; websocket will continue trying and poll retries automatically.
+      }
+    }, FALLBACK_POLL_MS);
+
+    return () => clearInterval(poll);
+  }, [visibleSymbolsKey]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const pending = pendingTicksRef.current;
+      const symbols = Object.keys(pending);
+      if (symbols.length === 0) return;
+
+      pendingTicksRef.current = {};
+      const flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }> = [];
+      setResults((prev) => {
+        let changed = false;
+        const next = prev.map((row) => {
+          const tick = pending[row.symbol];
+          if (!tick) return row;
+
+          const price = tick.ltp ?? row.price;
+          const change = tick.change_pct ?? row.change;
+          const volume = tick.volume ?? row.volume;
+
+          if (price === row.price && change === row.change && volume === row.volume) {
+            return row;
+          }
+
+          if (price !== row.price) {
+            flashes.push({
+              symbol: row.symbol,
+              field: 'price',
+              direction: price > row.price ? 'up' : 'down',
+            });
+          }
+          if (change !== row.change) {
+            flashes.push({
+              symbol: row.symbol,
+              field: 'change',
+              direction: change > row.change ? 'up' : 'down',
+            });
+          }
+          if (volume !== row.volume) {
+            flashes.push({
+              symbol: row.symbol,
+              field: 'volume',
+              direction: volume > row.volume ? 'up' : 'down',
+            });
+          }
+
+          changed = true;
+          return { ...row, price, change, volume };
+        });
+
+        return changed ? next : prev;
+      });
+      applyFlashes(flashes);
+    }, TICK_FLUSH_MS);
+
+    return () => clearInterval(timer);
+  }, [applyFlashes]);
+
+  const handleSort = useCallback(
+    (field: SortField) => {
+      setCurrentPage(1);
+      if (sortField === field) {
+        setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      } else {
+        setSortField(field);
+        setSortDirection(field === 'symbol' ? 'asc' : 'desc');
+      }
+    },
+    [sortField]
+  );
+
+  const SortIcon = ({ field }: { field: SortField }) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 opacity-30" />;
+    return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
+  };
+
+  return (
+    <div className="flex flex-col h-screen">
+      <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
+        <div className="flex items-center gap-3">
+          <h1 className="text-base font-semibold">Stock Screener</h1>
+          {isConnected && (
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-profit-bg text-profit">
+              <Radio className="w-3 h-3" /> LIVE
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-background">
+            <Search className="w-4 h-4 text-foreground-muted" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                debouncedSetQuery(event.target.value);
+              }}
+              placeholder="Search symbol..."
+              className="bg-transparent outline-none w-32 text-sm"
+            />
+          </div>
+
+          <select
+            value={selectedUniverse}
+            onChange={(event) => {
+              setSelectedUniverse(event.target.value);
+              setCurrentPage(1);
+            }}
+            disabled={isIndicesLoading || indices.length === 0}
+            className="px-3 py-1.5 rounded text-sm border border-border bg-background outline-none"
+          >
+            {isIndicesLoading && <option value="">Loading universes...</option>}
+            {indices.map((index) => (
+              <option key={index.id} value={index.id}>
+                {index.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={itemsPerPage}
+            onChange={(event) => {
+              setItemsPerPage(Number(event.target.value));
+              setCurrentPage(1);
+            }}
+            className="px-2 py-1.5 rounded text-sm border border-border bg-background outline-none"
+          >
+            {RPP_OPTIONS.map((rpp) => (
+              <option key={rpp} value={rpp}>
+                {rpp}/page
+              </option>
+            ))}
+          </select>
+
+          <span className="text-sm text-foreground-muted">
+            {isIndicesLoading
+              ? 'Loading universes...'
+              : isLoading
+                ? <Loader2 className="w-4 h-4 animate-spin inline" />
+                : `${totalResults} stocks`}
+          </span>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-auto">
+        {indicesError && <div className="px-4 py-2 text-sm text-loss border-b border-border">{indicesError}</div>}
+        {error && <div className="px-4 py-2 text-sm text-loss border-b border-border">{error}</div>}
+
+        <table className="w-full">
+          <thead className="sticky top-0 bg-surface border-b border-border text-xs">
+            <tr>
+              <th className="py-2 pl-4 text-left font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('symbol')}>
+                <div className="flex items-center gap-1">
+                  Symbol <SortIcon field="symbol" />
+                </div>
+              </th>
+              <th className="py-2 text-left font-normal">Sector</th>
+              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('price')}>
+                <div className="flex items-center justify-end gap-1">
+                  Price <SortIcon field="price" />
+                </div>
+              </th>
+              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('change')}>
+                <div className="flex items-center justify-end gap-1">
+                  Change <SortIcon field="change" />
+                </div>
+              </th>
+              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('volume')}>
+                <div className="flex items-center justify-end gap-1">
+                  Volume <SortIcon field="volume" />
+                </div>
+              </th>
+              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('marketCap')}>
+                <div className="flex items-center justify-end gap-1">
+                  Mkt Cap <SortIcon field="marketCap" />
+                </div>
+              </th>
+              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('rsi')}>
+                <div className="flex items-center justify-end gap-1">
+                  RSI <SortIcon field="rsi" />
+                </div>
+              </th>
+              <th className="py-2 pr-4 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('macd')}>
+                <div className="flex items-center justify-end gap-1">
+                  MACD <SortIcon field="macd" />
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="text-sm">
+            {results.map((stock) => {
+              const priceKey = `${stock.symbol}:price`;
+              const changeKey = `${stock.symbol}:change`;
+              const volumeKey = `${stock.symbol}:volume`;
+              const flashClassByField: Partial<Record<FlashField, string>> = {
+                price: flashByCell[priceKey] ? `screener-flash-${flashByCell[priceKey]}` : '',
+                change: flashByCell[changeKey] ? `screener-flash-${flashByCell[changeKey]}` : '',
+                volume: flashByCell[volumeKey] ? `screener-flash-${flashByCell[volumeKey]}` : '',
+              };
+
+              return (
+                <StockRow
+                  key={stock.symbol}
+                  stock={stock}
+                  flashClassByField={flashClassByField}
+                  onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+                />
+              );
+            })}
+          </tbody>
+        </table>
+
+        {results.length === 0 && !isLoading && (
+          <div className="p-8 text-center text-foreground-muted">
+            {indices.length === 0
+              ? 'No universes available'
+              : error
+                ? 'Failed to load screener data'
+                : 'No results found'}
+          </div>
+        )}
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-surface">
+          <span className="text-sm text-foreground-muted">
+            Showing {(currentPage - 1) * itemsPerPage + 1}-{Math.min(currentPage * itemsPerPage, totalResults)} of {totalResults}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1} variant="secondary" size="sm">
+              Previous
+            </Button>
+            <span className="text-sm px-2">
+              Page {currentPage} of {totalPages}
+            </span>
+            <Button
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+              variant="secondary"
+              size="sm"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

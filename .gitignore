@@ -1,0 +1,290 @@
+# AlgoTrading - Production .gitignore
+# Excludes market data, credentials, and build artifacts
+
+# ============================================
+# Market Data & Databases (NEVER COMMIT)
+# ============================================
+
+# NSE Data Pipeline
+nse_data/raw/
+nse_data/processed/
+nse_data/backups/
+
+# Historical Data
+data/
+historical_data/
+
+# All Data Files
+*.parquet
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+
+# Compressed Archives
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ============================================
+# Credentials & Environment (NEVER COMMIT)
+# ============================================
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# API Keys & Secrets
+secrets/
+credentials/
+*.key
+*.pem
+*.crt
+
+# Fyers Config & Tokens
+fyers/config/access_token.json
+fyers/config/keys.env
+fyers/config/refresh_token.json
+
+# Build Results (Standalone)
+frontend/dist/
+frontend/out/
+backend/dist/
+backend/build/
+*.exe
+
+# Reference Data & Repositories
+reference/
+openalgo/
+*.tar
+*.gz
+
+# ============================================
+# Python
+# ============================================
+
+# Log files
+*.log
+backend/fyersApi.log
+backend/fyersRequests.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+
+# Environment
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Data cache
+backend/cache/
+data/_temp/ggs/
+.eggs/
+lib/
+!frontend/lib/
+lib64/
+parts/
+sdist/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+
+# Distribution / packaging
+build/
+develop-eggs/
+downloads/
+eggs/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+!**/backend_build.spec
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# pyenv
+.python-version
+
+# ============================================
+# Node.js / Frontend
+# ============================================
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel
+
+# Production build
+frontend/build/
+frontend/dist/
+
+# ============================================
+# IDEs & Editors
+# ============================================
+
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============================================
+# Operating System
+# ============================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ============================================
+# Logs & Temporary Files
+# ============================================
+
+# Application Logs
+logs/
+*.log
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Health check reports
+health_check_report.json
+data_management_audit.json
+
+# ============================================
+# Project-Specific
+# ============================================
+
+# Backtest Results
+backtest_results/
+*.pkl
+*.pickle
+
+# Screenshots & Recordings (if large)
+screenshots/
+recordings/
+
+# Local configuration overrides
+config.local.json
+settings.local.json
+
+# ============================================
+# Keep These Files (Exceptions)
+# ============================================
+
+# Keep metadata files
+!nse_data/metadata/
+!nse_data/metadata/*.csv
+
+# Keep README files
+!**/README.md
+
+# Keep example configs
+!.env.example
+!config.example.json
+
+# Keep .gitkeep files
+!.gitkeep
+
+# ============================================
+# Prevent Future Contamination
+# ============================================
+
+# Temp & Debug Scripts (NEVER COMMIT)
+temp_*.py
+debug_*.py
+# test_*.py - REMOVED to allow tests
+!backend/tests/test_*.py  # Allow test files in tests directory
+!backend/scripts/*.py      # Allow all scripts
+!backend/utils/*.py        # Allow utils
+
+
+# Archive Folders
+archive/
+old/
+backup/
+deprecated/

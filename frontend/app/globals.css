@@ -1,0 +1,532 @@
+@import "tailwindcss";
+
+/*
+  ALGO TRADING DESIGN SYSTEM
+  Optimized for Information Density & Financial Data
+*/
+
+:root {
+  /* LIGHT MODE - Unified Design Tokens */
+
+  /* Backgrounds */
+  --color-background: #ffffff;
+  --color-background-secondary: #f8fafc;
+  --color-background-tertiary: #f1f5f9;
+  --color-surface: #ffffff;
+  --color-elevated: #ffffff;
+
+  /* Foregrounds */
+  --color-foreground: rgba(15, 23, 42, 0.8);
+  --color-foreground-secondary: #334155;
+  --color-foreground-tertiary: #64748b;
+  --color-foreground-muted: #94a3b8;
+
+  /* Borders */
+  --color-border: #e2e8f0;
+  --color-border-subtle: #f1f5f9;
+  --color-border-focus: #3b82f6;
+
+  /* Primary */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-light: #eff6ff;
+  --color-primary-foreground: #ffffff;
+
+  /* Semantic Financial Colors */
+  --color-profit: #15803d;
+  --color-profit-bg: #dcfce7;
+  --color-loss: #b91c1c;
+  --color-loss-bg: #fee2e2;
+  --color-warning: #b45309;
+  --color-warning-bg: #fef3c7;
+
+  /* Typography */
+  --font-sans: var(--font-sans), "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-mono), "DM Mono", "Consolas", monospace;
+
+  /* Font Sizes */
+  --text-xxs: 10px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  /* Line Heights */
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  /* Font Weights */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* Spacing */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+  --spacing-10: 40px;
+  --spacing-12: 48px;
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+.dark {
+  /* DARK MODE - Linear-Inspired Professional Theme */
+
+  /* Backgrounds - Deep blacks with subtle gradients */
+  --color-background: #0a0a0a;
+  --color-background-secondary: #141414;
+  --color-background-tertiary: #1c1c1c;
+  --color-surface: #141414;
+  --color-elevated: #1f1f1f;
+
+  /* Foregrounds - Refined grays */
+  --color-foreground: rgba(250, 250, 250, 0.8);
+  --color-foreground-secondary: #a0a0a0;
+  --color-foreground-tertiary: #8a8a8a;
+  --color-foreground-muted: #444444;
+
+  /* Borders - Subtle separation */
+  --color-border: #2a2a2a;
+  --color-border-subtle: #1f1f1f;
+  --color-border-focus: #3b82f6;
+
+  /* Primary - Vibrant blue */
+  --color-primary: #60a5fa;
+  --color-primary-hover: #3b82f6;
+  --color-primary-light: rgba(59, 130, 246, 0.15);
+  --color-primary-foreground: #0a0a0a;
+
+  /* Semantic Financial Colors - Vibrant for dark backgrounds */
+  --color-profit: #22c55e;
+  --color-profit-bg: rgba(34, 197, 94, 0.15);
+  --color-loss: #ef4444;
+  --color-loss-bg: rgba(239, 68, 68, 0.15);
+  --color-warning: #f59e0b;
+  --color-warning-bg: rgba(245, 158, 11, 0.15);
+
+  /* Shadows - Deeper for dark mode */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+}
+
+@theme {
+  /* Map unified tokens to Tailwind classes */
+
+  /* Colors */
+  --color-background: var(--color-background);
+  --color-background-secondary: var(--color-background-secondary);
+  --color-background-tertiary: var(--color-background-tertiary);
+  --color-surface: var(--color-surface);
+  --color-elevated: var(--color-elevated);
+
+  --color-foreground: var(--color-foreground);
+  --color-foreground-secondary: var(--color-foreground-secondary);
+  --color-foreground-tertiary: var(--color-foreground-tertiary);
+  --color-foreground-muted: var(--color-foreground-muted);
+
+  --color-border: var(--color-border);
+  --color-border-subtle: var(--color-border-subtle);
+
+  --color-primary: var(--color-primary);
+  --color-primary-hover: var(--color-primary-hover);
+  --color-primary-light: var(--color-primary-light);
+  --color-primary-fg: var(--color-primary-foreground);
+
+  --color-profit: var(--color-profit);
+  --color-profit-bg: var(--color-profit-bg);
+  --color-loss: var(--color-loss);
+  --color-loss-bg: var(--color-loss-bg);
+  --color-warning: var(--color-warning);
+  --color-warning-bg: var(--color-warning-bg);
+
+  /* Typography */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Spacing */
+  --spacing-1: var(--spacing-1);
+  --spacing-2: var(--spacing-2);
+  --spacing-3: var(--spacing-3);
+  --spacing-4: var(--spacing-4);
+  --spacing-5: var(--spacing-5);
+  --spacing-6: var(--spacing-6);
+  --spacing-8: var(--spacing-8);
+  --spacing-10: var(--spacing-10);
+  --spacing-12: var(--spacing-12);
+
+  /* Radius */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-full: var(--radius-full);
+
+  /* Shadows */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    /* Enable OpenType features for better typography */
+    font-feature-settings:
+      "cv02",  /* Alternate characters */
+      "cv03",  /* Alternate characters */
+      "cv04",  /* Alternate characters */
+      "cv11",  /* Alternate characters */
+      "tnum",  /* Tabular numbers */
+      "case",  /* Case-sensitive forms */
+      "liga",  /* Standard ligatures */
+      "calt";  /* Contextual alternates */
+    /* Smooth font rendering */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* Base typography */
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    font-weight: var(--font-normal);
+  }
+
+  /* Dense Headers */
+  h1,
+  .h1 {
+    @apply text-2xl font-bold tracking-tight text-foreground;
+  }
+  h2,
+  .h2 {
+    @apply text-xl font-bold tracking-tight text-foreground;
+  }
+  h3,
+  .h3 {
+    @apply text-lg font-semibold tracking-tight text-foreground;
+  }
+  h4,
+  .h4 {
+    @apply text-base font-semibold text-foreground;
+  }
+
+  /* Financial Data Text */
+  .mono-num {
+    font-family: var(--font-mono);
+    /* Enable tabular numbers for aligned columns */
+    font-variant-numeric: tabular-nums;
+    /* Tighter letter spacing for numbers */
+    letter-spacing: -0.02em;
+    /* Enable font features for better number display */
+    font-feature-settings:
+      "tnum",  /* Tabular numbers */
+      "zero",  /* Slashed zero */
+      "ss01",  /* Stylistic set 1 */
+      "liga";  /* Ligatures */
+    /* Smooth rendering */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  /* Layout Containers */
+  .layout-container {
+    @apply flex h-screen w-full bg-background overflow-hidden;
+  }
+
+  .main-content {
+    @apply flex-1 flex flex-col min-w-0 overflow-hidden relative;
+  }
+
+  .page-scroll {
+    @apply flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-4 space-y-4;
+  }
+
+  /* Cards */
+  .card {
+    @apply bg-surface border border-border rounded-lg shadow-md;
+  }
+
+  .card-header {
+    @apply px-4 py-3 border-b border-border flex items-center justify-between;
+  }
+
+  .card-body {
+    @apply p-4;
+  }
+
+  .card-compact {
+    @apply p-3;
+  }
+
+  /* Inputs */
+  .input-base {
+    @apply bg-background-secondary border border-border rounded-md px-3 py-1.5 text-sm
+    text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary
+    transition-colors duration-200;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200
+    disabled:opacity-50 disabled:pointer-events-none cursor-pointer;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-primary-fg hover:bg-primary-hover shadow-sm;
+  }
+
+  .btn-secondary {
+    @apply bg-background-secondary text-foreground hover:bg-background-tertiary border border-border;
+  }
+
+  .btn-ghost {
+    @apply text-foreground-secondary hover:bg-background-secondary hover:text-foreground;
+  }
+
+  .btn-sm {
+    @apply px-2.5 py-1 text-xs;
+  }
+
+  /* Data Tables */
+  .data-table {
+    @apply w-full text-left border-collapse text-xs;
+  }
+
+  .data-table th {
+    @apply bg-background-secondary text-foreground-tertiary font-semibold px-3 py-2 border-b border-border text-xs uppercase tracking-wider sticky top-0 z-10;
+  }
+
+  .data-table td {
+    @apply px-3 py-2 border-b border-border/50 text-foreground transition-colors;
+  }
+
+  .data-table tr:hover td {
+    @apply bg-background-secondary/50;
+  }
+
+  /* Badges */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide;
+  }
+
+  .badge-profit {
+    @apply bg-profit-bg text-profit;
+  }
+  .badge-loss {
+    @apply bg-loss-bg text-loss;
+  }
+  .badge-warning {
+    @apply bg-warning-bg text-warning;
+  }
+  .badge-neutral {
+    @apply bg-background-tertiary text-foreground-secondary;
+  }
+}
+
+@layer utilities {
+  /* Typography Scale Utilities */
+  .text-xxs {
+    font-size: var(--text-xxs);
+    line-height: 14px;
+  }
+
+  .text-xs {
+    font-size: var(--text-xs);
+    line-height: 16px;
+  }
+
+  .text-sm {
+    font-size: var(--text-sm);
+    line-height: 18px;
+  }
+
+  .text-base {
+    font-size: var(--text-base);
+    line-height: 22px;
+  }
+
+  .text-lg {
+    font-size: var(--text-lg);
+    line-height: 24px;
+  }
+
+  .text-xl {
+    font-size: var(--text-xl);
+    line-height: 28px;
+  }
+
+  .text-2xl {
+    font-size: var(--text-2xl);
+    line-height: 32px;
+  }
+
+  /* Font Family Utilities */
+  .font-sans {
+    font-family: var(--font-sans);
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Font Weight Utilities */
+  .font-normal {
+    font-weight: var(--font-normal);
+  }
+
+  .font-medium {
+    font-weight: var(--font-medium);
+  }
+
+  .font-semibold {
+    font-weight: var(--font-semibold);
+  }
+
+  .font-bold {
+    font-weight: var(--font-bold);
+  }
+
+  /* Line Height Utilities */
+  .leading-tight {
+    line-height: var(--leading-tight);
+  }
+
+  .leading-normal {
+    line-height: var(--leading-normal);
+  }
+
+  .leading-relaxed {
+    line-height: var(--leading-relaxed);
+  }
+
+  /* Scrollbar Styling */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full hover:bg-foreground-muted/50;
+  }
+
+  /* Animation Keyframes */
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes scaleIn {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes screenerGlowUp {
+    0% {
+      text-shadow: 0 0 0 rgba(34, 197, 94, 0);
+      transform: scale(1);
+    }
+    20% {
+      text-shadow: 0 0 10px rgba(34, 197, 94, 0.65);
+      transform: scale(1.03);
+    }
+    100% {
+      text-shadow: 0 0 0 rgba(34, 197, 94, 0);
+      transform: scale(1);
+    }
+  }
+
+  @keyframes screenerGlowDown {
+    0% {
+      text-shadow: 0 0 0 rgba(239, 68, 68, 0);
+      transform: scale(1);
+    }
+    20% {
+      text-shadow: 0 0 10px rgba(239, 68, 68, 0.65);
+      transform: scale(1.03);
+    }
+    100% {
+      text-shadow: 0 0 0 rgba(239, 68, 68, 0);
+      transform: scale(1);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.2s ease-out;
+  }
+
+  .animate-scale-in {
+    animation: scaleIn 0.15s ease-out;
+  }
+
+  .screener-flash-up {
+    display: inline-block;
+    animation: screenerGlowUp 650ms ease-out;
+    will-change: transform, text-shadow;
+    color: var(--color-profit);
+  }
+
+  .screener-flash-down {
+    display: inline-block;
+    animation: screenerGlowDown 650ms ease-out;
+    will-change: transform, text-shadow;
+    color: var(--color-loss);
+  }
+}
