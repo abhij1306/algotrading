@@ -185,6 +185,9 @@ class OptionChainService:
 
             return option_chain
 
+        except ValueError as e:
+            logger.warning(f"Option chain unavailable for {underlying}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Error fetching option chain for {underlying}: {e}")
             return None
@@ -227,7 +230,7 @@ class OptionChainService:
         elif expiries:
             selected_expiry = expiries[0]  # Nearest expiry
         else:
-            selected_expiry = date.today()
+            raise ValueError(f"No expiries returned for {underlying}")
 
         strikes = self._parse_strikes(raw_data, selected_expiry, spot_price, include_greeks)
 

@@ -548,7 +548,6 @@ def place_options_order(
         )
 
         mode = req.mode.upper()
-        order_execution_service.set_mode(mode)
         payload = {
             "symbol": db_symbol,
             "side": req.side.upper(),
@@ -568,7 +567,7 @@ def place_options_order(
             "risk_override_reason": req.risk_override_reason,
         }
 
-        result = order_execution_service.place_order(payload, db)
+        result = order_execution_service.place_order(payload, db, mode=mode)
         if result.get("status") == "ERROR":
             raise HTTPException(status_code=400, detail=result.get("message", "Order failed"))
         return result

@@ -49,6 +49,8 @@ class FyersClient:
         self.access_token = None
         self.token_expires_at = None
         self._token_file_mtime_ns = None
+        self._connecting = False
+        self._validating_token = False
 
         # Skip initialization if DEV_MODE is set
         if os.getenv("DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}:
@@ -108,12 +110,17 @@ class FyersClient:
             logger.error(f"Failed checking token file changes: {e}")
             return False
 
-    def _connect(self):
+    def _connect(self, *, skip_validation: bool = False):
         """Initialize FyersModel instance"""
+        if self._connecting:
+            logger.debug("Skipping nested Fyers _connect call")
+            return
+
         if not self.client_id or not self.access_token:
             logger.warning("Fyers credentials not loaded.")
             return
 
+        self._connecting = True
         try:
             self.fyers = _get_fyers_model().FyersModel(
                 client_id=self.client_id,
@@ -121,52 +128,64 @@ class FyersClient:
                 log_path=""
             )
 
-            if self.validate_token():
+            if skip_validation:
+                logger.info("[OK] Fyers client connected (validation skipped)")
+            elif self.validate_token():
                 logger.info("[OK] Fyers client connected successfully")
             else:
                 logger.warning("[WARN] Fyers token validation failed.")
 
         except Exception as e:
             logger.error(f"Error connecting to Fyers: {e}")
+        finally:
+            self._connecting = False
 
     def validate_token(self) -> bool:
         """Check if token is valid by making a lightweight call"""
-        token_updated = self._refresh_credentials_if_changed()
-        if token_updated:
-            logger.info("Detected updated Fyers token on disk, reconnecting client.")
-            self._connect()
+        if self._validating_token:
+            logger.debug("Skipping nested token validation call")
+            return bool(self.fyers)
 
-        if not self.fyers:
-            # One extra attempt in case client wasn't initialized during startup.
-            self._connect()
+        self._validating_token = True
+        try:
+            token_updated = self._refresh_credentials_if_changed()
+            if token_updated:
+                logger.info("Detected updated Fyers token on disk, reconnecting client.")
+                self._connect(skip_validation=True)
+
             if not self.fyers:
+                # One extra attempt in case client wasn't initialized during startup.
+                self._connect(skip_validation=True)
+                if not self.fyers:
+                    return False
+
+            def _profile_ok() -> bool:
+                response = self.fyers.get_profile()
+                if response.get('s') == 'ok':
+                    return True
+                logger.warning(f"[ERROR] Fyers token invalid: {response}")
                 return False
 
-        def _profile_ok() -> bool:
-            response = self.fyers.get_profile()
-            if response.get('s') == 'ok':
-                return True
-            logger.warning(f"[ERROR] Fyers token invalid: {response}")
-            return False
+            try:
+                if _profile_ok():
+                    return True
 
-        try:
-            if _profile_ok():
-                return True
-
-            # Retry once after reloading from disk to handle fresh-login while backend is running.
-            if self._refresh_credentials_if_changed():
-                self._connect()
-                return _profile_ok()
-            return False
-        except Exception as e:
-            logger.error(f"[ERROR] Token validation failed: {e}")
-            if self._refresh_credentials_if_changed():
-                try:
-                    self._connect()
+                # Retry once after reloading from disk to handle fresh-login while backend is running.
+                if self._refresh_credentials_if_changed():
+                    self._connect(skip_validation=True)
                     return _profile_ok()
-                except Exception as retry_error:
-                    logger.error(f"[ERROR] Token validation retry failed: {retry_error}")
-            return False
+                return False
+            except Exception as e:
+                logger.error(f"[ERROR] Token validation failed: {e}")
+                if self._refresh_credentials_if_changed():
+                    try:
+                        self._connect(skip_validation=True)
+                        return _profile_ok()
+                    except Exception as retry_error:
+                        logger.error(f"[ERROR] Token validation retry failed: {retry_error}")
+                return False
+        finally:
+            self._validating_token = False
 
     def is_token_expired(self) -> bool:
         """Check if token has expired based on expiry date"""

@@ -27,6 +27,7 @@ const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
                         {...props}
                     />
                     <svg
+                        aria-hidden="true"
                         className="pointer-events-none absolute h-3 w-3 text-primary-fg opacity-0 transition-opacity peer-checked:opacity-100"
                         xmlns="http://www.w3.org/2000/svg"
                         viewBox="0 0 24 24"

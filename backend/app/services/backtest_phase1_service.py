@@ -36,7 +36,9 @@ UNIVERSE_SNAPSHOT_MAP: dict[str, Path] = {
     "NIFTY50": CURATED_ROOT / "snapshot_nifty50_daily.parquet",
     "BANKNIFTY": CURATED_ROOT / "snapshot_banknifty_daily.parquet",
 }
-STOCK_SNAPSHOT_PATH = CURATED_ROOT / "snapshot_stock_daily.parquet"
+FYERS_STOCK_DATASET_PATH = (
+    PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices" / "stock_price_daily.parquet"
+)
 
 SUPPORTED_INSTRUMENTS = ("equity", "options")
 SUPPORTED_STRATEGIES = {
@@ -142,8 +144,9 @@ class Phase1BacktestService:
         return scoped[["date", "price"]].assign(symbol=universe_id)[["date", "symbol", "price"]].sort_values("date")
 
     def _load_symbol_snapshot(self, symbols: list[str]) -> pd.DataFrame:
-        if not STOCK_SNAPSHOT_PATH.exists():
-            raise FileNotFoundError(f"Missing artifact: {STOCK_SNAPSHOT_PATH}")
+        source_path = FYERS_STOCK_DATASET_PATH
+        if not source_path.exists():
+            raise FileNotFoundError(f"Missing artifact: {FYERS_STOCK_DATASET_PATH}")
         if not symbols:
             raise ValueError("At least one symbol is required when selection mode='symbols'")
 
@@ -151,12 +154,12 @@ class Phase1BacktestService:
         if not normalized:
             raise ValueError("No valid symbols provided")
 
-        df = pd.read_parquet(STOCK_SNAPSHOT_PATH)
+        df = pd.read_parquet(source_path)
         if "date" not in df.columns or "symbol" not in df.columns:
-            raise ValueError(f"Invalid stock snapshot schema: {STOCK_SNAPSHOT_PATH.name}")
+            raise ValueError(f"Invalid stock snapshot schema: {source_path.name}")
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
         df = df[df["symbol"].str.upper().isin(normalized)].copy()
-        df["price"] = self._price_column(df)
+        df["price"] = pd.to_numeric(df.get("close"), errors="coerce")
         df = df.dropna(subset=["date", "symbol", "price"])
 
         existing = set(df["symbol"].str.upper().unique().tolist())
@@ -315,8 +318,9 @@ class Phase1BacktestService:
             }
 
         stock_range = {"available": False, "min_date": None, "max_date": None, "rows": 0}
-        if STOCK_SNAPSHOT_PATH.exists():
-            sdf = pd.read_parquet(STOCK_SNAPSHOT_PATH)
+        stock_source = FYERS_STOCK_DATASET_PATH
+        if stock_source.exists():
+            sdf = pd.read_parquet(stock_source)
             if "date" in sdf.columns and len(sdf):
                 d = pd.to_datetime(sdf["date"], errors="coerce").dt.date.dropna()
                 if len(d):
@@ -325,6 +329,7 @@ class Phase1BacktestService:
                         "min_date": d.min().isoformat(),
                         "max_date": d.max().isoformat(),
                         "rows": int(len(sdf)),
+                        "source": stock_source.name,
                     }
 
         any_equity = any(v["available"] for v in equity_ranges.values()) or stock_range["available"]

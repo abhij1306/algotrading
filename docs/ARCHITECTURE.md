@@ -28,8 +28,12 @@
   - `WS /api/websocket/stream`
 - Trading and options routes:
   - `/api/trading/*` (mode/order/orders/positions/tradebook/funds/risk-check)
-  - `/api/options/*` (chain/expiries/atm/greeks)
-  - `/api/terminal/options/*` (board/depth/orderflow/preview-order/order alias)
+  - `/api/options/*` (general market-data contracts: chain/expiries/atm/greeks, suitable for non-terminal clients)
+  - `/api/terminal/options/*` (terminal-optimized board/depth/orderflow/preview-order plus order alias)
+  - Route relationship:
+    - Shared market data: both route groups read from the same option data services.
+    - Terminal-only: board/depth/orderflow/preview-order are UI-focused aggregates not exposed in `/api/options/*`.
+    - Order alias: terminal options order endpoint maps terminal payload to `/api/trading/order` semantics.
 
 3. Domain Services
 - `symbol_master.py`: symbol normalization and provider boundary conversion
@@ -97,6 +101,10 @@
 3. `GET /api/terminal/options/depth` returns depth for selected contract/underlying.
 4. `GET /api/terminal/options/orderflow` returns derived OI/volume/depth metrics.
 5. WebSocket ticks update contract LTP and position PnL between polling cycles.
+
+## Options API Usage Guidance
+- Use `/api/options/*` when you need reusable market-data primitives (chain/expiries/atm/greeks) for external tools or non-terminal workflows.
+- Use `/api/terminal/options/*` from terminal UI flows where compact board/depth/orderflow payloads and preview-order behavior are required.
 
 ## Market-Hours Policy
 - Open window: 09:15–15:30 IST, weekdays

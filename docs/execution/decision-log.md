@@ -88,7 +88,10 @@
 ## 2026-02-20
 ### D-022: Terminal Unified Order Contract
 - Decision: terminal order submit path is unified on `/api/trading/order` for PAPER and LIVE; `/api/terminal/paper/order` kept as legacy compatibility only.
-- Rationale: one payload contract prevents mode drift and enables strict paper/live parity.
+- Supersedes: D-014 (`/api/terminal/paper/order` as primary path) is superseded for new clients.
+- Safety invariants retained: PAPER mode still never dispatches to broker; LIVE mode requires `is_live_confirmation_ack=true` and risk checks pass before broker dispatch.
+- Migration note: clients using `/api/terminal/paper/order` should move to `/api/trading/order` with mode-driven behavior; legacy endpoint remains compatibility-only and can be rolled back to if migration issues appear.
+- Rationale: one payload contract prevents mode drift and enables strict paper/live parity while preserving existing safety guarantees.
 
 ### D-023: Options-First Terminal Surface
 - Decision: terminal UX defaults to options board (underlying/expiry/chain/depth/orderflow + quick order), while preserving watchlist and account panels.

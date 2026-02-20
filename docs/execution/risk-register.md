@@ -86,7 +86,7 @@
 
 ## R-013: Options Board Data Freshness Drift
 - Severity: High
-- Description: option chain/depth/orderflow can appear fresh while stale due API lag/network failures.
+- Description: option chain/depth/orderflow can appear fresh while stale due to API lag/network failures.
 - Mitigation: include freshness timestamps, stale banners, and mixed polling+websocket model in terminal.
 - Owner: Terminal + options services
 - Status: Open

@@ -132,7 +132,7 @@ async def lifespan(app: FastAPI):
                         timeout=5.0,
                     )
                 except TimeoutError:
-                    logger.warning("[WARN] Fyers token validation timed out after 5s; continuing startup")
+                    logger.warning("[WARN] Fyers token validation timed out after 5s; step marked failed and startup sequence will record warning state")
                     raise ValueError("Fyers token validation timeout")
 
             if not fyers or not is_valid:

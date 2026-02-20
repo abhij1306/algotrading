@@ -146,7 +146,6 @@ MANIFEST
 .hypothesis/
 .hypothesis/**
 .hypothesis/*
-.hypothesis/*
 backend/.hypothesis/
 backend/.hypothesis/**
 .coverage

@@ -92,7 +92,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 - Supports `ticker` and `ticker_batch` messages (batch currently optional)
 
 ## Terminal Usage Pattern
-- Terminal subscribes selected symbol, watchlist symbols, and open-position symbols.
+- Terminal subscribes to the selected symbol, watchlist symbols, and open-position symbols.
 - Tick updates are used for:
   - live watchlist LTP/change refresh
   - position PnL refresh in bottom panels

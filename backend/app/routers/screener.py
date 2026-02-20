@@ -50,6 +50,7 @@ def get_screener_results(
     query: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=100),
+    full: bool = Query(default=False),
     sort_by: str = Query(default="symbol"),
     sort_order: str = Query(default="asc"),
 ) -> dict[str, Any]:
@@ -121,12 +122,16 @@ def get_screener_results(
         )
 
         total_records = companies_query.count()
-        offset = (page - 1) * limit
-        rows = companies_query.offset(offset).limit(limit).all()
+        if full:
+            # Guardrail: prevent accidental oversized responses.
+            rows = companies_query.limit(1200).all()
+        else:
+            offset = (page - 1) * limit
+            rows = companies_query.offset(offset).limit(limit).all()
 
         symbols = [company.symbol for company, _ in rows]
         live_quotes: dict[str, dict[str, Any]] = {}
-        if symbols:
+        if symbols and not full:
             try:
                 live_quotes = fetch_fyers_quotes(symbols) or {}
             except Exception as exc:

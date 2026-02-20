@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-02-20T07:18:32.033643+00:00",
+  "universe_source_file": "data_system\\01_sources\\nse_bhavcopy\\sec_bhavdata_full_18022026.csv",
+  "universe_source_date": "2026-02-18",
+  "symbol_count": 2413,
+  "years": {
+    "2026": {
+      "range_from": "2026-01-01",
+      "range_to": "2026-02-20",
+      "rows": 86435,
+      "symbols_ok": 2408,
+      "symbols_failed": 5,
+      "output_parquet": "data_system\\01_sources\\fyers_stock_prices\\yearly\\stock_price_daily_2026.parquet"
+    }
+  },
+  "consolidated": {
+    "rows": 86435,
+    "symbols": 2408,
+    "min_date": "2026-01-01",
+    "max_date": "2026-02-20",
+    "output_parquet": "data_system\\01_sources\\fyers_stock_prices\\stock_price_daily.parquet",
+    "output_csv": "data_system\\01_sources\\fyers_stock_prices\\stock_price_daily.csv"
+  }
+}

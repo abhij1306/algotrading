@@ -273,9 +273,9 @@ export default function DashboardPage() {
               return {
                 name: idx.name,
                 symbol: idx.symbol,
-                value: typeof quote.price === 'number' ? quote.price : 0,
-                change: typeof quote.change === 'number' ? quote.change : 0,
-                changePercent: typeof quote.changePercent === 'number' ? quote.changePercent : 0,
+                value: typeof quote.price === 'number' ? roundToDecimals(quote.price, 2) : 0,
+                change: typeof quote.change === 'number' ? roundToDecimals(quote.change, 2) : 0,
+                changePercent: typeof quote.changePercent === 'number' ? roundToDecimals(quote.changePercent, 2) : 0,
                 type: 'global' as const,
                 source: 'yahoo' as const,
               } satisfies MarketIndex;

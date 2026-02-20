@@ -23,7 +23,7 @@ class OrderExecutionService:
 
     def __init__(self):
         self._broker = None
-        self._mode = "PAPER" # Default to PAPER
+        self._mode = "PAPER"  # Default mode for legacy callers
 
     @property
     def broker(self):
@@ -69,8 +69,8 @@ class OrderExecutionService:
         if ref <= 0:
             ref = price
 
-        slippage_bps = float(order_params.get("paper_slippage_bps", 5.0))
-        fee_bps = float(order_params.get("paper_fee_bps", 3.5))
+        slippage_bps = self._safe_float(order_params.get("paper_slippage_bps", 5.0), 5.0)
+        fee_bps = self._safe_float(order_params.get("paper_fee_bps", 3.5), 3.5)
 
         status = "SUBMITTED"
         fill_price = 0.0
@@ -129,7 +129,7 @@ class OrderExecutionService:
             "message": reason,
         }
 
-    def place_order(self, order_params: dict[str, Any], db: Session) -> dict[str, Any]:
+    def place_order(self, order_params: dict[str, Any], db: Session, mode: str | None = None) -> dict[str, Any]:
         """
         Place an order.
 
@@ -150,6 +150,10 @@ class OrderExecutionService:
             Dict with order_id, status, message
         """
         try:
+            effective_mode = (mode or self._mode).upper()
+            if effective_mode not in {"PAPER", "LIVE"}:
+                raise ValueError("Invalid mode. Use PAPER or LIVE")
+
             symbol = order_params.get("symbol")
             side = order_params.get("side", "BUY")
             quantity = int(order_params.get("quantity", 0))
@@ -157,7 +161,7 @@ class OrderExecutionService:
                 raise ValueError("Quantity must be positive")
 
             # 1. Live confirmation + risk checks
-            if self._mode == "LIVE":
+            if effective_mode == "LIVE":
                 if not bool(order_params.get("is_live_confirmation_ack", False)):
                     return {
                         "status": "ERROR",
@@ -196,7 +200,7 @@ class OrderExecutionService:
             # 2. Create DB Record (PENDING)
             internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
 
-            is_paper_order = (1 if self._mode == "PAPER" else 0)
+            is_paper_order = (1 if effective_mode == "PAPER" else 0)
 
             new_order = LiveOrder(
                 id=internal_id,
@@ -221,7 +225,7 @@ class OrderExecutionService:
             db.flush()  # Flush to get constraints checked, but don't commit yet
             # 3. Route Order
             response = {}
-            if self._mode == "LIVE":
+            if effective_mode == "LIVE":
                 # Prepare Broker Payload
                 broker_order = {
                     "symbol": fyers_symbol,
@@ -236,14 +240,19 @@ class OrderExecutionService:
                 try:
                     broker_resp = self.broker.place_order(broker_order)
 
-                    if broker_resp["status"] == "SUBMITTED":
-                        new_order.id = broker_resp["order_id"] # Update with Broker ID
+                    if not isinstance(broker_resp, dict):
+                        logger.error("Broker returned non-dict response: %s", broker_resp)
+                        new_order.status = "ERROR"
+                        new_order.reject_reason = "Malformed broker response"
+                        response = {"status": "ERROR", "message": "Malformed broker response"}
+                    elif broker_resp.get("status") == "SUBMITTED" and broker_resp.get("order_id"):
+                        new_order.id = str(broker_resp.get("order_id"))  # Update with Broker ID
                         new_order.status = "SUBMITTED"
-                        new_order.broker_message = broker_resp["message"]
+                        new_order.broker_message = str(broker_resp.get("message", "Submitted"))
                         response = broker_resp
                     else:
                         new_order.status = "REJECTED"
-                        new_order.reject_reason = broker_resp["message"]
+                        new_order.reject_reason = str(broker_resp.get("message", "Order rejected by broker"))
                         response = broker_resp
                 except Exception as e:
                     new_order.status = "ERROR"

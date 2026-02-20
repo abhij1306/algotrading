@@ -75,5 +75,7 @@ export function formatPrice(value: number): string {
  */
 export function roundToDecimals(value: number | null | undefined, decimals: number = 2): number {
   if (value === null || value === undefined || isNaN(value)) return 0;
-  return Number(value.toFixed(decimals));
+  const factor = 10 ** decimals;
+  const epsilon = value >= 0 ? Number.EPSILON : -Number.EPSILON;
+  return Math.round((value + epsilon) * factor) / factor;
 }

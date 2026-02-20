@@ -412,7 +412,7 @@
   }
 
   .font-mono {
-    font-family: var(--font-sans), var(--font-sans-fallback);
+    font-family: var(--font-mono), var(--font-mono-fallback), ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace;
   }
 
   /* Font Weight Utilities */
@@ -507,7 +507,7 @@
   }
 }
 
-/* 
+/*
   SCREENER FLASH ANIMATIONS
   Dual-phase system to ensure re-triggering during rapid data updates.
 */

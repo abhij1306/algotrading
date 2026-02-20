@@ -61,6 +61,7 @@ const TICK_FLUSH_MS = 200;
 const FALLBACK_POLL_MS = 3000;
 const WS_STALE_MS = 5000;
 const FLASH_DURATION_MS = 600;
+const MAX_FALLBACK_SYMBOLS = 100;
 
 function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -261,8 +262,7 @@ export default function ScreenerPage() {
 
       const params: Record<string, string> = {
         universe: selectedUniverse,
-        page: String(currentPage),
-        limit: String(itemsPerPage),
+        full: 'true',
         sort_by: sortField,
         sort_order: sortDirection,
       };
@@ -288,7 +288,7 @@ export default function ScreenerPage() {
       }));
       setResults(normalizedResults);
       resultsRef.current = normalizedResults;
-      setTotalResults(screenerPayload.total || 0);
+      setTotalResults(normalizedResults.length || screenerPayload.total || 0);
       setIsLoading(false);
     }
 
@@ -296,9 +296,14 @@ export default function ScreenerPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedUniverse, currentPage, itemsPerPage, debouncedQuery, sortField, sortDirection]);
+  }, [selectedUniverse, debouncedQuery, sortField, sortDirection]);
 
-  const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
+  const totalPages = Math.max(1, Math.ceil(results.length / itemsPerPage));
+
+  const currentPageRows = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return results.slice(start, start + itemsPerPage);
+  }, [results, currentPage, itemsPerPage]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -306,10 +311,15 @@ export default function ScreenerPage() {
     }
   }, [currentPage, totalPages]);
 
-  const visibleSymbolsKey = useMemo(() => {
+  const subscribedSymbolsKey = useMemo(() => {
     const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort();
     return symbols.join(',');
   }, [results]);
+
+  const fallbackSymbolsKey = useMemo(() => {
+    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort();
+    return symbols.join(',');
+  }, [currentPageRows]);
 
   useEffect(() => {
     if (!isConnected) {
@@ -318,16 +328,16 @@ export default function ScreenerPage() {
   }, [isConnected]);
 
   useEffect(() => {
-    if (!isConnected || !visibleSymbolsKey) return;
-    if (visibleSymbolsKey === subscribedSymbolsKeyRef.current) return;
+    if (!isConnected || !subscribedSymbolsKey) return;
+    if (subscribedSymbolsKey === subscribedSymbolsKeyRef.current) return;
 
     if (subscribedSymbolsKeyRef.current) {
       sendMessage({ action: 'unsubscribe', symbols: subscribedSymbolsKeyRef.current.split(',') });
     }
 
-    sendMessage({ action: 'subscribe', symbols: visibleSymbolsKey.split(',') });
-    subscribedSymbolsKeyRef.current = visibleSymbolsKey;
-  }, [isConnected, visibleSymbolsKey, sendMessage]);
+    sendMessage({ action: 'subscribe', symbols: subscribedSymbolsKey.split(',') });
+    subscribedSymbolsKeyRef.current = subscribedSymbolsKey;
+  }, [isConnected, subscribedSymbolsKey, sendMessage]);
 
   useEffect(() => {
     return () => {
@@ -354,12 +364,12 @@ export default function ScreenerPage() {
 
     setFlashByCell((prev) => {
       // OPTIMIZATION: Check if any values actually changed before creating new object
-      const hasChanges = Object.keys(entries).some(key => 
+      const hasChanges = Object.keys(entries).some(key =>
         !prev[key] || prev[key].direction !== entries[key]
       );
-      
+
       if (!hasChanges) return prev; // Prevent unnecessary re-render
-      
+
       const next = { ...prev };
       for (const [key, direction] of Object.entries(entries)) {
         const current = prev[key];
@@ -409,14 +419,16 @@ export default function ScreenerPage() {
 
   useEffect(() => {
     const poll = setInterval(async () => {
-      if (!visibleSymbolsKey) return;
+      if (!fallbackSymbolsKey) return;
 
       const now = Date.now();
       const wsStale = !lastTickAtRef.current || (now - lastTickAtRef.current > WS_STALE_MS);
       if (!wsStale) return;
 
       try {
-        const response = await apiClient.get(`/api/market/quotes/live?symbols=${encodeURIComponent(visibleSymbolsKey)}`);
+        const fallbackSymbols = fallbackSymbolsKey.split(',').filter(Boolean);
+        if (fallbackSymbols.length === 0 || fallbackSymbols.length > MAX_FALLBACK_SYMBOLS) return;
+        const response = await apiClient.get(`/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(','))}`);
         const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
         for (const [symbol, quote] of Object.entries(quoteMap)) {
           const ltp = typeof quote.ltp === 'number' ? quote.ltp : undefined;
@@ -440,7 +452,7 @@ export default function ScreenerPage() {
     }, FALLBACK_POLL_MS);
 
     return () => clearInterval(poll);
-  }, [visibleSymbolsKey]);
+  }, [fallbackSymbolsKey]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -497,14 +509,14 @@ export default function ScreenerPage() {
 
       if (nextResults) {
         // OPTIMIZATION: Only re-sort if the sorted field actually changed
-        const sortFieldChanged = flashes.some(f => 
+        const sortFieldChanged = flashes.some(f =>
           f.field === sortField && ['change', 'volume', 'price'].includes(sortField)
         );
-        
+
         if (sortFieldChanged && (sortField === 'change' || sortField === 'volume' || sortField === 'price')) {
           nextResults.sort((a, b) => compareBySort(a, b, sortField, sortDirection));
         }
-        
+
         resultsRef.current = nextResults;
         setResults(nextResults);
         if (flashes.length > 0) {
@@ -649,12 +661,12 @@ export default function ScreenerPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {results.map((stock) => {
+            {currentPageRows.map((stock) => {
               // OPTIMIZATION: Create stable flash state object to prevent unnecessary re-renders
               const priceKey = `${stock.symbol}:price`;
               const changeKey = `${stock.symbol}:change`;
               const volumeKey = `${stock.symbol}:volume`;
-              
+
               // Only create object if at least one flash exists
               const hasFlash = flashByCell[priceKey] || flashByCell[changeKey] || flashByCell[volumeKey];
               const flashStateByField: Partial<Record<FlashField, FlashState>> = hasFlash ? {
@@ -676,7 +688,7 @@ export default function ScreenerPage() {
           </tbody>
         </table>
 
-        {results.length === 0 && !isLoading && (
+        {currentPageRows.length === 0 && !isLoading && (
           <div className="p-8 text-center text-foreground-muted">
             {indices.length === 0
               ? 'No universes available'

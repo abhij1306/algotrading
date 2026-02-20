@@ -40,6 +40,8 @@ npm run dev
 
 1. **Database Indexes** - Added missing indexes for Company and HistoricalPrice tables
    - `ix_company_symbol_active` - For symbol filtering
+   - `ix_company_sector` - For sector-level filtering/grouping
+   - `ix_company_market_cap` - For market-cap filtering/sorting
    - `ix_historical_price_company_date` - For latest price queries
    - `ix_historical_price_date` - For date range queries
    - Expected: 500ms → 5-50ms query times
@@ -77,7 +79,7 @@ See `PERFORMANCE_AUDIT.md` for detailed implementation instructions.
 ### Check Database Indexes
 
 ```sql
-SELECT 
+SELECT
     tablename,
     indexname,
     indexdef
@@ -172,7 +174,7 @@ Watch for these improvements:
 
 ```sql
 -- Check index usage
-SELECT 
+SELECT
     schemaname,
     tablename,
     indexname,
@@ -183,8 +185,14 @@ FROM pg_stat_user_indexes
 WHERE indexname LIKE 'ix_%'
 ORDER BY idx_scan DESC;
 
+-- Prerequisite: pg_stat_statements extension must be enabled
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+-- Restart PostgreSQL after enabling this extension on your instance.
+-- Optional before measurement:
+SELECT pg_stat_statements_reset();
+
 -- Check slow queries
-SELECT 
+SELECT
     query,
     calls,
     total_time,
@@ -244,4 +252,3 @@ For issues or questions:
 2. Review backend logs: `backend/logs/`
 3. Check database query logs
 4. Open an issue with performance metrics
-
