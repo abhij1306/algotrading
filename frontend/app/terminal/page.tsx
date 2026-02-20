@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useMemo, memo, useRef } from 'react';
 import dynamic from 'next/dynamic';
-import { Search, Plus, Settings, Bell, CandlestickChart, TrendingUp, Loader2 } from 'lucide-react';
+import { Search, Plus, Settings, Bell, CandlestickChart, ListOrdered, Loader2, ExternalLink } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
-import { formatPercentage } from '@/lib/utils';
+import { formatPercentage, roundToDecimals } from '@/lib/utils';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { isMarketOpen } from '@/lib/market-hours';
+import { getTradingViewUrl } from '@/lib/tradingview';
 
 interface WatchlistItem {
   symbol: string;
@@ -41,7 +42,41 @@ interface SearchResultItem {
 }
 
 type TradingMode = 'PAPER' | 'LIVE';
-type OrderType = 'MARKET' | 'LIMIT' | 'SL';
+type OrderType = 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
+type TerminalView = 'options' | 'positions' | 'chart';
+
+interface OptionsLeg {
+  symbol: string | null;
+  ltp: number | null;
+  oi: number | null;
+  volume: number | null;
+  change_pct: number | null;
+}
+
+interface OptionsBoardRow {
+  strike: number;
+  ce: OptionsLeg | null;
+  pe: OptionsLeg | null;
+}
+
+interface OptionsBoardResponse {
+  underlying: string;
+  spot_price: number;
+  expiry: string;
+  atm_strike: number;
+  strikes: OptionsBoardRow[];
+  timestamp: string;
+}
+
+interface OptionsOrderflowResponse {
+  pcr_oi: number | null;
+  pcr_volume: number | null;
+  ce_oi: number;
+  pe_oi: number;
+  ce_volume: number;
+  pe_volume: number;
+  timestamp: string;
+}
 
 interface PositionItem {
   id: string;
@@ -50,21 +85,26 @@ interface PositionItem {
   entry_price: number;
   current_price: number;
   unrealized_pnl: number;
+  realized_pnl?: number;
+  net_pnl?: number;
   product_type: string;
+  mode?: 'PAPER' | 'LIVE';
 }
 
-interface OrderItem {
-  id: string;
-  symbol: string;
-  side: string;
-  quantity: number;
-  price: number;
-  status: string;
-  created_at: string;
-  is_paper?: number;
+interface PositionsBookResponse {
+  live_positions: PositionItem[];
+  paper_positions: PositionItem[];
+  net_pnl_live: number;
+  net_pnl_paper: number;
+  net_pnl_total: number;
 }
 
 const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1H', 'D', 'W', 'M'];
+const OPTION_LOT_SIZES: Record<string, number> = {
+  NIFTY: 75,
+  BANKNIFTY: 30,
+  FINNIFTY: 25,
+};
 
 function toSafeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -87,11 +127,13 @@ const PriceChart = dynamic(
 const WatchlistRow = memo(function WatchlistRow({
   stock,
   isSelected,
-  onClick
+  onClick,
+  onOpenTradingView,
 }: {
   stock: WatchlistItem;
   isSelected: boolean;
   onClick: () => void;
+  onOpenTradingView: (symbol: string) => void;
 }) {
   return (
     <tr
@@ -99,7 +141,21 @@ const WatchlistRow = memo(function WatchlistRow({
       className={`cursor-pointer transition-colors ${isSelected ? 'bg-surface' : 'hover:bg-surface/50'}`}
     >
       <td className="py-2 pl-3">
-        <div className="font-medium">{stock.symbol}</div>
+        <div className="flex items-center gap-1">
+          <div className="font-medium">{stock.symbol}</div>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenTradingView(stock.symbol);
+            }}
+            className="text-foreground-muted hover:text-foreground"
+            title="Open on TradingView"
+            aria-label={`Open ${stock.symbol} on TradingView`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <div className="text-xs text-foreground-muted truncate max-w-[100px]">{stock.name}</div>
       </td>
       <td className="py-2 pr-3 text-right">
@@ -122,7 +178,6 @@ export default function TerminalPage() {
   const { isConnected, lastMessage, sendMessage } = useWebSocket();
   const [selectedSymbol, setSelectedSymbol] = useState<string>('');
   const [selectedTimeframe, setSelectedTimeframe] = useState('D');
-  const [activeTab, setActiveTab] = useState('positions');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -133,18 +188,26 @@ export default function TerminalPage() {
   const [tradingMode, setTradingMode] = useState<TradingMode>('PAPER');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
   const [orderQty, setOrderQty] = useState<number>(1);
+  const [optionLots, setOptionLots] = useState<number>(1);
   const [orderPrice, setOrderPrice] = useState<number>(0);
   const [orderTrigger, setOrderTrigger] = useState<number>(0);
   const [orderBusy, setOrderBusy] = useState(false);
   const [orderMessage, setOrderMessage] = useState<string | null>(null);
-  const [livePositions, setLivePositions] = useState<PositionItem[]>([]);
-  const [liveOrders, setLiveOrders] = useState<OrderItem[]>([]);
-  const [paperOrders, setPaperOrders] = useState<OrderItem[]>([]);
-  const [panelError, setPanelError] = useState<string | null>(null);
+  const [positions, setPositions] = useState<PositionItem[]>([]);
+  const [positionsError, setPositionsError] = useState<string | null>(null);
   const [watchlistQuery, setWatchlistQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [watchlistActionError, setWatchlistActionError] = useState<string | null>(null);
+  const [terminalView, setTerminalView] = useState<TerminalView>('options');
+  const [optionsUnderlying, setOptionsUnderlying] = useState<string>('NIFTY');
+  const [optionsExpiry, setOptionsExpiry] = useState<string>('');
+  const [optionsBoard, setOptionsBoard] = useState<OptionsBoardResponse | null>(null);
+  const [optionsOrderflow, setOptionsOrderflow] = useState<OptionsOrderflowResponse | null>(null);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const [selectedOptionSymbol, setSelectedOptionSymbol] = useState<string>('');
+  const [riskOverrideReason, setRiskOverrideReason] = useState<string>('');
   const subscribedSymbolsKeyRef = useRef('');
 
   useEffect(() => {
@@ -182,6 +245,12 @@ export default function TerminalPage() {
               change: toSafeNumber(row.change),
               ltp: toSafeNumber(row.ltp) ?? toSafeNumber(row.price),
             })).filter((row) => row.symbol.length > 0)
+              .map((row) => ({
+                ...row,
+                price: typeof row.price === 'number' ? roundToDecimals(row.price, 2) : row.price,
+                ltp: typeof row.ltp === 'number' ? roundToDecimals(row.ltp, 2) : row.ltp,
+                change: typeof row.change === 'number' ? roundToDecimals(row.change, 2) : row.change,
+              }))
           : [];
 
         setWatchlist(normalized);
@@ -216,6 +285,9 @@ export default function TerminalPage() {
 
   useEffect(() => {
     const fetchChartData = async () => {
+      if (terminalView !== 'chart') {
+        return;
+      }
       if (!selectedSymbol) {
         setChartData([]);
         setChartError(null);
@@ -248,7 +320,84 @@ export default function TerminalPage() {
     };
 
     void fetchChartData();
-  }, [selectedSymbol, selectedTimeframe]);
+  }, [terminalView, selectedSymbol, selectedTimeframe]);
+
+  useEffect(() => {
+    if (terminalView !== 'options') {
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchOptionsBoard = async () => {
+      try {
+        if (!optionsBoard) {
+          setOptionsLoading(true);
+        }
+        setOptionsError(null);
+        const boardParams = new URLSearchParams({
+          underlying: optionsUnderlying,
+          strike_count: '15',
+        });
+        if (optionsExpiry) {
+          boardParams.set('expiry', optionsExpiry);
+        }
+        const boardRes = await fetch(`/api/terminal/options/board?${boardParams.toString()}`);
+
+        if (!boardRes.ok) {
+          const err = await boardRes.json().catch(() => null) as { detail?: string } | null;
+          throw new Error(err?.detail || `Options board failed (${boardRes.status})`);
+        }
+        const board = (await boardRes.json()) as OptionsBoardResponse;
+
+        if (cancelled) {
+          return;
+        }
+        setOptionsBoard(board);
+        const computed = Array.isArray(board.strikes)
+          ? board.strikes.reduce(
+              (acc, row) => {
+                acc.ceOi += Number(row.ce?.oi || 0);
+                acc.peOi += Number(row.pe?.oi || 0);
+                acc.ceVol += Number(row.ce?.volume || 0);
+                acc.peVol += Number(row.pe?.volume || 0);
+                return acc;
+              },
+              { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 }
+            )
+          : { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 };
+        setOptionsOrderflow({
+          ce_oi: computed.ceOi,
+          pe_oi: computed.peOi,
+          ce_volume: computed.ceVol,
+          pe_volume: computed.peVol,
+          pcr_oi: computed.ceOi > 0 ? roundToDecimals(computed.peOi / computed.ceOi, 4) : null,
+          pcr_volume: computed.ceVol > 0 ? roundToDecimals(computed.peVol / computed.ceVol, 4) : null,
+          timestamp: board.timestamp,
+        });
+        if (!optionsExpiry && board.expiry) {
+          setOptionsExpiry(board.expiry);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setOptionsError(err instanceof Error ? err.message : 'Failed to load options board');
+        }
+      } finally {
+        if (!cancelled) {
+          setOptionsLoading(false);
+        }
+      }
+    };
+
+    void fetchOptionsBoard();
+    const interval = setInterval(() => {
+      void fetchOptionsBoard();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [terminalView, optionsUnderlying, optionsExpiry, optionsBoard]);
 
   useEffect(() => {
     if (watchlistQuery.trim().length < 2) {
@@ -311,7 +460,8 @@ export default function TerminalPage() {
     const symbols = Array.from(new Set([
       ...watchlist.map((item: WatchlistItem) => item.symbol),
       selectedSymbol,
-      ...livePositions.map((position) => position.symbol),
+      selectedOptionSymbol,
+      ...positions.map((position) => position.symbol),
     ].filter(Boolean))).sort();
     if (symbols.length === 0) return;
 
@@ -324,7 +474,7 @@ export default function TerminalPage() {
 
     sendMessage({ action: 'subscribe', symbols });
     subscribedSymbolsKeyRef.current = symbolsKey;
-  }, [isConnected, watchlist, selectedSymbol, livePositions, sendMessage]);
+  }, [isConnected, watchlist, selectedSymbol, selectedOptionSymbol, positions, sendMessage]);
 
   useEffect(() => {
     return () => {
@@ -343,9 +493,9 @@ export default function TerminalPage() {
           item.symbol === tick.symbol
             ? {
                 ...item,
-                ltp: typeof tick.ltp === 'number' ? tick.ltp : item.ltp,
-                price: typeof tick.ltp === 'number' ? tick.ltp : item.price,
-                change: typeof tick.change_pct === 'number' ? tick.change_pct : item.change,
+                ltp: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : item.ltp,
+                price: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : item.price,
+                change: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : item.change,
               }
             : item
         ));
@@ -413,32 +563,33 @@ export default function TerminalPage() {
   };
 
   useEffect(() => {
-    const pollPanels = async () => {
+    const pollPositions = async () => {
       try {
-        setPanelError(null);
-        const [positionsRes, ordersRes] = await Promise.all([
-          fetch('/api/trading/positions'),
-          fetch('/api/trading/orders?limit=100'),
-        ]);
-
-        const positionsData = positionsRes.ok ? (await positionsRes.json()) as PositionItem[] : [];
-        const ordersData = ordersRes.ok ? (await ordersRes.json()) as OrderItem[] : [];
-
-        setLivePositions(Array.isArray(positionsData) ? positionsData : []);
-        if (Array.isArray(ordersData)) {
-          setPaperOrders(ordersData.filter((order) => Number(order.is_paper) === 1));
-          setLiveOrders(ordersData.filter((order) => Number(order.is_paper) !== 1));
-        } else {
-          setPaperOrders([]);
-          setLiveOrders([]);
+        setPositionsError(null);
+        const response = await fetch('/api/trading/positions/book');
+        if (!response.ok) {
+          throw new Error('Failed to load positions');
         }
-      } catch {
-        setPanelError('Failed to load positions/orderbook');
+        const data = (await response.json()) as PositionsBookResponse;
+        const liveRows = Array.isArray(data.live_positions) ? data.live_positions : [];
+        const paperRows = Array.isArray(data.paper_positions) ? data.paper_positions : [];
+        setPositions(
+          [...liveRows, ...paperRows].map((row) => ({
+            ...row,
+            current_price: Number(row.current_price || 0),
+            entry_price: Number(row.entry_price || 0),
+            unrealized_pnl: Number(row.unrealized_pnl || 0),
+            realized_pnl: Number(row.realized_pnl || 0),
+            net_pnl: Number(row.net_pnl || row.unrealized_pnl || 0),
+          }))
+        );
+      } catch (error) {
+        setPositionsError(error instanceof Error ? error.message : 'Failed to load positions');
       }
     };
 
-    void pollPanels();
-    const interval = setInterval(() => { void pollPanels(); }, 10000);
+    void pollPositions();
+    const interval = setInterval(() => { void pollPositions(); }, 7000);
     return () => clearInterval(interval);
   }, []);
 
@@ -447,15 +598,17 @@ export default function TerminalPage() {
     const tick = lastMessage.data as { symbol?: string; ltp?: number };
     if (!tick.symbol || typeof tick.ltp !== 'number') return;
 
-    setLivePositions((prev) => prev.map((pos) => {
+    setPositions((prev) => prev.map((pos) => {
       if (pos.symbol !== tick.symbol) return pos;
-      const currentPrice = tick.ltp as number;
+      const currentPrice = roundToDecimals(tick.ltp as number, 2);
       const qty = Number(pos.net_qty || 0);
-      const pnl = (currentPrice - Number(pos.entry_price || 0)) * qty;
+      const unrealized = roundToDecimals((currentPrice - Number(pos.entry_price || 0)) * qty, 2);
+      const realized = Number(pos.realized_pnl || 0);
       return {
         ...pos,
         current_price: currentPrice,
-        unrealized_pnl: pnl,
+        unrealized_pnl: unrealized,
+        net_pnl: roundToDecimals(realized + unrealized, 2),
       };
     }));
   }, [lastMessage]);
@@ -464,8 +617,46 @@ export default function TerminalPage() {
     watchlist.find(s => s.symbol === selectedSymbol) || watchlist[0] || null,
   [watchlist, selectedSymbol]);
 
+  const positionsSummary = useMemo(() => {
+    const net_pnl_live = positions
+      .filter((p) => p.mode !== 'PAPER')
+      .reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
+    const net_pnl_paper = positions
+      .filter((p) => p.mode === 'PAPER')
+      .reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
+    return {
+      net_pnl_live: roundToDecimals(net_pnl_live, 2),
+      net_pnl_paper: roundToDecimals(net_pnl_paper, 2),
+      net_pnl_total: roundToDecimals(net_pnl_live + net_pnl_paper, 2),
+    };
+  }, [positions]);
+
+  const activeTradeSymbol = useMemo(() => {
+    if (terminalView === 'options' && selectedOptionSymbol) {
+      return selectedOptionSymbol;
+    }
+    return currentSymbol?.symbol || '';
+  }, [terminalView, selectedOptionSymbol, currentSymbol]);
+
+  const isOptionSymbol = useMemo(
+    () => activeTradeSymbol.endsWith('CE') || activeTradeSymbol.endsWith('PE'),
+    [activeTradeSymbol]
+  );
+
+  const optionLotSize = useMemo(() => OPTION_LOT_SIZES[optionsUnderlying] ?? 1, [optionsUnderlying]);
+  const effectiveOrderQuantity = useMemo(() => {
+    if (terminalView === 'options' && isOptionSymbol) {
+      return Math.max(1, optionLots) * optionLotSize;
+    }
+    return Math.max(1, orderQty);
+  }, [terminalView, isOptionSymbol, optionLots, optionLotSize, orderQty]);
+
+  const openTradingView = (symbol: string) => {
+    window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
+  };
+
   const placeOrder = async (side: 'BUY' | 'SELL') => {
-    if (!currentSymbol || orderQty <= 0) {
+    if (!activeTradeSymbol || effectiveOrderQuantity <= 0) {
       setOrderMessage('Select symbol and enter valid quantity');
       return;
     }
@@ -473,48 +664,36 @@ export default function TerminalPage() {
     try {
       setOrderBusy(true);
       setOrderMessage(null);
-
-      if (tradingMode === 'PAPER') {
-        const response = await fetch('/api/terminal/paper/order', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            symbol: currentSymbol.symbol,
-            side,
-            quantity: orderQty,
-            order_type: orderType,
-            price: orderType === 'MARKET' ? 0 : orderPrice,
-            trigger_price: orderType === 'SL' ? orderTrigger : 0,
-          }),
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data?.detail || 'Failed to place paper order');
+      let isLiveConfirmationAck = false;
+      if (tradingMode === 'LIVE') {
+        isLiveConfirmationAck = window.confirm(`Confirm LIVE ${side} ${effectiveOrderQuantity} ${activeTradeSymbol}?`);
+        if (!isLiveConfirmationAck) {
+          setOrderMessage('Live order cancelled');
+          return;
         }
-        setOrderMessage(`PAPER ${side} submitted (${data.order_id})`);
-        return;
       }
 
       await fetch('/api/trading/mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'LIVE' }),
+        body: JSON.stringify({ mode: tradingMode }),
       });
 
-      const response = await fetch('/api/trading/order', {
+      const response = await fetch('/api/trading/order?x_user_id=default_user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          symbol: currentSymbol.symbol,
+          symbol: activeTradeSymbol,
           side,
-          quantity: orderQty,
+          quantity: effectiveOrderQuantity,
           product: 'INTRADAY',
-          type: orderType === 'SL' ? 'SL' : orderType,
+          type: orderType,
           price: orderType === 'MARKET' ? 0 : orderPrice,
-          trigger_price: orderType === 'SL' ? orderTrigger : 0,
-          tag: 'terminal-live',
-          instrument_type: 'EQ',
+          trigger_price: (orderType === 'SL' || orderType === 'SL-M') ? orderTrigger : 0,
+          tag: terminalView === 'options' ? 'terminal-options' : 'terminal-live',
+          instrument_type: activeTradeSymbol.endsWith('PE') ? 'PE' : activeTradeSymbol.endsWith('CE') ? 'CE' : 'EQ',
+          is_live_confirmation_ack: isLiveConfirmationAck,
+          risk_override_reason: riskOverrideReason.trim() || null,
         }),
       });
 
@@ -522,11 +701,33 @@ export default function TerminalPage() {
       if (!response.ok) {
         throw new Error(data?.detail || 'Failed to place live order');
       }
-      setOrderMessage(`LIVE ${side} submitted (${data.order_id || data.id || 'ok'})`);
+      setOrderMessage(`${tradingMode} ${side} ${data.status || 'submitted'} (${data.order_id || data.id || 'ok'})`);
     } catch (err) {
       setOrderMessage(err instanceof Error ? err.message : 'Order failed');
     } finally {
       setOrderBusy(false);
+    }
+  };
+
+  const squarePosition = async (row: PositionItem) => {
+    try {
+      setOrderMessage(null);
+      const response = await fetch('/api/trading/positions/square', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: row.symbol,
+          mode: row.mode || 'PAPER',
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.detail || 'Failed to square position');
+      }
+      setOrderMessage(`${row.mode || 'PAPER'} square submitted for ${row.symbol}`);
+      setPositions((prev) => prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)));
+    } catch (error) {
+      setOrderMessage(error instanceof Error ? error.message : 'Failed to square position');
     }
   };
 
@@ -543,6 +744,17 @@ export default function TerminalPage() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-lg">{currentSymbol?.symbol || '--'}</span>
+                {currentSymbol?.symbol && (
+                  <button
+                    type="button"
+                    onClick={() => openTradingView(currentSymbol.symbol)}
+                    className="text-foreground-muted hover:text-foreground"
+                    title="Open on TradingView"
+                    aria-label={`Open ${currentSymbol.symbol} on TradingView`}
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </button>
+                )}
                 <span className="px-1.5 py-0.5 rounded text-xs bg-background-tertiary">NSE</span>
                 {isConnected && <span className="w-1.5 h-1.5 rounded-full bg-profit" />}
               </div>
@@ -690,6 +902,7 @@ export default function TerminalPage() {
                       stock={stock}
                       isSelected={selectedSymbol === stock.symbol}
                       onClick={() => setSelectedSymbol(stock.symbol)}
+                      onOpenTradingView={openTradingView}
                     />
                   ))}
                 </tbody>
@@ -703,121 +916,208 @@ export default function TerminalPage() {
           {/* Chart Toolbar */}
           <div className="h-9 flex items-center justify-between px-3 border-b border-border">
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
-                <CandlestickChart className="w-4 h-4" /> Candles
+              <Button
+                variant={terminalView === 'options' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => setTerminalView('options')}
+              >
+                <CandlestickChart className="w-4 h-4" /> Option Chain
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
-                <TrendingUp className="w-4 h-4" /> Indicators
+              <Button
+                variant={terminalView === 'positions' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => setTerminalView('positions')}
+              >
+                <ListOrdered className="w-4 h-4" /> Positions
               </Button>
             </div>
             <div className="flex items-center gap-2">
-              {chartSource && <span className="text-xs text-foreground-muted">Source: {chartSource}</span>}
+              {terminalView === 'options' && optionsBoard && (
+                <span className="text-xs text-foreground-muted">
+                  {optionsBoard.underlying} Spot: {roundToDecimals(optionsBoard.spot_price, 2).toFixed(2)}
+                </span>
+              )}
               <Button variant="profit" size="sm" className="h-7 text-xs px-4">Buy</Button>
               <Button variant="loss" size="sm" className="h-7 text-xs px-4">Sell</Button>
             </div>
           </div>
 
-          {/* Chart */}
+          {/* Chart / Options Board */}
           <div className="flex-1 flex items-center justify-center">
-            {chartLoading ? (
+            {terminalView === 'options' && optionsLoading && !optionsBoard ? (
               <div className="text-center">
                 <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-foreground-muted" />
-                <p className="text-sm text-foreground-muted">Loading chart...</p>
+                <p className="text-sm text-foreground-muted">Loading options board...</p>
               </div>
-            ) : chartError ? (
+            ) : terminalView === 'options' && optionsError && !optionsBoard ? (
               <div className="text-center">
-                <p className="text-sm text-loss">{chartError}</p>
+                <p className="text-sm text-loss">{optionsError}</p>
               </div>
-            ) : chartData.length === 0 ? (
+            ) : terminalView === 'options' && !optionsBoard ? (
               <div className="text-center">
-                <CandlestickChart className="w-12 h-12 mx-auto mb-2 text-foreground-muted" />
-                <p className="text-sm text-foreground-muted">No chart data</p>
+                <p className="text-sm text-foreground-muted">No options data</p>
+              </div>
+            ) : terminalView === 'options' ? (
+              <div className="h-full w-full overflow-auto p-2">
+                <div className="mb-2 flex items-center gap-2">
+                  <select
+                    value={optionsUnderlying}
+                    onChange={(event) => setOptionsUnderlying(event.target.value)}
+                    className="h-8 rounded border border-border bg-background px-2 text-xs"
+                  >
+                    <option value="NIFTY">NIFTY</option>
+                    <option value="BANKNIFTY">BANKNIFTY</option>
+                    <option value="FINNIFTY">FINNIFTY</option>
+                  </select>
+                  <input
+                    type="date"
+                    value={optionsExpiry}
+                    onChange={(event) => setOptionsExpiry(event.target.value)}
+                    className="h-8 rounded border border-border bg-background px-2 text-xs"
+                  />
+                  {optionsOrderflow && (
+                    <div className="text-xs text-foreground-muted">
+                      PCR(OI): {optionsOrderflow.pcr_oi ?? '--'} | PCR(Vol): {optionsOrderflow.pcr_volume ?? '--'}
+                    </div>
+                  )}
+                </div>
+                <table className="w-full text-xs">
+                  <thead className="border-b border-border text-foreground-muted">
+                    <tr>
+                      <th className="py-1 text-left font-normal">CE</th>
+                      <th className="py-1 text-right font-normal">CE LTP</th>
+                      <th className="py-1 text-right font-normal">Strike</th>
+                      <th className="py-1 text-right font-normal">PE LTP</th>
+                      <th className="py-1 text-left font-normal">PE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(optionsBoard?.strikes ?? []).map((row) => (
+                      <tr key={row.strike} className="border-b border-border/60">
+                        <td className="py-1">
+                          <button
+                            type="button"
+                            className="text-left hover:text-profit"
+                            onClick={() => {
+                              if (row.ce?.symbol) {
+                                setSelectedOptionSymbol(row.ce.symbol);
+                              }
+                            }}
+                          >
+                            {row.ce?.symbol || '--'}
+                          </button>
+                        </td>
+                        <td className="py-1 text-right tabular-nums">{typeof row.ce?.ltp === 'number' ? row.ce.ltp.toFixed(2) : '--'}</td>
+                        <td className={`py-1 text-right tabular-nums ${row.strike === optionsBoard?.atm_strike ? 'text-foreground font-semibold' : 'text-foreground-muted'}`}>{row.strike.toFixed(2)}</td>
+                        <td className="py-1 text-right tabular-nums">{typeof row.pe?.ltp === 'number' ? row.pe.ltp.toFixed(2) : '--'}</td>
+                        <td className="py-1 text-left">
+                          <button
+                            type="button"
+                            className="text-left hover:text-loss"
+                            onClick={() => {
+                              if (row.pe?.symbol) {
+                                setSelectedOptionSymbol(row.pe.symbol);
+                              }
+                            }}
+                          >
+                            {row.pe?.symbol || '--'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : terminalView === 'positions' ? (
+              <div className="h-full w-full overflow-auto p-2">
+                <div className="mb-2 flex items-center gap-4 text-xs">
+                  <span className="text-foreground-muted">
+                    Live Net P&L:{' '}
+                    <span className={positionsSummary.net_pnl_live >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+                      {positionsSummary.net_pnl_live.toFixed(2)}
+                    </span>
+                  </span>
+                  <span className="text-foreground-muted">
+                    Paper Net P&L:{' '}
+                    <span className={positionsSummary.net_pnl_paper >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+                      {positionsSummary.net_pnl_paper.toFixed(2)}
+                    </span>
+                  </span>
+                  <span className="text-foreground-muted">
+                    Total:{' '}
+                    <span className={positionsSummary.net_pnl_total >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+                      {positionsSummary.net_pnl_total.toFixed(2)}
+                    </span>
+                  </span>
+                </div>
+                {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
+                    <tr>
+                      <th className="py-1 text-left font-normal">Symbol</th>
+                      <th className="py-1 text-left font-normal">Mode</th>
+                      <th className="py-1 text-left font-normal">Side</th>
+                      <th className="py-1 text-right font-normal">Qty</th>
+                      <th className="py-1 text-right font-normal">Entry</th>
+                      <th className="py-1 text-right font-normal">LTP</th>
+                      <th className="py-1 text-right font-normal">Unrealized</th>
+                      <th className="py-1 text-right font-normal">Net P&L</th>
+                      <th className="py-1 text-right font-normal">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((pos) => (
+                      <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
+                        <td className="py-1 pr-2">{pos.symbol}</td>
+                        <td className="py-1 pr-2">{pos.mode || 'LIVE'}</td>
+                        <td className="py-1 pr-2">{pos.net_qty >= 0 ? 'LONG' : 'SHORT'}</td>
+                        <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
+                        <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.entry_price || 0).toFixed(2)}</td>
+                        <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.current_price || 0).toFixed(2)}</td>
+                        <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                          {Number(pos.unrealized_pnl || 0).toFixed(2)}
+                        </td>
+                        <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                          {Number(pos.net_pnl || 0).toFixed(2)}
+                        </td>
+                        <td className="py-1 pr-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => void squarePosition(pos)}
+                          >
+                            Square
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                    {positions.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="py-8 text-center text-foreground-muted">No open positions</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             ) : (
-              <PriceChart data={chartData} />
+              <div className="text-center text-sm text-foreground-muted">Select a view</div>
             )}
-          </div>
-
-          {/* Bottom Panel */}
-          <div className="h-40 border-t border-border bg-surface">
-            <div className="flex items-center gap-1 px-3 h-8 border-b border-border">
-              {['Positions', 'Orders', 'Trades'].map((tab) => (
-                <Button
-                  key={tab}
-                  onClick={() => setActiveTab(tab.toLowerCase())}
-                  variant={activeTab === tab.toLowerCase() ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-6 text-xs"
-                >
-                  {tab}
-                </Button>
-              ))}
-            </div>
-            <div className="p-3 h-[calc(100%-2rem)] overflow-auto">
-              {panelError && <div className="text-xs text-loss mb-2">{panelError}</div>}
-              {activeTab === 'positions' && (
-                livePositions.length === 0 ? (
-                  <div className="text-center text-sm text-foreground-muted">No live positions</div>
-                ) : (
-                  <table className="w-full text-xs">
-                    <thead className="text-foreground-muted">
-                      <tr>
-                        <th className="text-left font-normal">Symbol</th>
-                        <th className="text-right font-normal">Qty</th>
-                        <th className="text-right font-normal">LTP</th>
-                        <th className="text-right font-normal">P&L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {livePositions.map((pos) => (
-                        <tr key={pos.id} className="border-t border-border">
-                          <td className="py-1.5">{pos.symbol} <span className="text-xs text-foreground-muted">LIVE</span></td>
-                          <td className="py-1.5 text-right tabular-nums">{pos.net_qty}</td>
-                          <td className="py-1.5 text-right tabular-nums">{Number(pos.current_price || 0).toFixed(2)}</td>
-                          <td className={`py-1.5 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                            {Number(pos.unrealized_pnl || 0).toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-              )}
-              {activeTab === 'orders' && (
-                [...liveOrders, ...paperOrders].length === 0 ? (
-                  <div className="text-center text-sm text-foreground-muted">No orders</div>
-                ) : (
-                  <table className="w-full text-xs">
-                    <thead className="text-foreground-muted">
-                      <tr>
-                        <th className="text-left font-normal">Symbol</th>
-                        <th className="text-left font-normal">Mode</th>
-                        <th className="text-right font-normal">Qty</th>
-                        <th className="text-right font-normal">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...liveOrders, ...paperOrders].map((order) => (
-                        <tr key={order.id} className="border-t border-border">
-                          <td className="py-1.5">{order.symbol}</td>
-                          <td className="py-1.5">{Number(order.is_paper) === 1 ? 'PAPER' : 'LIVE'}</td>
-                          <td className="py-1.5 text-right tabular-nums">{order.quantity}</td>
-                          <td className="py-1.5 text-right">{order.status}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-              )}
-              {activeTab === 'trades' && (
-                <div className="text-center text-sm text-foreground-muted">Tradebook integration in T3 continuation</div>
-              )}
-            </div>
           </div>
         </div>
 
         {/* Right Sidebar - Order Panel */}
         <div className="w-56 flex-shrink-0 p-3 border-l border-border bg-surface">
+          <div className="mb-2 text-xs text-foreground-muted">
+            Trade Symbol: <span className="tabular-nums text-foreground">{activeTradeSymbol || '--'}</span>
+          </div>
+          {terminalView === 'options' && isOptionSymbol && (
+            <div className="mb-2 text-xs text-foreground-muted">
+              Lot Size: <span className="tabular-nums text-foreground">{optionLotSize}</span> | Lots: <span className="tabular-nums text-foreground">{optionLots}</span> | Qty: <span className="tabular-nums text-foreground">{effectiveOrderQuantity}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2 mb-3">
             <Button variant="profit" className="flex-1 h-8 text-sm" disabled={orderBusy} onClick={() => void placeOrder('BUY')}>Buy</Button>
             <Button variant="loss" className="flex-1 h-8 text-sm" disabled={orderBusy} onClick={() => void placeOrder('SELL')}>Sell</Button>
@@ -834,19 +1134,34 @@ export default function TerminalPage() {
                 <option value="MARKET">Market</option>
                 <option value="LIMIT">Limit</option>
                 <option value="SL">Stop Loss</option>
+                <option value="SL-M">Stop Loss Market</option>
               </select>
             </div>
-            <div>
-              <label className="text-xs text-foreground-muted mb-1 block">Quantity</label>
-              <Input
-                type="number"
-                min={1}
-                value={orderQty}
-                onChange={(event) => setOrderQty(Math.max(1, Number(event.target.value) || 1))}
-                placeholder="Qty"
-                className="h-8 text-sm"
-              />
-            </div>
+            {terminalView === 'options' && isOptionSymbol ? (
+              <div>
+                <label className="text-xs text-foreground-muted mb-1 block">Lots</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={optionLots}
+                  onChange={(event) => setOptionLots(Math.max(1, Number(event.target.value) || 1))}
+                  placeholder="Lots"
+                  className="h-8 text-sm"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-foreground-muted mb-1 block">Quantity</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={orderQty}
+                  onChange={(event) => setOrderQty(Math.max(1, Number(event.target.value) || 1))}
+                  placeholder="Qty"
+                  className="h-8 text-sm"
+                />
+              </div>
+            )}
             <div>
               <label className="text-xs text-foreground-muted mb-1 block">Price</label>
               <Input
@@ -858,7 +1173,7 @@ export default function TerminalPage() {
                 className="h-8 text-sm"
               />
             </div>
-            {orderType === 'SL' && (
+            {(orderType === 'SL' || orderType === 'SL-M') && (
               <div>
                 <label className="text-xs text-foreground-muted mb-1 block">Trigger</label>
                 <Input
@@ -866,6 +1181,18 @@ export default function TerminalPage() {
                   value={orderTrigger}
                   onChange={(event) => setOrderTrigger(Number(event.target.value) || 0)}
                   placeholder="Trigger"
+                  className="h-8 text-sm"
+                />
+              </div>
+            )}
+            {tradingMode === 'LIVE' && (
+              <div>
+                <label className="text-xs text-foreground-muted mb-1 block">Risk Override Reason (if warning)</label>
+                <Input
+                  type="text"
+                  value={riskOverrideReason}
+                  onChange={(event) => setRiskOverrideReason(event.target.value)}
+                  placeholder="Optional unless risk warning"
                   className="h-8 text-sm"
                 />
               </div>

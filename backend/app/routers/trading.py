@@ -6,6 +6,8 @@ API endpoints for order placement, position management, and trading operations.
 
 import logging
 import os
+import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,14 +17,19 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..models.live_order import LiveOrder
+from ..services.live_market_service import live_market
 from ..services.order_execution_service import order_execution_service
 from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
+from ..services.symbol_master import symbol_master
 
 router = APIRouter(
     prefix="/api/trading",
     tags=["Trading"]
 )
+
+SINGLE_USER_ID = "default_user"
 
 # ============== Pydantic Models ==============
 
@@ -39,6 +46,8 @@ class OrderRequest(BaseModel):
     strike_price: float | None = None
     expiry_date: str | None = None  # YYYY-MM-DD
     option_type: str | None = None  # CE/PE
+    is_live_confirmation_ack: bool = False
+    risk_override_reason: str | None = None
 
 
 class ModifyOrderRequest(BaseModel):
@@ -55,6 +64,11 @@ class ModeRequest(BaseModel):
 class ExitPositionRequest(BaseModel):
     symbol: str | None = None  # If None, exit all positions
     product_type: str | None = None
+
+
+class SquarePositionRequest(BaseModel):
+    symbol: str | None = None
+    mode: str = "PAPER"  # PAPER / LIVE
 
 
 class RiskCheckRequest(BaseModel):
@@ -121,6 +135,116 @@ class ExposureSummaryResponse(BaseModel):
     orders_limit: int
     position_count: int
     positions_limit: int
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _latest_price_for_symbol(symbol: str) -> float:
+    tick = live_market.get_latest_tick(symbol)
+    if tick and isinstance(tick, dict):
+        ltp = tick.get("ltp")
+        if isinstance(ltp, (int, float)):
+            return float(ltp)
+    return 0.0
+
+
+def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[dict[str, Any]]:
+    orders = (
+        db.query(LiveOrder)
+        .filter(
+            LiveOrder.user_id == user_id,
+            LiveOrder.is_paper == 1,
+            LiveOrder.status == "FILLED",
+            LiveOrder.filled_qty > 0,
+        )
+        .order_by(LiveOrder.created_at.asc())
+        .all()
+    )
+
+    book: dict[str, dict[str, Any]] = {}
+    for order in orders:
+        symbol = order.symbol
+        state = book.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "product_type": order.product_type or "INTRADAY",
+                "instrument_type": order.instrument_type,
+                "net_qty": 0,
+                "entry_price": 0.0,
+                "realized_pnl": 0.0,
+            },
+        )
+
+        qty = int(order.filled_qty or order.quantity or 0)
+        if qty <= 0:
+            continue
+
+        px = _to_float(order.average_price, _to_float(order.price, 0.0))
+        if px <= 0:
+            px = _latest_price_for_symbol(symbol) or state["entry_price"]
+
+        delta = qty if str(order.side).upper() == "BUY" else -qty
+        net = int(state["net_qty"])
+        entry = _to_float(state["entry_price"], 0.0)
+
+        if net == 0:
+            state["net_qty"] = delta
+            state["entry_price"] = px
+            continue
+
+        same_side = (net > 0 and delta > 0) or (net < 0 and delta < 0)
+        if same_side:
+            total_qty = abs(net) + abs(delta)
+            state["entry_price"] = ((entry * abs(net)) + (px * abs(delta))) / max(total_qty, 1)
+            state["net_qty"] = net + delta
+            continue
+
+        closing_qty = min(abs(net), abs(delta))
+        if net > 0:
+            state["realized_pnl"] += (px - entry) * closing_qty
+        else:
+            state["realized_pnl"] += (entry - px) * closing_qty
+
+        net_after = net + delta
+        state["net_qty"] = net_after
+        if net_after == 0:
+            state["entry_price"] = 0.0
+        elif (net_after > 0 and net < 0) or (net_after < 0 and net > 0):
+            state["entry_price"] = px
+
+    positions: list[dict[str, Any]] = []
+    for symbol, state in book.items():
+        net_qty = int(state["net_qty"])
+        if net_qty == 0:
+            continue
+        current_price = _latest_price_for_symbol(symbol) or _to_float(state["entry_price"], 0.0)
+        unrealized = (current_price - _to_float(state["entry_price"], 0.0)) * net_qty
+        positions.append(
+            {
+            "id": f"PAPER-{symbol}",
+                "symbol": symbol,
+                "fyers_symbol": None,
+                "side": "LONG" if net_qty > 0 else "SHORT",
+                "quantity": abs(net_qty),
+                "net_qty": net_qty,
+                "entry_price": round(_to_float(state["entry_price"], 0.0), 2),
+                "current_price": round(current_price, 2),
+                "unrealized_pnl": round(unrealized, 2),
+                "realized_pnl": round(_to_float(state["realized_pnl"], 0.0), 2),
+                "net_pnl": round(unrealized + _to_float(state["realized_pnl"], 0.0), 2),
+                "product_type": state["product_type"],
+                "instrument_type": state["instrument_type"],
+                "mode": "PAPER",
+            }
+        )
+
+    return positions
 
 
 # ============== Endpoints ==============
@@ -228,6 +352,35 @@ def get_positions(
         raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
 
 
+@router.get("/positions/book")
+def get_positions_book(
+    db: Session = Depends(get_db),
+):
+    """Unified positions view for Terminal: live + paper + net P&L."""
+    try:
+        position_sync_service.sync_positions()
+        live_positions = position_sync_service.get_positions(SINGLE_USER_ID)
+        for pos in live_positions:
+            unrealized = _to_float(pos.get("unrealized_pnl"), 0.0)
+            pos["realized_pnl"] = 0.0
+            pos["net_pnl"] = round(unrealized, 2)
+            pos["mode"] = "LIVE"
+
+        paper_positions = _build_paper_positions(db, SINGLE_USER_ID)
+        live_net = round(sum(_to_float(p.get("net_pnl"), 0.0) for p in live_positions), 2)
+        paper_net = round(sum(_to_float(p.get("net_pnl"), 0.0) for p in paper_positions), 2)
+
+        return {
+            "live_positions": live_positions,
+            "paper_positions": paper_positions,
+            "net_pnl_live": live_net,
+            "net_pnl_paper": paper_net,
+            "net_pnl_total": round(live_net + paper_net, 2),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error building positions book: {str(e)}")
+
+
 @router.get("/positions/summary")
 def get_position_summary(user_id: str = Query("default_user")):
     """Get position summary (P&L, exposure, etc.)"""
@@ -236,6 +389,93 @@ def get_position_summary(user_id: str = Query("default_user")):
         return summary
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching position summary: {str(e)}")
+
+
+@router.post("/positions/square")
+def square_position(req: SquarePositionRequest, db: Session = Depends(get_db)):
+    """Square open position(s) in PAPER or LIVE mode."""
+    try:
+        mode = req.mode.strip().upper()
+        if mode not in {"PAPER", "LIVE"}:
+            raise HTTPException(status_code=400, detail="mode must be PAPER or LIVE")
+
+        if mode == "LIVE":
+            from ..brokers.plugins.fyers import FyersBroker
+
+            broker = FyersBroker()
+            if req.symbol:
+                symbol = req.symbol
+                result = broker.exit_position(symbol)
+                if result.get("status") in {"ERROR", "REJECTED"} or result.get("s") == "error":
+                    try:
+                        result = broker.exit_position(symbol_master.to_fyers(symbol))
+                    except Exception:
+                        pass
+                ok = result.get("status") in {"SUCCESS", "OK"} or result.get("s") == "ok"
+                return {
+                    "status": "SUCCESS" if ok else "ERROR",
+                    "mode": "LIVE",
+                    "symbol": req.symbol,
+                    "message": result.get("message", "Live square sent"),
+                }
+            result = broker.exit_all_positions()
+            ok = result.get("status") in {"SUCCESS", "OK"} or result.get("s") == "ok"
+            return {
+                "status": "SUCCESS" if ok else "ERROR",
+                "mode": "LIVE",
+                "message": result.get("message", "Live exit-all sent"),
+            }
+
+        paper_positions = _build_paper_positions(db, req.user_id)
+        targets = [p for p in paper_positions if not req.symbol or p["symbol"] == req.symbol]
+        if not targets:
+            return {"status": "SUCCESS", "mode": "PAPER", "message": "No paper position to square"}
+
+        now = datetime.utcnow()
+        for pos in targets:
+            qty = int(abs(_to_float(pos.get("net_qty"), 0)))
+            if qty <= 0:
+                continue
+            symbol = str(pos.get("symbol"))
+            side = "SELL" if _to_float(pos.get("net_qty"), 0) > 0 else "BUY"
+            px = _latest_price_for_symbol(symbol) or _to_float(pos.get("current_price"), 0.0) or _to_float(pos.get("entry_price"), 0.0)
+            internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+            square_order = LiveOrder(
+                id=internal_id,
+                internal_id=internal_id,
+                user_id=SINGLE_USER_ID,
+                symbol=symbol,
+                fyers_symbol=symbol,
+                side=side,
+                quantity=qty,
+                order_type="MARKET",
+                product_type=pos.get("product_type") or "INTRADAY",
+                price=0.0,
+                trigger_price=0.0,
+                status="FILLED",
+                filled_qty=qty,
+                average_price=round(px, 2),
+                instrument_type=pos.get("instrument_type") or "EQ",
+                order_tag="square-off-paper",
+                source="MANUAL",
+                is_paper=1,
+                broker_message="Paper square-off",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(square_order)
+
+        db.commit()
+        return {
+            "status": "SUCCESS",
+            "mode": "PAPER",
+            "message": f"Squared {len(targets)} paper position(s)",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error squaring position: {str(e)}")
 
 
 @router.post("/positions/exit")

@@ -16,6 +16,7 @@ class ConnectionManager:
         # Subscriptions mapping: websocket -> set of symbols
         # Also serves as the registry of active connections
         self.subscriptions: dict[WebSocket, set] = {}
+        self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
         self.loop = None
 
     def set_loop(self, loop):
@@ -56,6 +57,10 @@ class ConnectionManager:
         if websocket in self.subscriptions:
             removed_symbols = set(self.subscriptions[websocket])
             del self.subscriptions[websocket]
+            # Rebuild cached global symbol set after removing this client.
+            self._global_subscriptions = (
+                set().union(*self.subscriptions.values()) if self.subscriptions else set()
+            )
         logger.info(f"[WSManager] Client disconnected. Total: {len(self.subscriptions)}")
         return removed_symbols
 
@@ -64,6 +69,7 @@ class ConnectionManager:
         if websocket in self.subscriptions:
             for symbol in symbols:
                 self.subscriptions[websocket].add(symbol)
+                self._global_subscriptions.add(symbol)  # Update global cache
             logger.info(f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(self.subscriptions[websocket])}")
 
     async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
@@ -71,14 +77,14 @@ class ConnectionManager:
         if websocket in self.subscriptions:
             for symbol in symbols:
                 self.subscriptions[websocket].discard(symbol)
+            # Rebuild global cache after unsubscribe
+            self._global_subscriptions = set().union(*self.subscriptions.values()) if self.subscriptions else set()
             logger.info(f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(self.subscriptions[websocket])}")
 
     def get_all_subscribed_symbols(self) -> set[str]:
-        """Get union of subscribed symbols across all active clients."""
-        combined: set[str] = set()
-        for symbols in self.subscriptions.values():
-            combined.update(symbols)
-        return combined
+        """Get union of subscribed symbols across all active clients (O(1) cached)."""
+        # Return a copy so callers can safely diff before/after subscribe/unsubscribe.
+        return set(self._global_subscriptions)
 
     async def broadcast(self, message: dict[str, Any]):
         """

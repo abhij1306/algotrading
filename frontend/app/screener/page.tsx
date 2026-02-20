@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, memo, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search,
@@ -11,12 +11,14 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  ExternalLink,
 } from 'lucide-react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { screenerAPI, apiClient } from '@/lib/api-client';
 import { debounce } from '@/lib/debounce';
-import { Button } from '@/components/ui';
-import { formatPercentage } from '@/lib/utils';
+import { Badge, Button } from '@/components/ui';
+import { formatPercentage, roundToDecimals } from '@/lib/utils';
+import { getTradingViewUrl } from '@/lib/tradingview';
 
 interface ScreenerResult {
   symbol: string;
@@ -52,12 +54,13 @@ type SortField = 'symbol' | 'price' | 'change' | 'volume' | 'marketCap' | 'rsi' 
 type SortDirection = 'asc' | 'desc';
 type FlashDirection = 'up' | 'down';
 type FlashField = 'price' | 'change' | 'volume';
+type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 
 const RPP_OPTIONS = [25, 50, 100];
 const TICK_FLUSH_MS = 200;
 const FALLBACK_POLL_MS = 3000;
 const WS_STALE_MS = 5000;
-const FLASH_DURATION_MS = 900;
+const FLASH_DURATION_MS = 600;
 
 function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -76,28 +79,36 @@ function formatMarketCap(value: number): string {
   return `${Math.round(value)} Cr`;
 }
 
-function getFlashStyle(direction?: FlashDirection): CSSProperties {
-  const base: CSSProperties = {
-    transition: 'color 900ms ease-out, text-shadow 900ms ease-out, transform 350ms ease-out',
-    display: 'inline-block',
-  };
-  if (!direction) return base;
-  return {
-    ...base,
-    color: direction === 'up' ? 'var(--color-profit)' : 'var(--color-loss)',
-    textShadow: direction === 'up' ? '0 0 10px rgba(34, 197, 94, 0.65)' : '0 0 10px rgba(239, 68, 68, 0.65)',
-    transform: 'scale(1.03)',
-  };
+function compareBySort(a: ScreenerResult, b: ScreenerResult, field: SortField, direction: SortDirection): number {
+  let cmp = 0;
+  if (field === 'symbol') {
+    cmp = a.symbol.localeCompare(b.symbol);
+  } else {
+    cmp = toNumber(a[field]) - toNumber(b[field]);
+  }
+
+  if (cmp === 0) {
+    cmp = a.symbol.localeCompare(b.symbol);
+  }
+  return direction === 'asc' ? cmp : -cmp;
+}
+
+function getFlashClassName(flash?: FlashState): string | undefined {
+  if (!flash) return undefined;
+  if (flash.direction === 'up') return flash.phase === 0 ? 'screener-flash-up-a' : 'screener-flash-up-b';
+  return flash.phase === 0 ? 'screener-flash-down-a' : 'screener-flash-down-b';
 }
 
 const StockRow = memo(function StockRow({
   stock,
   onClick,
-  flashDirectionByField,
+  onOpenTradingView,
+  flashStateByField,
 }: {
   stock: ScreenerResult;
   onClick: () => void;
-  flashDirectionByField: Partial<Record<FlashField, FlashDirection>>;
+  onOpenTradingView: (symbol: string) => void;
+  flashStateByField: Partial<Record<FlashField, FlashState>>;
 }) {
   const isUp = toNumber(stock.change) >= 0;
   const rsi = toNumber(stock.rsi);
@@ -106,23 +117,37 @@ const StockRow = memo(function StockRow({
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors border-b border-border">
       <td className="py-2 pl-4">
-        <div className="font-medium">{stock.symbol}</div>
+        <div className="flex items-center gap-1">
+          <div className="font-medium">{stock.symbol}</div>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenTradingView(stock.symbol);
+            }}
+            className="text-foreground-muted hover:text-foreground"
+            title="Open on TradingView"
+            aria-label={`Open ${stock.symbol} on TradingView`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <div className="text-xs text-foreground-muted truncate max-w-[120px]">{stock.name}</div>
       </td>
       <td className="py-2">
         <span className="text-xs px-1.5 py-0.5 rounded bg-background-tertiary">{stock.sector}</span>
       </td>
       <td className="py-2 text-right tabular-nums">
-        <span style={getFlashStyle(flashDirectionByField.price)}>{toNumber(stock.price).toFixed(2)}</span>
+        <span className={getFlashClassName(flashStateByField.price)}>{toNumber(stock.price).toFixed(2)}</span>
       </td>
       <td className={`py-2 text-right tabular-nums ${isUp ? 'text-profit' : 'text-loss'}`}>
         <div className="flex items-center justify-end gap-1">
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          <span style={getFlashStyle(flashDirectionByField.change)}>{formatPercentage(toNumber(stock.change))}</span>
+          <span className={getFlashClassName(flashStateByField.change)}>{formatPercentage(toNumber(stock.change))}</span>
         </div>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
-        <span style={getFlashStyle(flashDirectionByField.volume)}>{formatVolume(toNumber(stock.volume))}</span>
+        <span className={getFlashClassName(flashStateByField.volume)}>{formatVolume(toNumber(stock.volume))}</span>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">{formatMarketCap(toNumber(stock.marketCap))}</td>
       <td className={`py-2 text-right tabular-nums ${rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : ''}`}>
@@ -158,10 +183,14 @@ export default function ScreenerPage() {
 
   const requestIdRef = useRef(0);
   const subscribedSymbolsKeyRef = useRef('');
+  const resultsRef = useRef<ScreenerResult[]>([]);
   const pendingTicksRef = useRef<Record<string, TickData>>({});
   const lastTickAtRef = useRef(0);
   const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const [flashByCell, setFlashByCell] = useState<Record<string, FlashDirection>>({});
+  const [flashByCell, setFlashByCell] = useState<Record<string, FlashState>>({});
+  const openTradingView = (symbol: string) => {
+    window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
+  };
 
   const debouncedSetQuery = useMemo(
     () =>
@@ -252,7 +281,13 @@ export default function ScreenerPage() {
         return;
       }
 
-      setResults(screenerPayload.results || []);
+      const normalizedResults = (screenerPayload.results || []).map((row) => ({
+        ...row,
+        price: roundToDecimals(row.price, 2),
+        change: roundToDecimals(row.change, 2),
+      }));
+      setResults(normalizedResults);
+      resultsRef.current = normalizedResults;
       setTotalResults(screenerPayload.total || 0);
       setIsLoading(false);
     }
@@ -317,15 +352,32 @@ export default function ScreenerPage() {
       entries[key] = flash.direction;
     }
 
-    setFlashByCell((prev) => ({ ...prev, ...entries }));
+    setFlashByCell((prev) => {
+      // OPTIMIZATION: Check if any values actually changed before creating new object
+      const hasChanges = Object.keys(entries).some(key => 
+        !prev[key] || prev[key].direction !== entries[key]
+      );
+      
+      if (!hasChanges) return prev; // Prevent unnecessary re-render
+      
+      const next = { ...prev };
+      for (const [key, direction] of Object.entries(entries)) {
+        const current = prev[key];
+        next[key] = {
+          direction,
+          phase: current ? (current.phase === 0 ? 1 : 0) : 0,
+        };
+      }
+      return next;
+    });
 
-    for (const [key, direction] of Object.entries(entries)) {
+    for (const [key] of Object.entries(entries)) {
       const existing = flashTimeoutsRef.current[key];
       if (existing) clearTimeout(existing);
 
       flashTimeoutsRef.current[key] = setTimeout(() => {
         setFlashByCell((current) => {
-          if (current[key] !== direction) return current;
+          if (!current[key]) return current;
           const updated = { ...current };
           delete updated[key];
           return updated;
@@ -397,54 +449,72 @@ export default function ScreenerPage() {
       if (symbols.length === 0) return;
 
       pendingTicksRef.current = {};
+      const currentResults = resultsRef.current;
+      if (!currentResults || currentResults.length === 0) return;
+
       const flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }> = [];
-      setResults((prev) => {
-        let changed = false;
-        const next = prev.map((row) => {
-          const tick = pending[row.symbol];
-          if (!tick) return row;
+      let nextResults: ScreenerResult[] | null = null;
 
-          const price = tick.ltp ?? row.price;
-          const change = tick.change_pct ?? row.change;
-          const volume = tick.volume ?? row.volume;
+      for (let i = 0; i < currentResults.length; i++) {
+        const row = currentResults[i];
+        const tick = pending[row.symbol];
+        if (!tick) continue;
 
-          if (price === row.price && change === row.change && volume === row.volume) {
-            return row;
-          }
+        const price = roundToDecimals(tick.ltp ?? row.price, 2);
+        const change = roundToDecimals(tick.change_pct ?? row.change, 2);
+        const volume = tick.volume ?? row.volume;
 
-          if (price !== row.price) {
-            flashes.push({
-              symbol: row.symbol,
-              field: 'price',
-              direction: price > row.price ? 'up' : 'down',
-            });
-          }
-          if (change !== row.change) {
-            flashes.push({
-              symbol: row.symbol,
-              field: 'change',
-              direction: change > row.change ? 'up' : 'down',
-            });
-          }
-          if (volume !== row.volume) {
-            flashes.push({
-              symbol: row.symbol,
-              field: 'volume',
-              direction: volume > row.volume ? 'up' : 'down',
-            });
-          }
+        if (price === row.price && change === row.change && volume === row.volume) {
+          continue;
+        }
 
-          changed = true;
-          return { ...row, price, change, volume };
-        });
+        if (!nextResults) nextResults = [...currentResults];
 
-        return changed ? next : prev;
-      });
-      applyFlashes(flashes);
+        if (price !== row.price) {
+          flashes.push({
+            symbol: row.symbol,
+            field: 'price',
+            direction: price > row.price ? 'up' : 'down',
+          });
+        }
+        if (change !== row.change) {
+          flashes.push({
+            symbol: row.symbol,
+            field: 'change',
+            direction: change > row.change ? 'up' : 'down',
+          });
+        }
+        if (volume !== row.volume) {
+          flashes.push({
+            symbol: row.symbol,
+            field: 'volume',
+            direction: volume > row.volume ? 'up' : 'down',
+          });
+        }
+
+        nextResults[i] = { ...row, price, change, volume };
+      }
+
+      if (nextResults) {
+        // OPTIMIZATION: Only re-sort if the sorted field actually changed
+        const sortFieldChanged = flashes.some(f => 
+          f.field === sortField && ['change', 'volume', 'price'].includes(sortField)
+        );
+        
+        if (sortFieldChanged && (sortField === 'change' || sortField === 'volume' || sortField === 'price')) {
+          nextResults.sort((a, b) => compareBySort(a, b, sortField, sortDirection));
+        }
+        
+        resultsRef.current = nextResults;
+        setResults(nextResults);
+        if (flashes.length > 0) {
+          applyFlashes(flashes);
+        }
+      }
     }, TICK_FLUSH_MS);
 
     return () => clearInterval(timer);
-  }, [applyFlashes]);
+  }, [applyFlashes, sortField, sortDirection]);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -466,13 +536,13 @@ export default function ScreenerPage() {
 
   return (
     <div className="flex flex-col h-screen">
-      <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface px-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold">Stock Screener</h1>
+          <h1 className="text-xl font-semibold text-foreground">Stock Screener</h1>
           {isConnected && (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-profit-bg text-profit">
-              <Radio className="w-3 h-3" /> LIVE
-            </span>
+            <Badge variant="profit" pulse>
+              LIVE
+            </Badge>
           )}
         </div>
 
@@ -580,21 +650,26 @@ export default function ScreenerPage() {
           </thead>
           <tbody className="text-sm">
             {results.map((stock) => {
+              // OPTIMIZATION: Create stable flash state object to prevent unnecessary re-renders
               const priceKey = `${stock.symbol}:price`;
               const changeKey = `${stock.symbol}:change`;
               const volumeKey = `${stock.symbol}:volume`;
-              const flashDirectionByField: Partial<Record<FlashField, FlashDirection>> = {
+              
+              // Only create object if at least one flash exists
+              const hasFlash = flashByCell[priceKey] || flashByCell[changeKey] || flashByCell[volumeKey];
+              const flashStateByField: Partial<Record<FlashField, FlashState>> = hasFlash ? {
                 price: flashByCell[priceKey],
                 change: flashByCell[changeKey],
                 volume: flashByCell[volumeKey],
-              };
+              } : {};
 
               return (
                 <StockRow
                   key={stock.symbol}
                   stock={stock}
-                  flashDirectionByField={flashDirectionByField}
+                  flashStateByField={flashStateByField}
                   onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+                  onOpenTradingView={openTradingView}
                 />
               );
             })}

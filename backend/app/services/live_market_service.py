@@ -84,10 +84,10 @@ class LiveMarketService:
         self.latest_values[symbol] = tick
 
     async def _flush_loop(self):
-        """Background task to flush buffered ticks every 500ms for faster updates"""
+        """Background task to flush buffered ticks every 200ms for low-latency updates"""
         try:
             while True:
-                await asyncio.sleep(0.5)  # Reduced from 1s to 500ms for faster real-time updates
+                await asyncio.sleep(0.2)
                 if not self.tick_buffer:
                     continue
 
@@ -99,9 +99,6 @@ class LiveMarketService:
                 # Payload: {"type": "ticker_batch", "data": [tick1, tick2, ...]}
                 if batch:
                     msg = {"type": "ticker_batch", "data": list(batch.values())}
-                    # Reduced logging frequency - only log every 10th batch to avoid spam
-                    if len(batch) > 0:
-                        pass  # Silent mode for production
                     await manager.broadcast(msg)
 
         except asyncio.CancelledError:
@@ -157,10 +154,10 @@ class LiveMarketService:
             logger.error(f"Error in monitor loop: {e}")
 
     def handle_tick_incoming(self, tick):
-        """Entry point for ticks from Fyers Thread - broadcast immediately"""
+        """Entry point for ticks from Fyers Thread - buffer for batch broadcast"""
         if self.loop and not self.loop.is_closed():
             try:
-                # Convert symbol to DB_FORMAT before broadcasting
+                # Convert symbol to DB_FORMAT before buffering
                 fyers_symbol = tick.get("symbol")
                 if fyers_symbol:
                     db_symbol = symbol_master.to_db(fyers_symbol)
@@ -191,9 +188,8 @@ class LiveMarketService:
                     # Update latest values cache
                     self.latest_values[db_symbol] = tick_db
 
-                    # Broadcast immediately without buffering
-                    msg = {"type": "ticker", "data": tick_db}
-                    asyncio.run_coroutine_threadsafe(manager.broadcast(msg), self.loop)
+                    # Buffer for batch broadcast (removed immediate broadcast to avoid duplicates)
+                    asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
             except Exception as e:
                 logger.error(f"Error processing incoming tick: {e}")
 
@@ -212,6 +208,9 @@ class LiveMarketService:
         # 2. Start monitor loop if not running
         if self.loop and (self.monitor_task is None or self.monitor_task.done()):
             self.monitor_task = self.loop.create_task(self._monitor_loop())
+        # Start broadcast flush loop if not running.
+        if self.loop and (self.broadcast_task is None or self.broadcast_task.done()):
+            self.broadcast_task = self.loop.create_task(self._flush_loop())
 
         # 4. Check if already connecting or connected
         if self._is_connecting or self.ws_connected:
