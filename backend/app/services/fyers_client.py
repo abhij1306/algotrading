@@ -48,9 +48,10 @@ class FyersClient:
         self.client_id = None
         self.access_token = None
         self.token_expires_at = None
+        self._token_file_mtime_ns = None
 
         # Skip initialization if DEV_MODE is set
-        if os.getenv("DEV_MODE") == "true":
+        if os.getenv("DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}:
             logger.info("[DEV_MODE] Skipping Fyers client initialization")
             self._initialized = True
             return
@@ -66,6 +67,7 @@ class FyersClient:
             return
 
         try:
+            self._token_file_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
             with open(FYERS_TOKEN_PATH) as f:
                 data = json.load(f)
                 self.client_id = data.get('client_id')
@@ -86,6 +88,25 @@ class FyersClient:
 
         except Exception as e:
             logger.error(f"Failed to load Fyers credentials: {e}")
+
+    def _refresh_credentials_if_changed(self) -> bool:
+        """
+        Reload token credentials when token file changes on disk.
+        Returns True if credentials were reloaded.
+        """
+        try:
+            if not FYERS_TOKEN_PATH.exists():
+                return False
+            current_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
+            if self._token_file_mtime_ns == current_mtime_ns and self.client_id and self.access_token:
+                return False
+
+            old_token = self.access_token
+            self._load_credentials()
+            return bool(self.access_token and self.access_token != old_token)
+        except Exception as e:
+            logger.error(f"Failed checking token file changes: {e}")
+            return False
 
     def _connect(self):
         """Initialize FyersModel instance"""
@@ -110,18 +131,41 @@ class FyersClient:
 
     def validate_token(self) -> bool:
         """Check if token is valid by making a lightweight call"""
-        if not self.fyers:
-            return False
+        token_updated = self._refresh_credentials_if_changed()
+        if token_updated:
+            logger.info("Detected updated Fyers token on disk, reconnecting client.")
+            self._connect()
 
-        try:
+        if not self.fyers:
+            # One extra attempt in case client wasn't initialized during startup.
+            self._connect()
+            if not self.fyers:
+                return False
+
+        def _profile_ok() -> bool:
             response = self.fyers.get_profile()
             if response.get('s') == 'ok':
                 return True
-            else:
-                logger.warning(f"[ERROR] Fyers token invalid: {response}")
-                return False
+            logger.warning(f"[ERROR] Fyers token invalid: {response}")
+            return False
+
+        try:
+            if _profile_ok():
+                return True
+
+            # Retry once after reloading from disk to handle fresh-login while backend is running.
+            if self._refresh_credentials_if_changed():
+                self._connect()
+                return _profile_ok()
+            return False
         except Exception as e:
             logger.error(f"[ERROR] Token validation failed: {e}")
+            if self._refresh_credentials_if_changed():
+                try:
+                    self._connect()
+                    return _profile_ok()
+                except Exception as retry_error:
+                    logger.error(f"[ERROR] Token validation retry failed: {retry_error}")
             return False
 
     def is_token_expired(self) -> bool:
@@ -223,3 +267,8 @@ def get_fyers_client() -> FyersClient:
     if _fyers_client is None:
         _fyers_client = FyersClient()
     return _fyers_client
+
+def reset_fyers_client() -> None:
+    """Reset singleton so fresh credentials are loaded on next access."""
+    global _fyers_client
+    _fyers_client = None

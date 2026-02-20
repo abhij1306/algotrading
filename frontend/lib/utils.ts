@@ -68,3 +68,12 @@ export function formatPrice(value: number): string {
   if (value >= 1) return value.toFixed(3);
   return value.toFixed(6);
 }
+
+/**
+ * Round a numeric value to fixed decimals and return as number.
+ * Useful for keeping realtime UI values deterministic with provider precision.
+ */
+export function roundToDecimals(value: number | null | undefined, decimals: number = 2): number {
+  if (value === null || value === undefined || isNaN(value)) return 0;
+  return Number(value.toFixed(decimals));
+}

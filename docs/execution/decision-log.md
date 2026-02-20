@@ -84,3 +84,16 @@
 ### D-021: Remove Broker-Historical Price Backfill from Canonical Pipeline
 - Decision: deprecate `fetch-fyers-ohlcv` from canonical Phase-1 build; keep only bhavcopy + corporate actions + monthly weightage as trusted inputs.
 - Rationale: historical broker-derived OHLCV is now treated as non-trusted for Phase-1 reproducibility and must not influence canonical artifacts.
+
+## 2026-02-20
+### D-022: Terminal Unified Order Contract
+- Decision: terminal order submit path is unified on `/api/trading/order` for PAPER and LIVE; `/api/terminal/paper/order` kept as legacy compatibility only.
+- Rationale: one payload contract prevents mode drift and enables strict paper/live parity.
+
+### D-023: Options-First Terminal Surface
+- Decision: terminal UX defaults to options board (underlying/expiry/chain/depth/orderflow + quick order), while preserving watchlist and account panels.
+- Rationale: aligns terminal with options-first trading priority while keeping existing terminal context.
+
+### D-024: Live Safety Handshake Requirement
+- Decision: LIVE order submission requires `is_live_confirmation_ack=true`; risk warnings require `risk_override_reason`.
+- Rationale: adds hard guardrails to prevent accidental live dispatch and enforces auditable risk overrides.

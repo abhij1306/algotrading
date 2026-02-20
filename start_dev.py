@@ -143,7 +143,7 @@ def main() -> None:
     backend_env["PYTHONUNBUFFERED"] = "1"
     backend_env["BACKEND_HOST"] = "127.0.0.1"
     backend_env["BACKEND_PORT"] = str(backend_port)
-    backend_env.setdefault("BACKEND_RELOAD", "true")
+    backend_env.setdefault("BACKEND_RELOAD", "false")
     # Keep market-hours behavior real by default; set DEV_MODE=true explicitly when needed.
     backend_env.setdefault("DEV_MODE", "false")
 

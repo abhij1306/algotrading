@@ -15,6 +15,8 @@
 1. UI Layer
 - Pages: Dashboard, Screener, Terminal, Backtest
 - Shared realtime hook: `frontend/hooks/useWebSocket.ts`
+- Terminal trading surfaces:
+  - `frontend/app/terminal/page.tsx` (options-first board + execution ticket + panels)
 
 2. API Layer
 - FastAPI routers in `backend/app/routers`
@@ -24,11 +26,18 @@
   - `POST /api/websocket/disconnect`
   - `GET /api/websocket/status`
   - `WS /api/websocket/stream`
+- Trading and options routes:
+  - `/api/trading/*` (mode/order/orders/positions/tradebook/funds/risk-check)
+  - `/api/options/*` (chain/expiries/atm/greeks)
+  - `/api/terminal/options/*` (board/depth/orderflow/preview-order/order alias)
 
 3. Domain Services
 - `symbol_master.py`: symbol normalization and provider boundary conversion
 - `index_universe_loader.py`: loads 33 index constituent CSVs from `data_system/03_universe/constituents`
 - `live_market_service.py`: market-hours gating, provider connect/reconnect, tick normalization, broadcast dispatch
+- `order_execution_service.py`: unified PAPER/LIVE execution routing
+- `option_chain_service.py`: option chain fetch/cache + Greeks
+- `risk_manager.py`: pre-trade risk checks for live path
 
 4. Data Layer
 - DB entities: company, historical_price, orders, positions, dataset_run, snapshot index tables
@@ -73,6 +82,21 @@
 4. `LiveMarketService.subscribe()` converts to Fyers and subscribes provider
 5. Incoming provider tick -> normalized (`symbol`, `change_pct`, `change`, `volume`) -> immediate broadcast as `ticker`
 6. `ws_manager` filters per-client by subscription set before send
+
+## Terminal Execution Flow
+1. UI sets mode through `POST /api/trading/mode`.
+2. Orders use unified contract (`/api/trading/order`) for both PAPER and LIVE.
+3. `order_execution_service` routes by mode:
+- PAPER: simulated fill path only.
+- LIVE: confirmation + risk + broker dispatch.
+4. Orders and account panels are served from `/api/trading/orders|positions|tradebook|funds`.
+
+## Options Board Data Flow
+1. UI selects underlying + expiry.
+2. `GET /api/terminal/options/board` returns chain context + ATM summary.
+3. `GET /api/terminal/options/depth` returns depth for selected contract/underlying.
+4. `GET /api/terminal/options/orderflow` returns derived OI/volume/depth metrics.
+5. WebSocket ticks update contract LTP and position PnL between polling cycles.
 
 ## Market-Hours Policy
 - Open window: 09:15–15:30 IST, weekdays

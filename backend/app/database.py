@@ -85,9 +85,10 @@ else:
         echo=False,
         pool_pre_ping=True,
         poolclass=QueuePool,
-        pool_size=10,
-        max_overflow=20,
-        pool_recycle=3600  # Recycle connections after 1 hour
+        pool_size=20,        # Increased from 10 for better concurrency
+        max_overflow=40,     # Increased from 20 for peak load handling
+        pool_recycle=3600,   # Recycle connections after 1 hour
+        pool_timeout=30,     # Add timeout to prevent indefinite waiting
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

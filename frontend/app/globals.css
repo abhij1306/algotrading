@@ -201,14 +201,22 @@
     font-family: var(--font-sans), var(--font-sans-fallback);
     /* Enable OpenType features for better typography */
     font-feature-settings:
-      "cv02",  /* Alternate characters */
-      "cv03",  /* Alternate characters */
-      "cv04",  /* Alternate characters */
-      "cv11",  /* Alternate characters */
-      "tnum",  /* Tabular numbers */
-      "case",  /* Case-sensitive forms */
-      "liga",  /* Standard ligatures */
-      "calt";  /* Contextual alternates */
+      "cv02",
+      /* Alternate characters */
+      "cv03",
+      /* Alternate characters */
+      "cv04",
+      /* Alternate characters */
+      "cv11",
+      /* Alternate characters */
+      "tnum",
+      /* Tabular numbers */
+      "case",
+      /* Case-sensitive forms */
+      "liga",
+      /* Standard ligatures */
+      "calt";
+    /* Contextual alternates */
     /* Smooth font rendering */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -224,14 +232,17 @@
   .h1 {
     @apply text-2xl font-bold tracking-tight text-foreground;
   }
+
   h2,
   .h2 {
     @apply text-xl font-bold tracking-tight text-foreground;
   }
+
   h3,
   .h3 {
     @apply text-lg font-semibold tracking-tight text-foreground;
   }
+
   h4,
   .h4 {
     @apply text-base font-semibold text-foreground;
@@ -246,10 +257,14 @@
     letter-spacing: -0.02em;
     /* Enable font features for better number display */
     font-feature-settings:
-      "tnum",  /* Tabular numbers */
-      "zero",  /* Slashed zero */
-      "ss01",  /* Stylistic set 1 */
-      "liga";  /* Ligatures */
+      "tnum",
+      /* Tabular numbers */
+      "zero",
+      /* Slashed zero */
+      "ss01",
+      /* Stylistic set 1 */
+      "liga";
+    /* Ligatures */
     /* Smooth rendering */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -257,6 +272,7 @@
 }
 
 @layer components {
+
   /* Layout Containers */
   .layout-container {
     @apply flex h-screen w-full bg-background overflow-hidden;
@@ -289,15 +305,12 @@
 
   /* Inputs */
   .input-base {
-    @apply bg-background-secondary border border-border rounded-md px-3 py-1.5 text-sm
-    text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary
-    transition-colors duration-200;
+    @apply bg-background-secondary border border-border rounded-md px-3 py-1.5 text-sm text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors duration-200;
   }
 
   /* Buttons */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200
-    disabled:opacity-50 disabled:pointer-events-none cursor-pointer;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none cursor-pointer;
   }
 
   .btn-primary {
@@ -341,18 +354,22 @@
   .badge-profit {
     @apply bg-profit-bg text-profit;
   }
+
   .badge-loss {
     @apply bg-loss-bg text-loss;
   }
+
   .badge-warning {
     @apply bg-warning-bg text-warning;
   }
+
   .badge-neutral {
     @apply bg-background-tertiary text-foreground-secondary;
   }
 }
 
 @layer utilities {
+
   /* Typography Scale Utilities */
   .text-xxs {
     font-size: var(--text-xxs);
@@ -444,8 +461,13 @@
 
   /* Animation Keyframes */
   @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
   }
 
   @keyframes slideUp {
@@ -453,6 +475,7 @@
       opacity: 0;
       transform: translateY(10px);
     }
+
     to {
       opacity: 1;
       transform: translateY(0);
@@ -464,38 +487,9 @@
       opacity: 0;
       transform: scale(0.95);
     }
+
     to {
       opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  @keyframes screenerGlowUp {
-    0% {
-      text-shadow: 0 0 0 rgba(34, 197, 94, 0);
-      transform: scale(1);
-    }
-    20% {
-      text-shadow: 0 0 10px rgba(34, 197, 94, 0.65);
-      transform: scale(1.03);
-    }
-    100% {
-      text-shadow: 0 0 0 rgba(34, 197, 94, 0);
-      transform: scale(1);
-    }
-  }
-
-  @keyframes screenerGlowDown {
-    0% {
-      text-shadow: 0 0 0 rgba(239, 68, 68, 0);
-      transform: scale(1);
-    }
-    20% {
-      text-shadow: 0 0 10px rgba(239, 68, 68, 0.65);
-      transform: scale(1.03);
-    }
-    100% {
-      text-shadow: 0 0 0 rgba(239, 68, 68, 0);
       transform: scale(1);
     }
   }
@@ -511,65 +505,79 @@
   .animate-scale-in {
     animation: scaleIn 0.15s ease-out;
   }
+}
 
-  .screener-flash-up {
-    display: inline-block;
-    animation: screenerGlowUp 650ms ease-out;
-    will-change: transform, text-shadow;
+/* 
+  SCREENER FLASH ANIMATIONS
+  Dual-phase system to ensure re-triggering during rapid data updates.
+*/
+@keyframes screenerGlowUp_A {
+  0% {
     color: var(--color-profit);
+    text-shadow: 0 0 8px var(--color-profit);
   }
 
-  .screener-flash-down {
-    display: inline-block;
-    animation: screenerGlowDown 650ms ease-out;
-    will-change: transform, text-shadow;
+  100% {
+    color: inherit;
+    text-shadow: none;
+  }
+}
+
+@keyframes screenerGlowUp_B {
+  0% {
+    color: var(--color-profit);
+    text-shadow: 0 0 8px var(--color-profit);
+  }
+
+  100% {
+    color: inherit;
+    text-shadow: none;
+  }
+}
+
+@keyframes screenerGlowDown_A {
+  0% {
     color: var(--color-loss);
+    text-shadow: 0 0 8px var(--color-loss);
+  }
+
+  100% {
+    color: inherit;
+    text-shadow: none;
   }
 }
 
-/* Keep Screener flash styles as plain global CSS to avoid utility-layer pruning. */
-@keyframes screenerGlowUpGlobal {
+@keyframes screenerGlowDown_B {
   0% {
-    text-shadow: 0 0 0 rgba(34, 197, 94, 0);
-    transform: scale(1);
+    color: var(--color-loss);
+    text-shadow: 0 0 8px var(--color-loss);
   }
-  20% {
-    text-shadow: 0 0 10px rgba(34, 197, 94, 0.65);
-    transform: scale(1.03);
-  }
-  100% {
-    text-shadow: 0 0 0 rgba(34, 197, 94, 0);
-    transform: scale(1);
-  }
-}
 
-@keyframes screenerGlowDownGlobal {
-  0% {
-    text-shadow: 0 0 0 rgba(239, 68, 68, 0);
-    transform: scale(1);
-  }
-  20% {
-    text-shadow: 0 0 10px rgba(239, 68, 68, 0.65);
-    transform: scale(1.03);
-  }
   100% {
-    text-shadow: 0 0 0 rgba(239, 68, 68, 0);
-    transform: scale(1);
+    color: inherit;
+    text-shadow: none;
   }
 }
 
 .screener-flash-up-a,
-.screener-flash-up-b {
-  display: inline-block;
-  animation: screenerGlowUpGlobal 650ms ease-out;
-  will-change: transform, text-shadow;
-  color: var(--color-profit);
-}
-
+.screener-flash-up-b,
 .screener-flash-down-a,
 .screener-flash-down-b {
-  display: inline-block;
-  animation: screenerGlowDownGlobal 650ms ease-out;
-  will-change: transform, text-shadow;
-  color: var(--color-loss);
+  will-change: color, text-shadow;
+}
+
+.screener-flash-up-a {
+  animation: screenerGlowUp_A 600ms ease-out;
+}
+
+.screener-flash-up-b {
+  animation: screenerGlowUp_B 600ms ease-out;
+}
+
+.screener-flash-down-a {
+  animation: screenerGlowDown_A 600ms ease-out;
+}
+
+.screener-flash-down-b {
+  animation: screenerGlowDown_B 600ms ease-out;
 }

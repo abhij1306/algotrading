@@ -41,6 +41,94 @@ class OrderExecutionService:
     def get_mode(self) -> str:
         return self._mode
 
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _estimate_market_reference_price(self, fyers_symbol: str, fallback_price: float = 0.0) -> float:
+        try:
+            quote = self.broker.get_quote(fyers_symbol)
+            value = quote.get("v", {}) if isinstance(quote, dict) else {}
+            lp = self._safe_float(value.get("lp"), 0.0)
+            if lp > 0:
+                return lp
+            return self._safe_float(quote.get("last_price"), fallback_price)
+        except Exception:
+            return fallback_price
+
+    def _simulate_paper_fill(self, order_params: dict[str, Any], fyers_symbol: str) -> dict[str, Any]:
+        side = str(order_params.get("side", "BUY")).upper()
+        order_type = str(order_params.get("type", "MARKET")).upper()
+        qty = max(0, int(order_params.get("quantity", 0)))
+        price = self._safe_float(order_params.get("price"), 0.0)
+        trigger_price = self._safe_float(order_params.get("trigger_price"), 0.0)
+        ref = self._estimate_market_reference_price(fyers_symbol, fallback_price=price)
+        if ref <= 0:
+            ref = price
+
+        slippage_bps = float(order_params.get("paper_slippage_bps", 5.0))
+        fee_bps = float(order_params.get("paper_fee_bps", 3.5))
+
+        status = "SUBMITTED"
+        fill_price = 0.0
+        filled_qty = 0
+        reason = "Pending in paper book"
+
+        def market_fill(px: float) -> float:
+            slip = px * (slippage_bps / 10000.0)
+            return px + slip if side == "BUY" else max(0.0, px - slip)
+
+        if order_type == "MARKET":
+            fill_price = market_fill(ref)
+            status = "FILLED"
+            filled_qty = qty
+            reason = "Paper simulated market fill"
+        elif order_type == "LIMIT":
+            if (side == "BUY" and price >= ref) or (side == "SELL" and price <= ref):
+                fill_price = market_fill(min(price, ref) if side == "BUY" else max(price, ref))
+                status = "FILLED"
+                filled_qty = qty
+                reason = "Paper simulated marketable limit fill"
+            else:
+                reason = "Paper limit resting (not marketable)"
+        elif order_type == "SL":
+            triggered = (side == "BUY" and trigger_price <= ref) or (side == "SELL" and trigger_price >= ref)
+            if triggered and price > 0 and ((side == "BUY" and price >= ref) or (side == "SELL" and price <= ref)):
+                fill_price = market_fill(min(price, ref) if side == "BUY" else max(price, ref))
+                status = "FILLED"
+                filled_qty = qty
+                reason = "Paper simulated stop-limit fill"
+            else:
+                reason = "Paper stop-limit pending trigger/fill"
+        elif order_type == "SL-M":
+            triggered = (side == "BUY" and trigger_price <= ref) or (side == "SELL" and trigger_price >= ref)
+            if triggered:
+                fill_price = market_fill(ref)
+                status = "FILLED"
+                filled_qty = qty
+                reason = "Paper simulated stop-market fill"
+            else:
+                reason = "Paper stop-market pending trigger"
+        else:
+            reason = f"Paper unsupported order type {order_type}"
+
+        notional = fill_price * filled_qty
+        estimated_charges = round(notional * (fee_bps / 10000.0), 2) if filled_qty > 0 else 0.0
+        fill_price = round(fill_price, 2) if fill_price > 0 else 0.0
+
+        return {
+            "status": status,
+            "fill_price": fill_price,
+            "filled_qty": filled_qty,
+            "estimated_charges": estimated_charges,
+            "slippage_bps": slippage_bps,
+            "fill_source": "paper_sim",
+            "message": reason,
+        }
+
     def place_order(self, order_params: dict[str, Any], db: Session) -> dict[str, Any]:
         """
         Place an order.
@@ -68,8 +156,15 @@ class OrderExecutionService:
             if quantity <= 0:
                 raise ValueError("Quantity must be positive")
 
-            # 1. Risk Check (for LIVE mode)
+            # 1. Live confirmation + risk checks
             if self._mode == "LIVE":
+                if not bool(order_params.get("is_live_confirmation_ack", False)):
+                    return {
+                        "status": "ERROR",
+                        "message": "LIVE order requires explicit confirmation acknowledgment",
+                        "code": "LIVE_CONFIRMATION_REQUIRED",
+                    }
+
                 risk_result = risk_manager.pre_trade_check(order_params, db)
                 if risk_result.status.value == "FAIL":
                     return {
@@ -79,6 +174,12 @@ class OrderExecutionService:
                     }
                 # Warn but allow if WARNING
                 if risk_result.status.value == "WARNING":
+                    if not str(order_params.get("risk_override_reason", "")).strip():
+                        return {
+                            "status": "ERROR",
+                            "message": f"Risk warning requires override reason: {risk_result.message}",
+                            "code": "RISK_WARNING_OVERRIDE_REQUIRED",
+                        }
                     logger.warning(f"Risk Warning: {risk_result.message}")
 
             # 2. Validate Symbol & Format
@@ -151,12 +252,24 @@ class OrderExecutionService:
 
             else:
                 # PAPER MODE
-                new_order.status = "SUBMITTED"
-                new_order.broker_message = "Paper Order Placed"
+                paper_fill = self._simulate_paper_fill(order_params, fyers_symbol)
+                new_order.status = paper_fill["status"]
+                new_order.filled_qty = int(paper_fill["filled_qty"])
+                new_order.average_price = float(paper_fill["fill_price"])
+                new_order.broker_message = (
+                    f'{paper_fill["message"]} | fill_source={paper_fill["fill_source"]} '
+                    f'| slippage_bps={paper_fill["slippage_bps"]} '
+                    f'| estimated_charges={paper_fill["estimated_charges"]}'
+                )
                 response = {
                     "order_id": internal_id,
-                    "status": "SUBMITTED",
-                    "message": "Paper Order Placed Successfully"
+                    "status": paper_fill["status"],
+                    "message": paper_fill["message"],
+                    "fill_source": paper_fill["fill_source"],
+                    "slippage_bps": paper_fill["slippage_bps"],
+                    "estimated_charges": paper_fill["estimated_charges"],
+                    "average_price": paper_fill["fill_price"],
+                    "filled_qty": paper_fill["filled_qty"],
                 }
 
             db.commit()

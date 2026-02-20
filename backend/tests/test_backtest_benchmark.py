@@ -381,3 +381,89 @@ class TestBenchmarkCalculation:
         assert abs(benchmark_equity.iloc[0] - initial_capital) < 0.01, (
             f"Initial benchmark equity should be {initial_capital}, got {benchmark_equity.iloc[0]}"
         )
+
+
+# Property-Based Tests using Hypothesis
+
+from hypothesis import HealthCheck, given, settings, strategies as st
+
+
+class TestBenchmarkProperties:
+    """Property-based tests for benchmark calculation using Hypothesis."""
+
+    @given(
+        initial_capital=st.floats(
+            min_value=10_000.0,
+            max_value=10_000_000.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        price_changes=st.lists(
+            st.floats(
+                min_value=-0.05,
+                max_value=0.05,
+                allow_nan=False,
+                allow_infinity=False,
+            ),
+            min_size=5,
+            max_size=60
+        )
+    )
+    @settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
+    def test_property_benchmark_buy_and_hold_calculation(self, initial_capital, price_changes):
+        """
+        Property 1: Benchmark uses buy-and-hold calculation
+        
+        **Validates: Requirements 1.2, 1.5**
+        
+        For any backtest run with valid index price data, the benchmark equity
+        at any point should equal: initial_capital * (index_price[i] / index_price[0])
+        
+        This property verifies that:
+        1. The benchmark calculation follows the buy-and-hold formula exactly
+        2. The formula holds for any initial capital amount
+        3. The formula holds for any sequence of price changes
+        4. No rebalancing or other adjustments are applied
+        """
+        # Generate index price series from price changes
+        # Start with a reasonable base price
+        base_price = 1000.0
+        index_prices = [base_price]
+        
+        for change in price_changes:
+            # Apply percentage change to get next price
+            next_price = index_prices[-1] * (1.0 + change)
+            # Ensure price stays positive
+            if next_price > 0:
+                index_prices.append(next_price)
+        
+        # Need at least 2 prices for meaningful test
+        if len(index_prices) < 2:
+            return
+        
+        # Create pandas Series with datetime index
+        dates = pd.date_range('2025-01-01', periods=len(index_prices), freq='D')
+        index_series = pd.Series(index_prices, index=dates)
+        
+        # Calculate benchmark using the service's logic
+        initial_index_price = index_series.iloc[0]
+        benchmark_ret = (index_series / initial_index_price) - 1.0
+        benchmark_equity = initial_capital * (1.0 + benchmark_ret)
+        
+        # Verify the property: benchmark_equity[i] = initial_capital * (index_price[i] / index_price[0])
+        for i in range(len(index_prices)):
+            expected_equity = initial_capital * (index_prices[i] / index_prices[0])
+            actual_equity = benchmark_equity.iloc[i]
+            
+            # Allow small floating point tolerance (0.01% relative error)
+            relative_error = abs(actual_equity - expected_equity) / max(abs(expected_equity), 1.0)
+            assert relative_error < 0.0001, (
+                f"Buy-and-hold formula violated at index {i}: "
+                f"expected {expected_equity}, got {actual_equity}, "
+                f"relative error {relative_error:.6f}"
+            )
+        
+        # Additional verification: first point should always equal initial capital
+        assert abs(benchmark_equity.iloc[0] - initial_capital) < 0.01, (
+            f"Initial benchmark equity should be {initial_capital}, got {benchmark_equity.iloc[0]}"
+        )

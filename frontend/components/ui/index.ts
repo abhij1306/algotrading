@@ -52,6 +52,7 @@ export { Tooltip } from "./Tooltip";
 
 // Form Controls
 export { ScrollArea, ScrollBar } from "./ScrollArea";
+export { Checkbox } from "./checkbox";
 
 // Utility Components
 export { GlassCard } from "./GlassCard";

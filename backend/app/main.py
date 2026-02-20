@@ -124,7 +124,18 @@ async def lifespan(app: FastAPI):
         async def step_validate_fyers_token():
             from .services.fyers_client import get_fyers_client
             fyers = get_fyers_client()
-            if not fyers or not fyers.validate_token():
+            is_valid = False
+            if fyers:
+                try:
+                    is_valid = await asyncio.wait_for(
+                        asyncio.to_thread(fyers.validate_token),
+                        timeout=5.0,
+                    )
+                except TimeoutError:
+                    logger.warning("[WARN] Fyers token validation timed out after 5s; continuing startup")
+                    raise ValueError("Fyers token validation timeout")
+
+            if not fyers or not is_valid:
                 logger.warning("[WARN] Fyers token is invalid or expired")
                 raise ValueError("Fyers token validation failed")
             logger.info("[OK] Fyers token validated")

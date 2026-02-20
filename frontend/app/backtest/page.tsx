@@ -9,6 +9,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Checkbox,
   Input,
   PageContainer,
   Select,
@@ -209,67 +210,73 @@ export default function BacktestPage() {
                     <CardTitle className="text-sm uppercase tracking-wider text-foreground-muted">Run Configuration</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3 px-4 pb-4 pt-0">
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-foreground-secondary">Run Name (optional)</span>
-                      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nifty EMA Test Q1" />
-                    </label>
+                    <Input
+                      label="Run Name (optional)"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="e.g. Nifty EMA Test Q1"
+                    />
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">Instrument</span>
-                        <Select
-                          value={instrumentType}
-                          onChange={(e) => setInstrumentType(e.target.value as 'equity' | 'options')}
-                        >
-                          <option value="equity">Equity</option>
-                          <option value="options">Options</option>
-                        </Select>
-                      </label>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">Capital (₹)</span>
-                        <Input type="number" min="1" step="1" value={initialCapital} onChange={(e) => setInitialCapital(e.target.value)} />
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">Start Date</span>
-                        <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-                      </label>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">End Date</span>
-                        <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-                      </label>
-                    </div>
-
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-foreground-secondary">Selection Mode</span>
+                    <div className="grid grid-cols-2 gap-4">
                       <Select
-                        value={selectionMode}
-                        onChange={(e) => setSelectionMode(e.target.value as 'universe' | 'symbols')}
+                        label="Instrument"
+                        value={instrumentType}
+                        onChange={(e) => setInstrumentType(e.target.value as 'equity' | 'options')}
                       >
-                        <option value="universe">Index Universe</option>
-                        <option value="symbols">Specific Symbols</option>
+                        <option value="equity">Equity</option>
+                        <option value="options">Options</option>
                       </Select>
-                    </label>
+
+                      <Input
+                        label="Capital (₹)"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={initialCapital}
+                        onChange={(e) => setInitialCapital(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <Input
+                        label="Start Date"
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                      />
+                      <Input
+                        label="End Date"
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                      />
+                    </div>
+
+                    <Select
+                      label="Selection Mode"
+                      value={selectionMode}
+                      onChange={(e) => setSelectionMode(e.target.value as 'universe' | 'symbols')}
+                    >
+                      <option value="universe">Index Universe</option>
+                      <option value="symbols">Specific Symbols</option>
+                    </Select>
 
                     {selectionMode === 'universe' ? (
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">Universe</span>
-                        <Select
-                          value={universe}
-                          onChange={(e) => setUniverse(e.target.value)}
-                        >
-                          {Object.keys(status?.universe_ranges ?? { NIFTY50: {} }).map((u) => (
-                            <option key={u} value={u}>{u}</option>
-                          ))}
-                        </Select>
-                      </label>
+                      <Select
+                        label="Universe"
+                        value={universe}
+                        onChange={(e) => setUniverse(e.target.value)}
+                      >
+                        {Object.keys(status?.universe_ranges ?? { NIFTY50: {} }).map((u) => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </Select>
                     ) : (
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-foreground-secondary">Symbols (comma separated)</span>
-                        <Input value={symbols} onChange={(e) => setSymbols(e.target.value)} />
-                      </label>
+                      <Input
+                        label="Symbols (comma separated)"
+                        value={symbols}
+                        onChange={(e) => setSymbols(e.target.value)}
+                      />
                     )}
                   </CardContent>
                 </Card>
@@ -323,11 +330,9 @@ export default function BacktestPage() {
                                 <div className="text-sm font-semibold text-foreground">{s.name}</div>
                                 <div className="text-xs text-foreground-muted">{s.id.replaceAll('_', ' ')}</div>
                               </div>
-                              <input
-                                type="checkbox"
+                              <Checkbox
                                 checked={!!allocation?.enabled}
-                                onChange={(e) => onToggleStrategy(s.id, e.target.checked)}
-                                className="mt-1 h-4 w-4 cursor-pointer accent-primary"
+                                onChange={(e) => onToggleStrategy(s.id, (e.target as HTMLInputElement).checked)}
                               />
                             </div>
                             <div className="flex items-center justify-between gap-2">

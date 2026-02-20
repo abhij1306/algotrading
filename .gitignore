@@ -143,6 +143,12 @@ MANIFEST
 
 # Unit test / coverage
 .pytest_cache/
+.hypothesis/
+.hypothesis/**
+.hypothesis/*
+.hypothesis/*
+backend/.hypothesis/
+backend/.hypothesis/**
 .coverage
 .coverage.*
 htmlcov/

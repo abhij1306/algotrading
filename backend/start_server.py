@@ -26,7 +26,7 @@ def _env_bool(key: str, default: bool) -> bool:
 if __name__ == "__main__":
     host = os.getenv("BACKEND_HOST", "127.0.0.1")
     port = int(os.getenv("BACKEND_PORT", "8000"))
-    reload_enabled = _env_bool("BACKEND_RELOAD", True)
+    reload_enabled = _env_bool("BACKEND_RELOAD", False)
 
     if reload_enabled:
         uvicorn.run(
@@ -36,6 +36,15 @@ if __name__ == "__main__":
             log_level="info",
             loop="asyncio",
             reload=True,
+            reload_dirs=["backend/app"],
+            reload_excludes=[
+                "data_system/*",
+                "nse_data/*",
+                "archive/*",
+                "frontend/*",
+                ".next/*",
+                "venv/*",
+            ],
         )
     else:
         uvicorn.run(app, host=host, port=port, log_level="info", loop="asyncio")

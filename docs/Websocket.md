@@ -91,6 +91,15 @@ Implemented in `backend/app/services/live_market_service.py`:
 - `registerCallback()` for low-rerender high-frequency consumption
 - Supports `ticker` and `ticker_batch` messages (batch currently optional)
 
+## Terminal Usage Pattern
+- Terminal subscribes selected symbol, watchlist symbols, and open-position symbols.
+- Tick updates are used for:
+  - live watchlist LTP/change refresh
+  - position PnL refresh in bottom panels
+  - lightweight chart last-candle updates
+  - options board contract LTP refresh between polling intervals
+- Depth/chain/orderflow remain polling-driven; websocket is incremental refresh, not authoritative snapshot source.
+
 ## Notes on Historical Drift
 Older docs mentioned a 1s buffer/flush pipeline as the primary path.
 Current implementation broadcasts normalized ticks immediately on arrival; use this document as source of truth.

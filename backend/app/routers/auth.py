@@ -220,6 +220,12 @@ def generate_token(request: AuthCodeRequest):
 
             print(f"[Fyers Auth] Access token saved to {ACCESS_TOKEN_FILE}")
             print(f"[Fyers Auth] Token expires at: {expires_at_utc.isoformat()}")
+            try:
+                # Ensure in-memory singleton does not keep stale token after re-login.
+                from ..services.fyers_client import reset_fyers_client
+                reset_fyers_client()
+            except Exception as refresh_err:
+                print(f"[Fyers Auth] Warning: could not reset in-memory Fyers client: {refresh_err}")
             return {"status": "success", "message": "Token generated and saved successfully"}
         else:
             error_msg = response.get("message", "Token generation failed")

@@ -38,6 +38,20 @@
 - `to_fyers_future(underlying, expiry)`
 - `parse_option_symbol(fyers_symbol)`
 
+## Terminal and Options Mapping Examples
+- Option board underlying:
+  - Input UI symbol: `NIFTY`
+  - Chain source symbol: `NSE:NIFTY50-INDEX` (resolved by service mapping)
+- Equity order:
+  - UI/API symbol: `SBIN`
+  - Broker symbol: `NSE:SBIN-EQ`
+- Option contract order:
+  - UI components: `underlying=NIFTY`, `expiry=2026-02-26`, `strike=22500`, `option_type=CE`
+  - Broker symbol build: `symbol_master.to_fyers_option(...)`
+- WebSocket subscriptions:
+  - Accepts `SBIN` and `NSE:SBIN-EQ`
+  - Both normalize to DB with `symbol_master.to_db` before subscription tracking
+
 ## Where Conversions Must Happen
 - Routers:
   - WebSocket subscribe/unsubscribe normalize inbound symbols via `to_db`

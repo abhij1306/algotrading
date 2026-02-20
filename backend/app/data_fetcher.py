@@ -13,7 +13,7 @@ from .services.symbol_master import symbol_master
 
 # Simple cache for quotes to avoid 429 errors
 _quotes_cache = {}
-_CACHE_TTL = 2  # 2 seconds TTL for live quotes
+_CACHE_TTL = 5  # 5 seconds TTL for live quotes (increased from 2 for better rate limiting)
 
 def fetch_fyers_quotes(symbols: list) -> dict:
     """

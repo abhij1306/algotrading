@@ -2,13 +2,14 @@
 
 import { useState, useEffect, useCallback, memo, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { TrendingUp, TrendingDown, Activity, Zap, Globe, ChevronRight, Target, BarChart3, Radio, Moon } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Zap, Globe, ChevronRight, Target, BarChart3, Radio, Moon, ExternalLink } from 'lucide-react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { apiClient } from '@/lib/api-client';
 import { Button } from '@/components/ui';
 import { getISTTime, MarketStatus } from '@/lib/market-hours';
-import { formatCurrency, formatPercentage } from '@/lib/utils';
+import { formatCurrency, formatPercentage, roundToDecimals } from '@/lib/utils';
 import { InsightsPanel } from '@/components/dashboard/InsightsPanel';
+import { getTradingViewUrl } from '@/lib/tradingview';
 
 interface PortfolioStats {
   totalValue: number;
@@ -82,13 +83,33 @@ const StatItem = memo(function StatItem({ label, value, change, trend, loading }
   );
 });
 
-const IndexRow = memo(function IndexRow({ idx, onClick }: { idx: MarketIndex; onClick: () => void }) {
+const IndexRow = memo(function IndexRow({
+  idx,
+  onClick,
+  onOpenTradingView,
+}: {
+  idx: MarketIndex;
+  onClick: () => void;
+  onOpenTradingView: (symbol: string) => void;
+}) {
   const isUp = (idx.change ?? 0) >= 0;
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
       <td className="py-2 pl-4">
         <div className="flex items-center gap-2">
           <span className="font-medium">{idx.name}</span>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenTradingView(idx.symbol);
+            }}
+            className="text-foreground-muted hover:text-foreground"
+            title="Open on TradingView"
+            aria-label={`Open ${idx.name} on TradingView`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
           {idx.source === 'websocket' && <span className="w-1.5 h-1.5 rounded-full bg-profit" />}
         </div>
       </td>
@@ -100,13 +121,37 @@ const IndexRow = memo(function IndexRow({ idx, onClick }: { idx: MarketIndex; on
   );
 });
 
-const WatchlistRow = memo(function WatchlistRow({ stock, onClick }: { stock: WatchlistItem; onClick: () => void }) {
+const WatchlistRow = memo(function WatchlistRow({
+  stock,
+  onClick,
+  onOpenTradingView,
+}: {
+  stock: WatchlistItem;
+  onClick: () => void;
+  onOpenTradingView: (symbol: string) => void;
+}) {
   const hasPrice = typeof stock.price === 'number' && Number.isFinite(stock.price);
   const hasChangePercent = typeof stock.changePercent === 'number' && Number.isFinite(stock.changePercent);
   const isUp = hasChangePercent ? (stock.changePercent ?? 0) >= 0 : false;
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
-      <td className="py-2.5 pl-4 font-medium">{stock.symbol}</td>
+      <td className="py-2.5 pl-4">
+        <div className="flex items-center gap-1">
+          <span className="font-medium">{stock.symbol}</span>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenTradingView(stock.symbol);
+            }}
+            className="text-foreground-muted hover:text-foreground"
+            title="Open on TradingView"
+            aria-label={`Open ${stock.symbol} on TradingView`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </td>
       <td className="py-2.5 text-right tabular-nums">
         {hasPrice ? `₹${(stock.price ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
       </td>
@@ -139,6 +184,9 @@ export default function DashboardPage() {
   const indicesLoadedRef = useRef(false);
   const subscriptionSymbolsRef = useRef<string>('');
   const pendingTicksRef = useRef<Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>>({});
+  const openTradingView = (symbol: string) => {
+    window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
+  };
 
   // Mount setup
   useEffect(() => {
@@ -189,9 +237,9 @@ export default function DashboardPage() {
 
             return {
               symbol: String(item.symbol ?? ''),
-              price: typeof rawPrice === 'number' ? rawPrice : null,
-              change: typeof rawChange === 'number' ? rawChange : null,
-              changePercent: typeof rawChangePercent === 'number' ? rawChangePercent : null,
+              price: typeof rawPrice === 'number' ? roundToDecimals(rawPrice, 2) : null,
+              change: typeof rawChange === 'number' ? roundToDecimals(rawChange, 2) : null,
+              changePercent: typeof rawChangePercent === 'number' ? roundToDecimals(rawChangePercent, 2) : null,
             } as WatchlistItem;
           }).filter((item: WatchlistItem) => item.symbol.length > 0)
         : [];
@@ -205,6 +253,9 @@ export default function DashboardPage() {
             ? indicesRes.data.map((idx: MarketIndex) => ({
                 ...idx,
                 symbol: idx.symbol || idx.name,
+                value: roundToDecimals(idx.value, 2),
+                change: roundToDecimals(idx.change, 2),
+                changePercent: roundToDecimals(idx.changePercent, 2),
                 type: 'indian',
                 source: 'api',
               }))
@@ -311,9 +362,9 @@ export default function DashboardPage() {
           if (!tick) return item;
           return {
             ...item,
-            price: tick.ltp ?? item.price,
-            changePercent: tick.change_pct ?? item.changePercent,
-            change: tick.change ?? item.change,
+            price: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : item.price,
+            changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : item.changePercent,
+            change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : item.change,
           };
         })
       );
@@ -324,9 +375,9 @@ export default function DashboardPage() {
           if (!tick) return idx;
           return {
             ...idx,
-            value: tick.ltp ?? idx.value,
-            changePercent: tick.change_pct ?? idx.changePercent,
-            change: tick.change ?? idx.change,
+            value: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : idx.value,
+            changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : idx.changePercent,
+            change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : idx.change,
             source: 'websocket',
           };
         })
@@ -472,6 +523,7 @@ export default function DashboardPage() {
                       key={idx.name}
                       idx={idx}
                       onClick={() => router.push(`/terminal?symbol=${idx.symbol}`)}
+                      onOpenTradingView={openTradingView}
                     />
                   ))}
                 </tbody>
@@ -512,6 +564,7 @@ export default function DashboardPage() {
                       key={stock.symbol}
                       stock={stock}
                       onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+                      onOpenTradingView={openTradingView}
                     />
                   ))}
                 </tbody>

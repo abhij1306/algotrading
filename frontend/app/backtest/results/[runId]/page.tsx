@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, memo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
@@ -63,6 +63,91 @@ function formatRupeeLakh(value: number): string {
   return `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
+// OPTIMIZATION: Memoized chart components to prevent unnecessary re-renders
+const EquityChart = memo(function EquityChart({ data }: { data: Array<{ date: string; equity: number; benchmark: number | null }> }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-sm text-foreground-muted">
+        No equity curve data available for this run.
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart
+        data={data}
+        margin={{ top: 10, right: 30, left: 60, bottom: 40 }}
+      >
+        <XAxis
+          dataKey="date"
+          height={60}
+          angle={-45}
+          textAnchor="end"
+          stroke="var(--color-foreground-muted)"
+          tick={{ fill: 'var(--color-foreground-muted)', fontSize: 10 }}
+          axisLine={{ stroke: 'var(--color-border)' }}
+          tickLine={{ stroke: 'var(--color-border)' }}
+        />
+        <YAxis
+          width={60}
+          stroke="var(--color-foreground-muted)"
+          tick={{ fill: 'var(--color-foreground-secondary)', fontSize: 11 }}
+          axisLine={{ stroke: 'var(--color-border)' }}
+          tickLine={{ stroke: 'var(--color-border)' }}
+        />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: 'var(--color-elevated)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--color-foreground)',
+            fontSize: '12px'
+          }}
+        />
+        <Line
+          type="monotone"
+          dataKey="equity"
+          stroke="var(--color-primary)"
+          strokeWidth={2.5}
+          dot={false}
+          name="Portfolio"
+        />
+        <Line
+          type="monotone"
+          dataKey="benchmark"
+          stroke="var(--color-foreground-muted)"
+          strokeWidth={1.8}
+          strokeDasharray="5 5"
+          dot={false}
+          name="Benchmark"
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+});
+
+const DrawdownChart = memo(function DrawdownChart({ data }: { data: CurvePoint[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-xs text-foreground-muted">
+        No drawdown data
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={data}>
+        <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-foreground-muted)' }} hide />
+        <YAxis tick={{ fontSize: 10, fill: 'var(--color-foreground-secondary)' }} width={40} />
+        <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: '11px' }} />
+        <Line type="monotone" dataKey="drawdown_pct" stroke="var(--color-loss)" dot={false} strokeWidth={2} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+});
+
 export default function BacktestResultPage() {
   const params = useParams<{ runId: string }>();
   const router = useRouter();
@@ -109,6 +194,7 @@ export default function BacktestResultPage() {
     };
   }, [runId]);
 
+  // OPTIMIZATION: Memoize chart data to prevent recalculation on every render
   const chartRows = useMemo(() => {
     const eq = payload?.result?.equity_curve ?? [];
     const benchmark = payload?.result?.benchmark_curve ?? [];
@@ -119,13 +205,26 @@ export default function BacktestResultPage() {
     const sampleRate = Math.max(1, Math.floor(rows.length / 200));
     const sampled = rows.filter((_, i) => i % sampleRate === 0);
 
-    console.log('Chart rows:', rows.length, 'sampled to', sampled.length);
     return sampled;
-  }, [payload]);
+  }, [payload?.result?.equity_curve, payload?.result?.benchmark_curve]);
 
-  const drawdownRows: CurvePoint[] = payload?.result?.drawdown_curve ?? [];
-  const trades = payload?.result?.trade_log ?? [];
-  const metrics = payload?.result?.metrics;
+  // OPTIMIZATION: Memoize drawdown data
+  const drawdownRows = useMemo(() => 
+    payload?.result?.drawdown_curve ?? [], 
+    [payload?.result?.drawdown_curve]
+  );
+
+  // OPTIMIZATION: Memoize trades and metrics
+  const trades = useMemo(() => 
+    payload?.result?.trade_log ?? [], 
+    [payload?.result?.trade_log]
+  );
+  
+  const metrics = useMemo(() => 
+    payload?.result?.metrics, 
+    [payload?.result?.metrics]
+  );
+  
   const winRate = metrics?.win_rate_pct ?? 0;
 
   return (
@@ -217,62 +316,7 @@ export default function BacktestResultPage() {
                     </div>
                   </CardHeader>
                   <CardContent className="p-4" style={{ height: '360px' }}>
-                    {chartRows.length === 0 ? (
-                      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-sm text-foreground-muted">
-                        No equity curve data available for this run.
-                      </div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart
-                          data={chartRows}
-                          margin={{ top: 10, right: 30, left: 60, bottom: 40 }}
-                        >
-                          <XAxis
-                            dataKey="date"
-                            height={60}
-                            angle={-45}
-                            textAnchor="end"
-                            stroke="var(--color-foreground-muted)"
-                            tick={{ fill: 'var(--color-foreground-muted)', fontSize: 10 }}
-                            axisLine={{ stroke: 'var(--color-border)' }}
-                            tickLine={{ stroke: 'var(--color-border)' }}
-                          />
-                          <YAxis
-                            width={60}
-                            stroke="var(--color-foreground-muted)"
-                            tick={{ fill: 'var(--color-foreground-secondary)', fontSize: 11 }}
-                            axisLine={{ stroke: 'var(--color-border)' }}
-                            tickLine={{ stroke: 'var(--color-border)' }}
-                          />
-                          <Tooltip
-                            contentStyle={{
-                              backgroundColor: 'var(--color-elevated)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 'var(--radius-md)',
-                              color: 'var(--color-foreground)',
-                              fontSize: '12px'
-                            }}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="equity"
-                            stroke="var(--color-primary)"
-                            strokeWidth={2.5}
-                            dot={false}
-                            name="Portfolio"
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="benchmark"
-                            stroke="var(--color-foreground-muted)"
-                            strokeWidth={1.8}
-                            strokeDasharray="5 5"
-                            dot={false}
-                            name="Benchmark"
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
+                    <EquityChart data={chartRows} />
                   </CardContent>
                 </Card>
 
@@ -281,20 +325,7 @@ export default function BacktestResultPage() {
                     <CardTitle className="text-sm uppercase tracking-wider text-foreground-muted">Drawdown</CardTitle>
                   </CardHeader>
                   <CardContent className="h-24 p-3">
-                    {drawdownRows.length === 0 ? (
-                      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-xs text-foreground-muted">
-                        No drawdown data
-                      </div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={drawdownRows}>
-                          <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-foreground-muted)' }} hide />
-                          <YAxis tick={{ fontSize: 10, fill: 'var(--color-foreground-secondary)' }} width={40} />
-                          <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: '11px' }} />
-                          <Line type="monotone" dataKey="drawdown_pct" stroke="var(--color-loss)" dot={false} strokeWidth={2} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
+                    <DrawdownChart data={drawdownRows} />
                   </CardContent>
                 </Card>
               </div>
