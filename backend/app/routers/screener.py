@@ -103,7 +103,9 @@ def get_screener_results(
 
         normalized_sort = (sort_by or "symbol").lower()
         descending = (sort_order or "asc").lower() == "desc"
-        change_expr = ((HistoricalPrice.close - HistoricalPrice.open) / func.nullif(HistoricalPrice.open, 0)) * 100
+        change_expr = (
+            (HistoricalPrice.close - HistoricalPrice.open) / func.nullif(HistoricalPrice.open, 0)
+        ) * 100
 
         sort_mapping = {
             "symbol": Company.symbol,

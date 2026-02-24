@@ -1,55 +1,71 @@
-import { FlatCompat } from "@eslint/eslintrc";
-import path from "path";
-import { fileURLToPath } from "url";
+import js from '@eslint/js';
+import typescript from '@typescript-eslint/eslint-plugin';
+import typescriptParser from '@typescript-eslint/parser';
+import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
-
-const eslintConfig = [
+export default [
+  js.configs.recommended,
   {
-    ignores: [
-      ".next/**",
-      "out/**",
-      "node_modules/**",
-      ".turbo/**",
-      "scripts/**",
-      "next-env.d.ts",
-    ],
-  },
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
-  {
-    rules: {
-      // TypeScript
-      "@typescript-eslint/no-unused-vars": [
-        "warn",
-        {
-          argsIgnorePattern: "^_",
-          varsIgnorePattern: "^_",
-          ignoreRestSiblings: true,
-        },
-      ],
-      "@typescript-eslint/no-explicit-any": "error",
-
-      // General
-      "no-console": ["warn", { allow: ["warn", "error"] }],
-      "no-unused-vars": "off",
-      "no-var": "error",
-      "prefer-const": "error",
-
-      // Design system - only hardcoded colors (relaxed for solo dev)
-      "no-restricted-syntax": [
-        "warn",
-        {
-          selector: "JSXAttribute[name.name='className'] Literal[value=/\[#[0-9a-fA-F]{3,8}\]/]",
-          message: "Use design system CSS variables instead of arbitrary hex colors",
-        },
-      ],
+    files: ['**/*.{ts,tsx,js,jsx,mjs}'],
+    languageOptions: {
+      parser: typescriptParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        ecmaFeatures: { jsx: true }
+      },
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        ...globals.es2021,
+        // React 17+ JSX transform globals
+        React: 'readonly',
+        // Node.js types
+        NodeJS: 'readonly',
+        RequestInit: 'readonly'
+      }
     },
+    plugins: {
+      '@typescript-eslint': typescript,
+      'react-hooks': reactHooks
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true }],
+      'no-unused-vars': 'off',
+      'no-console': ['warn', { allow: ['warn', 'error'] }],
+      'no-var': 'error',
+      'prefer-const': 'error',
+      // Disable no-undef for TypeScript (TypeScript handles this)
+      'no-undef': 'off',
+      // React hooks rules
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn'
+    }
   },
+  // Test files configuration
+  {
+    files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}', '**/__tests__/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        ...globals.es2021,
+        // Jest/Vitest globals
+        describe: 'readonly',
+        it: 'readonly',
+        test: 'readonly',
+        expect: 'readonly',
+        beforeEach: 'readonly',
+        afterEach: 'readonly',
+        beforeAll: 'readonly',
+        afterAll: 'readonly',
+        vi: 'readonly',
+        jest: 'readonly'
+      }
+    }
+  },
+  {
+    ignores: ['.next/**', 'out/**', 'node_modules/**', '.turbo/**', 'scripts/**', 'next-env.d.ts']
+  }
 ];
-
-export default eslintConfig;

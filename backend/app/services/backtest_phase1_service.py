@@ -23,13 +23,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..utils.helpers import safe_float
+
 logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CURATED_ROOT = PROJECT_ROOT / "data_system" / "04_curated" / "phase1"
 INDEX_PRICE_DATASET_PATH = (
-    PROJECT_ROOT / "data_system" / "01_sources" / "fyers_index_prices" / "universe_index_price_daily.parquet"
+    PROJECT_ROOT
+    / "data_system"
+    / "01_sources"
+    / "fyers_index_prices"
+    / "universe_index_price_daily.parquet"
 )
 
 UNIVERSE_SNAPSHOT_MAP: dict[str, Path] = {
@@ -65,13 +71,6 @@ class Phase1BacktestService:
     @staticmethod
     def _parse_date(value: str) -> date:
         return datetime.strptime(value, "%Y-%m-%d").date()
-
-    @staticmethod
-    def _safe_float(value: Any, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except Exception:
-            return default
 
     @staticmethod
     def _normalize_weight_allocations(strategies: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -136,12 +135,20 @@ class Phase1BacktestService:
             raise ValueError("Index dataset schema mismatch: expected date, universe_id, close")
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
         df["universe_id"] = df["universe_id"].astype(str).str.upper()
-        scoped = df[(df["universe_id"] == universe_id) & (df["date"] >= start) & (df["date"] <= end)].copy()
+        scoped = df[
+            (df["universe_id"] == universe_id) & (df["date"] >= start) & (df["date"] <= end)
+        ].copy()
         scoped["price"] = pd.to_numeric(scoped["close"], errors="coerce")
         scoped = scoped.dropna(subset=["date", "price"])
         if scoped.empty:
-            raise ValueError(f"No index dataset rows for universe={universe_id} in range {start}..{end}")
-        return scoped[["date", "price"]].assign(symbol=universe_id)[["date", "symbol", "price"]].sort_values("date")
+            raise ValueError(
+                f"No index dataset rows for universe={universe_id} in range {start}..{end}"
+            )
+        return (
+            scoped[["date", "price"]]
+            .assign(symbol=universe_id)[["date", "symbol", "price"]]
+            .sort_values("date")
+        )
 
     def _load_symbol_snapshot(self, symbols: list[str]) -> pd.DataFrame:
         source_path = FYERS_STOCK_DATASET_PATH
@@ -168,7 +175,9 @@ class Phase1BacktestService:
             raise ValueError(f"Symbols missing in snapshot_stock_daily: {', '.join(missing[:10])}")
         return df
 
-    def _build_signal(self, prices: pd.DataFrame, strategy_id: str, params: dict[str, Any]) -> pd.DataFrame:
+    def _build_signal(
+        self, prices: pd.DataFrame, strategy_id: str, params: dict[str, Any]
+    ) -> pd.DataFrame:
         sid = strategy_id.upper()
         if sid == "EMA20_EMA50_CROSSOVER":
             fast = int(params.get("fast_period", 20))
@@ -221,8 +230,8 @@ class Phase1BacktestService:
                     next_exit = next(exit_iter, None)
                 if next_exit is None:
                     break
-                entry_price = self._safe_float(p.loc[entry_date], np.nan)
-                exit_price = self._safe_float(p.loc[next_exit], np.nan)
+                entry_price = safe_float(p.loc[entry_date], np.nan)
+                exit_price = safe_float(p.loc[next_exit], np.nan)
                 if np.isnan(entry_price) or np.isnan(exit_price) or entry_price <= 0:
                     continue
                 ret = (exit_price / entry_price) - 1.0
@@ -304,11 +313,21 @@ class Phase1BacktestService:
                     continue
 
             if path is None or not path.exists():
-                equity_ranges[universe] = {"available": False, "min_date": None, "max_date": None, "rows": 0}
+                equity_ranges[universe] = {
+                    "available": False,
+                    "min_date": None,
+                    "max_date": None,
+                    "rows": 0,
+                }
                 continue
             df = self._load_universe_snapshot(universe)
             if df.empty:
-                equity_ranges[universe] = {"available": False, "min_date": None, "max_date": None, "rows": 0}
+                equity_ranges[universe] = {
+                    "available": False,
+                    "min_date": None,
+                    "max_date": None,
+                    "rows": 0,
+                }
                 continue
             equity_ranges[universe] = {
                 "available": True,
@@ -337,14 +356,14 @@ class Phase1BacktestService:
             "data_ready": any_equity,
             "instrument_capabilities": {
                 "equity": {"enabled": any_equity, "note": "Backtest ready from curated snapshots"},
-                "options": {"enabled": False, "note": "Options historical dataset not onboarded yet"},
+                "options": {
+                    "enabled": False,
+                    "note": "Options historical dataset not onboarded yet",
+                },
             },
             "universe_ranges": equity_ranges,
             "stock_range": stock_range,
-            "supported_strategies": [
-                {"id": k, "name": v}
-                for k, v in SUPPORTED_STRATEGIES.items()
-            ],
+            "supported_strategies": [{"id": k, "name": v} for k, v in SUPPORTED_STRATEGIES.items()],
         }
 
     def list_strategies(self) -> dict[str, Any]:
@@ -388,7 +407,9 @@ class Phase1BacktestService:
         if instrument_type not in SUPPORTED_INSTRUMENTS:
             raise ValueError(f"Unsupported instrument_type='{instrument_type}'")
         if instrument_type == "options":
-            raise ValueError("Options backtest is not available until options historical dataset is onboarded")
+            raise ValueError(
+                "Options backtest is not available until options historical dataset is onboarded"
+            )
 
         start = self._parse_date(str(payload["start_date"]))
         end = self._parse_date(str(payload["end_date"]))
@@ -476,7 +497,7 @@ class Phase1BacktestService:
             index_prices.index = pd.to_datetime(index_prices.index)
 
             # Align index prices with portfolio returns dates using forward fill
-            aligned_index = index_prices.reindex(portfolio_ret.index, method='ffill')
+            aligned_index = index_prices.reindex(portfolio_ret.index, method="ffill")
 
             # Buy-and-hold: (current_price / initial_price) - 1
             initial_index_price = aligned_index.iloc[0]
@@ -490,7 +511,9 @@ class Phase1BacktestService:
         equity = initial_capital * (1.0 + portfolio_ret).cumprod()
         drawdown = (equity / equity.cummax()) - 1.0
 
-        metrics = self._compute_metrics(equity, portfolio_ret, drawdown, combined_trades, initial_capital)
+        metrics = self._compute_metrics(
+            equity, portfolio_ret, drawdown, combined_trades, initial_capital
+        )
         combined_trades.sort(key=lambda x: (x["entry_date"], x["symbol"]))
 
         return {
@@ -498,8 +521,14 @@ class Phase1BacktestService:
             "selection": {"mode": mode, "scope": scope_label},
             "date_range": {"start": start.isoformat(), "end": end.isoformat()},
             "metrics": metrics,
-            "equity_curve": [{"date": d.date().isoformat(), "equity": round(float(v), 4)} for d, v in equity.items()],
-            "benchmark_curve": [{"date": d.date().isoformat(), "equity": round(float(v), 4)} for d, v in benchmark_equity.items()],
+            "equity_curve": [
+                {"date": d.date().isoformat(), "equity": round(float(v), 4)}
+                for d, v in equity.items()
+            ],
+            "benchmark_curve": [
+                {"date": d.date().isoformat(), "equity": round(float(v), 4)}
+                for d, v in benchmark_equity.items()
+            ],
             "drawdown_curve": [
                 {"date": d.date().isoformat(), "drawdown_pct": round(float(v) * 100.0, 4)}
                 for d, v in drawdown.items()

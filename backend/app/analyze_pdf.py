@@ -1,6 +1,7 @@
-﻿"""
+"""
 Quick PDF analyzer to understand the structure of NSE sector PDF
 """
+
 from pathlib import Path
 
 import pdfplumber
@@ -10,6 +11,7 @@ PDF_FILE = (
     / "sector"
     / "nse-indices_industry-classification-structure-2023-07.pdf"
 )
+
 
 def analyze_pdf_structure() -> None:
     with pdfplumber.open(PDF_FILE) as pdf:
@@ -33,7 +35,7 @@ def analyze_pdf_structure() -> None:
 
             if tables:
                 for i, table in enumerate(tables):
-                    print(f"\nTable {i+1}:")
+                    print(f"\nTable {i + 1}:")
                     print(f"Rows: {len(table)}, Columns: {len(table[0]) if table else 0}")
                     if table:
                         print("First row (headers):", table[0])
@@ -41,6 +43,7 @@ def analyze_pdf_structure() -> None:
                             print("Second row (sample):", table[1])
 
             print("\n")
+
 
 if __name__ == "__main__":
     analyze_pdf_structure()

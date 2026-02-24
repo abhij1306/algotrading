@@ -1,9 +1,8 @@
-﻿"""
+"""
 Risk Metrics Calculation Engine
 Combines technical (market) and fundamental (financial) risk metrics
 for institutional-grade portfolio risk assessment.
 """
-
 
 import numpy as np
 import pandas as pd
@@ -44,7 +43,7 @@ class RiskMetricsEngine:
         downside_returns = returns[returns < 0]
 
         if len(downside_returns) == 0:
-            return float('inf')
+            return float("inf")
 
         downside_std = downside_returns.std() * np.sqrt(self.trading_days_per_year)
 
@@ -77,16 +76,13 @@ class RiskMetricsEngine:
             return 1.0
 
         # Align the series
-        aligned = pd.DataFrame({
-            'asset': asset_returns,
-            'market': market_returns
-        }).dropna()
+        aligned = pd.DataFrame({"asset": asset_returns, "market": market_returns}).dropna()
 
         if len(aligned) < 10:
             return 1.0
 
-        covariance = aligned['asset'].cov(aligned['market'])
-        market_variance = aligned['market'].var()
+        covariance = aligned["asset"].cov(aligned["market"])
+        market_variance = aligned["market"].var()
 
         if market_variance == 0:
             return 1.0
@@ -104,19 +100,19 @@ class RiskMetricsEngine:
     def debt_to_equity(self, total_debt: float, total_equity: float) -> float:
         """Debt-to-Equity Ratio: Financial leverage"""
         if total_equity == 0:
-            return float('inf')
+            return float("inf")
         return total_debt / total_equity
 
     def interest_coverage(self, ebit: float, interest_expense: float) -> float:
         """Interest Coverage Ratio: Ability to pay interest"""
         if interest_expense == 0:
-            return float('inf')
+            return float("inf")
         return ebit / interest_expense
 
     def current_ratio(self, current_assets: float, current_liabilities: float) -> float:
         """Current Ratio: Short-term liquidity"""
         if current_liabilities == 0:
-            return float('inf')
+            return float("inf")
         return current_assets / current_liabilities
 
     def roe(self, net_income: float, shareholders_equity: float) -> float:
@@ -144,8 +140,8 @@ class RiskMetricsEngine:
 
         growth_rates = []
         for i in range(1, len(revenues)):
-            if revenues[i-1] != 0:
-                growth_rates.append((revenues[i] - revenues[i-1]) / revenues[i-1])
+            if revenues[i - 1] != 0:
+                growth_rates.append((revenues[i] - revenues[i - 1]) / revenues[i - 1])
 
         if len(growth_rates) < 2:
             return 0.0
@@ -162,7 +158,7 @@ class RiskMetricsEngine:
         score = 5.0  # Start at neutral
 
         # Sharpe Ratio contribution (0-2 points)
-        sharpe = metrics.get('sharpe_ratio', 0)
+        sharpe = metrics.get("sharpe_ratio", 0)
         if sharpe > 2.0:
             score += 2.0
         elif sharpe > 1.0:
@@ -173,7 +169,7 @@ class RiskMetricsEngine:
             score -= 1.0
 
         # Max Drawdown contribution (0-2 points)
-        mdd = abs(metrics.get('max_drawdown', 0))
+        mdd = abs(metrics.get("max_drawdown", 0))
         if mdd < 0.10:  # Less than 10%
             score += 2.0
         elif mdd < 0.20:
@@ -182,7 +178,7 @@ class RiskMetricsEngine:
             score -= 2.0
 
         # VaR contribution (0-2 points)
-        var_95 = abs(metrics.get('var_95', 0))
+        var_95 = abs(metrics.get("var_95", 0))
         if var_95 < 0.02:  # Less than 2% daily VaR
             score += 2.0
         elif var_95 < 0.03:
@@ -191,7 +187,7 @@ class RiskMetricsEngine:
             score -= 1.0
 
         # Volatility contribution (0-2 points)
-        vol = metrics.get('volatility', 0)
+        vol = metrics.get("volatility", 0)
         if vol < 0.15:  # Less than 15% annual vol
             score += 2.0
         elif vol < 0.25:
@@ -200,7 +196,7 @@ class RiskMetricsEngine:
             score -= 1.0
 
         # Beta contribution (0-2 points)
-        beta_val = metrics.get('beta', 1.0)
+        beta_val = metrics.get("beta", 1.0)
         if 0.8 <= beta_val <= 1.2:  # Near market beta
             score += 1.0
         elif beta_val > 1.5:  # High systematic risk
@@ -216,7 +212,7 @@ class RiskMetricsEngine:
         score = 5.0  # Start at neutral
 
         # Debt-to-Equity contribution (0-3 points)
-        de_ratio = metrics.get('debt_equity', 0)
+        de_ratio = metrics.get("debt_equity", 0)
         if de_ratio < 0.3:
             score += 3.0
         elif de_ratio < 0.5:
@@ -227,7 +223,7 @@ class RiskMetricsEngine:
             score -= 2.0
 
         # ROE contribution (0-2 points)
-        roe_val = metrics.get('roe', 0)
+        roe_val = metrics.get("roe", 0)
         if roe_val > 0.20:  # >20% ROE
             score += 2.0
         elif roe_val > 0.15:
@@ -238,7 +234,7 @@ class RiskMetricsEngine:
             score -= 1.0
 
         # Profit Margin contribution (0-2 points)
-        margin = metrics.get('profit_margin', 0)
+        margin = metrics.get("profit_margin", 0)
         if margin > 0.15:
             score += 2.0
         elif margin > 0.10:
@@ -247,7 +243,7 @@ class RiskMetricsEngine:
             score -= 1.0
 
         # Current Ratio (Liquidity) contribution (0-2 points)
-        current = metrics.get('current_ratio', 1.0)
+        current = metrics.get("current_ratio", 1.0)
         if current > 2.0:
             score += 2.0
         elif current > 1.5:
@@ -256,7 +252,7 @@ class RiskMetricsEngine:
             score -= 2.0
 
         # Interest Coverage contribution (0-1 point)
-        coverage = metrics.get('interest_coverage', 0)
+        coverage = metrics.get("interest_coverage", 0)
         if coverage > 5.0:
             score += 1.0
         elif coverage < 2.0:
@@ -264,8 +260,9 @@ class RiskMetricsEngine:
 
         return max(0.0, min(10.0, score))
 
-    def combined_risk_score(self, tech_score: float, fund_score: float,
-                           tech_weight: float = 0.6) -> tuple[float, str]:
+    def combined_risk_score(
+        self, tech_score: float, fund_score: float, tech_weight: float = 0.6
+    ) -> tuple[float, str]:
         """
         Combine technical and fundamental scores
         Returns: (score, grade)
@@ -305,26 +302,34 @@ class RiskMetricsEngine:
         warnings = []
 
         # Technical warnings
-        if tech_metrics.get('max_drawdown', 0) < -0.30:
-            warnings.append(f"{symbol}: High drawdown risk (>{abs(tech_metrics['max_drawdown']*100):.1f}%)")
+        if tech_metrics.get("max_drawdown", 0) < -0.30:
+            warnings.append(
+                f"{symbol}: High drawdown risk (>{abs(tech_metrics['max_drawdown'] * 100):.1f}%)"
+            )
 
-        if tech_metrics.get('volatility', 0) > 0.40:
-            warnings.append(f"{symbol}: Very high volatility ({tech_metrics['volatility']*100:.1f}%)")
+        if tech_metrics.get("volatility", 0) > 0.40:
+            warnings.append(
+                f"{symbol}: Very high volatility ({tech_metrics['volatility'] * 100:.1f}%)"
+            )
 
-        if tech_metrics.get('beta', 1.0) > 1.5:
+        if tech_metrics.get("beta", 1.0) > 1.5:
             warnings.append(f"{symbol}: High market sensitivity (Beta: {tech_metrics['beta']:.2f})")
 
         # Fundamental warnings
-        if fund_metrics.get('debt_equity', 0) > 1.5:
+        if fund_metrics.get("debt_equity", 0) > 1.5:
             warnings.append(f"{symbol}: High leverage (D/E: {fund_metrics['debt_equity']:.2f})")
 
-        if fund_metrics.get('current_ratio', 2.0) < 1.0:
-            warnings.append(f"{symbol}: Liquidity concern (Current Ratio: {fund_metrics['current_ratio']:.2f})")
+        if fund_metrics.get("current_ratio", 2.0) < 1.0:
+            warnings.append(
+                f"{symbol}: Liquidity concern (Current Ratio: {fund_metrics['current_ratio']:.2f})"
+            )
 
-        if fund_metrics.get('roe', 0.15) < 0.05:
-            warnings.append(f"{symbol}: Low profitability (ROE: {fund_metrics['roe']*100:.1f}%)")
+        if fund_metrics.get("roe", 0.15) < 0.05:
+            warnings.append(f"{symbol}: Low profitability (ROE: {fund_metrics['roe'] * 100:.1f}%)")
 
-        if fund_metrics.get('interest_coverage', 5.0) < 2.0:
-            warnings.append(f"{symbol}: Interest coverage risk ({fund_metrics['interest_coverage']:.1f}x)")
+        if fund_metrics.get("interest_coverage", 5.0) < 2.0:
+            warnings.append(
+                f"{symbol}: Interest coverage risk ({fund_metrics['interest_coverage']:.1f}x)"
+            )
 
         return warnings

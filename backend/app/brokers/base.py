@@ -1,7 +1,8 @@
-﻿from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any, TypedDict
 
 # --- Standardized Schemas ---
+
 
 class OrderResponse(TypedDict):
     order_id: str
@@ -9,19 +10,22 @@ class OrderResponse(TypedDict):
     message: str
     details: dict[str, Any] | None
 
+
 class Position(TypedDict):
     symbol: str
-    side: str # LONG/SHORT
+    side: str  # LONG/SHORT
     quantity: int
     entry_price: float
     current_price: float
     pnl: float
     product_type: str
 
+
 class BrokerFunds(TypedDict):
     available: float
     used: float
     total: float
+
 
 class IBroker(ABC):
     """

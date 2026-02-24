@@ -1,10 +1,10 @@
-﻿
 import logging
 from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 class BaseStrategy(ABC):
     """
@@ -26,9 +26,16 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def get_standard_result(self, current_date: date, daily_return: float = 0.0,
-                            gross_pnl: float = 0.0, capital: float = 0.0,
-                            trades: int = 0, max_dd: float = 0.0, win_rate: float = 0.0):
+    def get_standard_result(
+        self,
+        current_date: date,
+        daily_return: float = 0.0,
+        gross_pnl: float = 0.0,
+        capital: float = 0.0,
+        trades: int = 0,
+        max_dd: float = 0.0,
+        win_rate: float = 0.0,
+    ):
         """
         Helper to format the output contract.
         """
@@ -42,5 +49,5 @@ class BaseStrategy(ABC):
             "number_of_trades": int(trades),
             "max_intraday_drawdown": float(max_dd),
             "win_rate": float(win_rate),
-            "regime_tag": self.regime_tag
+            "regime_tag": self.regime_tag,
         }

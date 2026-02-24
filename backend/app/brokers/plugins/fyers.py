@@ -9,6 +9,7 @@ class FyersBroker(IBroker):
     Fyers Implementation of IBroker.
     Wraps actual API calls for Live Trading and standardizes output.
     """
+
     def __init__(self):
         self.client = None
         self.connect()
@@ -27,24 +28,24 @@ class FyersBroker(IBroker):
         Execute order on Fyers.
         """
         if not self.client:
-             self.connect() # Try one last time
-             if not self.client:
-                 return OrderResponse(order_id="", status="REJECTED", message="Fyers Client not initialized. Please Login.", details=None)
+            self.connect()  # Try one last time
+            if not self.client:
+                return OrderResponse(
+                    order_id="",
+                    status="REJECTED",
+                    message="Fyers Client not initialized. Please Login.",
+                    details=None,
+                )
 
         # Map generic order dict to Fyers parameters
         # order keys: symbol, quantity, side (BUY/SELL), type (MARKET/LIMIT), product (MIS/CNC/INTRADAY)
 
-        product_map = {
-            "MIS": "INTRADAY",
-            "INTRADAY": "INTRADAY",
-            "CNC": "CNC",
-            "MARGIN": "MARGIN"
-        }
+        product_map = {"MIS": "INTRADAY", "INTRADAY": "INTRADAY", "CNC": "CNC", "MARGIN": "MARGIN"}
 
         data = {
             "symbol": order["symbol"],
             "qty": order["quantity"],
-            "type": 2 if order.get("type", "MARKET") == "MARKET" else 1, # 1=Limit, 2=Market
+            "type": 2 if order.get("type", "MARKET") == "MARKET" else 1,  # 1=Limit, 2=Market
             "side": 1 if order.get("side") == "BUY" else -1,
             "productType": product_map.get(order.get("product", "INTRADAY").upper(), "INTRADAY"),
             "limitPrice": order.get("price", 0) if order.get("type") != "MARKET" else 0,
@@ -63,23 +64,18 @@ class FyersBroker(IBroker):
                     order_id=response.get("id", ""),
                     status="SUBMITTED",
                     message=response.get("message", "Order Placed"),
-                    details=response
+                    details=response,
                 )
             else:
                 return OrderResponse(
                     order_id="",
                     status="REJECTED",
                     message=response.get("message", "Fyers rejected order"),
-                    details=response
+                    details=response,
                 )
 
         except Exception as e:
-            return OrderResponse(
-                order_id="",
-                status="ERROR",
-                message=str(e),
-                details=None
-            )
+            return OrderResponse(order_id="", status="ERROR", message=str(e), details=None)
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not self.client:
@@ -95,16 +91,13 @@ class FyersBroker(IBroker):
         if not self.client:
             return {"status": "ERROR", "message": "Client not initialized"}
 
-        data = {
-            "id": order_id,
-            "type": 1 if params.get("order_type") != "MARKET" else 2
-        }
+        data = {"id": order_id, "type": 1 if params.get("order_type") != "MARKET" else 2}
 
         if "quantity" in params:
             data["qty"] = params["quantity"]
         if "price" in params:
             data["limitPrice"] = params["price"]
-            data["type"] = 1 # Force Limit
+            data["type"] = 1  # Force Limit
 
         # If changing to MARKET, set type=2 and limitPrice=0
         if params.get("order_type") == "MARKET":
@@ -131,15 +124,19 @@ class FyersBroker(IBroker):
 
                 side = "LONG" if qty > 0 else "SHORT"
 
-                positions.append(Position(
-                    symbol=p.get("symbol"),
-                    side=side,
-                    quantity=abs(qty),
-                    entry_price=float(p.get("buyAvg", 0)) if side == "LONG" else float(p.get("sellAvg", 0)),
-                    current_price=float(p.get("ltp", 0)),
-                    pnl=float(p.get("pl", 0)),
-                    product_type=p.get("productType", "INTRADAY")
-                ))
+                positions.append(
+                    Position(
+                        symbol=p.get("symbol"),
+                        side=side,
+                        quantity=abs(qty),
+                        entry_price=float(p.get("buyAvg", 0))
+                        if side == "LONG"
+                        else float(p.get("sellAvg", 0)),
+                        current_price=float(p.get("ltp", 0)),
+                        pnl=float(p.get("pl", 0)),
+                        product_type=p.get("productType", "INTRADAY"),
+                    )
+                )
         return positions
 
     def get_orders(self) -> list[dict[str, Any]]:
@@ -168,9 +165,9 @@ class FyersBroker(IBroker):
             available = float(response.get("available", 0) or 0)
             used = float(response.get("used", 0) or 0)
             total = float(response.get("total", 0) or (available + used))
-             # Handle complex fund_limit structure if needed, but simple dict check is usually enough
-             # or verify against previous implementation logic
-             # The previous logic had a complex check for 'fund_limit' list. Retaining it.
+            # Handle complex fund_limit structure if needed, but simple dict check is usually enough
+            # or verify against previous implementation logic
+            # The previous logic had a complex check for 'fund_limit' list. Retaining it.
             funds = response.get("fund_limit", [])
             if isinstance(funds, list):
                 for f in funds:
@@ -187,7 +184,7 @@ class FyersBroker(IBroker):
         """Get live quote."""
         if not self.client:
             return {}
-        data = {"symbols": symbol} # "NSE:SBIN-EQ"
+        data = {"symbols": symbol}  # "NSE:SBIN-EQ"
         response = self.client.quotes(data=data)
         if response.get("s") == "ok":
             d = response.get("d", [])
@@ -220,7 +217,7 @@ class FyersBroker(IBroker):
                     "quantity": p["quantity"],
                     "side": "SELL" if p["side"] == "LONG" else "BUY",
                     "type": "MARKET",
-                    "product": p["product_type"]
+                    "product": p["product_type"],
                 }
                 res = self.place_order(order_data)
 

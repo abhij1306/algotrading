@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -8,6 +8,7 @@ from ..base import Base
 
 class FinancialStatement(Base):
     """Annual/Quarterly financial statements"""
+
     __tablename__ = "financial_statements"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -56,12 +57,13 @@ class FinancialStatement(Base):
 
     # Composite index
     __table_args__ = (
-        Index('ix_company_period', 'company_id', 'period_end', 'period_type', unique=True),
+        Index("ix_company_period", "company_id", "period_end", "period_type", unique=True),
     )
 
 
 class QuarterlyResult(Base):
     """Quarterly results announcements"""
+
     __tablename__ = "quarterly_results"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -97,6 +99,4 @@ class QuarterlyResult(Base):
     company = relationship("Company", back_populates="quarterly_results")
 
     # Composite index
-    __table_args__ = (
-        Index('ix_company_quarter', 'company_id', 'quarter_end', unique=True),
-    )
+    __table_args__ = (Index("ix_company_quarter", "company_id", "quarter_end", unique=True),)

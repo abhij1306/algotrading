@@ -7,6 +7,7 @@ prevents subsequent steps from executing after a failure.
 
 Requirements: 6.1, 6.4
 """
+
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class StartupStep(Enum):
     """Enumeration of startup steps in the correct execution order."""
+
     SET_EVENT_LOOP = "set_event_loop"
     VALIDATE_SYMBOL_MASTER = "validate_symbol_master"
     VALIDATE_DATABASE = "validate_database"
@@ -57,10 +59,7 @@ class StartupSequence:
         self._has_failure = False
 
     async def execute_step(
-        self,
-        step: StartupStep,
-        func: Callable[[], Awaitable[None]],
-        required: bool = True
+        self, step: StartupStep, func: Callable[[], Awaitable[None]], required: bool = True
     ) -> bool:
         """
         Execute a startup step and track its completion.
@@ -92,10 +91,7 @@ class StartupSequence:
 
         except Exception as e:
             self.failed_step = step
-            logger.error(
-                f"[Startup] Failed: {step.value} - {e}",
-                exc_info=True
-            )
+            logger.error(f"[Startup] Failed: {step.value} - {e}", exc_info=True)
 
             if required:
                 self._has_failure = True
@@ -106,8 +102,7 @@ class StartupSequence:
                 raise
             else:
                 logger.warning(
-                    f"[Startup] Optional step {step.value} failed. "
-                    "Continuing with remaining steps."
+                    f"[Startup] Optional step {step.value} failed. Continuing with remaining steps."
                 )
                 return False
 
@@ -131,7 +126,7 @@ class StartupSequence:
             "completed_steps": [step.value for step in self.completed_steps],
             "failed_step": self.failed_step.value if self.failed_step else None,
             "is_complete": self.is_complete(),
-            "total_completed": len(self.completed_steps)
+            "total_completed": len(self.completed_steps),
         }
 
     def log_summary(self):

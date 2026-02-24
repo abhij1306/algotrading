@@ -4,6 +4,7 @@ Historical Universe Manager Service
 Manages index universe compositions for both historical backtesting and live screening.
 Supports accurate historical snapshots using timestamped constituent changes.
 """
+
 import json
 import logging
 from dataclasses import dataclass
@@ -27,18 +28,18 @@ logger = logging.getLogger(__name__)
 
 # NSE Index weightage file URLs and patterns
 NSE_INDEX_FILES = {
-    'NIFTY50': 'ind_nifty50list.csv',
-    'NIFTY100': 'ind_nifty100list.csv',
-    'NIFTY200': 'ind_nifty200list.csv',
-    'NIFTY500': 'ind_nifty500list.csv',
-    'NIFTYBANK': 'ind_niftybanklist.csv',
-    'NIFTYIT': 'ind_niftyitlist.csv',
-    'NIFTYFMCG': 'ind_niftyfmcglist.csv',
-    'NIFTYPHARMA': 'ind_niftypharmalist.csv',
-    'NIFTYAUTO': 'ind_niftyautolist.csv',
-    'NIFTYMETAL': 'ind_niftymetallist.csv',
-    'NIFTYENERGY': 'ind_niftyenergylist.csv',
-    'NIFTYREALTY': 'ind_niftyrealtylist.csv',
+    "NIFTY50": "ind_nifty50list.csv",
+    "NIFTY100": "ind_nifty100list.csv",
+    "NIFTY200": "ind_nifty200list.csv",
+    "NIFTY500": "ind_nifty500list.csv",
+    "NIFTYBANK": "ind_niftybanklist.csv",
+    "NIFTYIT": "ind_niftyitlist.csv",
+    "NIFTYFMCG": "ind_niftyfmcglist.csv",
+    "NIFTYPHARMA": "ind_niftypharmalist.csv",
+    "NIFTYAUTO": "ind_niftyautolist.csv",
+    "NIFTYMETAL": "ind_niftymetallist.csv",
+    "NIFTYENERGY": "ind_niftyenergylist.csv",
+    "NIFTYREALTY": "ind_niftyrealtylist.csv",
 }
 
 # Default data path for weightage files
@@ -48,6 +49,7 @@ DEFAULT_DATA_PATH = Path(__file__).parent.parent.parent.parent / "data" / "index
 @dataclass
 class UniverseConstituent:
     """Represents a single constituent in an index universe"""
+
     symbol: str
     fyers_symbol: str
     weight: float | None
@@ -59,6 +61,7 @@ class UniverseConstituent:
 @dataclass
 class LocalUniverseSnapshotDTO:
     """Snapshot of universe composition at a specific date"""
+
     universe_code: str
     snapshot_date: date
     constituents: list[UniverseConstituent]
@@ -99,13 +102,19 @@ class HistoricalUniverseManager:
         """
         return self.symbol_lifecycle.resolve_symbol(symbol, target_date, db)
 
-    def get_universe_definition(self, db: Session, universe_code: str) -> IndexUniverseDefinition | None:
+    def get_universe_definition(
+        self, db: Session, universe_code: str
+    ) -> IndexUniverseDefinition | None:
         """Get universe definition by code"""
-        return db.query(IndexUniverseDefinition).filter(
-            IndexUniverseDefinition.index_code == universe_code
-        ).first()
+        return (
+            db.query(IndexUniverseDefinition)
+            .filter(IndexUniverseDefinition.index_code == universe_code)
+            .first()
+        )
 
-    def list_universes(self, db: Session, include_custom: bool = True) -> list[IndexUniverseDefinition]:
+    def list_universes(
+        self, db: Session, include_custom: bool = True
+    ) -> list[IndexUniverseDefinition]:
         """List all available universes"""
         query = db.query(IndexUniverseDefinition)
         if not include_custom:
@@ -113,10 +122,7 @@ class HistoricalUniverseManager:
         return query.all()
 
     def get_constituents_at_date(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date
+        self, db: Session, universe_code: str, target_date: date
     ) -> list[UniverseConstituent]:
         """
         Get all constituents of a universe at a specific date.
@@ -141,37 +147,39 @@ class HistoricalUniverseManager:
 
         # Query constituents that were active at target_date
         # A symbol is active if: effective_from <= target_date AND (effective_to is NULL OR effective_to >= target_date)
-        results = db.query(IndexConstituentHistory).filter(
-            and_(
-                IndexConstituentHistory.universe_id == universe.id,
-                IndexConstituentHistory.effective_from <= target_date,
-                or_(
-                    IndexConstituentHistory.effective_to.is_(None),
-                    IndexConstituentHistory.effective_to >= target_date
+        results = (
+            db.query(IndexConstituentHistory)
+            .filter(
+                and_(
+                    IndexConstituentHistory.universe_id == universe.id,
+                    IndexConstituentHistory.effective_from <= target_date,
+                    or_(
+                        IndexConstituentHistory.effective_to.is_(None),
+                        IndexConstituentHistory.effective_to >= target_date,
+                    ),
                 )
             )
-        ).all()
+            .all()
+        )
 
         constituents = []
         for r in results:
-            constituents.append(UniverseConstituent(
-                symbol=r.symbol,
-                fyers_symbol=r.fyers_symbol or self.symbol_master.to_fyers(r.symbol),
-                weight=r.weight,
-                company_name=r.company_name,
-                industry=r.industry,
-                isin=r.isin
-            ))
+            constituents.append(
+                UniverseConstituent(
+                    symbol=r.symbol,
+                    fyers_symbol=r.fyers_symbol or self.symbol_master.to_fyers(r.symbol),
+                    weight=r.weight,
+                    company_name=r.company_name,
+                    industry=r.industry,
+                    isin=r.isin,
+                )
+            )
 
         logger.debug(f"Found {len(constituents)} constituents for {universe_code} at {target_date}")
         return constituents
 
     def get_symbols_at_date(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date,
-        resolve_historical: bool = True
+        self, db: Session, universe_code: str, target_date: date, resolve_historical: bool = True
     ) -> list[str]:
         """
         Get list of symbols in universe at a specific date.
@@ -197,11 +205,7 @@ class HistoricalUniverseManager:
         return symbols
 
     def get_universe_symbols(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date,
-        resolve_historical: bool = True
+        self, db: Session, universe_code: str, target_date: date, resolve_historical: bool = True
     ) -> list[str]:
         """
         Get symbols for a universe at a specific date.
@@ -217,25 +221,14 @@ class HistoricalUniverseManager:
         return self.get_symbols_at_date(db, universe_code, target_date, resolve_historical)
 
     def get_constituents_with_weightage(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date
+        self, db: Session, universe_code: str, target_date: date
     ) -> dict[str, float]:
         """Get symbol -> weightage mapping for a universe at a date"""
         constituents = self.get_constituents_at_date(db, universe_code, target_date)
-        return {
-            c.symbol: c.weight
-            for c in constituents
-            if c.weight is not None
-        }
+        return {c.symbol: c.weight for c in constituents if c.weight is not None}
 
     def get_date_range_constituents(
-        self,
-        db: Session,
-        universe_code: str,
-        start_date: date,
-        end_date: date
+        self, db: Session, universe_code: str, start_date: date, end_date: date
     ) -> dict[date, list[str]]:
         """
         Get constituent lists for each trading day in a date range.
@@ -250,14 +243,18 @@ class HistoricalUniverseManager:
             return {}
 
         # Fetch all constituent history for the universe in the date window in one query
-        history_records = db.query(IndexConstituentHistory).filter(
-            IndexConstituentHistory.universe_id == universe.id,
-            IndexConstituentHistory.effective_from <= end_date,
-            or_(
-                IndexConstituentHistory.effective_to.is_(None),
-                IndexConstituentHistory.effective_to >= start_date
+        history_records = (
+            db.query(IndexConstituentHistory)
+            .filter(
+                IndexConstituentHistory.universe_id == universe.id,
+                IndexConstituentHistory.effective_from <= end_date,
+                or_(
+                    IndexConstituentHistory.effective_to.is_(None),
+                    IndexConstituentHistory.effective_to >= start_date,
+                ),
             )
-        ).all()
+            .all()
+        )
 
         # Generate all trading dates in range
         dates = []
@@ -282,10 +279,7 @@ class HistoricalUniverseManager:
         return result
 
     def create_universe_snapshot(
-        self,
-        db: Session,
-        universe_code: str,
-        snapshot_date: date
+        self, db: Session, universe_code: str, snapshot_date: date
     ) -> bool:
         """
         Pre-compute and cache a universe snapshot for fast retrieval.
@@ -299,33 +293,34 @@ class HistoricalUniverseManager:
         symbols = [c.symbol for c in constituents]
 
         # Check if snapshot exists
-        existing = db.query(UniverseSnapshot).filter(
-            and_(
-                UniverseSnapshot.universe_id == universe.id,
-                UniverseSnapshot.snapshot_date == snapshot_date
+        existing = (
+            db.query(UniverseSnapshot)
+            .filter(
+                and_(
+                    UniverseSnapshot.universe_id == universe.id,
+                    UniverseSnapshot.snapshot_date == snapshot_date,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if existing:
             existing.symbols = json.dumps(symbols)
             existing.generated_at = datetime.now()
         else:
             snapshot = UniverseSnapshot(
-                universe_id=universe.id,
-                snapshot_date=snapshot_date,
-                symbols=json.dumps(symbols)
+                universe_id=universe.id, snapshot_date=snapshot_date, symbols=json.dumps(symbols)
             )
             db.add(snapshot)
 
         db.flush()  # Persist snapshot, caller must commit
-        logger.info(f"Created snapshot for {universe_code} at {snapshot_date}: {len(symbols)} symbols")
+        logger.info(
+            f"Created snapshot for {universe_code} at {snapshot_date}: {len(symbols)} symbols"
+        )
         return True
 
     def get_cached_snapshot(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date
+        self, db: Session, universe_code: str, target_date: date
     ) -> list[str] | None:
         """
         Get pre-cached snapshot if available.
@@ -336,12 +331,17 @@ class HistoricalUniverseManager:
             return None
 
         # Find nearest snapshot
-        snapshot = db.query(UniverseSnapshot).filter(
-            and_(
-                UniverseSnapshot.universe_id == universe.id,
-                UniverseSnapshot.snapshot_date <= target_date
+        snapshot = (
+            db.query(UniverseSnapshot)
+            .filter(
+                and_(
+                    UniverseSnapshot.universe_id == universe.id,
+                    UniverseSnapshot.snapshot_date <= target_date,
+                )
             )
-        ).order_by(UniverseSnapshot.snapshot_date.desc()).first()
+            .order_by(UniverseSnapshot.snapshot_date.desc())
+            .first()
+        )
 
         if snapshot:
             return json.loads(snapshot.symbols)
@@ -362,25 +362,27 @@ class UniverseManager(HistoricalUniverseManager):
         super().__init__(data_path)
 
     def get_custom_universe_symbols(
-        self,
-        db: Session,
-        universe_code: str,
-        target_date: date | None = None
+        self, db: Session, universe_code: str, target_date: date | None = None
     ) -> list[str]:
         """
         Get symbols from a custom user-defined universe.
         """
-        custom = db.query(CustomUniverse).filter(
-            CustomUniverse.universe_code == universe_code,
-            CustomUniverse.is_active.is_(True)
-        ).first()
+        custom = (
+            db.query(CustomUniverse)
+            .filter(
+                CustomUniverse.universe_code == universe_code, CustomUniverse.is_active.is_(True)
+            )
+            .first()
+        )
 
         if not custom:
             return []
 
-        members = db.query(CustomUniverseMember).filter(
-            CustomUniverseMember.universe_id == custom.id
-        ).all()
+        members = (
+            db.query(CustomUniverseMember)
+            .filter(CustomUniverseMember.universe_id == custom.id)
+            .all()
+        )
 
         return [m.symbol for m in members]
 
@@ -391,32 +393,31 @@ class UniverseManager(HistoricalUniverseManager):
         universe_name: str,
         symbols: list[str],
         description: str = "",
-        created_by: str = "system"
+        created_by: str = "system",
     ) -> CustomUniverse:
         """Create a new custom universe with symbols"""
         # Check for existing universe with same universe_code
-        existing = db.query(CustomUniverse).filter(
-            CustomUniverse.universe_code == universe_code
-        ).first()
+        existing = (
+            db.query(CustomUniverse).filter(CustomUniverse.universe_code == universe_code).first()
+        )
 
         if existing:
-            raise ValueError(f"Custom universe with code '{universe_code}' already exists (ID: {existing.id})")
+            raise ValueError(
+                f"Custom universe with code '{universe_code}' already exists (ID: {existing.id})"
+            )
 
         custom = CustomUniverse(
             universe_code=universe_code,
             universe_name=universe_name,
             description=description,
-            created_by=created_by
+            created_by=created_by,
         )
         db.add(custom)
         db.flush()
 
         # Add members
         for symbol in symbols:
-            member = CustomUniverseMember(
-                universe_id=custom.id,
-                symbol=symbol
-            )
+            member = CustomUniverseMember(universe_id=custom.id, symbol=symbol)
             db.add(member)
 
         db.flush()  # Persist member entries, let caller commit
@@ -431,30 +432,34 @@ class UniverseManager(HistoricalUniverseManager):
 
         # Standard indices
         for code, _definition in NSE_INDEX_FILES.items():
-            universes.append({
-                'code': code,
-                'name': code.replace('NIFTY', 'Nifty '),
-                'type': 'standard',
-                'source': 'NSE'
-            })
+            universes.append(
+                {
+                    "code": code,
+                    "name": code.replace("NIFTY", "Nifty "),
+                    "type": "standard",
+                    "source": "NSE",
+                }
+            )
 
         # Custom universes
-        custom = db.query(CustomUniverse).filter(
-            CustomUniverse.is_active.is_(True)
-        ).all()
+        custom = db.query(CustomUniverse).filter(CustomUniverse.is_active.is_(True)).all()
 
         for c in custom:
-            count = db.query(CustomUniverseMember).filter(
-                CustomUniverseMember.universe_id == c.id
-            ).count()
+            count = (
+                db.query(CustomUniverseMember)
+                .filter(CustomUniverseMember.universe_id == c.id)
+                .count()
+            )
 
-            universes.append({
-                'code': c.universe_code,
-                'name': c.universe_name,
-                'type': 'custom',
-                'source': 'user',
-                'member_count': count
-            })
+            universes.append(
+                {
+                    "code": c.universe_code,
+                    "name": c.universe_name,
+                    "type": "custom",
+                    "source": "user",
+                    "member_count": count,
+                }
+            )
 
         return universes
 

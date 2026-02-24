@@ -68,8 +68,10 @@ class ImmutableDataRepository(DataRepository):
 
     def get_or_create_company(self, *args, **kwargs):
         # We should only allow get, not create
-        symbol = args[0] if args else kwargs.get('symbol')
+        symbol = args[0] if args else kwargs.get("symbol")
         company = self.get_company(symbol)
         if not company:
-            raise PermissionError(f"Company {symbol} not found and creation is disabled in ImmutableDataRepository")
+            raise PermissionError(
+                f"Company {symbol} not found and creation is disabled in ImmutableDataRepository"
+            )
         return company

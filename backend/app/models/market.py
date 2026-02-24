@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Text, func
 
@@ -7,6 +7,7 @@ from ..base import Base
 
 class MarketNews(Base):
     """Market news articles for real-time news ticker"""
+
     __tablename__ = "market_news"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -29,9 +30,10 @@ class MarketNews(Base):
 
     # Indexes
     __table_args__ = (
-        Index('ix_published_at', 'published_at', postgresql_ops={'published_at': 'DESC'}),
-        Index('ix_symbols', 'symbols'),
+        Index("ix_published_at", "published_at", postgresql_ops={"published_at": "DESC"}),
+        Index("ix_symbols", "symbols"),
     )
+
 
 class Watchlist(Base):
     __tablename__ = "watchlist"
@@ -41,8 +43,10 @@ class Watchlist(Base):
     instrument_type = Column(String, default="EQ")
     added_at = Column(DateTime, default=func.now())
 
+
 class StockUniverse(Base):
     """Immutable stock universe definitions with historical membership"""
+
     __tablename__ = "stock_universes"
 
     id = Column(String(50), primary_key=True)

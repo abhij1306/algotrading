@@ -2,6 +2,7 @@
 WebSocket Manager for broadcasting messages to connected clients
 Handles connection lifecycle and broadcasting
 """
+
 import json
 import logging
 from typing import Any
@@ -10,6 +11,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 logger = logging.getLogger(__name__)
+
 
 class ConnectionManager:
     def __init__(self):
@@ -40,10 +42,12 @@ class ConnectionManager:
 
         # Send initial welcome — client may have already disconnected (React StrictMode, page nav)
         try:
-            await websocket.send_json({
-                "type": "connection_established",
-                "message": "Connected to SmartTrader WebSocket Stream"
-            })
+            await websocket.send_json(
+                {
+                    "type": "connection_established",
+                    "message": "Connected to SmartTrader WebSocket Stream",
+                }
+            )
         except (WebSocketDisconnect, Exception):
             # Normal disconnect during handshake (React StrictMode, page navigation)
             logger.debug("[WSManager] Client disconnected before handshake completion")
@@ -70,7 +74,9 @@ class ConnectionManager:
             for symbol in symbols:
                 self.subscriptions[websocket].add(symbol)
                 self._global_subscriptions.add(symbol)  # Update global cache
-            logger.info(f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(self.subscriptions[websocket])}")
+            logger.info(
+                f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(self.subscriptions[websocket])}"
+            )
 
     async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
         """Unsubscribe a specific connection from symbols"""
@@ -78,8 +84,12 @@ class ConnectionManager:
             for symbol in symbols:
                 self.subscriptions[websocket].discard(symbol)
             # Rebuild global cache after unsubscribe
-            self._global_subscriptions = set().union(*self.subscriptions.values()) if self.subscriptions else set()
-            logger.info(f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(self.subscriptions[websocket])}")
+            self._global_subscriptions = (
+                set().union(*self.subscriptions.values()) if self.subscriptions else set()
+            )
+            logger.info(
+                f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(self.subscriptions[websocket])}"
+            )
 
     def get_all_subscribed_symbols(self) -> set[str]:
         """Get union of subscribed symbols across all active clients (O(1) cached)."""
@@ -142,6 +152,7 @@ class ConnectionManager:
                 self.disconnect(connection)
             except Exception:
                 self.disconnect(connection)
+
 
 # Singleton instance
 manager = ConnectionManager()

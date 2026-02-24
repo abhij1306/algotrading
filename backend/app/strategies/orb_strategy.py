@@ -1,4 +1,4 @@
-﻿"""
+"""
 Opening Range Breakout (ORB) Strategy
 Intraday strategy that trades breakouts from opening range
 """
@@ -35,19 +35,19 @@ class ORBStrategy(BaseStrategy):
         super().__init__(params)
 
         # Strategy parameters
-        self.opening_range_minutes = params.get('opening_range_minutes', 5)
+        self.opening_range_minutes = params.get("opening_range_minutes", 5)
 
         # ATR-based stops (multipliers, not percentages)
-        self.stop_loss_atr_multiplier = params.get('stop_loss_atr_multiplier', 0.5)
-        self.take_profit_atr_multiplier = params.get('take_profit_atr_multiplier', 1.5)
+        self.stop_loss_atr_multiplier = params.get("stop_loss_atr_multiplier", 0.5)
+        self.take_profit_atr_multiplier = params.get("take_profit_atr_multiplier", 1.5)
 
         # For fallback if ATR can't be calculated
-        self.stop_loss_pct = params.get('stop_loss_pct', 20)  # 20% fallback
-        self.take_profit_pct = params.get('take_profit_pct', 30)  # 30% fallback
+        self.stop_loss_pct = params.get("stop_loss_pct", 20)  # 20% fallback
+        self.take_profit_pct = params.get("take_profit_pct", 30)  # 30% fallback
 
-        self.max_positions_per_day = params.get('max_positions_per_day', 1)
-        self.trade_type = params.get('trade_type', 'options')
-        self.days_to_expiry = params.get('days_to_expiry', 5)  # Weekly options default
+        self.max_positions_per_day = params.get("max_positions_per_day", 1)
+        self.trade_type = params.get("trade_type", "options")
+        self.days_to_expiry = params.get("days_to_expiry", 5)  # Weekly options default
 
         # State variables
         self.opening_range_high = None
@@ -62,7 +62,7 @@ class ORBStrategy(BaseStrategy):
         # 15:15 IST = 09:45 UTC
 
         self.market_open = time(9, 15)  # IST (Display/Config)
-        self.market_close = time(15, 15) # IST (Display/Config)
+        self.market_close = time(15, 15)  # IST (Display/Config)
 
         # Derived UTC timings for data comparison
         # ASSUMPTION: Data is IST (naive), so we match IST times directly
@@ -93,16 +93,15 @@ class ORBStrategy(BaseStrategy):
         # Get candles from opening range period
         # Data timestamps are UTC, so this comparison works
         opening_candles = data[
-            (data['timestamp'] >= market_open_today) &
-            (data['timestamp'] <= opening_range_end)
+            (data["timestamp"] >= market_open_today) & (data["timestamp"] <= opening_range_end)
         ]
 
         if len(opening_candles) == 0:
             # print(f"No candles for opening range: {market_open_today} - {opening_range_end}")
             return False
 
-        self.opening_range_high = opening_candles['high'].max()
-        self.opening_range_low = opening_candles['low'].min()
+        self.opening_range_high = opening_candles["high"].max()
+        self.opening_range_low = opening_candles["low"].min()
         self.opening_range_calculated = True
 
         # print(f"Opening Range: {self.opening_range_high} - {self.opening_range_low} for {market_open_today.date()}")
@@ -116,8 +115,8 @@ class ORBStrategy(BaseStrategy):
             return None
 
         current_row = current_data.iloc[0]
-        current_time = current_row['timestamp'] # UTC from DB
-        current_price = current_row['close']
+        current_time = current_row["timestamp"]  # UTC from DB
+        current_price = current_row["close"]
 
         # Reset daily state if new day
         if self.current_date != current_time.date():
@@ -150,19 +149,19 @@ class ORBStrategy(BaseStrategy):
 
         # Breakout - Buy CE (Call)
         if current_price > self.opening_range_high:
-            signal_type = 'BUY'
-            instrument_suffix = 'CE' if self.trade_type == 'options' else 'EQ'
+            signal_type = "BUY"
+            instrument_suffix = "CE" if self.trade_type == "options" else "EQ"
 
         # Breakdown - Buy PE (Put)
         elif current_price < self.opening_range_low:
-            signal_type = 'BUY'
-            instrument_suffix = 'PE' if self.trade_type == 'options' else 'EQ'
+            signal_type = "BUY"
+            instrument_suffix = "PE" if self.trade_type == "options" else "EQ"
 
         if signal_type:
             # Set default entry price (spot)
             entry_price = current_price
 
-            if self.trade_type == 'options':
+            if self.trade_type == "options":
                 # Round price to nearest 50 for strike
                 strike = round(current_price / 50) * 50
                 instrument = f"{self.params.get('symbol', 'STOCK')} {strike} {instrument_suffix}"
@@ -172,7 +171,7 @@ class ORBStrategy(BaseStrategy):
                     underlying_price=current_price,
                     option_type=instrument_suffix,  # CE or PE
                     strike=strike,
-                    days_to_expiry=self.days_to_expiry  # Use configured expiry
+                    days_to_expiry=self.days_to_expiry,  # Use configured expiry
                 )
             else:
                 instrument = f"{self.params.get('symbol', 'STOCK')}-EQ"
@@ -202,10 +201,10 @@ class ORBStrategy(BaseStrategy):
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 metadata={
-                    'opening_range_high': self.opening_range_high,
-                    'opening_range_low': self.opening_range_low,
-                    'breakout_type': 'UP' if instrument_suffix == 'CE' else 'DOWN'
-                }
+                    "opening_range_high": self.opening_range_high,
+                    "opening_range_low": self.opening_range_low,
+                    "breakout_type": "UP" if instrument_suffix == "CE" else "DOWN",
+                },
             )
 
         return None
@@ -223,10 +222,10 @@ class ORBStrategy(BaseStrategy):
             return 0
 
         # Determine Lot Size
-        symbol = self.params.get('symbol', '').upper()
-        if 'NIFTY' in symbol and 'BANK' not in symbol:
+        symbol = self.params.get("symbol", "").upper()
+        if "NIFTY" in symbol and "BANK" not in symbol:
             lot_size = 75
-        elif 'BANKNIFTY' in symbol:
+        elif "BANKNIFTY" in symbol:
             lot_size = 15
         else:
             lot_size = 1
@@ -268,18 +267,26 @@ class ORBStrategy(BaseStrategy):
         # Calculate current valuation of the position (Premium)
         current_val = current_price
 
-        if self.trade_type == 'options':
-             # Use Black-Scholes to get current premium
-             current_val = self.get_exit_price(position, current_price, current_time)
+        if self.trade_type == "options":
+            # Use Black-Scholes to get current premium
+            current_val = self.get_exit_price(position, current_price, current_time)
 
         # Update current price in position tracking
         if isinstance(position, dict):
-            position['current_price'] = current_val
+            position["current_price"] = current_val
 
         # Stop loss & Take Profit checks
         # Safely get params, default to no-op if missing
-        stop_loss = position.get('stop_loss') if isinstance(position, dict) else getattr(position, 'stop_loss', None)
-        take_profit = position.get('take_profit') if isinstance(position, dict) else getattr(position, 'take_profit', None)
+        stop_loss = (
+            position.get("stop_loss")
+            if isinstance(position, dict)
+            else getattr(position, "stop_loss", None)
+        )
+        take_profit = (
+            position.get("take_profit")
+            if isinstance(position, dict)
+            else getattr(position, "take_profit", None)
+        )
 
         if stop_loss is not None and current_val <= stop_loss:
             return True
@@ -288,31 +295,37 @@ class ORBStrategy(BaseStrategy):
 
         return False
 
-    def get_exit_price(self, position: Position, current_spot_price: float, current_time: datetime) -> float:
+    def get_exit_price(
+        self, position: Position, current_spot_price: float, current_time: datetime
+    ) -> float:
         """
         Calculate exit price for a position (especially for options)
         """
-        if self.trade_type != 'options':
+        if self.trade_type != "options":
             return current_spot_price
 
         try:
             # Parse instrument to get strike and type
             # Format: "SYMBOL STRIKE TYPE" e.g., "RELIANCE 2400 CE"
-            instrument = position.get('instrument') if isinstance(position, dict) else getattr(position, 'instrument', '')
+            instrument = (
+                position.get("instrument")
+                if isinstance(position, dict)
+                else getattr(position, "instrument", "")
+            )
             if not instrument:
                 return current_spot_price
 
             parts = instrument.split()
             if len(parts) >= 3:
                 strike = float(parts[-2])
-                op_type = parts[-1] # CE or PE
+                op_type = parts[-1]  # CE or PE
 
                 # Calculate synthetic option price based on current spot price
                 return price_synthetic_option(
                     underlying_price=current_spot_price,
-                    option_type=op_type.replace('CE', 'call').replace('PE', 'put'),
+                    option_type=op_type.replace("CE", "call").replace("PE", "put"),
                     strike=strike,
-                    days_to_expiry=self.days_to_expiry
+                    days_to_expiry=self.days_to_expiry,
                 )
         except Exception as e:
             # Fallback to spot price or 0 if error

@@ -1,4 +1,3 @@
-
 from datetime import date, datetime, time
 from typing import Any
 
@@ -19,18 +18,18 @@ class IntradayMeanReversionStrategy(BaseStrategy):
 
     def __init__(self, strategy_id: str, universe_id: str, parameters: dict[str, Any]):
         super().__init__(strategy_id, universe_id, parameters)
-        self.vwap_dev_threshold = parameters.get("vwap_deviation_threshold", 0.02) # 2% deviation
-        self.rsi_threshold = parameters.get("rsi_threshold", 30) # Oversold for long
+        self.vwap_dev_threshold = parameters.get("vwap_deviation_threshold", 0.02)  # 2% deviation
+        self.rsi_threshold = parameters.get("rsi_threshold", 30)  # Oversold for long
         self.max_positions = parameters.get("max_positions", 5)
         self.regime_tag = "RANGE"
 
     def calculate_vwap(self, df: pd.DataFrame):
-        v = df['volume'].values
-        p = df['close'].values
+        v = df["volume"].values
+        p = df["close"].values
         return (p * v).cumsum() / v.cumsum()
 
     def calculate_rsi(self, df: pd.DataFrame, period=14):
-        delta = df['close'].diff()
+        delta = df["close"].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
@@ -53,8 +52,8 @@ class IntradayMeanReversionStrategy(BaseStrategy):
             if len(df) < 20:
                 continue
             df = df.copy()
-            df['vwap'] = self.calculate_vwap(df)
-            df['rsi'] = self.calculate_rsi(df)
+            df["vwap"] = self.calculate_vwap(df)
+            df["rsi"] = self.calculate_rsi(df)
             indicators[symbol] = df
 
         all_timestamps = sorted(list(set([ts for df in indicators.values() for ts in df.index])))
@@ -63,7 +62,11 @@ class IntradayMeanReversionStrategy(BaseStrategy):
         for ts in all_timestamps:
             if ts >= eod_exit_time:
                 for symbol, pos in list(active_positions.items()):
-                    exit_price = indicators[symbol].loc[ts, "close"] if ts in indicators[symbol].index else indicators[symbol].iloc[-1]["close"]
+                    exit_price = (
+                        indicators[symbol].loc[ts, "close"]
+                        if ts in indicators[symbol].index
+                        else indicators[symbol].iloc[-1]["close"]
+                    )
                     total_pnl += (exit_price - pos["entry_price"]) * pos["size"]
                     trades_count += 1
                     del active_positions[symbol]
@@ -92,14 +95,15 @@ class IntradayMeanReversionStrategy(BaseStrategy):
                         entry_price = curr["close"]
                         # Fixed notional sizing for simplicity
                         size = floor(200000 / entry_price)
-                        active_positions[symbol] = {
-                            "entry_price": entry_price,
-                            "size": size
-                        }
+                        active_positions[symbol] = {"entry_price": entry_price, "size": size}
 
         daily_return = (total_pnl / 1000000.0) if total_pnl != 0 else 0.0
-        return self.get_standard_result(current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count)
+        return self.get_standard_result(
+            current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count
+        )
+
 
 def floor(val):
     import math
+
     return math.floor(val)

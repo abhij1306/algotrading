@@ -1,1 +1,1 @@
-﻿# Plugins package
+# Plugins package

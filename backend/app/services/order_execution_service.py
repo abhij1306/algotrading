@@ -10,8 +10,10 @@ from ..brokers.plugins.fyers import FyersBroker
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
+from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
+
 
 class OrderExecutionService:
     """
@@ -41,25 +43,22 @@ class OrderExecutionService:
     def get_mode(self) -> str:
         return self._mode
 
-    @staticmethod
-    def _safe_float(value: Any, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
-    def _estimate_market_reference_price(self, fyers_symbol: str, fallback_price: float = 0.0) -> float:
+    def _estimate_market_reference_price(
+        self, fyers_symbol: str, fallback_price: float = 0.0
+    ) -> float:
         try:
             quote = self.broker.get_quote(fyers_symbol)
             value = quote.get("v", {}) if isinstance(quote, dict) else {}
-            lp = self._safe_float(value.get("lp"), 0.0)
+            lp = safe_float(value.get("lp"), 0.0)
             if lp > 0:
                 return lp
-            return self._safe_float(quote.get("last_price"), fallback_price)
+            return safe_float(quote.get("last_price"), fallback_price)
         except Exception:
             return fallback_price
 
-    def _simulate_paper_fill(self, order_params: dict[str, Any], fyers_symbol: str) -> dict[str, Any]:
+    def _simulate_paper_fill(
+        self, order_params: dict[str, Any], fyers_symbol: str
+    ) -> dict[str, Any]:
         side = str(order_params.get("side", "BUY")).upper()
         order_type = str(order_params.get("type", "MARKET")).upper()
         qty = max(0, int(order_params.get("quantity", 0)))
@@ -95,8 +94,14 @@ class OrderExecutionService:
             else:
                 reason = "Paper limit resting (not marketable)"
         elif order_type == "SL":
-            triggered = (side == "BUY" and trigger_price <= ref) or (side == "SELL" and trigger_price >= ref)
-            if triggered and price > 0 and ((side == "BUY" and price >= ref) or (side == "SELL" and price <= ref)):
+            triggered = (side == "BUY" and trigger_price <= ref) or (
+                side == "SELL" and trigger_price >= ref
+            )
+            if (
+                triggered
+                and price > 0
+                and ((side == "BUY" and price >= ref) or (side == "SELL" and price <= ref))
+            ):
                 fill_price = market_fill(min(price, ref) if side == "BUY" else max(price, ref))
                 status = "FILLED"
                 filled_qty = qty
@@ -104,7 +109,9 @@ class OrderExecutionService:
             else:
                 reason = "Paper stop-limit pending trigger/fill"
         elif order_type == "SL-M":
-            triggered = (side == "BUY" and trigger_price <= ref) or (side == "SELL" and trigger_price >= ref)
+            triggered = (side == "BUY" and trigger_price <= ref) or (
+                side == "SELL" and trigger_price >= ref
+            )
             if triggered:
                 fill_price = market_fill(ref)
                 status = "FILLED"
@@ -129,7 +136,9 @@ class OrderExecutionService:
             "message": reason,
         }
 
-    def place_order(self, order_params: dict[str, Any], db: Session, mode: str | None = None) -> dict[str, Any]:
+    def place_order(
+        self, order_params: dict[str, Any], db: Session, mode: str | None = None
+    ) -> dict[str, Any]:
         """
         Place an order.
 
@@ -174,7 +183,7 @@ class OrderExecutionService:
                     return {
                         "status": "ERROR",
                         "message": f"Risk Check Failed: {risk_result.message}",
-                        "code": risk_result.code
+                        "code": risk_result.code,
                     }
                 # Warn but allow if WARNING
                 if risk_result.status.value == "WARNING":
@@ -200,7 +209,7 @@ class OrderExecutionService:
             # 2. Create DB Record (PENDING)
             internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
 
-            is_paper_order = (1 if effective_mode == "PAPER" else 0)
+            is_paper_order = 1 if effective_mode == "PAPER" else 0
 
             new_order = LiveOrder(
                 id=internal_id,
@@ -219,7 +228,7 @@ class OrderExecutionService:
                 strike_price=order_params.get("strike_price"),
                 order_tag=order_params.get("tag"),
                 source=order_params.get("source", "MANUAL"),
-                is_paper=is_paper_order
+                is_paper=is_paper_order,
             )
             db.add(new_order)
             db.flush()  # Flush to get constraints checked, but don't commit yet
@@ -233,7 +242,7 @@ class OrderExecutionService:
                     "side": side,
                     "type": order_params.get("type", "MARKET"),
                     "product": order_params.get("product", "INTRADAY"),
-                    "price": float(order_params.get("price", 0.0))
+                    "price": float(order_params.get("price", 0.0)),
                 }
 
                 # Call Broker
@@ -252,7 +261,9 @@ class OrderExecutionService:
                         response = broker_resp
                     else:
                         new_order.status = "REJECTED"
-                        new_order.reject_reason = str(broker_resp.get("message", "Order rejected by broker"))
+                        new_order.reject_reason = str(
+                            broker_resp.get("message", "Order rejected by broker")
+                        )
                         response = broker_resp
                 except Exception as e:
                     new_order.status = "ERROR"
@@ -266,9 +277,9 @@ class OrderExecutionService:
                 new_order.filled_qty = int(paper_fill["filled_qty"])
                 new_order.average_price = float(paper_fill["fill_price"])
                 new_order.broker_message = (
-                    f'{paper_fill["message"]} | fill_source={paper_fill["fill_source"]} '
-                    f'| slippage_bps={paper_fill["slippage_bps"]} '
-                    f'| estimated_charges={paper_fill["estimated_charges"]}'
+                    f"{paper_fill['message']} | fill_source={paper_fill['fill_source']} "
+                    f"| slippage_bps={paper_fill['slippage_bps']} "
+                    f"| estimated_charges={paper_fill['estimated_charges']}"
                 )
                 response = {
                     "order_id": internal_id,
@@ -288,6 +299,7 @@ class OrderExecutionService:
             logger.error(f"Order Placement Failed: {e}")
             db.rollback()
             return {"status": "ERROR", "message": str(e)}
+
     def modify_order(self, order_id: str, params: dict[str, Any], db: Session) -> dict[str, Any]:
         """Modify an existing order"""
         order = db.query(LiveOrder).filter(LiveOrder.id == order_id).first()
@@ -296,7 +308,10 @@ class OrderExecutionService:
 
         if self._mode == "LIVE":
             if order.is_paper:
-                return {"status": "ERROR", "message": "Cannot modify Paper order in Live mode (if originated as paper)"}
+                return {
+                    "status": "ERROR",
+                    "message": "Cannot modify Paper order in Live mode (if originated as paper)",
+                }
 
             try:
                 resp = self.broker.modify_order(order_id, params)
@@ -306,19 +321,23 @@ class OrderExecutionService:
                 msg = resp.get("message", "Modify failed")
 
                 if status == "ok":
-                    if "quantity" in params: order.quantity = params["quantity"]
-                    if "price" in params: order.price = params["price"]
+                    if "quantity" in params:
+                        order.quantity = params["quantity"]
+                    if "price" in params:
+                        order.price = params["price"]
                     order.broker_message = f"Modified: {msg}"
                     db.commit()
                     return {"status": "SUCCESS", "message": "Order Modified"}
                 else:
                     return {"status": "ERROR", "message": msg}
             except Exception as e:
-                 return {"status": "ERROR", "message": str(e)}
+                return {"status": "ERROR", "message": str(e)}
         else:
             # Paper Mode Modify
-            if "quantity" in params: order.quantity = params["quantity"]
-            if "price" in params: order.price = params["price"]
+            if "quantity" in params:
+                order.quantity = params["quantity"]
+            if "price" in params:
+                order.price = params["price"]
             db.commit()
             return {"status": "SUCCESS", "message": "Paper Order Modified"}
 
@@ -326,19 +345,19 @@ class OrderExecutionService:
         """Cancel an order"""
         order = db.query(LiveOrder).filter(LiveOrder.id == order_id).first()
         if not order:
-             # Try searching by internal_id if id match fails
+            # Try searching by internal_id if id match fails
             order = db.query(LiveOrder).filter(LiveOrder.internal_id == order_id).first()
             if not order:
                 return {"status": "ERROR", "message": "Order not found"}
 
         if self._mode == "LIVE":
             if order.is_paper:
-                 order.status = "CANCELLED"
-                 db.commit()
-                 return {"status": "SUCCESS", "message": "Paper Order Cancelled"}
+                order.status = "CANCELLED"
+                db.commit()
+                return {"status": "SUCCESS", "message": "Paper Order Cancelled"}
 
             try:
-                resp = self.broker.cancel_order(order.id) # Use broker ID
+                resp = self.broker.cancel_order(order.id)  # Use broker ID
                 status = resp.get("s", "error")
                 msg = resp.get("message", "Cancel failed")
 
@@ -365,7 +384,14 @@ class OrderExecutionService:
         """Get list of today's orders"""
         today = date.today()
         # Ensure we filter by date correctly depending on DB dialect
-        return db.query(LiveOrder).filter(func.date(LiveOrder.created_at) == today).order_by(LiveOrder.created_at.desc()).limit(limit).all()
+        return (
+            db.query(LiveOrder)
+            .filter(func.date(LiveOrder.created_at) == today)
+            .order_by(LiveOrder.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
 
 # Singleton
 order_execution_service = OrderExecutionService()

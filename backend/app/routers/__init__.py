@@ -1,4 +1,4 @@
-﻿# Router exports for clean imports in main.py
+# Router exports for clean imports in main.py
 
 from . import (
     activity,
@@ -31,5 +31,5 @@ __all__ = [
     "data_snapshot",
     "portfolio",
     "terminal",
-    "activity"
+    "activity",
 ]

@@ -2,6 +2,7 @@
 Authentication and Authorization Utilities
 Provides JWT token generation, validation, and user context
 """
+
 import os
 from datetime import datetime, timedelta
 
@@ -20,6 +21,7 @@ security = HTTPBearer()
 
 class TokenData(BaseModel):
     """JWT token payload"""
+
     user_id: str
     username: str | None = None
     exp: datetime | None = None
@@ -27,6 +29,7 @@ class TokenData(BaseModel):
 
 class User(BaseModel):
     """User model"""
+
     user_id: str
     username: str
     email: str | None = None
@@ -84,9 +87,7 @@ def verify_token(token: str) -> TokenData:
             raise credentials_exception
 
         token_data = TokenData(
-            user_id=user_id,
-            username=payload.get("username"),
-            exp=payload.get("exp")
+            user_id=user_id, username=payload.get("username"), exp=payload.get("exp")
         )
 
         return token_data
@@ -96,7 +97,7 @@ def verify_token(token: str) -> TokenData:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> TokenData:
     """
     FastAPI dependency to get current authenticated user.
@@ -130,15 +131,14 @@ def get_current_user_dev() -> TokenData:
     """
     if os.getenv("ENVIRONMENT") != "development":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Development mode not enabled"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Development mode not enabled"
         )
 
     return TokenData(user_id="default_user", username="dev_user")
 
 
 def get_user_id_with_fallback(
-    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False))
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
 ) -> str:
     """
     Get user ID with fallback to default_user in development.
@@ -157,7 +157,4 @@ def get_user_id_with_fallback(
     if os.getenv("ENVIRONMENT", "development") == "development":
         return "default_user"
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required"
-    )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")

@@ -34,6 +34,7 @@ class PositionSyncService:
         """Lazy load Fyers broker"""
         if self._broker is None:
             from ..brokers.plugins.fyers import FyersBroker
+
             self._broker = FyersBroker()
         return self._broker
 
@@ -146,7 +147,7 @@ class PositionSyncService:
                         ltp=pos.current_price,
                         unrealized_pl=pos.pnl,
                         pl_total=pos.pnl,
-                        last_synced_at=datetime.now()
+                        last_synced_at=datetime.now(),
                     )
                     db.add(new_pos)
                     synced_count += 1
@@ -167,7 +168,7 @@ class PositionSyncService:
                 "updated": updated_count,
                 "closed": closed_count,
                 "total_positions": len(broker_positions),
-                "timestamp": self._last_sync.isoformat()
+                "timestamp": self._last_sync.isoformat(),
             }
 
             logger.debug(f"Position sync complete: {result}")
@@ -194,10 +195,11 @@ class PositionSyncService:
         """
         db = SessionLocal()
         try:
-            positions = db.query(LivePosition).filter(
-                LivePosition.user_id == user_id,
-                LivePosition.net_qty != 0
-            ).all()
+            positions = (
+                db.query(LivePosition)
+                .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
+                .all()
+            )
 
             return [
                 {
@@ -214,7 +216,7 @@ class PositionSyncService:
                     "instrument_type": p.instrument_type,
                     "strike_price": p.strike_price,
                     "expiry_date": p.expiry_date.isoformat() if p.expiry_date else None,
-                    "last_synced": p.last_synced_at.isoformat() if p.last_synced_at else None
+                    "last_synced": p.last_synced_at.isoformat() if p.last_synced_at else None,
                 }
                 for p in positions
             ]
@@ -234,8 +236,12 @@ class PositionSyncService:
         positions = self.get_positions(user_id)
 
         total_pnl = sum(p["unrealized_pnl"] for p in positions)
-        long_value = sum(p["current_price"] * p["quantity"] for p in positions if p["side"] == "LONG")
-        short_value = sum(p["current_price"] * p["quantity"] for p in positions if p["side"] == "SHORT")
+        long_value = sum(
+            p["current_price"] * p["quantity"] for p in positions if p["side"] == "LONG"
+        )
+        short_value = sum(
+            p["current_price"] * p["quantity"] for p in positions if p["side"] == "SHORT"
+        )
 
         return {
             "total_positions": len(positions),
@@ -243,7 +249,7 @@ class PositionSyncService:
             "long_exposure": round(long_value, 2),
             "short_exposure": round(short_value, 2),
             "total_exposure": round(long_value + short_value, 2),
-            "last_sync": self._last_sync.isoformat() if self._last_sync else None
+            "last_sync": self._last_sync.isoformat() if self._last_sync else None,
         }
 
 

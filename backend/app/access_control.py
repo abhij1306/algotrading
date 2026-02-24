@@ -1,7 +1,8 @@
-﻿"""
+"""
 Central Access Control for Agents
 Defines READ/WRITE permissions and enforces boundaries.
 """
+
 from enum import Enum
 
 
@@ -10,6 +11,7 @@ class AgentType(Enum):
     STRATEGY_AGENT = "strategy_agent"
     RISK_AGENT = "risk_agent"
     UI_AGENT = "ui_agent"
+
 
 class AccessControl:
     def __init__(self, agent_id: str) -> None:
@@ -20,7 +22,7 @@ class AccessControl:
             AgentType.DATA_AGENT.value: ["companies", "historical_prices", "corporate_actions"],
             AgentType.STRATEGY_AGENT.value: ["learning_artifacts", "backtests", "strategies"],
             AgentType.RISK_AGENT.value: ["computed_risk_metrics", "user_portfolios"],
-            AgentType.UI_AGENT.value: ["ui_preferences"] # placeholder
+            AgentType.UI_AGENT.value: ["ui_preferences"],  # placeholder
         }
 
     def can_write(self, table_name: str) -> bool:
@@ -34,6 +36,7 @@ class AccessControl:
             raise PermissionError(
                 f"Agent {self.agent_id} is not allowed to write to table {table_name}"
             )
+
 
 def get_access_control(agent_id: str) -> AccessControl:
     return AccessControl(agent_id)

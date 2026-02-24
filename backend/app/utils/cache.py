@@ -2,6 +2,7 @@
 Simple in-memory cache with TTL support
 For production, consider Redis
 """
+
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -23,6 +24,7 @@ def cache_with_ttl(ttl_seconds: int = 300):
             # Expensive operation
             return symbols
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -42,6 +44,7 @@ def cache_with_ttl(ttl_seconds: int = 300):
             return result
 
         return wrapper
+
     return decorator
 
 

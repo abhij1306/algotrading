@@ -4,14 +4,18 @@ Handles live market data streaming using fyers-apiv3 WebSocket
 
 FIXED: Thread-safe message handling with event loop integration
 """
+
 import asyncio
+import logging
 from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 try:
     from fyers_apiv3.FyersWebsocket import data_ws
 except ImportError:
     data_ws = None
-    print("[FyersWS] fyers-apiv3 not installed. WebSocket features unavailable.")
+    logger.warning("[FyersWS] fyers-apiv3 not installed. WebSocket features unavailable.")
 
 
 class FyersWebSocketService:
@@ -30,7 +34,7 @@ class FyersWebSocketService:
         self.max_symbols_per_call = 25
 
     def _chunk(self, items: list[str], size: int) -> list[list[str]]:
-        return [items[i:i + size] for i in range(0, len(items), size)]
+        return [items[i : i + size] for i in range(0, len(items), size)]
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         """
@@ -46,6 +50,7 @@ class FyersWebSocketService:
 
         # Load access token from unified client
         from .fyers_client import get_fyers_client
+
         fyers_client = get_fyers_client()
 
         if fyers_client is None:
@@ -71,12 +76,12 @@ class FyersWebSocketService:
             on_close=self._on_close,
             on_error=self._on_error,
             on_message=self._on_message,
-            reconnect_retry=10
+            reconnect_retry=10,
         )
 
         # Connect (blocking call - should be run in thread)
         self.ws.connect()
-        print("[FyersWS] WebSocket connected")
+        logger.info("[FyersWS] WebSocket connected")
 
     def subscribe(self, symbols: list[str], callback: Callable = None):
         """
@@ -103,7 +108,7 @@ class FyersWebSocketService:
                     self.callbacks[symbol] = []
                 self.callbacks[symbol].append(callback)
 
-        print(f"[FyersWS] Subscribed to {len(unique_symbols)} symbols")
+        logger.info("[FyersWS] Subscribed to %s symbols", len(unique_symbols))
 
     def unsubscribe(self, symbols: list[str]):
         """Unsubscribe from symbols"""
@@ -136,37 +141,37 @@ class FyersWebSocketService:
                     try:
                         callback(message)
                     except Exception as e:
-                        print(f"[FyersWS] Callback error: {e}")
+                        logger.error("[FyersWS] Callback error: %s", e)
 
             # 2. Main Tick Handler (LiveMarketService)
             if self.on_tick_handler:
                 try:
                     self.on_tick_handler(message)
                 except Exception as e:
-                    print(f"[FyersWS] Main handler error: {e}")
+                    logger.error("[FyersWS] Main handler error: %s", e)
 
         except Exception as e:
-            print(f"[FyersWS] Error processing message: {e}")
+            logger.error("[FyersWS] Error processing message: %s", e)
 
     def _on_error(self, error):
         """Handle WebSocket error"""
         try:
             # Log actual errors at ERROR level with context
-            print(f"[FyersWS] ERROR: {str(error)}")
+            logger.error("[FyersWS] ERROR: %s", str(error))
         except Exception:
-            print("[FyersWS] ERROR: <unicode error>")
+            logger.error("[FyersWS] ERROR: <unicode error>")
 
     def _on_close(self, message):
         """Handle WebSocket close"""
         try:
             # Normal close is logged at INFO level
-            print(f"[FyersWS] Connection closed: {str(message)}")
+            logger.info("[FyersWS] Connection closed: %s", str(message))
         except Exception:
-            print("[FyersWS] Connection closed")
+            logger.info("[FyersWS] Connection closed")
 
     def _on_open(self):
         """Handle WebSocket open"""
-        print("[FyersWS] Connection established")
+        logger.info("[FyersWS] Connection established")
 
     def disconnect(self):
         """Close WebSocket connection"""
@@ -175,11 +180,12 @@ class FyersWebSocketService:
             self.ws = None
             self.subscribed_symbols.clear()
             self.callbacks.clear()
-            print("[FyersWS] Disconnected")
+            logger.info("[FyersWS] Disconnected")
 
 
 # Global singleton instance
 _ws_instance = None
+
 
 def get_websocket_service() -> FyersWebSocketService:
     """Get or create WebSocket service instance"""

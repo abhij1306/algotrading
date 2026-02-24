@@ -1,4 +1,4 @@
-﻿from typing import Any
+from typing import Any
 
 from ..database import AgentAuditLog, SessionLocal
 
@@ -18,7 +18,7 @@ class AuditLogger:
         decision: dict,
         reasoning: str,
         confidence: float,
-        status: str = 'SUCCESS'
+        status: str = "SUCCESS",
     ):
         """Log a high-level agent decision (e.g., Signal Generated, Trade Executed)"""
         db = SessionLocal()
@@ -27,12 +27,12 @@ class AuditLogger:
                 agent_name=agent_name,
                 action_type=action_type,
                 symbol=symbol,
-                input_snapshot=input_snapshot, # SQLAlchemy JSON handles dict
+                input_snapshot=input_snapshot,  # SQLAlchemy JSON handles dict
                 decision=decision,
                 reasoning=reasoning,
                 confidence=confidence,
                 status=status,
-                execution_time_ms=0  # TODO(#8): measure time
+                execution_time_ms=0,  # TODO(#8): measure time
             )
             db.add(log)
             db.commit()
@@ -48,14 +48,14 @@ class AuditLogger:
         params: dict,
         response: Any,
         duration_ms: int,
-        error: str = None
+        error: str = None,
     ):
         """Log a broker API call (Simulated or Real)"""
         # For API logs, we might want a separate table 'SystemLogs' or use AuditLog with specific types
         # Using AgentAuditLog with type="BROKER_API"
 
-        status = 'FAILURE' if error else 'SUCCESS'
-        reason = error if error else 'API Call Success'
+        status = "FAILURE" if error else "SUCCESS"
+        reason = error if error else "API Call Success"
 
         # Sanitize Params (Remove Secrets if any)
         # ...
@@ -63,10 +63,10 @@ class AuditLogger:
         AuditLogger.log_decision(
             agent_name=f"BROKER::{broker_name}",
             action_type=f"API::{method}",
-            symbol=params.get('symbol'),
+            symbol=params.get("symbol"),
             input_snapshot=params,
-            decision={"response": str(response)}, # Store string repr if complex
+            decision={"response": str(response)},  # Store string repr if complex
             reasoning=f"Duration: {duration_ms}ms. {reason}",
             confidence=1.0,
-            status=status
+            status=status,
         )

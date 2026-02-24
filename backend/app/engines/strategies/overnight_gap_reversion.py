@@ -1,4 +1,3 @@
-﻿
 import math
 from datetime import date, timedelta
 from typing import Any
@@ -20,13 +19,13 @@ class OvernightGapReversionStrategy(BaseStrategy):
 
     def __init__(self, strategy_id: str, universe_id: str, parameters: dict[str, Any]):
         super().__init__(strategy_id, universe_id, parameters)
-        self.gap_threshold = parameters.get("gap_size_threshold", 0.02) # 2% gap
+        self.gap_threshold = parameters.get("gap_size_threshold", 0.02)  # 2% gap
         self.max_holding_days = parameters.get("max_holding_days", 3)
         self.max_positions = parameters.get("max_positions", 10)
         self.regime_tag = "EVENT"
 
         # State across days
-        self.active_positions = {} # symbol: {entry_date, entry_price, size, days_held}
+        self.active_positions = {}  # symbol: {entry_date, entry_price, size, days_held}
 
     def run_day(self, current_date: date, symbols: list[str], db_session: Any) -> dict[str, Any]:
         provider = DataProvider(db_session)
@@ -90,7 +89,7 @@ class OvernightGapReversionStrategy(BaseStrategy):
                     continue
 
                 if curr_idx < 1:
-                    continue # Need at least one prior day
+                    continue  # Need at least one prior day
 
                 today = df.iloc[curr_idx]
                 prev = df.iloc[curr_idx - 1]
@@ -128,8 +127,10 @@ class OvernightGapReversionStrategy(BaseStrategy):
                         "entry_date": current_date,
                         "entry_price": entry_price,
                         "size": size,
-                        "days_held": 0
+                        "days_held": 0,
                     }
 
         daily_return = (total_pnl / 1000000.0) if total_pnl != 0 else 0.0
-        return self.get_standard_result(current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count)
+        return self.get_standard_result(
+            current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count
+        )

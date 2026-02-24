@@ -3,6 +3,7 @@ Consolidated Backtesting Engine
 ================================
 Portfolio-level backtesting with index universe reconstruction.
 """
+
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BacktestConfig:
     """Configuration for a backtest run"""
+
     start_date: date
     end_date: date
     initial_capital: float = 1000000.0
@@ -36,6 +38,7 @@ class BacktestConfig:
 @dataclass
 class Position:
     """Single position in backtest"""
+
     symbol: str
     entry_date: date
     entry_price: float
@@ -62,6 +65,7 @@ class Position:
 @dataclass
 class BacktestResult:
     """Results of a backtest run"""
+
     config: BacktestConfig
     equity_curve: list = field(default_factory=list)
     positions: list = field(default_factory=list)
@@ -125,7 +129,7 @@ class BacktestEngine:
             positions=list(self.all_positions),
             trades=self.trade_history,
             metrics=self._calculate_metrics(),
-            run_id=self._run_id
+            run_id=self._run_id,
         )
 
         logger.info(f"Backtest complete. Final equity: {self._get_total_equity():.2f}")
@@ -136,6 +140,7 @@ class BacktestEngine:
         session = get_db_session()
         try:
             import uuid
+
             self._run_id = f"BT-{uuid.uuid4().hex[:8].upper()}"
 
             run = BacktestRun(
@@ -145,7 +150,7 @@ class BacktestEngine:
                 start_date=self.config.start_date,
                 end_date=self.config.end_date,
                 initial_capital=self.config.initial_capital,
-                status="running"
+                status="running",
             )
             session.add(run)
             session.commit()
@@ -166,7 +171,7 @@ class BacktestEngine:
                 equity=total_equity,
                 cash=self.cash,
                 positions_count=len(self.positions),
-                daily_return=0.0
+                daily_return=0.0,
             )
             session.add(result)
             session.commit()
@@ -180,15 +185,13 @@ class BacktestEngine:
         session = get_db_session()
         try:
             metrics = self._calculate_metrics()
-            run = session.query(BacktestRun).filter(
-                BacktestRun.run_id == self._run_id
-            ).first()
+            run = session.query(BacktestRun).filter(BacktestRun.run_id == self._run_id).first()
 
             if run:
-                run.final_capital = metrics.get('final_equity', self.cash)
-                run.total_return = metrics.get('total_return', 0)
-                run.sharpe_ratio = metrics.get('sharpe_ratio', 0)
-                run.max_drawdown = metrics.get('max_drawdown', 0)
+                run.final_capital = metrics.get("final_equity", self.cash)
+                run.total_return = metrics.get("total_return", 0)
+                run.sharpe_ratio = metrics.get("sharpe_ratio", 0)
+                run.max_drawdown = metrics.get("max_drawdown", 0)
                 run.status = "completed"
                 session.commit()
         except Exception as e:
@@ -202,21 +205,28 @@ class BacktestEngine:
 
         try:
             # Get universe ID
-            universe = session.query(IndexUniverseDefinition).filter(
-                IndexUniverseDefinition.index_code == self.config.universe
-            ).first()
+            universe = (
+                session.query(IndexUniverseDefinition)
+                .filter(IndexUniverseDefinition.index_code == self.config.universe)
+                .first()
+            )
 
             if not universe:
                 logger.warning(f"Universe {self.config.universe} not found")
                 return
 
             # Query historical constituents
-            history = session.query(IndexConstituentHistory).filter(
-                and_(
-                    IndexConstituentHistory.universe_id == universe.id,
-                    IndexConstituentHistory.effective_from <= self.config.end_date
+            history = (
+                session.query(IndexConstituentHistory)
+                .filter(
+                    and_(
+                        IndexConstituentHistory.universe_id == universe.id,
+                        IndexConstituentHistory.effective_from <= self.config.end_date,
+                    )
                 )
-            ).order_by(IndexConstituentHistory.effective_from.desc()).all()
+                .order_by(IndexConstituentHistory.effective_from.desc())
+                .all()
+            )
 
             # Build date -> symbols mapping
             self._constituents_by_date = {}
@@ -274,14 +284,17 @@ class BacktestEngine:
         elif freq == "monthly":
             if current_date.day > 5:
                 return False
-            return (self._last_rebalance.year, self._last_rebalance.month) != (current_date.year, current_date.month)
+            return (self._last_rebalance.year, self._last_rebalance.month) != (
+                current_date.year,
+                current_date.month,
+            )
 
         return False
 
     def _rebalance(self, current_date: date):
         """Rebalance portfolio based on current constituents"""
         sorted_symbols = sorted(self._current_constituents)
-        target_symbols = sorted_symbols[:self.config.max_positions]
+        target_symbols = sorted_symbols[: self.config.max_positions]
 
         if not target_symbols:
             logger.warning(f"No constituents for {current_date}")
@@ -321,7 +334,7 @@ class BacktestEngine:
             entry_date=date,
             entry_price=buy_price,
             quantity=quantity,
-            current_price=buy_price
+            current_price=buy_price,
         )
 
         self.positions[symbol] = position
@@ -330,14 +343,16 @@ class BacktestEngine:
         cost = buy_price * quantity * (1 + self.config.brokerage)
         self.cash -= cost
 
-        self.trade_history.append({
-            'date': date.isoformat(),
-            'symbol': symbol,
-            'action': 'BUY',
-            'price': buy_price,
-            'quantity': quantity,
-            'value': cost
-        })
+        self.trade_history.append(
+            {
+                "date": date.isoformat(),
+                "symbol": symbol,
+                "action": "BUY",
+                "price": buy_price,
+                "quantity": quantity,
+                "value": cost,
+            }
+        )
 
     def _close_position(self, symbol: str, date: date):
         """Close an existing position"""
@@ -358,15 +373,17 @@ class BacktestEngine:
         proceeds = sell_price * position.quantity * (1 - self.config.brokerage)
         self.cash += proceeds
 
-        self.trade_history.append({
-            'date': date.isoformat(),
-            'symbol': symbol,
-            'action': 'SELL',
-            'price': sell_price,
-            'quantity': position.quantity,
-            'value': proceeds,
-            'pnl': position.realized_pnl
-        })
+        self.trade_history.append(
+            {
+                "date": date.isoformat(),
+                "symbol": symbol,
+                "action": "SELL",
+                "price": sell_price,
+                "quantity": position.quantity,
+                "value": proceeds,
+                "pnl": position.realized_pnl,
+            }
+        )
 
         del self.positions[symbol]
 
@@ -415,41 +432,41 @@ class BacktestEngine:
         import numpy as np
         import pandas as pd
 
-        equity_df = pd.DataFrame(self.equity_history, columns=['date', 'equity'])
-        equity_df['date'] = pd.to_datetime(equity_df['date'])
-        equity_df = equity_df.set_index('date')
+        equity_df = pd.DataFrame(self.equity_history, columns=["date", "equity"])
+        equity_df["date"] = pd.to_datetime(equity_df["date"])
+        equity_df = equity_df.set_index("date")
 
-        equity_df['returns'] = equity_df['equity'].pct_change()
+        equity_df["returns"] = equity_df["equity"].pct_change()
 
-        total_return = (equity_df['equity'].iloc[-1] / equity_df['equity'].iloc[0]) - 1
+        total_return = (equity_df["equity"].iloc[-1] / equity_df["equity"].iloc[0]) - 1
 
         days = (self.config.end_date - self.config.start_date).days
         years = days / 365
         annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
 
-        if equity_df['returns'].std() > 0:
-            sharpe = equity_df['returns'].mean() / equity_df['returns'].std() * np.sqrt(252)
+        if equity_df["returns"].std() > 0:
+            sharpe = equity_df["returns"].mean() / equity_df["returns"].std() * np.sqrt(252)
         else:
             sharpe = 0
 
-        rolling_max = equity_df['equity'].cummax()
-        drawdown = (equity_df['equity'] - rolling_max) / rolling_max
+        rolling_max = equity_df["equity"].cummax()
+        drawdown = (equity_df["equity"] - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
 
-        closed_trades = [t for t in self.trade_history if t.get('action') == 'SELL']
-        winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
+        closed_trades = [t for t in self.trade_history if t.get("action") == "SELL"]
+        winning_trades = [t for t in closed_trades if t.get("pnl", 0) > 0]
         win_rate = len(winning_trades) / len(closed_trades) if closed_trades else 0
 
         return {
-            'final_equity': equity_df['equity'].iloc[-1],
-            'total_return': total_return,
-            'annualized_return': annualized_return,
-            'sharpe_ratio': sharpe,
-            'max_drawdown': max_drawdown,
-            'total_trades': len(self.trade_history),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(closed_trades) - len(winning_trades),
-            'win_rate': win_rate,
+            "final_equity": equity_df["equity"].iloc[-1],
+            "total_return": total_return,
+            "annualized_return": annualized_return,
+            "sharpe_ratio": sharpe,
+            "max_drawdown": max_drawdown,
+            "total_trades": len(self.trade_history),
+            "winning_trades": len(winning_trades),
+            "losing_trades": len(closed_trades) - len(winning_trades),
+            "win_rate": win_rate,
         }
 
 

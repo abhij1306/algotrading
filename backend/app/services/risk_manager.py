@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class RiskStatus(Enum):
     """Risk check status"""
+
     PASS = "PASS"
     FAIL = "FAIL"
     WARNING = "WARNING"
@@ -30,6 +31,7 @@ class RiskStatus(Enum):
 @dataclass
 class RiskCheckResult:
     """Result of a risk check"""
+
     status: RiskStatus
     message: str
     code: str
@@ -39,6 +41,7 @@ class RiskCheckResult:
 @dataclass
 class RiskConfig:
     """Risk configuration"""
+
     # Position limits
     max_position_size: int = 1000  # Max quantity per symbol
     max_total_exposure: float = 500000  # Max total position value in INR
@@ -72,6 +75,7 @@ class RiskManager:
         """Lazy load Fyers broker"""
         if self._broker is None:
             from ..brokers.plugins.fyers import FyersBroker
+
             self._broker = FyersBroker()
         return self._broker
 
@@ -101,16 +105,13 @@ class RiskManager:
 
         # Fallback to default from config or env
         import os
+
         default_price = float(os.getenv("RISK_DEFAULT_PRICE", "0"))
         if default_price > 0:
             logger.info(f"Using configured default price {default_price} for {symbol}")
         return default_price
 
-    def pre_trade_check(
-        self,
-        order_params: dict,
-        db: Session | None = None
-    ) -> RiskCheckResult:
+    def pre_trade_check(self, order_params: dict, db: Session | None = None) -> RiskCheckResult:
         """
         Perform pre-trade risk checks.
 
@@ -158,9 +159,7 @@ class RiskManager:
                 return naked_check
 
         return RiskCheckResult(
-            status=RiskStatus.PASS,
-            message="All risk checks passed",
-            code="RISK_PASS"
+            status=RiskStatus.PASS, message="All risk checks passed", code="RISK_PASS"
         )
 
     def _check_market_hours(self) -> RiskCheckResult:
@@ -171,14 +170,10 @@ class RiskManager:
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
                 message="Market is closed. Orders can only be placed during market hours (9:15 AM - 3:30 PM IST).",
-                code="MARKET_CLOSED"
+                code="MARKET_CLOSED",
             )
 
-        return RiskCheckResult(
-            status=RiskStatus.PASS,
-            message="Market is open",
-            code="MARKET_OPEN"
-        )
+        return RiskCheckResult(status=RiskStatus.PASS, message="Market is open", code="MARKET_OPEN")
 
     def _check_daily_loss_limit(self, db: Session | None) -> RiskCheckResult:
         """Check if daily loss limit has been reached"""
@@ -188,16 +183,20 @@ class RiskManager:
 
             # Calculate realized P&L from today's trades
             # This is a simplified calculation - in production you'd use actual tradebook
-            result = db.query(func.sum(LivePosition.realized_pl)).filter(
-                func.date(LivePosition.last_synced_at) == today
-            ).scalar()
+            result = (
+                db.query(func.sum(LivePosition.realized_pl))
+                .filter(func.date(LivePosition.last_synced_at) == today)
+                .scalar()
+            )
 
             realized_pnl = result or 0
 
             # Also check unrealized P&L
-            result = db.query(func.sum(LivePosition.unrealized_pl)).filter(
-                LivePosition.net_qty != 0
-            ).scalar()
+            result = (
+                db.query(func.sum(LivePosition.unrealized_pl))
+                .filter(LivePosition.net_qty != 0)
+                .scalar()
+            )
 
             unrealized_pnl = result or 0
             total_pnl = realized_pnl + unrealized_pnl
@@ -207,7 +206,7 @@ class RiskManager:
                     status=RiskStatus.FAIL,
                     message=f"Daily loss limit reached. Current P&L: ₹{total_pnl:.2f}, Limit: ₹{-self.config.max_daily_loss:.2f}",
                     code="DAILY_LOSS_LIMIT",
-                    details={"current_pnl": total_pnl, "limit": -self.config.max_daily_loss}
+                    details={"current_pnl": total_pnl, "limit": -self.config.max_daily_loss},
                 )
 
             # Warning at 80% of limit
@@ -216,24 +215,20 @@ class RiskManager:
                     status=RiskStatus.WARNING,
                     message=f"Approaching daily loss limit. Current P&L: ₹{total_pnl:.2f}",
                     code="DAILY_LOSS_WARNING",
-                    details={"current_pnl": total_pnl, "limit": -self.config.max_daily_loss}
+                    details={"current_pnl": total_pnl, "limit": -self.config.max_daily_loss},
                 )
 
             return RiskCheckResult(
                 status=RiskStatus.PASS,
                 message="Daily loss within limits",
                 code="DAILY_LOSS_OK",
-                details={"current_pnl": total_pnl}
+                details={"current_pnl": total_pnl},
             )
         finally:
             if db:
                 db.close()
 
-    def _check_position_size(
-        self,
-        order_params: dict,
-        db: Session | None
-    ) -> RiskCheckResult:
+    def _check_position_size(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check if order size exceeds limits"""
         quantity = order_params.get("quantity", 0)
         symbol = order_params.get("symbol", "")
@@ -243,20 +238,14 @@ class RiskManager:
                 status=RiskStatus.FAIL,
                 message=f"Order size {quantity} exceeds maximum {self.config.max_position_size} for {symbol}",
                 code="POSITION_SIZE_LIMIT",
-                details={"quantity": quantity, "limit": self.config.max_position_size}
+                details={"quantity": quantity, "limit": self.config.max_position_size},
             )
 
         return RiskCheckResult(
-            status=RiskStatus.PASS,
-            message="Position size within limits",
-            code="POSITION_SIZE_OK"
+            status=RiskStatus.PASS, message="Position size within limits", code="POSITION_SIZE_OK"
         )
 
-    def _check_total_exposure(
-        self,
-        order_params: dict,
-        db: Session | None
-    ) -> RiskCheckResult:
+    def _check_total_exposure(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check if total exposure exceeds limits"""
         db = db or SessionLocal()
         try:
@@ -276,7 +265,7 @@ class RiskManager:
                     return RiskCheckResult(
                         status=RiskStatus.FAIL,
                         message=f"Cannot estimate price for {symbol}. Please provide limit price.",
-                        code="PRICE_ESTIMATE_FAILED"
+                        code="PRICE_ESTIMATE_FAILED",
                     )
 
             new_exposure = quantity * price
@@ -291,14 +280,12 @@ class RiskManager:
                         "current_exposure": current_exposure,
                         "new_exposure": new_exposure,
                         "total": total_exposure,
-                        "limit": self.config.max_total_exposure
-                    }
+                        "limit": self.config.max_total_exposure,
+                    },
                 )
 
             return RiskCheckResult(
-                status=RiskStatus.PASS,
-                message="Exposure within limits",
-                code="EXPOSURE_OK"
+                status=RiskStatus.PASS, message="Exposure within limits", code="EXPOSURE_OK"
             )
         finally:
             if db:
@@ -333,15 +320,15 @@ class RiskManager:
                     details={
                         "available": funds.available,
                         "required": estimated_margin,
-                        "shortfall": estimated_margin - funds.available
-                    }
+                        "shortfall": estimated_margin - funds.available,
+                    },
                 )
 
             return RiskCheckResult(
                 status=RiskStatus.PASS,
                 message="Sufficient margin available",
                 code="MARGIN_OK",
-                details={"available": funds.available, "required": estimated_margin}
+                details={"available": funds.available, "required": estimated_margin},
             )
         except Exception as e:
             logger.error(f"Error checking margin: {e}")
@@ -349,7 +336,7 @@ class RiskManager:
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
                 message=f"Could not verify margin: {str(e)}. Trade denied for safety.",
-                code="MARGIN_CHECK_ERROR"
+                code="MARGIN_CHECK_ERROR",
             )
 
     def _check_order_frequency(self, db: Session | None) -> RiskCheckResult:
@@ -357,32 +344,28 @@ class RiskManager:
         db = db or SessionLocal()
         try:
             today = date.today()
-            order_count = db.query(LiveOrder).filter(
-                func.date(LiveOrder.created_at) == today
-            ).count()
+            order_count = (
+                db.query(LiveOrder).filter(func.date(LiveOrder.created_at) == today).count()
+            )
 
             if order_count >= self.config.max_orders_per_day:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
                     message=f"Daily order limit reached ({self.config.max_orders_per_day})",
                     code="ORDER_FREQUENCY_LIMIT",
-                    details={"orders_today": order_count, "limit": self.config.max_orders_per_day}
+                    details={"orders_today": order_count, "limit": self.config.max_orders_per_day},
                 )
 
             return RiskCheckResult(
                 status=RiskStatus.PASS,
                 message="Order frequency within limits",
-                code="ORDER_FREQUENCY_OK"
+                code="ORDER_FREQUENCY_OK",
             )
         finally:
             if db:
                 db.close()
 
-    def _check_naked_short_option(
-        self,
-        order_params: dict,
-        db: Session | None
-    ) -> RiskCheckResult:
+    def _check_naked_short_option(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check for naked short option limits"""
         side = order_params.get("side", "BUY")
 
@@ -390,7 +373,7 @@ class RiskManager:
             return RiskCheckResult(
                 status=RiskStatus.PASS,
                 message="Buy option order - no naked short risk",
-                code="NAKED_SHORT_OK"
+                code="NAKED_SHORT_OK",
             )
 
         # It's a sell order - check current short position
@@ -400,10 +383,11 @@ class RiskManager:
         db = db or SessionLocal()
         try:
             # Get current short position for this option
-            position = db.query(LivePosition).filter(
-                LivePosition.symbol == symbol,
-                LivePosition.net_qty < 0
-            ).first()
+            position = (
+                db.query(LivePosition)
+                .filter(LivePosition.symbol == symbol, LivePosition.net_qty < 0)
+                .first()
+            )
 
             current_short = abs(position.net_qty) if position else 0
             total_short = current_short + quantity
@@ -417,14 +401,12 @@ class RiskManager:
                         "current_short": current_short,
                         "adding": quantity,
                         "total": total_short,
-                        "limit": self.config.max_naked_short_quantity
-                    }
+                        "limit": self.config.max_naked_short_quantity,
+                    },
                 )
 
             return RiskCheckResult(
-                status=RiskStatus.PASS,
-                message="Naked short within limits",
-                code="NAKED_SHORT_OK"
+                status=RiskStatus.PASS, message="Naked short within limits", code="NAKED_SHORT_OK"
             )
         finally:
             if db:
@@ -434,10 +416,11 @@ class RiskManager:
         """Get current exposure summary"""
         db = SessionLocal()
         try:
-            positions = db.query(LivePosition).filter(
-                LivePosition.user_id == user_id,
-                LivePosition.net_qty != 0
-            ).all()
+            positions = (
+                db.query(LivePosition)
+                .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
+                .all()
+            )
 
             long_exposure = sum(p.ltp * p.net_qty for p in positions if p.net_qty > 0)
             short_exposure = sum(p.ltp * abs(p.net_qty) for p in positions if p.net_qty < 0)
@@ -445,27 +428,34 @@ class RiskManager:
 
             # Get today's P&L
             today = date.today()
-            result = db.query(func.sum(LivePosition.realized_pl)).filter(
-                func.date(LivePosition.last_synced_at) == today
-            ).scalar()
+            result = (
+                db.query(func.sum(LivePosition.realized_pl))
+                .filter(func.date(LivePosition.last_synced_at) == today)
+                .scalar()
+            )
             today_pnl = result or 0
 
             # Get order count
-            order_count = db.query(LiveOrder).filter(
-                func.date(LiveOrder.created_at) == today
-            ).count()
+            order_count = (
+                db.query(LiveOrder).filter(func.date(LiveOrder.created_at) == today).count()
+            )
 
             return {
                 "long_exposure": round(long_exposure, 2),
                 "short_exposure": round(short_exposure, 2),
                 "total_exposure": round(total_exposure, 2),
                 "exposure_limit": self.config.max_total_exposure,
-                "exposure_utilization": round((total_exposure / self.config.max_total_exposure) * 100, 2) if self.config.max_total_exposure > 0 else 0,                "today_pnl": round(today_pnl, 2),
+                "exposure_utilization": round(
+                    (total_exposure / self.config.max_total_exposure) * 100, 2
+                )
+                if self.config.max_total_exposure > 0
+                else 0,
+                "today_pnl": round(today_pnl, 2),
                 "daily_loss_limit": -self.config.max_daily_loss,
                 "orders_today": order_count,
                 "orders_limit": self.config.max_orders_per_day,
                 "position_count": len(positions),
-                "positions_limit": self.config.max_positions_count
+                "positions_limit": self.config.max_positions_count,
             }
         finally:
             db.close()
@@ -497,13 +487,11 @@ class RiskManager:
                 status=RiskStatus.WARNING,
                 message=f"Large order detected. Notional value: ₹{notional:.2f}. Please confirm.",
                 code="LARGE_ORDER_CONFIRMATION",
-                details={"notional": notional, "threshold": self.config.large_order_notional}
+                details={"notional": notional, "threshold": self.config.large_order_notional},
             )
 
         return RiskCheckResult(
-            status=RiskStatus.PASS,
-            message="Order size normal",
-            code="ORDER_SIZE_NORMAL"
+            status=RiskStatus.PASS, message="Order size normal", code="ORDER_SIZE_NORMAL"
         )
 
 

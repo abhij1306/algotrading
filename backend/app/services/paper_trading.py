@@ -8,6 +8,7 @@ Run this as a scheduled task or background service:
 - Places paper orders (no real money)
 - Logs performance for graduation review
 """
+
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -26,7 +27,7 @@ class PaperTradingService:
     def __init__(self):
         self.db = SessionLocal()
         self.provider = DataProvider(self.db)
-        self.broker = PaperBroker(user_id='system_paper')
+        self.broker = PaperBroker(user_id="system_paper")
 
     async def run_cycle(self):
         """
@@ -35,9 +36,9 @@ class PaperTradingService:
         """
         try:
             # 1. Get all PAPER strategies
-            paper_strategies = self.db.query(StrategyContract).filter_by(
-                lifecycle_state='PAPER'
-            ).all()
+            paper_strategies = (
+                self.db.query(StrategyContract).filter_by(lifecycle_state="PAPER").all()
+            )
 
             if not paper_strategies:
                 print("[PAPER] No strategies in PAPER state")
@@ -83,7 +84,7 @@ class PaperTradingService:
                 # Generate signal
                 signal = strategy.on_data(
                     data.tail(1),  # Current candle
-                    data  # Historical context
+                    data,  # Historical context
                 )
 
                 if signal:
@@ -100,7 +101,7 @@ class PaperTradingService:
     def _load_strategy(self, contract: StrategyContract):
         """Load strategy instance from contract"""
         # For now, hard-coded
-        if contract.strategy_id.startswith('ORB'):
+        if contract.strategy_id.startswith("ORB"):
             return ORBStrategy()
 
         raise ValueError(f"Unknown strategy: {contract.strategy_id}")
@@ -127,10 +128,7 @@ class PaperTradingService:
 
         try:
             data = self.provider.get_history(
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date
+                symbol=symbol, timeframe=timeframe, start_date=start_date, end_date=end_date
             )
             return data
         except Exception:
@@ -138,14 +136,14 @@ class PaperTradingService:
 
     async def _place_paper_order(self, signal, symbol: str, strategy_id: str):
         """Place a paper order based on signal"""
-        side = 'BUY' if signal.direction == 'LONG' else 'SELL'
+        side = "BUY" if signal.direction == "LONG" else "SELL"
 
         order = {
-            'symbol': symbol,
-            'side': side,
-            'quantity': 1,  # Simplified
-            'order_type': 'MARKET',
-            'product_type': 'INTRADAY'
+            "symbol": symbol,
+            "side": side,
+            "quantity": 1,  # Simplified
+            "order_type": "MARKET",
+            "product_type": "INTRADAY",
         }
 
         result = self.broker.place_order(order)
@@ -157,31 +155,27 @@ class PaperTradingService:
         positions = self.broker.get_positions()
 
         for position in positions:
-            if position['symbol'] != symbol:
+            if position["symbol"] != symbol:
                 continue
 
             # Get current price
             try:
                 quote = self.provider.get_quote(symbol)
-                current_price = quote.get('ltp', 0)
+                current_price = quote.get("ltp", 0)
             except Exception:
                 continue
 
             # Check strategy exit logic
-            should_exit = strategy.should_exit(
-                position,
-                current_price,
-                datetime.now()
-            )
+            should_exit = strategy.should_exit(position, current_price, datetime.now())
 
             if should_exit:
-                exit_side = 'SELL' if position['side'] == 'LONG' else 'BUY'
+                exit_side = "SELL" if position["side"] == "LONG" else "BUY"
                 order = {
-                    'symbol': symbol,
-                    'side': exit_side,
-                    'quantity': position['quantity'],
-                    'order_type': 'MARKET',
-                    'product_type': 'INTRADAY'
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "quantity": position["quantity"],
+                    "order_type": "MARKET",
+                    "product_type": "INTRADAY",
                 }
 
                 result = self.broker.place_order(order)

@@ -1,13 +1,15 @@
-﻿"""
+"""
 Trading Strategies with configurable weightages
 User can select different strategies for different market conditions
 """
+
 from dataclasses import dataclass
 
 
 @dataclass
 class StrategyWeights:
     """Weightage configuration for a strategy"""
+
     volume_surge: int
     breakout: int
     trend: int
@@ -16,177 +18,160 @@ class StrategyWeights:
     price_deviation: int = 0
 
     def total(self) -> int:
-        return (self.volume_surge + self.breakout + self.trend +
-                self.volatility + self.momentum + self.price_deviation)
+        return (
+            self.volume_surge
+            + self.breakout
+            + self.trend
+            + self.volatility
+            + self.momentum
+            + self.price_deviation
+        )
 
 
 # ==================== STRATEGY DEFINITIONS ====================
 
 STRATEGIES = {
-    'momentum': {
-        'name': 'Momentum Stocks',
-        'description': 'Strong upward momentum with volume confirmation',
-        'icon': '[START]',
-        'weights': StrategyWeights(
-            volume_surge=25,      # High volume important
-            breakout=30,          # Breaking resistance
-            trend=20,             # Strong trend
-            volatility=10,        # Lower volatility preference
-            momentum=15,          # Price momentum key
-            price_deviation=0
+    "momentum": {
+        "name": "Momentum Stocks",
+        "description": "Strong upward momentum with volume confirmation",
+        "icon": "[START]",
+        "weights": StrategyWeights(
+            volume_surge=25,  # High volume important
+            breakout=30,  # Breaking resistance
+            trend=20,  # Strong trend
+            volatility=10,  # Lower volatility preference
+            momentum=15,  # Price momentum key
+            price_deviation=0,
         ),
-        'filters': {
-            'min_volume_percentile': 70,
-            'min_rsi': 55,
-            'max_rsi': 75,
-            'trend_required': True
-        }
+        "filters": {
+            "min_volume_percentile": 70,
+            "min_rsi": 55,
+            "max_rsi": 75,
+            "trend_required": True,
+        },
     },
-
-    'price_movers': {
-        'name': 'Price Movers',
-        'description': 'Stocks with significant price deviation from average',
-        'icon': '📊',
-        'weights': StrategyWeights(
+    "price_movers": {
+        "name": "Price Movers",
+        "description": "Stocks with significant price deviation from average",
+        "icon": "📊",
+        "weights": StrategyWeights(
             volume_surge=20,
             breakout=15,
             trend=10,
             volatility=15,
             momentum=10,
-            price_deviation=30    # Key factor
+            price_deviation=30,  # Key factor
         ),
-        'filters': {
-            'min_price_change': 2.0,  # 2% minimum move
-            'min_volume_percentile': 50
-        }
+        "filters": {
+            "min_price_change": 2.0,  # 2% minimum move
+            "min_volume_percentile": 50,
+        },
     },
-
-    'breakout': {
-        'name': 'Breakout Stocks',
-        'description': 'Breaking 20-day highs with volume',
-        'icon': '💥',
-        'weights': StrategyWeights(
+    "breakout": {
+        "name": "Breakout Stocks",
+        "description": "Breaking 20-day highs with volume",
+        "icon": "💥",
+        "weights": StrategyWeights(
             volume_surge=30,
-            breakout=40,          # Primary focus
+            breakout=40,  # Primary focus
             trend=15,
             volatility=10,
             momentum=5,
-            price_deviation=0
+            price_deviation=0,
         ),
-        'filters': {
-            'breakout_required': True,
-            'min_volume_percentile': 75
-        }
+        "filters": {"breakout_required": True, "min_volume_percentile": 75},
     },
-
-    'swing_trade': {
-        'name': 'Swing Trading',
-        'description': 'Multi-day position trades',
-        'icon': '📈',
-        'weights': StrategyWeights(
+    "swing_trade": {
+        "name": "Swing Trading",
+        "description": "Multi-day position trades",
+        "icon": "📈",
+        "weights": StrategyWeights(
             volume_surge=20,
             breakout=25,
-            trend=30,             # Trend most important
+            trend=30,  # Trend most important
             volatility=15,
             momentum=10,
-            price_deviation=0
+            price_deviation=0,
         ),
-        'filters': {
-            'min_atr_pct': 1.5,
-            'max_atr_pct': 4.0,
-            'trend_required': True
-        }
+        "filters": {"min_atr_pct": 1.5, "max_atr_pct": 4.0, "trend_required": True},
     },
-
-    'intraday': {
-        'name': 'Intraday Trading',
-        'description': 'Same-day trades with tight stops',
-        'icon': '⚡',
-        'weights': StrategyWeights(
+    "intraday": {
+        "name": "Intraday Trading",
+        "description": "Same-day trades with tight stops",
+        "icon": "⚡",
+        "weights": StrategyWeights(
             volume_surge=30,
             breakout=25,
             trend=15,
-            volatility=30,        # Tight volatility important
+            volatility=30,  # Tight volatility important
             momentum=0,
-            price_deviation=0
+            price_deviation=0,
         ),
-        'filters': {
-            'min_atr_pct': 1.0,
-            'max_atr_pct': 3.0,
-            'min_volume_percentile': 60
-        }
+        "filters": {"min_atr_pct": 1.0, "max_atr_pct": 3.0, "min_volume_percentile": 60},
     },
-
-    'value_momentum': {
-        'name': 'Value + Momentum',
-        'description': 'Undervalued stocks gaining momentum',
-        'icon': '💎',
-        'weights': StrategyWeights(
-            volume_surge=20,
-            breakout=20,
-            trend=25,
-            volatility=15,
-            momentum=20,
-            price_deviation=0
+    "value_momentum": {
+        "name": "Value + Momentum",
+        "description": "Undervalued stocks gaining momentum",
+        "icon": "💎",
+        "weights": StrategyWeights(
+            volume_surge=20, breakout=20, trend=25, volatility=15, momentum=20, price_deviation=0
         ),
-        'filters': {
-            'max_pe_ratio': 25,   # Value filter
-            'min_volume_percentile': 60
-        }
+        "filters": {
+            "max_pe_ratio": 25,  # Value filter
+            "min_volume_percentile": 60,
+        },
     },
-
-    'scalping': {
-        'name': 'Scalping',
-        'description': 'Quick in-and-out trades',
-        'icon': '⚡️',
-        'weights': StrategyWeights(
-            volume_surge=35,      # Very high volume needed
+    "scalping": {
+        "name": "Scalping",
+        "description": "Quick in-and-out trades",
+        "icon": "⚡️",
+        "weights": StrategyWeights(
+            volume_surge=35,  # Very high volume needed
             breakout=20,
             trend=10,
-            volatility=25,        # Tight range
+            volatility=25,  # Tight range
             momentum=10,
-            price_deviation=0
+            price_deviation=0,
         ),
-        'filters': {
-            'min_volume_percentile': 80,
-            'max_atr_pct': 2.0,
-            'min_liquidity': 1000000  # High liquidity
-        }
+        "filters": {
+            "min_volume_percentile": 80,
+            "max_atr_pct": 2.0,
+            "min_liquidity": 1000000,  # High liquidity
+        },
     },
-
-    'gap_trading': {
-        'name': 'Gap Trading',
-        'description': 'Stocks with opening gaps',
-        'icon': '🎯',
-        'weights': StrategyWeights(
+    "gap_trading": {
+        "name": "Gap Trading",
+        "description": "Stocks with opening gaps",
+        "icon": "🎯",
+        "weights": StrategyWeights(
             volume_surge=25,
             breakout=15,
             trend=15,
             volatility=15,
             momentum=10,
-            price_deviation=20    # Gap detection
+            price_deviation=20,  # Gap detection
         ),
-        'filters': {
-            'min_gap_pct': 1.5,   # 1.5% gap minimum
-            'min_volume_percentile': 65
-        }
-    }
+        "filters": {
+            "min_gap_pct": 1.5,  # 1.5% gap minimum
+            "min_volume_percentile": 65,
+        },
+    },
 }
 
 
 def get_strategy(strategy_name: str) -> dict:
     """Get strategy configuration"""
-    return STRATEGIES.get(strategy_name, STRATEGIES['intraday'])
+    return STRATEGIES.get(strategy_name, STRATEGIES["intraday"])
 
 
 def get_all_strategies() -> list[dict]:
     """Get all available strategies"""
     return [
         {
-            'id': key,
-            'name': config['name'],
-            'description': config['description'],
-            'icon': config['icon']
+            "id": key,
+            "name": config["name"],
+            "description": config["description"],
+            "icon": config["icon"],
         }
         for key, config in STRATEGIES.items()
     ]
@@ -204,8 +189,8 @@ def calculate_score_with_strategy(features: dict, strategy_name: str) -> float:
         Score (0-100)
     """
     strategy = get_strategy(strategy_name)
-    weights = strategy['weights']
-    filters = strategy.get('filters', {})
+    weights = strategy["weights"]
+    filters = strategy.get("filters", {})
 
     # Apply filters first
     if not passes_filters(features, filters):
@@ -214,7 +199,7 @@ def calculate_score_with_strategy(features: dict, strategy_name: str) -> float:
     score = 0.0
 
     # Volume surge score
-    vol_pct = features.get('vol_percentile', 0)
+    vol_pct = features.get("vol_percentile", 0)
     if vol_pct > 80:
         vol_score = weights.volume_surge
     elif vol_pct > 60:
@@ -226,19 +211,19 @@ def calculate_score_with_strategy(features: dict, strategy_name: str) -> float:
     score += vol_score
 
     # Breakout score
-    if features.get('is_20d_breakout', False):
+    if features.get("is_20d_breakout", False):
         score += weights.breakout
-    elif features.get('close', 0) > features.get('20d_high', 0) * 0.98:
+    elif features.get("close", 0) > features.get("20d_high", 0) * 0.98:
         score += weights.breakout * 0.5
 
     # Trend score
-    if features.get('price_above_ema50', False) and features.get('ema20_above_50', False):
+    if features.get("price_above_ema50", False) and features.get("ema20_above_50", False):
         score += weights.trend
-    elif features.get('price_above_ema50', False):
+    elif features.get("price_above_ema50", False):
         score += weights.trend * 0.5
 
     # Volatility score
-    atr_pct = features.get('atr_pct', 0)
+    atr_pct = features.get("atr_pct", 0)
     if 1.5 <= atr_pct <= 3.0:
         score += weights.volatility
     elif 1.0 <= atr_pct <= 4.0:
@@ -246,7 +231,7 @@ def calculate_score_with_strategy(features: dict, strategy_name: str) -> float:
 
     # Momentum score (RSI based)
     if weights.momentum > 0:
-        rsi = features.get('rsi', 50)
+        rsi = features.get("rsi", 50)
         if 55 <= rsi <= 70:
             score += weights.momentum
         elif 50 <= rsi <= 75:
@@ -254,7 +239,7 @@ def calculate_score_with_strategy(features: dict, strategy_name: str) -> float:
 
     # Price deviation score
     if weights.price_deviation > 0:
-        z_close = abs(features.get('z_close', 0))
+        z_close = abs(features.get("z_close", 0))
         if z_close > 1.5:
             score += weights.price_deviation
         elif z_close > 1.0:
@@ -271,40 +256,40 @@ def passes_filters(features: dict, filters: dict) -> bool:
     """Check if stock passes strategy filters"""
 
     # Volume filter
-    if 'min_volume_percentile' in filters:
-        if features.get('vol_percentile', 0) < filters['min_volume_percentile']:
+    if "min_volume_percentile" in filters:
+        if features.get("vol_percentile", 0) < filters["min_volume_percentile"]:
             return False
 
     # RSI filters
-    if 'min_rsi' in filters:
-        if features.get('rsi', 0) < filters['min_rsi']:
+    if "min_rsi" in filters:
+        if features.get("rsi", 0) < filters["min_rsi"]:
             return False
-    if 'max_rsi' in filters:
-        if features.get('rsi', 100) > filters['max_rsi']:
+    if "max_rsi" in filters:
+        if features.get("rsi", 100) > filters["max_rsi"]:
             return False
 
     # Trend required
-    if filters.get('trend_required', False):
-        if not (features.get('price_above_ema50', False) and features.get('ema20_above_50', False)):
+    if filters.get("trend_required", False):
+        if not (features.get("price_above_ema50", False) and features.get("ema20_above_50", False)):
             return False
 
     # Breakout required
-    if filters.get('breakout_required', False):
-        if not features.get('is_20d_breakout', False):
+    if filters.get("breakout_required", False):
+        if not features.get("is_20d_breakout", False):
             return False
 
     # ATR filters
-    if 'min_atr_pct' in filters:
-        if features.get('atr_pct', 0) < filters['min_atr_pct']:
+    if "min_atr_pct" in filters:
+        if features.get("atr_pct", 0) < filters["min_atr_pct"]:
             return False
-    if 'max_atr_pct' in filters:
-        if features.get('atr_pct', 100) > filters['max_atr_pct']:
+    if "max_atr_pct" in filters:
+        if features.get("atr_pct", 100) > filters["max_atr_pct"]:
             return False
 
     # Price change filter
-    if 'min_price_change' in filters:
+    if "min_price_change" in filters:
         # Calculate from z_close or other metric
-        if abs(features.get('z_close', 0)) < 0.5:
+        if abs(features.get("z_close", 0)) < 0.5:
             return False
 
     return True

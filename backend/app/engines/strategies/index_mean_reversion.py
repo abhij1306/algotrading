@@ -1,4 +1,3 @@
-﻿
 from datetime import date, datetime, time
 from typing import Any
 
@@ -19,16 +18,16 @@ class IndexMeanReversionStrategy(BaseStrategy):
 
     def __init__(self, strategy_id: str, universe_id: str, parameters: dict[str, Any]):
         super().__init__(strategy_id, universe_id, parameters)
-        self.entry_deviation_pct = parameters.get("entry_deviation", 0.005) # 0.5%
-        self.vwap_lookback = parameters.get("vwap_lookback", 100) # bars
+        self.entry_deviation_pct = parameters.get("entry_deviation", 0.005)  # 0.5%
+        self.vwap_lookback = parameters.get("vwap_lookback", 100)  # bars
         self.regime_tag = "INDEX_RANGE"
 
     def calculate_vwap(self, df: pd.DataFrame):
-        v = df['volume'].values
-        p = df['close'].values
+        v = df["volume"].values
+        p = df["close"].values
         # For index, volume might be missing or placeholder, handle gracefully
         if v.sum() == 0:
-            return df['close'].expanding().mean()
+            return df["close"].expanding().mean()
         return (p * v).cumsum() / v.cumsum()
 
     def run_day(self, current_date: date, symbols: list[str], db_session: Any) -> dict[str, Any]:
@@ -39,16 +38,16 @@ class IndexMeanReversionStrategy(BaseStrategy):
         if not data:
             return self.get_standard_result(current_date)
 
-        symbol = symbols[0] # Assume first symbol is the index
+        symbol = symbols[0]  # Assume first symbol is the index
         if symbol not in data:
             return self.get_standard_result(current_date)
 
         df = data[symbol].copy()
-        df['vwap'] = self.calculate_vwap(df)
+        df["vwap"] = self.calculate_vwap(df)
 
         total_pnl = 0.0
         trades_count = 0
-        active_position = None # {type, entry_price, size}
+        active_position = None  # {type, entry_price, size}
 
         eod_exit_time = datetime.combine(current_date, time(15, 15))
 
@@ -57,18 +56,26 @@ class IndexMeanReversionStrategy(BaseStrategy):
                 if active_position:
                     exit_price = row["close"]
                     side_mult = 1 if active_position["type"] == "LONG" else -1
-                    total_pnl += (exit_price - active_position["entry_price"]) * active_position["size"] * side_mult
+                    total_pnl += (
+                        (exit_price - active_position["entry_price"])
+                        * active_position["size"]
+                        * side_mult
+                    )
                     trades_count += 1
                 break
 
             # 1. Exit at mean
             if active_position:
                 if active_position["type"] == "LONG" and row["close"] >= row["vwap"]:
-                    total_pnl += (row["close"] - active_position["entry_price"]) * active_position["size"]
+                    total_pnl += (row["close"] - active_position["entry_price"]) * active_position[
+                        "size"
+                    ]
                     trades_count += 1
                     active_position = None
                 elif active_position["type"] == "SHORT" and row["close"] <= row["vwap"]:
-                    total_pnl += (active_position["entry_price"] - row["close"]) * active_position["size"]
+                    total_pnl += (active_position["entry_price"] - row["close"]) * active_position[
+                        "size"
+                    ]
                     trades_count += 1
                     active_position = None
 
@@ -81,15 +88,13 @@ class IndexMeanReversionStrategy(BaseStrategy):
                     active_position = {
                         "type": "LONG",
                         "entry_price": row["close"],
-                        "size": 50 # 1 lot Nifty (approx)
+                        "size": 50,  # 1 lot Nifty (approx)
                     }
                 # Overshoot above VWAP -> Short
                 elif deviation > self.entry_deviation_pct:
-                    active_position = {
-                        "type": "SHORT",
-                        "entry_price": row["close"],
-                        "size": 50
-                    }
+                    active_position = {"type": "SHORT", "entry_price": row["close"], "size": 50}
 
         daily_return = (total_pnl / 1000000.0) if total_pnl != 0 else 0.0
-        return self.get_standard_result(current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count)
+        return self.get_standard_result(
+            current_date, daily_return=daily_return, gross_pnl=total_pnl, trades=trades_count
+        )

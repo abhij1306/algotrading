@@ -1,6 +1,7 @@
 """
 SmartTrader 3.0 API - FastAPI Application
 """
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -66,27 +67,25 @@ async def lifespan(app: FastAPI):
             app.state.loop = loop
             logger.info(f"[OK] Event loop acquired: {loop}")
 
-        await sequence.execute_step(
-            StartupStep.SET_EVENT_LOOP,
-            step_get_event_loop,
-            required=True
-        )
+        await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step_get_event_loop, required=True)
 
         # Step 2: Set loop for WebSocket manager (implicit in step 1, but tracked separately)
         async def step_set_ws_manager_loop():
             from .utils.ws_manager import manager
+
             manager.set_loop(app.state.loop)
             logger.info("[OK] WebSocket manager loop set")
 
         await sequence.execute_step(
             StartupStep.SET_EVENT_LOOP,  # Reusing enum value as this is part of loop setup
             step_set_ws_manager_loop,
-            required=True
+            required=True,
         )
 
         # Step 3: Validate symbol_master (round-trip test)
         async def step_validate_symbol_master():
             from .services.symbol_master import symbol_master
+
             test_symbol = "SBIN"
             fyers_format = symbol_master.to_fyers(test_symbol)
             db_format = symbol_master.to_db(fyers_format)
@@ -95,9 +94,7 @@ async def lifespan(app: FastAPI):
             logger.info("[OK] Symbol master validated")
 
         await sequence.execute_step(
-            StartupStep.VALIDATE_SYMBOL_MASTER,
-            step_validate_symbol_master,
-            required=True
+            StartupStep.VALIDATE_SYMBOL_MASTER, step_validate_symbol_master, required=True
         )
 
         # Step 4: Validate database
@@ -105,6 +102,7 @@ async def lifespan(app: FastAPI):
             from sqlalchemy import text
 
             from .database import Base, SessionLocal, engine
+
             Base.metadata.create_all(bind=engine)
             # Test connection
             db = SessionLocal()
@@ -115,14 +113,13 @@ async def lifespan(app: FastAPI):
                 db.close()
 
         await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE,
-            step_validate_database,
-            required=True
+            StartupStep.VALIDATE_DATABASE, step_validate_database, required=True
         )
 
         # Step 5: Validate Fyers token (warn-only)
         async def step_validate_fyers_token():
             from .services.fyers_client import get_fyers_client
+
             fyers = get_fyers_client()
             is_valid = False
             if fyers:
@@ -132,7 +129,9 @@ async def lifespan(app: FastAPI):
                         timeout=5.0,
                     )
                 except TimeoutError:
-                    logger.warning("[WARN] Fyers token validation timed out after 5s; step marked failed and startup sequence will record warning state")
+                    logger.warning(
+                        "[WARN] Fyers token validation timed out after 5s; step marked failed and startup sequence will record warning state"
+                    )
                     raise ValueError("Fyers token validation timeout")
 
             if not fyers or not is_valid:
@@ -143,31 +142,33 @@ async def lifespan(app: FastAPI):
         await sequence.execute_step(
             StartupStep.VALIDATE_FYERS_TOKEN,
             step_validate_fyers_token,
-            required=False  # Warn-only
+            required=False,  # Warn-only
         )
 
         # Step 6: Load index universe (warn-only)
         async def step_load_index_universe():
             from .services.index_universe_loader import index_universe_loader
+
             index_universe_loader.load_all()
             logger.info("[OK] Index universe loaded")
 
         await sequence.execute_step(
             StartupStep.LOAD_INDEX_UNIVERSE,
             step_load_index_universe,
-            required=False  # Warn-only
+            required=False,  # Warn-only
         )
 
         # Step 7: Connect live_market with event loop
         async def step_connect_live_market():
             from .services.live_market_service import live_market
+
             live_market.connect(loop=app.state.loop)
             logger.info("[OK] Live market service connected")
 
         await sequence.execute_step(
             StartupStep.CONNECT_LIVE_MARKET,
             step_connect_live_market,
-            required=False  # Non-blocking, runs in background
+            required=False,  # Non-blocking, runs in background
         )
 
         # Log startup summary
@@ -184,28 +185,34 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutdown complete")
 
+
 app = FastAPI(
     title="SmartTrader 3.0 API",
     version="3.0.0",
     description="Algorithmic Trading Platform",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
+
 
 # Exception handlers
 @app.exception_handler(SmartTraderException)
 async def smarttrader_exception_handler(request: Request, exc: SmartTraderException):
     return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
 
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled: {str(exc)}", exc_info=True)
-    return JSONResponse(status_code=500, content={"error": {"code": "INTERNAL_ERROR", "message": "Server error"}})
+    return JSONResponse(
+        status_code=500, content={"error": {"code": "INTERNAL_ERROR", "message": "Server error"}}
+    )
+
 
 # CORS
 # Allow frontend origins from environment variable or default to localhost
 allowed_origins = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001"
+    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
 ).split(",")
 
 app.add_middleware(
@@ -236,9 +243,11 @@ app.include_router(options.router)
 
 logger.info("[OK] All routers registered")
 
+
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "SmartTrader 3.0 API Running", "version": "3.0.0"}
+
 
 @app.get("/ping")
 def ping():

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Technical Indicators and ATR Calculation
 """
 
@@ -18,12 +18,12 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     """
     if len(df) < period:
         # Fallback if not enough data
-        return (df['high'] - df['low']).mean()
+        return (df["high"] - df["low"]).mean()
 
     # Calculate True Range
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
 
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
@@ -33,7 +33,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     # Return the most recent ATR value
     current_atr = atr.iloc[-1]
 
-    return current_atr if not pd.isna(current_atr) else (df['high'] - df['low']).mean()
+    return current_atr if not pd.isna(current_atr) else (df["high"] - df["low"]).mean()
 
 
 def calculate_atr_percentage(df: pd.DataFrame, period: int = 14) -> float:
@@ -48,7 +48,7 @@ def calculate_atr_percentage(df: pd.DataFrame, period: int = 14) -> float:
         ATR as percentage of current close price
     """
     atr = calculate_atr(df, period)
-    current_price = df['close'].iloc[-1]
+    current_price = df["close"].iloc[-1]
 
     if current_price == 0:
         return 0

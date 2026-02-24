@@ -64,9 +64,9 @@ def calculate_implied_volatility(
     k: float,
     t: float,
     r: float,
-    option_type: str = 'call',
+    option_type: str = "call",
     max_iterations: int = 100,
-    tolerance: float = 1e-5
+    tolerance: float = 1e-5,
 ) -> float:
     """
     Calculate implied volatility using Newton-Raphson method
@@ -88,7 +88,7 @@ def calculate_implied_volatility(
     sigma = 0.3
 
     for _i in range(max_iterations):
-        if option_type == 'call':
+        if option_type == "call":
             price = black_scholes_call(s, k, t, r, sigma)
         else:
             price = black_scholes_put(s, k, t, r, sigma)
@@ -129,12 +129,7 @@ def calculate_atm_strike(spot_price: float, strike_interval: float = 50.0) -> fl
 
 
 def get_option_greeks(
-    s: float,
-    k: float,
-    t: float,
-    r: float,
-    sigma: float,
-    option_type: str = 'call'
+    s: float, k: float, t: float, r: float, sigma: float, option_type: str = "call"
 ) -> dict:
     """
     Calculate option Greeks
@@ -144,18 +139,18 @@ def get_option_greeks(
     """
     if t <= 0:
         return {
-            'delta': 1.0 if option_type == 'call' else -1.0,
-            'gamma': 0.0,
-            'theta': 0.0,
-            'vega': 0.0,
-            'rho': 0.0
+            "delta": 1.0 if option_type == "call" else -1.0,
+            "gamma": 0.0,
+            "theta": 0.0,
+            "vega": 0.0,
+            "rho": 0.0,
         }
 
     d1 = (np.log(s / k) + (r + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
     d2 = d1 - sigma * np.sqrt(t)
 
     # Delta
-    if option_type == 'call':
+    if option_type == "call":
         delta = norm.cdf(d1)
     else:
         delta = norm.cdf(d1) - 1
@@ -167,30 +162,22 @@ def get_option_greeks(
     vega = s * norm.pdf(d1) * np.sqrt(t) / 100
 
     # Theta
-    if option_type == 'call':
+    if option_type == "call":
         theta = (
-            -s * norm.pdf(d1) * sigma / (2 * np.sqrt(t))
-            - r * k * np.exp(-r * t) * norm.cdf(d2)
+            -s * norm.pdf(d1) * sigma / (2 * np.sqrt(t)) - r * k * np.exp(-r * t) * norm.cdf(d2)
         ) / 365
     else:
         theta = (
-            -s * norm.pdf(d1) * sigma / (2 * np.sqrt(t))
-            + r * k * np.exp(-r * t) * norm.cdf(-d2)
+            -s * norm.pdf(d1) * sigma / (2 * np.sqrt(t)) + r * k * np.exp(-r * t) * norm.cdf(-d2)
         ) / 365
 
     # Rho (divided by 100 for 1% change in interest rate)
-    if option_type == 'call':
+    if option_type == "call":
         rho = k * t * np.exp(-r * t) * norm.cdf(d2) / 100
     else:
         rho = -k * t * np.exp(-r * t) * norm.cdf(-d2) / 100
 
-    return {
-        'delta': delta,
-        'gamma': gamma,
-        'theta': theta,
-        'vega': vega,
-        'rho': rho
-    }
+    return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega, "rho": rho}
 
 
 # Default parameters for Indian market
@@ -201,9 +188,7 @@ NIFTY_DIVIDEND_YIELD = 0.012  # 1.2% annual dividend yield
 
 
 def calculate_historical_volatility(
-    price_data: pd.DataFrame,
-    window: int = 20,
-    timeframe_minutes: int = 5
+    price_data: pd.DataFrame, window: int = 20, timeframe_minutes: int = 5
 ) -> float:
     """
     Calculate annualized historical volatility from recent price data
@@ -221,7 +206,7 @@ def calculate_historical_volatility(
 
     try:
         # Calculate log returns
-        returns = np.log(price_data['close'] / price_data['close'].shift(1))
+        returns = np.log(price_data["close"] / price_data["close"].shift(1))
 
         # Calculate rolling standard deviation
         rolling_std = returns.rolling(window=window).std()
@@ -300,14 +285,14 @@ def calculate_time_to_expiry(current_time: datetime) -> float:
 
 def price_synthetic_option(
     underlying_price: float,
-    option_type: str = 'CE',
+    option_type: str = "CE",
     strike: float = None,
     days_to_expiry: int = None,
     volatility: float = None,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
     historical_data: pd.DataFrame | None = None,
     current_time: datetime | None = None,
-    apply_dividend_adjustment: bool = True
+    apply_dividend_adjustment: bool = True,
 ) -> float:
     """
     Price a synthetic option using Black-Scholes with improved accuracy
@@ -346,19 +331,15 @@ def price_synthetic_option(
         t = DEFAULT_DTE / 365.0
 
     # Calculate option price
-    if option_type.upper() in ['CE', 'CALL']:
-        price = black_scholes_call(
-            underlying_price, strike, t, risk_free_rate, volatility
-        )
+    if option_type.upper() in ["CE", "CALL"]:
+        price = black_scholes_call(underlying_price, strike, t, risk_free_rate, volatility)
 
         # Apply dividend adjustment (reduces call price)
         if apply_dividend_adjustment:
             price = price * (1 - NIFTY_DIVIDEND_YIELD * t)
 
     else:  # PE or PUT
-        price = black_scholes_put(
-            underlying_price, strike, t, risk_free_rate, volatility
-        )
+        price = black_scholes_put(underlying_price, strike, t, risk_free_rate, volatility)
 
         # Apply dividend adjustment (increases put price)
         if apply_dividend_adjustment:
@@ -367,7 +348,7 @@ def price_synthetic_option(
     # Validate result - ensure no NaN or Inf values
     if not np.isfinite(price) or price <= 0:
         # Fallback to simple intrinsic value if calculation failed
-        if option_type.upper() in ['CE', 'CALL']:
+        if option_type.upper() in ["CE", "CALL"]:
             price = max(underlying_price - strike, 1.0)  # Min 1 rupee
         else:
             price = max(strike - underlying_price, 1.0)  # Min 1 rupee

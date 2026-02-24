@@ -80,7 +80,9 @@ async def list_backtest_runs():
 async def run_backtest(request: BacktestRunRequest):
     payload = request.model_dump()
     if not payload.get("strategies"):
-        payload["strategies"] = [{"strategy_id": "MOMENTUM_2D", "weight": 1.0, "enabled": True, "params": {}}]
+        payload["strategies"] = [
+            {"strategy_id": "MOMENTUM_2D", "weight": 1.0, "enabled": True, "params": {}}
+        ]
 
     try:
         return backtest_phase1_service.create_job(payload)

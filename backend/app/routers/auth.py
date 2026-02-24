@@ -8,12 +8,15 @@ from fastapi import APIRouter, HTTPException
 from fyers_apiv3 import fyersModel
 from pydantic import BaseModel
 
+from app.utils.errors import handle_api_error
+
 router = APIRouter()
+
 
 # Get base directory for saving access tokens
 def get_base_dir():
     """Get the base directory of the project."""
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, "frozen", False):
         # Running as executable
         exe_dir = os.path.dirname(sys.executable)
         if os.path.exists(os.path.join(exe_dir, "fyers")):
@@ -23,7 +26,10 @@ def get_base_dir():
         return os.getcwd()
     else:
         # Development mode - go up from backend/app/routers/ to project root
-        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        return os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+
 
 BASE_DIR = get_base_dir()
 CONFIG_DIR = os.path.join(BASE_DIR, "fyers", "config")
@@ -37,6 +43,7 @@ class AuthCodeRequest(BaseModel):
 # Simple cache for status (avoid repeated file checks)
 _status_cache = {"connected": False, "user_id": None, "cached_at": 0}
 
+
 @router.get("/fyers/status")
 def get_fyers_status():
     """
@@ -46,10 +53,7 @@ def get_fyers_status():
 
     # Return cached result if less than 30s old
     if time.time() - _status_cache["cached_at"] < 30:
-        return {
-            "connected": _status_cache["connected"],
-            "user_id": _status_cache["user_id"]
-        }
+        return {"connected": _status_cache["connected"], "user_id": _status_cache["user_id"]}
 
     try:
         if os.path.exists(ACCESS_TOKEN_FILE):
@@ -81,6 +85,7 @@ def disconnect_fyers():
         # Disconnect WebSocket first
         try:
             from ..services.live_market_service import live_market
+
             if live_market.ws_service:
                 live_market.ws_service.disconnect()
                 print("[Fyers] WebSocket disconnected")
@@ -119,17 +124,17 @@ def get_fyers_auth_url():
         if not client_id:
             raise HTTPException(
                 status_code=500,
-                detail="CLIENT_ID not found in environment variables. Please add it to .env file."
+                detail="CLIENT_ID not found in environment variables. Please add it to .env file.",
             )
         if not secret_key:
             raise HTTPException(
                 status_code=500,
-                detail="SECRET_KEY not found in environment variables. Please add it to .env file."
+                detail="SECRET_KEY not found in environment variables. Please add it to .env file.",
             )
         if not redirect_uri:
             raise HTTPException(
                 status_code=500,
-                detail="REDIRECT_URI not found in environment variables. Please add it to .env file."
+                detail="REDIRECT_URI not found in environment variables. Please add it to .env file.",
             )
 
         print("[Fyers Auth] Generating auth URL...")
@@ -141,7 +146,7 @@ def get_fyers_auth_url():
             redirect_uri=redirect_uri,
             response_type="code",
             state="fyers_api_state",
-            grant_type="authorization_code"
+            grant_type="authorization_code",
         )
 
         auth_url = session.generate_authcode()
@@ -153,6 +158,7 @@ def get_fyers_auth_url():
     except Exception as e:
         print(f"[Fyers Auth] Error generating auth URL: {str(e)}")
         raise handle_api_error(e, "Failed to generate authentication URL")
+
 
 @router.post("/fyers/token")
 def generate_token(request: AuthCodeRequest):
@@ -170,7 +176,7 @@ def generate_token(request: AuthCodeRequest):
         if not all([client_id, secret_key, redirect_uri]):
             raise HTTPException(
                 status_code=500,
-                detail="Fyers credentials not found in environment variables. Please check .env file."
+                detail="Fyers credentials not found in environment variables. Please check .env file.",
             )
 
         print("[Fyers Auth] Exchanging auth code for access token...")
@@ -181,7 +187,7 @@ def generate_token(request: AuthCodeRequest):
             secret_key=secret_key,
             redirect_uri=redirect_uri,
             response_type="code",
-            grant_type="authorization_code"
+            grant_type="authorization_code",
         )
 
         # Exchange auth code for token
@@ -202,7 +208,9 @@ def generate_token(request: AuthCodeRequest):
             ist_now = utc_now + ist_offset
 
             # Midnight tonight IST = tomorrow 00:00 IST
-            midnight_ist = (ist_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            midnight_ist = (ist_now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
 
             # Convert back to UTC for storage
             expires_at_utc = midnight_ist - ist_offset
@@ -223,9 +231,12 @@ def generate_token(request: AuthCodeRequest):
             try:
                 # Ensure in-memory singleton does not keep stale token after re-login.
                 from ..services.fyers_client import reset_fyers_client
+
                 reset_fyers_client()
             except Exception as refresh_err:
-                print(f"[Fyers Auth] Warning: could not reset in-memory Fyers client: {refresh_err}")
+                print(
+                    f"[Fyers Auth] Warning: could not reset in-memory Fyers client: {refresh_err}"
+                )
             return {"status": "success", "message": "Token generated and saved successfully"}
         else:
             error_msg = response.get("message", "Token generation failed")

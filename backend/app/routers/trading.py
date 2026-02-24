@@ -24,14 +24,12 @@ from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
 from ..services.symbol_master import symbol_master
 
-router = APIRouter(
-    prefix="/api/trading",
-    tags=["Trading"]
-)
+router = APIRouter(prefix="/api/trading", tags=["Trading"])
 
 SINGLE_USER_ID = "default_user"
 
 # ============== Pydantic Models ==============
+
 
 class OrderRequest(BaseModel):
     symbol: str
@@ -227,7 +225,7 @@ def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[d
         unrealized = (current_price - _to_float(state["entry_price"], 0.0)) * net_qty
         positions.append(
             {
-            "id": f"PAPER-{symbol}",
+                "id": f"PAPER-{symbol}",
                 "symbol": symbol,
                 "fyers_symbol": None,
                 "side": "LONG" if net_qty > 0 else "SHORT",
@@ -249,6 +247,7 @@ def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[d
 
 # ============== Endpoints ==============
 
+
 @router.get("/mode")
 def get_trading_mode():
     """Get current trading mode (PAPER or LIVE)"""
@@ -269,7 +268,7 @@ def set_trading_mode(req: ModeRequest):
 def place_order(
     order: OrderRequest,
     db: Session = Depends(get_db),
-    x_user_id: str = Query(None, description="User ID header for authentication")
+    x_user_id: str = Query(None, description="User ID header for authentication"),
 ):
     """Place a new order (PAPER or LIVE based on current mode)"""
     try:
@@ -280,8 +279,7 @@ def place_order(
             user_id = "dev_user"
         else:
             raise HTTPException(
-                status_code=401,
-                detail="Authentication required. Provide x-user-id header."
+                status_code=401, detail="Authentication required. Provide x-user-id header."
             )
 
         # Convert Request to Dict
@@ -336,10 +334,10 @@ def get_orders(limit: int = 50, db: Session = Depends(get_db)):
 
 # ============== Position Endpoints ==============
 
+
 @router.get("/positions", response_model=list[PositionResponse])
 def get_positions(
-    user_id: str = Query("default_user", description="User ID"),
-    db: Session = Depends(get_db)
+    user_id: str = Query("default_user", description="User ID"), db: Session = Depends(get_db)
 ):
     """Get current open positions (synced from broker in LIVE mode)"""
     try:
@@ -438,7 +436,11 @@ def square_position(req: SquarePositionRequest, db: Session = Depends(get_db)):
                 continue
             symbol = str(pos.get("symbol"))
             side = "SELL" if _to_float(pos.get("net_qty"), 0) > 0 else "BUY"
-            px = _latest_price_for_symbol(symbol) or _to_float(pos.get("current_price"), 0.0) or _to_float(pos.get("entry_price"), 0.0)
+            px = (
+                _latest_price_for_symbol(symbol)
+                or _to_float(pos.get("current_price"), 0.0)
+                or _to_float(pos.get("entry_price"), 0.0)
+            )
             internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
             square_order = LiveOrder(
                 id=internal_id,
@@ -483,6 +485,7 @@ def exit_position(req: ExitPositionRequest):
     """Exit a specific position or all positions"""
     try:
         from ..brokers.plugins.fyers import FyersBroker
+
         broker = FyersBroker()
 
         if req.symbol:
@@ -491,7 +494,7 @@ def exit_position(req: ExitPositionRequest):
             return {
                 "status": "SUCCESS" if result.get("s") == "ok" else "ERROR",
                 "message": result.get("message", "Exit order placed"),
-                "symbol": req.symbol
+                "symbol": req.symbol,
             }
         else:
             # Exit all positions (panic button)
@@ -499,7 +502,7 @@ def exit_position(req: ExitPositionRequest):
             return {
                 "status": "SUCCESS" if result.get("s") == "ok" else "ERROR",
                 "message": result.get("message", "All positions exited"),
-                "action": "EXIT_ALL"
+                "action": "EXIT_ALL",
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error exiting position: {str(e)}")
@@ -507,30 +510,30 @@ def exit_position(req: ExitPositionRequest):
 
 # ============== Funds Endpoints ==============
 
+
 @router.get("/funds", response_model=FundsResponse)
 def get_funds():
     """Get available funds/margin from broker"""
     try:
         from ..brokers.plugins.fyers import FyersBroker
+
         broker = FyersBroker()
         funds = broker.get_funds()
 
-        return FundsResponse(
-            available=funds.available,
-            used=funds.used,
-            total=funds.total
-        )
+        return FundsResponse(available=funds.available, used=funds.used, total=funds.total)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching funds: {str(e)}")
 
 
 # ============== Tradebook Endpoints ==============
 
+
 @router.get("/tradebook", response_model=list[dict[str, Any]])
 def get_tradebook():
     """Get executed trades from broker"""
     try:
         from ..brokers.plugins.fyers import FyersBroker
+
         broker = FyersBroker()
         trades = broker.get_tradebook()
         return trades
@@ -539,6 +542,7 @@ def get_tradebook():
 
 
 # ============== Risk Management Endpoints ==============
+
 
 @router.post("/risk-check", response_model=RiskCheckResponse)
 def check_risk(req: RiskCheckRequest, db: Session = Depends(get_db)):
@@ -555,7 +559,7 @@ def check_risk(req: RiskCheckRequest, db: Session = Depends(get_db)):
             status=result.status.value,
             message=result.message,
             code=result.code,
-            details=result.details
+            details=result.details,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Risk check error: {str(e)}")
@@ -583,7 +587,7 @@ def check_large_order(order: OrderRequest, db: Session = Depends(get_db)):
             "status": result.status.value,
             "message": result.message,
             "code": result.code,
-            "details": result.details
+            "details": result.details,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Large order check error: {str(e)}")

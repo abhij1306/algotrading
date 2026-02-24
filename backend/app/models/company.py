@@ -8,6 +8,7 @@ from ..base import Base
 
 class Company(Base):
     """Company master data - the core entity all financial data links to"""
+
     __tablename__ = "companies"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -22,8 +23,12 @@ class Company(Base):
     is_fno = Column(Boolean, default=False)
 
     # Index categorization (broad-based and sector)
-    broad_market = Column(String(100), index=True)  # NIFTY50, NIFTY100, NIFTY200, NIFTY500, NIFTYNEXT50, etc.
-    sector_index = Column(String(100), index=True)  # NIFTYIT, NIFTYBANK, NIFTYAUTO, NIFTYPHARMA, etc.
+    broad_market = Column(
+        String(100), index=True
+    )  # NIFTY50, NIFTY100, NIFTY200, NIFTY500, NIFTYNEXT50, etc.
+    sector_index = Column(
+        String(100), index=True
+    )  # NIFTYIT, NIFTYBANK, NIFTYAUTO, NIFTYPHARMA, etc.
 
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -31,16 +36,18 @@ class Company(Base):
 
     # Relationships - these connect to the tables that have ForeignKey to companies.id
     historical_prices = relationship("HistoricalPrice", back_populates="company", lazy="dynamic")
-    financial_statements = relationship("FinancialStatement", back_populates="company", lazy="dynamic")
+    financial_statements = relationship(
+        "FinancialStatement", back_populates="company", lazy="dynamic"
+    )
     quarterly_results = relationship("QuarterlyResult", back_populates="company", lazy="dynamic")
     intraday_candles = relationship("IntradayCandle", back_populates="company", lazy="dynamic")
 
     # Indexes for common queries
     __table_args__ = (
-        Index('ix_company_sector_active', 'sector', 'is_active'),
-        Index('ix_company_symbol_active', 'symbol', 'is_active'),
-        Index('ix_company_broad_market', 'broad_market', 'is_active'),
-        Index('ix_company_sector_index', 'sector_index', 'is_active'),
+        Index("ix_company_sector_active", "sector", "is_active"),
+        Index("ix_company_symbol_active", "symbol", "is_active"),
+        Index("ix_company_broad_market", "broad_market", "is_active"),
+        Index("ix_company_sector_index", "sector_index", "is_active"),
     )
 
     def __repr__(self):

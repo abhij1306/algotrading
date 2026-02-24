@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text
 
@@ -7,6 +7,7 @@ from ..base import Base
 
 class DataUpdateLog(Base):
     """Track data updates for each company"""
+
     __tablename__ = "data_update_logs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -25,12 +26,12 @@ class DataUpdateLog(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        Index('ix_company_datatype', 'company_id', 'data_type'),
-    )
+    __table_args__ = (Index("ix_company_datatype", "company_id", "data_type"),)
+
 
 class AllocatorDecision(Base):
     """Audit trail of all allocator weight changes"""
+
     __tablename__ = "allocator_decisions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

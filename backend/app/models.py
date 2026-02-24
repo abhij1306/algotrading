@@ -1,4 +1,4 @@
-﻿"""
+"""
 Pydantic models for API requests and responses
 """
 
@@ -24,12 +24,14 @@ class StockFeatures(BaseModel):
     intraday_score: float | None = None
     swing_score: float | None = None
 
+
 class ScreenerStats(BaseModel):
     total_screened: int
     features_computed: int
     intraday_count: int
     swing_count: int
     combined_count: int
+
 
 class ScreenerResponse(BaseModel):
     intraday: list[dict]
@@ -38,6 +40,7 @@ class ScreenerResponse(BaseModel):
     stats: ScreenerStats
     generated_at: str
     mode: str
+
 
 class HealthResponse(BaseModel):
     status: str

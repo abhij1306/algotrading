@@ -27,32 +27,37 @@ logger = logging.getLogger(__name__)
 # Lazy import to avoid circular dependencies
 _index_universe_loader = None
 
+
 def _get_index_universe_loader():
     """Lazy load the index universe loader to avoid circular imports."""
     global _index_universe_loader
     if _index_universe_loader is None:
         from .index_universe_loader import index_universe_loader
+
         _index_universe_loader = index_universe_loader
     return _index_universe_loader
 
 
 class SymbolFormat(Enum):
     """Supported symbol formats"""
-    DB_FORMAT = "DB"           # SBIN
-    FYERS_FORMAT = "FYERS"     # NSE:SBIN-EQ
-    DISPLAY_FORMAT = "DISPLAY" # SBIN (same as DB)
-    ISIN_FORMAT = "ISIN"       # INE062A01015
+
+    DB_FORMAT = "DB"  # SBIN
+    FYERS_FORMAT = "FYERS"  # NSE:SBIN-EQ
+    DISPLAY_FORMAT = "DISPLAY"  # SBIN (same as DB)
+    ISIN_FORMAT = "ISIN"  # INE062A01015
+
 
 @dataclass
 class SymbolInfo:
     """Complete symbol information"""
-    ticker: str              # Base ticker (e.g., "SBIN")
-    exchange: str = "NSE"    # Exchange (default NSE)
-    series: str = "EQ"       # Series (default EQ - equity, INDEX - index)
-    company_name: str = ""   # Full company name
-    sector: str = ""         # Sector classification
-    isin: str = ""           # ISIN identifier
-    lot_size: int = 1        # Standard lot size for orders
+
+    ticker: str  # Base ticker (e.g., "SBIN")
+    exchange: str = "NSE"  # Exchange (default NSE)
+    series: str = "EQ"  # Series (default EQ - equity, INDEX - index)
+    company_name: str = ""  # Full company name
+    sector: str = ""  # Sector classification
+    isin: str = ""  # ISIN identifier
+    lot_size: int = 1  # Standard lot size for orders
     tick_size: float = 0.05  # Minimum price movement
     indices: list[str] = field(default_factory=list)  # List of indices this symbol belongs to
 
@@ -68,6 +73,7 @@ class SymbolInfo:
         if self.series == "INDEX":
             # Check if there's a special Fyers mapping for this index
             from .symbol_master import SymbolMaster
+
             fyers_ticker = SymbolMaster.FYERS_INDEX_MAPPING.get(self.ticker, self.ticker)
             return f"{self.exchange}:{fyers_ticker}-INDEX"
         return f"{self.exchange}:{self.ticker}-{self.series}"
@@ -76,6 +82,7 @@ class SymbolInfo:
     def display_format(self) -> str:
         """Returns: SBIN"""
         return self.ticker
+
 
 class SymbolMaster:
     """
@@ -86,9 +93,11 @@ class SymbolMaster:
     """
 
     # Regex patterns (ported from SymbolMapper)
-    FYERS_PATTERN = re.compile(r'^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$', re.IGNORECASE)
-    DB_PATTERN = re.compile(r'^[A-Z0-9&\.\-]{1,20}$')
-    ISIN_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{10}[A-Z0-9]{2}$')
+    FYERS_PATTERN = re.compile(
+        r"^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$", re.IGNORECASE
+    )
+    DB_PATTERN = re.compile(r"^[A-Z0-9&\.\-]{1,20}$")
+    ISIN_PATTERN = re.compile(r"^[A-Z]{2}[0-9]{10}[A-Z0-9]{2}$")
 
     # Exchange prefixes
     EXCHANGES = ["NSE", "BSE", "MCX", "NFO", "BFO", "CDS"]
@@ -179,7 +188,7 @@ class SymbolMaster:
                 company_name=description,
                 sector="Index",
                 lot_size=metadata.get("lot_size", 1),
-                tick_size=metadata.get("tick_size", 0.05)
+                tick_size=metadata.get("tick_size", 0.05),
             )
 
     def to_provider(self, symbol: str, provider: str = "fyers", exchange: str = "NSE") -> str:
@@ -247,6 +256,7 @@ class SymbolMaster:
 
         def get_last_thursday(year, month):
             import calendar
+
             c = calendar.monthcalendar(year, month)
             # c is list of weeks, each week is list of 7 days (0 if not in month)
             # Thursday is index 3
@@ -263,7 +273,7 @@ class SymbolMaster:
         # But Fyers usually sticks to the contract spec.
         # Let's try matching exact date.
 
-        is_monthly = (expiry == last_thurs)
+        is_monthly = expiry == last_thurs
 
         # Handle exceptions/holidays crudely: if expiry is Wed and last Thurs is tomorrow?
         # Keeping it simple: If > 24th and close to month end, assume monthly?
@@ -276,10 +286,14 @@ class SymbolMaster:
             # NSE:NIFTY2520622500CE
             # Month codes: 1-9, O, N, D
             month = expiry.month
-            if month == 10: m_code = 'O'
-            elif month == 11: m_code = 'N'
-            elif month == 12: m_code = 'D'
-            else: m_code = str(month)
+            if month == 10:
+                m_code = "O"
+            elif month == 11:
+                m_code = "N"
+            elif month == 12:
+                m_code = "D"
+            else:
+                m_code = str(month)
 
             dd = f"{expiry.day:02d}"
             return f"NSE:{underlying}{yy}{m_code}{dd}{strike}{opt_type}"
@@ -305,7 +319,7 @@ class SymbolMaster:
 
             # Try Monthly Regex: TAATASTEEL 25 FEB 100 CE
             # REGEX: ^([A-Z0-9]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$
-            m_match = re.match(r'^([A-Z0-9]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$', clean_symbol)
+            m_match = re.match(r"^([A-Z0-9]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$", clean_symbol)
             if m_match:
                 und, yy, mmm, strike, otype = m_match.groups()
                 return {
@@ -313,20 +327,20 @@ class SymbolMaster:
                     "expiry_str": f"{yy}-{mmm}",
                     "strike": float(strike),
                     "option_type": otype,
-                    "format": "MONTHLY"
+                    "format": "MONTHLY",
                 }
 
             # Try Weekly Regex: NIFTY 25 2 06 22500 CE
             # REGEX: ^([A-Z0-9]+)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$
-            w_match = re.match(r'^([A-Z0-9]+)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$', clean_symbol)
+            w_match = re.match(r"^([A-Z0-9]+)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$", clean_symbol)
             if w_match:
                 und, yy, m, dd, strike, otype = w_match.groups()
                 return {
                     "underlying": und,
-                    "expiry_str": f"{yy}-{m}-{dd}", # Raw codes
+                    "expiry_str": f"{yy}-{m}-{dd}",  # Raw codes
                     "strike": float(strike),
                     "option_type": otype,
-                    "format": "WEEKLY"
+                    "format": "WEEKLY",
                 }
 
             return {}
@@ -335,7 +349,9 @@ class SymbolMaster:
 
     def to_fyers(self, symbol: str) -> str:
         """Alias for to_provider(symbol, 'fyers')"""
-        if not self.is_valid(symbol, SymbolFormat.DB_FORMAT) and not self.is_valid(symbol, SymbolFormat.FYERS_FORMAT):
+        if not self.is_valid(symbol, SymbolFormat.DB_FORMAT) and not self.is_valid(
+            symbol, SymbolFormat.FYERS_FORMAT
+        ):
             raise ValueError(f"Invalid symbol format: {symbol}")
         return self.to_provider(symbol, "fyers")
 
@@ -365,12 +381,23 @@ class SymbolMaster:
             return self.SYMBOL_ALIASES.get(ticker, ticker)
 
         # 2. Try simple Fyers format parsing (fallback)
-        if ':' in symbol:
-            parts = symbol.split(':')
+        if ":" in symbol:
+            parts = symbol.split(":")
             if len(parts) > 1:
                 ticker_part = parts[1]
                 # Remove common suffixes
-                for suffix in ['-EQ', '-INDEX', '-BE', '-BZ', '-BL', '-GS', '-DR', '-V', '-DL', '-IL']:
+                for suffix in [
+                    "-EQ",
+                    "-INDEX",
+                    "-BE",
+                    "-BZ",
+                    "-BL",
+                    "-GS",
+                    "-DR",
+                    "-V",
+                    "-DL",
+                    "-IL",
+                ]:
                     if ticker_part.endswith(suffix):
                         ticker = ticker_part[: -len(suffix)]
                         return self.SYMBOL_ALIASES.get(ticker, ticker)
@@ -445,7 +472,7 @@ class SymbolMaster:
             sector=sector,
             indices=indices,
             lot_size=lot_size,
-            tick_size=tick_size
+            tick_size=tick_size,
         )
         self._cache[ticker] = info
         return info
@@ -515,11 +542,11 @@ class SymbolMaster:
 
     def _is_fyers_format(self, symbol: str) -> bool:
         """Check if symbol is in Fyers format (NSE:SBIN-EQ)"""
-        return bool(re.match(r'^[A-Z]+:[A-Z0-9_&-]+-[A-Z]+$', symbol))
+        return bool(re.match(r"^[A-Z]+:[A-Z0-9_&-]+-[A-Z]+$", symbol))
 
     def _is_valid_ticker(self, ticker: str) -> bool:
         """Check if ticker is valid (alphanumeric, uppercase, include & and -)"""
-        return bool(re.match(r'^[A-Z0-9_&-]+$', ticker)) and len(ticker) <= 20
+        return bool(re.match(r"^[A-Z0-9_&-]+$", ticker)) and len(ticker) <= 20
 
     def refresh_cache(self) -> None:
         """Clear cache and reload symbol master."""

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, memo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import dynamic from 'next/dynamic';
 import {
   Badge,
   Button,
@@ -63,90 +63,122 @@ function formatRupeeLakh(value: number): string {
   return `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
+// Dynamic import for recharts to reduce initial bundle size
+const DynamicEquityChart = dynamic(
+  () => import('recharts').then((mod) => {
+    const { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
+
+    return function EquityChartComponent({ data }: { data: Array<{ date: string; equity: number; benchmark: number | null }> }) {
+      if (data.length === 0) {
+        return (
+          <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-sm text-foreground-muted">
+            No equity curve data available for this run.
+          </div>
+        );
+      }
+
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{ top: 10, right: 30, left: 60, bottom: 40 }}
+          >
+            <XAxis
+              dataKey="date"
+              height={60}
+              angle={-45}
+              textAnchor="end"
+              stroke="var(--color-foreground-muted)"
+              tick={{ fill: 'var(--color-foreground-muted)', fontSize: 10 }}
+              axisLine={{ stroke: 'var(--color-border)' }}
+              tickLine={{ stroke: 'var(--color-border)' }}
+            />
+            <YAxis
+              width={60}
+              stroke="var(--color-foreground-muted)"
+              tick={{ fill: 'var(--color-foreground-secondary)', fontSize: 11 }}
+              axisLine={{ stroke: 'var(--color-border)' }}
+              tickLine={{ stroke: 'var(--color-border)' }}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'var(--color-elevated)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--color-foreground)',
+                fontSize: '12px'
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="equity"
+              stroke="var(--color-primary)"
+              strokeWidth={2.5}
+              dot={false}
+              name="Portfolio"
+            />
+            <Line
+              type="monotone"
+              dataKey="benchmark"
+              stroke="var(--color-foreground-muted)"
+              strokeWidth={1.8}
+              strokeDasharray="5 5"
+              dot={false}
+              name="Benchmark"
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    };
+  }),
+  {
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
+      </div>
+    ),
+    ssr: false
+  }
+);
+
+const DynamicDrawdownChart = dynamic(
+  () => import('recharts').then((mod) => {
+    const { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
+
+    return function DrawdownChartComponent({ data }: { data: CurvePoint[] }) {
+      if (data.length === 0) {
+        return (
+          <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-xs text-foreground-muted">
+            No drawdown data
+          </div>
+        );
+      }
+
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data}>
+            <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-foreground-muted)' }} hide />
+            <YAxis tick={{ fontSize: 10, fill: 'var(--color-foreground-secondary)' }} width={40} />
+            <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: '11px' }} />
+            <Line type="monotone" dataKey="drawdown_pct" stroke="var(--color-loss)" dot={false} strokeWidth={2} />
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    };
+  }),
+  {
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
+      </div>
+    ),
+    ssr: false
+  }
+);
+
 // OPTIMIZATION: Memoized chart components to prevent unnecessary re-renders
-const EquityChart = memo(function EquityChart({ data }: { data: Array<{ date: string; equity: number; benchmark: number | null }> }) {
-  if (data.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-sm text-foreground-muted">
-        No equity curve data available for this run.
-      </div>
-    );
-  }
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart
-        data={data}
-        margin={{ top: 10, right: 30, left: 60, bottom: 40 }}
-      >
-        <XAxis
-          dataKey="date"
-          height={60}
-          angle={-45}
-          textAnchor="end"
-          stroke="var(--color-foreground-muted)"
-          tick={{ fill: 'var(--color-foreground-muted)', fontSize: 10 }}
-          axisLine={{ stroke: 'var(--color-border)' }}
-          tickLine={{ stroke: 'var(--color-border)' }}
-        />
-        <YAxis
-          width={60}
-          stroke="var(--color-foreground-muted)"
-          tick={{ fill: 'var(--color-foreground-secondary)', fontSize: 11 }}
-          axisLine={{ stroke: 'var(--color-border)' }}
-          tickLine={{ stroke: 'var(--color-border)' }}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'var(--color-elevated)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-            color: 'var(--color-foreground)',
-            fontSize: '12px'
-          }}
-        />
-        <Line
-          type="monotone"
-          dataKey="equity"
-          stroke="var(--color-primary)"
-          strokeWidth={2.5}
-          dot={false}
-          name="Portfolio"
-        />
-        <Line
-          type="monotone"
-          dataKey="benchmark"
-          stroke="var(--color-foreground-muted)"
-          strokeWidth={1.8}
-          strokeDasharray="5 5"
-          dot={false}
-          name="Benchmark"
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-});
-
-const DrawdownChart = memo(function DrawdownChart({ data }: { data: CurvePoint[] }) {
-  if (data.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-xs text-foreground-muted">
-        No drawdown data
-      </div>
-    );
-  }
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={data}>
-        <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-foreground-muted)' }} hide />
-        <YAxis tick={{ fontSize: 10, fill: 'var(--color-foreground-secondary)' }} width={40} />
-        <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: '11px' }} />
-        <Line type="monotone" dataKey="drawdown_pct" stroke="var(--color-loss)" dot={false} strokeWidth={2} />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-});
+const EquityChart = memo(DynamicEquityChart);
+const DrawdownChart = memo(DynamicDrawdownChart);
 
 export default function BacktestResultPage() {
   const params = useParams<{ runId: string }>();
@@ -209,22 +241,22 @@ export default function BacktestResultPage() {
   }, [payload?.result?.equity_curve, payload?.result?.benchmark_curve]);
 
   // OPTIMIZATION: Memoize drawdown data
-  const drawdownRows = useMemo(() => 
-    payload?.result?.drawdown_curve ?? [], 
+  const drawdownRows = useMemo(() =>
+    payload?.result?.drawdown_curve ?? [],
     [payload?.result?.drawdown_curve]
   );
 
   // OPTIMIZATION: Memoize trades and metrics
-  const trades = useMemo(() => 
-    payload?.result?.trade_log ?? [], 
+  const trades = useMemo(() =>
+    payload?.result?.trade_log ?? [],
     [payload?.result?.trade_log]
   );
-  
-  const metrics = useMemo(() => 
-    payload?.result?.metrics, 
+
+  const metrics = useMemo(() =>
+    payload?.result?.metrics,
     [payload?.result?.metrics]
   );
-  
+
   const winRate = metrics?.win_rate_pct ?? 0;
 
   return (

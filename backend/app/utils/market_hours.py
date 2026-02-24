@@ -2,12 +2,14 @@
 Market Hours Utility for Backend
 Checks if NSE market is open (9:15 AM - 3:30 PM IST, Mon-Fri)
 """
+
 import os
 from datetime import datetime, time
 
 import pytz
 
-IST = pytz.timezone('Asia/Kolkata')
+IST = pytz.timezone("Asia/Kolkata")
+
 
 def is_market_open() -> tuple[bool, str]:
     """
@@ -57,7 +59,7 @@ def get_market_status() -> dict:
         "current_time_ist": now.strftime("%H:%M:%S IST"),
         "current_day": now.strftime("A"),
         "market_open_time": "09:15 IST",
-        "market_close_time": "15:30 IST"
+        "market_close_time": "15:30 IST",
     }
 
 
@@ -66,6 +68,7 @@ def require_market_open():
     Decorator to ensure market is open before executing endpoint.
     Raises HTTPException(503) if market is closed.
     """
+
     def decorator(func):
         from functools import wraps
 
@@ -75,24 +78,19 @@ def require_market_open():
         async def async_wrapper(*args, **kwargs):
             is_open, message = is_market_open()
             if not is_open:
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Service unavailable: {message}"
-                )
+                raise HTTPException(status_code=503, detail=f"Service unavailable: {message}")
             return await func(*args, **kwargs)
 
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             is_open, message = is_market_open()
             if not is_open:
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Service unavailable: {message}"
-                )
+                raise HTTPException(status_code=503, detail=f"Service unavailable: {message}")
             return func(*args, **kwargs)
 
         # Return appropriate wrapper based on function type
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:

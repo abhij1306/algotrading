@@ -8,16 +8,17 @@ class LivePosition(Base):
     Represents a real-time position synced from the broker.
     This creates a snapshot of the current holdings.
     """
+
     __tablename__ = "live_positions"
 
-    id = Column(String(100), primary_key=True)        # Composite ID: UID-SYMBOL-PRODUCT
-    user_id = Column(String(50), default='default_user')
+    id = Column(String(100), primary_key=True)  # Composite ID: UID-SYMBOL-PRODUCT
+    user_id = Column(String(50), default="default_user")
 
     symbol = Column(String(50), nullable=False, index=True)
     fyers_symbol = Column(String(80))
 
-    product_type = Column(String(20))                 # INTRADAY / MARGIN / CNC
-    side = Column(String(10))                         # LONG / SHORT
+    product_type = Column(String(20))  # INTRADAY / MARGIN / CNC
+    side = Column(String(10))  # LONG / SHORT
 
     # Quantities
     net_qty = Column(Integer, default=0)
@@ -36,7 +37,7 @@ class LivePosition(Base):
     pl_total = Column(Float, default=0.0)
 
     # Options Details (if applicable)
-    instrument_type = Column(String(10))              # EQ / FUT / CE / PE
+    instrument_type = Column(String(10))  # EQ / FUT / CE / PE
     strike_price = Column(Float, nullable=True)
     expiry_date = Column(Date, nullable=True)
 

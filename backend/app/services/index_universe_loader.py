@@ -1,4 +1,4 @@
-﻿"""
+"""
 Index Universe Loader Service
 =============================
 Loads index constituent data from CSV files for accurate symbol mappings.
@@ -40,13 +40,16 @@ logger = logging.getLogger(__name__)
 # Lazy import to avoid circular dependencies
 _symbol_master = None
 
+
 def _get_symbol_master():
     """Lazy load the symbol master to avoid circular imports."""
     global _symbol_master
     if _symbol_master is None:
         from .symbol_master import symbol_master
+
         _symbol_master = symbol_master
     return _symbol_master
+
 
 # Use project-relative path - GitHub compatible
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
@@ -65,7 +68,6 @@ INDEX_FILES = {
     "NIFTYNEXT50": "ind_niftynext50list.csv",
     "NIFTYTOTALMARKET": "ind_niftytotalmarket_list.csv",
     "NIFTYSMALLCAP500": "ind_NiftySmallcap500_list.csv",
-
     # Sector Indices
     "NIFTYBANK": "ind_niftybanklist.csv",
     "NIFTYIT": "ind_niftyitlist.csv",
@@ -81,19 +83,16 @@ INDEX_FILES = {
     "NIFTYCONSUMERDURABLES": "ind_niftyconsumerdurableslist.csv",
     "NIFTYCHEMICALS": "ind_niftyChemicals_list.csv",
     "NIFTYPSUBANK": "ind_niftypsubanklist.csv",
-
     # Mid & Small Cap Indices
     "NIFTYMIDCAP150": "ind_niftymidcap150list.csv",
     "NIFTYMIDCAP100": "ind_niftymidcap100list.csv",
     "NIFTYMIDCAP50": "ind_niftymidcap50list.csv",
     "NIFTYMIDCAPSELECT": "ind_niftymidcapselect_list.csv",
     "NIFTYSMALLCAP250": "ind_niftysmallcap250list.csv",
-
     # Multi-factor Indices
     "NIFTYLARGEMIDCAP250": "ind_niftylargemidcap250list.csv",
     "NIFTYMICROCAP250": "ind_niftymicrocap250_list.csv",
     "NIFTYMIDSMALLCAP400": "ind_niftymidsmallcap400list.csv",
-
     # Speciality Indices
     "NIFTYPRIVATEBANK": "ind_nifty_privatebanklist.csv",
     "NIFTYMIDSMALLFINANCIALSERVICES": "ind_niftymidsmallfinancailservice_list.csv",
@@ -105,6 +104,7 @@ INDEX_FILES = {
 @dataclass
 class IndexConstituent:
     """Represents a single constituent in an index"""
+
     symbol: str
     company_name: str
     industry: str
@@ -116,6 +116,7 @@ class IndexConstituent:
 @dataclass
 class IndexUniverse:
     """Represents an index with all its constituents"""
+
     index_id: str
     description: str
     symbols: list[str] = field(default_factory=list)
@@ -146,7 +147,7 @@ class IndexUniverseLoader:
         constituent = index_universe_loader.get_constituent("SBIN", "NIFTY50")
     """
 
-    def __init__(self, data_path = None):
+    def __init__(self, data_path=None):
         self.data_path = Path(data_path) if data_path else DATA_PATH
         self._indices: dict[str, IndexUniverse] = {}
         self._symbol_to_indices: dict[str, set[str]] = {}
@@ -183,27 +184,29 @@ class IndexUniverseLoader:
                     logger.warning(f"Index file not found: {filepath}")
 
             self._loaded = True
-            logger.info(f"Loaded {len(self._indices)} indices with {len(self._symbol_to_indices)} unique symbols")
+            logger.info(
+                f"Loaded {len(self._indices)} indices with {len(self._symbol_to_indices)} unique symbols"
+            )
 
     def _load_index_csv(self, index_id: str, filepath: Path) -> None:
         """Load a single index CSV file"""
         constituents = []
         symbols = []
 
-        with open(filepath, encoding='utf-8') as f:
+        with open(filepath, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                symbol = row.get('Symbol', '').strip().upper()
+                symbol = row.get("Symbol", "").strip().upper()
                 if not symbol:
                     continue
 
                 constituent = IndexConstituent(
                     symbol=symbol,
-                    company_name=row.get('Company Name', '').strip(),
-                    industry=row.get('Industry', '').strip(),
-                    series=row.get('Series', 'EQ').strip(),
-                    isin=row.get('ISIN Code', '').strip(),
-                    index_id=index_id
+                    company_name=row.get("Company Name", "").strip(),
+                    industry=row.get("Industry", "").strip(),
+                    series=row.get("Series", "EQ").strip(),
+                    isin=row.get("ISIN Code", "").strip(),
+                    index_id=index_id,
                 )
                 constituents.append(constituent)
                 symbols.append(symbol)
@@ -216,10 +219,7 @@ class IndexUniverseLoader:
         # Create IndexUniverse
         description = f"NSE {index_id.replace('NIFTY', 'NIFTY ')} Index"
         self._indices[index_id] = IndexUniverse(
-            index_id=index_id,
-            description=description,
-            symbols=symbols,
-            constituents=constituents
+            index_id=index_id, description=description, symbols=symbols, constituents=constituents
         )
 
         logger.info(f"Loaded {index_id}: {len(symbols)} symbols")

@@ -10,8 +10,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from app.services.backtest_phase1_service import Phase1BacktestService
 
@@ -333,7 +332,7 @@ class TestBenchmarkCalculation:
             if initial_index_price == 0:
                 raise ValueError("Initial index price cannot be zero")
             benchmark_ret = (index_prices / initial_index_price) - 1.0
-            benchmark_equity = initial_capital * (1.0 + benchmark_ret)
+            _ = initial_capital * (1.0 + benchmark_ret)  # noqa: F841
 
     def test_benchmark_with_single_data_point(self, service):
         """

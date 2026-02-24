@@ -1,17 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { formatPrice, formatPercent, formatCompact } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/type-guards";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 interface StockChartProps {
   symbol: string;
@@ -25,6 +17,83 @@ interface PriceData {
   low: number;
   volume: number;
 }
+
+// Dynamic import for recharts to reduce initial bundle size
+const DynamicLineChart = dynamic(
+  () => import('recharts').then((mod) => {
+    const { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
+
+    return function LineChartComponent({
+      data,
+      minPrice,
+      maxPrice,
+      isPositive
+    }: {
+      data: PriceData[];
+      minPrice: number;
+      maxPrice: number;
+      isPositive: boolean;
+    }) {
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+            <XAxis
+              dataKey="date"
+              stroke="var(--color-foreground-tertiary)"
+              tick={{ fill: "var(--color-foreground-tertiary)", fontSize: 12 }}
+              tickFormatter={(date) => {
+                const d = new Date(date);
+                return `${d.getDate()}/${d.getMonth() + 1}`;
+              }}
+            />
+            <YAxis
+              stroke="var(--color-foreground-tertiary)"
+              tick={{ fill: "var(--color-foreground-tertiary)", fontSize: 12 }}
+              domain={[minPrice * 0.98, maxPrice * 1.02]}
+              tickFormatter={(value) => `₹${formatPrice(value)}`}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "var(--color-background-tertiary)",
+                border: "1px solid var(--color-border)",
+                borderRadius: "8px",
+                padding: "12px",
+              }}
+              labelStyle={{ color: "var(--color-foreground)", marginBottom: "8px" }}
+              itemStyle={{ color: "var(--color-primary)" }}
+              formatter={(value) => [`₹${formatPrice(Number(value) || 0)}`, "Close"]}
+              labelFormatter={(label) => {
+                const d = new Date(label);
+                return d.toLocaleDateString("en-IN", {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                });
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="close"
+              stroke={isPositive ? "var(--color-profit)" : "var(--color-loss)"}
+              strokeWidth={2}
+              dot={false}
+              animationDuration={300}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    };
+  }),
+  {
+    loading: () => (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="w-full h-full animate-pulse rounded-md bg-background-secondary" />
+      </div>
+    ),
+    ssr: false
+  }
+);
 
 export default function StockChart({ symbol }: StockChartProps) {
   const [data, setData] = useState<PriceData[]>([]);
@@ -129,53 +198,12 @@ export default function StockChart({ symbol }: StockChartProps) {
 
       {/* Chart */}
       <div className="flex-1">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-            <XAxis
-              dataKey="date"
-              stroke="var(--color-foreground-tertiary)"
-              tick={{ fill: "var(--color-foreground-tertiary)", fontSize: 12 }}
-              tickFormatter={(date) => {
-                const d = new Date(date);
-                return `${d.getDate()}/${d.getMonth() + 1}`;
-              }}
-            />
-            <YAxis
-              stroke="var(--color-foreground-tertiary)"
-              tick={{ fill: "var(--color-foreground-tertiary)", fontSize: 12 }}
-              domain={[minPrice * 0.98, maxPrice * 1.02]}
-              tickFormatter={(value) => `₹${formatPrice(value)}`}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: "var(--color-background-tertiary)",
-                border: "1px solid var(--color-border)",
-                borderRadius: "8px",
-                padding: "12px",
-              }}
-              labelStyle={{ color: "var(--color-foreground)", marginBottom: "8px" }}
-              itemStyle={{ color: "var(--color-primary)" }}
-              formatter={(value) => [`₹${formatPrice(Number(value) || 0)}`, "Close"]}
-              labelFormatter={(label) => {
-                const d = new Date(label);
-                return d.toLocaleDateString("en-IN", {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
-                });
-              }}
-            />
-            <Line
-              type="monotone"
-              dataKey="close"
-              stroke={isPositive ? "var(--color-profit)" : "var(--color-loss)"}
-              strokeWidth={2}
-              dot={false}
-              animationDuration={300}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+        <DynamicLineChart
+          data={data}
+          minPrice={minPrice}
+          maxPrice={maxPrice}
+          isPositive={isPositive}
+        />
       </div>
 
       {/* Footer Stats */}

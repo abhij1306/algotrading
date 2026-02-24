@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 
 def load_dotenv(path: str = ".env"):

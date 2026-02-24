@@ -96,8 +96,6 @@ class TestWebSocketErrorResilience:
         Property: Functions decorated with @handle_websocket_errors should catch
         WebSocketDisconnect and log appropriately without crashing.
         """
-        disconnect_caught = False
-
         @handle_websocket_errors(log_level="INFO")
         async def mock_websocket_handler():
             raise WebSocketDisconnect()

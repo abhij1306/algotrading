@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from sqlalchemy import JSON, Column, DateTime, String, Text
 
@@ -7,6 +7,7 @@ from ..base import Base
 
 class StrategyConfig(Base):
     """Runtime Configuration for Strategies/Agents"""
+
     __tablename__ = "strategy_configs"
 
     key = Column(String(100), primary_key=True, index=True)
@@ -16,8 +17,10 @@ class StrategyConfig(Base):
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
 class StrategyContract(Base):
     """Read-only strategy-universe-timeframe contracts"""
+
     __tablename__ = "strategy_contracts"
 
     strategy_id = Column(String(50), primary_key=True)
@@ -36,11 +39,13 @@ class StrategyContract(Base):
     approved_at = Column(DateTime)
     approved_by = Column(String(50))
 
+
 class StrategyMetadata(Base):
     """
     Rich metadata for strategies (The 'Label')
     Contains forensic analysis notes, risk profile, and lifecycle status.
     """
+
     __tablename__ = "strategy_metadata"
 
     strategy_id = Column(String(50), primary_key=True)
@@ -53,6 +58,6 @@ class StrategyMetadata(Base):
     risk_profile = Column(JSON, default={})
 
     # Lifecycle
-    lifecycle_status = Column(String(20), default='RESEARCH')
+    lifecycle_status = Column(String(20), default="RESEARCH")
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

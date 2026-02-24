@@ -110,7 +110,8 @@ function toSafeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-const PriceChart = dynamic(
+// PriceChart component - reserved for future chart view implementation
+const _PriceChart = dynamic(
   () => import('@/components/terminal/PriceChart').then((mod) => mod.PriceChart),
   {
     ssr: false,
@@ -181,10 +182,11 @@ export default function TerminalPage() {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chartData, setChartData] = useState<CandlePoint[]>([]);
-  const [chartSource, setChartSource] = useState<string>('');
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState<string | null>(null);
+  // Chart state - reserved for future chart view implementation
+  const [_chartData, setChartData] = useState<CandlePoint[]>([]);
+  const [_chartSource, setChartSource] = useState<string>('');
+  const [_chartLoading, setChartLoading] = useState(false);
+  const [_chartError, setChartError] = useState<string | null>(null);
   const [tradingMode, setTradingMode] = useState<TradingMode>('PAPER');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
   const [orderQty, setOrderQty] = useState<number>(1);

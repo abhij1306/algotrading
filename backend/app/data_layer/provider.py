@@ -7,6 +7,7 @@ Architecture:
 - Parquet: Heavy time-series data (future optimization)
 - Fyers API v3: Live quotes only
 """
+
 from datetime import datetime
 
 import pandas as pd
@@ -41,7 +42,7 @@ class DataProvider:
         timeframe: str = "1D",
         start_date: datetime | None = None,
         end_date: datetime | None = None,
-        days: int = 365
+        days: int = 365,
     ) -> pd.DataFrame:
         """
         Fetch historical OHLCV data
@@ -75,10 +76,7 @@ class DataProvider:
                 end_date=end_date.date() if end_date else None,
             )
             if df is None or df.empty:
-                raise DataNotFoundError(
-                    symbol,
-                    f"No historical data available for {symbol}"
-                )
+                raise DataNotFoundError(symbol, f"No historical data available for {symbol}")
 
             return df
 
@@ -103,16 +101,15 @@ class DataProvider:
         if not company:
             raise InvalidSymbolError(symbol)
 
-        fs = self.db.query(FinancialStatement)\
-            .filter(FinancialStatement.company_id == company.id)\
-            .order_by(FinancialStatement.period_end.desc())\
+        fs = (
+            self.db.query(FinancialStatement)
+            .filter(FinancialStatement.company_id == company.id)
+            .order_by(FinancialStatement.period_end.desc())
             .first()
+        )
 
         if not fs:
-            raise DataNotFoundError(
-                symbol,
-                f"No financial statements available for {symbol}"
-            )
+            raise DataNotFoundError(symbol, f"No financial statements available for {symbol}")
 
         return {
             "symbol": symbol,
@@ -125,7 +122,7 @@ class DataProvider:
             "debt_to_equity": fs.debt_to_equity,
             "roe": fs.roe,
             "roa": fs.roa,
-            "market_cap": company.market_cap
+            "market_cap": company.market_cap,
         }
 
     def get_quote(self, symbol: str) -> dict:
@@ -161,6 +158,7 @@ class DataProvider:
         """
         try:
             from ..data_fetcher import fetch_fyers_quotes
+
             return fetch_fyers_quotes(symbols)
         except Exception as e:
             if "token" in str(e).lower():
@@ -183,7 +181,7 @@ class DataProvider:
             "postgresql": "UNKNOWN",
             "fyers": "UNKNOWN",
             "last_update": None,
-            "total_symbols": 0
+            "total_symbols": 0,
         }
 
         # Check PostgreSQL
@@ -197,6 +195,7 @@ class DataProvider:
         # Check Fyers
         try:
             from ..services.fyers_client import get_fyers_client
+
             client = get_fyers_client()
             client.fyers.get_profile()
             status["fyers"] = "OK"
@@ -208,9 +207,9 @@ class DataProvider:
 
         # Get latest data update timestamp
         try:
-            latest = self.db.query(HistoricalPrice)\
-                .order_by(HistoricalPrice.created_at.desc())\
-                .first()
+            latest = (
+                self.db.query(HistoricalPrice).order_by(HistoricalPrice.created_at.desc()).first()
+            )
             if latest:
                 status["last_update"] = latest.created_at.isoformat()
         except Exception:

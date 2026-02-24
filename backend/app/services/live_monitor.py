@@ -1,4 +1,3 @@
-
 import logging
 from datetime import datetime
 
@@ -10,6 +9,7 @@ from ..database import Company, LivePortfolioState, ResearchPortfolio
 
 logger = logging.getLogger(__name__)
 
+
 class LiveMonitorService:
     def __init__(self, db: Session):
         self.db = db
@@ -20,7 +20,9 @@ class LiveMonitorService:
         Calculate real-time equity based on LATEST AVAILABLE DB data.
         Strictly uses DataRepository (Database) data, no mock/dummy numbers.
         """
-        portfolio = self.db.query(ResearchPortfolio).filter(ResearchPortfolio.id == portfolio_id).first()
+        portfolio = (
+            self.db.query(ResearchPortfolio).filter(ResearchPortfolio.id == portfolio_id).first()
+        )
         if not portfolio:
             logger.error(f"Portfolio {portfolio_id} not found")
             return None
@@ -44,21 +46,27 @@ class LiveMonitorService:
             prices = self.repo.get_historical_prices(company.symbol, days=5)
 
             if not prices.empty and len(prices) >= 2:
-                latest_close = prices.iloc[-1]['Close']
-                prev_close = prices.iloc[-2]['Close']
+                latest_close = prices.iloc[-1]["Close"]
+                prev_close = prices.iloc[-2]["Close"]
                 market_change_pct = (latest_close - prev_close) / prev_close
-                logger.info(f"Market Driver ({company.symbol}): {latest_close} vs {prev_close} ({market_change_pct:.2%})")
+                logger.info(
+                    f"Market Driver ({company.symbol}): {latest_close} vs {prev_close} ({market_change_pct:.2%})"
+                )
             else:
-                logger.warning(f"Not enough historical data for {company.symbol} to calculate change")
+                logger.warning(
+                    f"Not enough historical data for {company.symbol} to calculate change"
+                )
         else:
             logger.warning("No companies found in DB to drive portfolio performance.")
 
         # 2. Update Equity based on Exposure
         # Get previous state
-        last_state = self.db.query(LivePortfolioState)\
-            .filter(LivePortfolioState.portfolio_id == portfolio_id)\
-            .order_by(desc(LivePortfolioState.timestamp))\
+        last_state = (
+            self.db.query(LivePortfolioState)
+            .filter(LivePortfolioState.portfolio_id == portfolio_id)
+            .order_by(desc(LivePortfolioState.timestamp))
             .first()
+        )
 
         # Initial capital if no history
         current_equity = last_state.total_equity if last_state else 1000000.0
@@ -69,8 +77,8 @@ class LiveMonitorService:
 
         if portfolio.composition and isinstance(portfolio.composition, list):
             for strat in portfolio.composition:
-                w = strat.get('weight', 0.0)
-                sid = strat.get('strategy_id', 'UNKNOWN')
+                w = strat.get("weight", 0.0)
+                sid = strat.get("strategy_id", "UNKNOWN")
                 exposure += w
 
                 # Update Strategy PnL component
@@ -80,7 +88,7 @@ class LiveMonitorService:
                 strat_perfs[sid] = {
                     "pnl": strat_pnl,
                     "allocation": w,
-                    "equity_contrib": alloc_cap + strat_pnl
+                    "equity_contrib": alloc_cap + strat_pnl,
                 }
 
         # Total PnL for this step
@@ -117,7 +125,7 @@ class LiveMonitorService:
             current_drawdown_pct=dd_pct,
             is_breached=breached,
             breach_details=details,
-            strategy_performance=strat_perfs
+            strategy_performance=strat_perfs,
         )
 
         self.db.add(state)
@@ -126,7 +134,9 @@ class LiveMonitorService:
 
     def monitor_all_active_portfolios(self):
         """Run monitor for all LIVE portfolios"""
-        portfolios = self.db.query(ResearchPortfolio).filter(ResearchPortfolio.status == "LIVE").all()
+        portfolios = (
+            self.db.query(ResearchPortfolio).filter(ResearchPortfolio.status == "LIVE").all()
+        )
         results = []
         for p in portfolios:
             try:

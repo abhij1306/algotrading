@@ -13,10 +13,7 @@ const allowedDevOrigins = [...appDevOrigins, ...localBridgeOrigins];
 const nextConfig: NextConfig = {
   allowedDevOrigins,
   images: {
-    unoptimized: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
+    formats: ['image/avif', 'image/webp'],
   },
   typescript: {
     ignoreBuildErrors: true,

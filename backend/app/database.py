@@ -2,6 +2,7 @@
 Database Configuration and Model Export
 Unified entry point for database engine, session, and models.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -45,20 +46,22 @@ MODEL_EXPORTS = (
 # Environment & Path Discovery
 # ============================================
 
+
 def get_env_file():
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)
         potential_paths = [
             os.path.join(exe_dir, ".env"),
             os.path.join(os.path.dirname(exe_dir), ".env"),
-            os.path.join(os.getcwd(), ".env")
+            os.path.join(os.getcwd(), ".env"),
         ]
         for p in potential_paths:
             if os.path.exists(p):
                 return p
         return ".env"
     else:
-        return Path(__file__).resolve().parent.parent.parent / '.env'
+        return Path(__file__).resolve().parent.parent.parent / ".env"
+
 
 env_path = get_env_file()
 load_dotenv(env_path)
@@ -67,11 +70,11 @@ load_dotenv(env_path)
 # Database Configuration
 # ============================================
 
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = os.getenv('DB_PORT', '5432')
-DB_NAME = os.getenv('DB_NAME', 'algotrading')
-DB_USER = os.getenv('DB_USER', 'postgres')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "algotrading")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 if os.getenv("USE_SQLITE_TEST", "False") == "True":
     DATABASE_URL = "sqlite:///./test_quant.db"
@@ -85,10 +88,10 @@ else:
         echo=False,
         pool_pre_ping=True,
         poolclass=QueuePool,
-        pool_size=20,        # Increased from 10 for better concurrency
-        max_overflow=40,     # Increased from 20 for peak load handling
-        pool_recycle=3600,   # Recycle connections after 1 hour
-        pool_timeout=30,     # Add timeout to prevent indefinite waiting
+        pool_size=20,  # Increased from 10 for better concurrency
+        max_overflow=40,  # Increased from 20 for peak load handling
+        pool_recycle=3600,  # Recycle connections after 1 hour
+        pool_timeout=30,  # Add timeout to prevent indefinite waiting
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -97,10 +100,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Database Helpers
 # ============================================
 
+
 def init_db():
     """Initialize database and create all tables"""
     Base.metadata.create_all(bind=engine)
-    print(f"Database initialized: {DATABASE_URL.split('@')[-1] if '@' in DATABASE_URL else DATABASE_URL}")
+    print(
+        f"Database initialized: {DATABASE_URL.split('@')[-1] if '@' in DATABASE_URL else DATABASE_URL}"
+    )
+
 
 def get_db():
     """FastAPI Dependency for database session"""
@@ -110,9 +117,11 @@ def get_db():
     finally:
         db.close()
 
+
 def get_db_session():
     """Create a new database session for services"""
     return SessionLocal()
+
 
 def get_or_create_company(db, symbol: str, **kwargs):
     """Utility to get existing company or create new one"""
@@ -124,12 +133,12 @@ def get_or_create_company(db, symbol: str, **kwargs):
         db.refresh(company)
     return company
 
+
 # Attempt to initialize DB (tables only created if they don't exist)
 try:
     if os.getenv("INIT_DB_ON_IMPORT", "True") == "True":
         Base.metadata.create_all(bind=engine)
 except Exception as e:
     import logging
-    logging.getLogger(__name__).warning(
-        f"Could not initialize database tables on import: {e}"
-    )
+
+    logging.getLogger(__name__).warning(f"Could not initialize database tables on import: {e}")

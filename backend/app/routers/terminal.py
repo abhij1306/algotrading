@@ -35,6 +35,7 @@ INDEX_YF_MAP = {
     "BANKNIFTY": "^NSEBANK",
 }
 
+
 class PaperOrderRequest(BaseModel):
     symbol: str
     side: str
@@ -131,9 +132,7 @@ def _load_index_yfinance_candles(symbol: str, timeframe: str, limit: int) -> pd.
                 "low": pd.to_numeric(data["Low"], errors="coerce").fillna(0.0),
                 "close": pd.to_numeric(data["Close"], errors="coerce").fillna(0.0),
                 "volume": (
-                    pd.to_numeric(data.get("Volume", 0), errors="coerce")
-                    .fillna(0.0)
-                    .astype(int)
+                    pd.to_numeric(data.get("Volume", 0), errors="coerce").fillna(0.0).astype(int)
                 ),
             }
         )
@@ -345,7 +344,9 @@ def get_options_board(
             strike_count=strike_count,
         )
         if not chain:
-            raise HTTPException(status_code=404, detail="Option board unavailable for selected underlying/expiry")
+            raise HTTPException(
+                status_code=404, detail="Option board unavailable for selected underlying/expiry"
+            )
 
         rows: list[dict[str, Any]] = []
         for strike in chain.strikes:
@@ -362,7 +363,9 @@ def get_options_board(
                         "volume": ce.volume if ce else None,
                         "iv": ce.iv if ce else None,
                         "change_pct": ce.change_pct if ce else None,
-                    } if ce else None,
+                    }
+                    if ce
+                    else None,
                     "pe": {
                         "symbol": pe.symbol if pe else None,
                         "fyers_symbol": pe.fyers_symbol if pe else None,
@@ -371,7 +374,9 @@ def get_options_board(
                         "volume": pe.volume if pe else None,
                         "iv": pe.iv if pe else None,
                         "change_pct": pe.change_pct if pe else None,
-                    } if pe else None,
+                    }
+                    if pe
+                    else None,
                 }
             )
 
@@ -438,7 +443,9 @@ def get_options_orderflow(
             strike_count=strike_count,
         )
         if not chain:
-            raise HTTPException(status_code=404, detail="Orderflow unavailable for selected underlying/expiry")
+            raise HTTPException(
+                status_code=404, detail="Orderflow unavailable for selected underlying/expiry"
+            )
 
         ce_oi = 0
         pe_oi = 0

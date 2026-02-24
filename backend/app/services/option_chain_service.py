@@ -22,6 +22,7 @@ RISK_FREE_RATE = 0.065
 @dataclass
 class OptionLeg:
     """Single option leg (Call or Put)"""
+
     symbol: str
     fyers_symbol: str
     strike: float
@@ -42,6 +43,7 @@ class OptionLeg:
 @dataclass
 class OptionStrike:
     """Represents a strike price with both Call and Put options"""
+
     strike_price: float
     call: OptionLeg | None = None
     put: OptionLeg | None = None
@@ -50,6 +52,7 @@ class OptionStrike:
 @dataclass
 class OptionChainData:
     """Complete option chain for an underlying"""
+
     underlying: str
     spot_price: float
     expiry: date
@@ -61,7 +64,7 @@ class OptionChainData:
         if not self.strikes:
             return 0.0
 
-        min_diff = float('inf')
+        min_diff = float("inf")
         atm_strike = self.strikes[0].strike_price
 
         for strike in self.strikes:
@@ -95,6 +98,7 @@ class OptionChainService:
         """Lazy load Fyers client"""
         if self._fyers_client is None:
             from ..services.fyers_client import get_fyers_client
+
             self._fyers_client = get_fyers_client()
         return self._fyers_client
 
@@ -251,7 +255,7 @@ class OptionChainService:
             spot_price=spot_price,
             expiry=selected_expiry,
             strikes=strikes,
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
         )
 
     def _extract_expiries(self, raw_data: dict) -> list[date]:
@@ -263,7 +267,9 @@ class OptionChainService:
             for item in expiry_data:
                 if not isinstance(item, dict):
                     continue
-                exp = self._parse_expiry_value(item.get("date")) or self._parse_expiry_value(item.get("expiry"))
+                exp = self._parse_expiry_value(item.get("date")) or self._parse_expiry_value(
+                    item.get("expiry")
+                )
                 if exp and exp not in expiries:
                     expiries.append(exp)
 
@@ -349,28 +355,38 @@ class OptionChainService:
                 continue
 
             expiry_key = selected_expiry.strftime("%Y-%m-%d")
-            expiry_data = expiries_data.get(expiry_key, {}) if isinstance(expiries_data, dict) else {}
+            expiry_data = (
+                expiries_data.get(expiry_key, {}) if isinstance(expiries_data, dict) else {}
+            )
             if not expiry_data:
                 continue
 
             ce_data = expiry_data.get("CE", {})
             pe_data = expiry_data.get("PE", {})
-            ce_leg = self._create_option_leg(
-                ce_data,
-                strike_price,
-                selected_expiry,
-                "CE",
-                spot_price,
-                include_greeks=include_greeks,
-            ) if ce_data else None
-            pe_leg = self._create_option_leg(
-                pe_data,
-                strike_price,
-                selected_expiry,
-                "PE",
-                spot_price,
-                include_greeks=include_greeks,
-            ) if pe_data else None
+            ce_leg = (
+                self._create_option_leg(
+                    ce_data,
+                    strike_price,
+                    selected_expiry,
+                    "CE",
+                    spot_price,
+                    include_greeks=include_greeks,
+                )
+                if ce_data
+                else None
+            )
+            pe_leg = (
+                self._create_option_leg(
+                    pe_data,
+                    strike_price,
+                    selected_expiry,
+                    "PE",
+                    spot_price,
+                    include_greeks=include_greeks,
+                )
+                if pe_data
+                else None
+            )
 
             if ce_leg or pe_leg:
                 strikes.append(OptionStrike(strike_price=strike_price, call=ce_leg, put=pe_leg))
@@ -415,7 +431,7 @@ class OptionChainService:
                     k=strike,
                     t=tte,
                     r=RISK_FREE_RATE,
-                    option_type='call' if option_type == 'CE' else 'put'
+                    option_type="call" if option_type == "CE" else "put",
                 )
 
                 greeks = get_option_greeks(
@@ -424,7 +440,7 @@ class OptionChainService:
                     t=tte,
                     r=RISK_FREE_RATE,
                     sigma=iv,
-                    option_type='call' if option_type == 'CE' else 'put'
+                    option_type="call" if option_type == "CE" else "put",
                 )
             except Exception as e:
                 logger.debug(f"Could not calculate Greeks: {e}")
@@ -444,7 +460,7 @@ class OptionChainService:
             greeks=greeks,
             change=change,
             change_pct=change_pct,
-            prev_close=prev_close
+            prev_close=prev_close,
         )
 
     def _calculate_tte(self, expiry: date) -> float:
@@ -488,11 +504,7 @@ class OptionChainService:
         return 0.0
 
     def get_greeks(
-        self,
-        underlying: str,
-        strike: float,
-        option_type: str,
-        expiry: date | None = None
+        self, underlying: str, strike: float, option_type: str, expiry: date | None = None
     ) -> dict:
         """Get Greeks for a specific option"""
         chain = self.get_option_chain(

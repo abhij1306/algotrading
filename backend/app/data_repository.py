@@ -2,6 +2,7 @@
 Data repository layer for database operations
 Provides clean interface for data access
 """
+
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -51,7 +52,7 @@ class DataRepository:
 
     # ==================== HISTORICAL PRICE OPERATIONS ====================
 
-    def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = 'bhavcopy'):
+    def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = "bhavcopy"):
         """Save historical prices from DataFrame and calculate technical indicators"""
         try:
             company = self.get_or_create_company(symbol)
@@ -59,24 +60,28 @@ class DataRepository:
             records_added = 0
             for idx, row in df.iterrows():
                 # Check if record exists
-                existing = self.db.query(HistoricalPrice).filter(
-                    and_(
-                        HistoricalPrice.company_id == company.id,
-                        HistoricalPrice.date == idx.date()
+                existing = (
+                    self.db.query(HistoricalPrice)
+                    .filter(
+                        and_(
+                            HistoricalPrice.company_id == company.id,
+                            HistoricalPrice.date == idx.date(),
+                        )
                     )
-                ).first()
+                    .first()
+                )
 
                 if not existing:
                     price = HistoricalPrice(
                         company_id=company.id,
                         date=idx.date(),
-                        open=float(row['Open']),
-                        high=float(row['High']),
-                        low=float(row['Low']),
-                        close=float(row['Close']),
-                        volume=int(row['Volume']),
+                        open=float(row["Open"]),
+                        high=float(row["High"]),
+                        low=float(row["Low"]),
+                        close=float(row["Close"]),
+                        volume=int(row["Volume"]),
                         # adj_close removed as it's not in the model
-                        source=source
+                        source=source,
                     )
                     self.db.add(price)
                     records_added += 1
@@ -96,32 +101,35 @@ class DataRepository:
 
                         if features:
                             # Update the latest price record with calculated indicators
-                            latest_price = self.db.query(HistoricalPrice).filter(
-                                HistoricalPrice.company_id == company.id
-                            ).order_by(HistoricalPrice.date.desc()).first()
+                            latest_price = (
+                                self.db.query(HistoricalPrice)
+                                .filter(HistoricalPrice.company_id == company.id)
+                                .order_by(HistoricalPrice.date.desc())
+                                .first()
+                            )
 
                             if latest_price and features:
-                                latest_price.ema_20 = features.get('ema20')
-                                latest_price.ema_50 = features.get('ema50')
-                                latest_price.rsi_14 = features.get('rsi')
-                                latest_price.atr_14 = features.get('atr')
-                                latest_price.high_20d = features.get('20d_high')
-                                latest_price.is_breakout = features.get('is_20d_breakout', False)
+                                latest_price.ema_20 = features.get("ema20")
+                                latest_price.ema_50 = features.get("ema50")
+                                latest_price.rsi_14 = features.get("rsi")
+                                latest_price.atr_14 = features.get("atr")
+                                latest_price.high_20d = features.get("20d_high")
+                                latest_price.is_breakout = features.get("is_20d_breakout", False)
 
                                 # Save Trends
-                                latest_price.trend_7d = features.get('trend_7d')
-                                latest_price.trend_30d = features.get('trend_30d')
+                                latest_price.trend_7d = features.get("trend_7d")
+                                latest_price.trend_30d = features.get("trend_30d")
 
                                 # Save Advanced Indicators
-                                latest_price.macd = features.get('macd')
-                                latest_price.macd_signal = features.get('macd_signal')
-                                latest_price.adx = features.get('adx')
-                                latest_price.stoch_k = features.get('stoch_k')
-                                latest_price.stoch_d = features.get('stoch_d')
-                                latest_price.bb_upper = features.get('bb_upper')
-                                latest_price.bb_middle = features.get('bb_middle')
-                                latest_price.bb_lower = features.get('bb_lower')
-                                latest_price.obv = features.get('obv')
+                                latest_price.macd = features.get("macd")
+                                latest_price.macd_signal = features.get("macd_signal")
+                                latest_price.adx = features.get("adx")
+                                latest_price.stoch_k = features.get("stoch_k")
+                                latest_price.stoch_d = features.get("stoch_d")
+                                latest_price.bb_upper = features.get("bb_upper")
+                                latest_price.bb_middle = features.get("bb_middle")
+                                latest_price.bb_lower = features.get("bb_lower")
+                                latest_price.obv = features.get("obv")
 
                                 self.db.commit()
                 except Exception as e:
@@ -132,11 +140,11 @@ class DataRepository:
             try:
                 self.log_data_update(
                     company.id,
-                    'historical',
+                    "historical",
                     records_added,
-                    'success',
+                    "success",
                     start_date=df.index.min().date(),
-                    end_date=df.index.max().date()
+                    end_date=df.index.max().date(),
                 )
             except Exception:
                 pass  # Don't fail if logging fails
@@ -151,16 +159,14 @@ class DataRepository:
         symbol: str,
         start_date: date | None = None,
         end_date: date | None = None,
-        days: int | None = None
+        days: int | None = None,
     ) -> pd.DataFrame:
         """Get historical prices as DataFrame"""
         company = self.get_company(symbol)
         if not company:
             return pd.DataFrame()
 
-        query = self.db.query(HistoricalPrice).filter(
-            HistoricalPrice.company_id == company.id
-        )
+        query = self.db.query(HistoricalPrice).filter(HistoricalPrice.company_id == company.id)
 
         if start_date:
             query = query.filter(HistoricalPrice.date >= start_date)
@@ -169,9 +175,12 @@ class DataRepository:
         if days:
             # Use the latest available date in database, not today's date
             # This ensures we get data even if database hasn't been updated today
-            latest_record = self.db.query(HistoricalPrice).filter(
-                HistoricalPrice.company_id == company.id
-            ).order_by(desc(HistoricalPrice.date)).first()
+            latest_record = (
+                self.db.query(HistoricalPrice)
+                .filter(HistoricalPrice.company_id == company.id)
+                .order_by(desc(HistoricalPrice.date))
+                .first()
+            )
 
             if latest_record:
                 cutoff_date = latest_record.date - timedelta(days=days)
@@ -185,22 +194,20 @@ class DataRepository:
 
         # Convert to DataFrame with UPPERCASE column names (required by portfolio analysis)
         data = {
-            'Open': [p.open for p in prices],
-            'High': [p.high for p in prices],
-            'Low': [p.low for p in prices],
-            'Close': [p.close for p in prices],
-            'Volume': [p.volume for p in prices],
+            "Open": [p.open for p in prices],
+            "High": [p.high for p in prices],
+            "Low": [p.low for p in prices],
+            "Close": [p.close for p in prices],
+            "Volume": [p.volume for p in prices],
         }
         df = pd.DataFrame(data, index=[p.date for p in prices])
-        df.index.name = 'date'
+        df.index.name = "date"
         df.index = pd.to_datetime(df.index)
 
         return df
 
     def get_bulk_historical_prices(
-        self,
-        symbols: list[str],
-        days: int = 200
+        self, symbols: list[str], days: int = 200
     ) -> dict[str, pd.DataFrame]:
         """
         Fetch historical prices for multiple symbols in a single query.
@@ -219,10 +226,12 @@ class DataRepository:
         start_date = date.today() - timedelta(days=days)
 
         # Fetch all prices in one query
-        prices = self.db.query(HistoricalPrice).filter(
-            HistoricalPrice.company_id.in_(company_ids),
-            HistoricalPrice.date >= start_date
-        ).order_by(HistoricalPrice.company_id, HistoricalPrice.date).all()
+        prices = (
+            self.db.query(HistoricalPrice)
+            .filter(HistoricalPrice.company_id.in_(company_ids), HistoricalPrice.date >= start_date)
+            .order_by(HistoricalPrice.company_id, HistoricalPrice.date)
+            .all()
+        )
 
         # Group by symbol
         results = {}
@@ -230,20 +239,22 @@ class DataRepository:
             sym = company_map[p.company_id]
             if sym not in results:
                 results[sym] = []
-            results[sym].append({
-                'date': p.date,
-                'Open': p.open,
-                'High': p.high,
-                'Low': p.low,
-                'Close': p.close,
-                'Volume': p.volume
-            })
+            results[sym].append(
+                {
+                    "date": p.date,
+                    "Open": p.open,
+                    "High": p.high,
+                    "Low": p.low,
+                    "Close": p.close,
+                    "Volume": p.volume,
+                }
+            )
 
         # Convert to DataFrames
         final_dfs = {}
         for sym, data in results.items():
             df = pd.DataFrame(data)
-            df = df.set_index('date')
+            df = df.set_index("date")
             df.index = pd.to_datetime(df.index)
             final_dfs[sym] = df
 
@@ -255,17 +266,17 @@ class DataRepository:
         if not company:
             return None
 
-        latest = self.db.query(HistoricalPrice).filter(
-            HistoricalPrice.company_id == company.id
-        ).order_by(desc(HistoricalPrice.date)).first()
+        latest = (
+            self.db.query(HistoricalPrice)
+            .filter(HistoricalPrice.company_id == company.id)
+            .order_by(desc(HistoricalPrice.date))
+            .first()
+        )
 
         return latest.date if latest else None
 
     def get_historical_data(
-        self,
-        symbol: str,
-        start_date: str,
-        end_date: str
+        self, symbol: str, start_date: str, end_date: str
     ) -> pd.DataFrame | None:
         """
         Get historical data with NSE fallback
@@ -281,6 +292,7 @@ class DataRepository:
         """
         # Try Postgres first
         from datetime import datetime
+
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
 
@@ -297,9 +309,12 @@ class DataRepository:
         if not company:
             return None
 
-        latest = self.db.query(HistoricalPrice).filter(
-            HistoricalPrice.company_id == company.id
-        ).order_by(desc(HistoricalPrice.date)).first()
+        latest = (
+            self.db.query(HistoricalPrice)
+            .filter(HistoricalPrice.company_id == company.id)
+            .order_by(desc(HistoricalPrice.date))
+            .first()
+        )
 
         return latest.close if latest else None
 
@@ -311,7 +326,7 @@ class DataRepository:
         timeframe: int = 5,  # timeframe in minutes
         start_date: datetime | None = None,
         end_date: datetime | None = None,
-        days: int | None = None
+        days: int | None = None,
     ) -> pd.DataFrame:
         """
         Get intraday candle data as DataFrame
@@ -331,10 +346,7 @@ class DataRepository:
             return pd.DataFrame()
 
         query = self.db.query(IntradayCandle).filter(
-            and_(
-                IntradayCandle.company_id == company.id,
-                IntradayCandle.timeframe == timeframe
-            )
+            and_(IntradayCandle.company_id == company.id, IntradayCandle.timeframe == timeframe)
         )
 
         if start_date:
@@ -351,41 +363,46 @@ class DataRepository:
         if not candles:
             # Fallback: Read from CSV if database is empty
             import os
+
             csv_path = None
 
             # Normalize symbol for CSV lookup
-            normalized_symbol = symbol.upper().replace(' ', '').replace('-', '')
+            normalized_symbol = symbol.upper().replace(" ", "").replace("-", "")
 
             if timeframe == 5:
                 # Canonical intraday fallback source under data_system.
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # app/.. -> backend
+                base_dir = os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))
+                )  # app/.. -> backend
                 project_root = os.path.dirname(base_dir)  # backend/.. -> root
-                intraday_root = os.path.join(project_root, 'data_system', '01_sources', 'nse_intraday')
-                if 'NIFTY' in normalized_symbol and '50' in normalized_symbol:
-                    csv_path = os.path.join(intraday_root, 'NIFTY50_5min_complete.csv')
-                elif 'BANKNIFTY' in normalized_symbol:
-                    csv_path = os.path.join(intraday_root, 'BANKNIFTY_5min_complete.csv')
+                intraday_root = os.path.join(
+                    project_root, "data_system", "01_sources", "nse_intraday"
+                )
+                if "NIFTY" in normalized_symbol and "50" in normalized_symbol:
+                    csv_path = os.path.join(intraday_root, "NIFTY50_5min_complete.csv")
+                elif "BANKNIFTY" in normalized_symbol:
+                    csv_path = os.path.join(intraday_root, "BANKNIFTY_5min_complete.csv")
 
             if csv_path and os.path.exists(csv_path):
                 print(f"[DATA] Reading intraday data from CSV: {csv_path}")
                 df = pd.read_csv(csv_path)
                 # Map 'datetime' from CSV to 'timestamp'
-                if 'datetime' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['datetime'])
-                elif 'timestamp' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                if "datetime" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["datetime"])
+                elif "timestamp" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
                 # Filter by date range
                 if start_date:
-                    df = df[df['timestamp'] >= start_date]
+                    df = df[df["timestamp"] >= start_date]
                 if end_date:
-                    df = df[df['timestamp'] <= end_date]
+                    df = df[df["timestamp"] <= end_date]
                 if days and not start_date:
                     cutoff = datetime.now() - timedelta(days=days)
-                    df = df[df['timestamp'] >= cutoff]
+                    df = df[df["timestamp"] >= cutoff]
 
                 # Ensure correct columns
-                required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
                 if all(col in df.columns for col in required_cols):
                     return df[required_cols].copy()
 
@@ -393,33 +410,37 @@ class DataRepository:
 
         # Convert to DataFrame
         data = {
-            'timestamp': [c.timestamp for c in candles],
-            'open': [c.open for c in candles],
-            'high': [c.high for c in candles],
-            'low': [c.low for c in candles],
-            'close': [c.close for c in candles],
-            'volume': [c.volume for c in candles],
+            "timestamp": [c.timestamp for c in candles],
+            "open": [c.open for c in candles],
+            "high": [c.high for c in candles],
+            "low": [c.low for c in candles],
+            "close": [c.close for c in candles],
+            "volume": [c.volume for c in candles],
         }
         df = pd.DataFrame(data)
         return df
 
     # ==================== FINANCIAL STATEMENT OPERATIONS ====================
 
-    def save_financial_statement(self, symbol: str, data: dict, period_type: str = 'quarterly'):
+    def save_financial_statement(self, symbol: str, data: dict, period_type: str = "quarterly"):
         """Save financial statement data"""
         company = self.get_or_create_company(symbol)
 
         # Extract period_type from data if present, otherwise use parameter
-        actual_period_type = data.pop('period_type', period_type)
+        actual_period_type = data.pop("period_type", period_type)
 
         # Check if exists
-        existing = self.db.query(FinancialStatement).filter(
-            and_(
-                FinancialStatement.company_id == company.id,
-                FinancialStatement.period_end == data['period_end'],
-                FinancialStatement.period_type == actual_period_type
+        existing = (
+            self.db.query(FinancialStatement)
+            .filter(
+                and_(
+                    FinancialStatement.company_id == company.id,
+                    FinancialStatement.period_end == data["period_end"],
+                    FinancialStatement.period_type == actual_period_type,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if existing:
             # Update existing
@@ -430,19 +451,14 @@ class DataRepository:
         else:
             # Create new
             statement = FinancialStatement(
-                company_id=company.id,
-                period_type=actual_period_type,
-                **data
+                company_id=company.id, period_type=actual_period_type, **data
             )
             self.db.add(statement)
 
         self.db.commit()
 
     def get_financial_statements(
-        self,
-        symbol: str,
-        period_type: str | None = None,
-        limit: int = 10
+        self, symbol: str, period_type: str | None = None, limit: int = 10
     ) -> list[FinancialStatement]:
         """Get financial statements"""
         company = self.get_company(symbol)
@@ -470,12 +486,16 @@ class DataRepository:
         """Save quarterly result"""
         company = self.get_or_create_company(symbol)
 
-        existing = self.db.query(QuarterlyResult).filter(
-            and_(
-                QuarterlyResult.company_id == company.id,
-                QuarterlyResult.quarter_end == data['quarter_end']
+        existing = (
+            self.db.query(QuarterlyResult)
+            .filter(
+                and_(
+                    QuarterlyResult.company_id == company.id,
+                    QuarterlyResult.quarter_end == data["quarter_end"],
+                )
             )
-        ).first()
+            .first()
+        )
 
         if existing:
             for key, value in data.items():
@@ -483,10 +503,7 @@ class DataRepository:
                     setattr(existing, key, value)
             existing.updated_at = datetime.utcnow()
         else:
-            result = QuarterlyResult(
-                company_id=company.id,
-                **data
-            )
+            result = QuarterlyResult(company_id=company.id, **data)
             self.db.add(result)
 
         self.db.commit()
@@ -497,9 +514,13 @@ class DataRepository:
         if not company:
             return []
 
-        return self.db.query(QuarterlyResult).filter(
-            QuarterlyResult.company_id == company.id
-        ).order_by(desc(QuarterlyResult.quarter_end)).limit(limit).all()
+        return (
+            self.db.query(QuarterlyResult)
+            .filter(QuarterlyResult.company_id == company.id)
+            .order_by(desc(QuarterlyResult.quarter_end))
+            .limit(limit)
+            .all()
+        )
 
     # ==================== UPDATE LOG OPERATIONS ====================
 
@@ -511,7 +532,7 @@ class DataRepository:
         status: str,
         error_message: str = None,
         start_date: date = None,
-        end_date: date = None
+        end_date: date = None,
     ):
         """Log data update"""
         log = DataUpdateLog(
@@ -522,7 +543,7 @@ class DataRepository:
             status=status,
             error_message=error_message,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
         )
         self.db.add(log)
         self.db.commit()
@@ -533,10 +554,15 @@ class DataRepository:
         if not company:
             return None
 
-        return self.db.query(DataUpdateLog).filter(
-            and_(
-                DataUpdateLog.company_id == company.id,
-                DataUpdateLog.data_type == data_type,
-                DataUpdateLog.status == 'success'
+        return (
+            self.db.query(DataUpdateLog)
+            .filter(
+                and_(
+                    DataUpdateLog.company_id == company.id,
+                    DataUpdateLog.data_type == data_type,
+                    DataUpdateLog.status == "success",
+                )
             )
-        ).order_by(desc(DataUpdateLog.last_update)).first()
+            .order_by(desc(DataUpdateLog.last_update))
+            .first()
+        )

@@ -1,4 +1,3 @@
-
 import asyncio
 import datetime
 import logging
@@ -13,9 +12,10 @@ from .symbol_master import symbol_master
 logger = logging.getLogger(__name__)
 
 # IST Timezone
-IST = pytz.timezone('Asia/Kolkata')
+IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN_TIME = datetime.time(9, 15)
 MARKET_CLOSE_TIME = datetime.time(15, 30)
+
 
 class LiveMarketService:
     """
@@ -67,7 +67,7 @@ class LiveMarketService:
 
         now = datetime.datetime.now(IST)
         # Weekends check
-        if now.weekday() >= 5: # 5=Sat, 6=Sun
+        if now.weekday() >= 5:  # 5=Sat, 6=Sun
             self._market_status = "CLOSED_WEEKEND"
             return False
 
@@ -114,27 +114,31 @@ class LiveMarketService:
         """
         try:
             while True:
-                await asyncio.sleep(30) # Check every 30s
+                await asyncio.sleep(30)  # Check every 30s
 
                 if self.is_market_open():
                     is_connected = False
                     if self.ws_service and self.ws_service.ws:
                         try:
                             # Safely check connection status
-                            if hasattr(self.ws_service.ws, 'is_connected'):
+                            if hasattr(self.ws_service.ws, "is_connected"):
                                 is_connected = self.ws_service.ws.is_connected()
-                            elif hasattr(self.ws_service.ws, 'is_open'):
+                            elif hasattr(self.ws_service.ws, "is_open"):
                                 is_connected = self.ws_service.ws.is_open
                         except Exception:
                             is_connected = False
 
                     if not is_connected:
                         if self.ws_connected:
-                            logger.info("[WS] Connection dropped during market hours. Triggering reconnect...")
+                            logger.info(
+                                "[WS] Connection dropped during market hours. Triggering reconnect..."
+                            )
                             self.ws_connected = False
                             self.connect()
                         elif not self._is_connecting:
-                            logger.debug("[WS] Market is open but not connected. Triggering connection...")
+                            logger.debug(
+                                "[WS] Market is open but not connected. Triggering connection..."
+                            )
                             self.connect()
                     elif not self.ws_connected:
                         # Case where it's connected but our flag is false
@@ -166,24 +170,24 @@ class LiveMarketService:
 
                     # Ensure change_pct is calculated if not provided
                     # Fyers sends 'chp' (change percent) field
-                    if 'chp' in tick_db:
-                        tick_db['change_pct'] = tick_db['chp']
-                    elif 'ltp' in tick_db and 'prev_close_price' in tick_db:
+                    if "chp" in tick_db:
+                        tick_db["change_pct"] = tick_db["chp"]
+                    elif "ltp" in tick_db and "prev_close_price" in tick_db:
                         # Calculate change_pct: (current - prev_close) / prev_close * 100
-                        ltp = tick_db['ltp']
-                        prev_close = tick_db['prev_close_price']
+                        ltp = tick_db["ltp"]
+                        prev_close = tick_db["prev_close_price"]
                         if prev_close and prev_close > 0:
-                            tick_db['change_pct'] = ((ltp - prev_close) / prev_close) * 100
+                            tick_db["change_pct"] = ((ltp - prev_close) / prev_close) * 100
 
                     # Normalize absolute change for consumers expecting `change`
-                    if 'ch' in tick_db and 'change' not in tick_db:
-                        tick_db['change'] = tick_db['ch']
+                    if "ch" in tick_db and "change" not in tick_db:
+                        tick_db["change"] = tick_db["ch"]
 
                     # Ensure volume is passed through (Fyers sends 'volume' or 'v')
-                    if 'v' in tick_db and 'volume' not in tick_db:
-                        tick_db['volume'] = tick_db['v']
-                    elif 'vol_traded_today' in tick_db and 'volume' not in tick_db:
-                        tick_db['volume'] = tick_db['vol_traded_today']
+                    if "v" in tick_db and "volume" not in tick_db:
+                        tick_db["volume"] = tick_db["v"]
+                    elif "vol_traded_today" in tick_db and "volume" not in tick_db:
+                        tick_db["volume"] = tick_db["vol_traded_today"]
 
                     # Update latest values cache
                     self.latest_values[db_symbol] = tick_db
@@ -218,6 +222,7 @@ class LiveMarketService:
 
         # 5. Validate Fyers Token
         from .fyers_client import get_fyers_client
+
         fyers = get_fyers_client()
         if not fyers or not fyers.validate_token():
             logger.warning("Cannot connect WebSocket: Fyers token is invalid or expired.")
@@ -240,7 +245,11 @@ class LiveMarketService:
                 self.ws_service.on_tick_handler = self.handle_tick_incoming
 
                 # Check if already connected
-                if self.ws_service.ws and hasattr(self.ws_service.ws, 'is_connected') and self.ws_service.ws.is_connected():
+                if (
+                    self.ws_service.ws
+                    and hasattr(self.ws_service.ws, "is_connected")
+                    and self.ws_service.ws.is_connected()
+                ):
                     logger.info("[OK] WebSocket already connected")
                     self.ws_connected = True
                     self._is_connecting = False
@@ -254,14 +263,19 @@ class LiveMarketService:
                         retry_count = 0
                         while retry_count < max_retries:
                             try:
-                                logger.debug(f"[WS] Connection attempt {retry_count + 1}/{max_retries}")
+                                logger.debug(
+                                    f"[WS] Connection attempt {retry_count + 1}/{max_retries}"
+                                )
                                 self.ws_service.connect()
 
                                 # If we get here, connection was successful
                                 # Manually update state as the thread might not call back immediately
-                                if hasattr(self.ws_service.ws, 'is_connected') and self.ws_service.ws.is_connected():
-                                     self.on_ws_connected()
-                                     break
+                                if (
+                                    hasattr(self.ws_service.ws, "is_connected")
+                                    and self.ws_service.ws.is_connected()
+                                ):
+                                    self.on_ws_connected()
+                                    break
 
                             except Exception as e:
                                 retry_count += 1
@@ -269,6 +283,7 @@ class LiveMarketService:
 
                                 if retry_count < max_retries:
                                     import time
+
                                     # Exponential Backoff: 5, 10, 20, 40, 60...
                                     delay = min(5 * (2 ** (retry_count - 1)), 60)
                                     logger.debug(f"[WS] Reconnection attempt in {delay} seconds...")
@@ -284,7 +299,9 @@ class LiveMarketService:
                 self._is_connecting = False
                 logger.error(f"Failed to connect to Fyers: {e}")
         else:
-            logger.info(f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now.")
+            logger.info(
+                f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
+            )
 
     async def subscribe(self, symbols: list[str]):
         """Subscribe to symbols non-blocking"""
@@ -308,25 +325,25 @@ class LiveMarketService:
                         invalid_symbols.append(symbol)
 
                 if invalid_symbols:
-                    logger.warning("Skipping invalid symbols for provider subscribe: %s", invalid_symbols)
+                    logger.warning(
+                        "Skipping invalid symbols for provider subscribe: %s", invalid_symbols
+                    )
 
                 if not fyers_symbols:
                     return
 
                 # CRITICAL FIX: Run blocking SDK call in executor
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    self.ws_service.subscribe,
-                    fyers_symbols
-                )
+                await loop.run_in_executor(None, self.ws_service.subscribe, fyers_symbols)
                 logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
             except Exception as e:
                 logger.error(f"Fyers subscription failed: {e}")
         else:
             # Add to pending subscriptions
             self.pending_subscriptions.update(symbols)
-            logger.warning(f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription.")
+            logger.warning(
+                f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
+            )
 
     async def unsubscribe(self, symbols: list[str]):
         """Unsubscribe non-blocking"""
@@ -345,20 +362,18 @@ class LiveMarketService:
                 if not fyers_symbols:
                     return
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    self.ws_service.unsubscribe,
-                    fyers_symbols
-                )
+                await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
             except Exception as e:
                 logger.error(f"Fyers unsubscription failed: {e}")
 
     def get_status(self):
         return {
             "market_status": self._market_status,
-            "fyers_connected": (self.ws_service is not None and
-                                self.ws_service.ws is not None and
-                                self.ws_service.ws.is_connected())
+            "fyers_connected": (
+                self.ws_service is not None
+                and self.ws_service.ws is not None
+                and self.ws_service.ws.is_connected()
+            ),
         }
 
     def get_latest_tick(self, symbol: str) -> dict | None:
@@ -376,8 +391,10 @@ class LiveMarketService:
             if symbol in self.latest_values
         }
 
+
 # Singleton
 live_market = LiveMarketService()
+
 
 def get_live_market_service() -> LiveMarketService:
     """Get the singleton LiveMarketService instance."""

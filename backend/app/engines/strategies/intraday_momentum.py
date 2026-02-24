@@ -1,4 +1,3 @@
-﻿
 from datetime import date, datetime, time
 from typing import Any
 
@@ -23,7 +22,7 @@ class IntradayMomentumStrategy(BaseStrategy):
         self.atr_lookback = parameters.get("atr_lookback", 14)
         self.vol_expansion_threshold = parameters.get("volume_expansion_threshold", 2.0)
         self.max_positions = parameters.get("max_positions", 5)
-        self.risk_per_trade = parameters.get("risk_per_trade", 0.01) # 1% of daily capital
+        self.risk_per_trade = parameters.get("risk_per_trade", 0.01)  # 1% of daily capital
         self.regime_tag = "TREND"
 
     def run_day(self, current_date: date, symbols: list[str], db_session: Any) -> dict[str, Any]:
@@ -35,7 +34,7 @@ class IntradayMomentumStrategy(BaseStrategy):
 
         total_pnl = 0.0
         trades_count = 0
-        active_positions = {} # symbol: {entry_price, size, stop_loss}
+        active_positions = {}  # symbol: {entry_price, size, stop_loss}
 
         # Combine all timestamps into a sorted unique list
         all_timestamps = sorted(list(set([ts for df in data.values() for ts in df.index])))
@@ -53,7 +52,7 @@ class IntradayMomentumStrategy(BaseStrategy):
                 opening_ranges[symbol] = {
                     "high": range_df["high"].max(),
                     "low": range_df["low"].min(),
-                    "avg_vol": range_df["volume"].mean()
+                    "avg_vol": range_df["volume"].mean(),
                 }
 
         # Step through time
@@ -64,7 +63,11 @@ class IntradayMomentumStrategy(BaseStrategy):
             # 1. Exit at EOD
             if ts >= eod_exit_time:
                 for symbol, pos in list(active_positions.items()):
-                    exit_price = data[symbol].loc[ts, "close"] if ts in data[symbol].index else data[symbol].iloc[-1]["close"]
+                    exit_price = (
+                        data[symbol].loc[ts, "close"]
+                        if ts in data[symbol].index
+                        else data[symbol].iloc[-1]["close"]
+                    )
                     pnl = (exit_price - pos["entry_price"]) * pos["size"]
                     total_pnl += pnl
                     trades_count += 1
@@ -95,13 +98,16 @@ class IntradayMomentumStrategy(BaseStrategy):
                     op_range = opening_ranges[symbol]
 
                     # Long entry condition: Breakout above opening range high + volume
-                    if curr_bar["close"] > op_range["high"] and curr_bar["volume"] > op_range["avg_vol"] * self.vol_expansion_threshold:
+                    if (
+                        curr_bar["close"] > op_range["high"]
+                        and curr_bar["volume"] > op_range["avg_vol"] * self.vol_expansion_threshold
+                    ):
                         # Entry!
                         # Position sizing: Risk 1% of typical capital (e.g. 1M)
                         # Stop loss at opening range low
                         entry_price = curr_bar["close"]
                         stop_loss = op_range["low"]
-                        risk_amount = stop_loss - entry_price # Negative for long
+                        risk_amount = stop_loss - entry_price  # Negative for long
 
                         if abs(risk_amount) > 0:
                             # Risk 1% of 1,000,000 = 10,000
@@ -109,7 +115,7 @@ class IntradayMomentumStrategy(BaseStrategy):
                             active_positions[symbol] = {
                                 "entry_price": entry_price,
                                 "size": size,
-                                "stop_loss": stop_loss
+                                "stop_loss": stop_loss,
                             }
 
         # Return daily summary
@@ -119,10 +125,12 @@ class IntradayMomentumStrategy(BaseStrategy):
             daily_return=daily_return,
             gross_pnl=total_pnl,
             capital=1000000.0,
-            trades=trades_count
+            trades=trades_count,
         )
+
 
 # Helper
 def floor(val):
     import math
+
     return math.floor(val)

@@ -4,7 +4,6 @@ Portfolio Router
 API endpoints for portfolio data, stats, and funds.
 """
 
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -67,6 +66,7 @@ def get_portfolio_funds(db: Session = DB_DEPENDENCY):
     try:
         # Try to get from broker
         from ..services.fyers_client import get_fyers_client
+
         fyers = get_fyers_client()
 
         if fyers and fyers.fyers:
@@ -91,21 +91,11 @@ def get_portfolio_funds(db: Session = DB_DEPENDENCY):
                     "available": available,
                     "used": used,
                     "total": total,
-                    "buyingPower": available
+                    "buyingPower": available,
                 }
 
         # Fallback: return zeros if broker not available
-        return {
-            "available": 0,
-            "used": 0,
-            "total": 0,
-            "buyingPower": 0
-        }
+        return {"available": 0, "used": 0, "total": 0, "buyingPower": 0}
     except Exception:
         # Return zeros on error
-        return {
-            "available": 0,
-            "used": 0,
-            "total": 0,
-            "buyingPower": 0
-        }
+        return {"available": 0, "used": 0, "total": 0, "buyingPower": 0}

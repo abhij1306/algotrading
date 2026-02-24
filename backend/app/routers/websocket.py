@@ -2,6 +2,7 @@
 WebSocket API Endpoint
 Allows frontend to connect/disconnect/subscribe to live data
 """
+
 import asyncio
 import logging
 
@@ -16,19 +17,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 class SubscribeRequest(BaseModel):
     symbols: list[str]
+
 
 @router.post("/connect")
 async def connect_websocket():
     """Initialize Fyers WebSocket connection"""
     try:
         from ..services.live_market_service import live_market
+
         # Ensure live_market captures the running loop for thread-safe broadcasting.
         live_market.connect(loop=asyncio.get_running_loop())
         return {"status": "connected", "message": "WebSocket initialization triggered"}
     except Exception as e:
         raise handle_api_error(e, "Failed to initialize WebSocket")
+
 
 @router.post("/subscribe")
 async def subscribe_symbols(request: SubscribeRequest):
@@ -43,25 +48,30 @@ async def subscribe_symbols(request: SubscribeRequest):
     except Exception as e:
         raise handle_api_error(e, "Failed to subscribe to symbols")
 
+
 @router.post("/disconnect")
 def disconnect_websocket():
     """Close WebSocket connection"""
     try:
         from ..services.fyers_websocket import get_websocket_service
+
         ws_service = get_websocket_service()
         ws_service.disconnect()
         return {"status": "disconnected"}
     except Exception as e:
         raise handle_api_error(e, "Failed to disconnect WebSocket")
 
+
 @router.get("/status")
 def get_websocket_status():
     """Check WebSocket connection status"""
     try:
         from ..services.live_market_service import live_market
+
         return live_market.get_status()
     except Exception as e:
         return {"connected": False, "error": str(e)}
+
 
 @router.websocket("/stream")
 async def websocket_endpoint(websocket: WebSocket):
@@ -109,12 +119,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             except Exception as sub_e:
                                 logger.warning(f"[WebSocket] LiveMarket sub failed: {sub_e}")
 
-                            await _safe_send(websocket, {
-                                "type": "ack",
-                                "action": "subscribe",
-                                "count": len(db_symbols),
-                                "provider_delta": len(newly_added),
-                            })
+                            await _safe_send(
+                                websocket,
+                                {
+                                    "type": "ack",
+                                    "action": "subscribe",
+                                    "count": len(db_symbols),
+                                    "provider_delta": len(newly_added),
+                                },
+                            )
 
                     elif action == "unsubscribe":
                         symbols = message.get("symbols", [])
@@ -126,12 +139,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             removed_symbols = sorted(before_symbols - after_symbols)
                             if removed_symbols:
                                 await live_market.unsubscribe(removed_symbols)
-                            await _safe_send(websocket, {
-                                "type": "ack",
-                                "action": "unsubscribe",
-                                "count": len(db_symbols),
-                                "provider_delta": len(removed_symbols),
-                            })
+                            await _safe_send(
+                                websocket,
+                                {
+                                    "type": "ack",
+                                    "action": "unsubscribe",
+                                    "count": len(db_symbols),
+                                    "provider_delta": len(removed_symbols),
+                                },
+                            )
 
                     elif action == "ping":
                         await _safe_send(websocket, {"type": "pong"})

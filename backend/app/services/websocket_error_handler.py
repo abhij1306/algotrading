@@ -7,6 +7,7 @@ are logged at INFO level while actual errors are logged at ERROR level with cont
 
 Requirements: 8.1, 8.2
 """
+
 import logging
 from collections.abc import Callable
 from functools import wraps
@@ -14,15 +15,13 @@ from typing import ParamSpec, TypeVar
 
 from fastapi import WebSocketDisconnect
 
-P = ParamSpec('P')
-T = TypeVar('T')
+P = ParamSpec("P")
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
 
-def handle_websocket_errors(
-    log_level: str = "INFO"
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
+def handle_websocket_errors(log_level: str = "INFO") -> Callable[[Callable[P, T]], Callable[P, T]]:
     """
     Decorator to handle WebSocket errors gracefully.
 
@@ -42,6 +41,7 @@ def handle_websocket_errors(
             await websocket.accept()
             # ... handle messages ...
     """
+
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -51,17 +51,16 @@ def handle_websocket_errors(
                 # Normal disconnect - log at specified level
                 logger.log(
                     getattr(logging, log_level.upper()),
-                    f"WebSocket disconnected in {func.__name__}"
+                    f"WebSocket disconnected in {func.__name__}",
                 )
                 raise  # Re-raise for proper cleanup
             except Exception as e:
                 # Actual error - log at ERROR with context
-                logger.error(
-                    f"Error in {func.__name__}: {e}",
-                    exc_info=True
-                )
+                logger.error(f"Error in {func.__name__}: {e}", exc_info=True)
                 raise
+
         return wrapper
+
     return decorator
 
 

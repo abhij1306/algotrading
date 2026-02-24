@@ -4,6 +4,7 @@ Symbol Lifecycle Service
 Service for resolving symbols across historical time periods.
 Handles mergers, name changes, de-listings, and symbol changes.
 """
+
 from datetime import date
 
 from sqlalchemy import and_, or_
@@ -24,12 +25,7 @@ class SymbolLifecycleService:
     def __init__(self):
         self._cache: dict[tuple, str | None] = {}
 
-    def resolve_symbol(
-        self,
-        symbol: str,
-        target_date: date,
-        session: Session | None = None
-    ) -> str:
+    def resolve_symbol(self, symbol: str, target_date: date, session: Session | None = None) -> str:
         """
         Resolve a symbol to what it was called on a specific date.
 
@@ -55,15 +51,19 @@ class SymbolLifecycleService:
             # Look for any change that affects this symbol on target_date
 
             # Case 1: Symbol was renamed/changed TO this symbol
-            new_symbol_record = session.query(SymbolHistory).filter(
-                and_(
-                    SymbolHistory.new_symbol == symbol,
-                    or_(
+            new_symbol_record = (
+                session.query(SymbolHistory)
+                .filter(
+                    and_(
+                        SymbolHistory.new_symbol == symbol,
+                        or_(
                             SymbolHistory.effective_to.is_(None),
-                        SymbolHistory.effective_to >= target_date
+                            SymbolHistory.effective_to >= target_date,
+                        ),
                     )
                 )
-            ).first()
+                .first()
+            )
 
             if new_symbol_record:
                 # If target_date is before the effective_from date, return old symbol (pre-change)
@@ -76,16 +76,20 @@ class SymbolLifecycleService:
                 return result
 
             # Case 2: Symbol was changed FROM this symbol to something else
-            old_symbol_record = session.query(SymbolHistory).filter(
-                and_(
-                    SymbolHistory.old_symbol == symbol,
-                    SymbolHistory.effective_from <= target_date,
-                    or_(
-                        SymbolHistory.effective_to.is_(None),
-                        SymbolHistory.effective_to >= target_date
+            old_symbol_record = (
+                session.query(SymbolHistory)
+                .filter(
+                    and_(
+                        SymbolHistory.old_symbol == symbol,
+                        SymbolHistory.effective_from <= target_date,
+                        or_(
+                            SymbolHistory.effective_to.is_(None),
+                            SymbolHistory.effective_to >= target_date,
+                        ),
                     )
                 )
-            ).first()
+                .first()
+            )
 
             if old_symbol_record and old_symbol_record.new_symbol:
                 result = old_symbol_record.new_symbol
@@ -101,9 +105,7 @@ class SymbolLifecycleService:
                 session.close()
 
     def get_symbol_history(
-        self,
-        symbol: str,
-        session: Session | None = None
+        self, symbol: str, session: Session | None = None
     ) -> list[SymbolHistory]:
         """
         Get full history of changes for a symbol.
@@ -121,23 +123,19 @@ class SymbolLifecycleService:
             close_session = True
 
         try:
-            records = session.query(SymbolHistory).filter(
-                or_(
-                    SymbolHistory.old_symbol == symbol,
-                    SymbolHistory.new_symbol == symbol
-                )
-            ).order_by(SymbolHistory.effective_from).all()
+            records = (
+                session.query(SymbolHistory)
+                .filter(or_(SymbolHistory.old_symbol == symbol, SymbolHistory.new_symbol == symbol))
+                .order_by(SymbolHistory.effective_from)
+                .all()
+            )
 
             return records
         finally:
             if close_session:
                 session.close()
 
-    def get_current_symbol(
-        self,
-        symbol: str,
-        session: Session | None = None
-    ) -> str:
+    def get_current_symbol(self, symbol: str, session: Session | None = None) -> str:
         """
         Get the current symbol that a historical symbol maps to.
 
@@ -150,12 +148,7 @@ class SymbolLifecycleService:
         """
         return self.resolve_symbol(symbol, date.today(), session)
 
-    def was_listed_on(
-        self,
-        symbol: str,
-        check_date: date,
-        session: Session | None = None
-    ) -> bool:
+    def was_listed_on(self, symbol: str, check_date: date, session: Session | None = None) -> bool:
         """
         Check if a symbol was listed on a specific date.
 
@@ -174,21 +167,25 @@ class SymbolLifecycleService:
 
         try:
             # Check if there's any record that overlaps with check_date
-            record = session.query(SymbolHistory).filter(
-                or_(
-                    and_(
-                        SymbolHistory.old_symbol == symbol,
-                        or_(
-                            SymbolHistory.effective_to.is_(None),
-                            SymbolHistory.effective_to >= check_date
-                        )
-                    ),
-                    and_(
-                        SymbolHistory.new_symbol == symbol,
-                        SymbolHistory.effective_from <= check_date
+            record = (
+                session.query(SymbolHistory)
+                .filter(
+                    or_(
+                        and_(
+                            SymbolHistory.old_symbol == symbol,
+                            or_(
+                                SymbolHistory.effective_to.is_(None),
+                                SymbolHistory.effective_to >= check_date,
+                            ),
+                        ),
+                        and_(
+                            SymbolHistory.new_symbol == symbol,
+                            SymbolHistory.effective_from <= check_date,
+                        ),
                     )
                 )
-            ).first()
+                .first()
+            )
 
             # If no record exists, assume it was listed (current symbol)
             if record is None:
@@ -219,7 +216,7 @@ class SymbolLifecycleService:
         conversion_ratio: str | None = None,
         notes: str | None = None,
         source: str = "manual",
-        session: Session | None = None
+        session: Session | None = None,
     ) -> SymbolHistory:
         """
         Add a new symbol change record.
@@ -256,7 +253,7 @@ class SymbolLifecycleService:
                 new_company_name=new_company_name,
                 conversion_ratio=conversion_ratio,
                 notes=notes,
-                source=source
+                source=source,
             )
 
             session.add(history)
@@ -271,11 +268,7 @@ class SymbolLifecycleService:
             if close_session:
                 session.close()
 
-    def get_active_symbols(
-        self,
-        target_date: date,
-        session: Session | None = None
-    ) -> list[str]:
+    def get_active_symbols(self, target_date: date, session: Session | None = None) -> list[str]:
         """
         Get all symbols that were active on a given date.
 
@@ -293,15 +286,19 @@ class SymbolLifecycleService:
 
         try:
             # Get all records active on target_date
-            records = session.query(SymbolHistory).filter(
-                and_(
-                    SymbolHistory.effective_from <= target_date,
-                    or_(
-                        SymbolHistory.effective_to.is_(None),
-                        SymbolHistory.effective_to >= target_date
+            records = (
+                session.query(SymbolHistory)
+                .filter(
+                    and_(
+                        SymbolHistory.effective_from <= target_date,
+                        or_(
+                            SymbolHistory.effective_to.is_(None),
+                            SymbolHistory.effective_to >= target_date,
+                        ),
                     )
                 )
-            ).all()
+                .all()
+            )
 
             symbols = set()
             for record in records:

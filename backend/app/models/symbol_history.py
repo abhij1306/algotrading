@@ -1,8 +1,9 @@
-﻿"""
+"""
 Symbol History Model
 ===================
 Track symbol lifecycle changes (mergers, name changes, de-listings, etc.)
 """
+
 from datetime import UTC, date, datetime
 from enum import Enum
 
@@ -14,6 +15,7 @@ from ..base import Base
 
 class SymbolChangeType(str, Enum):
     """Types of symbol changes"""
+
     MERGER = "merger"  # Company merged with another
     ACQUISITION = "acquisition"  # Company was acquired
     NAME_CHANGE = "name_change"  # Company renamed
@@ -32,6 +34,7 @@ class SymbolHistory(Base):
     This enables accurate historical backtesting by mapping
     old symbols to their current equivalents.
     """
+
     __tablename__ = "symbol_history"
 
     id = Column(Integer, primary_key=True, index=True)

@@ -1,4 +1,3 @@
-﻿
 from sqlalchemy import JSON, Column, Date, Float, ForeignKey, Index, Integer, String
 
 from ..base import Base
@@ -6,6 +5,7 @@ from ..base import Base
 
 class BacktestRun(Base):
     """Frozen snapshot of a backtest execution"""
+
     __tablename__ = "backtest_runs"
 
     run_id = Column(String(50), primary_key=True)
@@ -18,8 +18,10 @@ class BacktestRun(Base):
 
     summary_metrics = Column(JSON)
 
+
 class BacktestDailyResult(Base):
     """Daily normalized output for an individual strategy"""
+
     __tablename__ = "backtest_daily_results"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -36,12 +38,12 @@ class BacktestDailyResult(Base):
     win_rate = Column(Float)
     regime_tag = Column(String(20))
 
-    __table_args__ = (
-        Index('ix_run_strat_date', 'run_id', 'strategy_id', 'date', unique=True),
-    )
+    __table_args__ = (Index("ix_run_strat_date", "run_id", "strategy_id", "date", unique=True),)
+
 
 class PortfolioDailyResult(Base):
     """Aggregated daily output for a multi-strategy portfolio"""
+
     __tablename__ = "portfolio_daily_results"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -53,6 +55,4 @@ class PortfolioDailyResult(Base):
     portfolio_drawdown = Column(Float)
     strategy_weights = Column(JSON)
 
-    __table_args__ = (
-        Index('ix_portfolio_run_date', 'run_id', 'date', unique=True),
-    )
+    __table_args__ = (Index("ix_portfolio_run_date", "run_id", "date", unique=True),)

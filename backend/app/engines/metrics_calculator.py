@@ -1,5 +1,3 @@
-﻿
-
 import numpy as np
 import pandas as pd
 
@@ -24,7 +22,11 @@ class MetricsCalculator:
         vol = daily_returns.std() * np.sqrt(252)
 
         # 3. Sharpe Ratio (Risk-free = 0 for simplicity)
-        sharpe = (daily_returns.mean() / daily_returns.std() * np.sqrt(252)) if daily_returns.std() != 0 else 0.0
+        sharpe = (
+            (daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+            if daily_returns.std() != 0
+            else 0.0
+        )
 
         # 4. Sortino Ratio (Downside deviation)
         downside_returns = daily_returns[daily_returns < 0]
@@ -52,5 +54,5 @@ class MetricsCalculator:
             "sortino": float(sortino),
             "max_drawdown": float(max_dd),
             "win_rate": float(win_rate),
-            "expectancy": float(expectancy)
+            "expectancy": float(expectancy),
         }

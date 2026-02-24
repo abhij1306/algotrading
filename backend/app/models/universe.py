@@ -1,8 +1,9 @@
-﻿"""
+"""
 Enhanced Index Membership Model for Historical Tracking
 ====================================================
 Supports accurate historical index composition snapshots for backtesting.
 """
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -26,12 +27,15 @@ class IndexUniverseDefinition(Base):
     Master table for index universe definitions.
     Stores metadata about each index tracked by the system.
     """
+
     __tablename__ = "index_universe_definitions"
 
     id = Column(Integer, primary_key=True)
-    index_code = Column(String(20), unique=True, nullable=False, index=True)  # 'NIFTY50', 'BANKNIFTY', etc.
+    index_code = Column(
+        String(20), unique=True, nullable=False, index=True
+    )  # 'NIFTY50', 'BANKNIFTY', etc.
     index_name = Column(String(100), nullable=False)
-    exchange = Column(String(10), default='NSE')  # NSE, BSE
+    exchange = Column(String(10), default="NSE")  # NSE, BSE
     is_custom = Column(Boolean, default=False)  # True for user-defined universes
     description = Column(Text)
 
@@ -59,6 +63,7 @@ class IndexConstituentHistory(Base):
     - Multiple entries per symbol possible (if re-added after removal)
     - Weightage changes tracked separately
     """
+
     __tablename__ = "index_constituents_history"
 
     id = Column(Integer, primary_key=True)
@@ -90,10 +95,10 @@ class IndexConstituentHistory(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint('universe_id', 'symbol', 'effective_from', name='uq_constituent_history'),
-        Index('idx_history_universe_date', 'universe_id', 'effective_from'),
-        Index('idx_history_symbol_dates', 'symbol', 'effective_from', 'effective_to'),
-        Index('idx_history_lookup', 'universe_id', 'effective_from', 'effective_to'),
+        UniqueConstraint("universe_id", "symbol", "effective_from", name="uq_constituent_history"),
+        Index("idx_history_universe_date", "universe_id", "effective_from"),
+        Index("idx_history_symbol_dates", "symbol", "effective_from", "effective_to"),
+        Index("idx_history_lookup", "universe_id", "effective_from", "effective_to"),
     )
 
     def __repr__(self):
@@ -105,6 +110,7 @@ class IndexWeightageChange(Base):
     Tracks weightage changes for index constituents over time.
     Useful for understanding portfolio rebalancing impacts.
     """
+
     __tablename__ = "index_weightage_changes"
 
     id = Column(Integer, primary_key=True)
@@ -123,9 +129,7 @@ class IndexWeightageChange(Base):
 
     created_at = Column(DateTime, server_default=func.now())
 
-    __table_args__ = (
-        Index('idx_weightage_symbol_date', 'symbol', 'change_date'),
-    )
+    __table_args__ = (Index("idx_weightage_symbol_date", "symbol", "change_date"),)
 
     def __repr__(self):
         return f"<IndexWeightageChange(symbol={self.symbol}, date={self.change_date}, change={self.weight_change}%)>"
@@ -135,6 +139,7 @@ class CustomUniverse(Base):
     """
     User-defined custom universes for screening and backtesting.
     """
+
     __tablename__ = "custom_universes"
 
     id = Column(Integer, primary_key=True)
@@ -160,18 +165,19 @@ class CustomUniverseMember(Base):
     """
     Members of custom universes.
     """
+
     __tablename__ = "custom_universe_members"
 
     id = Column(Integer, primary_key=True)
-    universe_id = Column(Integer, ForeignKey('index_universe_definitions.id'), nullable=False)
+    universe_id = Column(Integer, ForeignKey("index_universe_definitions.id"), nullable=False)
     symbol = Column(String(20), nullable=False, index=True)
     weight = Column(Float)
 
     added_at = Column(DateTime, server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint('universe_id', 'symbol', name='uq_custom_universe_member'),
-        Index('idx_custom_universe_symbol', 'universe_id', 'symbol'),
+        UniqueConstraint("universe_id", "symbol", name="uq_custom_universe_member"),
+        Index("idx_custom_universe_symbol", "universe_id", "symbol"),
     )
 
 
@@ -180,10 +186,11 @@ class UniverseSnapshot(Base):
     Pre-computed universe snapshots for fast historical lookups.
     Generated monthly or on-demand.
     """
+
     __tablename__ = "universe_snapshots"
 
     id = Column(Integer, primary_key=True)
-    universe_id = Column(Integer, ForeignKey('index_universe_definitions.id'), nullable=False)
+    universe_id = Column(Integer, ForeignKey("index_universe_definitions.id"), nullable=False)
     snapshot_date = Column(Date, nullable=False, index=True)  # The date this snapshot represents
 
     # Symbols in this snapshot (stored as JSON for fast retrieval)
@@ -194,8 +201,8 @@ class UniverseSnapshot(Base):
     source_data_date = Column(Date)  # Which weightage file this was generated from
 
     __table_args__ = (
-        UniqueConstraint('universe_id', 'snapshot_date', name='uq_universe_snapshot'),
-        Index('idx_snapshot_lookup', 'universe_id', 'snapshot_date'),
+        UniqueConstraint("universe_id", "snapshot_date", name="uq_universe_snapshot"),
+        Index("idx_snapshot_lookup", "universe_id", "snapshot_date"),
     )
 
     def __repr__(self):

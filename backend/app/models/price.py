@@ -1,4 +1,4 @@
-﻿from datetime import UTC, datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -19,6 +19,7 @@ from ..base import Base
 
 class HistoricalPrice(Base):
     """Daily OHLCV data with technical indicators"""
+
     __tablename__ = "historical_prices"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -59,7 +60,7 @@ class HistoricalPrice(Base):
     is_breakout = Column(Boolean)  # Price at/above 20-day high
 
     # New Trend Metrics (Pre-calculated)
-    trend_7d = Column(Float)   # % Change over 7 days (5 trading days)
+    trend_7d = Column(Float)  # % Change over 7 days (5 trading days)
     trend_30d = Column(Float)  # % Change over 30 days (21 trading days)
 
     # Data source tracking
@@ -70,12 +71,12 @@ class HistoricalPrice(Base):
     company = relationship("Company", back_populates="historical_prices")
 
     # Composite index for fast queries
-    __table_args__ = (
-        Index('ix_company_date', 'company_id', 'date', unique=True),
-    )
+    __table_args__ = (Index("ix_company_date", "company_id", "date", unique=True),)
+
 
 class IntradayCandle(Base):
     """Intraday OHLCV candle data for backtesting"""
+
     __tablename__ = "intraday_candles"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -90,13 +91,15 @@ class IntradayCandle(Base):
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(BigInteger, nullable=False)  # Use BigInteger to match HistoricalPrice and handle high-volume intraday data
+    volume = Column(
+        BigInteger, nullable=False
+    )  # Use BigInteger to match HistoricalPrice and handle high-volume intraday data
 
     # Additional fields
     trades = Column(Integer)  # Number of trades in this candle
 
     # Data source tracking
-    source = Column(String(20), default='fyers')  # 'fyers', 'zerodha', etc.
+    source = Column(String(20), default="fyers")  # 'fyers', 'zerodha', etc.
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     # Relationships
@@ -104,6 +107,6 @@ class IntradayCandle(Base):
 
     # Composite index for fast queries by company, timeframe, and timestamp
     __table_args__ = (
-        Index('ix_intraday_company_tf_ts', 'company_id', 'timeframe', 'timestamp', unique=True),
-        Index('ix_intraday_timestamp', 'timestamp'),
+        Index("ix_intraday_company_tf_ts", "company_id", "timeframe", "timestamp", unique=True),
+        Index("ix_intraday_timestamp", "timestamp"),
     )

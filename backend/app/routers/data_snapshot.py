@@ -158,7 +158,9 @@ def get_snapshot_status(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
                     parsed_entry = json.loads(lines[idx])
                     break
                 except json.JSONDecodeError as exc:
-                    logger.warning("Skipping malformed run_log.jsonl line at index %s: %s", idx, exc)
+                    logger.warning(
+                        "Skipping malformed run_log.jsonl line at index %s: %s", idx, exc
+                    )
             if parsed_entry is not None:
                 status["latest_run_log"] = parsed_entry
 

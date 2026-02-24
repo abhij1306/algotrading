@@ -2,6 +2,7 @@
 Error Handling Utilities
 Sanitizes error messages to prevent information leakage
 """
+
 import logging
 import os
 
@@ -37,7 +38,7 @@ def handle_api_error(
     error: Exception,
     user_message: str = "An error occurred",
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
-    log_level: str = "error"
+    log_level: str = "error",
 ) -> HTTPException:
     """
     Handle API errors with proper logging and sanitization.
@@ -131,7 +132,7 @@ def handle_unauthorized_error(message: str = "Authentication required") -> HTTPE
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=message,
-        headers={"WWW-Authenticate": "Bearer"}
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 
@@ -155,13 +156,7 @@ class SafeHTTPException(HTTPException):
     HTTPException that automatically sanitizes error messages in production.
     """
 
-    def __init__(
-        self,
-        status_code: int,
-        detail: str,
-        user_message: str | None = None,
-        **kwargs
-    ):
+    def __init__(self, status_code: int, detail: str, user_message: str | None = None, **kwargs):
         """
         Args:
             status_code: HTTP status code

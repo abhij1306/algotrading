@@ -1,4 +1,3 @@
-﻿
 from .index_mean_reversion import IndexMeanReversionStrategy
 from .intraday_mean_reversion import IntradayMeanReversionStrategy
 from .intraday_momentum import IntradayMomentumStrategy
@@ -23,7 +22,6 @@ STRATEGY_REGISTRY = {
     "INTRADAY_MEAN_REVERSION": IntradayMeanReversionStrategy,
     "OVERNIGHT_GAP": OvernightGapReversionStrategy,
     "INDEX_MEAN_REVERSION": IndexMeanReversionStrategy,
-
     # NIFTY Quant strategies
     "NIFTY_VOL_CONTRACTION": NiftyVolContraction,
     "NIFTY_DARVAS_BOX": NiftyDarvasBox,
@@ -34,5 +32,5 @@ STRATEGY_REGISTRY = {
     "NIFTY_REGIME_MOM": NiftyRegimeMom,
     "NIFTY_ATR_BREAK": NiftyAtrBreak,
     "NIFTY_MA_RIBBON": NiftyMaRibbon,
-    "NIFTY_MACRO_BREAK": NiftyMacroBreak
+    "NIFTY_MACRO_BREAK": NiftyMacroBreak,
 }

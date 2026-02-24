@@ -21,12 +21,12 @@ class DataCache:
 
     # Intent-based TTL configuration (in seconds)
     TTL_CONFIG = {
-        "backtest": 3600,        # 1 hour - backtesting data
-        "scanner": 60,           # 1 minute - scanner queries
-        "analysis": 300,         # 5 minutes - analysis/research
-        "chart": 180,            # 3 minutes - chart data
-        "realtime": 5,           # 5 seconds - real-time quotes
-        "default": 300           # 5 minutes - default
+        "backtest": 3600,  # 1 hour - backtesting data
+        "scanner": 60,  # 1 minute - scanner queries
+        "analysis": 300,  # 5 minutes - analysis/research
+        "chart": 180,  # 3 minutes - chart data
+        "realtime": 5,  # 5 seconds - real-time quotes
+        "default": 300,  # 5 minutes - default
     }
 
     def __init__(self):
@@ -58,11 +58,11 @@ class DataCache:
         entry = self._cache[key]
 
         # Check if expired
-        if datetime.now() > entry['expires_at']:
+        if datetime.now() > entry["expires_at"]:
             del self._cache[key]
             return None
 
-        return entry['data']
+        return entry["data"]
 
     def set(self, data: pd.DataFrame, intent: str, **params) -> None:
         """
@@ -74,14 +74,14 @@ class DataCache:
             **params: Query parameters
         """
         key = self._generate_key(intent, **params)
-        ttl = self.TTL_CONFIG.get(intent, self.TTL_CONFIG['default'])
+        ttl = self.TTL_CONFIG.get(intent, self.TTL_CONFIG["default"])
 
         self._cache[key] = {
-            'data': data.copy(),
-            'created_at': datetime.now(),
-            'expires_at': datetime.now() + timedelta(seconds=ttl),
-            'intent': intent,
-            'params': params
+            "data": data.copy(),
+            "created_at": datetime.now(),
+            "expires_at": datetime.now() + timedelta(seconds=ttl),
+            "intent": intent,
+            "params": params,
         }
 
     def invalidate(self, intent: str | None = None, **params) -> int:
@@ -105,10 +105,7 @@ class DataCache:
 
         elif intent:
             # Invalidate all entries with this intent
-            keys_to_delete = [
-                k for k, v in self._cache.items()
-                if v['intent'] == intent
-            ]
+            keys_to_delete = [k for k, v in self._cache.items() if v["intent"] == intent]
             for key in keys_to_delete:
                 del self._cache[key]
             return len(keys_to_delete)
@@ -122,10 +119,7 @@ class DataCache:
     def cleanup_expired(self) -> int:
         """Remove expired entries from cache"""
         now = datetime.now()
-        keys_to_delete = [
-            k for k, v in self._cache.items()
-            if now > v['expires_at']
-        ]
+        keys_to_delete = [k for k, v in self._cache.items() if now > v["expires_at"]]
 
         for key in keys_to_delete:
             del self._cache[key]
@@ -136,24 +130,21 @@ class DataCache:
         """Get cache statistics"""
         now = datetime.now()
 
-        stats = {
-            'total_entries': len(self._cache),
-            'by_intent': {},
-            'expired_entries': 0
-        }
+        stats = {"total_entries": len(self._cache), "by_intent": {}, "expired_entries": 0}
 
         for entry in self._cache.values():
-            intent = entry['intent']
-            stats['by_intent'][intent] = stats['by_intent'].get(intent, 0) + 1
+            intent = entry["intent"]
+            stats["by_intent"][intent] = stats["by_intent"].get(intent, 0) + 1
 
-            if now > entry['expires_at']:
-                stats['expired_entries'] += 1
+            if now > entry["expires_at"]:
+                stats["expired_entries"] += 1
 
         return stats
 
 
 # Global cache instance
 _cache_instance = None
+
 
 def get_cache() -> DataCache:
     """Get global cache instance (singleton)"""
@@ -168,25 +159,19 @@ if __name__ == "__main__":
     cache = get_cache()
 
     # Example: Cache backtest data
-    sample_data = pd.DataFrame({
-        'DATE': ['2024-01-01', '2024-01-02'],
-        'CLOSE': [100, 105]
-    })
+    sample_data = pd.DataFrame({"DATE": ["2024-01-01", "2024-01-02"], "CLOSE": [100, 105]})
 
     cache.set(
         data=sample_data,
         intent="backtest",
         symbol="RELIANCE",
         start_date="2024-01-01",
-        end_date="2024-12-31"
+        end_date="2024-12-31",
     )
 
     # Retrieve from cache
     cached = cache.get(
-        intent="backtest",
-        symbol="RELIANCE",
-        start_date="2024-01-01",
-        end_date="2024-12-31"
+        intent="backtest", symbol="RELIANCE", start_date="2024-01-01", end_date="2024-12-31"
     )
 
     print("Cached data:", cached)

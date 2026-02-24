@@ -2,6 +2,7 @@
 Unified Fyers Client - Robust and Singleton
 Handles authentication, token management, and data fetching.
 """
+
 import json
 import os
 from datetime import UTC, datetime
@@ -13,12 +14,16 @@ from .symbol_master import symbol_master
 
 # Lazy import fyers_apiv3 to speed up startup
 fyersModel = None
+
+
 def _get_fyers_model():
     global fyersModel
     if fyersModel is None:
         from fyers_apiv3 import fyersModel as _fm
+
         fyersModel = _fm
     return fyersModel
+
 
 # Setup Logging
 logger = get_logger("services.fyers_client")
@@ -27,11 +32,13 @@ logger = get_logger("services.fyers_client")
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 FYERS_TOKEN_PATH = PROJECT_ROOT / "fyers" / "config" / "access_token.json"
 
+
 class FyersClient:
     """
     Singleton Fyers Client wrapper.
     Ensures valid session and handles API calls.
     """
+
     _instance = None
 
     def __new__(cls):
@@ -72,10 +79,10 @@ class FyersClient:
             self._token_file_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
             with open(FYERS_TOKEN_PATH) as f:
                 data = json.load(f)
-                self.client_id = data.get('client_id')
-                self.access_token = data.get('access_token')
+                self.client_id = data.get("client_id")
+                self.access_token = data.get("access_token")
 
-                expires_str = data.get('expires_at')
+                expires_str = data.get("expires_at")
                 if expires_str:
                     try:
                         self.token_expires_at = datetime.fromisoformat(expires_str)
@@ -100,7 +107,11 @@ class FyersClient:
             if not FYERS_TOKEN_PATH.exists():
                 return False
             current_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
-            if self._token_file_mtime_ns == current_mtime_ns and self.client_id and self.access_token:
+            if (
+                self._token_file_mtime_ns == current_mtime_ns
+                and self.client_id
+                and self.access_token
+            ):
                 return False
 
             old_token = self.access_token
@@ -123,9 +134,7 @@ class FyersClient:
         self._connecting = True
         try:
             self.fyers = _get_fyers_model().FyersModel(
-                client_id=self.client_id,
-                token=self.access_token,
-                log_path=""
+                client_id=self.client_id, token=self.access_token, log_path=""
             )
 
             if skip_validation:
@@ -161,7 +170,7 @@ class FyersClient:
 
             def _profile_ok() -> bool:
                 response = self.fyers.get_profile()
-                if response.get('s') == 'ok':
+                if response.get("s") == "ok":
                     return True
                 logger.warning(f"[ERROR] Fyers token invalid: {response}")
                 return False
@@ -210,20 +219,20 @@ class FyersClient:
     def get_parsed_quotes(self, symbols: list[str]) -> dict[str, dict]:
         """Fetch and parse quotes into a standardized format"""
         response = self.get_quotes(symbols)
-        if response.get('s') != 'ok' or 'd' not in response:
+        if response.get("s") != "ok" or "d" not in response:
             return {}
 
         quotes_dict = {}
-        for quote in response['d']:
-            symbol_raw = quote.get('n')
+        for quote in response["d"]:
+            symbol_raw = quote.get("n")
             if not symbol_raw:
                 continue
 
             symbol = symbol_master.to_db(symbol_raw)
-            v = quote.get('v', {})
+            v = quote.get("v", {})
 
-            ltp = v.get('lp', 0)
-            prev_close = v.get('prev_close_price', ltp)
+            ltp = v.get("lp", 0)
+            prev_close = v.get("prev_close_price", ltp)
 
             if prev_close and prev_close > 0:
                 change_pct = ((ltp - prev_close) / prev_close) * 100
@@ -231,18 +240,20 @@ class FyersClient:
                 change_pct = 0
 
             quotes_dict[symbol] = {
-                'ltp': ltp,
-                'volume': v.get('volume', 0),
-                'high': v.get('high_price', 0),
-                'low': v.get('low_price', 0),
-                'open': v.get('open_price', 0),
-                'prev_close': prev_close,
-                'change_pct': round(change_pct, 2),
+                "ltp": ltp,
+                "volume": v.get("volume", 0),
+                "high": v.get("high_price", 0),
+                "low": v.get("low_price", 0),
+                "open": v.get("open_price", 0),
+                "prev_close": prev_close,
+                "change_pct": round(change_pct, 2),
             }
 
         return quotes_dict
 
-    def get_historical_data(self, symbol: str, timeframe: str, range_from: str, range_to: str) -> dict[str, Any]:
+    def get_historical_data(
+        self, symbol: str, timeframe: str, range_from: str, range_to: str
+    ) -> dict[str, Any]:
         """Fetch historical candle data"""
         if not self.fyers:
             return {}
@@ -253,7 +264,7 @@ class FyersClient:
             "date_format": "1",
             "range_from": range_from,
             "range_to": range_to,
-            "cont_flag": "1"
+            "cont_flag": "1",
         }
 
         try:
@@ -278,14 +289,17 @@ class FyersClient:
             return {"s": "error", "message": "Client not connected"}
         return self.fyers.place_order(data)
 
+
 # Global Accessor - LAZY INITIALIZATION
 _fyers_client = None
+
 
 def get_fyers_client() -> FyersClient:
     global _fyers_client
     if _fyers_client is None:
         _fyers_client = FyersClient()
     return _fyers_client
+
 
 def reset_fyers_client() -> None:
     """Reset singleton so fresh credentials are loaded on next access."""

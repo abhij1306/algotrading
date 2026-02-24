@@ -1,4 +1,4 @@
-﻿"""
+"""
 Portfolio Risk Analytics Engine
 Hedge-fund style risk analysis for personal portfolios
 Includes VaR, CVaR, Monte Carlo simulation, correlation analysis
@@ -109,11 +109,11 @@ class PortfolioRiskEngine:
                 recovery_idx = recovery.index[0]
 
         return {
-            'max_drawdown': max_dd,
-            'peak_date': peak_idx,
-            'trough_date': max_dd_idx,
-            'recovery_date': recovery_idx,
-            'recovery_days': (recovery_idx - max_dd_idx).days if recovery_idx else None
+            "max_drawdown": max_dd,
+            "peak_date": peak_idx,
+            "trough_date": max_dd_idx,
+            "recovery_date": recovery_idx,
+            "recovery_days": (recovery_idx - max_dd_idx).days if recovery_idx else None,
         }
 
     def calculate_beta(self, asset_returns: pd.Series, market_returns: pd.Series) -> float:
@@ -126,7 +126,7 @@ class PortfolioRiskEngine:
             Beta value
         """
         # Align data on indices (dates) to handle different lengths
-        aligned_data = pd.concat([asset_returns, market_returns], axis=1, join='inner').dropna()
+        aligned_data = pd.concat([asset_returns, market_returns], axis=1, join="inner").dropna()
 
         if aligned_data.empty or len(aligned_data) < 2:
             return 1.0
@@ -172,7 +172,7 @@ class PortfolioRiskEngine:
         Returns:
             Herfindahl index (0 to 1, higher = more concentrated)
         """
-        return np.sum(weights ** 2)
+        return np.sum(weights**2)
 
     def position_concentration_metrics(self, weights: np.array) -> dict:
         """
@@ -184,11 +184,17 @@ class PortfolioRiskEngine:
         """
         sorted_weights = np.sort(weights)[::-1]  # Sort descending
         return {
-            'top_3_concentration': np.sum(sorted_weights[:3]) if len(sorted_weights) >= 3 else np.sum(sorted_weights),
-            'top_5_concentration': np.sum(sorted_weights[:5]) if len(sorted_weights) >= 5 else np.sum(sorted_weights),
-            'top_10_concentration': np.sum(sorted_weights[:10]) if len(sorted_weights) >= 10 else np.sum(sorted_weights),
-            'max_position': sorted_weights[0] if len(sorted_weights) > 0 else 0,
-            'hhi': np.sum(weights ** 2)  # Herfindahl-Hirschman Index
+            "top_3_concentration": np.sum(sorted_weights[:3])
+            if len(sorted_weights) >= 3
+            else np.sum(sorted_weights),
+            "top_5_concentration": np.sum(sorted_weights[:5])
+            if len(sorted_weights) >= 5
+            else np.sum(sorted_weights),
+            "top_10_concentration": np.sum(sorted_weights[:10])
+            if len(sorted_weights) >= 10
+            else np.sum(sorted_weights),
+            "max_position": sorted_weights[0] if len(sorted_weights) > 0 else 0,
+            "hhi": np.sum(weights**2),  # Herfindahl-Hirschman Index
         }
 
     def correlation_matrix(self, returns: pd.DataFrame) -> pd.DataFrame:
@@ -217,10 +223,10 @@ class PortfolioRiskEngine:
         correlations = upper_triangle[upper_mask]
 
         return {
-            'avg_correlation': np.mean(correlations) if len(correlations) > 0 else 0,
-            'max_correlation': np.max(correlations) if len(correlations) > 0 else 0,
-            'min_correlation': np.min(correlations) if len(correlations) > 0 else 0,
-            'correlation_matrix': corr_matrix.to_dict()
+            "avg_correlation": np.mean(correlations) if len(correlations) > 0 else 0,
+            "max_correlation": np.max(correlations) if len(correlations) > 0 else 0,
+            "min_correlation": np.min(correlations) if len(correlations) > 0 else 0,
+            "correlation_matrix": corr_matrix.to_dict(),
         }
 
     def tail_risk_metrics(self, returns: pd.Series) -> dict:
@@ -232,9 +238,11 @@ class PortfolioRiskEngine:
             Dict with skewness and kurtosis
         """
         return {
-            'skewness': stats.skew(returns.dropna()),
-            'kurtosis': stats.kurtosis(returns.dropna()),
-            'excess_kurtosis': stats.kurtosis(returns.dropna(), fisher=True)  # Excess kurtosis (subtract 3)
+            "skewness": stats.skew(returns.dropna()),
+            "kurtosis": stats.kurtosis(returns.dropna()),
+            "excess_kurtosis": stats.kurtosis(
+                returns.dropna(), fisher=True
+            ),  # Excess kurtosis (subtract 3)
         }
 
     # ==================== MONTE CARLO SIMULATION ====================
@@ -244,7 +252,7 @@ class PortfolioRiskEngine:
         returns: pd.DataFrame,
         weights: np.array,
         time_horizon_days: int = 252,
-        num_simulations: int = 10000
+        num_simulations: int = 10000,
     ) -> dict:
         """
         Run Monte Carlo simulation for portfolio returns
@@ -267,9 +275,7 @@ class PortfolioRiskEngine:
         for i in range(num_simulations):
             # Generate random returns using multivariate normal distribution
             simulated_returns = np.random.multivariate_normal(
-                mean_returns,
-                cov_matrix,
-                time_horizon_days
+                mean_returns, cov_matrix, time_horizon_days
             )
 
             # Calculate portfolio returns for each day
@@ -281,18 +287,18 @@ class PortfolioRiskEngine:
 
         # Calculate statistics
         return {
-            'mean_return': np.mean(simulation_results),
-            'median_return': np.median(simulation_results),
-            'std_return': np.std(simulation_results),
-            'percentile_5': np.percentile(simulation_results, 5),
-            'percentile_25': np.percentile(simulation_results, 25),
-            'percentile_50': np.percentile(simulation_results, 50),
-            'percentile_75': np.percentile(simulation_results, 75),
-            'percentile_95': np.percentile(simulation_results, 95),
-            'prob_loss': np.sum(simulation_results < 0) / num_simulations,
-            'prob_loss_10pct': np.sum(simulation_results < -0.10) / num_simulations,
-            'prob_loss_20pct': np.sum(simulation_results < -0.20) / num_simulations,
-            'all_results': simulation_results.tolist()
+            "mean_return": np.mean(simulation_results),
+            "median_return": np.median(simulation_results),
+            "std_return": np.std(simulation_results),
+            "percentile_5": np.percentile(simulation_results, 5),
+            "percentile_25": np.percentile(simulation_results, 25),
+            "percentile_50": np.percentile(simulation_results, 50),
+            "percentile_75": np.percentile(simulation_results, 75),
+            "percentile_95": np.percentile(simulation_results, 95),
+            "prob_loss": np.sum(simulation_results < 0) / num_simulations,
+            "prob_loss_10pct": np.sum(simulation_results < -0.10) / num_simulations,
+            "prob_loss_20pct": np.sum(simulation_results < -0.20) / num_simulations,
+            "all_results": simulation_results.tolist(),
         }
 
     # ==================== FUNDAMENTAL RISK METRICS ====================
@@ -320,7 +326,7 @@ class PortfolioRiskEngine:
         score = 0
 
         # Leverage component (0-30 points)
-        de_ratio = financials.get('debt_to_equity', 0)
+        de_ratio = financials.get("debt_to_equity", 0)
         if de_ratio > 2.0:
             score += 30
         elif de_ratio > 1.0:
@@ -329,7 +335,7 @@ class PortfolioRiskEngine:
             score += 10
 
         # Profitability component (0-25 points)
-        roe = financials.get('roe', 0)
+        roe = financials.get("roe", 0)
         if roe < 5:
             score += 25
         elif roe < 10:
@@ -338,7 +344,7 @@ class PortfolioRiskEngine:
             score += 5
 
         # Liquidity component (0-25 points)
-        current_ratio = financials.get('current_ratio', 1.0)
+        current_ratio = financials.get("current_ratio", 1.0)
         if current_ratio < 0.5:
             score += 25
         elif current_ratio < 1.0:
@@ -347,7 +353,7 @@ class PortfolioRiskEngine:
             score += 5
 
         # Cash flow component (0-20 points)
-        fcf = financials.get('free_cash_flow', 0)
+        fcf = financials.get("free_cash_flow", 0)
         if fcf < 0:
             score += 20
         elif fcf < 100:  # Assuming in Crores
@@ -363,7 +369,7 @@ class PortfolioRiskEngine:
         weights: np.array,
         market_prices: pd.Series,
         financials: list[dict],
-        lookback_days: int = 252
+        lookback_days: int = 252,
     ) -> dict:
         """
         Comprehensive portfolio risk analysis
@@ -381,7 +387,11 @@ class PortfolioRiskEngine:
         market_returns_df = self.calculate_returns(market_prices)
 
         # Extract market returns as Series (calculate_beta expects Series)
-        market_returns = market_returns_df.iloc[:, 0] if isinstance(market_returns_df, pd.DataFrame) else market_returns_df
+        market_returns = (
+            market_returns_df.iloc[:, 0]
+            if isinstance(market_returns_df, pd.DataFrame)
+            else market_returns_df
+        )
 
         # Portfolio returns
         portfolio_returns = (returns * weights).sum(axis=1)
@@ -391,44 +401,48 @@ class PortfolioRiskEngine:
 
         # Market risk metrics
         market_risk = {
-            'volatility': returns.std().mean() * np.sqrt(self.trading_days_per_year),
-            'portfolio_volatility': self.portfolio_volatility(weights, cov_matrix),
-            'var_95': self.value_at_risk(portfolio_returns, 0.95),
-            'var_99': self.value_at_risk(portfolio_returns, 0.99),  # Already had this
-            'cvar_95': self.conditional_var(portfolio_returns, 0.95),
-            'cvar_99': self.conditional_var(portfolio_returns, 0.99),  # Already had this
-            'beta': self.calculate_beta(portfolio_returns, market_returns),
-            'sharpe_ratio': self.sharpe_ratio(portfolio_returns),
-            'max_drawdown': self.max_drawdown(portfolio_returns),
-            **self.tail_risk_metrics(portfolio_returns)  # ADD: Skewness, Kurtosis
+            "volatility": returns.std().mean() * np.sqrt(self.trading_days_per_year),
+            "portfolio_volatility": self.portfolio_volatility(weights, cov_matrix),
+            "var_95": self.value_at_risk(portfolio_returns, 0.95),
+            "var_99": self.value_at_risk(portfolio_returns, 0.99),  # Already had this
+            "cvar_95": self.conditional_var(portfolio_returns, 0.95),
+            "cvar_99": self.conditional_var(portfolio_returns, 0.99),  # Already had this
+            "beta": self.calculate_beta(portfolio_returns, market_returns),
+            "sharpe_ratio": self.sharpe_ratio(portfolio_returns),
+            "max_drawdown": self.max_drawdown(portfolio_returns),
+            **self.tail_risk_metrics(portfolio_returns),  # ADD: Skewness, Kurtosis
         }
 
         # Portfolio risk metrics
         correlation_data = self.correlation_metrics(returns)  # Enhanced correlation
-        position_concentration = self.position_concentration_metrics(weights)  # NEW: Top N concentration
+        position_concentration = self.position_concentration_metrics(
+            weights
+        )  # NEW: Top N concentration
 
         portfolio_risk = {
-            'concentration': self.concentration_risk(weights),
-            'marginal_contributions': self.marginal_risk_contribution(weights, cov_matrix).tolist(),
-            'hhi': position_concentration['hhi'],  # ADD: Explicit HHI
+            "concentration": self.concentration_risk(weights),
+            "marginal_contributions": self.marginal_risk_contribution(weights, cov_matrix).tolist(),
+            "hhi": position_concentration["hhi"],  # ADD: Explicit HHI
             **position_concentration,  # ADD: Top 3/5/10, max position
-            'avg_correlation': correlation_data['avg_correlation'],  # ADD
-            'max_correlation': correlation_data['max_correlation'],  # ADD
-            'min_correlation': correlation_data['min_correlation'],  # ADD
-            'correlation_matrix': correlation_data['correlation_matrix']
+            "avg_correlation": correlation_data["avg_correlation"],  # ADD
+            "max_correlation": correlation_data["max_correlation"],  # ADD
+            "min_correlation": correlation_data["min_correlation"],  # ADD
+            "correlation_matrix": correlation_data["correlation_matrix"],
         }
 
         # Fundamental risk
-        de_ratios = [f.get('debt_to_equity', 0) for f in financials]
+        de_ratios = [f.get("debt_to_equity", 0) for f in financials]
         fundamental_risk = {
-            'avg_leverage': self.leverage_score(de_ratios, weights),
-            'fragility_scores': [self.financial_fragility_score(f) for f in financials],
-            'avg_fragility': np.average([self.financial_fragility_score(f) for f in financials], weights=weights)
+            "avg_leverage": self.leverage_score(de_ratios, weights),
+            "fragility_scores": [self.financial_fragility_score(f) for f in financials],
+            "avg_fragility": np.average(
+                [self.financial_fragility_score(f) for f in financials], weights=weights
+            ),
         }
 
         return {
-            'market_risk': market_risk,
-            'portfolio_risk': portfolio_risk,
-            'fundamental_risk': fundamental_risk,
-            'timestamp': datetime.now().isoformat()
+            "market_risk": market_risk,
+            "portfolio_risk": portfolio_risk,
+            "fundamental_risk": fundamental_risk,
+            "timestamp": datetime.now().isoformat(),
         }

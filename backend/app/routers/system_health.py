@@ -2,6 +2,7 @@
 Pre-flight health check endpoint for Screener
 Verifies Fyers connectivity and data freshness before UI loads
 """
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -46,13 +47,11 @@ def system_health_check(db: Session = DB_DEPENDENCY):
         recommendations.append("Fyers API unavailable. Screener will use cached data only.")
 
     if health["last_update"] is None:
-        recommendations.append("No historical data found. Run canonical bhavcopy + phase1 pipeline.")
+        recommendations.append(
+            "No historical data found. Run canonical bhavcopy + phase1 pipeline."
+        )
 
-    return {
-        "status": status,
-        **health,
-        "recommendations": recommendations
-    }
+    return {"status": status, **health, "recommendations": recommendations}
 
 
 @router.get("/pre-flight/screener")
@@ -82,7 +81,7 @@ def screener_pre_flight(db: Session = DB_DEPENDENCY):
             "message": "No market data available. Please run data initialization scripts.",
             "fyers_connected": fyers_ok,
             "data_fresh": False,
-            "last_update": None
+            "last_update": None,
         }
 
     if not fyers_ok:
@@ -91,7 +90,7 @@ def screener_pre_flight(db: Session = DB_DEPENDENCY):
             "message": "Fyers connection unavailable. Using cached data only.",
             "fyers_connected": False,
             "data_fresh": False,
-            "last_update": health["last_update"]
+            "last_update": health["last_update"],
         }
 
     return {
@@ -99,5 +98,5 @@ def screener_pre_flight(db: Session = DB_DEPENDENCY):
         "message": "All systems operational",
         "fyers_connected": True,
         "data_fresh": True,
-        "last_update": health["last_update"]
+        "last_update": health["last_update"],
     }

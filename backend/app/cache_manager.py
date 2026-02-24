@@ -1,25 +1,29 @@
-﻿"""
+"""
 Data cache manager for historical data persistence
 """
+
 import json
+import logging
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 
 class DataCache:
-    def __init__(self, cache_dir: str = 'cache'):
+    def __init__(self, cache_dir: str = "cache"):
         self.root_dir = Path(__file__).parent.parent
         self.cache_dir = self.root_dir / cache_dir
-        self.historical_data_dir = self.cache_dir / 'historical_data'
+        self.historical_data_dir = self.cache_dir / "historical_data"
 
         # Ensure directories exist
         self.cache_dir.mkdir(exist_ok=True)
         self.historical_data_dir.mkdir(exist_ok=True)
 
-        self.cache_metadata_file = self.cache_dir / 'cache_metadata.json'
+        self.cache_metadata_file = self.cache_dir / "cache_metadata.json"
 
     def get_cache_metadata(self) -> dict:
         """Get cache metadata (last update time, etc.)"""
@@ -27,13 +31,13 @@ class DataCache:
             if self.cache_metadata_file.exists():
                 with open(self.cache_metadata_file) as f:
                     return json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to read cache metadata: %s", e)
         return {}
 
     def update_cache_metadata(self, metadata: dict):
         """Update cache metadata"""
-        with open(self.cache_metadata_file, 'w') as f:
+        with open(self.cache_metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
 
     def get_symbol_file(self, symbol: str) -> Path:
@@ -50,7 +54,7 @@ class DataCache:
         if not self.get_symbol_file(symbol).exists():
             return False
 
-        last_update = datetime.fromisoformat(metadata[symbol]['last_update'])
+        last_update = datetime.fromisoformat(metadata[symbol]["last_update"])
         today = datetime.now().date()
 
         # Cache is valid if:
@@ -74,24 +78,21 @@ class DataCache:
 
         # Prepare content
         content = {
-            'symbol': symbol,
-            'last_update': datetime.now().isoformat(),
-            'rows': len(data),
-            'data': data.to_dict('records'),
-            'index': data.index.astype(str).tolist()
+            "symbol": symbol,
+            "last_update": datetime.now().isoformat(),
+            "rows": len(data),
+            "data": data.to_dict("records"),
+            "index": data.index.astype(str).tolist(),
         }
 
         # Save to individual file
         file_path = self.get_symbol_file(symbol)
-        with open(file_path, 'w') as f:
+        with open(file_path, "w") as f:
             json.dump(content, f)
 
         # Update shared metadata
         metadata = self.get_cache_metadata()
-        metadata[symbol] = {
-            'last_update': datetime.now().isoformat(),
-            'rows': len(data)
-        }
+        metadata[symbol] = {"last_update": datetime.now().isoformat(), "rows": len(data)}
         self.update_cache_metadata(metadata)
 
     def load_historical_data(self, symbol: str) -> pd.DataFrame | None:
@@ -106,10 +107,10 @@ class DataCache:
                 content = json.load(f)
 
             # Reconstruct DataFrame
-            df = pd.DataFrame(content['data'])
-            if 'index' in content and content['index']:
-                df.index = pd.to_datetime(content['index'])
-                df.index.name = 'Date'
+            df = pd.DataFrame(content["data"])
+            if "index" in content and content["index"]:
+                df.index = pd.to_datetime(content["index"])
+                df.index.name = "Date"
 
             return df
         except Exception as e:
@@ -132,7 +133,7 @@ class DataCache:
             # Note: Indexing with date might return multiple rows if not unique,
             # but here we assume daily candles.
             mask = df.index.date == today
-            df.loc[mask] = new_row.values[0] # safer assignment
+            df.loc[mask] = new_row.values[0]  # safer assignment
         else:
             # Append new row
             df = pd.concat([df, new_row])
@@ -170,6 +171,7 @@ class DataCache:
                 self.update_cache_metadata(metadata)
             return True
         return False
+
 
 # Global cache instance
 cache_manager = DataCache()

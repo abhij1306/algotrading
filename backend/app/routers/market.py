@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 DB_DEPENDENCY = Depends(get_db)
 
+
 @router.get("/market/status")
 def market_status():
     """Get current market status (open/closed)"""
@@ -25,6 +26,7 @@ def get_market_indices():
     """
     try:
         from ..services.fyers_client import get_fyers_client
+
         fyers = get_fyers_client()
 
         if not fyers or not fyers.fyers:
@@ -58,15 +60,17 @@ def get_market_indices():
                     continue
 
                 change = ltp - prev_close
-                change_pct = (change / prev_close * 100)
+                change_pct = change / prev_close * 100
 
-                results.append({
-                    "name": name,
-                    "symbol": entry["symbol"],
-                    "value": ltp,
-                    "change": change,
-                    "changePercent": change_pct
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "symbol": entry["symbol"],
+                        "value": ltp,
+                        "change": change,
+                        "changePercent": change_pct,
+                    }
+                )
             except Exception:
                 logger.exception("Failed to fetch index quote for %s", name)
                 continue
@@ -88,6 +92,7 @@ def get_market_indices_alias():
     """Alias for /market/indices to keep API clients consistent."""
     return get_market_indices()
 
+
 @router.get("/quotes/live")
 def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
     """
@@ -96,12 +101,13 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
     symbols: comma-separated list (e.g., "RELIANCE,TCS,INFY")
     """
     try:
-        raw_symbols = [s.strip() for s in symbols.split(',') if s.strip()]
+        raw_symbols = [s.strip() for s in symbols.split(",") if s.strip()]
         if not raw_symbols:
             return {}
 
         # Try to get live quotes from Fyers
         from ..services.fyers_client import get_fyers_client
+
         fyers = get_fyers_client()
 
         quotes = {}
@@ -121,25 +127,22 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
             from ..models import Company, HistoricalPrice
 
             # Get latest prices from database
-            latest_prices = db.query(
-                Company.symbol,
-                HistoricalPrice.close,
-                HistoricalPrice.volume
-            ).join(
-                HistoricalPrice, Company.id == HistoricalPrice.company_id
-            ).filter(
-                Company.symbol.in_(raw_symbols)
-            ).order_by(
-                HistoricalPrice.date.desc()
-            ).limit(len(raw_symbols)).all()
+            latest_prices = (
+                db.query(Company.symbol, HistoricalPrice.close, HistoricalPrice.volume)
+                .join(HistoricalPrice, Company.id == HistoricalPrice.company_id)
+                .filter(Company.symbol.in_(raw_symbols))
+                .order_by(HistoricalPrice.date.desc())
+                .limit(len(raw_symbols))
+                .all()
+            )
 
             for sym, close, vol in latest_prices:
                 quotes[sym] = {
-                    'ltp': close or 0,
-                    'volume': vol or 0,
-                    'change': 0,
-                    'change_pct': 0,
-                    'source': 'database'
+                    "ltp": close or 0,
+                    "volume": vol or 0,
+                    "change": 0,
+                    "change_pct": 0,
+                    "source": "database",
                 }
 
         return quotes
@@ -164,8 +167,8 @@ def get_single_quote(symbol: str):
         if hist.empty:
             return {"symbol": symbol, "price": 0, "changePercent": 0}
 
-        current = hist['Close'].iloc[-1]
-        prev = hist['Close'].iloc[-2] if len(hist) >= 2 else hist['Open'].iloc[-1]
+        current = hist["Close"].iloc[-1]
+        prev = hist["Close"].iloc[-2] if len(hist) >= 2 else hist["Open"].iloc[-1]
         change = current - prev
         change_pct = (change / prev * 100) if prev else 0
 
@@ -173,18 +176,20 @@ def get_single_quote(symbol: str):
             "symbol": symbol,
             "price": round(current, 2),
             "change": round(change, 2),
-            "changePercent": round(change_pct, 2)
+            "changePercent": round(change_pct, 2),
         }
 
     except Exception as e:
         logger.error(f"Error fetching quote for {symbol}: {e}")
         return {"symbol": symbol, "price": 0, "changePercent": 0}
+
+
 @router.get("/search")
 def search_symbols(
     query: str,
     exclude_indices: bool = False,
     include_options: bool = True,
-    db: Session = DB_DEPENDENCY
+    db: Session = DB_DEPENDENCY,
 ):
     """
     Search for companies, indices, and option symbols by symbol or name
@@ -203,30 +208,25 @@ def search_symbols(
     if not exclude_indices:
         for idx_key, idx_info in STOCK_INDICES.items():
             idx_name = idx_info.get("name", "")
-            if (query_upper in idx_key.upper() or
-                query_upper in idx_name.upper()):
-                results_list.append({
-                    "symbol": idx_key,
-                    "name": idx_name,
-                    "sector": "INDEX",
-                    "type": "INDEX"
-                })
+            if query_upper in idx_key.upper() or query_upper in idx_name.upper():
+                results_list.append(
+                    {"symbol": idx_key, "name": idx_name, "sector": "INDEX", "type": "INDEX"}
+                )
 
     # Search in Company table (equities only)
     from ..database import Company
 
-    companies = db.query(Company).filter(
-        (Company.symbol.ilike(f"%{query}%")) |
-        (Company.name.ilike(f"%{query}%"))
-    ).limit(10).all()
+    companies = (
+        db.query(Company)
+        .filter((Company.symbol.ilike(f"%{query}%")) | (Company.name.ilike(f"%{query}%")))
+        .limit(10)
+        .all()
+    )
 
     for c in companies:
-        results_list.append({
-            "symbol": c.symbol,
-            "name": c.name,
-            "sector": c.sector,
-            "type": "EQUITY"
-        })
+        results_list.append(
+            {"symbol": c.symbol, "name": c.name, "sector": c.sector, "type": "EQUITY"}
+        )
 
     # Search for option symbols if enabled and query matches index/stock names
     if include_options and len(query_upper) >= 2:
@@ -287,7 +287,7 @@ def _search_option_symbols(query: str, existing_results: list) -> list:
                 try:
                     chain = option_chain_service.get_option_chain(
                         underlying=underlying,
-                        strike_count=6  # Get ATM ± 3 strikes
+                        strike_count=6,  # Get ATM ± 3 strikes
                     )
 
                     if chain and chain.strikes:
@@ -295,31 +295,39 @@ def _search_option_symbols(query: str, existing_results: list) -> list:
                         for strike in chain.strikes:
                             # Call option
                             if strike.call:
-                                option_results.append({
-                                    "symbol": strike.call.symbol,
-                                    "name": f"{underlying} {strike.strike_price} CE (Call)",
-                                    "sector": "OPTIONS",
-                                    "type": "CE",
-                                    "underlying": underlying,
-                                    "strike": strike.strike_price,
-                                    "expiry": chain.expiry.isoformat() if chain.expiry else None,
-                                    "ltp": strike.call.ltp,
-                                    "instrument_type": "CE"
-                                })
+                                option_results.append(
+                                    {
+                                        "symbol": strike.call.symbol,
+                                        "name": f"{underlying} {strike.strike_price} CE (Call)",
+                                        "sector": "OPTIONS",
+                                        "type": "CE",
+                                        "underlying": underlying,
+                                        "strike": strike.strike_price,
+                                        "expiry": chain.expiry.isoformat()
+                                        if chain.expiry
+                                        else None,
+                                        "ltp": strike.call.ltp,
+                                        "instrument_type": "CE",
+                                    }
+                                )
 
                             # Put option
                             if strike.put:
-                                option_results.append({
-                                    "symbol": strike.put.symbol,
-                                    "name": f"{underlying} {strike.strike_price} PE (Put)",
-                                    "sector": "OPTIONS",
-                                    "type": "PE",
-                                    "underlying": underlying,
-                                    "strike": strike.strike_price,
-                                    "expiry": chain.expiry.isoformat() if chain.expiry else None,
-                                    "ltp": strike.put.ltp,
-                                    "instrument_type": "PE"
-                                })
+                                option_results.append(
+                                    {
+                                        "symbol": strike.put.symbol,
+                                        "name": f"{underlying} {strike.strike_price} PE (Put)",
+                                        "sector": "OPTIONS",
+                                        "type": "PE",
+                                        "underlying": underlying,
+                                        "strike": strike.strike_price,
+                                        "expiry": chain.expiry.isoformat()
+                                        if chain.expiry
+                                        else None,
+                                        "ltp": strike.put.ltp,
+                                        "instrument_type": "PE",
+                                    }
+                                )
 
                             # Limit options per underlying
                             if len(option_results) >= 12:
@@ -335,6 +343,7 @@ def _search_option_symbols(query: str, existing_results: list) -> list:
 
     return option_results
 
+
 @router.get("/sectors")
 def get_sectors(db: Session = DB_DEPENDENCY):
     """
@@ -343,9 +352,16 @@ def get_sectors(db: Session = DB_DEPENDENCY):
     from ..database import Company
 
     # query distinct sectors
-    sectors = db.query(Company.sector).distinct().filter(Company.sector.is_not(None)).order_by(Company.sector).all()
+    sectors = (
+        db.query(Company.sector)
+        .distinct()
+        .filter(Company.sector.is_not(None))
+        .order_by(Company.sector)
+        .all()
+    )
 
     return {"sectors": [s[0] for s in sectors]}
+
 
 @router.get("/watchlist")
 def get_watchlist(db: Session = DB_DEPENDENCY):
@@ -383,30 +399,35 @@ def get_watchlist(db: Session = DB_DEPENDENCY):
             if latest_price:
                 ltp = latest_price.close
                 # Calculate change (vs prev close approx)
-                prev = latest_price.open # Approximate
+                prev = latest_price.open  # Approximate
                 if prev:
                     change = ltp - prev
-                    change_pct = (change / prev * 100)
+                    change_pct = change / prev * 100
 
-        results.append({
-            "symbol": sym,
-            "name": name,
-            "price": ltp,
-            "ltp": ltp,
-            "change": round(change, 2) if isinstance(change, (int, float)) else None,
-            "changePercent": round(change_pct, 2) if isinstance(change_pct, (int, float)) else None,
-            "instrument_type": item.instrument_type
-        })
+        results.append(
+            {
+                "symbol": sym,
+                "name": name,
+                "price": ltp,
+                "ltp": ltp,
+                "change": round(change, 2) if isinstance(change, (int, float)) else None,
+                "changePercent": round(change_pct, 2)
+                if isinstance(change_pct, (int, float))
+                else None,
+                "instrument_type": item.instrument_type,
+            }
+        )
 
     return results
+
 
 @router.post("/watchlist")
 def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY):
     """Add to watchlist"""
     from ..database import Watchlist
 
-    symbol = item.get('symbol')
-    inst_type = item.get('instrument_type', 'EQ')
+    symbol = item.get("symbol")
+    inst_type = item.get("instrument_type", "EQ")
 
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol required")
@@ -419,6 +440,7 @@ def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY):
     db.add(new_item)
     db.commit()
     return {"message": "Added"}
+
 
 @router.delete("/watchlist/{symbol}")
 def remove_from_watchlist(symbol: str, db: Session = DB_DEPENDENCY):
@@ -461,7 +483,7 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5):
         all_quotes = {}
         batch_size = 50
         for i in range(0, len(fyers_symbols), batch_size):
-            batch = fyers_symbols[i:i + batch_size]
+            batch = fyers_symbols[i : i + batch_size]
             quotes = fyers.get_parsed_quotes(batch)
             all_quotes.update(quotes)
 
@@ -474,12 +496,14 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5):
 
             if prev_close and ltp:
                 change_pct = ((ltp - prev_close) / prev_close) * 100
-                movers.append({
-                    "symbol": db_sym,
-                    "name": data.get("name", db_sym),
-                    "price": round(ltp, 2),
-                    "changePercent": round(change_pct, 2)
-                })
+                movers.append(
+                    {
+                        "symbol": db_sym,
+                        "name": data.get("name", db_sym),
+                        "price": round(ltp, 2),
+                        "changePercent": round(change_pct, 2),
+                    }
+                )
 
         # Sort by change percent
         movers.sort(key=lambda x: x["changePercent"], reverse=True)
@@ -488,10 +512,7 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5):
         gainers = movers[:limit]
         losers = movers[-limit:][::-1]  # Reverse to show worst first
 
-        return {
-            "gainers": gainers,
-            "losers": losers
-        }
+        return {"gainers": gainers, "losers": losers}
 
     except Exception as e:
         logger.error(f"Error fetching top movers: {e}")
@@ -541,15 +562,19 @@ def get_sector_performance():
                 change = ltp - prev_close
                 change_pct = (change / prev_close * 100) if prev_close else 0
 
-                results.append({
-                    "name": name,
-                    "symbol": entry["symbol"],
-                    "value": round(ltp, 2),
-                    "changePercent": round(change_pct, 2)
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "symbol": entry["symbol"],
+                        "value": round(ltp, 2),
+                        "changePercent": round(change_pct, 2),
+                    }
+                )
                 logger.info(f"Sector {name}: {ltp} ({change_pct:.2f}%)")
             else:
-                logger.warning(f"No data for sector {name} (Fyers: {fyers_symbol}, DB: {db_symbol}). Available keys: {list(quotes.keys())}")
+                logger.warning(
+                    f"No data for sector {name} (Fyers: {fyers_symbol}, DB: {db_symbol}). Available keys: {list(quotes.keys())}"
+                )
 
         return results
 
@@ -567,10 +592,7 @@ def get_commodities():
     try:
         import yfinance as yf
 
-        commodities = {
-            "Gold": "GC=F",
-            "Crude Oil": "CL=F"
-        }
+        commodities = {"Gold": "GC=F", "Crude Oil": "CL=F"}
 
         results = []
         for name, symbol in commodities.items():
@@ -579,16 +601,18 @@ def get_commodities():
                 hist = ticker.history(period="2d")
 
                 if not hist.empty:
-                    current = hist['Close'].iloc[-1]
-                    prev = hist['Close'].iloc[-2] if len(hist) >= 2 else hist['Open'].iloc[-1]
+                    current = hist["Close"].iloc[-1]
+                    prev = hist["Close"].iloc[-2] if len(hist) >= 2 else hist["Open"].iloc[-1]
                     change_pct = ((current - prev) / prev * 100) if prev else 0
 
-                    results.append({
-                        "name": name,
-                        "symbol": symbol,
-                        "price": round(current, 2),
-                        "changePercent": round(change_pct, 2)
-                    })
+                    results.append(
+                        {
+                            "name": name,
+                            "symbol": symbol,
+                            "price": round(current, 2),
+                            "changePercent": round(change_pct, 2),
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to fetch {name}: {e}")
                 continue
@@ -618,15 +642,11 @@ def get_currency(pair: str):
         if hist.empty:
             return {"pair": pair, "rate": 0, "changePercent": 0}
 
-        current = hist['Close'].iloc[-1]
-        prev = hist['Close'].iloc[-2] if len(hist) >= 2 else hist['Open'].iloc[-1]
+        current = hist["Close"].iloc[-1]
+        prev = hist["Close"].iloc[-2] if len(hist) >= 2 else hist["Open"].iloc[-1]
         change_pct = ((current - prev) / prev * 100) if prev else 0
 
-        return {
-            "pair": pair,
-            "rate": round(current, 2),
-            "changePercent": round(change_pct, 2)
-        }
+        return {"pair": pair, "rate": round(current, 2), "changePercent": round(change_pct, 2)}
 
     except Exception as e:
         logger.error(f"Error fetching currency {pair}: {e}")
