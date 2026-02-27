@@ -9,8 +9,8 @@
  * - Theme switch performance (checks for CSS variable usage)
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Performance targets
 const MAX_CSS_SIZE_KB = 50;

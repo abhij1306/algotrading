@@ -7,7 +7,7 @@
 // to the backend without CORS issues. On the server (SSR/build), fall back to a
 // loopback backend URL unless explicitly configured.
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || (typeof window === "undefined" ? "http://127.0.0.1:8000" : "");
+  process.env.NEXT_PUBLIC_API_URL || (globalThis.window === undefined ? "http://127.0.0.1:8000" : "");
 
 function joinUrl(baseURL: string, endpoint: string): string {
   // Allow relative baseURL (''), and avoid accidental double slashes.

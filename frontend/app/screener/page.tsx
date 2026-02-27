@@ -66,6 +66,10 @@ function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+function toSafeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 function formatVolume(value: number): string {
   if (value >= 10000000) return `${(value / 10000000).toFixed(1)}Cr`;
   if (value >= 100000) return `${(value / 100000).toFixed(1)}L`;
@@ -195,7 +199,7 @@ export default function ScreenerPage() {
   const debouncedSetQuery = useMemo(
     () =>
       debounce((value: unknown) => {
-        const nextQuery = String(value ?? '');
+        const nextQuery = toSafeString(value);
         setDebouncedQuery(nextQuery);
         setCurrentPage(1);
       }, 300),
@@ -311,12 +315,14 @@ export default function ScreenerPage() {
   }, [currentPage, totalPages]);
 
   const subscribedSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort();
+    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) => a.localeCompare(b));
     return symbols.join(',');
   }, [results]);
 
   const fallbackSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort();
+    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort(
+      (a, b) => a.localeCompare(b)
+    );
     return symbols.join(',');
   }, [currentPageRows]);
 

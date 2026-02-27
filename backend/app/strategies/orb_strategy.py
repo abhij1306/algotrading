@@ -296,7 +296,7 @@ class ORBStrategy(BaseStrategy):
         return False
 
     def get_exit_price(
-        self, position: Position, current_spot_price: float, current_time: datetime
+        self, position: Position, current_spot_price: float, _current_time: datetime
     ) -> float:
         """
         Calculate exit price for a position (especially for options)

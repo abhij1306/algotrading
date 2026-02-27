@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 9: Component Token Usage
  * Validates: Requirements 5.2, 5.3, 5.4, 5.5
@@ -7,8 +6,8 @@
  * properties should reference unified design tokens rather than hardcoded values.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Unified design tokens that are allowed
 const ALLOWED_TOKENS = [

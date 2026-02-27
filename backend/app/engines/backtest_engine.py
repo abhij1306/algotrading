@@ -408,7 +408,7 @@ class BacktestEngine:
             if current_price > 0:
                 position.current_price = current_price
 
-    def _fetch_daily_prices(self, target_date, symbols: list) -> dict:
+    def _fetch_daily_prices(self, _target_date, symbols: list) -> dict:
         """Fetch prices for all symbols"""
         # Simplified: return empty for now - actual implementation would query historical_prices
         return {}

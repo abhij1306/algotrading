@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -118,7 +118,7 @@ class LiveMonitorService:
         # 5. Save State
         state = LivePortfolioState(
             portfolio_id=portfolio.id,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             total_equity=new_equity,
             cash_balance=new_equity * (1 - exposure),
             deployed_capital=new_equity * exposure,

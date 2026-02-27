@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 10: Component Spacing Consistency
  * Validates: Requirements 5.6
@@ -7,15 +6,15 @@
  * defined spacing scale tokens (4px multiples).
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Valid spacing values from the design system (4px multiples)
-const VALID_SPACING = [
+const VALID_SPACING = new Set([
   '0', '0.5', '1', '1.5', '2', '2.5', '3', '3.5', '4', '5', '6', '7', '8',
   '9', '10', '11', '12', '14', '16', '20', '24', '28', '32', '36', '40',
   '44', '48', '52', '56', '60', '64', '72', '80', '96'
-];
+]);
 
 // Spacing class patterns
 const SPACING_PATTERNS = [
@@ -56,7 +55,7 @@ function testComponentSpacingConsistency() {
       }
 
       // Skip max-width constraints (like 1920px for container widths)
-      if (fullMatch.includes('px') && parseInt(value) > 100) {
+      if (fullMatch.includes('px') && Number.parseInt(value) > 100) {
         return;
       }
 
@@ -77,7 +76,7 @@ function testComponentSpacingConsistency() {
         const value = match[match.length - 1]; // Last capture group is the value
 
         // Skip if it's a valid spacing value
-        if (VALID_SPACING.includes(value)) {
+        if (VALID_SPACING.has(value)) {
           return;
         }
 

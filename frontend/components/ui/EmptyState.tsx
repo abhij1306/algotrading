@@ -17,7 +17,7 @@ export default function EmptyState({
   description,
   action,
   className,
-}: EmptyStateProps) {
+}: Readonly<EmptyStateProps>) {
   return (
     <div className={cn("flex flex-col items-center justify-center text-center p-8", className)}>
       {Icon && (

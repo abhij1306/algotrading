@@ -86,4 +86,4 @@ async def test_websocket_symbol_mapping():
     # Check latest_values (not tick_buffer)
     assert "SBIN" in service.latest_values
     assert service.latest_values["SBIN"]["symbol"] == "SBIN"
-    assert service.latest_values["SBIN"]["ltp"] == 500.50
+    assert service.latest_values["SBIN"]["ltp"] == pytest.approx(500.50, abs=0.001)

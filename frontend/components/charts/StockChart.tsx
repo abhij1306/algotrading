@@ -95,7 +95,7 @@ const DynamicLineChart = dynamic(
   }
 );
 
-export default function StockChart({ symbol }: StockChartProps) {
+export default function StockChart({ symbol }: Readonly<StockChartProps>) {
   const [data, setData] = useState<PriceData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

@@ -6,6 +6,7 @@ Runs periodically during market hours to keep positions in sync.
 """
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 
@@ -54,10 +55,8 @@ class PositionSyncService:
         self._is_running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         logger.info("Position sync service stopped")
 
     async def _sync_loop(self):

@@ -82,6 +82,7 @@ class LiveMarketService:
         symbol = tick.get("symbol")
         self.tick_buffer[symbol] = tick
         self.latest_values[symbol] = tick
+        await asyncio.sleep(0)
 
     async def _flush_loop(self):
         """Background task to flush buffered ticks every 200ms for low-latency updates"""
@@ -103,6 +104,7 @@ class LiveMarketService:
 
         except asyncio.CancelledError:
             logger.info("Broadcast flush loop cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error in flush loop: {e}")
 
@@ -154,6 +156,7 @@ class LiveMarketService:
 
         except asyncio.CancelledError:
             logger.info("Connection monitor cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error in monitor loop: {e}")
 

@@ -30,7 +30,7 @@ from app.indicators import (
 )
 
 
-def calculate_indicators_for_company(db, company_id: int, symbol: str):
+def calculate_indicators_for_company(db, company_id: int, _symbol: str):
     """
     Recalculate all indicators for a single company
     Updates the most recent 100 days to ensure accuracy

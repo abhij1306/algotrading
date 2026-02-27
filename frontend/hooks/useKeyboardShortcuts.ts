@@ -21,7 +21,7 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const isMac = /mac/i.test(navigator.userAgent);
       const modKey = isMac ? e.metaKey : e.ctrlKey;
 
       // Cmd/Ctrl + B: Run Backtest

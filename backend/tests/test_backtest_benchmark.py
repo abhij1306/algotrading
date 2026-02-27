@@ -310,7 +310,7 @@ class TestBenchmarkCalculation:
 
         # Verify benchmark equity is calculated correctly
         assert len(benchmark_equity) == len(portfolio_dates)
-        assert benchmark_equity.iloc[0] == initial_capital
+        assert benchmark_equity.iloc[0] == pytest.approx(initial_capital, abs=0.01)
 
     def test_zero_initial_index_price_handling(self, service):
         """

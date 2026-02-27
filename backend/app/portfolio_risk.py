@@ -369,7 +369,7 @@ class PortfolioRiskEngine:
         weights: np.array,
         market_prices: pd.Series,
         financials: list[dict],
-        lookback_days: int = 252,
+        _lookback_days: int = 252,
     ) -> dict:
         """
         Comprehensive portfolio risk analysis

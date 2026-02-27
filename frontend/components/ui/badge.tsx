@@ -61,7 +61,7 @@ export interface BadgeProps
   icon?: React.ReactNode;
 }
 
-function Badge({ className, variant, size, pulse = false, icon, children, ...props }: BadgeProps) {
+function Badge({ className, variant, size, pulse = false, icon, children, ...props }: Readonly<BadgeProps>) {
   return (
     <div className={cn(badgeVariants({ variant, size }), className)} {...props}>
       {pulse && (
@@ -79,7 +79,7 @@ function Badge({ className, variant, size, pulse = false, icon, children, ...pro
 /**
  * Specialized Status Badge
  */
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+export function StatusBadge({ status, className }: Readonly<{ status: string; className?: string }>) {
   const normalizedStatus = status.toLowerCase();
 
   const getVariant = (): BadgeProps["variant"] => {
@@ -101,7 +101,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
 /**
  * Price Change Badge
  */
-export function ChangeBadge({ value, className }: { value: number; className?: string }) {
+export function ChangeBadge({ value, className }: Readonly<{ value: number; className?: string }>) {
   return (
     <Badge variant={value >= 0 ? "profit" : "loss"} className={className}>
       {formatPercent(value)}

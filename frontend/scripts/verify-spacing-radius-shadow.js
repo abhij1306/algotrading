@@ -9,8 +9,8 @@
  * - Shadow tokens are defined for light and dark modes
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const GLOBALS_CSS_PATH = path.join(__dirname, '..', 'app', 'globals.css');
 
@@ -61,7 +61,7 @@ function validateSpacingScale(tokens) {
       continue;
     }
 
-    const pixels = parseInt(pxMatch[1], 10);
+    const pixels = Number.parseInt(pxMatch[1], 10);
     if (pixels % 4 !== 0) {
       errors.push(`Spacing --spacing-${name} is ${pixels}px, not a multiple of 4`);
     } else {

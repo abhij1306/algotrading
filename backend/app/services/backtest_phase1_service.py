@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -542,7 +542,7 @@ class Phase1BacktestService:
         job = BacktestJob(
             job_id=job_id,
             status="running",
-            created_at=datetime.utcnow().isoformat(),
+            created_at=datetime.now(timezone.utc).isoformat(),
             params=payload,
         )
         self._jobs[job_id] = job

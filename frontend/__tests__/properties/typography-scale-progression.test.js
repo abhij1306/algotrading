@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 5: Typography Scale Progression
  * Validates: Requirements 3.3
@@ -7,8 +6,8 @@
  * should be consistent (approximately 1.2x to 1.5x), ensuring harmonious typography.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Expected font size tokens in order from smallest to largest
 const FONT_SIZE_TOKENS = [
@@ -30,7 +29,7 @@ function parseFontSize(value) {
   const match = value.match(/^(\d+(?:\.\d+)?)(px|rem)?$/);
   if (!match) return null;
 
-  const num = parseFloat(match[1]);
+  const num = Number.parseFloat(match[1]);
   const unit = match[2];
 
   if (unit === 'rem') {

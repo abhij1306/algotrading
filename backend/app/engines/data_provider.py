@@ -23,7 +23,7 @@ class DataProvider:
         self.db = db or get_db_session()
 
     def get_intraday_data(
-        self, symbols: list[str], target_date: date, timeframe: int = 5
+        self, symbols: list[str], target_date: date, _timeframe: int = 5
     ) -> dict[str, list]:
         """Get intraday data for symbols on a given date"""
         from ..models.price import IntradayCandle

@@ -193,7 +193,7 @@ class PaperBroker(IBroker):
                     pos.quantity = remaining
                     pos.average_price = price
 
-    def _update_funds(self, db: Session, side: str, value: float, commission: float):
+    def _update_funds(self, db: Session, _side: str, value: float, commission: float):
         fund = db.query(PaperFund).filter_by(user_id=self.user_id).first()
         if fund:
             fund.total_balance -= commission

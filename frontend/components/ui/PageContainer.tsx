@@ -14,7 +14,7 @@ export function PageContainer({
   className,
   scrollable = true,
   fullWidth = false
-}: PageContainerProps) {
+}: Readonly<PageContainerProps>) {
   return (
     <div
       className={cn(

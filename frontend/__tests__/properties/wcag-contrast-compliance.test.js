@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 8: WCAG Contrast Compliance
  * Validates: Requirements 4.9, 9.6
@@ -7,8 +6,8 @@
  * the contrast ratio should meet WCAG AA standards (4.5:1 for normal text, 3:1 for large text).
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // WCAG AA contrast requirements
 const WCAG_AA_NORMAL_TEXT = 4.5;
@@ -49,9 +48,9 @@ function hexToRgb(hex) {
     hex = hex.split('').map(c => c + c).join('');
   }
 
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
+  const r = Number.parseInt(hex.substring(0, 2), 16);
+  const g = Number.parseInt(hex.substring(2, 4), 16);
+  const b = Number.parseInt(hex.substring(4, 6), 16);
 
   return { r, g, b };
 }
@@ -64,10 +63,10 @@ function rgbaToRgb(rgba) {
   if (!match) return null;
 
   return {
-    r: parseInt(match[1]),
-    g: parseInt(match[2]),
-    b: parseInt(match[3]),
-    a: match[4] ? parseFloat(match[4]) : 1.0,
+    r: Number.parseInt(match[1]),
+    g: Number.parseInt(match[2]),
+    b: Number.parseInt(match[3]),
+    a: match[4] ? Number.parseFloat(match[4]) : 1.0,
   };
 }
 

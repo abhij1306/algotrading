@@ -65,6 +65,10 @@ function formatDashboardPercent(value: number | null | undefined): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
+function toSafeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 // Memoized components for performance
 const StatItem = memo(function StatItem({ label, value, change, trend, loading }: {
   label: string; value: string; change?: number; trend?: 'up' | 'down'; loading?: boolean
@@ -236,7 +240,7 @@ export default function DashboardPage() {
             const rawChangePercent = item.changePercent ?? rawChange;
 
             return {
-              symbol: String(item.symbol ?? ''),
+              symbol: toSafeString(item.symbol),
               price: typeof rawPrice === 'number' ? roundToDecimals(rawPrice, 2) : null,
               change: typeof rawChange === 'number' ? roundToDecimals(rawChange, 2) : null,
               changePercent: typeof rawChangePercent === 'number' ? roundToDecimals(rawChangePercent, 2) : null,
@@ -305,7 +309,9 @@ export default function DashboardPage() {
   const symbolsKey = useMemo(() => {
     const watchlistSymbols = watchlist.map((item: WatchlistItem) => item.symbol);
     const indexSymbols = marketIndices.map((idx: MarketIndex) => idx.symbol).filter(Boolean);
-    return Array.from(new Set([...watchlistSymbols, ...indexSymbols, ...insightSymbols])).sort().join(',');
+    return Array.from(new Set([...watchlistSymbols, ...indexSymbols, ...insightSymbols]))
+      .sort((a, b) => a.localeCompare(b))
+      .join(',');
   }, [watchlist, marketIndices, insightSymbols]);
 
   // Subscribe when connected AND symbol set changes.

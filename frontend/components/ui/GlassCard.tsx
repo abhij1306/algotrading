@@ -11,7 +11,12 @@ interface GlassCardProps extends React.HTMLAttributes<HTMLDivElement> {
 /**
  * @deprecated Use Card with variant="glass" instead
  */
-export function GlassCard({ children, className, hoverEffect = false, ...props }: GlassCardProps) {
+export function GlassCard({
+  children,
+  className,
+  hoverEffect = false,
+  ...props
+}: Readonly<GlassCardProps>) {
   return (
     <div
       className={cn(

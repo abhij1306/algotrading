@@ -68,7 +68,7 @@ export function getISTTime(): string {
   const istOffset = 5.5 * 60 * 60 * 1000;
   const istTime = new Date(now.getTime() + istOffset);
 
-  return istTime.toISOString().substr(11, 8) + " IST";
+  return istTime.toISOString().slice(11, 19) + " IST";
 }
 
 /**

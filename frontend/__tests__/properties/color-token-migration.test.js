@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 4: Color Token Migration Completeness
  * Validates: Requirements 2.8
@@ -7,8 +6,8 @@
  * (CSS variables) rather than hardcoded hex, rgb, or named colors.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find hardcoded colors in style attributes and CSS
 const HEX_COLOR_PATTERN = /#[0-9a-fA-F]{3,8}/g;
@@ -16,7 +15,7 @@ const RGB_COLOR_PATTERN = /rgba?\([^)]+\)/g;
 const NAMED_COLOR_PATTERN = /\b(red|blue|green|yellow|orange|purple|pink|gray|grey|black|white|brown|cyan|magenta)\b/gi;
 
 // Allowed exceptions
-const ALLOWED_EXCEPTIONS = [
+const ALLOWED_EXCEPTIONS = new Set([
   'transparent',
   'currentColor',
   'inherit',
@@ -24,7 +23,7 @@ const ALLOWED_EXCEPTIONS = [
   'unset',
   'white', // Allowed in specific contexts like text on colored backgrounds
   'black', // Allowed in specific contexts
-];
+]);
 
 function getAllFiles(dir, fileList = []) {
   const files = fs.readdirSync(dir);
@@ -110,7 +109,7 @@ function testColorTokenMigration() {
       const color = match[0].toLowerCase();
 
       // Skip allowed exceptions
-      if (ALLOWED_EXCEPTIONS.includes(color)) {
+      if (ALLOWED_EXCEPTIONS.has(color)) {
         return;
       }
 

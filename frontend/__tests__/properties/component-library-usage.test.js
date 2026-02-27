@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 13: Component Library Usage
  * Validates: Requirements 6.6
@@ -7,8 +6,8 @@
  * rather than custom styled divs/buttons.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find custom styled elements that should use component library
 const CUSTOM_BUTTON_PATTERN = /<button[^>]*className="[^"]*\b(px-|py-|bg-|rounded)[^"]*"[^>]*>/gi;

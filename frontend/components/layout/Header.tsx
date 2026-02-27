@@ -10,12 +10,12 @@ interface HeaderProps {
   onCommandPaletteOpen: () => void;
 }
 
-export function AppHeader({ onCommandPaletteOpen }: HeaderProps) {
+export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
   const router = useRouter();
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (globalThis.window !== undefined) {
       setIsDark(document.documentElement.classList.contains('dark'));
     }
   }, []);

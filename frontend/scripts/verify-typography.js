@@ -5,8 +5,8 @@
  * Validates that all typography tokens are properly defined in globals.css
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const globalsPath = path.join(__dirname, '../app/globals.css');
 const globalsContent = fs.readFileSync(globalsPath, 'utf-8');

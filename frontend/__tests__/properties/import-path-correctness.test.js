@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 15: Import Path Correctness
  * Validates: Requirements 7.4
@@ -10,8 +9,8 @@
  * are still in that directory but have been refactored to use unified tokens.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find imports from raycast directory
 const RAYCAST_IMPORT_PATTERN = /from\s+['"][@./]*components\/raycast['"]/g;

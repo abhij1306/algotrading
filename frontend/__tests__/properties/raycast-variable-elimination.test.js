@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 3: Raycast Variable Elimination
  * Validates: Requirements 2.7, 6.7, 9.7
@@ -7,8 +6,8 @@
  * matching the pattern --raycast-*.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find Raycast CSS variables
 const RAYCAST_VAR_PATTERN = /var\(--raycast-[a-z-]+\)/g;

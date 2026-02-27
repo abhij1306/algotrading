@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 1: Spacing Scale Consistency
  * Validates: Requirements 2.3
@@ -7,8 +6,8 @@
  * ensuring consistent spacing throughout the application.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Expected spacing tokens and their values (all should be multiples of 4px)
 const EXPECTED_SPACING_TOKENS = {
@@ -28,7 +27,7 @@ function parseSpacingValue(value) {
   const match = value.match(/^(\d+(?:\.\d+)?)(px|rem)?$/);
   if (!match) return null;
 
-  const num = parseFloat(match[1]);
+  const num = Number.parseFloat(match[1]);
   const unit = match[2];
 
   if (unit === 'rem') {

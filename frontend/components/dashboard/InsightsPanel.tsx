@@ -12,6 +12,10 @@ interface InsightsPanelProps {
   onSymbolsChange?: (symbols: string[]) => void;
 }
 
+function toSafeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 export interface StockMover {
   symbol: string;
   name: string;
@@ -77,7 +81,7 @@ export interface PostMarketData {
   timestamp: string | null;
 }
 
-export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: InsightsPanelProps) {
+export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: Readonly<InsightsPanelProps>) {
   const [marketInsights, setMarketInsights] = useState<MarketInsights | null>(null);
   const [postMarketData, setPostMarketData] = useState<PostMarketData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -96,24 +100,24 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: In
 
       const gainers = Array.isArray(moversData.gainers)
         ? (moversData.gainers as Array<Record<string, unknown>>).map((row) => ({
-            symbol: String(row.symbol ?? ''),
-            name: String(row.name ?? row.symbol ?? ''),
+            symbol: toSafeString(row.symbol),
+            name: toSafeString(row.name, toSafeString(row.symbol)),
             price: typeof row.price === 'number' ? row.price : 0,
             changePercent: typeof row.changePercent === 'number' ? row.changePercent : 0,
           }))
         : [];
       const losers = Array.isArray(moversData.losers)
         ? (moversData.losers as Array<Record<string, unknown>>).map((row) => ({
-            symbol: String(row.symbol ?? ''),
-            name: String(row.name ?? row.symbol ?? ''),
+            symbol: toSafeString(row.symbol),
+            name: toSafeString(row.name, toSafeString(row.symbol)),
             price: typeof row.price === 'number' ? row.price : 0,
             changePercent: typeof row.changePercent === 'number' ? row.changePercent : 0,
           }))
         : [];
       const sectors = Array.isArray(sectorsRes.data)
         ? (sectorsRes.data as Array<Record<string, unknown>>).map((row) => ({
-            name: String(row.name ?? ''),
-            symbol: String(row.symbol ?? row.name ?? ''),
+            name: toSafeString(row.name),
+            symbol: toSafeString(row.symbol, toSafeString(row.name)),
             value: typeof row.value === 'number' ? row.value : 0,
             changePercent: typeof row.changePercent === 'number' ? row.changePercent : 0,
           }))
@@ -129,7 +133,7 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: In
           ...gainers.map((row) => row.symbol),
           ...losers.map((row) => row.symbol),
           ...sectors.map((row) => row.symbol),
-        ].filter(Boolean))).sort();
+        ].filter(Boolean))).sort((a, b) => a.localeCompare(b));
         onSymbolsChange(symbols);
       }
     } catch {
@@ -156,8 +160,8 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: In
       const conditionRaw = (overviewData.condition ?? null) as MarketConditionData | null;
 
       const parsedIndices = indicesRaw.map((idx: Record<string, unknown>) => ({
-        name: String(idx.name ?? ''),
-        symbol: String(idx.symbol ?? ''),
+        name: toSafeString(idx.name),
+        symbol: toSafeString(idx.symbol),
         price: typeof idx.price === 'number' ? idx.price : null,
         changePct: typeof idx.change_pct === 'number' ? idx.change_pct : null,
       }));
@@ -192,12 +196,12 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: In
         sentiment: {
           usFearGreed: {
             score: typeof usFearGreedRaw.score === 'number' ? usFearGreedRaw.score : null,
-            status: String(usFearGreedRaw.status ?? 'Unavailable'),
+            status: toSafeString(usFearGreedRaw.status, 'Unavailable'),
             source: typeof usFearGreedRaw.source === 'string' ? usFearGreedRaw.source : undefined,
           },
           indiaMMI: {
             score: typeof indiaMMIRaw.score === 'number' ? indiaMMIRaw.score : null,
-            status: String(indiaMMIRaw.status ?? 'Unavailable'),
+            status: toSafeString(indiaMMIRaw.status, 'Unavailable'),
             source: typeof indiaMMIRaw.source === 'string' ? indiaMMIRaw.source : undefined,
           },
         },

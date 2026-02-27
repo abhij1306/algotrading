@@ -5,8 +5,8 @@
  * Validates that font size progression is consistent (1.2x to 1.5x ratio)
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const globalsPath = path.join(__dirname, '../app/globals.css');
 const globalsContent = fs.readFileSync(globalsPath, 'utf-8');
@@ -15,13 +15,13 @@ console.log('🔍 Verifying Type Scale Progression...\n');
 
 // Extract font sizes
 const fontSizes = {
-  xxs: parseInt(globalsContent.match(/--text-xxs:\s*(\d+)px/)?.[1] || '0'),
-  xs: parseInt(globalsContent.match(/--text-xs:\s*(\d+)px/)?.[1] || '0'),
-  sm: parseInt(globalsContent.match(/--text-sm:\s*(\d+)px/)?.[1] || '0'),
-  base: parseInt(globalsContent.match(/--text-base:\s*(\d+)px/)?.[1] || '0'),
-  lg: parseInt(globalsContent.match(/--text-lg:\s*(\d+)px/)?.[1] || '0'),
-  xl: parseInt(globalsContent.match(/--text-xl:\s*(\d+)px/)?.[1] || '0'),
-  '2xl': parseInt(globalsContent.match(/--text-2xl:\s*(\d+)px/)?.[1] || '0'),
+  xxs: Number.parseInt(globalsContent.match(/--text-xxs:\s*(\d+)px/)?.[1] || '0'),
+  xs: Number.parseInt(globalsContent.match(/--text-xs:\s*(\d+)px/)?.[1] || '0'),
+  sm: Number.parseInt(globalsContent.match(/--text-sm:\s*(\d+)px/)?.[1] || '0'),
+  base: Number.parseInt(globalsContent.match(/--text-base:\s*(\d+)px/)?.[1] || '0'),
+  lg: Number.parseInt(globalsContent.match(/--text-lg:\s*(\d+)px/)?.[1] || '0'),
+  xl: Number.parseInt(globalsContent.match(/--text-xl:\s*(\d+)px/)?.[1] || '0'),
+  '2xl': Number.parseInt(globalsContent.match(/--text-2xl:\s*(\d+)px/)?.[1] || '0'),
 };
 
 console.log('📏 Font Sizes:');

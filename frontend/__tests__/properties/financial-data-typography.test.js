@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 6: Financial Data Typography
  * Validates: Requirements 3.6
@@ -7,8 +6,8 @@
  * it should use the monospace font family with tabular number formatting.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find elements that likely display financial data
 const FINANCIAL_DATA_PATTERNS = [

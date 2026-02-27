@@ -8,6 +8,8 @@ These tests verify that the application startup sequence executes in the correct
 order and that failures are properly handled.
 """
 
+import asyncio
+
 import pytest
 
 from app.services.startup_validator import StartupSequence, StartupStep
@@ -29,12 +31,15 @@ class TestStartupSequenceIntegrity:
 
         async def step1():
             execution_order.append("step1")
+            await asyncio.sleep(0)
 
         async def step2():
             execution_order.append("step2")
+            await asyncio.sleep(0)
 
         async def step3():
             execution_order.append("step3")
+            await asyncio.sleep(0)
 
         # Execute steps in order
         await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step1, required=True)
@@ -61,13 +66,16 @@ class TestStartupSequenceIntegrity:
 
         async def step1():
             execution_log.append("step1_executed")
+            await asyncio.sleep(0)
 
         async def step2_fails():
             execution_log.append("step2_attempted")
+            await asyncio.sleep(0)
             raise ValueError("Step 2 failed")
 
         async def step3():
             execution_log.append("step3_executed")
+            await asyncio.sleep(0)
 
         # Execute step 1 successfully
         result1 = await sequence.execute_step(
@@ -116,13 +124,16 @@ class TestStartupSequenceIntegrity:
 
         async def step1():
             execution_log.append("step1")
+            await asyncio.sleep(0)
 
         async def step2_fails():
             execution_log.append("step2_attempted")
+            await asyncio.sleep(0)
             raise ValueError("Optional step failed")
 
         async def step3():
             execution_log.append("step3")
+            await asyncio.sleep(0)
 
         # Execute step 1
         await sequence.execute_step(

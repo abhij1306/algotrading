@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 14: Raycast Component Refactoring
  * Validates: Requirements 7.2
@@ -7,8 +6,8 @@
  * it should use unified design tokens exclusively.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find Raycast CSS variables
 const RAYCAST_VAR_PATTERN = /var\(--raycast-[a-z-]+\)/g;

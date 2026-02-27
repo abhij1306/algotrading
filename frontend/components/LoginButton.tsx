@@ -3,7 +3,7 @@ import { LogOut, Key, CheckCircle, AlertCircle, X, Wifi, WifiOff } from "lucide-
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/type-guards";
 
-export default function LoginButton({ collapsed = false }: { collapsed?: boolean }) {
+export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?: boolean }>) {
   const [connected, setConnected] = useState(false);
   const [userId, setUserId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -84,12 +84,12 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
       if (data?.url) {
         // Use Electron's shell.openExternal if available
         const electron = (
-          window as unknown as { electron?: { openExternal?: (_url: string) => void } }
+          globalThis as unknown as { electron?: { openExternal?: (_url: string) => void } }
         ).electron;
         if (electron?.openExternal) {
           electron.openExternal(data.url);
         } else {
-          window.open(data.url, "_blank", "width=800,height=600");
+          globalThis.open(data.url, "_blank", "width=800,height=600");
         }
         setShowModal(true);
       } else {
@@ -282,10 +282,11 @@ export default function LoginButton({ collapsed = false }: { collapsed?: boolean
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-foreground-muted mb-2">
+                <label htmlFor="fyers-auth-code" className="block text-xs font-semibold text-foreground-muted mb-2">
                   Authorization Code
                 </label>
                 <input
+                  id="fyers-auth-code"
                   type="text"
                   value={authCode}
                   onChange={(e) => setAuthCode(e.target.value)}

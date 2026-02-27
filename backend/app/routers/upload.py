@@ -5,6 +5,7 @@ API endpoint to upload and process bhavcopy CSV files.
 """
 
 import logging
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -40,8 +41,7 @@ async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE):
 
         # Read and save file content
         content = await file.read()
-        with open(filepath, "wb") as f:
-            f.write(content)
+        await asyncio.to_thread(filepath.write_bytes, content)
 
         logger.info(f"Saved uploaded bhavcopy to: {filepath}")
 

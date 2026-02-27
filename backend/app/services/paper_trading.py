@@ -9,6 +9,7 @@ Run this as a scheduled task or background service:
 - Logs performance for graduation review
 """
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -118,6 +119,7 @@ class PaperTradingService:
         # Get latest symbols
         symbols_dict = universe.symbols_by_date
         latest_date = max(symbols_dict.keys())
+        await asyncio.sleep(0)
         return symbols_dict[latest_date]
 
     async def _fetch_live_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
@@ -130,11 +132,12 @@ class PaperTradingService:
             data = self.provider.get_history(
                 symbol=symbol, timeframe=timeframe, start_date=start_date, end_date=end_date
             )
+            await asyncio.sleep(0)
             return data
         except Exception:
             return pd.DataFrame()
 
-    async def _place_paper_order(self, signal, symbol: str, strategy_id: str):
+    async def _place_paper_order(self, signal, symbol: str, _strategy_id: str):
         """Place a paper order based on signal"""
         side = "BUY" if signal.direction == "LONG" else "SELL"
 
@@ -149,6 +152,7 @@ class PaperTradingService:
         result = self.broker.place_order(order)
 
         print(f"[PAPER] Placed order: {symbol} {side} - {result.get('status')}")
+        await asyncio.sleep(0)
 
     async def _check_paper_exits(self, symbol: str, strategy):
         """Check if we need to exit any paper positions"""
@@ -180,6 +184,8 @@ class PaperTradingService:
 
                 result = self.broker.place_order(order)
                 print(f"[PAPER] Exited position: {symbol} - {result.get('status')}")
+
+        await asyncio.sleep(0)
 
 
 # Entry point for scheduler

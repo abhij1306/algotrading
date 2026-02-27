@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
             loop = asyncio.get_running_loop()
             app.state.loop = loop
             logger.info(f"[OK] Event loop acquired: {loop}")
+            await asyncio.sleep(0)
 
         await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step_get_event_loop, required=True)
 
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
 
             manager.set_loop(app.state.loop)
             logger.info("[OK] WebSocket manager loop set")
+            await asyncio.sleep(0)
 
         await sequence.execute_step(
             StartupStep.SET_EVENT_LOOP,  # Reusing enum value as this is part of loop setup
@@ -92,6 +94,7 @@ async def lifespan(app: FastAPI):
             if db_format != test_symbol:
                 raise ValueError(f"Symbol master validation failed: {test_symbol} != {db_format}")
             logger.info("[OK] Symbol master validated")
+            await asyncio.sleep(0)
 
         await sequence.execute_step(
             StartupStep.VALIDATE_SYMBOL_MASTER, step_validate_symbol_master, required=True
@@ -111,6 +114,7 @@ async def lifespan(app: FastAPI):
                 logger.info("[OK] Database validated")
             finally:
                 db.close()
+            await asyncio.sleep(0)
 
         await sequence.execute_step(
             StartupStep.VALIDATE_DATABASE, step_validate_database, required=True
@@ -151,6 +155,7 @@ async def lifespan(app: FastAPI):
 
             index_universe_loader.load_all()
             logger.info("[OK] Index universe loaded")
+            await asyncio.sleep(0)
 
         await sequence.execute_step(
             StartupStep.LOAD_INDEX_UNIVERSE,
@@ -164,6 +169,7 @@ async def lifespan(app: FastAPI):
 
             live_market.connect(loop=app.state.loop)
             logger.info("[OK] Live market service connected")
+            await asyncio.sleep(0)
 
         await sequence.execute_step(
             StartupStep.CONNECT_LIVE_MARKET,

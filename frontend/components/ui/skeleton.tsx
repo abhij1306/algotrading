@@ -65,20 +65,29 @@ const SkeletonTable = React.forwardRef<
   React.HTMLAttributes<HTMLDivElement> & { rows?: number; columns?: number }
 >(({ className, rows = 5, columns = 4, ...props }, ref) => (
   <div ref={ref} className={cn("space-y-2", className)} {...props}>
-    {/* Header */}
-    <div className="flex gap-4 p-2">
-      {Array.from({ length: columns }).map((_, i) => (
-        <Skeleton key={i} className="h-4 flex-1" />
-      ))}
-    </div>
-    {/* Rows */}
-    {Array.from({ length: rows }).map((_, rowIndex) => (
-      <div key={rowIndex} className="flex gap-4 p-2">
-        {Array.from({ length: columns }).map((_, colIndex) => (
-          <Skeleton key={colIndex} className="h-4 flex-1" />
-        ))}
-      </div>
-    ))}
+    {(() => {
+      const headerCells = Array.from({ length: columns }, (_, idx) => `header-${idx + 1}`);
+      const rowKeys = Array.from({ length: rows }, (_, idx) => `row-${idx + 1}`);
+      const columnCells = Array.from({ length: columns }, (_, idx) => `col-${idx + 1}`);
+      return (
+        <>
+          {/* Header */}
+          <div className="flex gap-4 p-2">
+            {headerCells.map((key) => (
+              <Skeleton key={key} className="h-4 flex-1" />
+            ))}
+          </div>
+          {/* Rows */}
+          {rowKeys.map((rowKey) => (
+            <div key={rowKey} className="flex gap-4 p-2">
+              {columnCells.map((colKey) => (
+                <Skeleton key={`${rowKey}-${colKey}`} className="h-4 flex-1" />
+              ))}
+            </div>
+          ))}
+        </>
+      );
+    })()}
   </div>
 ));
 SkeletonTable.displayName = "SkeletonTable";

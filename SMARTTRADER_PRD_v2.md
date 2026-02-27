@@ -11,12 +11,6 @@
 
 SmartTrader is a **single-user, personal Indian equity and F&O trading platform** built as both a personal trading tool and an investor pitch demonstrating institutional-grade engineering. It is a **GitHub open-source project** with no authentication, no multi-user architecture, and no external paid data vendors.
 
-### The Pitch Positioning
-An investor looking at this system should feel two things:
-
-1. **Technical depth** — the data pipeline, backtesting methodology, and real-time architecture are non-trivial and demonstrate genuine engineering sophistication
-2. **Institutional quality** — the UI and data presentation look and behave like a professional terminal, not a hobby project
-
 ### What It Is Not
 - Not a multi-user platform (no auth, no roles, no sessions)
 - Not a prop trading system yet — it is the **foundation** that could become one

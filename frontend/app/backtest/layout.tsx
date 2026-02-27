@@ -5,7 +5,7 @@ export const metadata = {
   description: 'Backtest trading strategies on stocks, options, and index universes',
 };
 
-export default function BacktestLayout({ children }: { children: ReactNode }) {
+export default function BacktestLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       {children}

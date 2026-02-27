@@ -3,7 +3,7 @@ Data repository layer for database operations
 Provides clean interface for data access
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 from sqlalchemy import and_, desc
@@ -447,7 +447,7 @@ class DataRepository:
             for key, value in data.items():
                 if hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new
             statement = FinancialStatement(
@@ -501,7 +501,7 @@ class DataRepository:
             for key, value in data.items():
                 if hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             result = QuarterlyResult(company_id=company.id, **data)
             self.db.add(result)
@@ -538,7 +538,7 @@ class DataRepository:
         log = DataUpdateLog(
             company_id=company_id,
             data_type=data_type,
-            last_update=datetime.utcnow(),
+            last_update=datetime.now(timezone.utc),
             records_updated=records_updated,
             status=status,
             error_message=error_message,

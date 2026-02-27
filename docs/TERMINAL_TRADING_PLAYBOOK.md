@@ -1,6 +1,6 @@
 # Terminal Trading Playbook
 
-**Status:** Canonical  
+**Status:** Canonical
 **Last updated:** 2026-02-20
 
 ## 1) Purpose and Scope

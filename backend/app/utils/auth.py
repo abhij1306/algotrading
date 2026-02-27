@@ -4,7 +4,7 @@ Provides JWT token generation, validation, and user context
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -50,9 +50,9 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     to_encode = data.copy()
 
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -96,7 +96,7 @@ def verify_token(token: str) -> TokenData:
         raise credentials_exception
 
 
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> TokenData:
     """
@@ -107,8 +107,7 @@ async def get_current_user(
         def protected_route(user: TokenData = Depends(get_current_user)):
             return {"user_id": user.user_id}
     """
-    token = credentials.credentials
-    return verify_token(token)
+    return verify_token(credentials.credentials)
 
 
 def get_current_user_id(user: TokenData = Depends(get_current_user)) -> str:

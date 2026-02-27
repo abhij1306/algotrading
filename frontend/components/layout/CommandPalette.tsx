@@ -37,7 +37,7 @@ const MOCK_SYMBOLS: SymbolResult[] = [
   { symbol: 'NIFTY50', name: 'NIFTY 50 Index', exchange: 'NSE', price: 22450.0, change: 0.6 },
 ];
 
-export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
+export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -162,8 +162,8 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    globalThis.addEventListener('keydown', handleKeyDown);
+    return () => globalThis.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, selectedIndex, symbols, getCommands, router, onClose]);
 
   useEffect(() => {
@@ -185,8 +185,10 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
   return (
     <>
       {/* Backdrop */}
-      <div
+      <button
+        type="button"
         className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[600] animate-fade-in"
+        aria-label="Close command palette"
         onClick={onClose}
       />
 
@@ -324,8 +326,8 @@ export function useCommandPalette() {
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    globalThis.addEventListener('keydown', handleKeyDown);
+    return () => globalThis.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   return { isOpen, open: () => setIsOpen(true), close: () => setIsOpen(false) };

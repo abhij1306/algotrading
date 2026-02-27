@@ -7,7 +7,7 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children }: Readonly<AppShellProps>) {
   const { isOpen, open, close } = useCommandPalette();
 
   return (

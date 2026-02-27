@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 12: Inline Style Elimination
  * Validates: Requirements 5.8, 6.5
@@ -7,8 +6,8 @@
  * CSS variable references (use Tailwind classes instead).
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find inline style attributes with CSS variables
 const INLINE_STYLE_WITH_VAR_PATTERN = /style=\{[^}]*var\([^)]+\)[^}]*\}/g;

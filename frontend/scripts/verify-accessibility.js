@@ -10,8 +10,8 @@
  * - Screen reader compatibility (basic checks)
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // WCAG AA contrast ratio requirements
 const WCAG_AA_NORMAL = 4.5;
@@ -21,9 +21,9 @@ const WCAG_AA_LARGE = 3.0;
 function hexToRgb(hex) {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return result ? {
-    r: parseInt(result[1], 16),
-    g: parseInt(result[2], 16),
-    b: parseInt(result[3], 16)
+    r: Number.parseInt(result[1], 16),
+    g: Number.parseInt(result[2], 16),
+    b: Number.parseInt(result[3], 16)
   } : null;
 }
 

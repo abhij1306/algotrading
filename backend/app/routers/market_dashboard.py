@@ -1,6 +1,6 @@
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import or_
@@ -47,10 +47,10 @@ def get_market_overview():
             "indices": indices,
             "sentiment": sentiment,
             "condition": condition,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
-        payload = {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+        payload = {"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
 
     with _overview_cache_lock:
         _overview_cache_ts = now

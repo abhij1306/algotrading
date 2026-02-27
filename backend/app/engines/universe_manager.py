@@ -362,7 +362,7 @@ class UniverseManager(HistoricalUniverseManager):
         super().__init__(data_path)
 
     def get_custom_universe_symbols(
-        self, db: Session, universe_code: str, target_date: date | None = None
+        self, db: Session, universe_code: str, _target_date: date | None = None
     ) -> list[str]:
         """
         Get symbols from a custom user-defined universe.

@@ -310,7 +310,7 @@ class IndexUniverseLoader:
         universe = self._indices.get(index_id)
         return universe.description if universe else ""
 
-    def get_symbols_by_date(self, index_id: str, target_date: date) -> list[str]:
+    def get_symbols_by_date(self, index_id: str, _target_date: date) -> list[str]:
         """
         Get symbols for an index as of a specific date.
 

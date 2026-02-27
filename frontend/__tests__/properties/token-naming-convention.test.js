@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 2: Token Naming Convention
  * Validates: Requirements 2.6
@@ -7,8 +6,8 @@
  * --color-*, --spacing-*, --radius-*, --shadow-*, --font-*, or --text-*.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Valid token prefixes for the unified design system
 const VALID_TOKEN_PREFIXES = [

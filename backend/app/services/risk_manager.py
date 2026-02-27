@@ -228,7 +228,7 @@ class RiskManager:
             if db:
                 db.close()
 
-    def _check_position_size(self, order_params: dict, db: Session | None) -> RiskCheckResult:
+    def _check_position_size(self, order_params: dict, _db: Session | None) -> RiskCheckResult:
         """Check if order size exceeds limits"""
         quantity = order_params.get("quantity", 0)
         symbol = order_params.get("symbol", "")

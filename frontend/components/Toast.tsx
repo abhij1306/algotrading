@@ -19,7 +19,7 @@ interface ToastContextType {
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
-export function ToastProvider({ children }: { children: ReactNode }) {
+export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const removeToast = useCallback((id: string) => {
@@ -61,10 +61,10 @@ export function useToast() {
 function ToastContainer({
   toasts,
   onRemove,
-}: {
+}: Readonly<{
   toasts: Toast[];
   onRemove: (_id: string) => void;
-}) {
+}>) {
   if (toasts.length === 0) return null;
 
   return (
@@ -76,7 +76,7 @@ function ToastContainer({
   );
 }
 
-function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (_id: string) => void }) {
+function ToastItem({ toast, onRemove }: Readonly<{ toast: Toast; onRemove: (_id: string) => void }>) {
   const icons = {
     success: "✅",
     error: "❌",

@@ -110,6 +110,10 @@ function toSafeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function toSafeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 // PriceChart component - reserved for future chart view implementation
 const _PriceChart = dynamic(
   () => import('@/components/terminal/PriceChart').then((mod) => mod.PriceChart),
@@ -213,7 +217,7 @@ export default function TerminalPage() {
   const subscribedSymbolsKeyRef = useRef('');
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(globalThis.location.search);
     const urlSymbol = params.get('symbol');
     if (urlSymbol) {
       setSelectedSymbol(urlSymbol);
@@ -221,14 +225,14 @@ export default function TerminalPage() {
   }, []);
 
   useEffect(() => {
-    const storedMode = window.localStorage.getItem('terminal_trading_mode');
+    const storedMode = globalThis.localStorage.getItem('terminal_trading_mode');
     if (storedMode === 'LIVE' || storedMode === 'PAPER') {
       setTradingMode(storedMode);
     }
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem('terminal_trading_mode', tradingMode);
+    globalThis.localStorage.setItem('terminal_trading_mode', tradingMode);
   }, [tradingMode]);
 
   useEffect(() => {
@@ -241,8 +245,8 @@ export default function TerminalPage() {
         const data = (await response.json()) as Array<Record<string, unknown>>;
         const normalized = Array.isArray(data)
           ? data.map((row) => ({
-              symbol: String(row.symbol ?? ''),
-              name: String(row.name ?? row.symbol ?? ''),
+              symbol: toSafeString(row.symbol),
+              name: toSafeString(row.name, toSafeString(row.symbol)),
               price: toSafeNumber(row.price),
               change: toSafeNumber(row.change),
               ltp: toSafeNumber(row.ltp) ?? toSafeNumber(row.price),
@@ -424,8 +428,8 @@ export default function TerminalPage() {
         const normalized = Array.isArray(data)
           ? data
               .map((row) => ({
-                symbol: String(row.symbol ?? '').trim(),
-                name: String(row.name ?? row.symbol ?? '').trim(),
+                symbol: toSafeString(row.symbol).trim(),
+                name: toSafeString(row.name, toSafeString(row.symbol)).trim(),
                 type: typeof row.type === 'string' ? row.type : undefined,
                 instrument_type: typeof row.instrument_type === 'string' ? row.instrument_type : undefined,
               }))
@@ -464,7 +468,7 @@ export default function TerminalPage() {
       selectedSymbol,
       selectedOptionSymbol,
       ...positions.map((position) => position.symbol),
-    ].filter(Boolean))).sort();
+    ].filter(Boolean))).sort((a, b) => a.localeCompare(b));
     if (symbols.length === 0) return;
 
     const symbolsKey = symbols.join(',');
@@ -654,7 +658,7 @@ export default function TerminalPage() {
   }, [terminalView, isOptionSymbol, optionLots, optionLotSize, orderQty]);
 
   const openTradingView = (symbol: string) => {
-    window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
+    globalThis.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
   };
 
   const placeOrder = async (side: 'BUY' | 'SELL') => {
@@ -668,7 +672,7 @@ export default function TerminalPage() {
       setOrderMessage(null);
       let isLiveConfirmationAck = false;
       if (tradingMode === 'LIVE') {
-        isLiveConfirmationAck = window.confirm(`Confirm LIVE ${side} ${effectiveOrderQuantity} ${activeTradeSymbol}?`);
+        isLiveConfirmationAck = globalThis.confirm(`Confirm LIVE ${side} ${effectiveOrderQuantity} ${activeTradeSymbol}?`);
         if (!isLiveConfirmationAck) {
           setOrderMessage('Live order cancelled');
           return;
@@ -1127,8 +1131,9 @@ export default function TerminalPage() {
 
           <div className="space-y-3">
             <div>
-              <label className="text-xs text-foreground-muted mb-1 block">Order Type</label>
+              <label htmlFor="order-type" className="text-xs text-foreground-muted mb-1 block">Order Type</label>
               <select
+                id="order-type"
                 value={orderType}
                 onChange={(event) => setOrderType(event.target.value as OrderType)}
                 className="w-full h-8 px-2 rounded text-sm border border-border bg-background outline-none"
@@ -1141,8 +1146,9 @@ export default function TerminalPage() {
             </div>
             {terminalView === 'options' && isOptionSymbol ? (
               <div>
-                <label className="text-xs text-foreground-muted mb-1 block">Lots</label>
+                <label htmlFor="order-lots" className="text-xs text-foreground-muted mb-1 block">Lots</label>
                 <Input
+                  id="order-lots"
                   type="number"
                   min={1}
                   value={optionLots}
@@ -1153,8 +1159,9 @@ export default function TerminalPage() {
               </div>
             ) : (
               <div>
-                <label className="text-xs text-foreground-muted mb-1 block">Quantity</label>
+                <label htmlFor="order-qty" className="text-xs text-foreground-muted mb-1 block">Quantity</label>
                 <Input
+                  id="order-qty"
                   type="number"
                   min={1}
                   value={orderQty}
@@ -1165,8 +1172,9 @@ export default function TerminalPage() {
               </div>
             )}
             <div>
-              <label className="text-xs text-foreground-muted mb-1 block">Price</label>
+              <label htmlFor="order-price" className="text-xs text-foreground-muted mb-1 block">Price</label>
               <Input
+                id="order-price"
                 type="number"
                 value={orderPrice}
                 disabled={orderType === 'MARKET'}
@@ -1177,8 +1185,9 @@ export default function TerminalPage() {
             </div>
             {(orderType === 'SL' || orderType === 'SL-M') && (
               <div>
-                <label className="text-xs text-foreground-muted mb-1 block">Trigger</label>
+                <label htmlFor="order-trigger" className="text-xs text-foreground-muted mb-1 block">Trigger</label>
                 <Input
+                  id="order-trigger"
                   type="number"
                   value={orderTrigger}
                   onChange={(event) => setOrderTrigger(Number(event.target.value) || 0)}
@@ -1189,8 +1198,9 @@ export default function TerminalPage() {
             )}
             {tradingMode === 'LIVE' && (
               <div>
-                <label className="text-xs text-foreground-muted mb-1 block">Risk Override Reason (if warning)</label>
+                <label htmlFor="risk-override-reason" className="text-xs text-foreground-muted mb-1 block">Risk Override Reason (if warning)</label>
                 <Input
+                  id="risk-override-reason"
                   type="text"
                   value={riskOverrideReason}
                   onChange={(event) => setRiskOverrideReason(event.target.value)}

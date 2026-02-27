@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 7: Interactive Element States
  * Validates: Requirements 4.7
@@ -7,8 +6,8 @@
  * should be defined using design tokens.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pattern to find interactive elements
 const INTERACTIVE_ELEMENT_PATTERNS = [

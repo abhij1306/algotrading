@@ -66,7 +66,7 @@ const DynamicChart = dynamic(
   }
 );
 
-export function PriceChart({ data }: PriceChartProps) {
+export function PriceChart({ data }: Readonly<PriceChartProps>) {
   return (
     <div className="w-full h-full p-2">
       <DynamicChart data={data} />

@@ -1,4 +1,3 @@
-/* eslint-disable */
 /**
  * Property 11: Focus Ring Consistency
  * Validates: Requirements 5.7
@@ -7,8 +6,8 @@
  * with consistent styling (2px ring, 20% opacity).
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Expected focus ring patterns
 const VALID_FOCUS_PATTERNS = [

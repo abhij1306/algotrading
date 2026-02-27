@@ -7,7 +7,7 @@ API endpoints for order placement, position management, and trading operations.
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -429,7 +429,7 @@ def square_position(req: SquarePositionRequest, db: Session = Depends(get_db)):
         if not targets:
             return {"status": "SUCCESS", "mode": "PAPER", "message": "No paper position to square"}
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for pos in targets:
             qty = int(abs(_to_float(pos.get("net_qty"), 0)))
             if qty <= 0:

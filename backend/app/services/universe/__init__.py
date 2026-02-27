@@ -87,15 +87,17 @@ class UniverseServiceImpl:
     def get_symbols(
         self,
         index_code: str,
-        target_date: date | None = None,
-        mode: UniverseMode = UniverseMode.LIVE,
+        _target_date: date | None = None,
+        _mode: UniverseMode = UniverseMode.LIVE,
     ) -> list[str]:
         """Get all symbols for an index."""
         from ..index_universe_loader import index_universe_loader
 
         return index_universe_loader.get_index_symbols(index_code)
 
-    def is_constituent(self, symbol: str, index_code: str, as_of_date: date | None = None) -> bool:
+    def is_constituent(
+        self, symbol: str, index_code: str, _as_of_date: date | None = None
+    ) -> bool:
         """Check if a symbol is a constituent of an index."""
         from ..index_universe_loader import index_universe_loader
 
@@ -125,7 +127,7 @@ class UniverseServiceImpl:
         return indices
 
     def get_universe_changes(
-        self, index_code: str, start_date: date, end_date: date
+        self, _index_code: str, _start_date: date, _end_date: date
     ) -> dict[str, list[dict[str, Any]]]:
         """
         Get changes to an index between two dates.

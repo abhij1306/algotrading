@@ -5,8 +5,8 @@
  * Validates that fonts are properly configured in layout.tsx
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const layoutPath = path.join(__dirname, '../app/layout.tsx');
 const layoutContent = fs.readFileSync(layoutPath, 'utf-8');

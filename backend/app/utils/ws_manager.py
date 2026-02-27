@@ -3,6 +3,7 @@ WebSocket Manager for broadcasting messages to connected clients
 Handles connection lifecycle and broadcasting
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -77,6 +78,7 @@ class ConnectionManager:
             logger.info(
                 f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(self.subscriptions[websocket])}"
             )
+        await asyncio.sleep(0)
 
     async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
         """Unsubscribe a specific connection from symbols"""
@@ -90,6 +92,7 @@ class ConnectionManager:
             logger.info(
                 f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(self.subscriptions[websocket])}"
             )
+        await asyncio.sleep(0)
 
     def get_all_subscribed_symbols(self) -> set[str]:
         """Get union of subscribed symbols across all active clients (O(1) cached)."""
