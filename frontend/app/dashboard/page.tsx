@@ -42,17 +42,12 @@ interface BackendMarketStatusResponse {
   current_time_ist?: string;
 }
 
+type DashboardMode = 'market' | 'post_market';
+
 const QUICK_ACTIONS = [
   { icon: Zap, label: 'Trade', path: '/terminal' },
   { icon: Target, label: 'Backtest', path: '/backtest' },
   { icon: BarChart3, label: 'Screener', path: '/screener' },
-];
-
-const GLOBAL_INDICES = [
-  { name: 'S&P 500', symbol: '^GSPC' },
-  { name: 'Nasdaq', symbol: '^IXIC' },
-  { name: 'Dow Jones', symbol: '^DJI' },
-  { name: 'FTSE 100', symbol: '^FTSE' },
 ];
 
 function formatDashboardNumber(value: number | null | undefined): string {
@@ -67,6 +62,39 @@ function formatDashboardPercent(value: number | null | undefined): string {
 
 function toSafeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function applyWatchlistTicks(
+  rows: WatchlistItem[],
+  pending: Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>
+): WatchlistItem[] {
+  return rows.map((item) => {
+    const tick = pending[item.symbol];
+    if (!tick) return item;
+    return {
+      ...item,
+      price: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : item.price,
+      changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : item.changePercent,
+      change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : item.change,
+    };
+  });
+}
+
+function applyIndexTicks(
+  rows: MarketIndex[],
+  pending: Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>
+): MarketIndex[] {
+  return rows.map((idx) => {
+    const tick = pending[idx.symbol];
+    if (!tick) return idx;
+    return {
+      ...idx,
+      value: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : idx.value,
+      changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : idx.changePercent,
+      change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : idx.change,
+      source: 'websocket',
+    };
+  });
 }
 
 // Memoized components for performance
@@ -179,6 +207,7 @@ export default function DashboardPage() {
 
   const [mounted, setMounted] = useState(false);
   const [marketStatus, setMarketStatus] = useState<MarketStatus>({ isOpen: false, message: 'Loading market status' });
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('post_market');
   const [istTime, setIstTime] = useState<string>(getISTTime());
   const [portfolioStats, setPortfolioStats] = useState<PortfolioStats | null>(null);
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
@@ -188,6 +217,8 @@ export default function DashboardPage() {
   const indicesLoadedRef = useRef(false);
   const subscriptionSymbolsRef = useRef<string>('');
   const pendingTicksRef = useRef<Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>>({});
+  const fetchInFlightRef = useRef(false);
+  const fetchRequestIdRef = useRef(0);
   const openTradingView = (symbol: string) => {
     window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
   };
@@ -224,13 +255,23 @@ export default function DashboardPage() {
 
   // Fetch data (NO WebSocket subscription here)
   const fetchData = useCallback(async () => {
-    const status = await fetchMarketStatus();
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    const requestId = ++fetchRequestIdRef.current;
 
     try {
+      const status = await fetchMarketStatus();
+      const nextMode: DashboardMode = status.isOpen ? 'market' : 'post_market';
+      if (requestId === fetchRequestIdRef.current) {
+        setDashboardMode(nextMode);
+      }
+
       const [statsRes, watchlistRes] = await Promise.all([
         apiClient.get('/api/portfolio/stats'),
         apiClient.get('/api/market/watchlist')
       ]);
+
+      if (requestId !== fetchRequestIdRef.current) return;
 
       if (statsRes.data) setPortfolioStats(statsRes.data as PortfolioStats);
       const watchlistData = Array.isArray(watchlistRes.data)
@@ -251,6 +292,7 @@ export default function DashboardPage() {
 
       if (status.isOpen) {
         const indicesRes = await apiClient.get('/api/market/indices');
+        if (requestId !== fetchRequestIdRef.current) return;
         let indicesData: MarketIndex[] = [];
         if (indicesRes.data) {
           indicesData = Array.isArray(indicesRes.data)
@@ -268,27 +310,37 @@ export default function DashboardPage() {
           indicesLoadedRef.current = true;
         }
       } else {
-        // Fetch global indices in parallel for faster post-market render.
-        const globalResponses = await Promise.all(
-          GLOBAL_INDICES.map(async (idx) => {
-            try {
-              const res = await apiClient.get(`/api/market/quote/${idx.symbol}`);
-              const quote = (res.data ?? {}) as Record<string, unknown>;
-              return {
-                name: idx.name,
-                symbol: idx.symbol,
-                value: typeof quote.price === 'number' ? roundToDecimals(quote.price, 2) : 0,
-                change: typeof quote.change === 'number' ? roundToDecimals(quote.change, 2) : 0,
-                changePercent: typeof quote.changePercent === 'number' ? roundToDecimals(quote.changePercent, 2) : 0,
-                type: 'global' as const,
-                source: 'yahoo' as const,
-              } satisfies MarketIndex;
-            } catch {
-              return null;
-            }
-          })
-        );
-        const globalData = globalResponses.filter(Boolean) as MarketIndex[];
+        // Use one aggregated endpoint in post-market mode to avoid quote fan-out.
+        const overviewRes = await apiClient.get('/api/market/overview');
+        if (requestId !== fetchRequestIdRef.current) return;
+        const overviewData = (overviewRes.data ?? {}) as Record<string, unknown>;
+        const indicesRaw = Array.isArray(overviewData.indices) ? overviewData.indices : [];
+
+        const globalData: MarketIndex[] = [];
+        for (const idx of indicesRaw as Array<Record<string, unknown>>) {
+          const symbol = toSafeString(idx.symbol);
+          const name = toSafeString(idx.name, symbol);
+          const price = typeof idx.price === 'number' ? roundToDecimals(idx.price, 2) : null;
+          const change = typeof idx.change === 'number' ? roundToDecimals(idx.change, 2) : 0;
+          const changePct =
+            typeof idx.change_pct === 'number'
+              ? roundToDecimals(idx.change_pct, 2)
+              : typeof idx.changePercent === 'number'
+                ? roundToDecimals(idx.changePercent, 2)
+                : 0;
+
+          if (!symbol || price === null) continue;
+          globalData.push({
+            name,
+            symbol,
+            value: price,
+            change,
+            changePercent: changePct,
+            type: 'global',
+            source: 'yahoo',
+          });
+        }
+
         setMarketIndices(globalData);
         indicesLoadedRef.current = true;
       }
@@ -297,6 +349,8 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Dashboard fetch error:', error);
       setLoading({ portfolio: false, indices: false, watchlist: false });
+    } finally {
+      fetchInFlightRef.current = false;
     }
   }, [fetchMarketStatus]);
 
@@ -356,38 +410,24 @@ export default function DashboardPage() {
   }, [lastMessage]);
 
   useEffect(() => {
+    if (dashboardMode === 'market') return;
+    pendingTicksRef.current = {};
+    if (subscriptionSymbolsRef.current) {
+      const oldSymbols = subscriptionSymbolsRef.current.split(',');
+      sendMessage({ action: 'unsubscribe', symbols: oldSymbols });
+      subscriptionSymbolsRef.current = '';
+    }
+  }, [dashboardMode, sendMessage]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       const pending = pendingTicksRef.current;
       const symbols = Object.keys(pending);
       if (symbols.length === 0) return;
       pendingTicksRef.current = {};
 
-      setWatchlist((prev) =>
-        prev.map((item) => {
-          const tick = pending[item.symbol];
-          if (!tick) return item;
-          return {
-            ...item,
-            price: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : item.price,
-            changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : item.changePercent,
-            change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : item.change,
-          };
-        })
-      );
-
-      setMarketIndices((prev) =>
-        prev.map((idx) => {
-          const tick = pending[idx.symbol];
-          if (!tick) return idx;
-          return {
-            ...idx,
-            value: typeof tick.ltp === 'number' ? roundToDecimals(tick.ltp, 2) : idx.value,
-            changePercent: typeof tick.change_pct === 'number' ? roundToDecimals(tick.change_pct, 2) : idx.changePercent,
-            change: typeof tick.change === 'number' ? roundToDecimals(tick.change, 2) : idx.change,
-            source: 'websocket',
-          };
-        })
-      );
+      setWatchlist((prev) => applyWatchlistTicks(prev, pending));
+      setMarketIndices((prev) => applyIndexTicks(prev, pending));
     }, 250);
 
     return () => clearInterval(timer);

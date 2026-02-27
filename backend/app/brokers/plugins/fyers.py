@@ -3,6 +3,8 @@ from typing import Any
 from ...services.fyers_client import get_fyers_client
 from ..base import BrokerFunds, IBroker, OrderResponse, Position
 
+CLIENT_NOT_INITIALIZED = "Client not initialized"
+
 
 class FyersBroker(IBroker):
     """
@@ -33,7 +35,7 @@ class FyersBroker(IBroker):
                 return OrderResponse(
                     order_id="",
                     status="REJECTED",
-                    message="Fyers Client not initialized. Please Login.",
+                    message=f"Fyers {CLIENT_NOT_INITIALIZED}. Please Login.",
                     details=None,
                 )
 
@@ -79,7 +81,7 @@ class FyersBroker(IBroker):
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not self.client:
-            return {"status": "ERROR", "message": "Client not initialized"}
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
         data = {"id": order_id}
         return self.client.cancel_order(data=data)
 
@@ -89,7 +91,7 @@ class FyersBroker(IBroker):
         params: {type, limitPrice, qty}
         """
         if not self.client:
-            return {"status": "ERROR", "message": "Client not initialized"}
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
         data = {"id": order_id, "type": 1 if params.get("order_type") != "MARKET" else 2}
 
@@ -203,7 +205,7 @@ class FyersBroker(IBroker):
     def exit_position(self, symbol: str) -> dict[str, Any]:
         """Exit position for a specific symbol."""
         if not self.client:
-            return {"status": "ERROR", "message": "Client not initialized"}
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
         # Strategy: Get positions, find matches, close them.
         positions = self.get_positions()
@@ -226,7 +228,7 @@ class FyersBroker(IBroker):
     def exit_all_positions(self) -> dict[str, Any]:
         """Panic button: Exit all positions."""
         if not self.client:
-            return {"status": "ERROR", "message": "Client not initialized"}
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
         # Fyers API supports exiting all via exit_positions
         return self.client.exit_positions(data={})

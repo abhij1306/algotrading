@@ -13,6 +13,8 @@ from datetime import datetime
 import requests
 
 BASE_URL = "http://localhost:8000"
+STATUS_PASS = "✅ PASS"
+STATUS_FAIL = "❌ FAIL"
 
 class EndpointTester:
     def __init__(self):
@@ -38,10 +40,10 @@ class EndpointTester:
 
             if success:
                 self.passed_tests += 1
-                status = "✅ PASS"
+                status = STATUS_PASS
             else:
                 self.failed_tests += 1
-                status = "❌ FAIL"
+                status = STATUS_FAIL
 
             self.results[name] = {
                 "status": status,
@@ -58,7 +60,7 @@ class EndpointTester:
         except requests.exceptions.ConnectionError:
             self.failed_tests += 1
             self.results[name] = {
-                "status": "❌ FAIL",
+                "status": STATUS_FAIL,
                 "endpoint": endpoint,
                 "method": method,
                 "expected_status": expected_status,
@@ -66,12 +68,12 @@ class EndpointTester:
                 "response_time_ms": None,
                 "error": "Connection refused - Is backend running?"
             }
-            print(f"❌ FAIL | {method:4} {endpoint:50} | CONNECTION_ERROR")
+            print(f"{STATUS_FAIL} | {method:4} {endpoint:50} | CONNECTION_ERROR")
 
         except Exception as e:
             self.failed_tests += 1
             self.results[name] = {
-                "status": "❌ FAIL",
+                "status": STATUS_FAIL,
                 "endpoint": endpoint,
                 "method": method,
                 "expected_status": expected_status,
@@ -79,7 +81,7 @@ class EndpointTester:
                 "response_time_ms": None,
                 "error": str(e)
             }
-            print(f"❌ FAIL | {method:4} {endpoint:50} | ERROR: {str(e)[:50]}")
+            print(f"{STATUS_FAIL} | {method:4} {endpoint:50} | ERROR: {str(e)[:50]}")
 
     def run_all_tests(self):
         """Run all endpoint tests"""

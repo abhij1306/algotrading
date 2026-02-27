@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { MarketStatus } from '@/lib/market-hours';
 import { apiClient } from '@/lib/api-client';
 import { MarketHoursInsights } from './MarketHoursInsights';
@@ -86,8 +86,12 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: Re
   const [postMarketData, setPostMarketData] = useState<PostMarketData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const marketFetchInFlightRef = useRef(false);
+  const postFetchInFlightRef = useRef(false);
 
   const fetchMarketInsights = useCallback(async () => {
+    if (marketFetchInFlightRef.current) return;
+    marketFetchInFlightRef.current = true;
     try {
       setLoading(true);
       setError(null);
@@ -140,11 +144,14 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: Re
       setError('Failed to load market insights');
       onSymbolsChange?.([]);
     } finally {
+      marketFetchInFlightRef.current = false;
       setLoading(false);
     }
   }, [onSymbolsChange]);
 
   const fetchPostMarketData = useCallback(async () => {
+    if (postFetchInFlightRef.current) return;
+    postFetchInFlightRef.current = true;
     try {
       setLoading(true);
       setError(null);
@@ -212,25 +219,34 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: Re
       console.error('[InsightsPanel] Error fetching post-market data:', err);
       setError('Failed to load post-market data');
     } finally {
+      postFetchInFlightRef.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
     if (marketStatus.isOpen) {
-      fetchMarketInsights();
+      setPostMarketData(null);
+      void fetchMarketInsights();
       // Auto-refresh every 60 seconds during market hours
-      const interval = setInterval(fetchMarketInsights, 60000);
-      return () => clearInterval(interval);
+      intervalId = setInterval(() => {
+        void fetchMarketInsights();
+      }, 60000);
     } else {
+      setMarketInsights(null);
       onSymbolsChange?.([]);
-      fetchPostMarketData();
+      void fetchPostMarketData();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketStatus.isOpen]);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [marketStatus.isOpen, fetchMarketInsights, fetchPostMarketData, onSymbolsChange]);
 
   // Handle live WebSocket updates for top movers
   useEffect(() => {
+    if (!marketStatus.isOpen) return;
     if (lastMessage?.type === 'ticker' && lastMessage.data) {
       const tick = lastMessage.data as { symbol?: string; ltp?: number; change_pct?: number };
       if (tick.symbol) {
@@ -264,7 +280,7 @@ export function InsightsPanel({ marketStatus, lastMessage, onSymbolsChange }: Re
         });
       }
     }
-  }, [lastMessage]);
+  }, [lastMessage, marketStatus.isOpen]);
 
   if (loading && !marketInsights && !postMarketData) {
     return (

@@ -291,6 +291,10 @@ debug_*.py
 !backend/scripts/*.py      # Allow all scripts
 !backend/utils/*.py        # Allow utils
 
+# SonarQube scanner temp output
+.scannerwork/
+.sonarqube/
+
 
 # Archive Folders
 archive/

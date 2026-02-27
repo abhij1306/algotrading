@@ -42,6 +42,33 @@ from .routers import (
 )
 
 
+def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
+    """Suppress noisy expected WinError 10054 transport disconnect callbacks on Windows."""
+    default_handler = loop.default_exception_handler
+
+    def _handler(event_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        message = context.get("message", "")
+        handle = context.get("handle")
+        if (
+            isinstance(exc, ConnectionResetError)
+            and getattr(exc, "winerror", None) == 10054
+            and "_ProactorBasePipeTransport._call_connection_lost" in str(handle)
+        ):
+            logger.debug("Ignored expected Windows connection reset during transport shutdown")
+            return
+        if (
+            isinstance(exc, ConnectionResetError)
+            and getattr(exc, "winerror", None) == 10054
+            and "_call_connection_lost" in message
+        ):
+            logger.debug("Ignored expected Windows connection reset callback")
+            return
+        default_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -65,6 +92,7 @@ async def lifespan(app: FastAPI):
         async def step_get_event_loop():
             loop = asyncio.get_running_loop()
             app.state.loop = loop
+            _install_windows_reset_handler(loop)
             logger.info(f"[OK] Event loop acquired: {loop}")
             await asyncio.sleep(0)
 
@@ -133,15 +161,17 @@ async def lifespan(app: FastAPI):
                         timeout=5.0,
                     )
                 except TimeoutError:
-                    logger.warning(
-                        "[WARN] Fyers token validation timed out after 5s; step marked failed and startup sequence will record warning state"
-                    )
-                    raise ValueError("Fyers token validation timeout")
+                    logger.warning("[WARN] Fyers token validation timed out after 5s")
+                except Exception as exc:
+                    logger.warning(f"[WARN] Fyers token validation errored: {exc}")
 
-            if not fyers or not is_valid:
-                logger.warning("[WARN] Fyers token is invalid or expired")
-                raise ValueError("Fyers token validation failed")
-            logger.info("[OK] Fyers token validated")
+            app.state.fyers_token_valid = bool(is_valid)
+            if app.state.fyers_token_valid:
+                logger.info("[OK] Fyers token validated")
+            else:
+                logger.warning(
+                    "[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode."
+                )
 
         await sequence.execute_step(
             StartupStep.VALIDATE_FYERS_TOKEN,
@@ -167,8 +197,20 @@ async def lifespan(app: FastAPI):
         async def step_connect_live_market():
             from .services.live_market_service import live_market
 
-            live_market.connect(loop=app.state.loop)
-            logger.info("[OK] Live market service connected")
+            connect_status = live_market.connect(
+                loop=app.state.loop,
+                prevalidated_token=app.state.fyers_token_valid,
+            )
+            if connect_status in {"started", "already_connected"}:
+                logger.info("[OK] Live market service connection initialized")
+            elif connect_status == "market_closed":
+                logger.info("[INFO] Live market connection deferred: market closed")
+            elif connect_status == "token_invalid":
+                logger.warning(
+                    "[WARN] Live market connection deferred: Fyers token invalid/expired"
+                )
+            else:
+                logger.warning(f"[WARN] Live market connection deferred: {connect_status}")
             await asyncio.sleep(0)
 
         await sequence.execute_step(

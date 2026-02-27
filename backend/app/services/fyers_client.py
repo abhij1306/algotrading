@@ -66,7 +66,9 @@ class FyersClient:
             return
 
         self._load_credentials()
-        self._connect()
+        # Connect lazily without immediate token validation.
+        # Validation happens in startup validation and runtime checks.
+        self._connect(skip_validation=True)
         self._initialized = True
 
     def _load_credentials(self):
@@ -168,11 +170,15 @@ class FyersClient:
                 if not self.fyers:
                     return False
 
+            # Avoid noisy API validation calls when token is already known expired.
+            if self.is_token_expired():
+                return False
+
             def _profile_ok() -> bool:
                 response = self.fyers.get_profile()
                 if response.get("s") == "ok":
                     return True
-                logger.warning(f"[ERROR] Fyers token invalid: {response}")
+                logger.warning("[WARN] Fyers token invalid: %s", response)
                 return False
 
             try:

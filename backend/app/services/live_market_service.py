@@ -2,17 +2,20 @@ import asyncio
 import datetime
 import logging
 import os
-
-import pytz
+import time
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from ..utils.ws_manager import manager
-from .fyers_websocket import FyersWebSocketService, get_websocket_service
 from .symbol_master import symbol_master
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from .fyers_websocket import FyersWebSocketService
+
 # IST Timezone
-IST = pytz.timezone("Asia/Kolkata")
+IST = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN_TIME = datetime.time(9, 15)
 MARKET_CLOSE_TIME = datetime.time(15, 30)
 
@@ -24,7 +27,7 @@ class LiveMarketService:
     """
 
     def __init__(self):
-        self.ws_service: FyersWebSocketService | None = None
+        self.ws_service: "FyersWebSocketService | None" = None
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
         self.latest_values = {}
@@ -37,6 +40,8 @@ class LiveMarketService:
         self._is_connecting = False
         self._ws_thread = None
         self.pending_subscriptions = set()
+        self._last_connect_block_reason: str | None = None
+        self._last_subscribe_market_closed_log_ts = 0.0
 
     def on_ws_connected(self):
         """Callback when WebSocket connection is established"""
@@ -200,7 +205,7 @@ class LiveMarketService:
             except Exception as e:
                 logger.error(f"Error processing incoming tick: {e}")
 
-    def connect(self, loop=None):
+    def connect(self, loop=None, prevalidated_token: bool | None = None) -> str:
         """Connect to external data provider if market is open and token is valid"""
         # 1. Capture and set event loop
         if loop:
@@ -221,22 +226,32 @@ class LiveMarketService:
 
         # 4. Check if already connecting or connected
         if self._is_connecting or self.ws_connected:
-            return
+            self._last_connect_block_reason = None
+            return "already_connected"
 
         # 5. Validate Fyers Token
         from .fyers_client import get_fyers_client
 
-        fyers = get_fyers_client()
-        if not fyers or not fyers.validate_token():
-            logger.warning("Cannot connect WebSocket: Fyers token is invalid or expired.")
-            return
+        token_valid = prevalidated_token
+        if token_valid is None:
+            fyers = get_fyers_client()
+            token_valid = bool(fyers and fyers.validate_token())
+
+        if not token_valid:
+            if self._last_connect_block_reason != "token_invalid":
+                logger.debug("Live market connect skipped: Fyers token is invalid or expired.")
+                self._last_connect_block_reason = "token_invalid"
+            return "token_invalid"
 
         # 6. Check Market Hours
         if self.is_market_open():
+            self._last_connect_block_reason = None
             logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
 
             try:
                 self._is_connecting = True
+                from .fyers_websocket import get_websocket_service
+
                 self.ws_service = get_websocket_service()
 
                 # CRITICAL FIX: Set event loop for WebSocket BEFORE connecting
@@ -297,14 +312,19 @@ class LiveMarketService:
                     self._ws_thread = threading.Thread(target=ws_thread_runner, daemon=True)
                     self._ws_thread.start()
                     logger.info("[START] WebSocket connection started in background thread")
+                    return "started"
 
             except Exception as e:
                 self._is_connecting = False
                 logger.error(f"Failed to connect to Fyers: {e}")
+                return "error"
         else:
-            logger.info(
-                f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
-            )
+            if self._last_connect_block_reason != "market_closed":
+                logger.info(
+                    f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
+                )
+                self._last_connect_block_reason = "market_closed"
+            return "market_closed"
 
     async def subscribe(self, symbols: list[str]):
         """Subscribe to symbols non-blocking"""
@@ -313,7 +333,10 @@ class LiveMarketService:
             if self.is_market_open():
                 self.connect()
             else:
-                logger.warning("Cannot subscribe: Market is CLOSED.")
+                now = time.time()
+                if now - self._last_subscribe_market_closed_log_ts > 60:
+                    logger.info("Live subscribe deferred: market is closed")
+                    self._last_subscribe_market_closed_log_ts = now
                 return
 
         if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():

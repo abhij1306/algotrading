@@ -10,6 +10,15 @@ import pandas as pd
 import requests
 from sqlalchemy import func
 
+METRIC_TOTAL_REVENUE = "total revenue"
+METRIC_NET_INCOME = "net income"
+METRIC_NET_PROFIT = "net profit"
+METRIC_TOTAL_DEBT = "total debt"
+METRIC_EARNINGS_PER_SHARE = "earnings per share"
+METRIC_PRICE_TO_EARNINGS = "price to earnings"
+METRIC_SHAREHOLDERS_EQUITY = "shareholders equity"
+METRIC_NET_WORTH = "net worth"
+
 
 class SmartFinancialParser:
     """Intelligent parser for financial data using AI"""
@@ -120,10 +129,10 @@ class SmartFinancialParser:
 
         # Map Screener.in metric names to our standard names
         sales = (
-            metrics.get("sales", 0) or metrics.get("revenue", 0) or metrics.get("total revenue", 0)
+            metrics.get("sales", 0) or metrics.get("revenue", 0) or metrics.get(METRIC_TOTAL_REVENUE, 0)
         )
         net_profit = (
-            metrics.get("net profit", 0) or metrics.get("profit", 0) or metrics.get("net income", 0)
+            metrics.get(METRIC_NET_PROFIT, 0) or metrics.get("profit", 0) or metrics.get(METRIC_NET_INCOME, 0)
         )
 
         # Balance sheet items
@@ -132,7 +141,7 @@ class SmartFinancialParser:
         total_equity = equity + reserves if (equity or reserves) else 0
 
         borrowings = (
-            metrics.get("borrowings", 0) or metrics.get("total debt", 0) or metrics.get("debt", 0)
+            metrics.get("borrowings", 0) or metrics.get(METRIC_TOTAL_DEBT, 0) or metrics.get("debt", 0)
         )
 
         # Calculate derived metrics
@@ -140,8 +149,8 @@ class SmartFinancialParser:
         debt_to_equity = (borrowings / total_equity) if total_equity > 0 else 0
 
         # Try to get EPS and PE from metrics
-        eps = metrics.get("eps", 0) or metrics.get("earnings per share", 0)
-        pe = metrics.get("pe", 0) or metrics.get("p/e", 0) or metrics.get("price to earnings", 0)
+        eps = metrics.get("eps", 0) or metrics.get(METRIC_EARNINGS_PER_SHARE, 0)
+        pe = metrics.get("pe", 0) or metrics.get("p/e", 0) or metrics.get(METRIC_PRICE_TO_EARNINGS, 0)
 
         # Match symbol with existing database symbols
         matched_symbol = self._match_symbol_from_db(symbol)
@@ -257,29 +266,29 @@ class SmartFinancialParser:
             revenue = (
                 metrics_dict.get("sales", 0)
                 or metrics_dict.get("revenue", 0)
-                or metrics_dict.get("total revenue", 0)
+                or metrics_dict.get(METRIC_TOTAL_REVENUE, 0)
             )
             net_income = (
-                metrics_dict.get("net profit", 0)
+                metrics_dict.get(METRIC_NET_PROFIT, 0)
                 or metrics_dict.get("profit", 0)
-                or metrics_dict.get("net income", 0)
+                or metrics_dict.get(METRIC_NET_INCOME, 0)
             )
             equity = (
                 metrics_dict.get("equity", 0)
-                or metrics_dict.get("shareholders equity", 0)
-                or metrics_dict.get("net worth", 0)
+                or metrics_dict.get(METRIC_SHAREHOLDERS_EQUITY, 0)
+                or metrics_dict.get(METRIC_NET_WORTH, 0)
             )
             debt = (
                 metrics_dict.get("debt", 0)
-                or metrics_dict.get("total debt", 0)
+                or metrics_dict.get(METRIC_TOTAL_DEBT, 0)
                 or metrics_dict.get("borrowings", 0)
             )
-            eps = metrics_dict.get("eps", 0) or metrics_dict.get("earnings per share", 0)
+            eps = metrics_dict.get("eps", 0) or metrics_dict.get(METRIC_EARNINGS_PER_SHARE, 0)
             roe = metrics_dict.get("roe", 0) or metrics_dict.get("return on equity", 0)
             pe = (
                 metrics_dict.get("pe", 0)
                 or metrics_dict.get("p/e", 0)
-                or metrics_dict.get("price to earnings", 0)
+                or metrics_dict.get(METRIC_PRICE_TO_EARNINGS, 0)
             )
 
             # Calculate derived metrics if not present
@@ -323,21 +332,21 @@ class SmartFinancialParser:
         revenue = (
             metrics_dict.get("revenue", 0)
             or metrics_dict.get("sales", 0)
-            or metrics_dict.get("total revenue", 0)
+            or metrics_dict.get(METRIC_TOTAL_REVENUE, 0)
         )
         net_income = (
-            metrics_dict.get("net profit", 0)
-            or metrics_dict.get("net income", 0)
+            metrics_dict.get(METRIC_NET_PROFIT, 0)
+            or metrics_dict.get(METRIC_NET_INCOME, 0)
             or metrics_dict.get("profit after tax", 0)
         )
         equity = (
             metrics_dict.get("equity", 0)
-            or metrics_dict.get("shareholders equity", 0)
-            or metrics_dict.get("net worth", 0)
+            or metrics_dict.get(METRIC_SHAREHOLDERS_EQUITY, 0)
+            or metrics_dict.get(METRIC_NET_WORTH, 0)
         )
         debt = (
             metrics_dict.get("debt", 0)
-            or metrics_dict.get("total debt", 0)
+            or metrics_dict.get(METRIC_TOTAL_DEBT, 0)
             or metrics_dict.get("borrowings", 0)
         )
 
@@ -418,22 +427,22 @@ JSON:"""
 
         patterns = {
             "symbol": ["symbol", "ticker", "stock", "company", "name"],
-            "revenue": ["revenue", "sales", "total revenue", "turnover"],
-            "net_income": ["net profit", "net income", "pat", "profit after tax", "profit"],
+            "revenue": ["revenue", "sales", METRIC_TOTAL_REVENUE, "turnover"],
+            "net_income": [METRIC_NET_PROFIT, METRIC_NET_INCOME, "pat", "profit after tax", "profit"],
             "total_assets": ["total assets", "assets"],
             "shareholders_equity": [
                 "equity",
-                "shareholders equity",
-                "net worth",
+                METRIC_SHAREHOLDERS_EQUITY,
+                METRIC_NET_WORTH,
                 "shareholder funds",
             ],
-            "total_debt": ["debt", "total debt", "borrowings", "total borrowings"],
+            "total_debt": ["debt", METRIC_TOTAL_DEBT, "borrowings", "total borrowings"],
             "outstanding_shares": ["shares", "outstanding shares", "no. of shares"],
             "market_cap": ["market cap", "mcap", "market capitalization"],
-            "eps": ["eps", "earnings per share"],
+            "eps": ["eps", METRIC_EARNINGS_PER_SHARE],
             "roe": ["roe", "return on equity"],
             "debt_to_equity": ["debt to equity", "debt/equity", "d/e"],
-            "pe_ratio": ["pe", "p/e", "price to earnings", "pe ratio"],
+            "pe_ratio": ["pe", "p/e", METRIC_PRICE_TO_EARNINGS, "pe ratio"],
         }
 
         for col in columns:

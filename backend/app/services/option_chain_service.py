@@ -93,6 +93,23 @@ class OptionChainService:
         self._cache: dict[str, dict] = {}  # symbol -> {expiry -> (data, timestamp)}
         self._cache_ttl = 5  # 5 seconds for live market
         self._fyers_client = None
+        self._last_log_times: dict[str, float] = {}
+
+    def _log_with_cooldown(
+        self,
+        key: str,
+        level: str,
+        message: str,
+        *args,
+        cooldown_seconds: int = 60,
+    ) -> None:
+        now = time.time()
+        last = self._last_log_times.get(key, 0.0)
+        if now - last < cooldown_seconds:
+            return
+        self._last_log_times[key] = now
+        log_fn = getattr(logger, level, logger.warning)
+        log_fn(message, *args)
 
     def _get_fyers_client(self):
         """Lazy load Fyers client"""
@@ -154,13 +171,23 @@ class OptionChainService:
             client = self._get_fyers_client()
 
             if not client or not client.fyers:
-                logger.error("Fyers client not available")
+                self._log_with_cooldown(
+                    f"fyers_unavailable_{underlying}",
+                    "debug",
+                    "Option chain unavailable: Fyers client not available for %s",
+                    underlying,
+                )
                 return None
 
             # Get spot price first
             spot_price = self._get_spot_price(fyers_symbol)
             if spot_price == 0:
-                logger.error(f"Could not get spot price for {underlying}")
+                self._log_with_cooldown(
+                    f"spot_price_zero_{underlying}",
+                    "debug",
+                    "Option chain unavailable: could not get spot price for %s",
+                    underlying,
+                )
                 return None
 
             # Fetch option chain from Fyers
@@ -176,7 +203,13 @@ class OptionChainService:
                     break
 
             if response.get("s") != "ok":
-                logger.error(f"Fyers option chain error: {response}")
+                self._log_with_cooldown(
+                    f"option_chain_error_{underlying}",
+                    "debug",
+                    "Fyers option chain error for %s: %s",
+                    underlying,
+                    response,
+                )
                 return None
 
             # Parse response
@@ -190,10 +223,22 @@ class OptionChainService:
             return option_chain
 
         except ValueError as e:
-            logger.warning(f"Option chain unavailable for {underlying}: {e}")
+            self._log_with_cooldown(
+                f"option_chain_value_error_{underlying}",
+                "warning",
+                "Option chain unavailable for %s: %s",
+                underlying,
+                e,
+            )
             return None
         except Exception as e:
-            logger.error(f"Error fetching option chain for {underlying}: {e}")
+            self._log_with_cooldown(
+                f"option_chain_exception_{underlying}",
+                "error",
+                "Error fetching option chain for %s: %s",
+                underlying,
+                e,
+            )
             return None
 
     def _get_spot_price(self, fyers_symbol: str) -> float:

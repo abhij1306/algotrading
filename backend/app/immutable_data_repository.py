@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from .data_repository import DataRepository
 
+IMMUTABLE_WRITE_ERROR = "Write operations are disabled in ImmutableDataRepository"
+
 
 class ImmutableDataRepository(DataRepository):
     """
@@ -55,16 +57,16 @@ class ImmutableDataRepository(DataRepository):
     # Disable all write methods
 
     def save_historical_prices(self, *args, **kwargs):
-        raise PermissionError("Write operations are disabled in ImmutableDataRepository")
+        raise PermissionError(IMMUTABLE_WRITE_ERROR)
 
     def save_financial_statement(self, *args, **kwargs):
-        raise PermissionError("Write operations are disabled in ImmutableDataRepository")
+        raise PermissionError(IMMUTABLE_WRITE_ERROR)
 
     def save_quarterly_result(self, *args, **kwargs):
-        raise PermissionError("Write operations are disabled in ImmutableDataRepository")
+        raise PermissionError(IMMUTABLE_WRITE_ERROR)
 
     def log_data_update(self, *args, **kwargs):
-        raise PermissionError("Write operations are disabled in ImmutableDataRepository")
+        raise PermissionError(IMMUTABLE_WRITE_ERROR)
 
     def get_or_create_company(self, *args, **kwargs):
         # We should only allow get, not create

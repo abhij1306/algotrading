@@ -39,6 +39,14 @@ def setup_logging(name: str = "smarttrader"):
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+    # Reduce framework transport/access noise unless explicitly overridden.
+    framework_level = os.getenv("FRAMEWORK_LOG_LEVEL", "WARNING").upper()
+    if framework_level not in _VALID_LEVELS:
+        framework_level = "WARNING"
+    logging.getLogger("uvicorn.access").setLevel(framework_level)
+    logging.getLogger("websockets.server").setLevel(framework_level)
+    logging.getLogger("websockets.protocol").setLevel(framework_level)
+
     return logger
 
 

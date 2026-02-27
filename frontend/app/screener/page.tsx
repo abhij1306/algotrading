@@ -15,6 +15,7 @@ import {
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { screenerAPI, apiClient } from '@/lib/api-client';
 import { debounce } from '@/lib/debounce';
+import { isMarketOpen } from '@/lib/market-hours';
 import { Badge, Button } from '@/components/ui';
 import { formatPercentage, roundToDecimals } from '@/lib/utils';
 import { getTradingViewUrl } from '@/lib/tradingview';
@@ -57,7 +58,8 @@ type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 
 const RPP_OPTIONS = [25, 50, 100];
 const TICK_FLUSH_MS = 200;
-const FALLBACK_POLL_MS = 3000;
+const FALLBACK_POLL_OPEN_MS = 3000;
+const FALLBACK_POLL_CLOSED_MS = 60000;
 const WS_STALE_MS = 5000;
 const FLASH_DURATION_MS = 600;
 const MAX_FALLBACK_SYMBOLS = 100;
@@ -101,6 +103,19 @@ function getFlashClassName(flash?: FlashState): string | undefined {
   if (!flash) return undefined;
   if (flash.direction === 'up') return flash.phase === 0 ? 'screener-flash-up-a' : 'screener-flash-up-b';
   return flash.phase === 0 ? 'screener-flash-down-a' : 'screener-flash-down-b';
+}
+
+function sortIndicesForUi(indices: IndexItem[]): IndexItem[] {
+  return [...indices].sort((a, b) => {
+    if (a.id === 'NIFTY50') return -1;
+    if (b.id === 'NIFTY50') return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function resolveSelectedUniverse(current: string, indices: IndexItem[]): string {
+  if (indices.length === 0) return '';
+  return indices.some((index) => index.id === current) ? current : indices[0].id;
 }
 
 const StockRow = memo(function StockRow({
@@ -190,6 +205,7 @@ export default function ScreenerPage() {
   const resultsRef = useRef<ScreenerResult[]>([]);
   const pendingTicksRef = useRef<Record<string, TickData>>({});
   const lastTickAtRef = useRef(0);
+  const fallbackFetchInFlightRef = useRef(false);
   const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [flashByCell, setFlashByCell] = useState<Record<string, FlashState>>({});
   const openTradingView = (symbol: string) => {
@@ -228,17 +244,9 @@ export default function ScreenerPage() {
         name: item.name,
         count: item.count,
       }));
-
-      list.sort((a, b) => {
-        if (a.id === 'NIFTY50') return -1;
-        if (b.id === 'NIFTY50') return 1;
-        return a.name.localeCompare(b.name);
-      });
-
-      setIndices(list);
-      if (list.length > 0) {
-        setSelectedUniverse((current) => (list.some((index) => index.id === current) ? current : list[0].id));
-      }
+      const sortedList = sortIndicesForUi(list);
+      setIndices(sortedList);
+      setSelectedUniverse((current) => resolveSelectedUniverse(current, sortedList));
       setIsIndicesLoading(false);
     }
 
@@ -265,7 +273,8 @@ export default function ScreenerPage() {
 
       const params: Record<string, string> = {
         universe: selectedUniverse,
-        full: 'true',
+        page: String(currentPage),
+        limit: String(itemsPerPage),
         sort_by: sortField,
         sort_order: sortDirection,
       };
@@ -291,7 +300,11 @@ export default function ScreenerPage() {
       }));
       setResults(normalizedResults);
       resultsRef.current = normalizedResults;
-      setTotalResults(normalizedResults.length || screenerPayload.total || 0);
+      setTotalResults(
+        typeof screenerPayload.total === 'number'
+          ? screenerPayload.total
+          : normalizedResults.length
+      );
       setIsLoading(false);
     }
 
@@ -299,14 +312,13 @@ export default function ScreenerPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedUniverse, debouncedQuery, sortField, sortDirection]);
+  }, [selectedUniverse, debouncedQuery, sortField, sortDirection, currentPage, itemsPerPage]);
 
-  const totalPages = Math.max(1, Math.ceil(results.length / itemsPerPage));
+  const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
 
   const currentPageRows = useMemo(() => {
-    const start = (currentPage - 1) * itemsPerPage;
-    return results.slice(start, start + itemsPerPage);
-  }, [results, currentPage, itemsPerPage]);
+    return results;
+  }, [results]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -423,17 +435,46 @@ export default function ScreenerPage() {
   }, [registerCallback]);
 
   useEffect(() => {
-    const poll = setInterval(async () => {
-      if (!fallbackSymbolsKey) return;
+    if (!fallbackSymbolsKey) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      const pollMs = isMarketOpen().isOpen ? FALLBACK_POLL_OPEN_MS : FALLBACK_POLL_CLOSED_MS;
+      timeout = setTimeout(() => {
+        void poll();
+      }, pollMs);
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.hidden || fallbackFetchInFlightRef.current) {
+        scheduleNext();
+        return;
+      }
 
       const now = Date.now();
       const wsStale = !lastTickAtRef.current || (now - lastTickAtRef.current > WS_STALE_MS);
-      if (!wsStale) return;
+      if (!wsStale) {
+        scheduleNext();
+        return;
+      }
 
+      const fallbackSymbols = fallbackSymbolsKey.split(',').filter(Boolean);
+      if (fallbackSymbols.length === 0 || fallbackSymbols.length > MAX_FALLBACK_SYMBOLS) {
+        scheduleNext();
+        return;
+      }
+
+      fallbackFetchInFlightRef.current = true;
       try {
-        const fallbackSymbols = fallbackSymbolsKey.split(',').filter(Boolean);
-        if (fallbackSymbols.length === 0 || fallbackSymbols.length > MAX_FALLBACK_SYMBOLS) return;
-        const response = await apiClient.get(`/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(','))}`);
+        const response = await apiClient.get(
+          `/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(','))}`
+        );
         const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
         for (const [symbol, quote] of Object.entries(quoteMap)) {
           const ltp = typeof quote.ltp === 'number' ? quote.ltp : undefined;
@@ -453,10 +494,20 @@ export default function ScreenerPage() {
         }
       } catch {
         // Keep silent; websocket will continue trying and poll retries automatically.
+      } finally {
+        fallbackFetchInFlightRef.current = false;
+        scheduleNext();
       }
-    }, FALLBACK_POLL_MS);
+    };
 
-    return () => clearInterval(poll);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      fallbackFetchInFlightRef.current = false;
+    };
   }, [fallbackSymbolsKey]);
 
   useEffect(() => {

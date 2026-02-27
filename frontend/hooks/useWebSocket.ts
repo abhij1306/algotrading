@@ -20,9 +20,55 @@ interface WebSocketHookReturn {
 
 const RECONNECT_INTERVAL = 5000;
 const MAX_RETRIES = 10;
+const HEARTBEAT_INTERVAL_MS = 30000;
+const MAX_HIDDEN_QUEUE_SIZE = 1000;
+const PONG_EVENT = '{"type":"pong"}';
+const PING_EVENT = 'ping';
+const PONG_PAYLOAD = JSON.stringify({ type: 'pong' });
 
 interface WebSocketOptions {
   skipStateUpdates?: boolean;
+}
+
+function emitToCallbacks(
+  callbacks: Set<(msg: WebSocketMessage) => void>,
+  message: WebSocketMessage
+): void {
+  callbacks.forEach((cb) => {
+    try {
+      cb(message);
+    } catch {
+      // Isolate callback errors so one consumer cannot break others.
+    }
+  });
+}
+
+function dispatchIncomingMessage(
+  message: WebSocketMessage,
+  normalizeTicker: (value: unknown) => Record<string, unknown> | null,
+  emit: (msg: WebSocketMessage) => void
+): void {
+  if (message.type === 'ticker_batch' && Array.isArray(message.data)) {
+    for (const tick of message.data) {
+      const normalized = normalizeTicker(tick);
+      if (normalized) {
+        emit({ type: 'ticker', data: normalized });
+        continue;
+      }
+      if (isTickerData(tick)) {
+        emit({ type: 'ticker', data: tick });
+      }
+    }
+    return;
+  }
+
+  if (message.type === 'ticker' && message.data) {
+    const normalized = normalizeTicker(message.data);
+    emit(normalized ? { ...message, data: normalized } : message);
+    return;
+  }
+
+  emit(message);
 }
 
 export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookReturn {
@@ -37,6 +83,8 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isConnectingRef = useRef(false);
   const retryCountRef = useRef(0);
+  const cancelledRef = useRef(false);
+  const messagesQueueRef = useRef<WebSocketMessage[]>([]);
 
   // Ref for options to avoid stale closure
   const optionsRef = useRef(options);
@@ -75,14 +123,50 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
     };
   }, []);
 
+  const emitMessage = useCallback((message: WebSocketMessage) => {
+    emitToCallbacks(callbacksRef.current, message);
+
+    if (!optionsRef.current.skipStateUpdates) {
+      setLastMessage(message);
+    }
+  }, []);
+
+  const startHeartbeat = useCallback((socket: WebSocket) => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+    }
+    heartbeatIntervalRef.current = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(PING_EVENT);
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }, []);
+
+  const flushQueuedMessages = useCallback(() => {
+    if (cancelledRef.current || document.hidden || messagesQueueRef.current.length === 0) {
+      return;
+    }
+
+    const queuedMessages = messagesQueueRef.current;
+    messagesQueueRef.current = [];
+    for (const message of queuedMessages) {
+      dispatchIncomingMessage(message, normalizeTicker, emitMessage);
+    }
+  }, [normalizeTicker, emitMessage]);
+
   // Single effect for connection lifecycle - runs once on mount
   useEffect(() => {
-    // Local cancellation flag - scoped to this effect lifecycle
-    let cancelled = false;
+    cancelledRef.current = false;
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        flushQueuedMessages();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     function connectImpl() {
       // Guard: cancelled (unmounted), already open, or already connecting
-      if (cancelled) return;
+      if (cancelledRef.current) return;
       if (
         isConnectingRef.current ||
         socketRef.current?.readyState === WebSocket.OPEN ||
@@ -105,7 +189,7 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
         socketRef.current = socket;
 
         socket.onopen = () => {
-          if (cancelled) {
+          if (cancelledRef.current) {
             socket.close(1000);
             return;
           }
@@ -113,63 +197,36 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
           retryCountRef.current = 0;
           setIsConnected(true);
 
-          // Start heartbeat
-          if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-          heartbeatIntervalRef.current = setInterval(() => {
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send('ping');
-            }
-          }, 30000);
+          startHeartbeat(socket);
         };
 
         socket.onmessage = (event) => {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
 
           try {
-            if (event.data === '{"type":"pong"}') return;
-            if (event.data === 'ping') {
-              socket.send(JSON.stringify({ type: 'pong' }));
+            if (event.data === PONG_EVENT) return;
+            if (event.data === PING_EVENT) {
+              socket.send(PONG_PAYLOAD);
               return;
             }
 
-            const message = JSON.parse(event.data);
-
-            // Visibility check: pause updates if tab hidden to save CPU
-            if (document.hidden) return;
-
-            const handleMsg = (msg: WebSocketMessage) => {
-              callbacksRef.current.forEach(cb => {
-                try { cb(msg); } catch { /* callback isolation */ }
-              });
-
-              // Use ref for live options value
-              if (!optionsRef.current.skipStateUpdates) {
-                setLastMessage(msg);
+            const message = JSON.parse(event.data) as WebSocketMessage;
+            if (document.hidden) {
+              messagesQueueRef.current.push(message);
+              if (messagesQueueRef.current.length > MAX_HIDDEN_QUEUE_SIZE) {
+                const overflow = messagesQueueRef.current.length - MAX_HIDDEN_QUEUE_SIZE;
+                messagesQueueRef.current.splice(0, overflow);
               }
-            };
-
-            if (message.type === 'ticker_batch' && Array.isArray(message.data)) {
-              message.data.forEach((tick: unknown) => {
-                const normalized = normalizeTicker(tick);
-                if (normalized) {
-                  handleMsg({ type: 'ticker', data: normalized });
-                } else if (isTickerData(tick)) {
-                  handleMsg({ type: 'ticker', data: tick });
-                }
-              });
-            } else if (message.type === 'ticker' && message.data) {
-              const normalized = normalizeTicker(message.data);
-              handleMsg(normalized ? { ...message, data: normalized } : message);
-            } else {
-              handleMsg(message);
+              return;
             }
+            dispatchIncomingMessage(message, normalizeTicker, emitMessage);
           } catch (err) {
             console.warn('[WebSocket] Message parse error:', err);
           }
         };
 
         socket.onclose = (event) => {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
 
           setIsConnected(false);
           socketRef.current = null;
@@ -196,7 +253,7 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
       } catch (err) {
         console.warn('[WebSocket] Connection creation failed:', err);
         isConnectingRef.current = false;
-        if (!cancelled) {
+        if (!cancelledRef.current) {
           reconnectTimeoutRef.current = setTimeout(connectImpl, RECONNECT_INTERVAL);
         }
       }
@@ -206,8 +263,9 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
 
     return () => {
       // Mark as cancelled BEFORE closing - prevents onclose from triggering reconnect
-      cancelled = true;
+      cancelledRef.current = true;
       isConnectingRef.current = false;
+      messagesQueueRef.current = [];
 
       if (socketRef.current) {
         socketRef.current.close(1000, 'Component unmounted');
@@ -215,8 +273,9 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
       }
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [getWsUrl, normalizeTicker]);
+  }, [getWsUrl, normalizeTicker, emitMessage, startHeartbeat, flushQueuedMessages]);
 
   const sendMessage = useCallback((message: unknown) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {

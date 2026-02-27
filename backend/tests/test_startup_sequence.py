@@ -203,10 +203,12 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
 
         async def step1():
-            pass
+            # Async no-op step to emulate startup callback execution.
+            await asyncio.sleep(0)
 
         async def step2():
-            pass
+            # Async no-op step to emulate startup callback execution.
+            await asyncio.sleep(0)
 
         # Initial status
         status = sequence.get_status()
@@ -240,7 +242,8 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
 
         async def step1():
-            pass
+            # Async no-op step to emulate startup callback execution.
+            await asyncio.sleep(0)
 
         async def step2_fails():
             raise ValueError("First failure")
@@ -303,7 +306,8 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
 
         async def step1():
-            pass
+            # Async no-op step to emulate startup callback execution.
+            await asyncio.sleep(0)
 
         async def step2_fails():
             raise ValueError("Test failure")

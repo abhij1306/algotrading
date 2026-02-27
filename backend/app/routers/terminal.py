@@ -338,15 +338,24 @@ def get_options_board(
 ) -> dict[str, Any]:
     """Options board snapshot for terminal options-first view."""
     try:
+        normalized_underlying = underlying.upper()
         chain = option_chain_service.get_option_chain(
-            underlying=underlying.upper(),
+            underlying=normalized_underlying,
             expiry=expiry,
             strike_count=strike_count,
         )
         if not chain:
-            raise HTTPException(
-                status_code=404, detail="Option board unavailable for selected underlying/expiry"
-            )
+            return {
+                "underlying": normalized_underlying,
+                "spot_price": None,
+                "expiry": expiry.isoformat() if expiry else None,
+                "atm_strike": None,
+                "strikes": [],
+                "timestamp": datetime.now(UTC).isoformat(),
+                "stale_after_sec": 3,
+                "available": False,
+                "reason": "Option board unavailable for selected underlying/expiry",
+            }
 
         rows: list[dict[str, Any]] = []
         for strike in chain.strikes:
@@ -388,6 +397,8 @@ def get_options_board(
             "strikes": rows,
             "timestamp": chain.timestamp.isoformat(),
             "stale_after_sec": 3,
+            "available": True,
+            "reason": None,
         }
     except HTTPException:
         raise
@@ -437,15 +448,28 @@ def get_options_orderflow(
 ) -> dict[str, Any]:
     """Derived orderflow metrics from option chain snapshot (Phase-1)."""
     try:
+        normalized_underlying = underlying.upper()
         chain = option_chain_service.get_option_chain(
-            underlying=underlying.upper(),
+            underlying=normalized_underlying,
             expiry=expiry,
             strike_count=strike_count,
         )
         if not chain:
-            raise HTTPException(
-                status_code=404, detail="Orderflow unavailable for selected underlying/expiry"
-            )
+            return {
+                "underlying": normalized_underlying,
+                "expiry": expiry.isoformat() if expiry else None,
+                "spot_price": None,
+                "pcr_oi": None,
+                "pcr_volume": None,
+                "ce_oi": 0,
+                "pe_oi": 0,
+                "ce_volume": 0,
+                "pe_volume": 0,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "definition": "Derived from option chain OI/volume; not true tape analytics",
+                "available": False,
+                "reason": "Orderflow unavailable for selected underlying/expiry",
+            }
 
         ce_oi = 0
         pe_oi = 0
@@ -474,6 +498,8 @@ def get_options_orderflow(
             "pe_volume": pe_volume,
             "timestamp": chain.timestamp.isoformat(),
             "definition": "Derived from option chain OI/volume; not true tape analytics",
+            "available": True,
+            "reason": None,
         }
     except HTTPException:
         raise

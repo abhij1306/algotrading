@@ -275,12 +275,15 @@ class BacktestBroker(IBroker):
                 )
 
     def cancel_order(self, order_id: str):
+        # Backtest fills are immediate; there is no pending order book to cancel.
         pass
 
     def modify_order(self, order_id: str, new_price: float):
+        # Backtest mode does not persist pending orders, so modify is intentionally a no-op.
         pass
 
     def get_order_status(self, order_id: str):
+        # All orders are handled synchronously as FILLED/REJECTED in place_order.
         pass
 
     def get_holdings(self):

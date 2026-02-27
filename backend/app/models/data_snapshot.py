@@ -14,6 +14,8 @@ from sqlalchemy import (
 
 from ..base import Base
 
+DATASET_RUN_ID_FK = "dataset_runs.run_id"
+
 
 class DatasetRun(Base):
     """Tracks each Phase-1 dataset build run."""
@@ -37,7 +39,7 @@ class DatasetArtifact(Base):
     __tablename__ = "dataset_artifacts"
 
     id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(String(64), ForeignKey("dataset_runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(64), ForeignKey(DATASET_RUN_ID_FK), nullable=False, index=True)
     dataset_name = Column(String(100), nullable=False, index=True)
     artifact_path = Column(String(500), nullable=False)
     row_count = Column(Integer, nullable=False, default=0)
@@ -61,7 +63,7 @@ class SnapshotIndexStock(Base):
     snapshot_date = Column(Date, nullable=False, index=True)
     symbol = Column(String(20), nullable=False, index=True)
     artifact_path = Column(String(500), nullable=False)
-    run_id = Column(String(64), ForeignKey("dataset_runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(64), ForeignKey(DATASET_RUN_ID_FK), nullable=False, index=True)
     row_pointer = Column(String(120))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -80,7 +82,7 @@ class SnapshotIndexUniverse(Base):
     snapshot_date = Column(Date, nullable=False, index=True)
     universe_id = Column(String(40), nullable=False, index=True)
     artifact_path = Column(String(500), nullable=False)
-    run_id = Column(String(64), ForeignKey("dataset_runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(64), ForeignKey(DATASET_RUN_ID_FK), nullable=False, index=True)
     version = Column(String(40), nullable=False, default="v1")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 

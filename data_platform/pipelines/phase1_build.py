@@ -78,6 +78,9 @@ MONTH_ABBR = {
     "DEC": 12,
 }
 NIFTY50_LINE_RE = re.compile(r"^([A-Z0-9&\-.]+)\s+.+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$")
+EQUITY_OHLCV_FILE = "equity_ohlcv.parquet"
+EQUITY_OHLCV_ADJ_FILE = "equity_ohlcv_adj.parquet"
+SNAPSHOT_STOCK_DAILY_FILE = "snapshot_stock_daily.parquet"
 
 
 @dataclass
@@ -457,7 +460,7 @@ class Phase1Builder:
             ["trade_date", "symbol", "open", "high", "low", "close", "volume", "turnover", "source"]
         ].sort_values(["trade_date", "symbol"])
 
-        out = self.paths.curated_root / "equity_ohlcv.parquet"
+        out = self.paths.curated_root / EQUITY_OHLCV_FILE
         equity_df.to_parquet(out, index=False)
 
         self.summary["equity"] = {
@@ -697,9 +700,9 @@ class Phase1Builder:
         step = "apply-corp-actions"
         self._log(step, "started")
 
-        equity_path = self.paths.curated_root / "equity_ohlcv.parquet"
+        equity_path = self.paths.curated_root / EQUITY_OHLCV_FILE
         if not equity_path.exists():
-            raise RuntimeError("equity_ohlcv.parquet missing. Run build-equity first.")
+            raise RuntimeError(f"{EQUITY_OHLCV_FILE} missing. Run build-equity first.")
         equity = pd.read_parquet(equity_path)
         equity["trade_date"] = pd.to_datetime(equity["trade_date"], errors="coerce").dt.date
 
@@ -758,7 +761,7 @@ class Phase1Builder:
             )
 
         adjusted["volume"] = adjusted["volume"].fillna(0).astype("int64")
-        adjusted_out = self.paths.curated_root / "equity_ohlcv_adj.parquet"
+        adjusted_out = self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE
         adjusted.to_parquet(adjusted_out, index=False)
 
         audit_df = pd.DataFrame(audit_rows).sort_values("symbol") if audit_rows else pd.DataFrame()
@@ -776,8 +779,8 @@ class Phase1Builder:
         step = "build-snapshots"
         self._log(step, "started")
 
-        raw_path = self.paths.curated_root / "equity_ohlcv.parquet"
-        adj_path = self.paths.curated_root / "equity_ohlcv_adj.parquet"
+        raw_path = self.paths.curated_root / EQUITY_OHLCV_FILE
+        adj_path = self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE
         for p in [raw_path, adj_path]:
             if not p.exists():
                 raise RuntimeError(f"Required input missing for snapshots: {p}")
@@ -813,7 +816,7 @@ class Phase1Builder:
             }
         ).sort_values(["date", "symbol"])
 
-        stock_out = self.paths.curated_root / "snapshot_stock_daily.parquet"
+        stock_out = self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE
         stock_snapshot.to_parquet(stock_out, index=False)
 
         universe_row_counts: dict[str, int] = {}
@@ -906,9 +909,9 @@ class Phase1Builder:
         }
 
         required_files = [
-            self.paths.curated_root / "equity_ohlcv.parquet",
-            self.paths.curated_root / "equity_ohlcv_adj.parquet",
-            self.paths.curated_root / "snapshot_stock_daily.parquet",
+            self.paths.curated_root / EQUITY_OHLCV_FILE,
+            self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE,
+            self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE,
         ]
         for universe_id in self.universes:
             spec = self._get_universe_spec(universe_id)
@@ -928,7 +931,7 @@ class Phase1Builder:
             self.issues.extend(issues)
             return False
 
-        eq = pd.read_parquet(self.paths.curated_root / "equity_ohlcv.parquet")
+        eq = pd.read_parquet(self.paths.curated_root / EQUITY_OHLCV_FILE)
         dup_count = int(eq.duplicated(subset=["trade_date", "symbol"]).sum())
         metrics["equity_duplicates"] = dup_count
         if dup_count > 0:
@@ -954,7 +957,7 @@ class Phase1Builder:
                 warnings.append(f"{slug}_bad_weight_sum_months:{len(bad_weight)}")
             metrics[f"{slug}_months"] = int(month_stats.shape[0])
 
-        stock_snap = pd.read_parquet(self.paths.curated_root / "snapshot_stock_daily.parquet")
+        stock_snap = pd.read_parquet(self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE)
         snap_dups = int(stock_snap.duplicated(subset=["date", "symbol"]).sum())
         metrics["snapshot_stock_duplicates"] = snap_dups
         if snap_dups > 0:
@@ -1026,9 +1029,9 @@ class Phase1Builder:
         step = "publish"
         self._log(step, "started")
         artifact_paths = {
-            "equity_ohlcv": self.paths.curated_root / "equity_ohlcv.parquet",
-            "equity_ohlcv_adj": self.paths.curated_root / "equity_ohlcv_adj.parquet",
-            "snapshot_stock_daily": self.paths.curated_root / "snapshot_stock_daily.parquet",
+            "equity_ohlcv": self.paths.curated_root / EQUITY_OHLCV_FILE,
+            "equity_ohlcv_adj": self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE,
+            "snapshot_stock_daily": self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE,
         }
         for universe_id in self.universes:
             spec = self._get_universe_spec(universe_id)

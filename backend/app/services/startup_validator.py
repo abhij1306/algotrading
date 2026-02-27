@@ -55,6 +55,7 @@ class StartupSequence:
     def __init__(self):
         """Initialize the startup sequence tracker."""
         self.completed_steps: list[StartupStep] = []
+        self.optional_failed_steps: list[StartupStep] = []
         self.failed_step: StartupStep | None = None
         self._has_failure = False
 
@@ -90,10 +91,9 @@ class StartupSequence:
             return True
 
         except Exception as e:
-            self.failed_step = step
-            logger.error(f"[Startup] Failed: {step.value} - {e}", exc_info=True)
-
             if required:
+                self.failed_step = step
+                logger.error(f"[Startup] Failed: {step.value} - {e}", exc_info=True)
                 self._has_failure = True
                 logger.error(
                     f"[Startup] Required step {step.value} failed. "
@@ -101,6 +101,8 @@ class StartupSequence:
                 )
                 raise
             else:
+                self.optional_failed_steps.append(step)
+                logger.warning(f"[Startup] Optional step failed: {step.value} - {e}")
                 logger.warning(
                     f"[Startup] Optional step {step.value} failed. Continuing with remaining steps."
                 )
@@ -125,6 +127,7 @@ class StartupSequence:
         return {
             "completed_steps": [step.value for step in self.completed_steps],
             "failed_step": self.failed_step.value if self.failed_step else None,
+            "optional_failed_steps": [step.value for step in self.optional_failed_steps],
             "is_complete": self.is_complete(),
             "total_completed": len(self.completed_steps),
         }
@@ -132,10 +135,17 @@ class StartupSequence:
     def log_summary(self):
         """Log a summary of the startup sequence execution."""
         if self.is_complete():
-            logger.info(
-                f"[Startup] All steps completed successfully. "
-                f"Total: {len(self.completed_steps)} steps"
-            )
+            if self.optional_failed_steps:
+                logger.warning(
+                    f"[Startup] Startup completed with warnings. "
+                    f"Completed: {len(self.completed_steps)} steps, "
+                    f"Optional failures: {[step.value for step in self.optional_failed_steps]}"
+                )
+            else:
+                logger.info(
+                    f"[Startup] All steps completed successfully. "
+                    f"Total: {len(self.completed_steps)} steps"
+                )
         else:
             logger.error(
                 f"[Startup] Startup sequence incomplete. "

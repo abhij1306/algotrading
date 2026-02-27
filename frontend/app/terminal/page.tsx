@@ -215,6 +215,7 @@ export default function TerminalPage() {
   const [selectedOptionSymbol, setSelectedOptionSymbol] = useState<string>('');
   const [riskOverrideReason, setRiskOverrideReason] = useState<string>('');
   const subscribedSymbolsKeyRef = useRef('');
+  const optionsFetchInFlightRef = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams(globalThis.location.search);
@@ -336,6 +337,10 @@ export default function TerminalPage() {
     let cancelled = false;
 
     const fetchOptionsBoard = async () => {
+      if (optionsFetchInFlightRef.current) {
+        return;
+      }
+      optionsFetchInFlightRef.current = true;
       try {
         if (!optionsBoard) {
           setOptionsLoading(true);
@@ -389,6 +394,7 @@ export default function TerminalPage() {
           setOptionsError(err instanceof Error ? err.message : 'Failed to load options board');
         }
       } finally {
+        optionsFetchInFlightRef.current = false;
         if (!cancelled) {
           setOptionsLoading(false);
         }
@@ -396,14 +402,15 @@ export default function TerminalPage() {
     };
 
     void fetchOptionsBoard();
+    const pollMs = isMarketOpen().isOpen ? 3000 : 20000;
     const interval = setInterval(() => {
       void fetchOptionsBoard();
-    }, 3000);
+    }, pollMs);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [terminalView, optionsUnderlying, optionsExpiry, optionsBoard]);
+  }, [terminalView, optionsUnderlying, optionsExpiry]);
 
   useEffect(() => {
     if (watchlistQuery.trim().length < 2) {
@@ -569,6 +576,10 @@ export default function TerminalPage() {
   };
 
   useEffect(() => {
+    if (terminalView !== 'positions') {
+      return;
+    }
+
     const pollPositions = async () => {
       try {
         setPositionsError(null);
@@ -597,7 +608,7 @@ export default function TerminalPage() {
     void pollPositions();
     const interval = setInterval(() => { void pollPositions(); }, 7000);
     return () => clearInterval(interval);
-  }, []);
+  }, [terminalView]);
 
   useEffect(() => {
     if (lastMessage?.type !== 'ticker' || !lastMessage.data) return;

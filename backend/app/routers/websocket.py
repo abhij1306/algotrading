@@ -29,8 +29,18 @@ async def connect_websocket():
         from ..services.live_market_service import live_market
 
         # Ensure live_market captures the running loop for thread-safe broadcasting.
-        live_market.connect(loop=asyncio.get_running_loop())
-        return {"status": "connected", "message": "WebSocket initialization triggered"}
+        connect_status = live_market.connect(loop=asyncio.get_running_loop())
+        message_map = {
+            "started": "WebSocket initialization triggered",
+            "already_connected": "WebSocket already connected",
+            "market_closed": "WebSocket deferred because market is closed",
+            "token_invalid": "WebSocket deferred because Fyers token is invalid/expired",
+            "error": "WebSocket initialization failed",
+        }
+        return {
+            "status": connect_status,
+            "message": message_map.get(connect_status, "WebSocket initialization completed"),
+        }
     except Exception as e:
         raise handle_api_error(e, "Failed to initialize WebSocket")
 

@@ -25,7 +25,7 @@ class ConnectionManager:
     def set_loop(self, loop):
         """Set event loop for thread-safe broadcasting"""
         self.loop = loop
-        logger.info(f"[WSManager] Event loop set: {loop is not None}")
+        logger.debug(f"[WSManager] Event loop set: {loop is not None}")
 
     async def connect(self, websocket: WebSocket) -> bool:
         """
@@ -39,7 +39,7 @@ class ConnectionManager:
             return False
 
         self.subscriptions[websocket] = set()
-        logger.info(f"[WSManager] Client connected. Total: {len(self.subscriptions)}")
+        logger.debug(f"[WSManager] Client connected. Total: {len(self.subscriptions)}")
 
         # Send initial welcome — client may have already disconnected (React StrictMode, page nav)
         try:
@@ -66,7 +66,7 @@ class ConnectionManager:
             self._global_subscriptions = (
                 set().union(*self.subscriptions.values()) if self.subscriptions else set()
             )
-        logger.info(f"[WSManager] Client disconnected. Total: {len(self.subscriptions)}")
+        logger.debug(f"[WSManager] Client disconnected. Total: {len(self.subscriptions)}")
         return removed_symbols
 
     async def subscribe(self, websocket: WebSocket, symbols: list[str]):
@@ -75,7 +75,7 @@ class ConnectionManager:
             for symbol in symbols:
                 self.subscriptions[websocket].add(symbol)
                 self._global_subscriptions.add(symbol)  # Update global cache
-            logger.info(
+            logger.debug(
                 f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(self.subscriptions[websocket])}"
             )
         await asyncio.sleep(0)
@@ -89,7 +89,7 @@ class ConnectionManager:
             self._global_subscriptions = (
                 set().union(*self.subscriptions.values()) if self.subscriptions else set()
             )
-            logger.info(
+            logger.debug(
                 f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(self.subscriptions[websocket])}"
             )
         await asyncio.sleep(0)

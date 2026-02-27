@@ -5,10 +5,9 @@ Checks if NSE market is open (9:15 AM - 3:30 PM IST, Mon-Fri)
 
 import os
 from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
-import pytz
-
-IST = pytz.timezone("Asia/Kolkata")
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def is_market_open() -> tuple[bool, str]:

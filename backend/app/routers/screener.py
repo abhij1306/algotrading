@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -12,6 +14,10 @@ from ..services.index_universe_loader import index_universe_loader
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_SCREENER_CACHE_TTL_SECONDS = 5.0
+_screener_cache_lock = threading.Lock()
+_screener_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
 
 
 @router.get("/indices")
@@ -63,6 +69,26 @@ def get_screener_results(
         db = SessionLocal()
 
         normalized_universe = universe.upper()
+        normalized_query = query.strip().lower() if query else None
+        normalized_sort = (sort_by or "symbol").lower()
+        normalized_order = (sort_order or "asc").lower()
+        cache_key = (
+            normalized_universe,
+            normalized_query,
+            page,
+            limit,
+            bool(full),
+            normalized_sort,
+            normalized_order,
+        )
+
+        if not full:
+            now = time.time()
+            with _screener_cache_lock:
+                cached = _screener_cache.get(cache_key)
+                if cached and (now - cached[0]) < _SCREENER_CACHE_TTL_SECONDS:
+                    return cached[1]
+
         available_universes = set(index_universe_loader.get_available_indices())
 
         if normalized_universe != "ALL" and normalized_universe not in available_universes:
@@ -96,13 +122,13 @@ def get_screener_results(
                 return {"results": [], "total": 0, "page": page, "limit": limit}
             companies_query = companies_query.filter(Company.symbol.in_(index_symbols))
 
-        if query:
+        if normalized_query:
             companies_query = companies_query.filter(
-                Company.symbol.ilike(f"%{query}%") | Company.name.ilike(f"%{query}%")
+                Company.symbol.ilike(f"%{normalized_query}%")
+                | Company.name.ilike(f"%{normalized_query}%")
             )
 
-        normalized_sort = (sort_by or "symbol").lower()
-        descending = (sort_order or "asc").lower() == "desc"
+        descending = normalized_order == "desc"
         change_expr = (
             (HistoricalPrice.close - HistoricalPrice.open) / func.nullif(HistoricalPrice.open, 0)
         ) * 100
@@ -123,7 +149,7 @@ def get_screener_results(
             desc(sort_expr) if descending else sort_expr
         )
 
-        total_records = companies_query.count()
+        total_records = companies_query.order_by(None).count()
         if full:
             # Guardrail: prevent accidental oversized responses.
             rows = companies_query.limit(1200).all()
@@ -174,12 +200,16 @@ def get_screener_results(
                 }
             )
 
-        return {
+        payload = {
             "results": results_list,
             "total": total_records,
             "page": page,
             "limit": limit,
         }
+        if not full:
+            with _screener_cache_lock:
+                _screener_cache[cache_key] = (time.time(), payload)
+        return payload
     finally:
         if db:
             db.close()

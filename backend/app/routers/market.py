@@ -10,6 +10,7 @@ from ..utils.market_hours import get_market_status
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DB_DEPENDENCY = Depends(get_db)
+NIFTY_50_NAME = "NIFTY 50"
 
 
 @router.get("/market/status")
@@ -34,7 +35,7 @@ def get_market_indices():
 
         # Index symbols
         indices = {
-            "NIFTY 50": {"fyers_symbol": "NSE:NIFTY50-INDEX", "symbol": "NIFTY50"},
+            NIFTY_50_NAME: {"fyers_symbol": "NSE:NIFTY50-INDEX", "symbol": "NIFTY50"},
             "SENSEX": {"fyers_symbol": "BSE:SENSEX-INDEX", "symbol": "SENSEX"},
             "BANKNIFTY": {"fyers_symbol": "NSE:NIFTYBANK-INDEX", "symbol": "BANKNIFTY"},
             "NIFTY IT": {"fyers_symbol": "NSE:NIFTYIT-INDEX", "symbol": "NIFTYIT"},
@@ -148,7 +149,7 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
         return quotes
 
     except Exception as e:
-        print(f"Error fetching quotes: {str(e)}")
+        logger.warning("Error fetching quotes: %s", e)
         return {}
 
 
@@ -245,8 +246,8 @@ def _search_option_symbols(query: str, existing_results: list) -> list:
 
     # List of optionable underlyings (indices + top stocks)
     optionable_underlyings = {
-        "NIFTY": "NIFTY 50",
-        "NIFTY50": "NIFTY 50",
+        "NIFTY": NIFTY_50_NAME,
+        "NIFTY50": NIFTY_50_NAME,
         "BANKNIFTY": "NIFTY Bank",
         "FINNIFTY": "NIFTY Financial Services",
         "MIDCPNIFTY": "NIFTY Midcap Select",
@@ -545,9 +546,9 @@ def get_sector_performance():
 
         # Fetch quotes
         fyers_symbols = [entry["fyers_symbol"] for entry in sectors.values()]
-        logger.info(f"Fetching sector quotes for: {fyers_symbols}")
+        logger.debug("Fetching sector quotes for: %s", fyers_symbols)
         quotes = fyers.get_parsed_quotes(fyers_symbols)
-        logger.info(f"Received {len(quotes)} sector quotes with keys: {list(quotes.keys())}")
+        logger.debug("Received %d sector quotes", len(quotes))
 
         results = []
         for name, entry in sectors.items():
@@ -570,10 +571,13 @@ def get_sector_performance():
                         "changePercent": round(change_pct, 2),
                     }
                 )
-                logger.info(f"Sector {name}: {ltp} ({change_pct:.2f}%)")
+                logger.debug("Sector %s: %s (%.2f%%)", name, ltp, change_pct)
             else:
-                logger.warning(
-                    f"No data for sector {name} (Fyers: {fyers_symbol}, DB: {db_symbol}). Available keys: {list(quotes.keys())}"
+                logger.debug(
+                    "No data for sector %s (Fyers: %s, DB: %s).",
+                    name,
+                    fyers_symbol,
+                    db_symbol,
                 )
 
         return results
