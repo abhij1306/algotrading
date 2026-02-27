@@ -11,6 +11,7 @@ Run this as a scheduled task or background service:
 
 import asyncio
 from datetime import datetime, timedelta
+from functools import partial
 
 import pandas as pd
 
@@ -118,6 +119,8 @@ class PaperTradingService:
 
         # Get latest symbols
         symbols_dict = universe.symbols_by_date
+        if not symbols_dict:
+            return []
         latest_date = max(symbols_dict.keys())
         await asyncio.sleep(0)
         return symbols_dict[latest_date]
@@ -125,14 +128,20 @@ class PaperTradingService:
     async def _fetch_live_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
         """Fetch recent data for signal generation"""
         # Get last 100 candles
+        start_date = datetime.now() - timedelta(days=5)
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=7)
-
         try:
-            data = self.provider.get_history(
-                symbol=symbol, timeframe=timeframe, start_date=start_date, end_date=end_date
+            loop = asyncio.get_running_loop()
+            data = await loop.run_in_executor(
+                None,
+                partial(
+                    self.provider.get_history,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
             )
-            await asyncio.sleep(0)
             return data
         except Exception:
             return pd.DataFrame()

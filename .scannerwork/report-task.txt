@@ -1,0 +1,6 @@
+projectKey=smarttrader-algotrading
+serverUrl=http://127.0.0.1:9000
+serverVersion=26.2.0.119303
+dashboardUrl=http://127.0.0.1:9000/dashboard?id=smarttrader-algotrading
+ceTaskId=09b5df0c-c1e3-4217-acca-1985598d31f4
+ceTaskUrl=http://127.0.0.1:9000/api/ce/task?id=09b5df0c-c1e3-4217-acca-1985598d31f4

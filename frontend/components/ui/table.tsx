@@ -16,11 +16,6 @@ const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableE
         className={cn("w-full caption-bottom text-sm text-foreground", className)}
         {...props}
       >
-        <thead className="sr-only">
-          <tr>
-            <th scope="col">Data</th>
-          </tr>
-        </thead>
         {children}
       </table>
     </div>
