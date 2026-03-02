@@ -37,6 +37,13 @@ def test_fyers_to_db_conversion():
     db_index = symbol_master.to_db(fyers_index)
     assert db_index == "NIFTY50"
 
+def test_corporate_action_alias_ltim_to_ltm():
+    """Legacy LTIM symbol should map to LTM for provider compatibility."""
+    assert symbol_master.to_db("LTIM") == "LTM"
+    assert symbol_master.to_db("NSE:LTIM-EQ") == "LTM"
+    assert symbol_master.to_fyers("LTIM") == "NSE:LTM-EQ"
+    assert symbol_master.to_fyers("NSE:LTIM-EQ") == "NSE:LTM-EQ"
+
 def test_roundtrip_conversion():
     """Test bidirectional conversion"""
     original = "RELIANCE"

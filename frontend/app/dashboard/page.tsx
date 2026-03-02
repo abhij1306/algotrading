@@ -203,10 +203,10 @@ const WatchlistRow = memo(function WatchlistRow({
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { isConnected, lastMessage, sendMessage } = useWebSocket();
+  const [marketStatus, setMarketStatus] = useState<MarketStatus>({ isOpen: false, message: 'Loading market status' });
+  const { isConnected, lastMessage, sendMessage } = useWebSocket({ enabled: marketStatus.isOpen });
 
   const [mounted, setMounted] = useState(false);
-  const [marketStatus, setMarketStatus] = useState<MarketStatus>({ isOpen: false, message: 'Loading market status' });
   const [dashboardMode, setDashboardMode] = useState<DashboardMode>('post_market');
   const [istTime, setIstTime] = useState<string>(getISTTime());
   const [portfolioStats, setPortfolioStats] = useState<PortfolioStats | null>(null);
@@ -260,18 +260,17 @@ export default function DashboardPage() {
     const requestId = ++fetchRequestIdRef.current;
 
     try {
-      const status = await fetchMarketStatus();
-      const nextMode: DashboardMode = status.isOpen ? 'market' : 'post_market';
-      if (requestId === fetchRequestIdRef.current) {
-        setDashboardMode(nextMode);
-      }
-
+      // Load core cards quickly; do not block them on market-status/indices calls.
+      const statusPromise = fetchMarketStatus();
       const [statsRes, watchlistRes] = await Promise.all([
         apiClient.get('/api/portfolio/stats'),
         apiClient.get('/api/market/watchlist')
       ]);
 
-      if (requestId !== fetchRequestIdRef.current) return;
+      if (requestId !== fetchRequestIdRef.current) {
+        fetchInFlightRef.current = false;
+        return;
+      }
 
       if (statsRes.data) setPortfolioStats(statsRes.data as PortfolioStats);
       const watchlistData = Array.isArray(watchlistRes.data)
@@ -289,6 +288,12 @@ export default function DashboardPage() {
           }).filter((item: WatchlistItem) => item.symbol.length > 0)
         : [];
       setWatchlist(watchlistData);
+      setLoading((prev) => ({ ...prev, portfolio: false, watchlist: false }));
+
+      const status = await statusPromise;
+      if (requestId !== fetchRequestIdRef.current) return;
+      const nextMode: DashboardMode = status.isOpen ? 'market' : 'post_market';
+      setDashboardMode(nextMode);
 
       if (status.isOpen) {
         const indicesRes = await apiClient.get('/api/market/indices');
@@ -345,7 +350,7 @@ export default function DashboardPage() {
         indicesLoadedRef.current = true;
       }
 
-      setLoading({ portfolio: false, indices: false, watchlist: false });
+      setLoading((prev) => ({ ...prev, indices: false }));
     } catch (error) {
       console.error('Dashboard fetch error:', error);
       setLoading({ portfolio: false, indices: false, watchlist: false });

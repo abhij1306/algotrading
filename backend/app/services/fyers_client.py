@@ -58,6 +58,8 @@ class FyersClient:
         self._token_file_mtime_ns = None
         self._connecting = False
         self._validating_token = False
+        self._missing_token_file_logged = False
+        self._missing_credentials_logged = False
 
         # Skip initialization if DEV_MODE is set
         if os.getenv("DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}:
@@ -74,7 +76,9 @@ class FyersClient:
     def _load_credentials(self):
         """Load credentials from file with expiry checking"""
         if not FYERS_TOKEN_PATH.exists():
-            logger.warning(f"Fyers token file not found at {FYERS_TOKEN_PATH}")
+            if not self._missing_token_file_logged:
+                logger.warning(f"Fyers token file not found at {FYERS_TOKEN_PATH}")
+                self._missing_token_file_logged = True
             return
 
         try:
@@ -96,6 +100,10 @@ class FyersClient:
                             logger.warning(f"Fyers token expired on {self.token_expires_at}")
                     except ValueError:
                         pass
+
+                # Credentials are available again, allow future missing-credentials warning if needed.
+                if self.client_id and self.access_token:
+                    self._missing_credentials_logged = False
 
         except Exception as e:
             logger.error(f"Failed to load Fyers credentials: {e}")
@@ -123,14 +131,16 @@ class FyersClient:
             logger.error(f"Failed checking token file changes: {e}")
             return False
 
-    def _connect(self, *, skip_validation: bool = False):
+    def _connect(self, *, skip_validation: bool = False, suppress_missing_credentials_log: bool = False):
         """Initialize FyersModel instance"""
         if self._connecting:
             logger.debug("Skipping nested Fyers _connect call")
             return
 
         if not self.client_id or not self.access_token:
-            logger.warning("Fyers credentials not loaded.")
+            if not suppress_missing_credentials_log and not self._missing_credentials_logged:
+                logger.warning("Fyers credentials not loaded.")
+                self._missing_credentials_logged = True
             return
 
         self._connecting = True
@@ -166,7 +176,7 @@ class FyersClient:
 
             if not self.fyers:
                 # One extra attempt in case client wasn't initialized during startup.
-                self._connect(skip_validation=True)
+                self._connect(skip_validation=True, suppress_missing_credentials_log=True)
                 if not self.fyers:
                     return False
 

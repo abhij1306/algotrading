@@ -2,7 +2,7 @@
 
 **Status:** Canonical
 **Code source:** `backend/app/services/symbol_master.py`
-**Last updated:** 2026-02-19
+**Last updated:** 2026-03-02
 
 ## Canonical Formats
 - `DB_FORMAT`: `SBIN`, `NIFTY50`
@@ -30,6 +30,7 @@
   - `NIFTY` -> `NIFTY50`
   - `NIFTY BANK` / `NIFTYBANK` -> `BANKNIFTY`
   - `S&P BSE SENSEX` -> `SENSEX`
+  - `LTIM` -> `LTM` (legacy ticker migration)
 - Index provider mapping supported (example):
   - `BANKNIFTY` DB -> `NIFTYBANK` in Fyers ticker mapping
 

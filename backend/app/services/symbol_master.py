@@ -136,6 +136,8 @@ class SymbolMaster:
         "INDIA VIX": "INDIAVIX",
         "S&P BSE SENSEX": "SENSEX",
         "SENSEX": "SENSEX",
+        # Corporate-action ticker migration aliases.
+        "LTIM": "LTM",
     }
 
     # Fyers index symbol mapping (DB format -> Fyers ticker)
