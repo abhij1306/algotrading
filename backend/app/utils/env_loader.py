@@ -27,9 +27,14 @@ def load_dotenv(path: str = ".env"):
                     continue
 
                 if "=" in line:
+                    if line.startswith("export "):
+                        line = line[len("export ") :].strip()
+
                     key, value = line.split("=", 1)
                     key = key.strip()
                     value = value.strip()
+                    if not key:
+                        continue
 
                     # Remove quotes if present
                     if value.startswith('"') and value.endswith('"'):
@@ -37,6 +42,7 @@ def load_dotenv(path: str = ".env"):
                     elif value.startswith("'") and value.endswith("'"):
                         value = value[1:-1]
 
-                    os.environ[key] = value
+                    if key not in os.environ:
+                        os.environ[key] = value
     except Exception as e:
         print(f"Warning: Failed to load .env file: {e}")

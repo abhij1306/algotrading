@@ -6,6 +6,7 @@ API endpoints for managing index universes with historical and live modes.
 
 import logging
 from datetime import date, datetime
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -23,8 +24,11 @@ from ..utils.errors import handle_api_error, handle_validation_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-DB_DEPENDENCY = Depends(get_db)
+DB_DEPENDENCY = Annotated[Session, Depends(get_db)]
 DATE_FORMAT = "%Y-%m-%d"
+BAD_REQUEST_RESPONSE = {400: {"description": "Invalid universe input"}}
+NOT_IMPLEMENTED_RESPONSE = {501: {"description": "Historical universe mode not implemented"}}
+NOT_FOUND_RESPONSE = {404: {"description": "Universe not found"}}
 
 
 # Request/Response Models
@@ -97,17 +101,20 @@ def _parse_target_date(target_date: str | None) -> date | None:
     try:
         return datetime.strptime(target_date, DATE_FORMAT).date()
     except ValueError as e:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid date format: {target_date}. Use YYYY-MM-DD"
-        ) from e
+        raise ValueError(f"Invalid date format: {target_date}. Use YYYY-MM-DD") from e
 
 
 def _parse_universe_mode(mode: str) -> UniverseMode:
-    return UniverseMode.HISTORICAL if mode.lower() == "historical" else UniverseMode.LIVE
+    normalized_mode = (mode or "").strip().lower()
+    if normalized_mode == "historical":
+        return UniverseMode.HISTORICAL
+    if normalized_mode == "live":
+        return UniverseMode.LIVE
+    raise ValueError(f"Invalid mode: {mode}. Use 'historical' or 'live'.")
 
 
 @router.get("/list")
-async def list_universes():
+async def list_universes() -> dict[str, Any]:
     """
     List all available index universes.
     """
@@ -129,15 +136,21 @@ async def list_universes():
 
     except Exception as e:
         logger.error(f"Error listing universes: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to list universes")
+        raise handle_api_error(e, "Failed to list universes") from e
 
 
-@router.get("/constituents/{index_code}", response_model=UniverseResponse)
+@router.get(
+    "/constituents/{index_code}",
+    responses={
+        400: {"description": "Invalid universe input"},
+        501: {"description": "Historical universe mode not implemented"},
+    },
+)
 async def get_constituents(
     index_code: str,
-    target_date: str | None = Query(None, description="Date in YYYY-MM-DD format"),
-    mode: str = Query("live", description="Mode: 'historical' or 'live'"),
-):
+    target_date: Annotated[str | None, Query(description="Date in YYYY-MM-DD format")] = None,
+    mode: Annotated[str, Query(description="Mode: 'historical' or 'live'")] = "live",
+) -> UniverseResponse:
     """
     Get constituents for an index on a specific date.
 
@@ -170,19 +183,27 @@ async def get_constituents(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting constituents: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to get constituents")
+        raise handle_api_error(e, "Failed to get constituents") from e
 
 
-@router.get("/symbols/{index_code}")
+@router.get(
+    "/symbols/{index_code}",
+    responses={
+        400: {"description": "Invalid universe input"},
+        501: {"description": "Historical universe mode not implemented"},
+    },
+)
 async def get_symbols(
     index_code: str,
-    target_date: str | None = Query(None, description="Date in YYYY-MM-DD format"),
-    mode: str = Query("live", description="Mode: 'historical' or 'live'"),
-):
+    target_date: Annotated[str | None, Query(description="Date in YYYY-MM-DD format")] = None,
+    mode: Annotated[str, Query(description="Mode: 'historical' or 'live'")] = "live",
+) -> dict[str, Any]:
     """
     Get just the symbols for an index (no metadata).
     """
@@ -208,19 +229,27 @@ async def get_symbols(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting symbols: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to get symbols")
+        raise handle_api_error(e, "Failed to get symbols") from e
 
 
-@router.get("/changes/{index_code}", response_model=UniverseChangesResponse)
+@router.get(
+    "/changes/{index_code}",
+    responses={
+        400: {"description": "Invalid universe input"},
+        501: {"description": "Historical universe mode not implemented"},
+    },
+)
 async def get_universe_changes(
     index_code: str,
-    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
-    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
-):
+    start_date: Annotated[str, Query(description="Start date in YYYY-MM-DD format")],
+    end_date: Annotated[str, Query(description="End date in YYYY-MM-DD format")],
+) -> UniverseChangesResponse:
     """
     Get changes to an index between two dates.
 
@@ -256,7 +285,7 @@ async def get_universe_changes(
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting universe changes: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to get universe changes")
+        raise handle_api_error(e, "Failed to get universe changes") from e
 
 
 class CreateCustomUniverseRequest(BaseModel):
@@ -268,7 +297,9 @@ class CreateCustomUniverseRequest(BaseModel):
 
 
 @router.post("/custom")
-async def create_custom_universe(req: CreateCustomUniverseRequest, db: Session = DB_DEPENDENCY):
+async def create_custom_universe(
+    req: CreateCustomUniverseRequest, db: DB_DEPENDENCY
+) -> dict[str, Any]:
     """
     Create a custom universe with specified symbols.
     """
@@ -292,14 +323,14 @@ async def create_custom_universe(req: CreateCustomUniverseRequest, db: Session =
         }
 
     except ValueError as e:
-        raise handle_validation_error(e)
+        raise handle_validation_error(e) from e
     except Exception as e:
         logger.error(f"Error creating custom universe: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to create custom universe")
+        raise handle_api_error(e, "Failed to create custom universe") from e
 
 
-@router.get("/custom/{universe_code}")
-async def get_custom_universe(universe_code: str, db: Session = DB_DEPENDENCY):
+@router.get("/custom/{universe_code}", responses=NOT_FOUND_RESPONSE)
+async def get_custom_universe(universe_code: str, db: DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get a custom universe by code.
     """
@@ -331,4 +362,4 @@ async def get_custom_universe(universe_code: str, db: Session = DB_DEPENDENCY):
         raise
     except Exception as e:
         logger.error(f"Error getting custom universe: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to get custom universe")
+        raise handle_api_error(e, "Failed to get custom universe") from e

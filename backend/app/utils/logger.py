@@ -36,10 +36,13 @@ def setup_logging(name: str = "smarttrader"):
     logger.addHandler(console_handler)
 
     # File Handler (Rotating: 10MB per file, keep 5 backups)
-    log_file = LOG_DIR / f"{name}.log"
-    file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    try:
+        log_file = LOG_DIR / f"{name}.log"
+        file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except OSError as e:
+        logger.warning(f"Could not create file handler: {e}. Using console logging only.")
 
     # Reduce framework transport/access noise unless explicitly overridden.
     framework_level = os.getenv("FRAMEWORK_LOG_LEVEL", "WARNING").upper()

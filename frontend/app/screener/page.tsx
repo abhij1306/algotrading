@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search,
@@ -105,6 +105,172 @@ function getFlashClassName(flash?: FlashState): string | undefined {
   return flash.phase === 0 ? 'screener-flash-down-a' : 'screener-flash-down-b';
 }
 
+function getRsiClassName(rsi: number): string {
+  if (rsi > 70) {
+    return 'text-loss';
+  }
+  if (rsi < 30) {
+    return 'text-profit';
+  }
+  return '';
+}
+
+function getMacdClassName(macd: number): string {
+  if (macd > 0) {
+    return 'text-profit';
+  }
+  if (macd < 0) {
+    return 'text-loss';
+  }
+  return 'text-foreground-muted';
+}
+
+function normalizeTickerMessage(raw: TickData): TickData | null {
+  if (!raw.symbol) {
+    return null;
+  }
+
+  let ltp: number | undefined;
+  if (typeof raw.ltp === 'number') {
+    ltp = raw.ltp;
+  } else if (typeof raw.lp === 'number') {
+    ltp = raw.lp;
+  }
+
+  let changePct: number | undefined;
+  if (typeof raw.change_pct === 'number') {
+    changePct = raw.change_pct;
+  } else if (typeof raw.chp === 'number') {
+    changePct = raw.chp;
+  }
+
+  let volume: number | undefined;
+  if (typeof raw.volume === 'number') {
+    volume = raw.volume;
+  } else if (typeof raw.v === 'number') {
+    volume = raw.v;
+  } else if (typeof raw.vol_traded_today === 'number') {
+    volume = raw.vol_traded_today;
+  }
+
+  return {
+    symbol: raw.symbol,
+    ltp,
+    change_pct: changePct,
+    volume,
+  };
+}
+
+function getFallbackChange(quote: Record<string, unknown>): number | undefined {
+  if (typeof quote.change_pct === 'number') {
+    return quote.change_pct;
+  }
+  if (typeof quote.change === 'number') {
+    return quote.change;
+  }
+  return undefined;
+}
+
+function shouldResort(sortField: SortField, flashes: Array<{ field: FlashField }>): boolean {
+  if (!['change', 'volume', 'price'].includes(sortField)) {
+    return false;
+  }
+  return flashes.some((flash) => flash.field === sortField);
+}
+
+function getFlashStateByField(
+  symbol: string,
+  flashByCell: Record<string, FlashState>
+): Partial<Record<FlashField, FlashState>> {
+  const priceKey = `${symbol}:price`;
+  const changeKey = `${symbol}:change`;
+  const volumeKey = `${symbol}:volume`;
+  const price = flashByCell[priceKey];
+  const change = flashByCell[changeKey];
+  const volume = flashByCell[volumeKey];
+  if (!price && !change && !volume) {
+    return {};
+  }
+  return { price, change, volume };
+}
+
+function getResultCountContent(
+  isIndicesLoading: boolean,
+  isLoading: boolean,
+  totalResults: number
+): ReactNode {
+  if (isIndicesLoading) {
+    return 'Loading universes...';
+  }
+  if (isLoading) {
+    return <Loader2 className="w-4 h-4 animate-spin inline" />;
+  }
+  return `${totalResults} stocks`;
+}
+
+function getEmptyStateMessage(indices: IndexItem[], error: string | null): string {
+  if (indices.length === 0) {
+    return 'No universes available';
+  }
+  if (error) {
+    return 'Failed to load screener data';
+  }
+  return 'No results found';
+}
+
+function updateRowFromTick(
+  row: ScreenerResult,
+  tick: TickData,
+  flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>
+): ScreenerResult | null {
+  const price = roundToDecimals(tick.ltp ?? row.price, 2);
+  const change = roundToDecimals(tick.change_pct ?? row.change, 2);
+  const volume = tick.volume ?? row.volume;
+
+  if (price === row.price && change === row.change && volume === row.volume) {
+    return null;
+  }
+
+  if (price !== row.price) {
+    flashes.push({
+      symbol: row.symbol,
+      field: 'price',
+      direction: price > row.price ? 'up' : 'down',
+    });
+  }
+  if (change !== row.change) {
+    flashes.push({
+      symbol: row.symbol,
+      field: 'change',
+      direction: change > row.change ? 'up' : 'down',
+    });
+  }
+  if (volume !== row.volume) {
+    flashes.push({
+      symbol: row.symbol,
+      field: 'volume',
+      direction: volume > row.volume ? 'up' : 'down',
+    });
+  }
+
+  return { ...row, price, change, volume };
+}
+
+const SortIcon = memo(function SortIcon({
+  field,
+  sortField,
+  sortDirection,
+}: {
+  field: SortField;
+  sortField: SortField;
+  sortDirection: SortDirection;
+}) {
+  if (sortField !== field) {
+    return <ArrowUpDown className="w-3 h-3 opacity-30" />;
+  }
+  return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
+});
+
 function sortIndicesForUi(indices: IndexItem[]): IndexItem[] {
   return [...indices].sort((a, b) => {
     if (a.id === 'NIFTY50') return -1;
@@ -132,6 +298,8 @@ const StockRow = memo(function StockRow({
   const isUp = toNumber(stock.change) >= 0;
   const rsi = toNumber(stock.rsi);
   const macd = toNumber(stock.macd);
+  const rsiClassName = getRsiClassName(rsi);
+  const macdClassName = getMacdClassName(macd);
 
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors border-b border-border">
@@ -169,10 +337,10 @@ const StockRow = memo(function StockRow({
         <span className={getFlashClassName(flashStateByField.volume)}>{formatVolume(toNumber(stock.volume))}</span>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">{formatMarketCap(toNumber(stock.marketCap))}</td>
-      <td className={`py-2 text-right tabular-nums ${rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : ''}`}>
+      <td className={`py-2 text-right tabular-nums ${rsiClassName}`}>
         {rsi > 0 ? rsi.toFixed(1) : '--'}
       </td>
-      <td className={`py-2 pr-4 text-right tabular-nums ${macd > 0 ? 'text-profit' : macd < 0 ? 'text-loss' : 'text-foreground-muted'}`}>
+      <td className={`py-2 pr-4 text-right tabular-nums ${macdClassName}`}>
         {macd !== 0 ? macd.toFixed(2) : '--'}
       </td>
     </tr>
@@ -381,9 +549,7 @@ export default function ScreenerPage() {
 
     setFlashByCell((prev) => {
       // OPTIMIZATION: Check if any values actually changed before creating new object
-      const hasChanges = Object.keys(entries).some(key =>
-        !prev[key] || prev[key].direction !== entries[key]
-      );
+      const hasChanges = Object.keys(entries).some((key) => prev[key]?.direction !== entries[key]);
 
       if (!hasChanges) return prev; // Prevent unnecessary re-render
 
@@ -420,13 +586,8 @@ export default function ScreenerPage() {
       const raw = message.data as TickData;
       if (!raw.symbol) return;
 
-      const normalized: TickData = {
-        symbol: raw.symbol,
-        ltp: typeof raw.ltp === 'number' ? raw.ltp : (typeof raw.lp === 'number' ? raw.lp : undefined),
-        change_pct: typeof raw.change_pct === 'number' ? raw.change_pct : (typeof raw.chp === 'number' ? raw.chp : undefined),
-        volume: typeof raw.volume === 'number' ? raw.volume : (typeof raw.v === 'number' ? raw.v : (typeof raw.vol_traded_today === 'number' ? raw.vol_traded_today : undefined)),
-      };
-
+      const normalized = normalizeTickerMessage(raw);
+      if (!normalized) return;
       pendingTicksRef.current[raw.symbol] = normalized;
       lastTickAtRef.current = Date.now();
     });
@@ -478,10 +639,7 @@ export default function ScreenerPage() {
         const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
         for (const [symbol, quote] of Object.entries(quoteMap)) {
           const ltp = typeof quote.ltp === 'number' ? quote.ltp : undefined;
-          const changePct =
-            typeof quote.change_pct === 'number'
-              ? quote.change_pct
-              : (typeof quote.change === 'number' ? quote.change : undefined);
+          const changePct = getFallbackChange(quote);
           const volume = typeof quote.volume === 'number' ? quote.volume : undefined;
 
           if (ltp === undefined && changePct === undefined && volume === undefined) continue;
@@ -536,40 +694,16 @@ export default function ScreenerPage() {
           continue;
         }
 
-        if (!nextResults) nextResults = [...currentResults];
-
-        if (price !== row.price) {
-          flashes.push({
-            symbol: row.symbol,
-            field: 'price',
-            direction: price > row.price ? 'up' : 'down',
-          });
+        nextResults ??= [...currentResults];
+        const updatedRow = updateRowFromTick(row, tick, flashes);
+        if (!updatedRow) {
+          continue;
         }
-        if (change !== row.change) {
-          flashes.push({
-            symbol: row.symbol,
-            field: 'change',
-            direction: change > row.change ? 'up' : 'down',
-          });
-        }
-        if (volume !== row.volume) {
-          flashes.push({
-            symbol: row.symbol,
-            field: 'volume',
-            direction: volume > row.volume ? 'up' : 'down',
-          });
-        }
-
-        nextResults[i] = { ...row, price, change, volume };
+        nextResults[i] = updatedRow;
       }
 
       if (nextResults) {
-        // OPTIMIZATION: Only re-sort if the sorted field actually changed
-        const sortFieldChanged = flashes.some(f =>
-          f.field === sortField && ['change', 'volume', 'price'].includes(sortField)
-        );
-
-        if (sortFieldChanged && (sortField === 'change' || sortField === 'volume' || sortField === 'price')) {
+        if (shouldResort(sortField, flashes)) {
           nextResults.sort((a, b) => compareBySort(a, b, sortField, sortDirection));
         }
 
@@ -597,10 +731,8 @@ export default function ScreenerPage() {
     [sortField]
   );
 
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 opacity-30" />;
-    return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
-  };
+  const resultCountContent = getResultCountContent(isIndicesLoading, isLoading, totalResults);
+  const emptyStateMessage = getEmptyStateMessage(indices, error);
 
   return (
     <div className="flex flex-col h-screen">
@@ -662,11 +794,7 @@ export default function ScreenerPage() {
           </select>
 
           <span className="text-sm text-foreground-muted">
-            {isIndicesLoading
-              ? 'Loading universes...'
-              : isLoading
-                ? <Loader2 className="w-4 h-4 animate-spin inline" />
-                : `${totalResults} stocks`}
+            {resultCountContent}
           </span>
         </div>
       </header>
@@ -680,38 +808,38 @@ export default function ScreenerPage() {
             <tr>
               <th className="py-2 pl-4 text-left font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('symbol')}>
                 <div className="flex items-center gap-1">
-                  Symbol <SortIcon field="symbol" />
+                  Symbol <SortIcon field="symbol" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-left font-normal">Sector</th>
               <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('price')}>
                 <div className="flex items-center justify-end gap-1">
-                  Price <SortIcon field="price" />
+                  Price <SortIcon field="price" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('change')}>
                 <div className="flex items-center justify-end gap-1">
-                  Change <SortIcon field="change" />
+                  Change <SortIcon field="change" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('volume')}>
                 <div className="flex items-center justify-end gap-1">
-                  Volume <SortIcon field="volume" />
+                  Volume <SortIcon field="volume" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('marketCap')}>
                 <div className="flex items-center justify-end gap-1">
-                  Mkt Cap <SortIcon field="marketCap" />
+                  Mkt Cap <SortIcon field="marketCap" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('rsi')}>
                 <div className="flex items-center justify-end gap-1">
-                  RSI <SortIcon field="rsi" />
+                  RSI <SortIcon field="rsi" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 pr-4 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('macd')}>
                 <div className="flex items-center justify-end gap-1">
-                  MACD <SortIcon field="macd" />
+                  MACD <SortIcon field="macd" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
             </tr>
@@ -719,17 +847,7 @@ export default function ScreenerPage() {
           <tbody className="text-sm">
             {currentPageRows.map((stock) => {
               // OPTIMIZATION: Create stable flash state object to prevent unnecessary re-renders
-              const priceKey = `${stock.symbol}:price`;
-              const changeKey = `${stock.symbol}:change`;
-              const volumeKey = `${stock.symbol}:volume`;
-
-              // Only create object if at least one flash exists
-              const hasFlash = flashByCell[priceKey] || flashByCell[changeKey] || flashByCell[volumeKey];
-              const flashStateByField: Partial<Record<FlashField, FlashState>> = hasFlash ? {
-                price: flashByCell[priceKey],
-                change: flashByCell[changeKey],
-                volume: flashByCell[volumeKey],
-              } : {};
+              const flashStateByField = getFlashStateByField(stock.symbol, flashByCell);
 
               return (
                 <StockRow
@@ -745,14 +863,10 @@ export default function ScreenerPage() {
         </table>
 
         {currentPageRows.length === 0 && !isLoading && (
-          <div className="p-8 text-center text-foreground-muted">
-            {indices.length === 0
-              ? 'No universes available'
-              : error
-                ? 'Failed to load screener data'
-                : 'No results found'}
-          </div>
-        )}
+            <div className="p-8 text-center text-foreground-muted">
+              {emptyStateMessage}
+            </div>
+          )}
       </div>
 
       {totalPages > 1 && (

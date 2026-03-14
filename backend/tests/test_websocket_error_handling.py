@@ -7,6 +7,7 @@ Validates: Requirements 8.1, 8.3, 8.5
 These tests verify that WebSocket connections handle errors gracefully without
 crashing the application, maintain application state, and allow reconnection.
 """
+import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -78,7 +79,7 @@ class TestWebSocketErrorResilience:
         assert len(manager.subscriptions[ws2]) == 2
 
         # Disconnect ws1
-        manager.disconnect(ws1)
+        await manager.disconnect(ws1)
 
         # Verify ws2 state is preserved
         assert len(manager.subscriptions) == 1
@@ -132,16 +133,19 @@ class TestWebSocketErrorResilience:
 
         # Create a websocket that will fail on send
         failing_ws = Mock(spec=WebSocket)
+        failing_ws.accept = AsyncMock()
         failing_ws.client_state = Mock(name="CONNECTED")
+        failing_ws.send_json = AsyncMock()
         failing_ws.send_text = AsyncMock(side_effect=WebSocketDisconnect())
 
-        # Add to subscriptions
-        manager.subscriptions[failing_ws] = {"SBIN"}
+        await manager.connect(failing_ws)
+        await manager.subscribe(failing_ws, ["SBIN"])
         assert len(manager.subscriptions) == 1
 
         # Broadcast a message
         message = {"type": "ticker", "data": {"symbol": "SBIN", "ltp": 500.0}}
         await manager.broadcast(message)
+        await asyncio.sleep(0)
 
         # Failing connection should be removed after send fails
         assert failing_ws not in manager.subscriptions
@@ -182,7 +186,7 @@ class TestWebSocketErrorResilience:
         assert result3 is True
         assert ws3 in manager.subscriptions
 
-        manager.disconnect(ws3)
+        await manager.disconnect(ws3)
         assert ws3 not in manager.subscriptions
 
     def test_log_websocket_event_formatting(self):
@@ -226,7 +230,7 @@ class TestWebSocketReconnection:
         assert ws in manager.subscriptions
 
         # Disconnect
-        manager.disconnect(ws)
+        await manager.disconnect(ws)
         assert ws not in manager.subscriptions
 
         # Reconnect (simulate new connection)
@@ -260,7 +264,7 @@ class TestWebSocketReconnection:
         assert len(manager.subscriptions[ws1]) == 2
 
         # Disconnect
-        manager.disconnect(ws1)
+        await manager.disconnect(ws1)
 
         # Reconnect and re-subscribe
         ws2 = Mock(spec=WebSocket)

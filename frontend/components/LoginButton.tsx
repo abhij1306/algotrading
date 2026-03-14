@@ -89,17 +89,18 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
         if (electron?.openExternal) {
           electron.openExternal(data.url);
         } else {
-          globalThis.open(data.url, "_blank", "width=800,height=600");
+          const openBrowserWindow = globalThis.window?.open;
+          if (typeof openBrowserWindow !== "function") {
+            setStatus("error");
+            setMessage("Login URL generated but no browser window is available to open it.");
+            return;
+          }
+          openBrowserWindow(data.url, "_blank", "width=800,height=600");
         }
         setShowModal(true);
       } else {
         setStatus("error");
-        setMessage(
-          (result.error?.message ||
-            data?.detail ||
-            data?.error ||
-            "Failed to get Login URL") as string
-        );
+        setMessage(result.error?.message || data?.detail || data?.error || "Failed to get Login URL");
       }
     } catch (e: unknown) {
       console.error("[Fyers] Network error:", e);

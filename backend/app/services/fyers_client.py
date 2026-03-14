@@ -5,7 +5,7 @@ Handles authentication, token management, and data fetching.
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -98,8 +98,9 @@ class FyersClient:
                         now_utc = datetime.now(UTC)
                         if now_utc > self.token_expires_at:
                             logger.warning(f"Fyers token expired on {self.token_expires_at}")
-                    except ValueError:
-                        pass
+                    except ValueError as e:
+                        logger.warning("Malformed expires_str %r: %s", expires_str, e)
+                        self.token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
                 # Credentials are available again, allow future missing-credentials warning if needed.
                 if self.client_id and self.access_token:

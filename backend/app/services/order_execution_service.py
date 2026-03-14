@@ -134,7 +134,10 @@ class OrderExecutionService:
 
     @staticmethod
     def _validate_quantity(order_params: dict[str, Any]) -> int:
-        quantity = int(order_params.get("quantity", 0))
+        try:
+            quantity = int(order_params.get("quantity", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid quantity") from exc
         if quantity <= 0:
             raise ValueError("Quantity must be positive")
         return quantity
@@ -340,6 +343,24 @@ class OrderExecutionService:
                 return {"status": "ERROR", "message": str(e)}
 
         # Paper Mode Modify
+        if "quantity" in params:
+            try:
+                quantity = int(params["quantity"])
+            except (TypeError, ValueError):
+                return {"status": "ERROR", "message": "Quantity must be a positive integer"}
+            if quantity <= 0:
+                return {"status": "ERROR", "message": "Quantity must be a positive integer"}
+            params["quantity"] = quantity
+
+        if "price" in params:
+            try:
+                price = float(params["price"])
+            except (TypeError, ValueError):
+                return {"status": "ERROR", "message": "Price must be a positive number"}
+            if price <= 0:
+                return {"status": "ERROR", "message": "Price must be a positive number"}
+            params["price"] = price
+
         if "quantity" in params:
             order.quantity = params["quantity"]
         if "price" in params:

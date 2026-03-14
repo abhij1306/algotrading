@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, memo, useRef } from 'react';
+import { useState, useEffect, useMemo, memo, useRef, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { Search, Plus, Settings, Bell, CandlestickChart, ListOrdered, Loader2, ExternalLink } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
@@ -114,6 +114,52 @@ function toSafeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function getChangeTone(change: number | null | undefined): string {
+  if (typeof change !== 'number') {
+    return 'text-foreground-muted';
+  }
+  return change >= 0 ? 'text-profit' : 'text-loss';
+}
+
+function getChangeText(change: number | null | undefined): string {
+  return typeof change === 'number' ? formatPercentage(change) : 'Unavailable';
+}
+
+function inferInstrumentType(symbol: string): 'PE' | 'CE' | 'EQ' {
+  if (symbol.endsWith('PE')) {
+    return 'PE';
+  }
+  if (symbol.endsWith('CE')) {
+    return 'CE';
+  }
+  return 'EQ';
+}
+
+function buildOptionsOrderflow(board: OptionsBoardResponse): OptionsOrderflowResponse {
+  const computed = Array.isArray(board.strikes)
+    ? board.strikes.reduce(
+        (acc, row) => {
+          acc.ceOi += Number(row.ce?.oi || 0);
+          acc.peOi += Number(row.pe?.oi || 0);
+          acc.ceVol += Number(row.ce?.volume || 0);
+          acc.peVol += Number(row.pe?.volume || 0);
+          return acc;
+        },
+        { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 }
+      )
+    : { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 };
+
+  return {
+    ce_oi: computed.ceOi,
+    pe_oi: computed.peOi,
+    ce_volume: computed.ceVol,
+    pe_volume: computed.peVol,
+    pcr_oi: computed.ceOi > 0 ? roundToDecimals(computed.peOi / computed.ceOi, 4) : null,
+    pcr_volume: computed.ceVol > 0 ? roundToDecimals(computed.peVol / computed.ceVol, 4) : null,
+    timestamp: board.timestamp,
+  };
+}
+
 // PriceChart component - reserved for future chart view implementation
 const _PriceChart = dynamic(
   () => import('@/components/terminal/PriceChart').then((mod) => mod.PriceChart),
@@ -167,12 +213,8 @@ const WatchlistRow = memo(function WatchlistRow({
         <div className="tabular-nums font-medium">
           {typeof stock.ltp === 'number' ? stock.ltp.toFixed(2) : '--'}
         </div>
-        <div className={`tabular-nums text-xs ${
-          typeof stock.change === 'number'
-            ? (stock.change >= 0 ? 'text-profit' : 'text-loss')
-            : 'text-foreground-muted'
-        }`}>
-          {typeof stock.change === 'number' ? formatPercentage(stock.change) : 'Unavailable'}
+        <div className={`tabular-nums text-xs ${getChangeTone(stock.change)}`}>
+          {getChangeText(stock.change)}
         </div>
       </td>
     </tr>
@@ -363,27 +405,7 @@ export default function TerminalPage() {
           return;
         }
         setOptionsBoard(board);
-        const computed = Array.isArray(board.strikes)
-          ? board.strikes.reduce(
-              (acc, row) => {
-                acc.ceOi += Number(row.ce?.oi || 0);
-                acc.peOi += Number(row.pe?.oi || 0);
-                acc.ceVol += Number(row.ce?.volume || 0);
-                acc.peVol += Number(row.pe?.volume || 0);
-                return acc;
-              },
-              { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 }
-            )
-          : { ceOi: 0, peOi: 0, ceVol: 0, peVol: 0 };
-        setOptionsOrderflow({
-          ce_oi: computed.ceOi,
-          pe_oi: computed.peOi,
-          ce_volume: computed.ceVol,
-          pe_volume: computed.peVol,
-          pcr_oi: computed.ceOi > 0 ? roundToDecimals(computed.peOi / computed.ceOi, 4) : null,
-          pcr_volume: computed.ceVol > 0 ? roundToDecimals(computed.peVol / computed.ceVol, 4) : null,
-          timestamp: board.timestamp,
-        });
+        setOptionsOrderflow(buildOptionsOrderflow(board));
         if (!optionsExpiry && board.expiry) {
           setOptionsExpiry(board.expiry);
         }
@@ -515,7 +537,11 @@ export default function TerminalPage() {
           setChartData((prev) => {
             if (prev.length === 0) return prev;
             const next = [...prev];
-            const last = { ...next[next.length - 1] };
+            const lastCandle = next.at(-1);
+            if (!lastCandle) {
+              return prev;
+            }
+            const last = { ...lastCandle };
             const nextPrice = tick.ltp as number;
 
             last.close = Number(nextPrice.toFixed(2));
@@ -701,7 +727,7 @@ export default function TerminalPage() {
           price: orderType === 'MARKET' ? 0 : orderPrice,
           trigger_price: (orderType === 'SL' || orderType === 'SL-M') ? orderTrigger : 0,
           tag: terminalView === 'options' ? 'terminal-options' : 'terminal-live',
-          instrument_type: activeTradeSymbol.endsWith('PE') ? 'PE' : activeTradeSymbol.endsWith('CE') ? 'CE' : 'EQ',
+          instrument_type: inferInstrumentType(activeTradeSymbol),
           is_live_confirmation_ack: isLiveConfirmationAck,
           risk_override_reason: riskOverrideReason.trim() || null,
         }),
@@ -741,6 +767,245 @@ export default function TerminalPage() {
     }
   };
 
+  let watchlistSearchContent: ReactNode = searchResults.map((item) => (
+    <button
+      key={`${item.symbol}-${item.type || 'EQ'}`}
+      type="button"
+      className="w-full text-left px-2 py-1.5 hover:bg-background-secondary border-b border-border last:border-b-0"
+      onClick={() => {
+        void addSymbolToWatchlist(item);
+      }}
+    >
+      <div className="text-sm font-medium">{item.symbol}</div>
+      <div className="text-xs text-foreground-muted truncate">{item.name}</div>
+    </button>
+  ));
+  if (searchLoading) {
+    watchlistSearchContent = (
+      <div className="px-2 py-2 text-xs text-foreground-muted">Searching...</div>
+    );
+  } else if (searchResults.length === 0) {
+    watchlistSearchContent = <div className="px-2 py-2 text-xs text-foreground-muted">No matches</div>;
+  }
+
+  let watchlistContent: ReactNode = (
+    <table className="w-full">
+      <thead className="text-xs text-foreground-muted border-b border-border">
+        <tr>
+          <th className="py-1.5 pl-3 text-left font-normal">Symbol</th>
+          <th className="py-1.5 pr-3 text-right font-normal">LTP</th>
+        </tr>
+      </thead>
+      <tbody className="text-sm">
+        {watchlist.map((stock) => (
+          <WatchlistRow
+            key={stock.symbol}
+            stock={stock}
+            isSelected={selectedSymbol === stock.symbol}
+            onClick={() => setSelectedSymbol(stock.symbol)}
+            onOpenTradingView={openTradingView}
+          />
+        ))}
+      </tbody>
+    </table>
+  );
+  if (isLoading) {
+    watchlistContent = (
+      <div className="flex items-center justify-center h-32">
+        <Loader2 className="w-5 h-5 animate-spin text-foreground-muted" />
+      </div>
+    );
+  } else if (error) {
+    watchlistContent = <div className="p-4 text-center text-sm text-loss">{error}</div>;
+  } else if (watchlist.length === 0) {
+    watchlistContent = <div className="p-4 text-center text-sm text-foreground-muted">No symbols</div>;
+  }
+
+  let centerPanelContent: ReactNode = (
+    <div className="text-center text-sm text-foreground-muted">Select a view</div>
+  );
+  if (terminalView === 'options') {
+    if (optionsLoading && !optionsBoard) {
+      centerPanelContent = (
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-foreground-muted" />
+          <p className="text-sm text-foreground-muted">Loading options board...</p>
+        </div>
+      );
+    } else if (optionsError && !optionsBoard) {
+      centerPanelContent = (
+        <div className="text-center">
+          <p className="text-sm text-loss">{optionsError}</p>
+        </div>
+      );
+    } else if (optionsBoard) {
+      centerPanelContent = (
+        <div className="h-full w-full overflow-auto p-2">
+          <div className="mb-2 flex items-center gap-2">
+            <select
+              value={optionsUnderlying}
+              onChange={(event) => setOptionsUnderlying(event.target.value)}
+              className="h-8 rounded border border-border bg-background px-2 text-xs"
+            >
+              <option value="NIFTY">NIFTY</option>
+              <option value="BANKNIFTY">BANKNIFTY</option>
+              <option value="FINNIFTY">FINNIFTY</option>
+            </select>
+            <input
+              type="date"
+              value={optionsExpiry}
+              onChange={(event) => setOptionsExpiry(event.target.value)}
+              className="h-8 rounded border border-border bg-background px-2 text-xs"
+            />
+            {optionsOrderflow && (
+              <div className="text-xs text-foreground-muted">
+                PCR(OI): {optionsOrderflow.pcr_oi ?? '--'} | PCR(Vol): {optionsOrderflow.pcr_volume ?? '--'}
+              </div>
+            )}
+          </div>
+          <table className="w-full text-xs">
+            <thead className="border-b border-border text-foreground-muted">
+              <tr>
+                <th className="py-1 text-left font-normal">CE</th>
+                <th className="py-1 text-right font-normal">CE LTP</th>
+                <th className="py-1 text-right font-normal">Strike</th>
+                <th className="py-1 text-right font-normal">PE LTP</th>
+                <th className="py-1 text-left font-normal">PE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(optionsBoard.strikes ?? []).map((row) => (
+                <tr key={row.strike} className="border-b border-border/60">
+                  <td className="py-1">
+                    <button
+                      type="button"
+                      className="text-left hover:text-profit"
+                      onClick={() => {
+                        if (row.ce?.symbol) {
+                          setSelectedOptionSymbol(row.ce.symbol);
+                        }
+                      }}
+                    >
+                      {row.ce?.symbol || '--'}
+                    </button>
+                  </td>
+                  <td className="py-1 text-right tabular-nums">
+                    {typeof row.ce?.ltp === 'number' ? row.ce.ltp.toFixed(2) : '--'}
+                  </td>
+                  <td
+                    className={`py-1 text-right tabular-nums ${
+                      row.strike === optionsBoard.atm_strike
+                        ? 'text-foreground font-semibold'
+                        : 'text-foreground-muted'
+                    }`}
+                  >
+                    {row.strike.toFixed(2)}
+                  </td>
+                  <td className="py-1 text-right tabular-nums">
+                    {typeof row.pe?.ltp === 'number' ? row.pe.ltp.toFixed(2) : '--'}
+                  </td>
+                  <td className="py-1 text-left">
+                    <button
+                      type="button"
+                      className="text-left hover:text-loss"
+                      onClick={() => {
+                        if (row.pe?.symbol) {
+                          setSelectedOptionSymbol(row.pe.symbol);
+                        }
+                      }}
+                    >
+                      {row.pe?.symbol || '--'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    } else {
+      centerPanelContent = (
+        <div className="text-center">
+          <p className="text-sm text-foreground-muted">No options data</p>
+        </div>
+      );
+    }
+  } else if (terminalView === 'positions') {
+    centerPanelContent = (
+      <div className="h-full w-full overflow-auto p-2">
+        <div className="mb-2 flex items-center gap-4 text-xs">
+          <span className="text-foreground-muted">
+            Live Net P&L:{' '}
+            <span className={positionsSummary.net_pnl_live >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+              {positionsSummary.net_pnl_live.toFixed(2)}
+            </span>
+          </span>
+          <span className="text-foreground-muted">
+            Paper Net P&L:{' '}
+            <span className={positionsSummary.net_pnl_paper >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+              {positionsSummary.net_pnl_paper.toFixed(2)}
+            </span>
+          </span>
+          <span className="text-foreground-muted">
+            Total:{' '}
+            <span className={positionsSummary.net_pnl_total >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
+              {positionsSummary.net_pnl_total.toFixed(2)}
+            </span>
+          </span>
+        </div>
+        {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
+            <tr>
+              <th className="py-1 text-left font-normal">Symbol</th>
+              <th className="py-1 text-left font-normal">Mode</th>
+              <th className="py-1 text-left font-normal">Side</th>
+              <th className="py-1 text-right font-normal">Qty</th>
+              <th className="py-1 text-right font-normal">Entry</th>
+              <th className="py-1 text-right font-normal">LTP</th>
+              <th className="py-1 text-right font-normal">Unrealized</th>
+              <th className="py-1 text-right font-normal">Net P&L</th>
+              <th className="py-1 text-right font-normal">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((pos) => (
+              <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
+                <td className="py-1 pr-2">{pos.symbol}</td>
+                <td className="py-1 pr-2">{pos.mode || 'LIVE'}</td>
+                <td className="py-1 pr-2">{pos.net_qty >= 0 ? 'LONG' : 'SHORT'}</td>
+                <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
+                <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.entry_price || 0).toFixed(2)}</td>
+                <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.current_price || 0).toFixed(2)}</td>
+                <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  {Number(pos.unrealized_pnl || 0).toFixed(2)}
+                </td>
+                <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  {Number(pos.net_pnl || 0).toFixed(2)}
+                </td>
+                <td className="py-1 pr-2 text-right">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => void squarePosition(pos)}
+                  >
+                    Square
+                  </Button>
+                </td>
+              </tr>
+            ))}
+            {positions.length === 0 && (
+              <tr>
+                <td colSpan={10} className="py-8 text-center text-foreground-muted">No open positions</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-[calc(100vh-48px)]">
       <div className={`px-4 py-1.5 text-xs border-b border-border ${tradingMode === 'PAPER' ? 'bg-amber-500/10 text-amber-400' : 'bg-loss-bg text-loss'}`}>
@@ -777,12 +1042,8 @@ export default function TerminalPage() {
                 {typeof currentSymbol?.ltp === 'number' ? currentSymbol.ltp.toFixed(2) : '--'}
               </div>
               {currentSymbol && (
-                <div className={`tabular-nums text-xs ${
-                  typeof currentSymbol.change === 'number'
-                    ? (currentSymbol.change >= 0 ? 'text-profit' : 'text-loss')
-                    : 'text-foreground-muted'
-                }`}>
-                  {typeof currentSymbol.change === 'number' ? formatPercentage(currentSymbol.change) : 'Unavailable'}
+                <div className={`tabular-nums text-xs ${getChangeTone(currentSymbol.change)}`}>
+                  {getChangeText(currentSymbol.change)}
                 </div>
               )}
             </div>
@@ -866,59 +1127,13 @@ export default function TerminalPage() {
             )}
             {watchlistQuery.trim().length >= 2 && (
               <div className="mt-1 rounded border border-border bg-surface max-h-44 overflow-y-auto">
-                {searchLoading ? (
-                  <div className="px-2 py-2 text-xs text-foreground-muted">Searching...</div>
-                ) : searchResults.length === 0 ? (
-                  <div className="px-2 py-2 text-xs text-foreground-muted">No matches</div>
-                ) : (
-                  searchResults.map((item) => (
-                    <button
-                      key={`${item.symbol}-${item.type || 'EQ'}`}
-                      type="button"
-                      className="w-full text-left px-2 py-1.5 hover:bg-background-secondary border-b border-border last:border-b-0"
-                      onClick={() => { void addSymbolToWatchlist(item); }}
-                    >
-                      <div className="text-sm font-medium">{item.symbol}</div>
-                      <div className="text-xs text-foreground-muted truncate">{item.name}</div>
-                    </button>
-                  ))
-                )}
+                {watchlistSearchContent}
               </div>
             )}
           </div>
 
           {/* Watchlist */}
-          <div className="flex-1 overflow-y-auto">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-32">
-                <Loader2 className="w-5 h-5 animate-spin text-foreground-muted" />
-              </div>
-            ) : error ? (
-              <div className="p-4 text-center text-sm text-loss">{error}</div>
-            ) : watchlist.length === 0 ? (
-              <div className="p-4 text-center text-sm text-foreground-muted">No symbols</div>
-            ) : (
-              <table className="w-full">
-                <thead className="text-xs text-foreground-muted border-b border-border">
-                  <tr>
-                    <th className="py-1.5 pl-3 text-left font-normal">Symbol</th>
-                    <th className="py-1.5 pr-3 text-right font-normal">LTP</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {watchlist.map((stock) => (
-                    <WatchlistRow
-                      key={stock.symbol}
-                      stock={stock}
-                      isSelected={selectedSymbol === stock.symbol}
-                      onClick={() => setSelectedSymbol(stock.symbol)}
-                      onOpenTradingView={openTradingView}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <div className="flex-1 overflow-y-auto">{watchlistContent}</div>
         </div>
 
         {/* Center - Chart Area */}
@@ -955,167 +1170,7 @@ export default function TerminalPage() {
           </div>
 
           {/* Chart / Options Board */}
-          <div className="flex-1 flex items-center justify-center">
-            {terminalView === 'options' && optionsLoading && !optionsBoard ? (
-              <div className="text-center">
-                <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-foreground-muted" />
-                <p className="text-sm text-foreground-muted">Loading options board...</p>
-              </div>
-            ) : terminalView === 'options' && optionsError && !optionsBoard ? (
-              <div className="text-center">
-                <p className="text-sm text-loss">{optionsError}</p>
-              </div>
-            ) : terminalView === 'options' && !optionsBoard ? (
-              <div className="text-center">
-                <p className="text-sm text-foreground-muted">No options data</p>
-              </div>
-            ) : terminalView === 'options' ? (
-              <div className="h-full w-full overflow-auto p-2">
-                <div className="mb-2 flex items-center gap-2">
-                  <select
-                    value={optionsUnderlying}
-                    onChange={(event) => setOptionsUnderlying(event.target.value)}
-                    className="h-8 rounded border border-border bg-background px-2 text-xs"
-                  >
-                    <option value="NIFTY">NIFTY</option>
-                    <option value="BANKNIFTY">BANKNIFTY</option>
-                    <option value="FINNIFTY">FINNIFTY</option>
-                  </select>
-                  <input
-                    type="date"
-                    value={optionsExpiry}
-                    onChange={(event) => setOptionsExpiry(event.target.value)}
-                    className="h-8 rounded border border-border bg-background px-2 text-xs"
-                  />
-                  {optionsOrderflow && (
-                    <div className="text-xs text-foreground-muted">
-                      PCR(OI): {optionsOrderflow.pcr_oi ?? '--'} | PCR(Vol): {optionsOrderflow.pcr_volume ?? '--'}
-                    </div>
-                  )}
-                </div>
-                <table className="w-full text-xs">
-                  <thead className="border-b border-border text-foreground-muted">
-                    <tr>
-                      <th className="py-1 text-left font-normal">CE</th>
-                      <th className="py-1 text-right font-normal">CE LTP</th>
-                      <th className="py-1 text-right font-normal">Strike</th>
-                      <th className="py-1 text-right font-normal">PE LTP</th>
-                      <th className="py-1 text-left font-normal">PE</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(optionsBoard?.strikes ?? []).map((row) => (
-                      <tr key={row.strike} className="border-b border-border/60">
-                        <td className="py-1">
-                          <button
-                            type="button"
-                            className="text-left hover:text-profit"
-                            onClick={() => {
-                              if (row.ce?.symbol) {
-                                setSelectedOptionSymbol(row.ce.symbol);
-                              }
-                            }}
-                          >
-                            {row.ce?.symbol || '--'}
-                          </button>
-                        </td>
-                        <td className="py-1 text-right tabular-nums">{typeof row.ce?.ltp === 'number' ? row.ce.ltp.toFixed(2) : '--'}</td>
-                        <td className={`py-1 text-right tabular-nums ${row.strike === optionsBoard?.atm_strike ? 'text-foreground font-semibold' : 'text-foreground-muted'}`}>{row.strike.toFixed(2)}</td>
-                        <td className="py-1 text-right tabular-nums">{typeof row.pe?.ltp === 'number' ? row.pe.ltp.toFixed(2) : '--'}</td>
-                        <td className="py-1 text-left">
-                          <button
-                            type="button"
-                            className="text-left hover:text-loss"
-                            onClick={() => {
-                              if (row.pe?.symbol) {
-                                setSelectedOptionSymbol(row.pe.symbol);
-                              }
-                            }}
-                          >
-                            {row.pe?.symbol || '--'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : terminalView === 'positions' ? (
-              <div className="h-full w-full overflow-auto p-2">
-                <div className="mb-2 flex items-center gap-4 text-xs">
-                  <span className="text-foreground-muted">
-                    Live Net P&L:{' '}
-                    <span className={positionsSummary.net_pnl_live >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
-                      {positionsSummary.net_pnl_live.toFixed(2)}
-                    </span>
-                  </span>
-                  <span className="text-foreground-muted">
-                    Paper Net P&L:{' '}
-                    <span className={positionsSummary.net_pnl_paper >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
-                      {positionsSummary.net_pnl_paper.toFixed(2)}
-                    </span>
-                  </span>
-                  <span className="text-foreground-muted">
-                    Total:{' '}
-                    <span className={positionsSummary.net_pnl_total >= 0 ? 'text-profit tabular-nums' : 'text-loss tabular-nums'}>
-                      {positionsSummary.net_pnl_total.toFixed(2)}
-                    </span>
-                  </span>
-                </div>
-                {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
-                    <tr>
-                      <th className="py-1 text-left font-normal">Symbol</th>
-                      <th className="py-1 text-left font-normal">Mode</th>
-                      <th className="py-1 text-left font-normal">Side</th>
-                      <th className="py-1 text-right font-normal">Qty</th>
-                      <th className="py-1 text-right font-normal">Entry</th>
-                      <th className="py-1 text-right font-normal">LTP</th>
-                      <th className="py-1 text-right font-normal">Unrealized</th>
-                      <th className="py-1 text-right font-normal">Net P&L</th>
-                      <th className="py-1 text-right font-normal">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {positions.map((pos) => (
-                      <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
-                        <td className="py-1 pr-2">{pos.symbol}</td>
-                        <td className="py-1 pr-2">{pos.mode || 'LIVE'}</td>
-                        <td className="py-1 pr-2">{pos.net_qty >= 0 ? 'LONG' : 'SHORT'}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.entry_price || 0).toFixed(2)}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{Number(pos.current_price || 0).toFixed(2)}</td>
-                        <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                          {Number(pos.unrealized_pnl || 0).toFixed(2)}
-                        </td>
-                        <td className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                          {Number(pos.net_pnl || 0).toFixed(2)}
-                        </td>
-                        <td className="py-1 pr-2 text-right">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => void squarePosition(pos)}
-                          >
-                            Square
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                    {positions.length === 0 && (
-                      <tr>
-                        <td colSpan={10} className="py-8 text-center text-foreground-muted">No open positions</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center text-sm text-foreground-muted">Select a view</div>
-            )}
-          </div>
+          <div className="flex-1 flex items-center justify-center">{centerPanelContent}</div>
         </div>
 
         {/* Right Sidebar - Order Panel */}

@@ -253,7 +253,24 @@ class RiskManager:
         try:
             # Get current positions value
             positions = db.query(LivePosition).filter(LivePosition.net_qty != 0).all()
-            current_exposure = sum(abs(p.net_qty) * (p.ltp or 0) for p in positions)
+            missing_ltp_positions = [p for p in positions if p.ltp is None]
+            if missing_ltp_positions:
+                symbols = [
+                    getattr(position, "symbol", None) or getattr(position, "id", "unknown")
+                    for position in missing_ltp_positions
+                ]
+                logger.warning(
+                    "Exposure check aborted because positions are missing LTP: %s",
+                    symbols,
+                )
+                return RiskCheckResult(
+                    status=RiskStatus.FAIL,
+                    message="Cannot verify exposure because one or more open positions are missing live prices.",
+                    code="EXPOSURE_LTP_MISSING",
+                    details={"symbols": symbols},
+                )
+
+            current_exposure = sum(abs(p.net_qty) * p.ltp for p in positions)
             # Add new order value
             quantity = order_params.get("quantity", 0)
             price = order_params.get("price", 0)

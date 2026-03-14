@@ -69,6 +69,103 @@ def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(_handler)
 
 
+async def _step_get_event_loop(app: FastAPI) -> None:
+    loop = asyncio.get_running_loop()
+    app.state.loop = loop
+    _install_windows_reset_handler(loop)
+    logger.info(f"[OK] Event loop acquired: {loop}")
+    await asyncio.sleep(0)
+
+
+async def _step_set_ws_manager_loop(app: FastAPI) -> None:
+    from .utils.ws_manager import manager
+
+    manager.set_loop(app.state.loop)
+    logger.info("[OK] WebSocket manager loop set")
+    await asyncio.sleep(0)
+
+
+async def _step_validate_symbol_master() -> None:
+    from .services.symbol_master import symbol_master
+
+    test_symbol = "SBIN"
+    fyers_format = symbol_master.to_fyers(test_symbol)
+    db_format = symbol_master.to_db(fyers_format)
+    if db_format != test_symbol:
+        raise ValueError(f"Symbol master validation failed: {test_symbol} != {db_format}")
+    logger.info("[OK] Symbol master validated")
+    await asyncio.sleep(0)
+
+
+async def _step_validate_database() -> None:
+    from sqlalchemy import text
+
+    from .database import Base, SessionLocal, engine
+
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        logger.info("[OK] Database validated")
+    finally:
+        db.close()
+    await asyncio.sleep(0)
+
+
+async def _step_validate_fyers_token(app: FastAPI) -> None:
+    from .services.fyers_client import get_fyers_client
+
+    fyers = get_fyers_client()
+    is_valid = False
+    if fyers:
+        try:
+            is_valid = await asyncio.wait_for(asyncio.to_thread(fyers.validate_token), timeout=5.0)
+        except TimeoutError:
+            logger.warning("[WARN] Fyers token validation timed out after 5s")
+        except Exception as exc:
+            logger.warning(f"[WARN] Fyers token validation errored: {exc}")
+
+    app.state.fyers_token_valid = bool(is_valid)
+    if app.state.fyers_token_valid:
+        logger.info("[OK] Fyers token validated")
+    else:
+        logger.warning("[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode.")
+
+
+async def _step_load_index_universe() -> None:
+    from .services.index_universe_loader import index_universe_loader
+
+    if index_universe_loader.data_path.exists():
+        logger.info("[OK] Index universe data path available; loading deferred until first use")
+    else:
+        logger.warning(
+            "[WARN] Index universe data path missing; universe features will degrade until data is provided"
+        )
+    await asyncio.sleep(0)
+
+
+def _log_live_market_status(connect_status: str) -> None:
+    if connect_status in {"started", "already_connected"}:
+        logger.info("[OK] Live market service connection initialized")
+    elif connect_status == "market_closed":
+        logger.info("[INFO] Live market connection deferred: market closed")
+    elif connect_status == "token_invalid":
+        logger.warning("[WARN] Live market connection deferred: Fyers token invalid/expired")
+    else:
+        logger.warning(f"[WARN] Live market connection deferred: {connect_status}")
+
+
+async def _step_connect_live_market(app: FastAPI) -> None:
+    from .services.live_market_service import live_market
+
+    connect_status = live_market.connect(
+        loop=app.state.loop,
+        prevalidated_token=app.state.fyers_token_valid,
+    )
+    _log_live_market_status(connect_status)
+    await asyncio.sleep(0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -88,144 +185,37 @@ async def lifespan(app: FastAPI):
     sequence = StartupSequence()
 
     try:
-        # Step 1: Get event loop
-        async def step_get_event_loop():
-            loop = asyncio.get_running_loop()
-            app.state.loop = loop
-            _install_windows_reset_handler(loop)
-            logger.info(f"[OK] Event loop acquired: {loop}")
-            await asyncio.sleep(0)
-
-        await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step_get_event_loop, required=True)
-
-        # Step 2: Set loop for WebSocket manager (implicit in step 1, but tracked separately)
-        async def step_set_ws_manager_loop():
-            from .utils.ws_manager import manager
-
-            manager.set_loop(app.state.loop)
-            logger.info("[OK] WebSocket manager loop set")
-            await asyncio.sleep(0)
-
         await sequence.execute_step(
-            StartupStep.SET_EVENT_LOOP,  # Reusing enum value as this is part of loop setup
-            step_set_ws_manager_loop,
+            StartupStep.SET_EVENT_LOOP,
+            lambda: _step_get_event_loop(app),
             required=True,
         )
-
-        # Step 3: Validate symbol_master (round-trip test)
-        async def step_validate_symbol_master():
-            from .services.symbol_master import symbol_master
-
-            test_symbol = "SBIN"
-            fyers_format = symbol_master.to_fyers(test_symbol)
-            db_format = symbol_master.to_db(fyers_format)
-            if db_format != test_symbol:
-                raise ValueError(f"Symbol master validation failed: {test_symbol} != {db_format}")
-            logger.info("[OK] Symbol master validated")
-            await asyncio.sleep(0)
-
         await sequence.execute_step(
-            StartupStep.VALIDATE_SYMBOL_MASTER, step_validate_symbol_master, required=True
+            StartupStep.SET_WS_MANAGER_LOOP,
+            lambda: _step_set_ws_manager_loop(app),
+            required=True,
         )
-
-        # Step 4: Validate database
-        async def step_validate_database():
-            from sqlalchemy import text
-
-            from .database import Base, SessionLocal, engine
-
-            Base.metadata.create_all(bind=engine)
-            # Test connection
-            db = SessionLocal()
-            try:
-                db.execute(text("SELECT 1"))
-                logger.info("[OK] Database validated")
-            finally:
-                db.close()
-            await asyncio.sleep(0)
-
         await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE, step_validate_database, required=True
+            StartupStep.VALIDATE_SYMBOL_MASTER, _step_validate_symbol_master, required=True
         )
-
-        # Step 5: Validate Fyers token (warn-only)
-        async def step_validate_fyers_token():
-            from .services.fyers_client import get_fyers_client
-
-            fyers = get_fyers_client()
-            is_valid = False
-            if fyers:
-                try:
-                    is_valid = await asyncio.wait_for(
-                        asyncio.to_thread(fyers.validate_token),
-                        timeout=5.0,
-                    )
-                except TimeoutError:
-                    logger.warning("[WARN] Fyers token validation timed out after 5s")
-                except Exception as exc:
-                    logger.warning(f"[WARN] Fyers token validation errored: {exc}")
-
-            app.state.fyers_token_valid = bool(is_valid)
-            if app.state.fyers_token_valid:
-                logger.info("[OK] Fyers token validated")
-            else:
-                logger.warning(
-                    "[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode."
-                )
-
+        await sequence.execute_step(
+            StartupStep.VALIDATE_DATABASE, _step_validate_database, required=True
+        )
         await sequence.execute_step(
             StartupStep.VALIDATE_FYERS_TOKEN,
-            step_validate_fyers_token,
-            required=False,  # Warn-only
+            lambda: _step_validate_fyers_token(app),
+            required=False,
         )
-
-        # Step 6: Load index universe (warn-only)
-        async def step_load_index_universe():
-            from .services.index_universe_loader import index_universe_loader
-
-            if index_universe_loader.data_path.exists():
-                logger.info(
-                    "[OK] Index universe data path available; loading deferred until first use"
-                )
-            else:
-                logger.warning(
-                    "[WARN] Index universe data path missing; universe features will degrade until data is provided"
-                )
-            await asyncio.sleep(0)
-
         await sequence.execute_step(
             StartupStep.LOAD_INDEX_UNIVERSE,
-            step_load_index_universe,
-            required=False,  # Warn-only
+            _step_load_index_universe,
+            required=False,
         )
-
-        # Step 7: Connect live_market with event loop
-        async def step_connect_live_market():
-            from .services.live_market_service import live_market
-
-            connect_status = live_market.connect(
-                loop=app.state.loop,
-                prevalidated_token=app.state.fyers_token_valid,
-            )
-            if connect_status in {"started", "already_connected"}:
-                logger.info("[OK] Live market service connection initialized")
-            elif connect_status == "market_closed":
-                logger.info("[INFO] Live market connection deferred: market closed")
-            elif connect_status == "token_invalid":
-                logger.warning(
-                    "[WARN] Live market connection deferred: Fyers token invalid/expired"
-                )
-            else:
-                logger.warning(f"[WARN] Live market connection deferred: {connect_status}")
-            await asyncio.sleep(0)
-
         await sequence.execute_step(
             StartupStep.CONNECT_LIVE_MARKET,
-            step_connect_live_market,
-            required=False,  # Non-blocking, runs in background
+            lambda: _step_connect_live_market(app),
+            required=False,
         )
-
-        # Log startup summary
         sequence.log_summary()
         if sequence.is_complete():
             logger.info("[OK] WebSocket services initialized successfully")

@@ -333,6 +333,7 @@ class LiveMarketService:
             if self.is_market_open():
                 self.connect()
             else:
+                self.pending_subscriptions.update(symbols)
                 now = time.time()
                 if now - self._last_subscribe_market_closed_log_ts > 60:
                     logger.info("Live subscribe deferred: market is closed")

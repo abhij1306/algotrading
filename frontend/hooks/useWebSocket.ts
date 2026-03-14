@@ -278,8 +278,11 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
         console.warn('[WebSocket] Connection creation failed:', err);
         isConnectingRef.current = false;
         const isEnabled = optionsRef.current.enabled ?? true;
-        if (!cancelledRef.current && isEnabled) {
+        retryCountRef.current += 1;
+        if (!cancelledRef.current && isEnabled && retryCountRef.current < MAX_RETRIES) {
           reconnectTimeoutRef.current = setTimeout(connectImpl, RECONNECT_INTERVAL);
+        } else if (!cancelledRef.current && isEnabled) {
+          console.error('[WebSocket] Max reconnect attempts reached after connection creation failure');
         }
       }
     }

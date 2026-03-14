@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Column, Date, Float, ForeignKey, Index, Integer, String
+from datetime import datetime, timezone
+
+from sqlalchemy import JSON, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text
 
 from ..base import Base
 
@@ -9,14 +11,40 @@ class BacktestRun(Base):
     __tablename__ = "backtest_runs"
 
     run_id = Column(String(50), primary_key=True)
+    name = Column(String(100))
+    status = Column(String(20), default="running", index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+    completed_at = Column(DateTime(timezone=True))
+
+    # Compatibility fields used by legacy engine paths.
+    strategy_id = Column(String(50), index=True)
+    universe = Column(String(50), index=True)
+    initial_capital = Column(Float)
+    final_capital = Column(Float)
+    total_return = Column(Float)
+    sharpe_ratio = Column(Float)
+    max_drawdown = Column(Float)
+
+    # Phase-1 immutable run snapshot.
+    instrument_type = Column(String(20), default="equity")
+    selection_mode = Column(String(20), default="universe")
+    scope_label = Column(String(200))
     universe_id = Column(String(50), index=True)
     strategy_configs = Column(JSON)
     portfolio_config = Column(JSON)
     capital_mode = Column(String(20))
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
-
     summary_metrics = Column(JSON)
+    strategy_versions = Column(JSON)
+    request_payload = Column(JSON)
+    result_payload = Column(JSON)
+    error_message = Column(Text)
 
 
 class BacktestDailyResult(Base):

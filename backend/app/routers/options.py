@@ -4,15 +4,16 @@ Options Router
 API endpoints for option chain data and Greeks.
 """
 
+import logging
 from datetime import date
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from ..database import get_db
-from ..services.option_chain_service import option_chain_service
+from ..services.option_chain_service import OptionChainData, OptionLeg, option_chain_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/options", tags=["Options"])
 
 
@@ -87,17 +88,69 @@ class GreeksResponse(BaseModel):
 # ============== Endpoints ==============
 
 
-@router.get("/chain", response_model=OptionChainResponse)
+def _to_leg_response(leg: OptionLeg | None) -> OptionLegResponse | None:
+    if not leg:
+        return None
+
+    return OptionLegResponse(
+        symbol=leg.symbol,
+        fyers_symbol=leg.fyers_symbol,
+        strike=leg.strike,
+        expiry=leg.expiry,
+        option_type=leg.option_type,
+        ltp=leg.ltp,
+        bid=leg.bid,
+        ask=leg.ask,
+        volume=leg.volume,
+        oi=leg.oi,
+        iv=leg.iv,
+        greeks=leg.greeks,
+        change=leg.change,
+        change_pct=leg.change_pct,
+        prev_close=leg.prev_close,
+    )
+
+
+def _to_chain_response(chain: OptionChainData) -> OptionChainResponse:
+    strikes_response = [
+        OptionStrikeResponse(
+            strike_price=strike.strike_price,
+            ce=_to_leg_response(strike.call),
+            pe=_to_leg_response(strike.put),
+        )
+        for strike in chain.strikes
+    ]
+    return OptionChainResponse(
+        underlying=chain.underlying,
+        spot_price=chain.spot_price,
+        expiry=chain.expiry,
+        strikes=strikes_response,
+        atm_strike=chain.get_atm_strike(),
+        timestamp=chain.timestamp.isoformat(),
+    )
+
+
+@router.get(
+    "/chain",
+    responses={
+        404: {"description": "Resource not found"},
+        500: {"description": "Internal server error"},
+    },
+)
 async def get_option_chain(
-    symbol: str = Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY, RELIANCE)"),
-    expiry: date | None = Query(
-        None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."
-    ),
-    strike_count: int = Query(
-        15, ge=5, le=50, description="Number of strikes to return (centered around ATM)"
-    ),
-    db: Session = Depends(get_db),
-):
+    symbol: Annotated[
+        str,
+        Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY, RELIANCE)"),
+    ],
+    expiry: Annotated[
+        date | None,
+        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ],
+    strike_count: Annotated[
+        int,
+        Query(15, ge=5, le=50, description="Number of strikes to return (centered around ATM)"),
+    ],
+) -> OptionChainResponse:
     """
     Get option chain data for an underlying.
 
@@ -112,79 +165,34 @@ async def get_option_chain(
         if not chain:
             raise HTTPException(
                 status_code=404,
-                detail=f"Option chain not available for {symbol}. Market may be closed or symbol invalid.",
+                detail=(
+                    f"Option chain not available for {symbol}. "
+                    "Market may be closed or symbol invalid."
+                ),
             )
 
-        # Convert to response model
-        strikes_response = []
-        for strike in chain.strikes:
-            ce_response = None
-            pe_response = None
-
-            if strike.call:
-                ce_response = OptionLegResponse(
-                    symbol=strike.call.symbol,
-                    fyers_symbol=strike.call.fyers_symbol,
-                    strike=strike.call.strike,
-                    expiry=strike.call.expiry,
-                    option_type=strike.call.option_type,
-                    ltp=strike.call.ltp,
-                    bid=strike.call.bid,
-                    ask=strike.call.ask,
-                    volume=strike.call.volume,
-                    oi=strike.call.oi,
-                    iv=strike.call.iv,
-                    greeks=strike.call.greeks,
-                    change=strike.call.change,
-                    change_pct=strike.call.change_pct,
-                    prev_close=strike.call.prev_close,
-                )
-
-            if strike.put:
-                pe_response = OptionLegResponse(
-                    symbol=strike.put.symbol,
-                    fyers_symbol=strike.put.fyers_symbol,
-                    strike=strike.put.strike,
-                    expiry=strike.put.expiry,
-                    option_type=strike.put.option_type,
-                    ltp=strike.put.ltp,
-                    bid=strike.put.bid,
-                    ask=strike.put.ask,
-                    volume=strike.put.volume,
-                    oi=strike.put.oi,
-                    iv=strike.put.iv,
-                    greeks=strike.put.greeks,
-                    change=strike.put.change,
-                    change_pct=strike.put.change_pct,
-                    prev_close=strike.put.prev_close,
-                )
-
-            strikes_response.append(
-                OptionStrikeResponse(
-                    strike_price=strike.strike_price, ce=ce_response, pe=pe_response
-                )
-            )
-
-        return OptionChainResponse(
-            underlying=chain.underlying,
-            spot_price=chain.spot_price,
-            expiry=chain.expiry,
-            strikes=strikes_response,
-            atm_strike=chain.get_atm_strike(),
-            timestamp=chain.timestamp.isoformat(),
-        )
+        return _to_chain_response(chain)
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching option chain: {str(e)}")
+        logger.exception("Error fetching option chain for %s", symbol)
+        raise HTTPException(status_code=500, detail=f"Error fetching option chain: {e}") from e
 
 
-@router.get("/expiries", response_model=ExpiriesResponse)
+@router.get(
+    "/expiries",
+    responses={
+        404: {"description": "Resource not found"},
+        500: {"description": "Internal server error"},
+    },
+)
 async def get_expiries(
-    symbol: str = Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
-    db: Session = Depends(get_db),
-):
+    symbol: Annotated[
+        str,
+        Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
+    ],
+) -> ExpiriesResponse:
     """
     Get available expiry dates for an underlying.
 
@@ -202,15 +210,27 @@ async def get_expiries(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching expiries: {str(e)}")
+        logger.exception("Error fetching expiries for %s", symbol)
+        raise HTTPException(status_code=500, detail=f"Error fetching expiries: {e}") from e
 
 
-@router.get("/atm", response_model=ATMStrikeResponse)
+@router.get(
+    "/atm",
+    responses={
+        404: {"description": "Resource not found"},
+        500: {"description": "Internal server error"},
+    },
+)
 async def get_atm_strike(
-    symbol: str = Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
-    expiry: date | None = Query(None, description="Expiry date (YYYY-MM-DD)"),
-    db: Session = Depends(get_db),
-):
+    symbol: Annotated[
+        str,
+        Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
+    ],
+    expiry: Annotated[
+        date | None,
+        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ],
+) -> ATMStrikeResponse:
     """
     Get the at-the-money (ATM) strike for an underlying.
 
@@ -236,17 +256,29 @@ async def get_atm_strike(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching ATM strike: {str(e)}")
+        logger.exception("Error fetching ATM strike for %s", symbol)
+        raise HTTPException(status_code=500, detail=f"Error fetching ATM strike: {e}") from e
 
 
-@router.get("/greeks", response_model=GreeksResponse)
+@router.get(
+    "/greeks",
+    responses={
+        404: {"description": "Resource not found"},
+        500: {"description": "Internal server error"},
+    },
+)
 async def get_greeks(
-    symbol: str = Query(..., description="Underlying symbol (e.g., NIFTY)"),
-    strike: float = Query(..., description="Strike price"),
-    option_type: str = Query(..., pattern="^(CE|PE)$", description="Option type: CE or PE"),
-    expiry: date | None = Query(None, description="Expiry date (YYYY-MM-DD)"),
-    db: Session = Depends(get_db),
-):
+    symbol: Annotated[str, Query(..., description="Underlying symbol (e.g., NIFTY)")],
+    strike: Annotated[float, Query(..., description="Strike price")],
+    option_type: Annotated[
+        str,
+        Query(..., pattern="^(CE|PE)$", description="Option type: CE or PE"),
+    ],
+    expiry: Annotated[
+        date | None,
+        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ],
+) -> GreeksResponse:
     """
     Get Greeks (Delta, Gamma, Theta, Vega, Rho) for a specific option.
 
@@ -280,11 +312,12 @@ async def get_greeks(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching Greeks: {str(e)}")
+        logger.exception("Error fetching Greeks for %s %s %s", symbol, strike, option_type)
+        raise HTTPException(status_code=500, detail=f"Error fetching Greeks: {e}") from e
 
 
 @router.post("/cache/clear")
-async def clear_cache(db: Session = Depends(get_db)):
+async def clear_cache() -> dict[str, str]:
     """
     Clear the option chain cache.
     Use this if you suspect stale data.

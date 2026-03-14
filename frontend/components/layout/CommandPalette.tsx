@@ -32,9 +32,9 @@ const MOCK_SYMBOLS: SymbolResult[] = [
   { symbol: 'RELIANCE', name: 'Reliance Industries', exchange: 'NSE', price: 2450.5, change: 1.2 },
   { symbol: 'TCS', name: 'Tata Consultancy Services', exchange: 'NSE', price: 3890.25, change: -0.5 },
   { symbol: 'INFY', name: 'Infosys Ltd', exchange: 'NSE', price: 1650.75, change: 0.8 },
-  { symbol: 'HDFCBANK', name: 'HDFC Bank', exchange: 'NSE', price: 1420.0, change: 0.3 },
+  { symbol: 'HDFCBANK', name: 'HDFC Bank', exchange: 'NSE', price: 1420, change: 0.3 },
   { symbol: 'SBIN', name: 'State Bank of India', exchange: 'NSE', price: 675.5, change: 1.5 },
-  { symbol: 'NIFTY50', name: 'NIFTY 50 Index', exchange: 'NSE', price: 22450.0, change: 0.6 },
+  { symbol: 'NIFTY50', name: 'NIFTY 50 Index', exchange: 'NSE', price: 22450, change: 0.6 },
 ];
 
 export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
@@ -189,6 +189,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         type="button"
         className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[600] animate-fade-in"
         aria-label="Close command palette"
+        tabIndex={-1}
         onClick={onClose}
       />
 
@@ -209,14 +210,10 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
 
         {/* Results */}
         <div className="max-h-[400px] overflow-y-auto py-2">
-          {!hasResults ? (
-            <div className="px-4 py-8 text-center text-foreground-tertiary">
-              No results found for &quot;{query}&quot;
-            </div>
-          ) : (
+          {hasResults ? (
             <>
               {/* Symbols Section */}
-              {symbols.length > 0 && (
+              {symbols.length > 0 ? (
                 <div className="mb-2">
                   <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-foreground-tertiary">
                     Symbols
@@ -254,7 +251,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                     </button>
                   ))}
                 </div>
-              )}
+              ) : null}
 
               {/* Commands by Category */}
               {['Navigation', 'Actions', 'Preferences'].map((category) => {
@@ -296,6 +293,10 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                 );
               })}
             </>
+          ) : (
+            <div className="px-4 py-8 text-center text-foreground-tertiary">
+              No results found for &quot;{query}&quot;
+            </div>
           )}
         </div>
 

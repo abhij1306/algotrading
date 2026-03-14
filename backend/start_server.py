@@ -52,7 +52,6 @@ if __name__ == "__main__":
     access_log_enabled = _env_bool("BACKEND_ACCESS_LOG", False)
     backend_log_level = _env_level("BACKEND_LOG_LEVEL", "INFO").lower()
     framework_log_level = _env_level("FRAMEWORK_LOG_LEVEL", "WARNING")
-    framework_log_level = _env_level("FRAMEWORK_LOG_LEVEL", "WARNING")
     uvicorn_log_config = _build_uvicorn_log_config(framework_log_level)
 
     if reload_enabled:

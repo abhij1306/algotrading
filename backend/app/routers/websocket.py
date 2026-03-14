@@ -174,7 +174,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pass  # Connection already dead
     finally:
         before_symbols = manager.get_all_subscribed_symbols()
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)
         after_symbols = manager.get_all_subscribed_symbols()
         removed_symbols = sorted(before_symbols - after_symbols)
         if removed_symbols:

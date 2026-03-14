@@ -33,6 +33,7 @@ class ConnectionManager:
         self.connections: dict[WebSocket, ClientConnection] = {}
         self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
         self.loop = None
+        self._lock = asyncio.Lock()
 
     def set_loop(self, loop):
         """Set event loop for thread-safe broadcasting"""
@@ -52,8 +53,9 @@ class ConnectionManager:
 
         client = ClientConnection(websocket=websocket)
         client.sender_task = asyncio.create_task(self._sender_loop(client))
-        self.connections[websocket] = client
-        self.subscriptions[websocket] = client.subscriptions
+        async with self._lock:
+            self.connections[websocket] = client
+            self.subscriptions[websocket] = client.subscriptions
         logger.debug(f"[WSManager] Client connected. Total: {len(self.connections)}")
 
         # Send initial welcome — client may have already disconnected (React StrictMode, page nav)
@@ -67,55 +69,56 @@ class ConnectionManager:
         except (WebSocketDisconnect, Exception):
             # Normal disconnect during handshake (React StrictMode, page navigation)
             logger.debug("[WSManager] Client disconnected before handshake completion")
-            self.disconnect(websocket)
+            await self.disconnect(websocket)
             return False
 
         return True
 
-    def disconnect(self, websocket: WebSocket) -> set[str]:
+    async def disconnect(self, websocket: WebSocket) -> set[str]:
         removed_symbols: set[str] = set()
-        client = self.connections.pop(websocket, None)
-        self.subscriptions.pop(websocket, None)
-        if client:
-            removed_symbols = set(client.subscriptions)
-            if client.sender_task:
-                client.sender_task.cancel()
-            # Rebuild cached global symbol set after removing this client.
-            self._global_subscriptions = (
-                set().union(*(conn.subscriptions for conn in self.connections.values()))
-                if self.connections
-                else set()
-            )
+        async with self._lock:
+            client = self.connections.pop(websocket, None)
+            self.subscriptions.pop(websocket, None)
+            if client:
+                removed_symbols = set(client.subscriptions)
+                if client.sender_task:
+                    client.sender_task.cancel()
+                self._global_subscriptions = (
+                    set().union(*(conn.subscriptions for conn in self.connections.values()))
+                    if self.connections
+                    else set()
+                )
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
         return removed_symbols
 
     async def subscribe(self, websocket: WebSocket, symbols: list[str]):
         """Subscribe a specific connection to symbols"""
-        client = self.connections.get(websocket)
-        if client:
-            for symbol in symbols:
-                client.subscriptions.add(symbol)
-                self._global_subscriptions.add(symbol)  # Update global cache
-            logger.debug(
-                f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(client.subscriptions)}"
-            )
+        async with self._lock:
+            client = self.connections.get(websocket)
+            if client:
+                for symbol in symbols:
+                    client.subscriptions.add(symbol)
+                    self._global_subscriptions.add(symbol)
+                logger.debug(
+                    f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(client.subscriptions)}"
+                )
         await asyncio.sleep(0)
 
     async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
         """Unsubscribe a specific connection from symbols"""
-        client = self.connections.get(websocket)
-        if client:
-            for symbol in symbols:
-                client.subscriptions.discard(symbol)
-            # Rebuild global cache after unsubscribe
-            self._global_subscriptions = (
-                set().union(*(conn.subscriptions for conn in self.connections.values()))
-                if self.connections
-                else set()
-            )
-            logger.debug(
-                f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(client.subscriptions)}"
-            )
+        async with self._lock:
+            client = self.connections.get(websocket)
+            if client:
+                for symbol in symbols:
+                    client.subscriptions.discard(symbol)
+                self._global_subscriptions = (
+                    set().union(*(conn.subscriptions for conn in self.connections.values()))
+                    if self.connections
+                    else set()
+                )
+                logger.debug(
+                    f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(client.subscriptions)}"
+                )
         await asyncio.sleep(0)
 
     def get_all_subscribed_symbols(self) -> set[str]:
@@ -128,7 +131,9 @@ class ConnectionManager:
         Broadcast JSON message to clients.
         Supports 'ticker_batch' (filtered per client) and single 'ticker' (broadcast to subscribers).
         """
-        if not self.connections and not self.subscriptions:
+        async with self._lock:
+            active_connections = list(self.connections.values())
+        if not active_connections:
             return
 
         try:
@@ -147,17 +152,14 @@ class ConnectionManager:
             logger.error(f"[WSManager] Failed to serialize message: {e}")
             return
 
-        all_connections = set(self.connections.keys()) | set(self.subscriptions.keys())
-        for connection in list(all_connections):
+        for client in active_connections:
+            connection = client.websocket
             try:
-                client = self.connections.get(connection)
                 if connection.client_state != WebSocketState.CONNECTED:
-                    self.disconnect(connection)
+                    await self.disconnect(connection)
                     continue
 
-                client_subs = self.subscriptions.get(
-                    connection, client.subscriptions if client else set()
-                )
+                client_subs = client.subscriptions
                 if is_batch:
                     batch_data = message.get("data", [])
                     client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
@@ -169,21 +171,15 @@ class ConnectionManager:
                         continue
                     outbound = {"__pre_serialized__": json_msg}
 
-                if client:
-                    try:
-                        client.queue.put_nowait(outbound)
-                    except asyncio.QueueFull:
-                        logger.warning("[WSManager] Dropping slow websocket client")
-                        self.disconnect(connection)
-                else:
-                    if "__pre_serialized__" in outbound:
-                        await connection.send_text(str(outbound["__pre_serialized__"]))
-                    else:
-                        await connection.send_json(outbound)
+                try:
+                    client.queue.put_nowait(outbound)
+                except asyncio.QueueFull:
+                    logger.warning("[WSManager] Dropping slow websocket client")
+                    await self.disconnect(connection)
             except (WebSocketDisconnect, RuntimeError):
-                self.disconnect(connection)
+                await self.disconnect(connection)
             except Exception:
-                self.disconnect(connection)
+                await self.disconnect(connection)
 
     async def _sender_loop(self, client: ClientConnection) -> None:
         try:
@@ -204,8 +200,9 @@ class ConnectionManager:
                     )
         except asyncio.CancelledError:
             raise
-        except Exception:
-            self.disconnect(client.websocket)
+        except Exception as exc:
+            logger.exception("[WSManager] Sender loop failed for client %s", client.websocket, exc_info=exc)
+            await self.disconnect(client.websocket)
 
 
 # Singleton instance

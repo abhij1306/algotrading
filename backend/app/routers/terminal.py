@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Annotated, Any
 
 import pandas as pd
 import yfinance as yf
@@ -66,6 +66,206 @@ class TerminalOptionsOrderRequest(TerminalOptionsPreviewRequest):
     tag: str | None = "terminal-options"
     is_live_confirmation_ack: bool = False
     risk_override_reason: str | None = None
+
+
+def _empty_chart_response(symbol: str, timeframe: str, source: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": source,
+        "candles": [],
+    }
+
+
+def _build_company_daily_frame(rows: list[HistoricalPrice]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ts": [datetime.combine(row.date, datetime.min.time()) for row in rows],
+            "open": [float(row.open or 0) for row in rows],
+            "high": [float(row.high or 0) for row in rows],
+            "low": [float(row.low or 0) for row in rows],
+            "close": [float(row.close or 0) for row in rows],
+            "volume": [int(row.volume or 0) for row in rows],
+            "ema20": [float(row.ema_20 or 0) for row in rows],
+            "ema50": [float(row.ema_50 or 0) for row in rows],
+        }
+    )
+
+
+def _load_intraday_chart_frame(
+    repo: DataRepository,
+    db_symbol: str,
+    normalized_tf: str,
+    limit: int,
+) -> tuple[pd.DataFrame, str, str]:
+    if normalized_tf not in INTRADAY_TIMEFRAME_MAP:
+        return pd.DataFrame(), "historical_prices", normalized_tf
+
+    tf_minutes = INTRADAY_TIMEFRAME_MAP[normalized_tf]
+    candles_df = repo.get_intraday_candles(db_symbol, timeframe=tf_minutes, days=15)
+    if candles_df.empty:
+        return pd.DataFrame(), "intraday_candles", "d"
+
+    candles_df = candles_df.rename(columns={"timestamp": "ts"})
+    candles_df = candles_df.sort_values("ts")
+    candles_df = candles_df.tail(limit).reset_index(drop=True)
+    return candles_df, "intraday_candles", normalized_tf
+
+
+def _load_company_chart_frame(
+    db: Session,
+    company: Company | None,
+    normalized_tf: str,
+    limit: int,
+) -> tuple[pd.DataFrame, str]:
+    if normalized_tf not in {"d", "w", "m"} or not company:
+        return pd.DataFrame(), "historical_prices"
+
+    rows = (
+        db.query(HistoricalPrice)
+        .filter(HistoricalPrice.company_id == company.id)
+        .order_by(HistoricalPrice.date.asc())
+        .all()
+    )
+    if not rows:
+        return pd.DataFrame(), "historical_prices"
+
+    daily_df = _build_company_daily_frame(rows)
+    if normalized_tf not in {"w", "m"}:
+        return daily_df.tail(limit).reset_index(drop=True), "historical_prices"
+
+    resample_rule = "W" if normalized_tf == "w" else "ME"
+    candles_df = (
+        daily_df.set_index("ts")
+        .resample(resample_rule)
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        )
+        .dropna(subset=["open", "high", "low", "close"])
+        .reset_index()
+    )
+    return candles_df.tail(limit).reset_index(drop=True), "historical_prices_resampled"
+
+
+def _load_chart_dataset(
+    db: Session,
+    repo: DataRepository,
+    db_symbol: str,
+    timeframe: str,
+    limit: int,
+) -> tuple[pd.DataFrame, str]:
+    company = (
+        db.query(Company)
+        .filter(and_(Company.symbol == db_symbol, Company.is_active.is_(True)))
+        .first()
+    )
+    normalized_tf = timeframe.strip().lower()
+    candles_df, source, normalized_tf = _load_intraday_chart_frame(
+        repo, db_symbol, normalized_tf, limit
+    )
+    if candles_df.empty:
+        candles_df, source = _load_company_chart_frame(db, company, normalized_tf, limit)
+    if candles_df.empty and not company:
+        candles_df = _load_index_yfinance_candles(db_symbol, normalized_tf, limit)
+        source = "yfinance_index_fallback"
+    return candles_df, source
+
+
+def _serialize_chart_candles(candles_df: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {
+            "ts": row.ts.isoformat() if hasattr(row.ts, "isoformat") else str(row.ts),
+            "open": round(float(row.open), 2),
+            "high": round(float(row.high), 2),
+            "low": round(float(row.low), 2),
+            "close": round(float(row.close), 2),
+            "volume": int(row.volume),
+            "ema20": round(float(row.ema20), 2),
+            "ema50": round(float(row.ema50), 2),
+        }
+        for row in candles_df.itertuples(index=False)
+    ]
+
+
+def _serialize_option_leg(leg: object) -> dict[str, Any] | None:
+    if not leg:
+        return None
+
+    return {
+        "symbol": getattr(leg, "symbol", None),
+        "fyers_symbol": getattr(leg, "fyers_symbol", None),
+        "ltp": getattr(leg, "ltp", None),
+        "oi": getattr(leg, "oi", None),
+        "volume": getattr(leg, "volume", None),
+        "iv": getattr(leg, "iv", None),
+        "change_pct": getattr(leg, "change_pct", None),
+    }
+
+
+def _build_options_board_rows(strikes: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for strike in strikes:
+        rows.append(
+            {
+                "strike": strike.strike_price,
+                "ce": _serialize_option_leg(strike.call),
+                "pe": _serialize_option_leg(strike.put),
+            }
+        )
+    return rows
+
+
+def _empty_options_board_response(underlying: str, expiry: date | None) -> dict[str, Any]:
+    return {
+        "underlying": underlying,
+        "spot_price": None,
+        "expiry": expiry.isoformat() if expiry else None,
+        "atm_strike": None,
+        "strikes": [],
+        "timestamp": datetime.now(UTC).isoformat(),
+        "stale_after_sec": 3,
+        "available": False,
+        "reason": "Option board unavailable for selected underlying/expiry",
+    }
+
+
+def _empty_orderflow_response(underlying: str, expiry: date | None) -> dict[str, Any]:
+    return {
+        "underlying": underlying,
+        "expiry": expiry.isoformat() if expiry else None,
+        "spot_price": None,
+        "pcr_oi": None,
+        "pcr_volume": None,
+        "ce_oi": 0,
+        "pe_oi": 0,
+        "ce_volume": 0,
+        "pe_volume": 0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "definition": "Derived from option chain OI/volume; not true tape analytics",
+        "available": False,
+        "reason": "Orderflow unavailable for selected underlying/expiry",
+    }
+
+
+def _aggregate_orderflow(strikes: list[Any]) -> tuple[int, int, int, int]:
+    ce_oi = 0
+    pe_oi = 0
+    ce_volume = 0
+    pe_volume = 0
+    for strike in strikes:
+        if strike.call:
+            ce_oi += int(strike.call.oi or 0)
+            ce_volume += int(strike.call.volume or 0)
+        if strike.put:
+            pe_oi += int(strike.put.oi or 0)
+            pe_volume += int(strike.put.volume or 0)
+    return ce_oi, pe_oi, ce_volume, pe_volume
 
 
 def _prepare_candle_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -197,11 +397,11 @@ def _quote_ltp(fyers_symbol: str) -> float:
         return 0.0
 
 
-@router.get("/chart")
+@router.get("/chart", responses={500: {"description": "Internal server error"}})
 def get_chart_data(
-    symbol: str = Query(..., min_length=1),
-    timeframe: str = Query("D", min_length=1),
-    limit: int = Query(200, ge=20, le=1000),
+    symbol: Annotated[str, Query(..., min_length=1)],
+    timeframe: Annotated[str, Query("D", min_length=1)],
+    limit: Annotated[int, Query(200, ge=20, le=1000)],
 ) -> dict[str, Any]:
     """Return OHLCV + EMA20/EMA50 for terminal chart."""
     db = None
@@ -210,115 +410,18 @@ def get_chart_data(
         repo = DataRepository(db)
 
         db_symbol = symbol_master.to_db(symbol)
-        company = (
-            db.query(Company)
-            .filter(and_(Company.symbol == db_symbol, Company.is_active.is_(True)))
-            .first()
-        )
-
-        normalized_tf = timeframe.strip().lower()
-        candles_df = pd.DataFrame()
-        source = "historical_prices"
-
-        if normalized_tf in INTRADAY_TIMEFRAME_MAP:
-            tf_minutes = INTRADAY_TIMEFRAME_MAP[normalized_tf]
-            candles_df = repo.get_intraday_candles(db_symbol, timeframe=tf_minutes, days=15)
-            source = "intraday_candles"
-
-            if not candles_df.empty:
-                candles_df = candles_df.rename(columns={"timestamp": "ts"})
-                candles_df = candles_df.sort_values("ts")
-                candles_df = candles_df.tail(limit).reset_index(drop=True)
-            else:
-                # Fallback to daily data if intraday candles not available
-                normalized_tf = "d"
-
-        if normalized_tf in {"d", "w", "m"} and company:
-            rows = (
-                db.query(HistoricalPrice)
-                .filter(HistoricalPrice.company_id == company.id)
-                .order_by(HistoricalPrice.date.asc())
-                .all()
-            )
-
-            if not rows:
-                return {
-                    "symbol": db_symbol,
-                    "timeframe": timeframe,
-                    "source": source,
-                    "candles": [],
-                }
-
-            daily_df = pd.DataFrame(
-                {
-                    "ts": [datetime.combine(row.date, datetime.min.time()) for row in rows],
-                    "open": [float(row.open or 0) for row in rows],
-                    "high": [float(row.high or 0) for row in rows],
-                    "low": [float(row.low or 0) for row in rows],
-                    "close": [float(row.close or 0) for row in rows],
-                    "volume": [int(row.volume or 0) for row in rows],
-                    "ema20": [float(row.ema_20 or 0) for row in rows],
-                    "ema50": [float(row.ema_50 or 0) for row in rows],
-                }
-            )
-
-            if normalized_tf in {"w", "m"}:
-                resample_rule = "W" if normalized_tf == "w" else "ME"
-                daily_df = daily_df.set_index("ts")
-                candles_df = (
-                    daily_df.resample(resample_rule)
-                    .agg(
-                        {
-                            "open": "first",
-                            "high": "max",
-                            "low": "min",
-                            "close": "last",
-                            "volume": "sum",
-                        }
-                    )
-                    .dropna(subset=["open", "high", "low", "close"])
-                    .reset_index()
-                )
-                source = "historical_prices_resampled"
-            else:
-                candles_df = daily_df.copy()
-                source = "historical_prices"
-
-            candles_df = candles_df.tail(limit).reset_index(drop=True)
-
-        if candles_df.empty and not company:
-            candles_df = _load_index_yfinance_candles(db_symbol, normalized_tf, limit)
-            source = "yfinance_index_fallback"
+        candles_df, source = _load_chart_dataset(db, repo, db_symbol, timeframe, limit)
 
         if candles_df.empty:
-            return {
-                "symbol": db_symbol,
-                "timeframe": timeframe,
-                "source": source,
-                "candles": [],
-            }
+            return _empty_chart_response(db_symbol, timeframe, source)
 
         candles_df = _prepare_candle_frame(candles_df)
-
-        candles = [
-            {
-                "ts": row.ts.isoformat() if hasattr(row.ts, "isoformat") else str(row.ts),
-                "open": round(float(row.open), 2),
-                "high": round(float(row.high), 2),
-                "low": round(float(row.low), 2),
-                "close": round(float(row.close), 2),
-                "volume": int(row.volume),
-                "ema20": round(float(row.ema20), 2),
-                "ema50": round(float(row.ema50), 2),
-            }
-            for row in candles_df.itertuples(index=False)
-        ]
 
         return {
             "symbol": db_symbol,
             "timeframe": timeframe,
             "source": source,
-            "candles": candles,
+            "candles": _serialize_chart_candles(candles_df),
         }
     except HTTPException:
         raise
@@ -330,11 +433,11 @@ def get_chart_data(
             db.close()
 
 
-@router.get("/options/board")
+@router.get("/options/board", responses={500: {"description": "Internal server error"}})
 def get_options_board(
-    underlying: str = Query("NIFTY", min_length=2),
-    expiry: date | None = Query(None),
-    strike_count: int = Query(15, ge=5, le=50),
+    underlying: Annotated[str, Query("NIFTY", min_length=2)],
+    expiry: Annotated[date | None, Query(None)],
+    strike_count: Annotated[int, Query(15, ge=5, le=50)],
 ) -> dict[str, Any]:
     """Options board snapshot for terminal options-first view."""
     try:
@@ -345,56 +448,14 @@ def get_options_board(
             strike_count=strike_count,
         )
         if not chain:
-            return {
-                "underlying": normalized_underlying,
-                "spot_price": None,
-                "expiry": expiry.isoformat() if expiry else None,
-                "atm_strike": None,
-                "strikes": [],
-                "timestamp": datetime.now(UTC).isoformat(),
-                "stale_after_sec": 3,
-                "available": False,
-                "reason": "Option board unavailable for selected underlying/expiry",
-            }
-
-        rows: list[dict[str, Any]] = []
-        for strike in chain.strikes:
-            ce = strike.call
-            pe = strike.put
-            rows.append(
-                {
-                    "strike": strike.strike_price,
-                    "ce": {
-                        "symbol": ce.symbol if ce else None,
-                        "fyers_symbol": ce.fyers_symbol if ce else None,
-                        "ltp": ce.ltp if ce else None,
-                        "oi": ce.oi if ce else None,
-                        "volume": ce.volume if ce else None,
-                        "iv": ce.iv if ce else None,
-                        "change_pct": ce.change_pct if ce else None,
-                    }
-                    if ce
-                    else None,
-                    "pe": {
-                        "symbol": pe.symbol if pe else None,
-                        "fyers_symbol": pe.fyers_symbol if pe else None,
-                        "ltp": pe.ltp if pe else None,
-                        "oi": pe.oi if pe else None,
-                        "volume": pe.volume if pe else None,
-                        "iv": pe.iv if pe else None,
-                        "change_pct": pe.change_pct if pe else None,
-                    }
-                    if pe
-                    else None,
-                }
-            )
+            return _empty_options_board_response(normalized_underlying, expiry)
 
         return {
             "underlying": chain.underlying,
             "spot_price": chain.spot_price,
             "expiry": chain.expiry.isoformat(),
             "atm_strike": chain.get_atm_strike(),
-            "strikes": rows,
+            "strikes": _build_options_board_rows(chain.strikes),
             "timestamp": chain.timestamp.isoformat(),
             "stale_after_sec": 3,
             "available": True,
@@ -407,8 +468,14 @@ def get_options_board(
         raise HTTPException(status_code=500, detail="Failed to load options board") from exc
 
 
-@router.get("/options/depth")
-def get_options_depth(symbol: str = Query(..., min_length=2)) -> dict[str, Any]:
+@router.get(
+    "/options/depth",
+    responses={
+        500: {"description": "Internal server error"},
+        503: {"description": "Service unavailable"},
+    },
+)
+def get_options_depth(symbol: Annotated[str, Query(..., min_length=2)]) -> dict[str, Any]:
     """Depth snapshot for selected option contract or underlying."""
     try:
         db_symbol = symbol_master.to_db(symbol)
@@ -440,11 +507,11 @@ def get_options_depth(symbol: str = Query(..., min_length=2)) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load options depth") from exc
 
 
-@router.get("/options/orderflow")
+@router.get("/options/orderflow", responses={500: {"description": "Internal server error"}})
 def get_options_orderflow(
-    underlying: str = Query("NIFTY", min_length=2),
-    expiry: date | None = Query(None),
-    strike_count: int = Query(15, ge=5, le=50),
+    underlying: Annotated[str, Query("NIFTY", min_length=2)],
+    expiry: Annotated[date | None, Query(None)],
+    strike_count: Annotated[int, Query(15, ge=5, le=50)],
 ) -> dict[str, Any]:
     """Derived orderflow metrics from option chain snapshot (Phase-1)."""
     try:
@@ -455,33 +522,9 @@ def get_options_orderflow(
             strike_count=strike_count,
         )
         if not chain:
-            return {
-                "underlying": normalized_underlying,
-                "expiry": expiry.isoformat() if expiry else None,
-                "spot_price": None,
-                "pcr_oi": None,
-                "pcr_volume": None,
-                "ce_oi": 0,
-                "pe_oi": 0,
-                "ce_volume": 0,
-                "pe_volume": 0,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "definition": "Derived from option chain OI/volume; not true tape analytics",
-                "available": False,
-                "reason": "Orderflow unavailable for selected underlying/expiry",
-            }
+            return _empty_orderflow_response(normalized_underlying, expiry)
 
-        ce_oi = 0
-        pe_oi = 0
-        ce_volume = 0
-        pe_volume = 0
-        for strike in chain.strikes:
-            if strike.call:
-                ce_oi += int(strike.call.oi or 0)
-                ce_volume += int(strike.call.volume or 0)
-            if strike.put:
-                pe_oi += int(strike.put.oi or 0)
-                pe_volume += int(strike.put.volume or 0)
+        ce_oi, pe_oi, ce_volume, pe_volume = _aggregate_orderflow(chain.strikes)
 
         pcr_oi = round(pe_oi / ce_oi, 4) if ce_oi > 0 else None
         pcr_volume = round(pe_volume / ce_volume, 4) if ce_volume > 0 else None
@@ -508,10 +551,10 @@ def get_options_orderflow(
         raise HTTPException(status_code=500, detail="Failed to load options orderflow") from exc
 
 
-@router.post("/options/preview-order")
+@router.post("/options/preview-order", responses={400: {"description": "Invalid request"}})
 def preview_options_order(
     req: TerminalOptionsPreviewRequest,
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """Validate and preview options order without placement."""
     try:
@@ -569,10 +612,16 @@ def preview_options_order(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/options/order")
+@router.post(
+    "/options/order",
+    responses={
+        400: {"description": "Invalid request"},
+        500: {"description": "Internal server error"},
+    },
+)
 def place_options_order(
     req: TerminalOptionsOrderRequest,
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """Terminal options order alias on top of unified trading execution service."""
     try:
@@ -611,7 +660,13 @@ def place_options_order(
         raise HTTPException(status_code=500, detail="Failed to place options order") from exc
 
 
-@router.post("/paper/order")
+@router.post(
+    "/paper/order",
+    responses={
+        400: {"description": "Invalid request"},
+        500: {"description": "Internal server error"},
+    },
+)
 def place_paper_order(order: PaperOrderRequest) -> dict[str, Any]:
     """
     Place a paper order without touching broker execution path.

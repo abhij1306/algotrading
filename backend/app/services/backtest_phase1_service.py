@@ -23,6 +23,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..database import get_db_session
+from ..models.backtest import BacktestRun
 from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,8 @@ SUPPORTED_STRATEGIES = {
     "MOMENTUM_2D": "2-Day Momentum",
     "MEAN_REVERSION_3D": "3-Day Mean Reversion",
 }
+PARAM_SCHEMA_VERSION = 1
+STRATEGY_VERSION = "phase1-v1"
 
 
 @dataclass
@@ -391,16 +395,126 @@ class Phase1BacktestService:
         }
 
     def list_runs(self) -> list[dict[str, Any]]:
-        items = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
-        return [
-            {
-                "job_id": j.job_id,
-                "status": j.status,
-                "created_at": j.created_at,
-                "params": j.params,
-            }
-            for j in items
-        ]
+        session = get_db_session()
+        try:
+            runs = (
+                session.query(BacktestRun)
+                .order_by(BacktestRun.created_at.desc())
+                .limit(100)
+                .all()
+            )
+            return [self._serialize_run_summary(run) for run in runs]
+        except Exception as exc:
+            logger.warning("Falling back to in-memory backtest run listing: %s", exc)
+            items = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            return [
+                {
+                    "job_id": j.job_id,
+                    "status": j.status,
+                    "created_at": j.created_at,
+                    "params": j.params,
+                }
+                for j in items
+            ]
+        finally:
+            session.close()
+
+    @staticmethod
+    def _serialize_run_summary(run: BacktestRun) -> dict[str, Any]:
+        return {
+            "job_id": run.run_id,
+            "status": run.status,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+            "params": run.request_payload or {},
+            "summary_metrics": run.summary_metrics or {},
+        }
+
+    @staticmethod
+    def _resolve_run_scope(payload: dict[str, Any]) -> tuple[str, str]:
+        selection = payload.get("selection") or {}
+        mode = str(selection.get("mode", "universe")).lower()
+        if mode == "symbols":
+            symbols = [str(symbol).upper() for symbol in selection.get("symbols") or [] if symbol]
+            return mode, f"SYMBOLS:{','.join(sorted(set(symbols)))}"
+        universe = str(selection.get("universe", "NIFTY50")).upper()
+        return mode, universe
+
+    def _build_strategy_snapshot(
+        self, strategies: list[dict[str, Any]], normalized: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        raw_by_strategy = {
+            str(strategy.get("strategy_id", "")).upper(): strategy for strategy in strategies
+        }
+        snapshot: list[dict[str, Any]] = []
+        for strategy in normalized:
+            strategy_id = strategy["strategy_id"]
+            raw_cfg = raw_by_strategy.get(strategy_id, {})
+            snapshot.append(
+                {
+                    "strategy_id": strategy_id,
+                    "strategy_version": str(raw_cfg.get("strategy_version") or STRATEGY_VERSION),
+                    "param_schema_version": int(
+                        raw_cfg.get("param_schema_version") or PARAM_SCHEMA_VERSION
+                    ),
+                    "weight": strategy["weight"],
+                    "resolved_params": strategy["params"],
+                }
+            )
+        return snapshot
+
+    def _create_db_run(self, job: BacktestJob, normalized: list[dict[str, Any]]) -> None:
+        selection_mode, scope_label = self._resolve_run_scope(job.params)
+        strategy_snapshot = self._build_strategy_snapshot(job.params.get("strategies") or [], normalized)
+        session = get_db_session()
+        try:
+            primary_strategy = strategy_snapshot[0]["strategy_id"] if strategy_snapshot else None
+            run = BacktestRun(
+                run_id=job.job_id,
+                name=job.params.get("name"),
+                status=job.status,
+                strategy_id=primary_strategy,
+                universe=scope_label if selection_mode == "universe" else None,
+                initial_capital=float(job.params.get("initial_capital", 0.0)),
+                instrument_type=str(job.params.get("instrument_type", "equity")).lower(),
+                selection_mode=selection_mode,
+                scope_label=scope_label,
+                universe_id=scope_label if selection_mode == "universe" else None,
+                strategy_configs=strategy_snapshot,
+                strategy_versions=strategy_snapshot,
+                portfolio_config={
+                    "selection": job.params.get("selection") or {},
+                    "execution": job.params.get("execution") or {},
+                },
+                capital_mode="NOTIONAL",
+                start_date=self._parse_date(str(job.params["start_date"])),
+                end_date=self._parse_date(str(job.params["end_date"])),
+                request_payload=job.params,
+            )
+            session.merge(run)
+            session.commit()
+        finally:
+            session.close()
+
+    def _finalize_db_run(self, job: BacktestJob) -> None:
+        session = get_db_session()
+        try:
+            run = session.query(BacktestRun).filter(BacktestRun.run_id == job.job_id).first()
+            if run is None:
+                return
+            run.status = job.status
+            run.completed_at = datetime.now(timezone.utc)
+            run.error_message = job.error
+            if job.result:
+                metrics = job.result.get("metrics") or {}
+                run.summary_metrics = metrics
+                run.result_payload = job.result
+                run.final_capital = float(metrics.get("final_equity", 0.0) or 0.0)
+                run.total_return = float(metrics.get("total_return_pct", 0.0) or 0.0)
+                run.sharpe_ratio = float(metrics.get("sharpe_ratio", 0.0) or 0.0)
+                run.max_drawdown = float(metrics.get("max_drawdown_pct", 0.0) or 0.0)
+            session.commit()
+        finally:
+            session.close()
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
         instrument_type = str(payload.get("instrument_type", "equity")).lower()
@@ -539,28 +653,57 @@ class Phase1BacktestService:
 
     def create_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_id = f"BT-{uuid.uuid4().hex[:10].upper()}"
+        normalized = self._normalize_weight_allocations(payload.get("strategies") or [])
         job = BacktestJob(
             job_id=job_id,
             status="running",
             created_at=datetime.now(timezone.utc).isoformat(),
             params=payload,
         )
-        self._jobs[job_id] = job
-
+        db_run_created = False
         try:
+            self._create_db_run(job, normalized)
+            db_run_created = True
+            self._jobs[job_id] = job
+
             result = self.run(payload)
             job.status = "completed"
             job.result = result
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
+            if not db_run_created:
+                self._jobs.pop(job_id, None)
+                logger.exception("Failed to create backtest job %s", job_id, exc_info=exc)
+                raise
+        finally:
+            if db_run_created:
+                self._finalize_db_run(job)
         return {"job_id": job_id, "status": job.status}
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
+        session = get_db_session()
+        try:
+            run = session.query(BacktestRun).filter(BacktestRun.run_id == job_id).first()
+            if run is not None:
+                payload: dict[str, Any] = {
+                    "job_id": run.run_id,
+                    "status": run.status,
+                    "created_at": run.created_at.isoformat() if run.created_at else None,
+                    "params": run.request_payload or {},
+                }
+                if run.error_message:
+                    payload["error"] = run.error_message
+                if run.result_payload:
+                    payload["result"] = run.result_payload
+                return payload
+        finally:
+            session.close()
+
         job = self._jobs.get(job_id)
         if not job:
             return None
-        payload: dict[str, Any] = {
+        payload = {
             "job_id": job.job_id,
             "status": job.status,
             "created_at": job.created_at,
