@@ -32,6 +32,7 @@ SINGLE_USER_ID = "default_user"
 
 
 class OrderRequest(BaseModel):
+    mode: str = "PAPER"  # PAPER / LIVE
     symbol: str
     side: str  # BUY / SELL
     quantity: int
@@ -53,10 +54,6 @@ class ModifyOrderRequest(BaseModel):
     new_quantity: int | None = None
     new_price: float | None = None
     new_type: str | None = None
-
-
-class ModeRequest(BaseModel):
-    mode: str  # PAPER / LIVE
 
 
 class ExitPositionRequest(BaseModel):
@@ -250,18 +247,20 @@ def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[d
 
 @router.get("/mode")
 def get_trading_mode():
-    """Get current trading mode (PAPER or LIVE)"""
-    return {"mode": order_execution_service.get_mode()}
+    """Deprecated compatibility endpoint. Orders must now supply mode explicitly."""
+    return {
+        "mode": "PAPER",
+        "message": "Deprecated endpoint. Supply mode on each order request.",
+    }
 
 
 @router.post("/mode")
-def set_trading_mode(req: ModeRequest):
-    """Set trading mode (PAPER or LIVE)"""
-    try:
-        order_execution_service.set_mode(req.mode)
-        return {"status": "SUCCESS", "mode": req.mode}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+def set_trading_mode():
+    """Deprecated compatibility endpoint. No shared mode is stored server-side."""
+    return {
+        "status": "IGNORED",
+        "message": "Shared trading mode has been removed. Supply mode on each order request.",
+    }
 
 
 @router.post("/order")
@@ -283,10 +282,10 @@ def place_order(
             )
 
         # Convert Request to Dict
-        params = order.dict()
+        params = order.model_dump()
         params["user_id"] = user_id
 
-        result = order_execution_service.place_order(params, db)
+        result = order_execution_service.place_order(params, db, mode=order.mode)
 
         if result.get("status") == "ERROR":
             raise HTTPException(status_code=400, detail=result.get("message"))

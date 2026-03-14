@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 
 def load_dotenv(path: str = ".env"):
@@ -6,15 +7,20 @@ def load_dotenv(path: str = ".env"):
     Manually load .env file into os.environ.
     Replaces python-dotenv dependency to fix PyInstaller build issues.
     """
-    if not os.path.exists(path):
-        # Try looking up one level if not found (development convenience)
-        if os.path.exists(os.path.join("..", path)):
-            path = os.path.join("..", path)
-        else:
+    env_path = Path(path)
+    if not env_path.exists():
+        project_root = Path(__file__).resolve().parents[3]
+        candidate_paths = [
+            project_root / path,
+            Path.cwd() / path,
+            Path.cwd().parent / path,
+        ]
+        env_path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
+        if env_path is None:
             return
 
     try:
-        with open(path) as f:
+        with env_path.open() as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):

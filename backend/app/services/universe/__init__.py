@@ -54,6 +54,11 @@ class UniverseServiceImpl:
         mode: UniverseMode = UniverseMode.LIVE,
     ) -> UniverseResult:
         """Get all constituents for an index."""
+        if mode == UniverseMode.HISTORICAL:
+            raise NotImplementedError(
+                "Historical universe lookup is disabled until date-effective membership data "
+                "is wired to an authoritative source."
+            )
         from ..index_universe_loader import index_universe_loader
 
         constituents = []
@@ -91,6 +96,11 @@ class UniverseServiceImpl:
         _mode: UniverseMode = UniverseMode.LIVE,
     ) -> list[str]:
         """Get all symbols for an index."""
+        if _mode == UniverseMode.HISTORICAL:
+            raise NotImplementedError(
+                "Historical universe lookup is disabled until date-effective membership data "
+                "is wired to an authoritative source."
+            )
         from ..index_universe_loader import index_universe_loader
 
         return index_universe_loader.get_index_symbols(index_code)
@@ -136,13 +146,10 @@ class UniverseServiceImpl:
         Note: This is a placeholder implementation. Full implementation would require
         historical constituent data tracking.
         """
-        # Placeholder implementation - returns empty changes
-        # Full implementation would query historical universe data
-        return {
-            "additions": [],
-            "removals": [],
-            "weight_changes": [],
-        }
+        raise NotImplementedError(
+            "Universe change history is disabled until date-effective constituent history is "
+            "wired to an authoritative source."
+        )
 
     def get_custom_universe(self, universe_id: int) -> UniverseResult:
         """

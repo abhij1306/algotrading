@@ -18,9 +18,6 @@ const nextConfig: NextConfig = {
   images: {
     formats: ['image/avif', 'image/webp'],
   },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
 
   // Compiler options
   compiler: {

@@ -342,9 +342,7 @@ export default function TerminalPage() {
       }
       optionsFetchInFlightRef.current = true;
       try {
-        if (!optionsBoard) {
-          setOptionsLoading(true);
-        }
+        setOptionsLoading(true);
         setOptionsError(null);
         const boardParams = new URLSearchParams({
           underlying: optionsUnderlying,
@@ -690,16 +688,11 @@ export default function TerminalPage() {
         }
       }
 
-      await fetch('/api/trading/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: tradingMode }),
-      });
-
       const response = await fetch('/api/trading/order?x_user_id=default_user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          mode: tradingMode,
           symbol: activeTradeSymbol,
           side,
           quantity: effectiveOrderQuantity,

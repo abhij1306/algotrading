@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from ...services.fyers_client import get_fyers_client
@@ -12,9 +14,52 @@ class FyersBroker(IBroker):
     Wraps actual API calls for Live Trading and standardizes output.
     """
 
+    _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fyers-broker")
+    _circuit_failures = 0
+    _circuit_open_until = 0.0
+    _circuit_failure_threshold = 3
+    _circuit_recovery_sec = 20.0
+
     def __init__(self):
         self.client = None
         self.connect()
+
+    @classmethod
+    def _circuit_open(cls) -> bool:
+        return time.monotonic() < cls._circuit_open_until
+
+    @classmethod
+    def _record_success(cls) -> None:
+        cls._circuit_failures = 0
+        cls._circuit_open_until = 0.0
+
+    @classmethod
+    def _record_failure(cls) -> None:
+        cls._circuit_failures += 1
+        if cls._circuit_failures >= cls._circuit_failure_threshold:
+            cls._circuit_open_until = time.monotonic() + cls._circuit_recovery_sec
+
+    def _call_with_guard(
+        self,
+        fn,
+        *,
+        timeout_sec: float = 2.0,
+        fallback: Any,
+    ) -> Any:
+        if self._circuit_open():
+            return fallback
+
+        future = self._executor.submit(fn)
+        try:
+            result = future.result(timeout=timeout_sec)
+            self._record_success()
+            return result
+        except FutureTimeoutError:
+            self._record_failure()
+            return fallback
+        except Exception:
+            self._record_failure()
+            return fallback
 
     def connect(self):
         """Attempt to load authenticated client"""
@@ -58,8 +103,11 @@ class FyersBroker(IBroker):
         }
 
         try:
-            response = self.client.place_order(data=data)
-            # Response format: {'s': 'ok', 'code': 1101, 'message': 'Order submitted successfully', 'id': '12345'}
+            response = self._call_with_guard(
+                lambda: self.client.place_order(data=data),
+                timeout_sec=1.5,
+                fallback={"s": "error", "message": "Fyers order timeout/unavailable"},
+            )
 
             if response.get("s") == "ok":
                 return OrderResponse(
@@ -83,7 +131,11 @@ class FyersBroker(IBroker):
         if not self.client:
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
         data = {"id": order_id}
-        return self.client.cancel_order(data=data)
+        return self._call_with_guard(
+            lambda: self.client.cancel_order(data=data),
+            timeout_sec=1.5,
+            fallback={"s": "error", "message": "Fyers cancel timeout/unavailable"},
+        )
 
     def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -106,13 +158,21 @@ class FyersBroker(IBroker):
             data["type"] = 2
             data["limitPrice"] = 0
 
-        return self.client.modify_order(data=data)
+        return self._call_with_guard(
+            lambda: self.client.modify_order(data=data),
+            timeout_sec=1.5,
+            fallback={"s": "error", "message": "Fyers modify timeout/unavailable"},
+        )
 
     def get_positions(self) -> list[Position]:
         if not self.client:
             return []
 
-        response = self.client.positions()
+        response = self._call_with_guard(
+            lambda: self.client.positions(),
+            timeout_sec=2.0,
+            fallback={"s": "error", "netPositions": []},
+        )
         # Response: {"s": "ok", "netPositions": [...]}
 
         positions = []
@@ -144,20 +204,32 @@ class FyersBroker(IBroker):
     def get_orders(self) -> list[dict[str, Any]]:
         if not self.client:
             return []
-        response = self.client.orderbook()
+        response = self._call_with_guard(
+            lambda: self.client.orderbook(),
+            timeout_sec=2.0,
+            fallback={"orderBook": []},
+        )
         return response.get("orderBook", [])
 
     def get_holdings(self) -> list[dict[str, Any]]:
         if not self.client:
             return []
-        response = self.client.holdings()
+        response = self._call_with_guard(
+            lambda: self.client.holdings(),
+            timeout_sec=2.0,
+            fallback={"holdings": []},
+        )
         return response.get("holdings", [])
 
     def get_funds(self) -> BrokerFunds:
         if not self.client:
             return BrokerFunds(available=0, used=0, total=0)
 
-        response = self.client.funds()
+        response = self._call_with_guard(
+            lambda: self.client.funds(),
+            timeout_sec=2.0,
+            fallback={},
+        )
 
         available: float = 0
         used: float = 0
@@ -167,9 +239,6 @@ class FyersBroker(IBroker):
             available = float(response.get("available", 0) or 0)
             used = float(response.get("used", 0) or 0)
             total = float(response.get("total", 0) or (available + used))
-            # Handle complex fund_limit structure if needed, but simple dict check is usually enough
-            # or verify against previous implementation logic
-            # The previous logic had a complex check for 'fund_limit' list. Retaining it.
             funds = response.get("fund_limit", [])
             if isinstance(funds, list):
                 for f in funds:
@@ -187,7 +256,11 @@ class FyersBroker(IBroker):
         if not self.client:
             return {}
         data = {"symbols": symbol}  # "NSE:SBIN-EQ"
-        response = self.client.quotes(data=data)
+        response = self._call_with_guard(
+            lambda: self.client.quotes(data=data),
+            timeout_sec=1.5,
+            fallback={},
+        )
         if response.get("s") == "ok":
             d = response.get("d", [])
             if d:
@@ -198,32 +271,36 @@ class FyersBroker(IBroker):
         """Get executed trades."""
         if not self.client:
             return []
-        response = self.client.tradebook()
-        # Returns list of trades
+        response = self._call_with_guard(
+            lambda: self.client.tradebook(),
+            timeout_sec=2.0,
+            fallback={"tradeBook": []},
+        )
         return response.get("tradeBook", [])
+
+    @staticmethod
+    def _build_exit_order(position: Position) -> dict[str, Any]:
+        return {
+            "symbol": position["symbol"],
+            "quantity": position["quantity"],
+            "side": "SELL" if position["side"] == "LONG" else "BUY",
+            "type": "MARKET",
+            "product": position["product_type"],
+        }
 
     def exit_position(self, symbol: str) -> dict[str, Any]:
         """Exit position for a specific symbol."""
         if not self.client:
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
-        # Strategy: Get positions, find matches, close them.
-        positions = self.get_positions()
-        res = {"status": "OK", "message": "No positions found"}
+        matching_positions = [position for position in self.get_positions() if position["symbol"] == symbol]
+        if not matching_positions:
+            return {"status": "OK", "message": "No positions found"}
 
-        for p in positions:
-            if p["symbol"] == symbol:
-                # Place a counter order (market) to close it.
-                order_data = {
-                    "symbol": symbol,
-                    "quantity": p["quantity"],
-                    "side": "SELL" if p["side"] == "LONG" else "BUY",
-                    "type": "MARKET",
-                    "product": p["product_type"],
-                }
-                res = self.place_order(order_data)
-
-        return res
+        result: dict[str, Any] = {"status": "OK", "message": "No positions found"}
+        for position in matching_positions:
+            result = self.place_order(self._build_exit_order(position))
+        return result
 
     def exit_all_positions(self) -> dict[str, Any]:
         """Panic button: Exit all positions."""
@@ -231,4 +308,8 @@ class FyersBroker(IBroker):
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
         # Fyers API supports exiting all via exit_positions
-        return self.client.exit_positions(data={})
+        return self._call_with_guard(
+            lambda: self.client.exit_positions(data={}),
+            timeout_sec=1.5,
+            fallback={"s": "error", "message": "Fyers exit timeout/unavailable"},
+        )

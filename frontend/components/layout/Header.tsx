@@ -51,8 +51,8 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
           onClick={() => router.push('/dashboard')}
           className="flex items-center gap-2 hover:opacity-80 transition-opacity"
         >
-          <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-purple-600">
-            <Command className="w-5 h-5 text-white" />
+          <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover shadow-sm">
+            <Command className="w-5 h-5 text-primary-fg" />
           </div>
           <span className="font-semibold text-lg hidden sm:block text-foreground">
             SmartTrader

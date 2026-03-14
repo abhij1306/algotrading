@@ -134,11 +134,4 @@ def get_or_create_company(db, symbol: str, **kwargs):
     return company
 
 
-# Attempt to initialize DB (tables only created if they don't exist)
-try:
-    if os.getenv("INIT_DB_ON_IMPORT", "True") == "True":
-        Base.metadata.create_all(bind=engine)
-except Exception as e:
-    import logging
-
-    logging.getLogger(__name__).warning(f"Could not initialize database tables on import: {e}")
+# Avoid import-time schema creation; startup owns database validation/initialization.

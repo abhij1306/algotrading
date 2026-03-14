@@ -25,23 +25,12 @@ class OrderExecutionService:
 
     def __init__(self):
         self._broker = None
-        self._mode = "PAPER"  # Default mode for legacy callers
 
     @property
     def broker(self):
         if not self._broker:
             self._broker = FyersBroker()
         return self._broker
-
-    def set_mode(self, mode: str):
-        """Set trading mode: 'PAPER' or 'LIVE'"""
-        if mode.upper() not in ["PAPER", "LIVE"]:
-            raise ValueError("Invalid mode. Use PAPER or LIVE")
-        self._mode = mode.upper()
-        logger.info(f"Trading mode set to {self._mode}")
-
-    def get_mode(self) -> str:
-        return self._mode
 
     def _estimate_market_reference_price(
         self, fyers_symbol: str, fallback_price: float = 0.0
@@ -136,6 +125,137 @@ class OrderExecutionService:
             "message": reason,
         }
 
+    @staticmethod
+    def _resolve_mode(order_params: dict[str, Any], mode: str | None) -> str:
+        effective_mode = (mode or order_params.get("mode") or "PAPER").upper()
+        if effective_mode not in {"PAPER", "LIVE"}:
+            raise ValueError("Invalid mode. Use PAPER or LIVE")
+        return effective_mode
+
+    @staticmethod
+    def _validate_quantity(order_params: dict[str, Any]) -> int:
+        quantity = int(order_params.get("quantity", 0))
+        if quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        return quantity
+
+    def _run_live_risk_checks(self, order_params: dict[str, Any], db: Session) -> dict[str, Any] | None:
+        if not bool(order_params.get("is_live_confirmation_ack", False)):
+            return {
+                "status": "ERROR",
+                "message": "LIVE order requires explicit confirmation acknowledgment",
+                "code": "LIVE_CONFIRMATION_REQUIRED",
+            }
+
+        risk_result = risk_manager.pre_trade_check(order_params, db)
+        if risk_result.status.value == "FAIL":
+            return {
+                "status": "ERROR",
+                "message": f"Risk Check Failed: {risk_result.message}",
+                "code": risk_result.code,
+            }
+        if risk_result.status.value == "WARNING":
+            if not str(order_params.get("risk_override_reason", "")).strip():
+                return {
+                    "status": "ERROR",
+                    "message": f"Risk warning requires override reason: {risk_result.message}",
+                    "code": "RISK_WARNING_OVERRIDE_REQUIRED",
+                }
+            logger.warning(f"Risk Warning: {risk_result.message}")
+        return None
+
+    def _resolve_symbols(self, order_params: dict[str, Any]) -> tuple[str, str]:
+        symbol = order_params.get("symbol")
+        db_symbol = symbol_master.to_db(symbol)
+        fyers_symbol = order_params.get("fyers_symbol")
+        if fyers_symbol:
+            return db_symbol, fyers_symbol
+        try:
+            return db_symbol, symbol_master.to_fyers(db_symbol)
+        except Exception:
+            return db_symbol, symbol or db_symbol
+
+    @staticmethod
+    def _create_order_record(
+        order_params: dict[str, Any],
+        db_symbol: str,
+        fyers_symbol: str,
+        quantity: int,
+        effective_mode: str,
+    ) -> LiveOrder:
+        internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+        return LiveOrder(
+            id=internal_id,
+            internal_id=internal_id,
+            user_id=order_params.get("user_id", "default"),
+            symbol=db_symbol,
+            fyers_symbol=fyers_symbol,
+            side=order_params.get("side", "BUY"),
+            quantity=quantity,
+            order_type=order_params.get("type", "MARKET"),
+            product_type=order_params.get("product", "INTRADAY"),
+            price=float(order_params.get("price", 0)),
+            trigger_price=float(order_params.get("trigger_price", 0)),
+            status="PENDING",
+            instrument_type=order_params.get("instrument_type", "EQ"),
+            strike_price=order_params.get("strike_price"),
+            order_tag=order_params.get("tag"),
+            source=order_params.get("source", "MANUAL"),
+            is_paper=1 if effective_mode == "PAPER" else 0,
+        )
+
+    def _submit_live_order(
+        self, order_params: dict[str, Any], fyers_symbol: str, new_order: LiveOrder
+    ) -> dict[str, Any]:
+        broker_order = {
+            "symbol": fyers_symbol,
+            "quantity": int(order_params.get("quantity", 0)),
+            "side": order_params.get("side", "BUY"),
+            "type": order_params.get("type", "MARKET"),
+            "product": order_params.get("product", "INTRADAY"),
+            "price": float(order_params.get("price", 0.0)),
+        }
+        broker_resp = self.broker.place_order(broker_order)
+
+        if not isinstance(broker_resp, dict):
+            logger.error("Broker returned non-dict response: %s", broker_resp)
+            new_order.status = "ERROR"
+            new_order.reject_reason = "Malformed broker response"
+            return {"status": "ERROR", "message": "Malformed broker response"}
+
+        if broker_resp.get("status") == "SUBMITTED" and broker_resp.get("order_id"):
+            new_order.id = str(broker_resp.get("order_id"))
+            new_order.status = "SUBMITTED"
+            new_order.broker_message = str(broker_resp.get("message", "Submitted"))
+            return broker_resp
+
+        new_order.status = "REJECTED"
+        new_order.reject_reason = str(broker_resp.get("message", "Order rejected by broker"))
+        return broker_resp
+
+    @staticmethod
+    def _apply_paper_fill(
+        new_order: LiveOrder, internal_id: str, paper_fill: dict[str, Any]
+    ) -> dict[str, Any]:
+        new_order.status = paper_fill["status"]
+        new_order.filled_qty = int(paper_fill["filled_qty"])
+        new_order.average_price = float(paper_fill["fill_price"])
+        new_order.broker_message = (
+            f"{paper_fill['message']} | fill_source={paper_fill['fill_source']} "
+            f"| slippage_bps={paper_fill['slippage_bps']} "
+            f"| estimated_charges={paper_fill['estimated_charges']}"
+        )
+        return {
+            "order_id": internal_id,
+            "status": paper_fill["status"],
+            "message": paper_fill["message"],
+            "fill_source": paper_fill["fill_source"],
+            "slippage_bps": paper_fill["slippage_bps"],
+            "estimated_charges": paper_fill["estimated_charges"],
+            "average_price": paper_fill["fill_price"],
+            "filled_qty": paper_fill["filled_qty"],
+        }
+
     def place_order(
         self, order_params: dict[str, Any], db: Session, mode: str | None = None
     ) -> dict[str, Any]:
@@ -159,138 +279,30 @@ class OrderExecutionService:
             Dict with order_id, status, message
         """
         try:
-            effective_mode = (mode or self._mode).upper()
-            if effective_mode not in {"PAPER", "LIVE"}:
-                raise ValueError("Invalid mode. Use PAPER or LIVE")
-
-            symbol = order_params.get("symbol")
-            side = order_params.get("side", "BUY")
-            quantity = int(order_params.get("quantity", 0))
-            if quantity <= 0:
-                raise ValueError("Quantity must be positive")
-
-            # 1. Live confirmation + risk checks
+            effective_mode = self._resolve_mode(order_params, mode)
+            quantity = self._validate_quantity(order_params)
             if effective_mode == "LIVE":
-                if not bool(order_params.get("is_live_confirmation_ack", False)):
-                    return {
-                        "status": "ERROR",
-                        "message": "LIVE order requires explicit confirmation acknowledgment",
-                        "code": "LIVE_CONFIRMATION_REQUIRED",
-                    }
+                risk_error = self._run_live_risk_checks(order_params, db)
+                if risk_error:
+                    return risk_error
 
-                risk_result = risk_manager.pre_trade_check(order_params, db)
-                if risk_result.status.value == "FAIL":
-                    return {
-                        "status": "ERROR",
-                        "message": f"Risk Check Failed: {risk_result.message}",
-                        "code": risk_result.code,
-                    }
-                # Warn but allow if WARNING
-                if risk_result.status.value == "WARNING":
-                    if not str(order_params.get("risk_override_reason", "")).strip():
-                        return {
-                            "status": "ERROR",
-                            "message": f"Risk warning requires override reason: {risk_result.message}",
-                            "code": "RISK_WARNING_OVERRIDE_REQUIRED",
-                        }
-                    logger.warning(f"Risk Warning: {risk_result.message}")
-
-            # 2. Validate Symbol & Format
-            db_symbol = symbol_master.to_db(symbol)
-
-            # Determine Fyers Symbol
-            fyers_symbol = order_params.get("fyers_symbol")
-            if not fyers_symbol:
-                try:
-                    fyers_symbol = symbol_master.to_fyers(db_symbol)
-                except Exception:
-                    fyers_symbol = symbol or db_symbol
-
-            # 2. Create DB Record (PENDING)
-            internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
-
-            is_paper_order = 1 if effective_mode == "PAPER" else 0
-
-            new_order = LiveOrder(
-                id=internal_id,
-                internal_id=internal_id,
-                user_id=order_params.get("user_id", "default"),
-                symbol=db_symbol,
-                fyers_symbol=fyers_symbol,
-                side=side,
-                quantity=quantity,
-                order_type=order_params.get("type", "MARKET"),
-                product_type=order_params.get("product", "INTRADAY"),
-                price=float(order_params.get("price", 0)),
-                trigger_price=float(order_params.get("trigger_price", 0)),
-                status="PENDING",
-                instrument_type=order_params.get("instrument_type", "EQ"),
-                strike_price=order_params.get("strike_price"),
-                order_tag=order_params.get("tag"),
-                source=order_params.get("source", "MANUAL"),
-                is_paper=is_paper_order,
+            db_symbol, fyers_symbol = self._resolve_symbols(order_params)
+            new_order = self._create_order_record(
+                order_params, db_symbol, fyers_symbol, quantity, effective_mode
             )
             db.add(new_order)
-            db.flush()  # Flush to get constraints checked, but don't commit yet
-            # 3. Route Order
-            response = {}
+            db.flush()
+
             if effective_mode == "LIVE":
-                # Prepare Broker Payload
-                broker_order = {
-                    "symbol": fyers_symbol,
-                    "quantity": quantity,
-                    "side": side,
-                    "type": order_params.get("type", "MARKET"),
-                    "product": order_params.get("product", "INTRADAY"),
-                    "price": float(order_params.get("price", 0.0)),
-                }
-
-                # Call Broker
                 try:
-                    broker_resp = self.broker.place_order(broker_order)
-
-                    if not isinstance(broker_resp, dict):
-                        logger.error("Broker returned non-dict response: %s", broker_resp)
-                        new_order.status = "ERROR"
-                        new_order.reject_reason = "Malformed broker response"
-                        response = {"status": "ERROR", "message": "Malformed broker response"}
-                    elif broker_resp.get("status") == "SUBMITTED" and broker_resp.get("order_id"):
-                        new_order.id = str(broker_resp.get("order_id"))  # Update with Broker ID
-                        new_order.status = "SUBMITTED"
-                        new_order.broker_message = str(broker_resp.get("message", "Submitted"))
-                        response = broker_resp
-                    else:
-                        new_order.status = "REJECTED"
-                        new_order.reject_reason = str(
-                            broker_resp.get("message", "Order rejected by broker")
-                        )
-                        response = broker_resp
+                    response = self._submit_live_order(order_params, fyers_symbol, new_order)
                 except Exception as e:
                     new_order.status = "ERROR"
                     new_order.reject_reason = str(e)
                     response = {"status": "ERROR", "message": str(e)}
-
             else:
-                # PAPER MODE
                 paper_fill = self._simulate_paper_fill(order_params, fyers_symbol)
-                new_order.status = paper_fill["status"]
-                new_order.filled_qty = int(paper_fill["filled_qty"])
-                new_order.average_price = float(paper_fill["fill_price"])
-                new_order.broker_message = (
-                    f"{paper_fill['message']} | fill_source={paper_fill['fill_source']} "
-                    f"| slippage_bps={paper_fill['slippage_bps']} "
-                    f"| estimated_charges={paper_fill['estimated_charges']}"
-                )
-                response = {
-                    "order_id": internal_id,
-                    "status": paper_fill["status"],
-                    "message": paper_fill["message"],
-                    "fill_source": paper_fill["fill_source"],
-                    "slippage_bps": paper_fill["slippage_bps"],
-                    "estimated_charges": paper_fill["estimated_charges"],
-                    "average_price": paper_fill["fill_price"],
-                    "filled_qty": paper_fill["filled_qty"],
-                }
+                response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
 
             db.commit()
             return response
@@ -306,13 +318,7 @@ class OrderExecutionService:
         if not order:
             return {"status": "ERROR", "message": "Order not found"}
 
-        if self._mode == "LIVE":
-            if order.is_paper:
-                return {
-                    "status": "ERROR",
-                    "message": "Cannot modify Paper order in Live mode (if originated as paper)",
-                }
-
+        if not order.is_paper:
             try:
                 resp = self.broker.modify_order(order_id, params)
                 # Fyers validation needed here
@@ -332,14 +338,14 @@ class OrderExecutionService:
                     return {"status": "ERROR", "message": msg}
             except Exception as e:
                 return {"status": "ERROR", "message": str(e)}
-        else:
-            # Paper Mode Modify
-            if "quantity" in params:
-                order.quantity = params["quantity"]
-            if "price" in params:
-                order.price = params["price"]
-            db.commit()
-            return {"status": "SUCCESS", "message": "Paper Order Modified"}
+
+        # Paper Mode Modify
+        if "quantity" in params:
+            order.quantity = params["quantity"]
+        if "price" in params:
+            order.price = params["price"]
+        db.commit()
+        return {"status": "SUCCESS", "message": "Paper Order Modified"}
 
     def cancel_order(self, order_id: str, db: Session) -> dict[str, Any]:
         """Cancel an order"""
@@ -350,12 +356,7 @@ class OrderExecutionService:
             if not order:
                 return {"status": "ERROR", "message": "Order not found"}
 
-        if self._mode == "LIVE":
-            if order.is_paper:
-                order.status = "CANCELLED"
-                db.commit()
-                return {"status": "SUCCESS", "message": "Paper Order Cancelled"}
-
+        if not order.is_paper:
             try:
                 resp = self.broker.cancel_order(order.id)  # Use broker ID
                 status = resp.get("s", "error")
@@ -374,11 +375,14 @@ class OrderExecutionService:
                     return {"status": "ERROR", "message": msg}
             except Exception as e:
                 return {"status": "ERROR", "message": str(e)}
-        else:
-            # Paper Mode
-            order.status = "CANCELLED"
-            db.commit()
-            return {"status": "SUCCESS", "message": "Paper Order Cancelled"}
+
+        # Paper Mode
+        terminal_states = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
+        if order.status in terminal_states:
+            return {"status": "ERROR", "message": f"Cannot cancel order in {order.status} state"}
+        order.status = "CANCELLED"
+        db.commit()
+        return {"status": "SUCCESS", "message": "Paper Order Cancelled"}
 
     def get_todays_orders(self, db: Session, limit: int = 50) -> list[LiveOrder]:
         """Get list of today's orders"""

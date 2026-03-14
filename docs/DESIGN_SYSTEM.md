@@ -117,3 +117,4 @@ This file is the single design-system reference for colors, typography, spacing,
    - update in `frontend/app/globals.css`
    - update in this file
    - UI smoke check on Dashboard, Screener, Terminal.
+5. Shared components must not introduce hardcoded palette drift such as raw green/red/gray utility colors or non-token brand gradients.

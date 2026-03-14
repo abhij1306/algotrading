@@ -177,6 +177,7 @@ class RiskManager:
 
     def _check_daily_loss_limit(self, db: Session | None) -> RiskCheckResult:
         """Check if daily loss limit has been reached"""
+        owns_session = db is None
         db = db or SessionLocal()
         try:
             today = date.today()
@@ -225,7 +226,7 @@ class RiskManager:
                 details={"current_pnl": total_pnl},
             )
         finally:
-            if db:
+            if owns_session and db:
                 db.close()
 
     def _check_position_size(self, order_params: dict, _db: Session | None) -> RiskCheckResult:
@@ -247,12 +248,12 @@ class RiskManager:
 
     def _check_total_exposure(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check if total exposure exceeds limits"""
+        owns_session = db is None
         db = db or SessionLocal()
         try:
             # Get current positions value
             positions = db.query(LivePosition).filter(LivePosition.net_qty != 0).all()
-            current_exposure = sum(abs(p.net_qty) * p.ltp for p in positions)
-
+            current_exposure = sum(abs(p.net_qty) * (p.ltp or 0) for p in positions)
             # Add new order value
             quantity = order_params.get("quantity", 0)
             price = order_params.get("price", 0)
@@ -288,7 +289,7 @@ class RiskManager:
                 status=RiskStatus.PASS, message="Exposure within limits", code="EXPOSURE_OK"
             )
         finally:
-            if db:
+            if owns_session and db:
                 db.close()
 
     def _check_available_margin(self, order_params: dict) -> RiskCheckResult:
@@ -341,6 +342,7 @@ class RiskManager:
 
     def _check_order_frequency(self, db: Session | None) -> RiskCheckResult:
         """Check if order frequency exceeds limits"""
+        owns_session = db is None
         db = db or SessionLocal()
         try:
             today = date.today()
@@ -362,7 +364,7 @@ class RiskManager:
                 code="ORDER_FREQUENCY_OK",
             )
         finally:
-            if db:
+            if owns_session and db:
                 db.close()
 
     def _check_naked_short_option(self, order_params: dict, db: Session | None) -> RiskCheckResult:
@@ -380,6 +382,7 @@ class RiskManager:
         quantity = order_params.get("quantity", 0)
         symbol = order_params.get("symbol", "")
 
+        owns_session = db is None
         db = db or SessionLocal()
         try:
             # Get current short position for this option
@@ -409,7 +412,7 @@ class RiskManager:
                 status=RiskStatus.PASS, message="Naked short within limits", code="NAKED_SHORT_OK"
             )
         finally:
-            if db:
+            if owns_session and db:
                 db.close()
 
     def get_exposure_summary(self, user_id: str = "default_user") -> dict:

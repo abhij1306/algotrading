@@ -42,12 +42,12 @@ export default function MarketStatus() {
     <div
       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold ${
         isMarketOpen
-          ? "bg-green-600/10 border-green-500/30 text-green-400"
-          : "bg-gray-600/10 border-gray-500/30 text-gray-400"
+          ? "bg-profit-bg border-profit/30 text-profit"
+          : "bg-background-secondary border-border text-foreground-muted"
       }`}
     >
       <div
-        className={`w-2 h-2 rounded-full ${isMarketOpen ? "bg-green-400 animate-pulse" : "bg-gray-400"}`}
+        className={`w-2 h-2 rounded-full ${isMarketOpen ? "bg-profit animate-pulse" : "bg-foreground-muted"}`}
       />
       {isMarketOpen ? "MARKET ONLINE" : "MARKET OFFLINE"}
     </div>

@@ -157,7 +157,7 @@ export default function StockChart({ symbol }: Readonly<StockChartProps>) {
   if (loading) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-background">
-        <div className="text-muted-foreground">Loading chart data...</div>
+        <div className="text-foreground-muted">Loading chart data...</div>
       </div>
     );
   }
@@ -165,11 +165,11 @@ export default function StockChart({ symbol }: Readonly<StockChartProps>) {
   if (error || data.length === 0) {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center bg-background p-8">
-        <div className="text-muted-foreground mb-2">📊 No Chart Data Available</div>
-        <div className="text-xs text-muted">
+        <div className="mb-2 text-foreground-muted">No Chart Data Available</div>
+        <div className="text-xs text-foreground-muted">
           {error || "Historical data not found for " + symbol}
         </div>
-        <div className="text-xs text-muted mt-2">Check if symbol exists in database</div>
+        <div className="mt-2 text-xs text-foreground-muted">Check if symbol exists in database</div>
       </div>
     );
   }
@@ -189,11 +189,11 @@ export default function StockChart({ symbol }: Readonly<StockChartProps>) {
         <div className="flex items-baseline gap-3">
           <div className="text-2xl font-semibold text-foreground">{symbol}</div>
           <div className="text-xl font-semibold text-foreground">₹{formatPrice(currentPrice)}</div>
-          <div className={`text-sm ${isPositive ? "text-green-500" : "text-red-500"}`}>
+          <div className={`text-sm ${isPositive ? "text-profit" : "text-loss"}`}>
             {formatPercent(priceChangePercent)}
           </div>
         </div>
-        <div className="text-xs text-muted-foreground mt-1">Last 90 days • Daily</div>
+        <div className="mt-1 text-xs text-foreground-muted">Last 90 days • Daily</div>
       </div>
 
       {/* Chart */}
@@ -209,21 +209,21 @@ export default function StockChart({ symbol }: Readonly<StockChartProps>) {
       {/* Footer Stats */}
       <div className="mt-4 grid grid-cols-4 gap-4 text-xs">
         <div>
-          <div className="text-muted-foreground">High</div>
+          <div className="text-foreground-muted">High</div>
           <div className="text-foreground font-semibold">₹{formatPrice(maxPrice)}</div>
         </div>
         <div>
-          <div className="text-muted-foreground">Low</div>
+          <div className="text-foreground-muted">Low</div>
           <div className="text-foreground font-semibold">₹{formatPrice(minPrice)}</div>
         </div>
         <div>
-          <div className="text-muted-foreground">Volume</div>
+          <div className="text-foreground-muted">Volume</div>
           <div className="text-foreground font-semibold">
             {formatCompact(data[data.length - 1]?.volume)}
           </div>
         </div>
         <div>
-          <div className="text-muted-foreground">Data Points</div>
+          <div className="text-foreground-muted">Data Points</div>
           <div className="text-foreground font-semibold">{data.length}</div>
         </div>
       </div>

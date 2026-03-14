@@ -6,11 +6,9 @@ block_cipher = None
 
 # Collect all data files from app/brokers/plugins and other necessary folders
 datas = [
-    ('../.env', '.'),  # Include main .env file with credentials
     ('../.env.example', '.'),
     ('app/brokers/plugins', 'app/brokers/plugins'),
 ]
-
 # Aggressively collect critical dependencies
 from PyInstaller.utils.hooks import collect_all
 tmp_ret = collect_all('uvicorn')
@@ -28,7 +26,6 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=[
-        'app.brokers.plugins.paper',
         'app.brokers.plugins.fyers',
         'app.brokers.plugins.backtest',
         'sqlalchemy.ext.baked',

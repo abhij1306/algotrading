@@ -183,8 +183,14 @@ async def lifespan(app: FastAPI):
         async def step_load_index_universe():
             from .services.index_universe_loader import index_universe_loader
 
-            index_universe_loader.load_all()
-            logger.info("[OK] Index universe loaded")
+            if index_universe_loader.data_path.exists():
+                logger.info(
+                    "[OK] Index universe data path available; loading deferred until first use"
+                )
+            else:
+                logger.warning(
+                    "[WARN] Index universe data path missing; universe features will degrade until data is provided"
+                )
             await asyncio.sleep(0)
 
         await sequence.execute_step(

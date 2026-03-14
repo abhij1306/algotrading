@@ -24,6 +24,7 @@ from ..utils.errors import handle_api_error, handle_validation_error
 router = APIRouter()
 logger = logging.getLogger(__name__)
 DB_DEPENDENCY = Depends(get_db)
+DATE_FORMAT = "%Y-%m-%d"
 
 
 # Request/Response Models
@@ -90,6 +91,21 @@ def constituent_to_response(c: UniverseConstituent) -> UniverseConstituentRespon
     )
 
 
+def _parse_target_date(target_date: str | None) -> date | None:
+    if not target_date:
+        return None
+    try:
+        return datetime.strptime(target_date, DATE_FORMAT).date()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid date format: {target_date}. Use YYYY-MM-DD"
+        ) from e
+
+
+def _parse_universe_mode(mode: str) -> UniverseMode:
+    return UniverseMode.HISTORICAL if mode.lower() == "historical" else UniverseMode.LIVE
+
+
 @router.get("/list")
 async def list_universes():
     """
@@ -133,20 +149,8 @@ async def get_constituents(
         service = get_universe_service()
 
         # Parse mode
-        if mode.lower() == "historical":
-            universe_mode = UniverseMode.HISTORICAL
-        else:
-            universe_mode = UniverseMode.LIVE
-
-        # Parse date if provided
-        target_date_obj = None
-        if target_date:
-            try:
-                target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-            except ValueError as e:
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid date format: {target_date}. Use YYYY-MM-DD"
-                ) from e
+        universe_mode = _parse_universe_mode(mode)
+        target_date_obj = _parse_target_date(target_date)
 
         # Get constituents
         result = service.get_constituents(
@@ -166,6 +170,8 @@ async def get_constituents(
 
     except HTTPException:
         raise
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting constituents: {e}", exc_info=True)
         raise handle_api_error(e, "Failed to get constituents")
@@ -184,20 +190,8 @@ async def get_symbols(
         service = get_universe_service()
 
         # Parse mode
-        if mode.lower() == "historical":
-            universe_mode = UniverseMode.HISTORICAL
-        else:
-            universe_mode = UniverseMode.LIVE
-
-        # Parse date if provided
-        target_date_obj = None
-        if target_date:
-            try:
-                target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-            except ValueError as e:
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid date format: {target_date}. Use YYYY-MM-DD"
-                ) from e
+        universe_mode = _parse_universe_mode(mode)
+        target_date_obj = _parse_target_date(target_date)
 
         # Get symbols
         symbols = service.get_symbols(
@@ -214,6 +208,8 @@ async def get_symbols(
 
     except HTTPException:
         raise
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting symbols: {e}", exc_info=True)
         raise handle_api_error(e, "Failed to get symbols")
@@ -233,8 +229,8 @@ async def get_universe_changes(
     try:
         # Parse dates
         try:
-            start = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            start = datetime.strptime(start_date, DATE_FORMAT).date()
+            end = datetime.strptime(end_date, DATE_FORMAT).date()
         except ValueError as e:
             raise HTTPException(
                 status_code=400, detail="Invalid date format. Use YYYY-MM-DD"
@@ -256,6 +252,8 @@ async def get_universe_changes(
 
     except HTTPException:
         raise
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error getting universe changes: {e}", exc_info=True)
         raise handle_api_error(e, "Failed to get universe changes")
