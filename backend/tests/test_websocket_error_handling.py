@@ -8,6 +8,7 @@ These tests verify that WebSocket connections handle errors gracefully without
 crashing the application, maintain application state, and allow reconnection.
 """
 import asyncio
+from typing import Never
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -21,7 +22,7 @@ class TestWebSocketErrorResilience:
     """Test suite for WebSocket error handling and resilience"""
 
     @pytest.mark.asyncio
-    async def test_graceful_disconnect_handling(self):
+    async def test_graceful_disconnect_handling(self) -> None:
         """
         Test that WebSocketDisconnect is handled gracefully without crashing.
 
@@ -45,7 +46,7 @@ class TestWebSocketErrorResilience:
         assert mock_websocket not in manager.subscriptions
 
     @pytest.mark.asyncio
-    async def test_state_preservation_during_disconnect(self):
+    async def test_state_preservation_during_disconnect(self) -> None:
         """
         Test that application state remains consistent after disconnect.
 
@@ -90,7 +91,7 @@ class TestWebSocketErrorResilience:
         assert "INFY" in manager.subscriptions[ws2]
 
     @pytest.mark.asyncio
-    async def test_decorator_handles_websocket_disconnect(self):
+    async def test_decorator_handles_websocket_disconnect(self) -> None:
         """
         Test that the @handle_websocket_errors decorator catches WebSocketDisconnect.
 
@@ -98,7 +99,7 @@ class TestWebSocketErrorResilience:
         WebSocketDisconnect and log appropriately without crashing.
         """
         @handle_websocket_errors(log_level="INFO")
-        async def mock_websocket_handler():
+        async def mock_websocket_handler() -> Never:
             raise WebSocketDisconnect()
 
         # Should raise WebSocketDisconnect (decorator re-raises after logging)
@@ -106,7 +107,7 @@ class TestWebSocketErrorResilience:
             await mock_websocket_handler()
 
     @pytest.mark.asyncio
-    async def test_decorator_handles_general_errors(self):
+    async def test_decorator_handles_general_errors(self) -> None:
         """
         Test that the decorator handles general exceptions with ERROR logging.
 
@@ -114,7 +115,7 @@ class TestWebSocketErrorResilience:
         with full context and re-raised.
         """
         @handle_websocket_errors(log_level="INFO")
-        async def mock_websocket_handler():
+        async def mock_websocket_handler() -> Never:
             raise ValueError("Test error")
 
         # Should raise the original exception
@@ -122,7 +123,7 @@ class TestWebSocketErrorResilience:
             await mock_websocket_handler()
 
     @pytest.mark.asyncio
-    async def test_broadcast_handles_dead_connections(self):
+    async def test_broadcast_handles_dead_connections(self) -> None:
         """
         Test that broadcast() removes dead connections without affecting others.
 
@@ -152,7 +153,7 @@ class TestWebSocketErrorResilience:
         assert len(manager.subscriptions) == 0
 
     @pytest.mark.asyncio
-    async def test_multiple_disconnect_scenarios(self):
+    async def test_multiple_disconnect_scenarios(self) -> None:
         """
         Test various disconnect scenarios (normal, error, timeout).
 
@@ -189,7 +190,7 @@ class TestWebSocketErrorResilience:
         await manager.disconnect(ws3)
         assert ws3 not in manager.subscriptions
 
-    def test_log_websocket_event_formatting(self):
+    def test_log_websocket_event_formatting(self) -> None:
         """
         Test that WebSocket events are logged with consistent formatting.
 
@@ -202,7 +203,12 @@ class TestWebSocketErrorResilience:
         # Should not raise any exceptions
         log_websocket_event("connection_established", level="INFO", client_id="test123")
         log_websocket_event("disconnect", level="INFO", reason="client_closed")
-        log_websocket_event("error", level="ERROR", error_type="timeout", details="Connection timeout")
+        log_websocket_event(
+            "error",
+            level="ERROR",
+            error_type="timeout",
+            details="Connection timeout",
+        )
         log_websocket_event("reconnection_attempt", level="DEBUG", attempt=3, max_attempts=10)
 
 
@@ -210,7 +216,7 @@ class TestWebSocketReconnection:
     """Test suite for WebSocket reconnection logic"""
 
     @pytest.mark.asyncio
-    async def test_reconnection_after_disconnect(self):
+    async def test_reconnection_after_disconnect(self) -> None:
         """
         Test that reconnection is possible after a disconnect.
 
@@ -244,7 +250,7 @@ class TestWebSocketReconnection:
         assert ws_new in manager.subscriptions
 
     @pytest.mark.asyncio
-    async def test_subscription_state_after_reconnect(self):
+    async def test_subscription_state_after_reconnect(self) -> None:
         """
         Test that subscriptions can be re-established after reconnection.
 

@@ -160,6 +160,10 @@ function buildOptionsOrderflow(board: OptionsBoardResponse): OptionsOrderflowRes
   };
 }
 
+function formatLtp(value: number | null | undefined): string {
+  return typeof value === 'number' ? value.toFixed(2) : '--';
+}
+
 // PriceChart component - reserved for future chart view implementation
 const _PriceChart = dynamic(
   () => import('@/components/terminal/PriceChart').then((mod) => mod.PriceChart),
@@ -229,10 +233,10 @@ export default function TerminalPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Chart state - reserved for future chart view implementation
-  const [_chartData, setChartData] = useState<CandlePoint[]>([]);
-  const [_chartSource, setChartSource] = useState<string>('');
-  const [_chartLoading, setChartLoading] = useState(false);
-  const [_chartError, setChartError] = useState<string | null>(null);
+  const chartDataRef = useRef<CandlePoint[]>([]);
+  const chartSourceRef = useRef('');
+  const chartLoadingRef = useRef(false);
+  const chartErrorRef = useRef<string | null>(null);
   const [tradingMode, setTradingMode] = useState<TradingMode>('PAPER');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
   const [orderQty, setOrderQty] = useState<number>(1);
@@ -338,14 +342,14 @@ export default function TerminalPage() {
         return;
       }
       if (!selectedSymbol) {
-        setChartData([]);
-        setChartError(null);
+        chartDataRef.current = [];
+        chartErrorRef.current = null;
         return;
       }
 
       try {
-        setChartLoading(true);
-        setChartError(null);
+        chartLoadingRef.current = true;
+        chartErrorRef.current = null;
 
         const params = new URLSearchParams({
           symbol: selectedSymbol,
@@ -358,13 +362,13 @@ export default function TerminalPage() {
         }
 
         const data = (await response.json()) as ChartResponse;
-        setChartData(Array.isArray(data.candles) ? data.candles : []);
-        setChartSource(data.source || '');
+        chartDataRef.current = Array.isArray(data.candles) ? data.candles : [];
+        chartSourceRef.current = data.source || '';
       } catch (err) {
-        setChartData([]);
-        setChartError(err instanceof Error ? err.message : 'Failed to load chart');
+        chartDataRef.current = [];
+        chartErrorRef.current = err instanceof Error ? err.message : 'Failed to load chart';
       } finally {
-        setChartLoading(false);
+        chartLoadingRef.current = false;
       }
     };
 
@@ -534,7 +538,7 @@ export default function TerminalPage() {
         ));
 
         if (tick.symbol === selectedSymbol && typeof tick.ltp === 'number') {
-          setChartData((prev) => {
+          chartDataRef.current = ((prev) => {
             if (prev.length === 0) return prev;
             const next = [...prev];
             const lastCandle = next.at(-1);
@@ -552,7 +556,7 @@ export default function TerminalPage() {
             }
             next[next.length - 1] = last;
             return next;
-          });
+          })(chartDataRef.current);
         }
       }
     }
@@ -825,20 +829,21 @@ export default function TerminalPage() {
     <div className="text-center text-sm text-foreground-muted">Select a view</div>
   );
   if (terminalView === 'options') {
-    if (optionsLoading && !optionsBoard) {
+    const hasOptionsBoard = Boolean(optionsBoard);
+    if (!hasOptionsBoard && optionsLoading) {
       centerPanelContent = (
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-foreground-muted" />
           <p className="text-sm text-foreground-muted">Loading options board...</p>
         </div>
       );
-    } else if (optionsError && !optionsBoard) {
+    } else if (!hasOptionsBoard && optionsError) {
       centerPanelContent = (
         <div className="text-center">
           <p className="text-sm text-loss">{optionsError}</p>
         </div>
       );
-    } else if (optionsBoard) {
+    } else if (hasOptionsBoard && optionsBoard) {
       centerPanelContent = (
         <div className="h-full w-full overflow-auto p-2">
           <div className="mb-2 flex items-center gap-2">
@@ -890,7 +895,7 @@ export default function TerminalPage() {
                     </button>
                   </td>
                   <td className="py-1 text-right tabular-nums">
-                    {typeof row.ce?.ltp === 'number' ? row.ce.ltp.toFixed(2) : '--'}
+                    {formatLtp(row.ce?.ltp)}
                   </td>
                   <td
                     className={`py-1 text-right tabular-nums ${
@@ -902,7 +907,7 @@ export default function TerminalPage() {
                     {row.strike.toFixed(2)}
                   </td>
                   <td className="py-1 text-right tabular-nums">
-                    {typeof row.pe?.ltp === 'number' ? row.pe.ltp.toFixed(2) : '--'}
+                    {formatLtp(row.pe?.ltp)}
                   </td>
                   <td className="py-1 text-left">
                     <button
@@ -997,7 +1002,7 @@ export default function TerminalPage() {
             ))}
             {positions.length === 0 && (
               <tr>
-                <td colSpan={10} className="py-8 text-center text-foreground-muted">No open positions</td>
+                <td colSpan={9} className="py-8 text-center text-foreground-muted">No open positions</td>
               </tr>
             )}
           </tbody>
@@ -1039,7 +1044,7 @@ export default function TerminalPage() {
             </div>
             <div className="text-right">
               <div className="font-semibold tabular-nums text-xl">
-                {typeof currentSymbol?.ltp === 'number' ? currentSymbol.ltp.toFixed(2) : '--'}
+                {formatLtp(currentSymbol?.ltp)}
               </div>
               {currentSymbol && (
                 <div className={`tabular-nums text-xs ${getChangeTone(currentSymbol.change)}`}>

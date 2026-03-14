@@ -10,14 +10,13 @@ _env_level = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_LEVEL = _env_level if _env_level in _VALID_LEVELS else "INFO"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LOG_DIR = PROJECT_ROOT / "logs"
-LOG_DIR.mkdir(exist_ok=True)
 
 # Standard format for all logs
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def setup_logging(name: str = "smarttrader"):
+def setup_logging(name: str = "smarttrader") -> logging.Logger:
     """
     Set up centralized logging with rotation and console output.
     """
@@ -37,6 +36,7 @@ def setup_logging(name: str = "smarttrader"):
 
     # File Handler (Rotating: 10MB per file, keep 5 backups)
     try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = LOG_DIR / f"{name}.log"
         file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
         file_handler.setFormatter(formatter)
@@ -59,7 +59,7 @@ def setup_logging(name: str = "smarttrader"):
 logger = setup_logging()
 
 
-def get_logger(module_name: str):
+def get_logger(module_name: str) -> logging.Logger:
     """
     Get a logger for a specific module, inheriting from the base configuration.
     """

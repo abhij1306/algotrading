@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useState, useEffect, useCallback, memo, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { TrendingUp, TrendingDown, Activity, Zap, Globe, ChevronRight, Target, BarChart3, Radio, Moon, ExternalLink } from 'lucide-react';
@@ -43,6 +44,25 @@ interface BackendMarketStatusResponse {
 }
 
 type DashboardMode = 'market' | 'post_market';
+type TickRecord = { symbol?: string; ltp?: number; change_pct?: number; change?: number };
+type LoadingState = { portfolio: boolean; indices: boolean; watchlist: boolean };
+type DashboardFetchResult = {
+  watchlistData: WatchlistItem[];
+  indicesData: MarketIndex[];
+  nextMode: DashboardMode;
+};
+type StatusBadge = {
+  icon: typeof Radio;
+  label: string;
+  className: string;
+};
+type MarketSectionMeta = {
+  title: string;
+  subtitle: string;
+};
+
+const EMPTY_LOADING_STATE: LoadingState = { portfolio: false, indices: false, watchlist: false };
+const LIVE_INDEX_SYMBOLS = new Set(['NIFTY50', 'BANKNIFTY', 'NIFTYIT']);
 
 const QUICK_ACTIONS = [
   { icon: Zap, label: 'Trade', path: '/terminal' },
@@ -64,9 +84,130 @@ function toSafeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function normalizeNumber(value: unknown): number | null {
+  return typeof value === 'number' ? roundToDecimals(value, 2) : null;
+}
+
+function normalizeWatchlistData(data: unknown): WatchlistItem[] {
+  if (!Array.isArray(data)) return [];
+  return data
+    .slice(0, 10)
+    .map((item: Record<string, unknown>) => {
+      const rawChange = item.change;
+      return {
+        symbol: toSafeString(item.symbol),
+        price: normalizeNumber(item.price),
+        change: normalizeNumber(rawChange),
+        changePercent: normalizeNumber(item.changePercent ?? rawChange),
+      } as WatchlistItem;
+    })
+    .filter((item: WatchlistItem) => item.symbol.length > 0);
+}
+
+function normalizeLiveIndices(data: unknown): MarketIndex[] {
+  if (!Array.isArray(data)) return [];
+  return data.map((idx: MarketIndex) => ({
+    ...idx,
+    symbol: idx.symbol || idx.name,
+    value: roundToDecimals(idx.value, 2),
+    change: roundToDecimals(idx.change, 2),
+    changePercent: roundToDecimals(idx.changePercent, 2),
+    type: 'indian',
+    source: 'api',
+  }));
+}
+
+function getIndexChangePercent(idx: Record<string, unknown>): number {
+  if (typeof idx.change_pct === 'number') {
+    return roundToDecimals(idx.change_pct, 2);
+  }
+  if (typeof idx.changePercent === 'number') {
+    return roundToDecimals(idx.changePercent, 2);
+  }
+  return 0;
+}
+
+function normalizeOverviewIndices(data: unknown): MarketIndex[] {
+  const indicesRaw = Array.isArray(data) ? data : [];
+  const globalData: MarketIndex[] = [];
+
+  for (const idx of indicesRaw as Array<Record<string, unknown>>) {
+    const symbol = toSafeString(idx.symbol);
+    const price = normalizeNumber(idx.price);
+    if (!symbol || price === null) continue;
+
+    globalData.push({
+      name: toSafeString(idx.name, symbol),
+      symbol,
+      value: price,
+      change: normalizeNumber(idx.change) ?? 0,
+      changePercent: getIndexChangePercent(idx),
+      type: 'global',
+      source: 'yahoo',
+    });
+  }
+
+  return globalData;
+}
+
+function getDashboardFetchResult(
+  marketStatus: MarketStatus,
+  watchlistData: WatchlistItem[],
+  marketPayload: unknown
+): DashboardFetchResult {
+  if (marketStatus.isOpen) {
+    return {
+      watchlistData,
+      indicesData: normalizeLiveIndices(marketPayload),
+      nextMode: 'market',
+    };
+  }
+
+  const overview = (marketPayload ?? {}) as Record<string, unknown>;
+  return {
+    watchlistData,
+    indicesData: normalizeOverviewIndices(overview.indices),
+    nextMode: 'post_market',
+  };
+}
+
+function getStatusBadge(isLive: boolean, isDelayed: boolean): StatusBadge {
+  if (isLive) {
+    return { icon: Radio, label: 'LIVE', className: 'bg-profit-bg text-profit' };
+  }
+  if (isDelayed) {
+    return { icon: Activity, label: 'DELAYED', className: 'bg-amber-500/10 text-amber-400' };
+  }
+  return {
+    icon: Moon,
+    label: 'CLOSED',
+    className: 'bg-background-tertiary text-foreground-secondary',
+  };
+}
+
+function getMarketSectionMeta(isOpen: boolean, isConnected: boolean): MarketSectionMeta {
+  if (isOpen) {
+    return {
+      title: 'Indian Markets',
+      subtitle: isConnected ? 'NSE Real-time' : 'NSE Delayed (Disconnected)',
+    };
+  }
+  return { title: 'Global Markets', subtitle: 'Yahoo Delayed' };
+}
+
+function getCompactIndexLabel(symbol: string): string {
+  if (symbol === 'NIFTY50') return 'NIFTY';
+  if (symbol === 'BANKNIFTY') return 'BANK';
+  return 'IT';
+}
+
+function getStatTrend(value: number | null | undefined): 'up' | 'down' {
+  return typeof value === 'number' && value >= 0 ? 'up' : 'down';
+}
+
 function applyWatchlistTicks(
   rows: WatchlistItem[],
-  pending: Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>
+  pending: Record<string, TickRecord>
 ): WatchlistItem[] {
   return rows.map((item) => {
     const tick = pending[item.symbol];
@@ -82,7 +223,7 @@ function applyWatchlistTicks(
 
 function applyIndexTicks(
   rows: MarketIndex[],
-  pending: Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>
+  pending: Record<string, TickRecord>
 ): MarketIndex[] {
   return rows.map((idx) => {
     const tick = pending[idx.symbol];
@@ -165,6 +306,22 @@ const WatchlistRow = memo(function WatchlistRow({
   const hasPrice = typeof stock.price === 'number' && Number.isFinite(stock.price);
   const hasChangePercent = typeof stock.changePercent === 'number' && Number.isFinite(stock.changePercent);
   const isUp = hasChangePercent ? (stock.changePercent ?? 0) >= 0 : false;
+  const priceLabel = hasPrice
+    ? `₹${(stock.price ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—';
+  let changeClass = 'text-foreground-muted';
+  if (hasChangePercent) {
+    changeClass = isUp ? 'text-profit' : 'text-loss';
+  }
+  let changeContent: ReactNode = 'Unavailable';
+  if (hasChangePercent) {
+    changeContent = (
+      <div className="flex items-center justify-end gap-1">
+        {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+        {formatDashboardPercent(stock.changePercent)}
+      </div>
+    );
+  }
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
       <td className="py-2.5 pl-4">
@@ -184,18 +341,9 @@ const WatchlistRow = memo(function WatchlistRow({
           </button>
         </div>
       </td>
-      <td className="py-2.5 text-right tabular-nums">
-        {hasPrice ? `₹${(stock.price ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-      </td>
-      <td className={`py-2.5 pr-4 text-right tabular-nums ${hasChangePercent ? (isUp ? 'text-profit' : 'text-loss') : 'text-foreground-muted'}`}>
-        {hasChangePercent ? (
-          <div className="flex items-center justify-end gap-1">
-            {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-            {formatDashboardPercent(stock.changePercent)}
-          </div>
-        ) : (
-          'Unavailable'
-        )}
+      <td className="py-2.5 text-right tabular-nums">{priceLabel}</td>
+      <td className={`py-2.5 pr-4 text-right tabular-nums ${changeClass}`}>
+        {changeContent}
       </td>
     </tr>
   );
@@ -213,10 +361,14 @@ export default function DashboardPage() {
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [insightSymbols, setInsightSymbols] = useState<string[]>([]);
-  const [loading, setLoading] = useState({ portfolio: true, indices: true, watchlist: true });
+  const [loading, setLoading] = useState<LoadingState>({
+    portfolio: true,
+    indices: true,
+    watchlist: true,
+  });
   const indicesLoadedRef = useRef(false);
   const subscriptionSymbolsRef = useRef<string>('');
-  const pendingTicksRef = useRef<Record<string, { symbol?: string; ltp?: number; change_pct?: number; change?: number }>>({});
+  const pendingTicksRef = useRef<Record<string, TickRecord>>({});
   const fetchInFlightRef = useRef(false);
   const fetchRequestIdRef = useRef(0);
   const openTradingView = (symbol: string) => {
@@ -273,87 +425,26 @@ export default function DashboardPage() {
       }
 
       if (statsRes.data) setPortfolioStats(statsRes.data as PortfolioStats);
-      const watchlistData = Array.isArray(watchlistRes.data)
-        ? watchlistRes.data.slice(0, 10).map((item: Record<string, unknown>) => {
-            const rawPrice = item.price;
-            const rawChange = item.change;
-            const rawChangePercent = item.changePercent ?? rawChange;
-
-            return {
-              symbol: toSafeString(item.symbol),
-              price: typeof rawPrice === 'number' ? roundToDecimals(rawPrice, 2) : null,
-              change: typeof rawChange === 'number' ? roundToDecimals(rawChange, 2) : null,
-              changePercent: typeof rawChangePercent === 'number' ? roundToDecimals(rawChangePercent, 2) : null,
-            } as WatchlistItem;
-          }).filter((item: WatchlistItem) => item.symbol.length > 0)
-        : [];
+      const watchlistData = normalizeWatchlistData(watchlistRes.data);
       setWatchlist(watchlistData);
       setLoading((prev) => ({ ...prev, portfolio: false, watchlist: false }));
 
       const status = await statusPromise;
       if (requestId !== fetchRequestIdRef.current) return;
-      const nextMode: DashboardMode = status.isOpen ? 'market' : 'post_market';
-      setDashboardMode(nextMode);
+      const marketResponse = status.isOpen
+        ? await apiClient.get('/api/market/indices')
+        : await apiClient.get('/api/market/overview');
+      if (requestId !== fetchRequestIdRef.current) return;
 
-      if (status.isOpen) {
-        const indicesRes = await apiClient.get('/api/market/indices');
-        if (requestId !== fetchRequestIdRef.current) return;
-        let indicesData: MarketIndex[] = [];
-        if (indicesRes.data) {
-          indicesData = Array.isArray(indicesRes.data)
-            ? indicesRes.data.map((idx: MarketIndex) => ({
-                ...idx,
-                symbol: idx.symbol || idx.name,
-                value: roundToDecimals(idx.value, 2),
-                change: roundToDecimals(idx.change, 2),
-                changePercent: roundToDecimals(idx.changePercent, 2),
-                type: 'indian',
-                source: 'api',
-              }))
-            : [];
-          setMarketIndices(indicesData);
-          indicesLoadedRef.current = true;
-        }
-      } else {
-        // Use one aggregated endpoint in post-market mode to avoid quote fan-out.
-        const overviewRes = await apiClient.get('/api/market/overview');
-        if (requestId !== fetchRequestIdRef.current) return;
-        const overviewData = (overviewRes.data ?? {}) as Record<string, unknown>;
-        const indicesRaw = Array.isArray(overviewData.indices) ? overviewData.indices : [];
-
-        const globalData: MarketIndex[] = [];
-        for (const idx of indicesRaw as Array<Record<string, unknown>>) {
-          const symbol = toSafeString(idx.symbol);
-          const name = toSafeString(idx.name, symbol);
-          const price = typeof idx.price === 'number' ? roundToDecimals(idx.price, 2) : null;
-          const change = typeof idx.change === 'number' ? roundToDecimals(idx.change, 2) : 0;
-          const changePct =
-            typeof idx.change_pct === 'number'
-              ? roundToDecimals(idx.change_pct, 2)
-              : typeof idx.changePercent === 'number'
-                ? roundToDecimals(idx.changePercent, 2)
-                : 0;
-
-          if (!symbol || price === null) continue;
-          globalData.push({
-            name,
-            symbol,
-            value: price,
-            change,
-            changePercent: changePct,
-            type: 'global',
-            source: 'yahoo',
-          });
-        }
-
-        setMarketIndices(globalData);
-        indicesLoadedRef.current = true;
-      }
+      const nextData = getDashboardFetchResult(status, watchlistData, marketResponse.data);
+      setDashboardMode(nextData.nextMode);
+      setMarketIndices(nextData.indicesData);
+      indicesLoadedRef.current = true;
 
       setLoading((prev) => ({ ...prev, indices: false }));
     } catch (error) {
       console.error('Dashboard fetch error:', error);
-      setLoading({ portfolio: false, indices: false, watchlist: false });
+      setLoading(EMPTY_LOADING_STATE);
     } finally {
       fetchInFlightRef.current = false;
     }
@@ -409,7 +500,7 @@ export default function DashboardPage() {
   // Handle live ticks
   useEffect(() => {
     if (lastMessage?.type === 'ticker' && lastMessage.data) {
-      const tick = lastMessage.data as { symbol?: string; ltp?: number; change_pct?: number; change?: number };
+      const tick = lastMessage.data as TickRecord;
       if (tick.symbol) pendingTicksRef.current[tick.symbol] = tick;
     }
   }, [lastMessage]);
@@ -442,6 +533,75 @@ export default function DashboardPage() {
 
   const isLive = marketStatus.isOpen && isConnected;
   const isDelayed = marketStatus.isOpen && !isConnected;
+  const statusBadge = getStatusBadge(isLive, isDelayed);
+  const StatusIcon = statusBadge.icon;
+  const marketSectionMeta = getMarketSectionMeta(marketStatus.isOpen, isConnected);
+  const renderIndicesBody = () => {
+    if (loading.indices) {
+      return (
+        <div className="p-4 space-y-2">
+          {[1, 2, 3, 4].map((i) => <div key={i} className="h-8 bg-background-tertiary/30 rounded" />)}
+        </div>
+      );
+    }
+    if (marketIndices.length === 0) {
+      return <div className="p-8 text-center text-foreground-muted">No market data</div>;
+    }
+    return (
+      <table className="w-full">
+        <thead className="text-xs text-foreground-muted border-b border-border">
+          <tr>
+            <th className="py-2 pl-4 text-left font-normal">Index</th>
+            <th className="py-2 text-right font-normal">Value</th>
+            <th className="py-2 pr-4 text-right font-normal">Change</th>
+          </tr>
+        </thead>
+        <tbody className="text-sm">
+          {marketIndices.map((idx) => (
+            <IndexRow
+              key={idx.name}
+              idx={idx}
+              onClick={() => router.push(`/terminal?symbol=${idx.symbol}`)}
+              onOpenTradingView={openTradingView}
+            />
+          ))}
+        </tbody>
+      </table>
+    );
+  };
+  const renderWatchlistBody = () => {
+    if (loading.watchlist) {
+      return (
+        <div className="p-4 space-y-2">
+          {[1, 2, 3, 4, 5].map((i) => <div key={i} className="h-8 bg-background-tertiary/30 rounded" />)}
+        </div>
+      );
+    }
+    if (watchlist.length === 0) {
+      return <div className="p-8 text-center text-foreground-muted">No stocks in watchlist</div>;
+    }
+    return (
+      <table className="w-full">
+        <thead className="text-xs text-foreground-muted border-b border-border">
+          <tr>
+            <th className="py-2 pl-4 text-left font-normal">Symbol</th>
+            <th className="py-2 text-right font-normal">Price</th>
+            <th className="py-2 pr-4 text-right font-normal">Change</th>
+          </tr>
+        </thead>
+        <tbody className="text-sm">
+          {watchlist.map((stock) => (
+            <WatchlistRow
+              key={stock.symbol}
+              stock={stock}
+              onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+              onOpenTradingView={openTradingView}
+            />
+          ))}
+        </tbody>
+      </table>
+    );
+  };
 
   const hasData = portfolioStats || marketIndices.length > 0 || watchlist.length > 0;
   if (!hasData && !loading.portfolio) {
@@ -462,26 +622,16 @@ export default function DashboardPage() {
       <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface h-11">
         <div className="flex items-center gap-3">
           <h1 className="text-base font-semibold">Dashboard</h1>
-          {isLive ? (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-profit-bg text-profit">
-              <Radio className="w-3 h-3" /> LIVE
-            </span>
-          ) : isDelayed ? (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400">
-              <Activity className="w-3 h-3" /> DELAYED
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-background-tertiary text-foreground-secondary">
-              <Moon className="w-3 h-3" /> CLOSED
-            </span>
-          )}
+          <span className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${statusBadge.className}`}>
+            <StatusIcon className="w-3 h-3" /> {statusBadge.label}
+          </span>
           {/* Live Indices - NIFTY & BANKNIFTY */}
           {marketIndices.length > 0 && (
             <div className="flex items-center gap-3 ml-2 pl-3 border-l border-border">
-              {marketIndices.filter((idx) => ['NIFTY50', 'BANKNIFTY', 'NIFTYIT'].includes(idx.symbol)).map(idx => {
+              {marketIndices.filter((idx) => LIVE_INDEX_SYMBOLS.has(idx.symbol)).map(idx => {
                 const isUp = (idx.change ?? 0) >= 0;
                 const isLive = idx.source === 'websocket';
-                const label = idx.symbol === 'NIFTY50' ? 'NIFTY' : idx.symbol === 'BANKNIFTY' ? 'BANK' : 'IT';
+                const label = getCompactIndexLabel(idx.symbol);
                 return (
                   <div key={idx.name} className="flex items-center gap-1.5">
                     <span className="text-xs text-foreground-muted">{label}</span>
@@ -520,14 +670,14 @@ export default function DashboardPage() {
           label="Day P&L"
           value={portfolioStats ? formatCurrency(portfolioStats.dayChange, 'INR', 'en-IN') : '—'}
           change={portfolioStats?.dayChangePercent}
-          trend={portfolioStats && portfolioStats.dayChange >= 0 ? 'up' : 'down'}
+          trend={getStatTrend(portfolioStats?.dayChange)}
           loading={loading.portfolio}
         />
         <StatItem
           label="Total Return"
           value={portfolioStats ? formatCurrency(portfolioStats.totalReturn, 'INR', 'en-IN') : '—'}
           change={portfolioStats?.totalReturnPercent}
-          trend={portfolioStats && portfolioStats.totalReturn >= 0 ? 'up' : 'down'}
+          trend={getStatTrend(portfolioStats?.totalReturn)}
           loading={loading.portfolio}
         />
       </div>
@@ -546,40 +696,16 @@ export default function DashboardPage() {
           <div className="lg:col-span-3 border-r border-border">
             <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface h-9">
               <div className="flex items-center gap-2">
-                {marketStatus.isOpen ? <Activity className="w-4 h-4 text-foreground-muted" /> : <Globe className="w-4 h-4 text-foreground-muted" />}
-                <span className="font-medium text-sm">{marketStatus.isOpen ? 'Indian Markets' : 'Global Markets'}</span>
+                {marketStatus.isOpen ? (
+                  <Activity className="w-4 h-4 text-foreground-muted" />
+                ) : (
+                  <Globe className="w-4 h-4 text-foreground-muted" />
+                )}
+                <span className="font-medium text-sm">{marketSectionMeta.title}</span>
               </div>
-              <span className="text-xs text-foreground-muted">
-                {marketStatus.isOpen ? (isConnected ? 'NSE Real-time' : 'NSE Delayed (Disconnected)') : 'Yahoo Delayed'}
-              </span>
+              <span className="text-xs text-foreground-muted">{marketSectionMeta.subtitle}</span>
             </div>
-            {loading.indices ? (
-              <div className="p-4 space-y-2">
-                {[1,2,3,4].map(i => <div key={i} className="h-8 bg-background-tertiary/30 rounded" />)}
-              </div>
-            ) : marketIndices.length === 0 ? (
-              <div className="p-8 text-center text-foreground-muted">No market data</div>
-            ) : (
-              <table className="w-full">
-                <thead className="text-xs text-foreground-muted border-b border-border">
-                  <tr>
-                    <th className="py-2 pl-4 text-left font-normal">Index</th>
-                    <th className="py-2 text-right font-normal">Value</th>
-                    <th className="py-2 pr-4 text-right font-normal">Change</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {marketIndices.map(idx => (
-                    <IndexRow
-                      key={idx.name}
-                      idx={idx}
-                      onClick={() => router.push(`/terminal?symbol=${idx.symbol}`)}
-                      onOpenTradingView={openTradingView}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {renderIndicesBody()}
           </div>
 
           {/* Watchlist - 2 cols */}
@@ -594,33 +720,7 @@ export default function DashboardPage() {
                 View All <ChevronRight className="w-3 h-3 ml-0.5" />
               </Button>
             </div>
-            {loading.watchlist ? (
-              <div className="p-4 space-y-2">
-                {[1,2,3,4,5].map(i => <div key={i} className="h-8 bg-background-tertiary/30 rounded" />)}
-              </div>
-            ) : watchlist.length === 0 ? (
-              <div className="p-8 text-center text-foreground-muted">No stocks in watchlist</div>
-            ) : (
-              <table className="w-full">
-                <thead className="text-xs text-foreground-muted border-b border-border">
-                  <tr>
-                    <th className="py-2 pl-4 text-left font-normal">Symbol</th>
-                    <th className="py-2 text-right font-normal">Price</th>
-                    <th className="py-2 pr-4 text-right font-normal">Change</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {watchlist.map(stock => (
-                    <WatchlistRow
-                      key={stock.symbol}
-                      stock={stock}
-                      onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
-                      onOpenTradingView={openTradingView}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {renderWatchlistBody()}
           </div>
         </div>
       </div>

@@ -4,23 +4,26 @@ Tests complete tick flow from Fyers (mocked/real) to Frontend via WebSocket.
 """
 import asyncio
 import json
+import logging
 import time
 
 import pytest
 import websockets
 
+logger = logging.getLogger(__name__)
+
 
 @pytest.mark.asyncio
-async def test_websocket_ticks():
+async def test_websocket_ticks() -> bool:
     """Test WebSocket tick delivery"""
 
     # Connect to WebSocket
     uri = "ws://localhost:8000/api/websocket/stream"
 
-    print("🔌 Connecting to WebSocket...")
+    logger.info("Connecting to WebSocket...")
     try:
         async with websockets.connect(uri) as websocket:
-            print("✅ Connected!")
+            logger.info("Connected")
 
             # Subscribe to symbols
             symbols = ['SBIN', 'RELIANCE', 'TCS']
@@ -29,16 +32,16 @@ async def test_websocket_ticks():
                 "symbols": symbols
             }
 
-            print(f"📡 Subscribing to: {symbols}")
+            logger.info("Subscribing to: %s", symbols)
             await websocket.send(json.dumps(subscribe_msg))
 
             # Wait for ACK
             response = await websocket.recv()
             ack = json.loads(response)
-            print(f"✅ ACK received: {ack}")
+            logger.info("ACK received: %s", ack)
 
             # Listen for ticks (timeout after 10 seconds for this test)
-            print("👂 Listening for ticks (10s timeout)...")
+            logger.info("Listening for ticks (10s timeout)...")
             received_symbols = set()
 
             timeout = time.time() + 10
@@ -53,35 +56,35 @@ async def test_websocket_ticks():
                         # Fyers format NSE:SBIN-EQ or DB format SBIN depending on conversion
                         ltp = tick.get('ltp') or tick.get('price')
 
-                        print(f"📊 Tick: {symbol} = ₹{ltp}")
+                        logger.info("Tick: %s = ₹%s", symbol, ltp)
                         received_symbols.add(symbol)
 
                         # Stop if received all symbols
                         if len(received_symbols) >= len(symbols):
-                            print(f"✅ Received ticks for all {len(symbols)} symbols!")
+                            logger.info("Received ticks for all %s symbols", len(symbols))
                             break
 
                 except TimeoutError:
-                    print("⏳ No ticks in last 2 seconds... (Expected if market closed/no mock)")
+                    logger.info("No ticks in last 2 seconds (expected if market closed/no mock)")
                     continue
 
             # Summary
-            print("\n" + "="*50)
-            print("TEST SUMMARY")
-            print("="*50)
-            print(f"Subscribed to: {len(symbols)} symbols")
-            print(f"Received ticks: {len(received_symbols)} symbols")
+            logger.info("%s", "=" * 50)
+            logger.info("TEST SUMMARY")
+            logger.info("%s", "=" * 50)
+            logger.info("Subscribed to: %s symbols", len(symbols))
+            logger.info("Received ticks: %s symbols", len(received_symbols))
 
             # In a real test we'd expect 100%, but here we just verify the connection and sub works
             return True
 
     except Exception as e:
-        print(f"❌ Connection failed: {e}")
+        logger.exception("Connection failed: %s", e)
         return False
 
 if __name__ == "__main__":
     # Note: This requires the backend to be running
-    print("⚠️  Ensure backend is running before executing this test.")
+    logger.warning("Ensure backend is running before executing this test.")
     try:
         asyncio.run(test_websocket_ticks())
     except KeyboardInterrupt:

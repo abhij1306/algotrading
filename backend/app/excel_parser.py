@@ -4,11 +4,14 @@ Uses OpenRouter Kwai model for intelligent column mapping and data extraction
 """
 
 import json
+import logging
 import os
 
 import pandas as pd
 import requests
 from sqlalchemy import func
+
+logger = logging.getLogger(__name__)
 
 METRIC_TOTAL_REVENUE = "total revenue"
 METRIC_NET_INCOME = "net income"
@@ -23,7 +26,7 @@ METRIC_NET_WORTH = "net worth"
 class SmartFinancialParser:
     """Intelligent parser for financial data using AI"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Load from environment variable
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
         self.model = "kwaipilot/kat-coder-pro-v1"
@@ -129,10 +132,14 @@ class SmartFinancialParser:
 
         # Map Screener.in metric names to our standard names
         sales = (
-            metrics.get("sales", 0) or metrics.get("revenue", 0) or metrics.get(METRIC_TOTAL_REVENUE, 0)
+            metrics.get("sales", 0)
+            or metrics.get("revenue", 0)
+            or metrics.get(METRIC_TOTAL_REVENUE, 0)
         )
         net_profit = (
-            metrics.get(METRIC_NET_PROFIT, 0) or metrics.get("profit", 0) or metrics.get(METRIC_NET_INCOME, 0)
+            metrics.get(METRIC_NET_PROFIT, 0)
+            or metrics.get("profit", 0)
+            or metrics.get(METRIC_NET_INCOME, 0)
         )
 
         # Balance sheet items
@@ -141,7 +148,9 @@ class SmartFinancialParser:
         total_equity = equity + reserves if (equity or reserves) else 0
 
         borrowings = (
-            metrics.get("borrowings", 0) or metrics.get(METRIC_TOTAL_DEBT, 0) or metrics.get("debt", 0)
+            metrics.get("borrowings", 0)
+            or metrics.get(METRIC_TOTAL_DEBT, 0)
+            or metrics.get("debt", 0)
         )
 
         # Calculate derived metrics
@@ -150,7 +159,11 @@ class SmartFinancialParser:
 
         # Try to get EPS and PE from metrics
         eps = metrics.get("eps", 0) or metrics.get(METRIC_EARNINGS_PER_SHARE, 0)
-        pe = metrics.get("pe", 0) or metrics.get("p/e", 0) or metrics.get(METRIC_PRICE_TO_EARNINGS, 0)
+        pe = (
+            metrics.get("pe", 0)
+            or metrics.get("p/e", 0)
+            or metrics.get(METRIC_PRICE_TO_EARNINGS, 0)
+        )
 
         # Match symbol with existing database symbols
         matched_symbol = self._match_symbol_from_db(symbol)
@@ -369,7 +382,8 @@ class SmartFinancialParser:
     def _ai_map_columns(self, columns: list[str]) -> dict[str, str]:
         """Use AI to map Excel columns to standard financial metrics"""
 
-        prompt = f"""You are a financial data expert. Map these Excel column names to standard financial metrics.
+        prompt = f"""You are a financial data expert.
+Map these Excel column names to standard financial metrics.
 
 Excel Columns: {json.dumps(columns)}
 
@@ -387,7 +401,8 @@ Standard Metrics:
 - debt_to_equity: Debt to Equity ratio
 - pe_ratio: Price to Earnings ratio
 
-Return ONLY a JSON object mapping Excel column names to standard metric names. If a column doesn't match any metric, omit it.
+Return ONLY a JSON object mapping Excel column names to standard metric names.
+If a column doesn't match any metric, omit it.
 Example: {{"Sales": "revenue", "Net Profit": "net_income", "Ticker": "symbol"}}
 
 JSON:"""
@@ -416,7 +431,7 @@ JSON:"""
                     mapping = json.loads(content[json_start:json_end])
                     return mapping
         except Exception as e:
-            print(f"AI mapping failed: {e}")
+            logger.warning("AI mapping failed: %s", e)
 
         # Fallback to rule-based mapping
         return self._fallback_mapping(columns)
@@ -428,7 +443,13 @@ JSON:"""
         patterns = {
             "symbol": ["symbol", "ticker", "stock", "company", "name"],
             "revenue": ["revenue", "sales", METRIC_TOTAL_REVENUE, "turnover"],
-            "net_income": [METRIC_NET_PROFIT, METRIC_NET_INCOME, "pat", "profit after tax", "profit"],
+            "net_income": [
+                METRIC_NET_PROFIT,
+                METRIC_NET_INCOME,
+                "pat",
+                "profit after tax",
+                "profit",
+            ],
             "total_assets": ["total assets", "assets"],
             "shareholders_equity": [
                 "equity",

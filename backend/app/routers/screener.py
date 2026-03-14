@@ -135,7 +135,9 @@ def _apply_screener_sort(
         "macd": HistoricalPrice.macd,
         "adx": HistoricalPrice.adx,
     }
-    sort_expr = sort_mapping.get(normalized_sort, Company.symbol)
+    sort_expr = sort_mapping.get(normalized_sort)
+    if sort_expr is None:
+        raise HTTPException(status_code=400, detail=f"Invalid sort field: {normalized_sort}")
     return companies_query.order_by(None).order_by(desc(sort_expr) if descending else sort_expr)
 
 

@@ -14,9 +14,10 @@ an options historical dataset is onboarded.
 from __future__ import annotations
 
 import logging
+import sys
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -464,7 +465,10 @@ class Phase1BacktestService:
 
     def _create_db_run(self, job: BacktestJob, normalized: list[dict[str, Any]]) -> None:
         selection_mode, scope_label = self._resolve_run_scope(job.params)
-        strategy_snapshot = self._build_strategy_snapshot(job.params.get("strategies") or [], normalized)
+        strategy_snapshot = self._build_strategy_snapshot(
+            job.params.get("strategies") or [],
+            normalized,
+        )
         session = get_db_session()
         try:
             primary_strategy = strategy_snapshot[0]["strategy_id"] if strategy_snapshot else None
@@ -502,7 +506,7 @@ class Phase1BacktestService:
             if run is None:
                 return
             run.status = job.status
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = datetime.now(UTC)
             run.error_message = job.error
             if job.result:
                 metrics = job.result.get("metrics") or {}
@@ -545,7 +549,7 @@ class Phase1BacktestService:
             if not isinstance(symbols, list):
                 raise ValueError("selection.symbols must be a list")
             df = self._load_symbol_snapshot([str(s) for s in symbols])
-            scope_label = f"SYMBOLS:{','.join(sorted(set(str(s).upper() for s in symbols if s)))}"
+            scope_label = f"SYMBOLS:{','.join(sorted({str(s).upper() for s in symbols if s}))}"
         else:
             raise ValueError("selection.mode must be 'universe' or 'symbols'")
 
@@ -657,7 +661,7 @@ class Phase1BacktestService:
         job = BacktestJob(
             job_id=job_id,
             status="running",
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
             params=payload,
         )
         db_run_created = False
@@ -678,12 +682,20 @@ class Phase1BacktestService:
                 raise
         finally:
             if db_run_created:
-                self._finalize_db_run(job)
+                has_active_exception = sys.exc_info()[0] is not None
+                try:
+                    self._finalize_db_run(job)
+                except Exception:
+                    if has_active_exception:
+                        logger.exception("Failed to finalize backtest job %s", job.job_id)
+                    else:
+                        raise
         return {"job_id": job_id, "status": job.status}
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
-        session = get_db_session()
+        session = None
         try:
+            session = get_db_session()
             run = session.query(BacktestRun).filter(BacktestRun.run_id == job_id).first()
             if run is not None:
                 payload: dict[str, Any] = {
@@ -697,8 +709,11 @@ class Phase1BacktestService:
                 if run.result_payload:
                     payload["result"] = run.result_payload
                 return payload
+        except Exception:
+            logger.exception("Failed to load backtest job %s from database", job_id)
         finally:
-            session.close()
+            if session is not None:
+                session.close()
 
         job = self._jobs.get(job_id)
         if not job:

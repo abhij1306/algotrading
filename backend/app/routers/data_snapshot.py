@@ -4,9 +4,10 @@ Phase-1 snapshot read APIs backed by curated parquet artifacts.
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 try:
     import pyarrow.dataset as ds
@@ -19,26 +20,76 @@ from ..database import DatasetRun, get_db
 from ..services.symbol_master import symbol_master
 
 router = APIRouter(prefix="/api/data", tags=["Data Snapshots"])
-DB_DEPENDENCY = Depends(get_db)
+DBSession = Annotated[Session, Depends(get_db)]
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PHASE1_ROOT = PROJECT_ROOT / "data_system"
 CURATED_ROOT = PHASE1_ROOT / "04_curated" / "phase1"
 METADATA_ROOT = PHASE1_ROOT / "05_metadata" / "phase1"
+SNAPSHOT_UNAVAILABLE_RESPONSE = {
+    503: {
+        "description": "Snapshot dependencies or artifacts are not available",
+    }
+}
+SNAPSHOT_NOT_FOUND_RESPONSE = {404: {"description": "Requested snapshot data was not found"}}
+SNAPSHOT_BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request parameters"}}
 
 
-def _require_file(path: Path) -> None:
+def _artifact_status(path: Path) -> dict[str, int | bool]:
+    return {
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+    }
+
+
+def _collect_artifact_status(
+    root: Path, filenames: Iterable[str]
+) -> dict[str, dict[str, int | bool]]:
+    return {filename: _artifact_status(root / filename) for filename in filenames}
+
+
+def _read_latest_run_log() -> dict[str, Any] | None:
+    run_log = METADATA_ROOT / "run_log.jsonl"
+    if not run_log.exists():
+        return None
+
+    lines = [
+        line.strip()
+        for line in run_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for idx in range(len(lines) - 1, -1, -1):
+        try:
+            return json.loads(lines[idx])
+        except json.JSONDecodeError as exc:
+            logger.warning("Skipping malformed run_log.jsonl line at index %s: %s", idx, exc)
+    return None
+
+
+def _serialize_latest_db_run(db: Session) -> dict[str, Any] | None:
+    latest = db.query(DatasetRun).order_by(DatasetRun.started_at.desc()).first()
+    if not latest:
+        return None
+    return {
+        "run_id": latest.run_id,
+        "asof_date": latest.asof_date.isoformat(),
+        "mode": latest.mode,
+        "status": latest.status,
+        "started_at": latest.started_at.isoformat() if latest.started_at else None,
+        "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
+    }
+
+
+def _require_file(path: Path) -> str | None:
     if ds is None:
-        raise HTTPException(
-            status_code=503,
-            detail="pyarrow is not installed. Install backend requirements to enable snapshot APIs.",
+        return (
+            "pyarrow is not installed. "
+            "Install backend requirements to enable snapshot APIs."
         )
     if not path.exists():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Phase-1 artifact not available: {path}",
-        )
+        return f"Phase-1 artifact not available: {path}"
+    return None
 
 
 def _parse_date(value: str) -> date:
@@ -46,19 +97,31 @@ def _parse_date(value: str) -> date:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
         detail = f"Invalid date '{value}', expected YYYY-MM-DD"
-        raise HTTPException(status_code=400, detail=detail) from exc
+        raise ValueError(detail) from exc
 
 
-@router.get("/snapshot/stock")
+@router.get(
+    "/snapshot/stock",
+    responses={
+        **SNAPSHOT_BAD_REQUEST_RESPONSE,
+        **SNAPSHOT_NOT_FOUND_RESPONSE,
+        **SNAPSHOT_UNAVAILABLE_RESPONSE,
+    },
+)
 def get_stock_snapshot(
-    date: str = Query(..., description="Snapshot date (YYYY-MM-DD)"),
-    symbol: str = Query(..., description="Stock symbol"),
+    date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],
+    symbol: Annotated[str, Query(description="Stock symbol")],
 ) -> dict[str, Any]:
-    target_date = _parse_date(date)
+    try:
+        target_date = _parse_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     normalized_symbol = symbol_master.to_db(symbol)
 
     path = CURATED_ROOT / "snapshot_stock_daily.parquet"
-    _require_file(path)
+    artifact_error = _require_file(path)
+    if artifact_error:
+        raise HTTPException(status_code=503, detail=artifact_error)
 
     dataset = ds.dataset(path)
     table = dataset.to_table(
@@ -78,19 +141,31 @@ def get_stock_snapshot(
     }
 
 
-@router.get("/snapshot/universe")
+@router.get(
+    "/snapshot/universe",
+    responses={
+        **SNAPSHOT_BAD_REQUEST_RESPONSE,
+        **SNAPSHOT_NOT_FOUND_RESPONSE,
+        **SNAPSHOT_UNAVAILABLE_RESPONSE,
+    },
+)
 def get_universe_snapshot(
-    date: str = Query(..., description="Snapshot date (YYYY-MM-DD)"),
-    universe: str = Query("NIFTY50", description="Universe identifier"),
+    date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],
+    universe: Annotated[str, Query(description="Universe identifier")] = "NIFTY50",
 ) -> dict[str, Any]:
-    target_date = _parse_date(date)
+    try:
+        target_date = _parse_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     universe_id = universe.strip().upper()
     if universe_id != "NIFTY50":
         detail = "Phase-1 currently supports universe=NIFTY50 only"
         raise HTTPException(status_code=400, detail=detail)
 
     path = CURATED_ROOT / "snapshot_nifty50_daily.parquet"
-    _require_file(path)
+    artifact_error = _require_file(path)
+    if artifact_error:
+        raise HTTPException(status_code=503, detail=artifact_error)
 
     dataset = ds.dataset(path)
     table = dataset.to_table(filter=ds.field("date") == target_date.isoformat())
@@ -108,71 +183,32 @@ def get_universe_snapshot(
     }
 
 
-@router.get("/snapshot/status")
-def get_snapshot_status(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
+@router.get("/snapshot/status", responses=SNAPSHOT_BAD_REQUEST_RESPONSE)
+def get_snapshot_status(db: DBSession) -> dict[str, Any]:
     status = {
         "phase1_root_exists": PHASE1_ROOT.exists(),
-        "curated": {},
-        "metadata_files": {},
-        "latest_run_log": None,
-        "latest_db_run": None,
+        "curated": _collect_artifact_status(
+            CURATED_ROOT,
+            [
+                "equity_ohlcv.parquet",
+                "equity_ohlcv_adj.parquet",
+                "nifty50_weights_monthly.parquet",
+                "nifty50_membership_daily.parquet",
+                "snapshot_stock_daily.parquet",
+                "snapshot_nifty50_daily.parquet",
+            ],
+        ),
+        "metadata_files": _collect_artifact_status(
+            METADATA_ROOT,
+            [
+                "source_manifest.json",
+                "data_contract.json",
+                "checksums.json",
+                "run_log.jsonl",
+            ],
+        ),
+        "latest_run_log": _read_latest_run_log(),
+        "latest_db_run": _serialize_latest_db_run(db),
     }
-
-    for artifact in [
-        "equity_ohlcv.parquet",
-        "equity_ohlcv_adj.parquet",
-        "nifty50_weights_monthly.parquet",
-        "nifty50_membership_daily.parquet",
-        "snapshot_stock_daily.parquet",
-        "snapshot_nifty50_daily.parquet",
-    ]:
-        path = CURATED_ROOT / artifact
-        status["curated"][artifact] = {
-            "exists": path.exists(),
-            "size_bytes": path.stat().st_size if path.exists() else 0,
-        }
-
-    for filename in [
-        "source_manifest.json",
-        "data_contract.json",
-        "checksums.json",
-        "run_log.jsonl",
-    ]:
-        path = METADATA_ROOT / filename
-        status["metadata_files"][filename] = {
-            "exists": path.exists(),
-            "size_bytes": path.stat().st_size if path.exists() else 0,
-        }
-
-    run_log = METADATA_ROOT / "run_log.jsonl"
-    if run_log.exists():
-        lines = [
-            line.strip()
-            for line in run_log.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        if lines:
-            parsed_entry: dict[str, Any] | None = None
-            for idx in range(len(lines) - 1, -1, -1):
-                try:
-                    parsed_entry = json.loads(lines[idx])
-                    break
-                except json.JSONDecodeError as exc:
-                    logger.warning(
-                        "Skipping malformed run_log.jsonl line at index %s: %s", idx, exc
-                    )
-            if parsed_entry is not None:
-                status["latest_run_log"] = parsed_entry
-
-    latest = db.query(DatasetRun).order_by(DatasetRun.started_at.desc()).first()
-    if latest:
-        status["latest_db_run"] = {
-            "run_id": latest.run_id,
-            "asof_date": latest.asof_date.isoformat(),
-            "mode": latest.mode,
-            "status": latest.status,
-            "started_at": latest.started_at.isoformat() if latest.started_at else None,
-            "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
-        }
 
     return status

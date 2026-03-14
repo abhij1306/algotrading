@@ -106,12 +106,20 @@ class FyersBroker(IBroker):
         # Map generic order dict to the broker order payload.
 
         product_map = {"MIS": "INTRADAY", "INTRADAY": "INTRADAY", "CNC": "CNC", "MARGIN": "MARGIN"}
+        side = order.get("side")
+        if side not in {"BUY", "SELL"}:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message="Invalid order side. Expected BUY or SELL.",
+                details={"side": side},
+            )
 
         data = {
             "symbol": order["symbol"],
             "qty": order["quantity"],
             "type": 2 if order.get("type", "MARKET") == "MARKET" else 1,
-            "side": 1 if order.get("side") == "BUY" else -1,
+            "side": 1 if side == "BUY" else -1,
             "productType": product_map.get(order.get("product", "INTRADAY").upper(), "INTRADAY"),
             "limitPrice": order.get("price", 0) if order.get("type") != "MARKET" else 0,
             "stopPrice": 0,
@@ -327,17 +335,17 @@ class FyersBroker(IBroker):
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
         matching_positions = [
-            position for position in self.get_positions() if position["symbol"] == symbol
+            position for position in self.get_positions() if position.symbol == symbol
         ]
         if not matching_positions:
             return {"status": "OK", "message": "No positions found"}
 
-        results: list[dict[str, Any]] = []
+        results: list[OrderResponse] = []
         has_failure = False
         for position in matching_positions:
             exit_result = self.place_order(self._build_exit_order(position))
             results.append(exit_result)
-            if exit_result.get("status") not in {"SUBMITTED", "SUCCESS", "OK"}:
+            if exit_result.status not in {"SUBMITTED", "SUCCESS", "OK"}:
                 has_failure = True
 
         return {

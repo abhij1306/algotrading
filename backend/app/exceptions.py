@@ -17,7 +17,7 @@ class SmartTraderError(Exception):
         message: str,
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         details: dict[str, Any] | None = None,
-    ):
+    ) -> None:
         self.code = code
         self.message = message
         self.status_code = status_code
@@ -40,7 +40,7 @@ class DataNotFoundError(SmartTraderError):
 
     def __init__(
         self, message: str, resource_type: str | None = None, resource_id: str | None = None
-    ):
+    ) -> None:
         details = {}
         if resource_type:
             details["resource_type"] = resource_type
@@ -58,7 +58,7 @@ class DataNotFoundError(SmartTraderError):
 class ValidationError(SmartTraderError):
     """Raised when request validation fails"""
 
-    def __init__(self, message: str, field: str | None = None, value: Any | None = None):
+    def __init__(self, message: str, field: str | None = None, value: object | None = None) -> None:
         details = {}
         if field:
             details["field"] = field
@@ -76,7 +76,9 @@ class ValidationError(SmartTraderError):
 class InsufficientDataError(SmartTraderError):
     """Raised when not enough data for operation"""
 
-    def __init__(self, message: str, required: int | None = None, available: int | None = None):
+    def __init__(
+        self, message: str, required: int | None = None, available: int | None = None
+    ) -> None:
         details = {}
         if required is not None:
             details["required"] = required
@@ -94,7 +96,9 @@ class InsufficientDataError(SmartTraderError):
 class ExternalAPIError(SmartTraderError):
     """Raised when external API (Fyers, NSE) fails"""
 
-    def __init__(self, message: str, service: str | None = None, fallback_available: bool = False):
+    def __init__(
+        self, message: str, service: str | None = None, fallback_available: bool = False
+    ) -> None:
         details = {}
         if service:
             details["service"] = service
@@ -111,7 +115,7 @@ class ExternalAPIError(SmartTraderError):
 class DatabaseError(SmartTraderError):
     """Raised when database operation fails"""
 
-    def __init__(self, message: str, operation: str | None = None):
+    def __init__(self, message: str, operation: str | None = None) -> None:
         details = {}
         if operation:
             details["operation"] = operation
@@ -127,7 +131,7 @@ class DatabaseError(SmartTraderError):
 class BacktestError(SmartTraderError):
     """Raised when backtest execution fails"""
 
-    def __init__(self, message: str, strategy_id: str | None = None):
+    def __init__(self, message: str, strategy_id: str | None = None) -> None:
         details = {}
         if strategy_id:
             details["strategy_id"] = strategy_id
@@ -145,7 +149,7 @@ class LifecycleTransitionError(SmartTraderError):
 
     def __init__(
         self, message: str, current_state: str | None = None, target_state: str | None = None
-    ):
+    ) -> None:
         details = {}
         if current_state:
             details["current_state"] = current_state
@@ -163,7 +167,7 @@ class LifecycleTransitionError(SmartTraderError):
 class RateLimitError(SmartTraderError):
     """Raised when rate limit is exceeded"""
 
-    def __init__(self, message: str, retry_after: int | None = None):
+    def __init__(self, message: str, retry_after: int | None = None) -> None:
         details = {}
         if retry_after:
             details["retry_after_seconds"] = retry_after

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class DataCache:
-    def __init__(self, cache_dir: str = "cache"):
+    def __init__(self, cache_dir: str = "cache") -> None:
         self.root_dir = Path(__file__).parent.parent
         self.cache_dir = self.root_dir / cache_dir
         self.historical_data_dir = self.cache_dir / "historical_data"
@@ -35,7 +35,7 @@ class DataCache:
             logger.debug("Failed to read cache metadata: %s", e)
         return {}
 
-    def update_cache_metadata(self, metadata: dict):
+    def update_cache_metadata(self, metadata: dict) -> None:
         """Update cache metadata"""
         with open(self.cache_metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
@@ -71,7 +71,7 @@ class DataCache:
 
         return False
 
-    def save_historical_data(self, symbol: str, data: pd.DataFrame):
+    def save_historical_data(self, symbol: str, data: pd.DataFrame) -> None:
         """Save historical data to cache (one file per symbol)"""
         if data is None or data.empty:
             return
@@ -114,7 +114,7 @@ class DataCache:
 
             return df
         except Exception as e:
-            print(f"Error loading cache for {symbol}: {e}")
+            logger.warning("Error loading cache for %s: %s", symbol, e)
             return None
 
     def append_today_candle(self, symbol: str, candle: dict) -> pd.DataFrame | None:
@@ -143,7 +143,7 @@ class DataCache:
 
         return df
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """Clear all cached data"""
         try:
             # Remove metadata
@@ -156,7 +156,7 @@ class DataCache:
                 self.historical_data_dir.mkdir()
 
         except Exception as e:
-            print(f"Error clearing cache: {e}")
+            logger.warning("Error clearing cache: %s", e)
 
     def delete_symbol_cache(self, symbol: str) -> bool:
         """Delete specific symbol cache"""

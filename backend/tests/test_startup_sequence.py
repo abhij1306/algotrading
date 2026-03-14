@@ -9,6 +9,7 @@ order and that failures are properly handled.
 """
 
 import asyncio
+from typing import Never
 
 import pytest
 
@@ -19,7 +20,7 @@ class TestStartupSequenceIntegrity:
     """Test suite for startup sequence validation"""
 
     @pytest.mark.asyncio
-    async def test_startup_steps_execute_in_order(self):
+    async def test_startup_steps_execute_in_order(self) -> None:
         """
         Test that startup steps execute in the correct order.
 
@@ -29,15 +30,15 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
         execution_order = []
 
-        async def step1():
+        async def step1() -> None:
             execution_order.append("step1")
             await asyncio.sleep(0)
 
-        async def step2():
+        async def step2() -> None:
             execution_order.append("step2")
             await asyncio.sleep(0)
 
-        async def step3():
+        async def step3() -> None:
             execution_order.append("step3")
             await asyncio.sleep(0)
 
@@ -54,7 +55,7 @@ class TestStartupSequenceIntegrity:
         assert sequence.completed_steps[2] == StartupStep.VALIDATE_DATABASE
 
     @pytest.mark.asyncio
-    async def test_required_step_failure_stops_sequence(self):
+    async def test_required_step_failure_stops_sequence(self) -> None:
         """
         Test that a required step failure prevents subsequent steps from executing.
 
@@ -64,16 +65,16 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
         execution_log = []
 
-        async def step1():
+        async def step1() -> None:
             execution_log.append("step1_executed")
             await asyncio.sleep(0)
 
-        async def step2_fails():
+        async def step2_fails() -> Never:
             execution_log.append("step2_attempted")
             await asyncio.sleep(0)
             raise ValueError("Step 2 failed")
 
-        async def step3():
+        async def step3() -> None:
             execution_log.append("step3_executed")
             await asyncio.sleep(0)
 
@@ -112,7 +113,7 @@ class TestStartupSequenceIntegrity:
         assert not sequence.is_complete()
 
     @pytest.mark.asyncio
-    async def test_optional_step_failure_continues_sequence(self):
+    async def test_optional_step_failure_continues_sequence(self) -> None:
         """
         Test that an optional step failure allows subsequent steps to execute.
 
@@ -122,16 +123,16 @@ class TestStartupSequenceIntegrity:
         sequence = StartupSequence()
         execution_log = []
 
-        async def step1():
+        async def step1() -> None:
             execution_log.append("step1")
             await asyncio.sleep(0)
 
-        async def step2_fails():
+        async def step2_fails() -> Never:
             execution_log.append("step2_attempted")
             await asyncio.sleep(0)
             raise ValueError("Optional step failed")
 
-        async def step3():
+        async def step3() -> None:
             execution_log.append("step3")
             await asyncio.sleep(0)
 
@@ -168,7 +169,7 @@ class TestStartupSequenceIntegrity:
         assert sequence.is_complete()  # No required failures
 
     @pytest.mark.asyncio
-    async def test_failure_logging_with_context(self):
+    async def test_failure_logging_with_context(self) -> None:
         """
         Test that failures are logged with full context.
 
@@ -177,7 +178,7 @@ class TestStartupSequenceIntegrity:
         """
         sequence = StartupSequence()
 
-        async def failing_step():
+        async def failing_step() -> Never:
             raise RuntimeError("Database connection failed: timeout after 30s")
 
         # Execute failing step
@@ -193,7 +194,7 @@ class TestStartupSequenceIntegrity:
         assert not sequence.is_complete()
 
     @pytest.mark.asyncio
-    async def test_get_status_returns_correct_state(self):
+    async def test_get_status_returns_correct_state(self) -> None:
         """
         Test that get_status() returns accurate sequence state.
 
@@ -202,11 +203,11 @@ class TestStartupSequenceIntegrity:
         """
         sequence = StartupSequence()
 
-        async def step1():
+        async def step1() -> None:
             # Async no-op step to emulate startup callback execution.
             await asyncio.sleep(0)
 
-        async def step2():
+        async def step2() -> None:
             # Async no-op step to emulate startup callback execution.
             await asyncio.sleep(0)
 
@@ -232,7 +233,7 @@ class TestStartupSequenceIntegrity:
         assert status["is_complete"] is True
 
     @pytest.mark.asyncio
-    async def test_multiple_failures_track_first_failure(self):
+    async def test_multiple_failures_track_first_failure(self) -> None:
         """
         Test that multiple failures track the first failure point.
 
@@ -241,14 +242,14 @@ class TestStartupSequenceIntegrity:
         """
         sequence = StartupSequence()
 
-        async def step1():
+        async def step1() -> None:
             # Async no-op step to emulate startup callback execution.
             await asyncio.sleep(0)
 
-        async def step2_fails():
+        async def step2_fails() -> Never:
             raise ValueError("First failure")
 
-        async def step3_fails():
+        async def step3_fails() -> Never:
             raise ValueError("Second failure")
 
         # Execute successful step
@@ -274,7 +275,7 @@ class TestStartupSequenceIntegrity:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_all_startup_steps_defined(self):
+    async def test_all_startup_steps_defined(self) -> None:
         """
         Test that all required startup steps are defined in the enum.
 
@@ -296,7 +297,7 @@ class TestStartupSequenceIntegrity:
             assert step in enum_steps, f"Missing required step: {step}"
 
     @pytest.mark.asyncio
-    async def test_log_summary_reflects_state(self):
+    async def test_log_summary_reflects_state(self) -> None:
         """
         Test that log_summary() accurately reflects the sequence state.
 
@@ -305,11 +306,11 @@ class TestStartupSequenceIntegrity:
         """
         sequence = StartupSequence()
 
-        async def step1():
+        async def step1() -> None:
             # Async no-op step to emulate startup callback execution.
             await asyncio.sleep(0)
 
-        async def step2_fails():
+        async def step2_fails() -> Never:
             raise ValueError("Test failure")
 
         # Successful sequence

@@ -80,7 +80,7 @@ def _empty_chart_response(symbol: str, timeframe: str, source: str) -> dict[str,
 def _build_company_daily_frame(rows: list[HistoricalPrice]) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "ts": [datetime.combine(row.date, datetime.min.time()) for row in rows],
+            "ts": [datetime.combine(row.date, datetime.min.time(), tzinfo=UTC) for row in rows],
             "open": [float(row.open or 0) for row in rows],
             "high": [float(row.high or 0) for row in rows],
             "low": [float(row.low or 0) for row in rows],
@@ -400,8 +400,8 @@ def _quote_ltp(fyers_symbol: str) -> float:
 @router.get("/chart", responses={500: {"description": "Internal server error"}})
 def get_chart_data(
     symbol: Annotated[str, Query(..., min_length=1)],
-    timeframe: Annotated[str, Query("D", min_length=1)],
-    limit: Annotated[int, Query(200, ge=20, le=1000)],
+    timeframe: Annotated[str, Query(min_length=1)] = "D",
+    limit: Annotated[int, Query(ge=20, le=1000)] = 200,
 ) -> dict[str, Any]:
     """Return OHLCV + EMA20/EMA50 for terminal chart."""
     db = None
@@ -435,9 +435,9 @@ def get_chart_data(
 
 @router.get("/options/board", responses={500: {"description": "Internal server error"}})
 def get_options_board(
-    underlying: Annotated[str, Query("NIFTY", min_length=2)],
-    expiry: Annotated[date | None, Query(None)],
-    strike_count: Annotated[int, Query(15, ge=5, le=50)],
+    underlying: Annotated[str, Query(min_length=2)] = "NIFTY",
+    expiry: Annotated[date | None, Query()] = None,
+    strike_count: Annotated[int, Query(ge=5, le=50)] = 15,
 ) -> dict[str, Any]:
     """Options board snapshot for terminal options-first view."""
     try:
@@ -509,9 +509,9 @@ def get_options_depth(symbol: Annotated[str, Query(..., min_length=2)]) -> dict[
 
 @router.get("/options/orderflow", responses={500: {"description": "Internal server error"}})
 def get_options_orderflow(
-    underlying: Annotated[str, Query("NIFTY", min_length=2)],
-    expiry: Annotated[date | None, Query(None)],
-    strike_count: Annotated[int, Query(15, ge=5, le=50)],
+    underlying: Annotated[str, Query(min_length=2)] = "NIFTY",
+    expiry: Annotated[date | None, Query()] = None,
+    strike_count: Annotated[int, Query(ge=5, le=50)] = 15,
 ) -> dict[str, Any]:
     """Derived orderflow metrics from option chain snapshot (Phase-1)."""
     try:

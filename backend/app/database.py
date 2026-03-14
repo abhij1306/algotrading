@@ -3,20 +3,22 @@ Database Configuration and Model Export
 Unified entry point for database engine, session, and models.
 """
 
+import logging
 import os
 import sys
+from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from . import models
 from .base import Base
 from .models import (
     Company,
-    DataUpdateLog,
     DatasetArtifact,
     DatasetRun,
+    DataUpdateLog,
     FinancialStatement,
     HistoricalPrice,
     IntradayCandle,
@@ -26,6 +28,8 @@ from .models import (
     Watchlist,
 )
 from .utils.env_loader import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 MODELS_IMPORTED = models
 MODEL_EXPORTS = (
@@ -47,7 +51,7 @@ MODEL_EXPORTS = (
 # ============================================
 
 
-def get_env_file():
+def get_env_file() -> Path | str:
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)
         potential_paths = [
@@ -101,15 +105,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ============================================
 
 
-def init_db():
+def init_db() -> None:
     """Initialize database and create all tables"""
     Base.metadata.create_all(bind=engine)
-    print(
-        f"Database initialized: {DATABASE_URL.split('@')[-1] if '@' in DATABASE_URL else DATABASE_URL}"
-    )
+    target = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
+    logger.info("Database initialized: %s", target)
 
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     """FastAPI Dependency for database session"""
     db = SessionLocal()
     try:
@@ -118,12 +121,12 @@ def get_db():
         db.close()
 
 
-def get_db_session():
+def get_db_session() -> Session:
     """Create a new database session for services"""
     return SessionLocal()
 
 
-def get_or_create_company(db, symbol: str, **kwargs):
+def get_or_create_company(db: Session, symbol: str, **kwargs: object) -> Company:
     """Utility to get existing company or create new one"""
     company = db.query(Company).filter(Company.symbol == symbol).first()
     if not company:

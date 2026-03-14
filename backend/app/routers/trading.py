@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -417,13 +417,20 @@ def set_trading_mode() -> dict[str, str]:
 def place_order(
     order: OrderRequest,
     db: DBSession,
-    x_user_id: Annotated[str | None, Query(description="User ID header for authentication")] = None,
+    x_user_id: Annotated[
+        str | None, Header(description="User ID header for authentication")
+    ] = None,
+    x_user_id_query: Annotated[
+        str | None, Query(alias="x_user_id", description="Legacy user ID query parameter")
+    ] = None,
 ) -> dict[str, Any]:
     """Place a new order (PAPER or LIVE based on current mode)"""
     try:
         # Get user_id from header or fallback to DEV_MODE default
         if x_user_id:
             user_id = x_user_id
+        elif x_user_id_query:
+            user_id = x_user_id_query
         elif os.getenv("DEV_MODE", "false").lower() == "true":
             user_id = "dev_user"
         else:
@@ -452,11 +459,11 @@ def place_order(
 def modify_order(req: ModifyOrderRequest, db: DBSession) -> dict[str, Any]:
     """Modify an existing order"""
     params = {}
-    if req.new_quantity:
+    if req.new_quantity is not None:
         params["quantity"] = req.new_quantity
-    if req.new_price:
+    if req.new_price is not None:
         params["price"] = req.new_price
-    if req.new_type:
+    if req.new_type is not None:
         params["order_type"] = req.new_type
 
     result = order_execution_service.modify_order(req.order_id, params, db)
@@ -680,7 +687,7 @@ def get_exposure_summary() -> ExposureSummaryResponse:
 
 
 @router.post("/risk/large-order-check", responses=SERVER_ERROR_RESPONSE)
-def check_large_order(order: OrderRequest, db: DBSession) -> dict[str, Any]:
+def check_large_order(order: OrderRequest) -> dict[str, Any]:
     """Check if order requires confirmation due to size"""
     try:
         params = order.dict()

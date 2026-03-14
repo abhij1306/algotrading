@@ -3,6 +3,7 @@ Configuration module for loading environment variables and settings
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from pathlib import Path
 from .utils.env_loader import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -30,9 +33,9 @@ class Config:
                 FYERS_CLIENT_ID = token_data.get("client_id", "")
                 FYERS_ACCESS_TOKEN = token_data.get("access_token", "")
                 # Secret key not needed for API calls, only for login
-                FYERS_SECRET_KEY = "loaded_from_token_file"
-        except Exception:
-            pass  # Silently fall back to environment variables
+                FYERS_SECRET_KEY = ""
+        except Exception as exc:
+            logger.warning("Failed to load FYERS token file %s: %s", FYERS_TOKEN_FILE, exc)
 
     # Fallback to environment variables
     if not FYERS_CLIENT_ID:
@@ -59,7 +62,7 @@ class Config:
     MIN_SWING_SCORE = 0  # Show all stocks
 
     @classmethod
-    def get_mode(cls):
+    def get_mode(cls) -> str:
         """Return data fetching mode"""
         return "Fyers" if cls.HAS_FYERS else "Database only"
 

@@ -16,7 +16,7 @@ class BacktestBroker(IBroker):
         initial_capital: float = 100000.0,
         commission_pct: float = 0.03,
         slippage_pct: float = 0.05,
-    ):
+    ) -> None:
         self.initial_capital = initial_capital
         self.available_balance = initial_capital
         self.used_margin = 0.0
@@ -31,13 +31,13 @@ class BacktestBroker(IBroker):
         self.current_time = datetime.now()
         self.market_prices: dict[str, float] = {}
 
-    def update_market_state(self, timestamp: datetime, prices: dict[str, float]):
+    def update_market_state(self, timestamp: datetime, prices: dict[str, float]) -> None:
         """Advance time and update prices for simulation"""
         self.current_time = timestamp
         self.market_prices.update(prices)
         self._mark_to_market()
 
-    def _mark_to_market(self):
+    def _mark_to_market(self) -> None:
         """Update PnL for all open positions"""
         for symbol, pos in self.positions.items():
             current_price = self.market_prices.get(symbol, pos["current_price"])
@@ -129,7 +129,9 @@ class BacktestBroker(IBroker):
             details={"average_price": fill_price, "commission": commission},
         )
 
-    def _handle_execution(self, symbol: str, side: str, qty: int, price: float, commission: float):
+    def _handle_execution(
+        self, symbol: str, side: str, qty: int, price: float, commission: float
+    ) -> None:
         """Handle position update (Netting)"""
         # Mapping BUY/SELL to LONG/SHORT logic requires knowing current position
 
@@ -238,8 +240,8 @@ class BacktestBroker(IBroker):
             }
         )
 
-        # If we closed a position, we should update the PnL of the *closing* trade log if possible
-        # Or better: keep a separate list of "Closed Trades" which is what the frontend expects usually.
+        # If we closed a position, we should update the PnL of the closing trade log.
+        # A separate closed-trades list would align better with frontend reporting.
         # The frontend expects: entry_time, exit_time, entry_price, exit_price, pnl
 
         # We MUST log completed round-trips here for the Engine to pick up.
@@ -274,17 +276,30 @@ class BacktestBroker(IBroker):
                     }
                 )
 
-    def cancel_order(self, order_id: str):
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
         # Backtest fills are immediate; there is no pending order book to cancel.
-        pass
+        return {
+            "status": "UNSUPPORTED",
+            "message": "Backtest broker does not maintain pending orders",
+            "order_id": order_id,
+        }
 
-    def modify_order(self, order_id: str, new_price: float):
+    def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
         # Backtest mode does not persist pending orders, so modify is intentionally a no-op.
-        pass
+        return {
+            "status": "UNSUPPORTED",
+            "message": "Backtest broker does not maintain pending orders",
+            "order_id": order_id,
+            "params": params,
+        }
 
-    def get_order_status(self, order_id: str):
+    def get_order_status(self, order_id: str) -> dict[str, Any]:
         # All orders are handled synchronously as FILLED/REJECTED in place_order.
-        pass
+        return {
+            "status": "UNKNOWN",
+            "message": "Backtest broker does not persist order status",
+            "order_id": order_id,
+        }
 
-    def get_holdings(self):
+    def get_holdings(self) -> list[dict[str, Any]]:
         return []

@@ -17,7 +17,7 @@ export function formatCurrency(
   currency: string = "INR",
   locale: string = "en-IN"
 ): string {
-  if (value === null || value === undefined || isNaN(value)) return '₹0.00';
+  if (value === null || value === undefined || Number.isNaN(value)) return "₹0.00";
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
@@ -30,7 +30,7 @@ export function formatCurrency(
  * Format a number as percentage
  */
 export function formatPercent(value: number | null | undefined, decimals: number = 2): string {
-  if (value === null || value === undefined || isNaN(value)) return '0.00%';
+  if (value === null || value === undefined || Number.isNaN(value)) return "0.00%";
   const sign = value >= 0 ? "+" : "";
   return `${sign}${value.toFixed(decimals)}%`;
 }
@@ -46,7 +46,7 @@ export function formatPercentage(value: number | null | undefined, decimals: num
  * Format a large number with abbreviations (K, M, B, T)
  */
 export function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || isNaN(value)) return '0';
+  if (value === null || value === undefined || Number.isNaN(value)) return "0";
   if (Math.abs(value) >= 1e7) return `₹${(value / 1e7).toFixed(2)}Cr`; // Crores for Indian market
   if (Math.abs(value) >= 1e5) return `₹${(value / 1e5).toFixed(2)}L`; // Lakhs for Indian market
   if (Math.abs(value) >= 1e3) return `₹${(value / 1e3).toFixed(2)}K`;
@@ -74,7 +74,7 @@ export function formatPrice(value: number): string {
  * Useful for keeping realtime UI values deterministic with provider precision.
  */
 export function roundToDecimals(value: number | null | undefined, decimals: number = 2): number {
-  if (value === null || value === undefined || isNaN(value)) return 0;
+  if (value === null || value === undefined || Number.isNaN(value)) return 0;
   const factor = 10 ** decimals;
   const epsilon = value >= 0 ? Number.EPSILON : -Number.EPSILON;
   return Math.round((value + epsilon) * factor) / factor;

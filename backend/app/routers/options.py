@@ -5,6 +5,7 @@ API endpoints for option chain data and Greeks.
 """
 
 import logging
+import os
 from datetime import date
 from typing import Annotated
 
@@ -144,12 +145,12 @@ async def get_option_chain(
     ],
     expiry: Annotated[
         date | None,
-        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
-    ],
+        Query(description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ] = None,
     strike_count: Annotated[
         int,
-        Query(15, ge=5, le=50, description="Number of strikes to return (centered around ATM)"),
-    ],
+        Query(ge=5, le=50, description="Number of strikes to return (centered around ATM)"),
+    ] = 15,
 ) -> OptionChainResponse:
     """
     Get option chain data for an underlying.
@@ -228,8 +229,8 @@ async def get_atm_strike(
     ],
     expiry: Annotated[
         date | None,
-        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
-    ],
+        Query(description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ] = None,
 ) -> ATMStrikeResponse:
     """
     Get the at-the-money (ATM) strike for an underlying.
@@ -276,8 +277,8 @@ async def get_greeks(
     ],
     expiry: Annotated[
         date | None,
-        Query(None, description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
-    ],
+        Query(description="Expiry date (YYYY-MM-DD). Defaults to nearest expiry."),
+    ] = None,
 ) -> GreeksResponse:
     """
     Get Greeks (Delta, Gamma, Theta, Vega, Rho) for a specific option.
@@ -322,5 +323,7 @@ async def clear_cache() -> dict[str, str]:
     Clear the option chain cache.
     Use this if you suspect stale data.
     """
+    if os.getenv("DEBUG_INTERNAL", "").lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=403, detail="Option cache clear is disabled")
     option_chain_service.clear_cache()
     return {"status": "success", "message": "Option chain cache cleared"}

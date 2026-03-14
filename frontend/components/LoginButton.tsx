@@ -88,16 +88,21 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
         ).electron;
         if (electron?.openExternal) {
           electron.openExternal(data.url);
+          setShowModal(true);
         } else {
-          const openBrowserWindow = globalThis.window?.open;
-          if (typeof openBrowserWindow !== "function") {
+          if (typeof globalThis.window?.open !== "function") {
             setStatus("error");
             setMessage("Login URL generated but no browser window is available to open it.");
             return;
           }
-          openBrowserWindow(data.url, "_blank", "width=800,height=600");
+          const popup = globalThis.window.open(data.url, "_blank", "width=800,height=600");
+          if (popup === null) {
+            setStatus("error");
+            setMessage("Popup blocked; please allow popups to continue login.");
+            return;
+          }
+          setShowModal(true);
         }
-        setShowModal(true);
       } else {
         setStatus("error");
         setMessage(result.error?.message || data?.detail || data?.error || "Failed to get Login URL");

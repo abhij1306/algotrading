@@ -253,7 +253,7 @@ class RiskManager:
         try:
             # Get current positions value
             positions = db.query(LivePosition).filter(LivePosition.net_qty != 0).all()
-            missing_ltp_positions = [p for p in positions if p.ltp is None]
+            missing_ltp_positions = [p for p in positions if p.ltp is None or p.ltp == 0]
             if missing_ltp_positions:
                 symbols = [
                     getattr(position, "symbol", None) or getattr(position, "id", "unknown")
