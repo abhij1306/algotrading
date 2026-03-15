@@ -17,8 +17,8 @@
 4. Router normalizes symbols to DB format via `symbol_master.to_db`
 5. Router computes aggregate provider deltas using union-of-subscriptions
 6. `LiveMarketService` subscribes/unsubscribes provider with Fyers symbols
-7. Incoming provider ticks are normalized and immediately broadcast as `{"type":"ticker","data":...}`
-8. `ws_manager.broadcast()` filters by each client's subscription set
+7. Incoming provider ticks are normalized, buffered for up to 200ms, and flushed as `ticker_batch`
+8. `ws_manager.broadcast()` filters by each client's subscription set and disconnects slow clients on queue overflow
 
 ## Message Contract
 ### Client -> Server
@@ -81,6 +81,12 @@ Implemented in `backend/app/services/live_market_service.py`:
 - `ws_manager.broadcast()` removes dead sockets on `WebSocketDisconnect`/`RuntimeError`
 - Live service queues pending subscriptions when provider WS is not yet connected
 - Provider reconnect uses exponential backoff in thread runner (`max_retries=10`)
+- `GET /api/websocket/status` is the operational health view for local runtime checks:
+  - provider connection state
+  - pending subscriptions
+  - websocket client/subscription counts
+  - queue pressure and overflow counters
+  - broadcast and provider timing metrics
 
 ## Frontend Hook Integration
 `frontend/hooks/useWebSocket.ts` behavior:
@@ -100,6 +106,16 @@ Implemented in `backend/app/services/live_market_service.py`:
   - options board contract LTP refresh between polling intervals
 - Depth/chain/orderflow remain polling-driven; websocket is incremental refresh, not authoritative snapshot source.
 
-## Notes on Historical Drift
-Older docs mentioned a 1s buffer/flush pipeline as the primary path.
-Current implementation broadcasts normalized ticks immediately on arrival; use this document as source of truth.
+## Runtime Metrics
+The current local implementation keeps lightweight in-memory runtime metrics only.
+
+Current metrics focus:
+- websocket connections accepted/disconnected
+- active client and subscription counts
+- queue depth and overflow counts
+- batch sizes and enqueued message counts
+- provider connect/reconnect attempts
+- flush/broadcast timings
+
+These metrics are intentionally lightweight for a single-user local app. They are meant
+to improve debugging and future development, not to introduce a full telemetry stack.

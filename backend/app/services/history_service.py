@@ -3,12 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from time import perf_counter
 
 import pandas as pd
 from sqlalchemy import func
 
-from ..database import get_db_session
+from ..database import db_session_scope
 from ..models import Company, HistoricalPrice
+from ..utils.runtime_metrics import runtime_metrics
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 EQUITY_SOURCE_PATH = (
@@ -85,12 +91,18 @@ class DailyHistoryService:
 
     def _load_equity_source(self) -> pd.DataFrame:
         if self._cached_equity_source is not None:
+            runtime_metrics.increment("history.equity_source.cache_hit")
             return self._cached_equity_source
+        runtime_metrics.increment("history.equity_source.cache_miss")
         if not EQUITY_SOURCE_PATH.exists():
             self._cached_equity_source = self._empty_equity_frame()
             return self._cached_equity_source
 
-        df = pd.read_parquet(EQUITY_SOURCE_PATH)
+        started = perf_counter()
+        df = pd.read_parquet(
+            EQUITY_SOURCE_PATH,
+            columns=["symbol", "date", "open", "high", "low", "close", "volume"],
+        )
         if df.empty:
             self._cached_equity_source = self._empty_equity_frame()
             return self._cached_equity_source
@@ -120,16 +132,30 @@ class DailyHistoryService:
             .sort_values(["symbol", "date"])
             .reset_index(drop=True)
         )
+        duration_ms = (perf_counter() - started) * 1000.0
+        runtime_metrics.observe_ms("history.equity_source.load_ms", duration_ms)
+        runtime_metrics.set_gauge("history.equity_source.rows", float(len(self._cached_equity_source)))
+        logger.info(
+            "Loaded equity source cache rows=%s duration_ms=%.2f",
+            len(self._cached_equity_source),
+            duration_ms,
+        )
         return self._cached_equity_source
 
     def _load_index_source(self) -> pd.DataFrame:
         if self._cached_index_source is not None:
+            runtime_metrics.increment("history.index_source.cache_hit")
             return self._cached_index_source
+        runtime_metrics.increment("history.index_source.cache_miss")
         if not INDEX_SOURCE_PATH.exists():
             self._cached_index_source = self._empty_index_frame()
             return self._cached_index_source
 
-        df = pd.read_parquet(INDEX_SOURCE_PATH)
+        started = perf_counter()
+        df = pd.read_parquet(
+            INDEX_SOURCE_PATH,
+            columns=["universe_id", "date", "open", "high", "low", "close", "volume"],
+        )
         if df.empty:
             self._cached_index_source = self._empty_index_frame()
             return self._cached_index_source
@@ -157,6 +183,14 @@ class DailyHistoryService:
             .sort_values(["universe_id", "date"])
             .reset_index(drop=True)
         )
+        duration_ms = (perf_counter() - started) * 1000.0
+        runtime_metrics.observe_ms("history.index_source.load_ms", duration_ms)
+        runtime_metrics.set_gauge("history.index_source.rows", float(len(self._cached_index_source)))
+        logger.info(
+            "Loaded index source cache rows=%s duration_ms=%.2f",
+            len(self._cached_index_source),
+            duration_ms,
+        )
         return self._cached_index_source
 
     def _query_equity_db(
@@ -168,8 +202,8 @@ class DailyHistoryService:
         if not symbols:
             return self._empty_equity_frame()
 
-        db = get_db_session()
-        try:
+        started = perf_counter()
+        with db_session_scope() as db:
             query = (
                 db.query(
                     Company.symbol.label("symbol"),
@@ -188,8 +222,7 @@ class DailyHistoryService:
             if end_date is not None:
                 query = query.filter(HistoricalPrice.date <= end_date)
             rows = query.all()
-        finally:
-            db.close()
+        runtime_metrics.observe_ms("history.equity_db.query_ms", (perf_counter() - started) * 1000.0)
 
         if not rows:
             return self._empty_equity_frame()
@@ -229,6 +262,7 @@ class DailyHistoryService:
         if not normalized:
             return self._empty_equity_frame()
 
+        started = perf_counter()
         frames = [self._query_equity_db(normalized, start_date, end_date)]
 
         source_df = self._load_equity_source()
@@ -255,6 +289,15 @@ class DailyHistoryService:
             .drop(columns=["source_rank"])
             .reset_index(drop=True)
         )
+        duration_ms = (perf_counter() - started) * 1000.0
+        runtime_metrics.observe_ms("history.equity.load_ms", duration_ms)
+        runtime_metrics.increment("history.equity.load_calls")
+        logger.debug(
+            "Loaded equity history symbols=%s rows=%s duration_ms=%.2f",
+            len(normalized),
+            len(combined),
+            duration_ms,
+        )
         return combined
 
     def load_index_history(
@@ -267,6 +310,7 @@ class DailyHistoryService:
         if not normalized:
             return self._empty_index_frame()
 
+        started = perf_counter()
         df = self._load_index_source()
         if df.empty:
             return self._empty_index_frame()
@@ -276,18 +320,25 @@ class DailyHistoryService:
             scoped = scoped[scoped["date"] >= start_date]
         if end_date is not None:
             scoped = scoped[scoped["date"] <= end_date]
-        return scoped.reset_index(drop=True)
+        scoped = scoped.reset_index(drop=True)
+        duration_ms = (perf_counter() - started) * 1000.0
+        runtime_metrics.observe_ms("history.index.load_ms", duration_ms)
+        runtime_metrics.increment("history.index.load_calls")
+        logger.debug(
+            "Loaded index history universe=%s rows=%s duration_ms=%.2f",
+            normalized,
+            len(scoped),
+            duration_ms,
+        )
+        return scoped
 
     def get_equity_coverage(self) -> CoverageSnapshot:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             db_min, db_max, db_rows = db.query(
                 func.min(HistoricalPrice.date),
                 func.max(HistoricalPrice.date),
                 func.count(HistoricalPrice.id),
             ).one()
-        finally:
-            db.close()
 
         source_df = self._load_equity_source()
         source_min = source_df["date"].min() if not source_df.empty else None

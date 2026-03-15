@@ -4,6 +4,12 @@
 **Scope:** Prioritized architecture backlog, no implementation in this phase  
 **Last updated:** 2026-03-15
 
+## Implementation Notes
+- 2026-03-15 quick wins implemented:
+  - lightweight websocket health/runtime metrics on the existing status path
+  - lightweight timing metrics for canonical history loads and VCP scan/backtest hot paths
+  - `db_session_scope()` introduced as the preferred service-owned DB session boundary
+
 ## Purpose
 This backlog translates the review conclusions into phased work that another engineer or agent can execute later without re-deciding the architecture.
 

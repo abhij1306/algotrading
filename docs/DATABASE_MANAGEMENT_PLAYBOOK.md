@@ -251,6 +251,10 @@ The intended access pattern is:
 - bulk analytical history and snapshots: curated datasets
 - provider raw dumps: source layer only
 
+Service-owned DB access should prefer a context-managed session boundary such as
+`db_session_scope()` instead of ad hoc open/close patterns. This keeps backbone
+services easier to reason about and makes future repository refactors simpler.
+
 ## Coverage Semantics
 1. Price coverage gap is not the same as membership gap.
 2. Missing price data must remain explicit.
@@ -275,6 +279,16 @@ The platform should converge on stable service contracts like:
 - `load_index_history(universe_id, start_date, end_date)`
 
 New features should plug into these services rather than create local data rules.
+
+## Runtime Observability Rule
+For local operational work and future performance tuning, backbone services should add
+lightweight in-memory runtime metrics for hot paths before introducing heavier
+infrastructure.
+
+Current approved quick-win observability targets:
+- websocket connection, queue, and batch health
+- canonical history load timings
+- strategy scan and backtest timings
 
 ## Build / Maintenance Rules
 1. Keep active runtime/build paths on canonical `data_system/` assets only.

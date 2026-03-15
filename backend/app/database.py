@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
@@ -133,6 +134,16 @@ def get_db() -> Generator[Session, None, None]:
 def get_db_session() -> Session:
     """Create a new database session for services"""
     return SessionLocal()
+
+
+@contextmanager
+def db_session_scope() -> Generator[Session, None, None]:
+    """Context-managed service session boundary for non-request code."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def get_or_create_company(db: Session, symbol: str, **kwargs: object) -> Company:

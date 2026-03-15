@@ -109,6 +109,24 @@ Runtime behavior:
 - Market-hours aware in `live_market_service.py`
 - `DEV_MODE=true` bypasses market-hours checks
 - Subscriptions are aggregate-delta managed across clients
+- Use `GET /api/websocket/status` as the first operational check for provider connection,
+  client counts, queue pressure, and local runtime metrics.
+
+## Backbone Service Conventions
+
+### DB sessions
+- For service-owned non-request DB work, prefer `db_session_scope()` from `app.database`
+  over ad hoc open/close handling.
+- Keep request-scoped FastAPI dependencies on `get_db()`.
+
+### Runtime metrics
+- Add lightweight in-memory runtime metrics for real hot paths before introducing any
+  heavier observability stack.
+- Current approved targets:
+  - websocket connection and queue health
+  - canonical history load timings
+  - strategy scan/backtest timings
+- Do not add speculative telemetry that does not help current local operations or near-term development.
 
 ---
 

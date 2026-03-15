@@ -6,7 +6,7 @@
 ## System Topology
 - Frontend: Next.js App Router (`frontend/app`)
 - Backend: FastAPI (`backend/app`)
-- Realtime: Fyers WS -> `LiveMarketService` -> backend WS clients
+- Realtime: Fyers WS -> `LiveMarketService` -> `ws_manager` -> backend WS clients
 - Storage:
   - Transactional: PostgreSQL/SQLite via SQLAlchemy models
   - Phase-1 datasets: `data_system/` (2025+ active scope)
@@ -166,8 +166,9 @@ Provider scripts should accept:
 2. Client subscribes symbols (DB/Fyers accepted; normalized to DB)
 3. Router computes subscription deltas across all clients
 4. `LiveMarketService.subscribe()` converts to Fyers and subscribes provider
-5. Incoming provider tick -> normalized (`symbol`, `change_pct`, `change`, `volume`) -> immediate broadcast as `ticker`
+5. Incoming provider tick -> normalized (`symbol`, `change_pct`, `change`, `volume`) -> buffered for batch flush
 6. `ws_manager` filters per-client by subscription set before send
+7. `GET /api/websocket/status` exposes provider plus websocket health metrics for local operations
 
 ## Terminal Execution Flow
 1. UI sets mode through `POST /api/trading/mode`.

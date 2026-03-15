@@ -5,9 +5,11 @@ import datetime
 import logging
 import os
 import time
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from ..utils.runtime_metrics import runtime_metrics
 from ..utils.ws_manager import manager
 from .symbol_master import symbol_master
 
@@ -51,6 +53,7 @@ class LiveMarketService:
         """Callback when WebSocket connection is established"""
         self.ws_connected = True
         self._is_connecting = False
+        runtime_metrics.increment("live_market.provider.connected")
         logger.info("[OK] WebSocket connection established")
 
         # Process pending subscriptions
@@ -66,6 +69,7 @@ class LiveMarketService:
         """Callback when WebSocket connection fails"""
         self.ws_connected = False
         self._is_connecting = False
+        runtime_metrics.increment("live_market.provider.failed")
         logger.error(f"[ERROR] WebSocket connection failed: {error}")
 
     def is_market_open(self) -> bool:
@@ -91,6 +95,9 @@ class LiveMarketService:
         symbol = tick.get("symbol")
         self.tick_buffer[symbol] = tick
         self.latest_values[symbol] = tick
+        runtime_metrics.increment("live_market.ticks.inbound")
+        runtime_metrics.set_gauge("live_market.buffered_symbols", float(len(self.tick_buffer)))
+        runtime_metrics.set_gauge("live_market.latest_values", float(len(self.latest_values)))
         await asyncio.sleep(0)
 
     async def _flush_loop(self) -> None:
@@ -108,8 +115,14 @@ class LiveMarketService:
                 # Broadcast BATCH update (Significantly reduces overhead)
                 # Payload: {"type": "ticker_batch", "data": [tick1, tick2, ...]}
                 if batch:
+                    started = perf_counter()
                     msg = {"type": "ticker_batch", "data": list(batch.values())}
                     await manager.broadcast(msg)
+                    duration_ms = (perf_counter() - started) * 1000.0
+                    runtime_metrics.increment("live_market.flush.batches")
+                    runtime_metrics.increment("live_market.flush.ticks", float(len(batch)))
+                    runtime_metrics.observe_ms("live_market.flush.broadcast_ms", duration_ms)
+                    runtime_metrics.set_gauge("live_market.buffered_symbols", float(len(self.tick_buffer)))
 
         except asyncio.CancelledError:
             logger.info("Broadcast flush loop cancelled")
@@ -145,12 +158,14 @@ class LiveMarketService:
                                 "[WS] Connection dropped during market hours. "
                                 "Triggering reconnect..."
                             )
+                            runtime_metrics.increment("live_market.provider.reconnect_triggered")
                             self.ws_connected = False
                             self.connect()
                         elif not self._is_connecting:
                             logger.debug(
                                 "[WS] Market is open but not connected. Triggering connection..."
                             )
+                            runtime_metrics.increment("live_market.provider.reconnect_triggered")
                             self.connect()
                     elif not self.ws_connected:
                         # Case where it's connected but our flag is false
@@ -204,6 +219,7 @@ class LiveMarketService:
 
                     # Update latest values cache
                     self.latest_values[db_symbol] = tick_db
+                    runtime_metrics.set_gauge("live_market.latest_values", float(len(self.latest_values)))
 
                     # Buffer for batch broadcast to avoid duplicate immediate sends.
                     asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
@@ -293,6 +309,7 @@ class LiveMarketService:
                                 logger.debug(
                                     f"[WS] Connection attempt {retry_count + 1}/{max_retries}"
                                 )
+                                runtime_metrics.increment("live_market.provider.connect_attempts")
                                 self.ws_service.connect()
 
                                 # Update state because the thread callback might lag slightly.
@@ -411,7 +428,7 @@ class LiveMarketService:
             except Exception as e:
                 logger.error(f"Fyers unsubscription failed: {e}")
 
-    def get_status(self) -> dict[str, str | bool]:
+    def get_status(self) -> dict[str, Any]:
         return {
             "market_status": self._market_status,
             "fyers_connected": (
@@ -419,6 +436,9 @@ class LiveMarketService:
                 and self.ws_service.ws is not None
                 and self.ws_service.ws.is_connected()
             ),
+            "pending_subscriptions": len(self.pending_subscriptions),
+            "metrics": runtime_metrics.snapshot(prefix="live_market.", strip_prefix=True),
+            "websocket": manager.get_health_snapshot(),
         }
 
     def get_latest_tick(self, symbol: str) -> dict | None:

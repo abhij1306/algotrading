@@ -7,10 +7,13 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
+
+from .runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
 SEND_TIMEOUT_SEC = 1.0
@@ -56,6 +59,8 @@ class ConnectionManager:
         async with self._lock:
             self.connections[websocket] = client
             self.subscriptions[websocket] = client.subscriptions
+        runtime_metrics.increment("websocket.connections.accepted")
+        runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
         logger.debug(f"[WSManager] Client connected. Total: {len(self.connections)}")
 
         # Send initial welcome — client may have already disconnected (React StrictMode, page nav)
@@ -88,6 +93,9 @@ class ConnectionManager:
                     if self.connections
                     else set()
                 )
+        runtime_metrics.increment("websocket.connections.disconnected")
+        runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
+        runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
         return removed_symbols
 
@@ -99,6 +107,8 @@ class ConnectionManager:
                 for symbol in symbols:
                     client.subscriptions.add(symbol)
                     self._global_subscriptions.add(symbol)
+                runtime_metrics.increment("websocket.subscriptions.added", float(len(symbols)))
+                runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
                 logger.debug(
                     f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(client.subscriptions)}"
                 )
@@ -116,6 +126,8 @@ class ConnectionManager:
                     if self.connections
                     else set()
                 )
+                runtime_metrics.increment("websocket.subscriptions.removed", float(len(symbols)))
+                runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
                 logger.debug(
                     f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(client.subscriptions)}"
                 )
@@ -165,6 +177,8 @@ class ConnectionManager:
                     client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
                     if not client_batch:
                         continue
+                    runtime_metrics.increment("websocket.messages.batched_tickers", float(len(client_batch)))
+                    runtime_metrics.set_gauge("websocket.batch.last_size", float(len(client_batch)))
                     outbound = {"type": "ticker_batch", "data": client_batch}
                 else:
                     if target_symbol and target_symbol not in client_subs:
@@ -173,7 +187,13 @@ class ConnectionManager:
 
                 try:
                     client.queue.put_nowait(outbound)
+                    runtime_metrics.increment("websocket.messages.enqueued")
+                    runtime_metrics.set_gauge(
+                        "websocket.queue.pending_total",
+                        float(sum(conn.queue.qsize() for conn in active_connections)),
+                    )
                 except asyncio.QueueFull:
+                    runtime_metrics.increment("websocket.queue_overflow")
                     logger.warning("[WSManager] Dropping slow websocket client")
                     await self.disconnect(connection)
             except (WebSocketDisconnect, RuntimeError):
@@ -203,6 +223,22 @@ class ConnectionManager:
         except Exception as exc:
             logger.exception("[WSManager] Sender loop failed for client %s", client.websocket, exc_info=exc)
             await self.disconnect(client.websocket)
+
+    def get_health_snapshot(self) -> dict[str, Any]:
+        active_connections = list(self.connections.values())
+        runtime_metrics.set_gauge("websocket.connections.active", float(len(active_connections)))
+        runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
+        runtime_metrics.set_gauge(
+            "websocket.queue.pending_total",
+            float(sum(conn.queue.qsize() for conn in active_connections)),
+        )
+        return {
+            "active_clients": len(active_connections),
+            "active_symbols": len(self._global_subscriptions),
+            "pending_messages": sum(conn.queue.qsize() for conn in active_connections),
+            "captured_at": datetime.now(UTC).isoformat(),
+            "metrics": runtime_metrics.snapshot(prefix="websocket.", strip_prefix=True),
+        }
 
 
 # Singleton instance

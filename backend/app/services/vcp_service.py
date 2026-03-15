@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -14,7 +15,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..data_fetcher import fetch_fyers_quotes
-from ..database import get_db_session
+from ..database import db_session_scope, get_db_session
 from ..models import (
     BacktestRun,
     Company,
@@ -25,6 +26,7 @@ from ..models import (
     VCPScanResult,
 )
 from .history_service import daily_history_service
+from ..utils.runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -481,11 +483,11 @@ class VCPService:
         }
 
     def run_scan(self, universe: str = DEFAULT_UNIVERSE, scan_date: date | None = None) -> dict[str, Any]:
+        started = time.perf_counter()
         scan_date = self._asof_date(scan_date)
         scan_id = str(uuid.uuid4())
         scan_timestamp = datetime.now(UTC)
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             symbols, constituent_mode = self._constituents_for_date(db, universe, scan_date)
             if not symbols:
                 raise ValueError(f"No constituents found for {universe} on {scan_date.isoformat()}")
@@ -563,6 +565,17 @@ class VCPService:
                     -item["rs_rating"],
                 )
             )
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
+            runtime_metrics.increment("strategy.vcp.scan_runs")
+            logger.info(
+                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s duration_ms=%.2f",
+                universe.upper(),
+                scan_id,
+                len(symbol_frames),
+                len(results),
+                duration_ms,
+            )
             return {
                 "scan_id": scan_id,
                 "scan_timestamp": scan_timestamp.isoformat(),
@@ -573,8 +586,6 @@ class VCPService:
                 "total_symbols_scanned": len(symbol_frames),
                 "results": results,
             }
-        finally:
-            db.close()
 
     def get_latest_scan(self, universe: str = DEFAULT_UNIVERSE, show_all: bool = False) -> dict[str, Any]:
         db = get_db_session()
@@ -840,6 +851,7 @@ class VCPService:
                     "next_actions": ["scan_run_on_demand", "queued_entries_manual", "reconciliation_placeholder"],
                 },
                 "regime": self._serialize_regime(self.get_regime()),
+                "metrics": runtime_metrics.snapshot(prefix="strategy.vcp.", strip_prefix=True),
             }
         finally:
             db.close()
@@ -978,13 +990,13 @@ class VCPService:
         }
 
     def run_backtest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
         universe = str(payload.get("universe") or DEFAULT_UNIVERSE).upper()
         start_date = datetime.strptime(payload["start_date"], "%Y-%m-%d").date()
         end_date = datetime.strptime(payload["end_date"], "%Y-%m-%d").date()
         capital = float(payload.get("initial_capital") or DEFAULT_CAPITAL)
 
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             end_constituents, mode = self._constituents_for_date(db, universe, end_date)
             combined = self._load_symbol_history(
                 symbols=end_constituents,
@@ -1159,9 +1171,18 @@ class VCPService:
             )
             db.add(run)
             db.commit()
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            runtime_metrics.observe_ms("strategy.vcp.backtest_ms", duration_ms)
+            runtime_metrics.increment("strategy.vcp.backtest_runs")
+            logger.info(
+                "VCP backtest complete universe=%s run_id=%s trades=%s trading_dates=%s duration_ms=%.2f",
+                universe,
+                run_id,
+                len(trades),
+                len(trading_dates),
+                duration_ms,
+            )
             return {"run_id": run_id, "status": "completed", "result": result_payload}
-        finally:
-            db.close()
 
     def get_backtest(self, run_id: str) -> dict[str, Any] | None:
         db = get_db_session()

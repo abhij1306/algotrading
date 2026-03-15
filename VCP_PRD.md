@@ -904,11 +904,16 @@ run lifecycle, persistence, and history remain aligned with the broader
 backtesting framework.
 
 ### Integration notes
+- VCP remains an isolated strategy workflow for now so its scan/position logic can
+  evolve without coupling Portfolio construction to a single entry model.
 - `vcp_scan_results.signal_status` carries `SKIPPED_GAP_UP`; skipped entries do not create `positions` rows.
 - `positions.scan_result_id` links live positions back to the originating VCP scan result.
 - Future Quant Research / Portfolio integration should add explicit hooks such as
   `backtest_run_id` on VCP scan artifacts and `portfolio_daily_result_id` (or an
   equivalent portfolio FK) on positions instead of duplicating universe/symbol logic.
+- When that integration is activated, `StrategyExecutor`, `PortfolioConstructor`,
+  and `PortfolioPolicy` should consume those hooks rather than reaching into VCP
+  tables with bespoke joins.
 
 ### `system_config`
 ```sql
