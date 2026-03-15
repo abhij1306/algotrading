@@ -9,6 +9,7 @@ from . import (
     market_dashboard,
     portfolio,
     screener,
+    strategies,
     system_health,
     terminal,
     unified,
@@ -32,4 +33,5 @@ __all__ = [
     "portfolio",
     "terminal",
     "activity",
+    "strategies",
 ]

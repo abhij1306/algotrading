@@ -25,6 +25,7 @@ from .universe import (
     IndexWeightageChange,
     UniverseSnapshot,
 )
+from .vcp import StrategyPosition, SystemConfig, VCPScanResult
 
 __all__ = [
     # Company & Fundamentals
@@ -73,4 +74,7 @@ __all__ = [
     "CustomUniverse",
     "CustomUniverseMember",
     "UniverseSnapshot",
+    "VCPScanResult",
+    "StrategyPosition",
+    "SystemConfig",
 ]

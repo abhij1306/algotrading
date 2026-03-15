@@ -82,6 +82,15 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         category: 'Navigation',
       },
       {
+        id: 'nav-strategies',
+        title: 'Strategies',
+        subtitle: 'Run the VCP scanner and manage strategy signals',
+        shortcut: '⌘5',
+        icon: <TrendingUp className="w-4 h-4" />,
+        action: () => { router.push('/strategies'); onClose(); },
+        category: 'Navigation',
+      },
+      {
         id: 'action-backtest',
         title: 'Run Quick Backtest',
         subtitle: 'Start a new backtest with default settings',

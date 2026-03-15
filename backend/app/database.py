@@ -28,6 +28,9 @@ from .models import (
     QuarterlyResult,
     SnapshotIndexStock,
     SnapshotIndexUniverse,
+    StrategyPosition,
+    SystemConfig,
+    VCPScanResult,
     Watchlist,
 )
 from .utils.env_loader import load_dotenv
@@ -113,6 +116,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_backtest_schema(bind=engine)
     ensure_universe_schema(bind=engine)
+    ensure_strategy_schema(bind=engine)
     target = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
     logger.info("Database initialized: %s", target)
 
@@ -192,6 +196,30 @@ def ensure_universe_schema(*, bind=None) -> None:
             text("ALTER TABLE index_universe_definitions ALTER COLUMN index_code TYPE VARCHAR(50)")
         )
     logger.warning("Widened index_universe_definitions.index_code to VARCHAR(50)")
+
+
+def ensure_strategy_schema(*, bind=None) -> None:
+    """Backfill missing strategy tables/columns on existing databases."""
+    db_engine = bind or engine
+    for table in (VCPScanResult.__table__, StrategyPosition.__table__, SystemConfig.__table__):
+        inspector = inspect(db_engine)
+        existing_tables = set(inspector.get_table_names())
+        if table.name not in existing_tables:
+            continue
+
+        existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
+        missing_columns = [column for column in table.columns if column.name not in existing_columns]
+        if not missing_columns:
+            continue
+
+        added: list[str] = []
+        with db_engine.begin() as connection:
+            for column in missing_columns:
+                column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
+                connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
+                added.append(column.name)
+
+        logger.warning("Backfilled missing columns on %s: %s", table.name, ", ".join(added))
 
 
 # Avoid import-time schema creation; startup owns database validation/initialization.

@@ -173,6 +173,29 @@ export const marketAPI = {
   removeFromWatchlist: (symbol: string) => apiClient.delete(`/api/market/watchlist/${symbol}`),
 };
 
+export const strategiesAPI = {
+  getStatus: (universe = "NIFTY500") =>
+    apiClient.get(`/api/strategies/status?universe=${encodeURIComponent(universe)}`),
+  getRegime: () => apiClient.get("/api/strategies/regime"),
+  getLatestScan: (universe = "NIFTY500", showAll = false) =>
+    apiClient.get(`/api/strategies/vcp/scan/latest?universe=${encodeURIComponent(universe)}&show_all=${showAll}`),
+  runScan: (body?: Record<string, unknown>) => apiClient.post("/api/strategies/vcp/scan/run", body ?? {}),
+  getSignal: (symbol: string) => apiClient.get(`/api/strategies/vcp/signal/${encodeURIComponent(symbol)}`),
+  queueSignal: (signalId: number) => apiClient.post(`/api/strategies/vcp/signal/${signalId}/queue`),
+  cancelSignal: (signalId: number) => apiClient.post(`/api/strategies/vcp/signal/${signalId}/cancel`),
+  getPositions: () => apiClient.get("/api/strategies/positions"),
+  closePosition: (positionId: number) => apiClient.post(`/api/strategies/positions/${positionId}/close`),
+  updateStop: (positionId: number, stop_price: number) =>
+    apiClient.post(`/api/strategies/positions/${positionId}/stop`, { stop_price }),
+  halt: (reason?: string) => apiClient.post("/api/strategies/halt", reason ? { reason } : {}),
+  resume: () => apiClient.post("/api/strategies/resume"),
+  runBacktest: (body: Record<string, unknown>) => apiClient.post("/api/strategies/vcp/backtest/run", body),
+  getBacktestHistory: (universe?: string) =>
+    apiClient.get(
+      `/api/strategies/vcp/backtest/history${universe ? `?universe=${encodeURIComponent(universe)}` : ""}`
+    ),
+};
+
 // Error handling utilities
 export function getErrorMessage(error?: APIError): string {
   if (!error) return "An unknown error occurred";

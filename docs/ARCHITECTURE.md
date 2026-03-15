@@ -1,7 +1,7 @@
 # SmartTrader Architecture
 
 **Status:** Canonical
-**Last updated:** 2026-02-19
+**Last updated:** 2026-03-15
 
 ## System Topology
 - Frontend: Next.js App Router (`frontend/app`)
@@ -13,7 +13,7 @@
 
 ## Runtime Layers
 1. UI Layer
-- Pages: Dashboard, Screener, Terminal, Backtest
+- Pages: Dashboard, Screener, Terminal, Strategies, Backtest
 - Shared realtime hook: `frontend/hooks/useWebSocket.ts`
 - Terminal trading surfaces:
   - `frontend/app/terminal/page.tsx` (options-first board + execution ticket + panels)
@@ -39,20 +39,58 @@
 - `symbol_master.py`: symbol normalization and provider boundary conversion
 - `index_universe_loader.py`: loads canonical index constituent CSVs from `data_system/03_universe/constituents`
 - `services/universe`: canonical runtime universe lookup; reads DB-backed universe tables first and falls back to `index_universe_loader` when DB is not seeded yet
+- `symbol_history` / lifecycle services: date-effective rename, merger, demerger, delisting, successor-predecessor mapping
 - `live_market_service.py`: market-hours gating, provider connect/reconnect, tick normalization, broadcast dispatch
 - `order_execution_service.py`: unified PAPER/LIVE execution routing
 - `option_chain_service.py`: option chain fetch/cache + Greeks
 - `risk_manager.py`: pre-trade risk checks for live path
 
 4. Data Layer
-- DB entities: company, historical_price, orders, positions, dataset_run, snapshot index tables
+- DB entities: company, historical_price, intraday_candle, universe definitions/history, symbol history, orders, positions, dataset_run, snapshot index tables
 - Curated snapshot artifacts (Phase-1):
   - `data_system/04_curated/phase1/*.parquet`
   - read by `backend/app/routers/data_snapshot.py`
 
+## Backbone Architecture
+The following backbone is feature-agnostic and must not be owned by any single feature:
+
+1. Database Management
+- Defines storage contracts, ingestion stages, validation, publication, and DB sync rules.
+- Owns canonical roots under `data_system/`.
+- Strategy/backtest/live-trading code may consume these contracts but must not redefine them.
+
+2. Universe Management
+- Owns universe definition, effective-date constituent membership, weight history, and snapshots.
+- Must support:
+  - live lookup using latest active membership
+  - historical lookup using effective dates
+  - current-constituent fallback only as an explicit policy choice
+
+3. Symbol Management
+- Owns provider normalization and symbol identity resolution.
+- All provider-facing symbol conversion must pass through `symbol_master`.
+
+4. Symbol Lifecycle Management
+- Owns corporate identity changes over time:
+  - renames
+  - mergers
+  - demergers
+  - delistings
+  - series changes
+- Features must ask lifecycle-aware services for symbol resolution rather than hardcoding aliases.
+
+The app should expose these as stable platform services that any future feature can plug into:
+- `resolve_universe(universe_id, as_of_date)`
+- `resolve_symbols(universe_id, as_of_date)`
+- `resolve_symbol(symbol, provider, as_of_date)`
+- `load_price_history(symbols, timeframe, start_date, end_date, adjusted, source_policy)`
+- `load_index_history(universe_id, start_date, end_date)`
+- `get_symbol_lineage(symbol, as_of_date)`
+
 ## Data Architecture (Consolidated)
 ### Active Inputs (Phase-1)
 - `data_system/01_sources/fyers_index_prices/universe_index_price_daily.parquet` (index universe prices for backtesting)
+- `data_system/01_sources/fyers_stock_prices/stock_price_daily.parquet` (supplemental provider daily cache; not authoritative over curated equity pipeline)
 - `data_system/01_sources/nse_bhavcopy/*.csv`
 - `data_system/01_sources/nse_corporate_actions/*.csv`
 - `data_system/01_sources/nse_index_weights_pdf/**/NIFTY_50_*.pdf`
@@ -74,6 +112,48 @@
 - Modes: `--mode full|incremental`
 - Contract: 2025-01-01 onward only in active runtime
 - Scope: stock pipeline only (bhavcopy/corporate actions/universe membership); index universe prices are managed separately via consolidated Fyers dataset.
+
+## Data Lanes
+The system intentionally separates these lanes:
+
+1. Universe and index lane
+- Universe weights, monthly constituent changes, snapshots, and direct index price series.
+- Supports historical universe reconstruction and survivorship-bias-aware backtests.
+
+2. Equity daily lane
+- Daily stock OHLCV, adjusted OHLCV, technicals, and snapshots.
+- Must be stored in consolidated datasets, not scattered feature-specific downloads.
+
+3. Intraday archive lane
+- Optional provider-specific archive for future use.
+- Not part of the default canonical backtest/runtime path unless a feature explicitly requires it.
+- Must be consolidated by contract, not stored long-term as thousands of per-symbol shard files.
+
+4. Feature lane
+- Strategy, screener, terminal, allocator, and analytics features.
+- Must read from the backbone services and canonical datasets instead of building their own symbol/universe logic.
+
+## Provider Script Policy
+Provider scripts must be source adapters, not feature adapters.
+
+Allowed long-term script shapes:
+- `refresh_fyers_index_daily`
+- `refresh_fyers_equity_daily`
+- `refresh_fyers_intraday_archive`
+- `consolidate_fyers_archives`
+
+Avoid long-term patterns like:
+- `download_fyers_nifty500_5min.py`
+- any script that bakes a single feature or a single universe into its identity
+
+Provider scripts should accept:
+- `universe`
+- `symbols`
+- `timeframe`
+- `range_from`
+- `range_to`
+- `refresh_policy`
+- `output_contract`
 
 ## Symbol Boundary Rules
 - Storage + internal logic: DB format (`SBIN`, `NIFTY50`)

@@ -1,10 +1,8 @@
 """
-Build stock historical OHLCV dataset from Fyers using latest NSE bhavcopy universe.
+Deprecated one-shot FYERS stock history builder.
 
-Rules implemented for this project task:
-- Symbol universe source: yesterday's bhavcopy (EQ series only)
-- Download order: yearly batches in sequence 2026, 2025, ... 2016
-- Output: one consolidated parquet + per-year parquet partitions
+Canonical maintained command:
+    python backend/scripts/refresh_fyers_equity_daily.py
 """
 
 from __future__ import annotations

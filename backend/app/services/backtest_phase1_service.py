@@ -4,7 +4,7 @@ Phase-1 backtest service.
 Capabilities now exposed for PRD-aligned rebuild:
 - Universe/symbol scoped runs (equity)
 - Single or portfolio strategy allocation
-- Real equity/benchmark/drawdown curves from curated parquet data
+- Real equity/benchmark/drawdown curves from canonical daily history
 - In-memory run store for immediate retrieval
 
 Options contracts are accepted at API boundary but intentionally blocked until
@@ -18,7 +18,6 @@ import sys
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,28 +25,10 @@ import pandas as pd
 
 from ..database import get_db_session
 from ..models.backtest import BacktestRun
+from .history_service import daily_history_service
 from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-CURATED_ROOT = PROJECT_ROOT / "data_system" / "04_curated" / "phase1"
-INDEX_PRICE_DATASET_PATH = (
-    PROJECT_ROOT
-    / "data_system"
-    / "01_sources"
-    / "fyers_index_prices"
-    / "universe_index_price_daily.parquet"
-)
-
-UNIVERSE_SNAPSHOT_MAP: dict[str, Path] = {
-    "NIFTY50": CURATED_ROOT / "snapshot_nifty50_daily.parquet",
-    "BANKNIFTY": CURATED_ROOT / "snapshot_banknifty_daily.parquet",
-}
-FYERS_STOCK_DATASET_PATH = (
-    PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices" / "stock_price_daily.parquet"
-)
 
 SUPPORTED_INSTRUMENTS = ("equity", "options")
 SUPPORTED_STRATEGIES = {
@@ -101,48 +82,13 @@ class Phase1BacktestService:
             )
         return normalized
 
-    @staticmethod
-    def _price_column(df: pd.DataFrame) -> pd.Series:
-        adj = pd.to_numeric(df.get("adj_close"), errors="coerce")
-        close = pd.to_numeric(df.get("close"), errors="coerce")
-        return adj.fillna(close)
-
-    def _load_universe_snapshot(self, universe: str) -> pd.DataFrame:
-        universe_id = universe.upper().strip()
-        path = UNIVERSE_SNAPSHOT_MAP.get(universe_id)
-        if path is None:
-            supported = ", ".join(sorted(UNIVERSE_SNAPSHOT_MAP.keys()))
-            raise ValueError(f"Unsupported universe '{universe_id}'. Supported: {supported}")
-        if not path.exists():
-            raise FileNotFoundError(f"Missing artifact: {path}")
-
-        df = pd.read_parquet(path)
-        if "date" not in df.columns or "symbol" not in df.columns:
-            raise ValueError(f"Invalid universe snapshot schema: {path.name}")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        if "in_universe" in df.columns:
-            df = df[df["in_universe"] == True].copy()  # noqa: E712
-        df["price"] = self._price_column(df)
-        df = df.dropna(subset=["date", "symbol", "price"])
-        return df
-
     def _load_universe_index_dataset(self, universe: str, start: date, end: date) -> pd.DataFrame:
-        """Load index-level daily closes from the consolidated local index dataset."""
         universe_id = universe.upper().strip()
-        if not INDEX_PRICE_DATASET_PATH.exists():
-            raise ValueError(
-                f"Index dataset missing: {INDEX_PRICE_DATASET_PATH}. "
-                "Download and consolidate index prices first."
-            )
-        df = pd.read_parquet(INDEX_PRICE_DATASET_PATH)
-        required = {"date", "universe_id", "close"}
-        if not required.issubset(set(df.columns)):
-            raise ValueError("Index dataset schema mismatch: expected date, universe_id, close")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        df["universe_id"] = df["universe_id"].astype(str).str.upper()
-        scoped = df[
-            (df["universe_id"] == universe_id) & (df["date"] >= start) & (df["date"] <= end)
-        ].copy()
+        scoped = daily_history_service.load_index_history(
+            universe_id=universe_id,
+            start_date=start,
+            end_date=end,
+        )
         scoped["price"] = pd.to_numeric(scoped["close"], errors="coerce")
         scoped = scoped.dropna(subset=["date", "price"])
         if scoped.empty:
@@ -156,9 +102,6 @@ class Phase1BacktestService:
         )
 
     def _load_symbol_snapshot(self, symbols: list[str]) -> pd.DataFrame:
-        source_path = FYERS_STOCK_DATASET_PATH
-        if not source_path.exists():
-            raise FileNotFoundError(f"Missing artifact: {FYERS_STOCK_DATASET_PATH}")
         if not symbols:
             raise ValueError("At least one symbol is required when selection mode='symbols'")
 
@@ -166,18 +109,14 @@ class Phase1BacktestService:
         if not normalized:
             raise ValueError("No valid symbols provided")
 
-        df = pd.read_parquet(source_path)
-        if "date" not in df.columns or "symbol" not in df.columns:
-            raise ValueError(f"Invalid stock snapshot schema: {source_path.name}")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        df = df[df["symbol"].str.upper().isin(normalized)].copy()
-        df["price"] = pd.to_numeric(df.get("close"), errors="coerce")
+        df = daily_history_service.load_equity_history(normalized)
+        df["price"] = pd.to_numeric(df["close"], errors="coerce")
         df = df.dropna(subset=["date", "symbol", "price"])
 
         existing = set(df["symbol"].str.upper().unique().tolist())
         missing = [s for s in normalized if s not in existing]
         if missing:
-            raise ValueError(f"Symbols missing in snapshot_stock_daily: {', '.join(missing[:10])}")
+            raise ValueError(f"Symbols missing in canonical daily history: {', '.join(missing[:10])}")
         return df
 
     def _build_signal(
@@ -288,79 +227,14 @@ class Phase1BacktestService:
         }
 
     def get_status(self) -> dict[str, Any]:
-        equity_ranges: dict[str, dict[str, Any]] = {}
-        index_df: pd.DataFrame | None = None
-        universe_ids: list[str] = []
-        if INDEX_PRICE_DATASET_PATH.exists():
-            try:
-                index_df = pd.read_parquet(INDEX_PRICE_DATASET_PATH)
-                index_df["date"] = pd.to_datetime(index_df["date"], errors="coerce").dt.date
-                index_df["universe_id"] = index_df["universe_id"].astype(str).str.upper()
-                universe_ids = sorted(index_df["universe_id"].dropna().unique().tolist())
-            except Exception:
-                index_df = None
-
-        # Prefer universes from consolidated index dataset.
-        # Fallback to legacy fixed map if dataset is unavailable.
-        scan_universes = universe_ids or list(UNIVERSE_SNAPSHOT_MAP.keys())
-
-        for universe in scan_universes:
-            path = UNIVERSE_SNAPSHOT_MAP.get(universe)
-            if index_df is not None:
-                udf = index_df[index_df["universe_id"] == universe].copy()
-                if not udf.empty:
-                    equity_ranges[universe] = {
-                        "available": True,
-                        "min_date": udf["date"].min().isoformat(),
-                        "max_date": udf["date"].max().isoformat(),
-                        "rows": int(len(udf)),
-                    }
-                    continue
-
-            if path is None or not path.exists():
-                equity_ranges[universe] = {
-                    "available": False,
-                    "min_date": None,
-                    "max_date": None,
-                    "rows": 0,
-                }
-                continue
-            df = self._load_universe_snapshot(universe)
-            if df.empty:
-                equity_ranges[universe] = {
-                    "available": False,
-                    "min_date": None,
-                    "max_date": None,
-                    "rows": 0,
-                }
-                continue
-            equity_ranges[universe] = {
-                "available": True,
-                "min_date": df["date"].min().isoformat(),
-                "max_date": df["date"].max().isoformat(),
-                "rows": int(len(df)),
-            }
-
-        stock_range = {"available": False, "min_date": None, "max_date": None, "rows": 0}
-        stock_source = FYERS_STOCK_DATASET_PATH
-        if stock_source.exists():
-            sdf = pd.read_parquet(stock_source)
-            if "date" in sdf.columns and len(sdf):
-                d = pd.to_datetime(sdf["date"], errors="coerce").dt.date.dropna()
-                if len(d):
-                    stock_range = {
-                        "available": True,
-                        "min_date": d.min().isoformat(),
-                        "max_date": d.max().isoformat(),
-                        "rows": int(len(sdf)),
-                        "source": stock_source.name,
-                    }
+        equity_ranges = daily_history_service.get_index_coverage_map()
+        stock_range = daily_history_service.get_equity_coverage().to_dict()
 
         any_equity = any(v["available"] for v in equity_ranges.values()) or stock_range["available"]
         return {
             "data_ready": any_equity,
             "instrument_capabilities": {
-                "equity": {"enabled": any_equity, "note": "Backtest ready from curated snapshots"},
+                "equity": {"enabled": any_equity, "note": "Backtest ready from canonical daily history"},
                 "options": {
                     "enabled": False,
                     "note": "Options historical dataset not onboarded yet",

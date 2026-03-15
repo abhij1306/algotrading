@@ -32,6 +32,7 @@ from .routers import (
     options,
     portfolio,
     screener,
+    strategies,
     system_health,
     terminal,
     trading,
@@ -100,11 +101,19 @@ async def _step_validate_symbol_master() -> None:
 async def _step_validate_database() -> None:
     from sqlalchemy import text
 
-    from .database import Base, SessionLocal, engine, ensure_backtest_schema, ensure_universe_schema
+    from .database import (
+        Base,
+        SessionLocal,
+        engine,
+        ensure_backtest_schema,
+        ensure_strategy_schema,
+        ensure_universe_schema,
+    )
 
     Base.metadata.create_all(bind=engine)
     ensure_backtest_schema(bind=engine)
     ensure_universe_schema(bind=engine)
+    ensure_strategy_schema(bind=engine)
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))
@@ -286,6 +295,7 @@ app.include_router(trading.router)
 app.include_router(portfolio.router)
 app.include_router(activity.router)
 app.include_router(options.router)
+app.include_router(strategies.router)
 
 logger.info("[OK] All routers registered")
 
