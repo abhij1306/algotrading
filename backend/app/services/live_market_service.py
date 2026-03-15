@@ -382,7 +382,14 @@ class LiveMarketService:
 
     async def unsubscribe(self, symbols: list[str]) -> None:
         """Unsubscribe non-blocking"""
-        symbols_set = {symbol_master.to_db(s) for s in symbols if s}
+        symbols_set: set[str] = set()
+        for symbol in symbols:
+            if not symbol:
+                continue
+            try:
+                symbols_set.add(symbol_master.to_db(symbol))
+            except Exception as exc:
+                logger.warning("Skipping invalid symbol for unsubscribe %s: %s", symbol, exc)
         if symbols_set:
             self.pending_subscriptions.difference_update(symbols_set)
 

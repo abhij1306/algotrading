@@ -659,7 +659,7 @@ def check_risk(req: RiskCheckRequest, db: DBSession) -> RiskCheckResponse:
     Use this to validate if an order would pass risk checks.
     """
     try:
-        order_params = req.dict()
+        order_params = req.model_dump()
         result = risk_manager.pre_trade_check(order_params, db)
 
         return RiskCheckResponse(
@@ -690,7 +690,7 @@ def get_exposure_summary() -> ExposureSummaryResponse:
 def check_large_order(order: OrderRequest) -> dict[str, Any]:
     """Check if order requires confirmation due to size"""
     try:
-        params = order.dict()
+        params = order.model_dump()
         result = risk_manager.check_large_order(params)
 
         return {

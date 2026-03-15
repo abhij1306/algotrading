@@ -89,6 +89,15 @@ ruff check .
 pytest
 ```
 
+### SonarQube
+Pass the SonarQube URL at scan time instead of hardcoding it in `sonar-project.properties`.
+
+```bash
+sonar-scanner -Dsonar.host.url=http://localhost:9000
+```
+
+For local-only defaults, keep a gitignored override such as `sonar-project.properties.local` or inject the URL in CI pipeline variables.
+
 ---
 
 ## Troubleshooting

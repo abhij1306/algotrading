@@ -9,12 +9,15 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateColumn
 
 from . import models
 from .base import Base
 from .models import (
+    BacktestDailyResult,
+    BacktestRun,
     Company,
     DatasetArtifact,
     DatasetRun,
@@ -108,6 +111,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     """Initialize database and create all tables"""
     Base.metadata.create_all(bind=engine)
+    ensure_backtest_schema(bind=engine)
+    ensure_universe_schema(bind=engine)
     target = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
     logger.info("Database initialized: %s", target)
 
@@ -135,6 +140,58 @@ def get_or_create_company(db: Session, symbol: str, **kwargs: object) -> Company
         db.commit()
         db.refresh(company)
     return company
+
+
+def ensure_backtest_schema(*, bind=None) -> None:
+    """Backfill missing backtest table columns on existing databases."""
+    db_engine = bind or engine
+    for table in (BacktestRun.__table__, BacktestDailyResult.__table__):
+        inspector = inspect(db_engine)
+        existing_tables = set(inspector.get_table_names())
+        if table.name not in existing_tables:
+            continue
+
+        existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
+        missing_columns = [column for column in table.columns if column.name not in existing_columns]
+        if not missing_columns:
+            continue
+
+        added: list[str] = []
+        with db_engine.begin() as connection:
+            for column in missing_columns:
+                column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
+                connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
+                added.append(column.name)
+
+        logger.warning(
+            "Backfilled missing columns on %s: %s",
+            table.name,
+            ", ".join(added),
+        )
+
+
+def ensure_universe_schema(*, bind=None) -> None:
+    """Widen legacy universe table columns to support current index codes."""
+    db_engine = bind or engine
+    if db_engine.dialect.name != "postgresql":
+        return
+
+    inspector = inspect(db_engine)
+    existing_tables = set(inspector.get_table_names())
+    if "index_universe_definitions" not in existing_tables:
+        return
+
+    columns = {column["name"]: column for column in inspector.get_columns("index_universe_definitions")}
+    index_code = columns.get("index_code")
+    current_length = getattr(index_code.get("type"), "length", None) if index_code else None
+    if current_length is not None and current_length >= 50:
+        return
+
+    with db_engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE index_universe_definitions ALTER COLUMN index_code TYPE VARCHAR(50)")
+        )
+    logger.warning("Widened index_universe_definitions.index_code to VARCHAR(50)")
 
 
 # Avoid import-time schema creation; startup owns database validation/initialization.

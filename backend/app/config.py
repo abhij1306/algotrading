@@ -32,8 +32,9 @@ class Config:
                 token_data = json.load(f)
                 FYERS_CLIENT_ID = token_data.get("client_id", "")
                 FYERS_ACCESS_TOKEN = token_data.get("access_token", "")
-                # Secret key not needed for API calls, only for login
-                FYERS_SECRET_KEY = ""
+                FYERS_SECRET_KEY = token_data.get(
+                    "secret_key", os.getenv("FYERS_SECRET_KEY", "")
+                )
         except Exception as exc:
             logger.warning("Failed to load FYERS token file %s: %s", FYERS_TOKEN_FILE, exc)
 

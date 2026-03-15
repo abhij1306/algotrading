@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
-async def test_websocket_ticks() -> bool:
+async def test_websocket_ticks() -> None:
     """Test WebSocket tick delivery"""
 
     # Connect to WebSocket
@@ -43,6 +43,7 @@ async def test_websocket_ticks() -> bool:
             # Listen for ticks (timeout after 10 seconds for this test)
             logger.info("Listening for ticks (10s timeout)...")
             received_symbols = set()
+            expected_symbols = set(symbols)
 
             timeout = time.time() + 10
             while time.time() < timeout:
@@ -74,16 +75,18 @@ async def test_websocket_ticks() -> bool:
             logger.info("%s", "=" * 50)
             logger.info("Subscribed to: %s symbols", len(symbols))
             logger.info("Received ticks: %s symbols", len(received_symbols))
-
-            # In a real test we'd expect 100%, but here we just verify the connection and sub works
-            return True
+            assert ack.get("status") in {"subscribed", "success", "ok", "connected"}
+            assert received_symbols, "Expected at least one tick after subscribing"
+            assert expected_symbols & received_symbols, "Expected subscribed symbols in tick stream"
 
     except Exception as e:
         logger.exception("Connection failed: %s", e)
-        return False
+        raise
 
 if __name__ == "__main__":
     # Note: This requires the backend to be running
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logger.setLevel(logging.INFO)
     logger.warning("Ensure backend is running before executing this test.")
     try:
         asyncio.run(test_websocket_ticks())

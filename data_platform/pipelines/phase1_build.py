@@ -78,6 +78,9 @@ MONTH_ABBR = {
     "DEC": 12,
 }
 NIFTY50_LINE_RE = re.compile(r"^([A-Z0-9&\-.]+)\s+.+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$")
+UNIVERSE_SYMBOL_ALIASES = {
+    "TATAMOTORS": "TMPV",
+}
 EQUITY_OHLCV_FILE = "equity_ohlcv.parquet"
 EQUITY_OHLCV_ADJ_FILE = "equity_ohlcv_adj.parquet"
 SNAPSHOT_STOCK_DAILY_FILE = "snapshot_stock_daily.parquet"
@@ -243,6 +246,7 @@ class Phase1Builder:
         self.run_id = f"phase1-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
         self.issues: list[str] = []
         self.summary: dict[str, Any] = {}
+        self._trade_dates_cache: list[date] | None = None
         self._write_data_contract()
 
     def _log(self, step: str, status: str, details: dict[str, Any] | None = None) -> None:
@@ -473,6 +477,38 @@ class Phase1Builder:
         }
         self._log(step, "completed", self.summary["equity"])
 
+    def _available_trade_dates(self) -> list[date]:
+        if self._trade_dates_cache is not None:
+            return self._trade_dates_cache
+
+        trade_dates: set[date] = set()
+        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
+            try:
+                bhav = pd.read_csv(bhav_file, usecols=lambda c: c.strip().upper() in {"DATE1"})
+            except Exception:
+                try:
+                    bhav = pd.read_csv(bhav_file)
+                except Exception:
+                    continue
+
+            bhav.columns = [c.strip().upper() for c in bhav.columns]
+            if "DATE1" in bhav.columns:
+                dates = pd.to_datetime(bhav["DATE1"], errors="coerce", dayfirst=True).dt.date.dropna()
+                trade_dates.update(
+                    d for d in dates.tolist() if self.start_date <= d <= self.asof
+                )
+                continue
+
+            m = re.search(r"(\d{2})(\d{2})(\d{4})", bhav_file.name)
+            if not m:
+                continue
+            fallback_date = datetime.strptime(m.group(0), "%d%m%Y").date()
+            if self.start_date <= fallback_date <= self.asof:
+                trade_dates.add(fallback_date)
+
+        self._trade_dates_cache = sorted(trade_dates)
+        return self._trade_dates_cache
+
     def _parse_nifty50_pdf(self, pdf_path: Path) -> tuple[pd.DataFrame, float]:
         rows: list[dict[str, Any]] = []
         reader = PdfReader(str(pdf_path))
@@ -524,6 +560,7 @@ class Phase1Builder:
                         "weight": pd.to_numeric(df["weight"], errors="coerce"),
                     }
                 ).dropna(subset=["symbol", "weight"])
+                out["symbol"] = out["symbol"].replace(UNIVERSE_SYMBOL_ALIASES)
                 return out, csv_path.as_posix()
         return pd.DataFrame(columns=["symbol", "weight"]), ""
 
@@ -564,6 +601,11 @@ class Phase1Builder:
         target_months = _iter_months(self.start_date, _month_start(self.asof))
         monthly_rows: list[pd.DataFrame] = []
         anomalies: list[dict[str, Any]] = []
+        last_available_month_df = pd.DataFrame(columns=["symbol", "weight"])
+        last_available_source_file = ""
+        last_available_source_priority = "none"
+        last_available_parse_conf = 0.0
+        last_available_month_key: str | None = None
 
         for month in target_months:
             mkey = _month_key(month)
@@ -593,8 +635,27 @@ class Phase1Builder:
                     parse_conf = conf
 
             if month_df.empty:
-                anomalies.append({"month": mkey, "type": "missing_month", "message": "No source available for month"})
-                continue
+                if not last_available_month_df.empty:
+                    month_df = last_available_month_df.copy()
+                    source_file = last_available_source_file
+                    source_priority = f"carry_forward_from_{last_available_month_key}"
+                    parse_conf = last_available_parse_conf
+                    anomalies.append(
+                        {
+                            "month": mkey,
+                            "type": "carry_forward_weights",
+                            "message": (
+                                "No source available for month; reused last available weights "
+                                f"from {last_available_month_key}"
+                            ),
+                            "source": source_priority,
+                        }
+                    )
+                else:
+                    anomalies.append(
+                        {"month": mkey, "type": "missing_month", "message": "No source available for month"}
+                    )
+                    continue
 
             month_df = month_df.drop_duplicates(subset=["symbol"], keep="last")
             weight_sum = float(pd.to_numeric(month_df["weight"], errors="coerce").sum())
@@ -629,6 +690,11 @@ class Phase1Builder:
             month_payload["parse_confidence"] = parse_conf
 
             monthly_rows.append(month_payload[["month", "symbol", "weight", "source_file", "source_priority", "parse_confidence"]])
+            last_available_month_df = month_df[["symbol", "weight"]].copy()
+            last_available_source_file = source_file
+            last_available_source_priority = source_priority
+            last_available_parse_conf = parse_conf
+            last_available_month_key = mkey
 
         if not monthly_rows:
             raise RuntimeError(f"Failed to build {universe_id} monthly weights.")
@@ -639,6 +705,7 @@ class Phase1Builder:
 
         daily_rows: list[pd.DataFrame] = []
         months_sorted = sorted(monthly_df["month"].drop_duplicates().tolist())
+        available_trade_dates = self._available_trade_dates()
         for m in months_sorted:
             month_start = pd.Timestamp(m).date().replace(day=1)
             next_m = _next_month(month_start)
@@ -646,9 +713,11 @@ class Phase1Builder:
             symbols = monthly_df[monthly_df["month"] == m][["symbol", "source_file", "source_priority"]]
             if symbols.empty:
                 continue
-            dates = pd.date_range(month_start, day_end, freq="D")
+            dates = [d for d in available_trade_dates if month_start <= d <= day_end]
+            if not dates:
+                continue
             expanded = symbols.loc[symbols.index.repeat(len(dates))].reset_index(drop=True)
-            expanded["date"] = dates.tolist() * len(symbols)
+            expanded["date"] = dates * len(symbols)
             expanded["in_universe"] = True
             daily_rows.append(expanded[["date", "symbol", "in_universe", "source_file", "source_priority"]])
 

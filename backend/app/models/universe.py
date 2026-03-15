@@ -32,7 +32,7 @@ class IndexUniverseDefinition(Base):
 
     id = Column(Integer, primary_key=True)
     index_code = Column(
-        String(20), unique=True, nullable=False, index=True
+        String(50), unique=True, nullable=False, index=True
     )  # 'NIFTY50', 'BANKNIFTY', etc.
     index_name = Column(String(100), nullable=False)
     exchange = Column(String(10), default="NSE")  # NSE, BSE

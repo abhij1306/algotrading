@@ -1,11 +1,18 @@
 {
-  "generated_at_utc": "2026-02-19T17:34:17.435347+00:00",
-  "run_id": "phase1-20260219173417-e9aae041",
+  "generated_at_utc": "2026-03-15T04:31:58.614449+00:00",
+  "run_id": "phase1-20260315043157-976b6a8f",
   "anomalies": [
     {
       "month": "2026-02",
-      "type": "missing_month",
-      "message": "No source available for month"
+      "type": "carry_forward_weights",
+      "message": "No source available for month; reused last available weights from 2026-01",
+      "source": "carry_forward_from_2026-01"
+    },
+    {
+      "month": "2026-03",
+      "type": "carry_forward_weights",
+      "message": "No source available for month; reused last available weights from 2026-02",
+      "source": "carry_forward_from_2026-02"
     }
   ]
 }

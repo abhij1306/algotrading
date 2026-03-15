@@ -37,8 +37,13 @@ class DataCache:
 
     def update_cache_metadata(self, metadata: dict) -> None:
         """Update cache metadata"""
-        with open(self.cache_metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+        try:
+            with open(self.cache_metadata_file, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except OSError as exc:
+            logger.error(
+                "Failed to write cache metadata %s: %s", self.cache_metadata_file, exc
+            )
 
     def get_symbol_file(self, symbol: str) -> Path:
         """Get path to symbol's data file"""

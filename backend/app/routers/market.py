@@ -465,10 +465,10 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5):
     """
     try:
         from ..services.fyers_client import get_fyers_client
-        from ..services.index_universe_loader import index_universe_loader
+        from ..services.universe import get_universe_service
 
         # Get index constituents
-        symbols = index_universe_loader.get_index_symbols(index)
+        symbols = get_universe_service().get_symbols(index)
         if not symbols:
             return {"gainers": [], "losers": []}
 

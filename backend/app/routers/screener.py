@@ -12,7 +12,7 @@ from ..constants.indices import DEFAULT_SCREENER_UNIVERSE
 from ..data_fetcher import fetch_fyers_quotes
 from ..database import SessionLocal
 from ..models import Company, HistoricalPrice
-from ..services.index_universe_loader import index_universe_loader
+from ..services.universe import get_universe_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ def _normalize_screener_request(
 def _build_screener_query(
     db: Session, normalized_universe: str, normalized_query: str | None
 ) -> object:
+    universe_service = get_universe_service()
     latest_prices_subquery = (
         db.query(
             HistoricalPrice.company_id,
@@ -105,7 +106,7 @@ def _build_screener_query(
         .filter(Company.is_active.is_(True))
     )
     if normalized_universe != "ALL":
-        index_symbols = index_universe_loader.get_index_symbols(normalized_universe)
+        index_symbols = universe_service.get_symbols(normalized_universe)
         if not index_symbols:
             return None
         companies_query = companies_query.filter(Company.symbol.in_(index_symbols))
@@ -232,20 +233,20 @@ def _load_screener_payload(
 
 @router.get("/indices", responses=INDICES_ERROR_RESPONSES)
 def get_indices(response: Response) -> dict[str, Any]:
-    """Return available screener universes from IndexUniverseLoader."""
+    """Return available screener universes from the canonical universe service."""
     response.headers["Cache-Control"] = "public, max-age=3600"
 
     try:
-        available_indices = index_universe_loader.get_available_indices()
+        universe_service = get_universe_service()
+        available_indices = universe_service.list_available_indices()
         indices: list[dict[str, Any]] = []
 
-        for index_id in available_indices:
-            universe = index_universe_loader.get_index_universe(index_id)
+        for item in available_indices:
             indices.append(
                 {
-                    "id": index_id,
-                    "name": index_universe_loader.get_index_description(index_id) or index_id,
-                    "count": len(universe) if universe else 0,
+                    "id": item.get("index_code", ""),
+                    "name": item.get("name") or item.get("index_code", ""),
+                    "count": int(item.get("count") or 0),
                 }
             )
 
@@ -299,7 +300,10 @@ def get_screener_results(
             if cached is not None:
                 return cached
 
-        available_universes = set(index_universe_loader.get_available_indices())
+        universe_service = get_universe_service()
+        available_universes = {
+            item.get("index_code", "") for item in universe_service.list_available_indices()
+        }
 
         if normalized_universe != "ALL" and normalized_universe not in available_universes:
             raise HTTPException(status_code=400, detail=f"Unknown universe: {universe}")

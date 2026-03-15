@@ -1,29 +1,27 @@
 {
-  "status": "failed",
-  "generated_at_utc": "2026-02-19T17:34:19.486981+00:00",
-  "run_id": "phase1-20260219173417-e9aae041",
-  "asof": "2026-02-19",
+  "status": "passed",
+  "generated_at_utc": "2026-03-15T04:32:01.252988+00:00",
+  "run_id": "phase1-20260315043157-976b6a8f",
+  "asof": "2026-03-13",
   "metrics": {
     "equity_duplicates": 0,
-    "equity_rows": 81635,
-    "equity_symbols": 2451,
-    "nifty50_months": 1,
-    "banknifty_months": 1,
+    "equity_rows": 103496,
+    "equity_symbols": 2503,
+    "nifty50_months": 3,
+    "banknifty_months": 3,
     "snapshot_stock_duplicates": 0,
     "snapshot_nifty50_duplicates": 0,
     "snapshot_nifty50_missing_membership_keys": 0,
     "snapshot_nifty50_missing_weight_rows": 0,
-    "snapshot_nifty50_missing_close_rows": 570,
+    "snapshot_nifty50_missing_close_rows": 0,
     "snapshot_banknifty_duplicates": 0,
     "snapshot_banknifty_missing_membership_keys": 0,
     "snapshot_banknifty_missing_weight_rows": 0,
-    "snapshot_banknifty_missing_close_rows": 132
+    "snapshot_banknifty_missing_close_rows": 0
   },
-  "issues": [
-    "snapshot_nifty50_missing_close_rows:570",
-    "snapshot_banknifty_missing_close_rows:132"
-  ],
+  "issues": [],
   "warnings": [
+    "nifty50_bad_count_months:2",
     "nifty50_bad_weight_sum_months:1"
   ]
 }

@@ -37,10 +37,11 @@ SNAPSHOT_BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request parameter
 
 
 def _artifact_status(path: Path) -> dict[str, int | bool]:
-    return {
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else 0,
-    }
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return {"exists": False, "size_bytes": 0}
+    return {"exists": True, "size_bytes": stat_result.st_size}
 
 
 def _collect_artifact_status(
@@ -183,7 +184,7 @@ def get_universe_snapshot(
     }
 
 
-@router.get("/snapshot/status", responses=SNAPSHOT_BAD_REQUEST_RESPONSE)
+@router.get("/snapshot/status")
 def get_snapshot_status(db: DBSession) -> dict[str, Any]:
     status = {
         "phase1_root_exists": PHASE1_ROOT.exists(),

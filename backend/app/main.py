@@ -100,9 +100,11 @@ async def _step_validate_symbol_master() -> None:
 async def _step_validate_database() -> None:
     from sqlalchemy import text
 
-    from .database import Base, SessionLocal, engine
+    from .database import Base, SessionLocal, engine, ensure_backtest_schema, ensure_universe_schema
 
     Base.metadata.create_all(bind=engine)
+    ensure_backtest_schema(bind=engine)
+    ensure_universe_schema(bind=engine)
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))

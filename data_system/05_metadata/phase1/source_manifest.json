@@ -1,7 +1,7 @@
 {
-  "generated_at_utc": "2026-02-19T18:22:05.040018+00:00",
-  "phase_start": "2025-01-01",
-  "asof": "2026-02-19",
+  "generated_at_utc": "2026-03-15T04:31:57.905917+00:00",
+  "phase_start": "2026-01-01",
+  "asof": "2026-03-13",
   "entries": [
     {
       "category": "bhavcopy",
@@ -26,6 +26,13 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_02032026.csv",
+      "size_bytes": 358102,
+      "sha256": "f292057e9e2b3817ce72918664e5ec59f51e066ee98607dbc9122e48ebdbc524",
+      "modified_at_utc": "2026-03-14T06:00:35.557951+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_03022026.csv",
       "size_bytes": 357071,
       "sha256": "9212a0a4ffaee43a49b24b4d6ba3de432c150270715d5cfae7e87003988c6146",
@@ -33,10 +40,24 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_03032026.csv",
+      "size_bytes": 358102,
+      "sha256": "f292057e9e2b3817ce72918664e5ec59f51e066ee98607dbc9122e48ebdbc524",
+      "modified_at_utc": "2026-03-14T06:00:29.664044+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_04022026.csv",
       "size_bytes": 353946,
       "sha256": "beb729e3e9f9c7da7b550586982ca9dca43f2df7d050f6480342a41ebb3f8e30",
       "modified_at_utc": "2026-02-19T17:26:07.817211+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_04032026.csv",
+      "size_bytes": 358654,
+      "sha256": "81ca08d02cfcc2980c0d7270ad2117eda7d3c6b44229b8780078fc329facff7c",
+      "modified_at_utc": "2026-03-14T06:00:18.194199+00:00"
     },
     {
       "category": "bhavcopy",
@@ -54,6 +75,13 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_05032026.csv",
+      "size_bytes": 357064,
+      "sha256": "3f7102f0eda57f87705ece225cdf04199389ba81719b4a6446c45fc74518dd49",
+      "modified_at_utc": "2026-03-14T06:00:13.174191+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_06012026.csv",
       "size_bytes": 350300,
       "sha256": "a414dfe55a9c63b0832f46625c4add68d223db7095f24af9cbf1d3d89552edbe",
@@ -65,6 +93,13 @@
       "size_bytes": 348962,
       "sha256": "c66ebacf6d5c719b22ed1850fdac9fad395286a77fba7103f44802b70ba56e0c",
       "modified_at_utc": "2026-02-19T17:26:02.544218+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_06032026.csv",
+      "size_bytes": 354838,
+      "sha256": "6399041690af22686529fe1884938deb9d2b933e1e36d931cd8979d629307466",
+      "modified_at_utc": "2026-03-14T06:00:07.938610+00:00"
     },
     {
       "category": "bhavcopy",
@@ -89,6 +124,13 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_08032026.csv",
+      "size_bytes": 354838,
+      "sha256": "6399041690af22686529fe1884938deb9d2b933e1e36d931cd8979d629307466",
+      "modified_at_utc": "2026-03-14T05:52:19.113083+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_09012026.csv",
       "size_bytes": 351036,
       "sha256": "f799f829e78ed52977d389591e84d5398f990eeeb8e8403af27621d4e0967991",
@@ -103,6 +145,13 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_09032026.csv",
+      "size_bytes": 359290,
+      "sha256": "0cdd01253afd5984a8d9575cf131c49d5027ae4947efd3df4412fddfa51d666d",
+      "modified_at_utc": "2026-03-14T05:52:13.417271+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_10022026.csv",
       "size_bytes": 354576,
       "sha256": "165a242a7e6eba66a87fb42627527055b0fc39e5eb32cc170c310c51a606e65b",
@@ -110,10 +159,24 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_10032026.csv",
+      "size_bytes": 355426,
+      "sha256": "a6ae6af5f84c48cb506f27060332a157e1d1f04814bc1663310bdb8ca2c14782",
+      "modified_at_utc": "2026-03-14T05:52:06.476787+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_11022026.csv",
       "size_bytes": 352518,
       "sha256": "76cc16dc85f34b4c897a4d04126c73c820688ab160f7fbf1c23f149919b61c35",
       "modified_at_utc": "2026-02-19T17:25:47.944404+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_11032026.csv",
+      "size_bytes": 356057,
+      "sha256": "efd209ffc96d7cf46f0fd2ccd2b50df369c687adc97b1ecb58d766df0be88988",
+      "modified_at_utc": "2026-03-14T05:51:57.013250+00:00"
     },
     {
       "category": "bhavcopy",
@@ -131,6 +194,13 @@
     },
     {
       "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_12032026.csv",
+      "size_bytes": 357038,
+      "sha256": "e485686ac7dab8c9b147b725c20d364fad98d0a6299b8162e7e48072d36dc0b5",
+      "modified_at_utc": "2026-03-14T05:50:42.561546+00:00"
+    },
+    {
+      "category": "bhavcopy",
       "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_13012026.csv",
       "size_bytes": 350079,
       "sha256": "9b489015c4b7710c5000e3ffaab6eea7a230bdf4ce312ad2a9a3925c6eb16ed4",
@@ -142,6 +212,13 @@
       "size_bytes": 351817,
       "sha256": "cfea76e512e44d6f61a33bf0f018243289a316c4de7efdf3aa8e3fb247f09642",
       "modified_at_utc": "2026-02-19T17:25:41.765784+00:00"
+    },
+    {
+      "category": "bhavcopy",
+      "relative_path": "01_sources/nse_bhavcopy/sec_bhavdata_full_13032026.csv",
+      "size_bytes": 358025,
+      "sha256": "0693b1487e13b156cc32900a77fe42fe48c9bcacbeb75b7bfc39166a8bb408b4",
+      "modified_at_utc": "2026-03-14T05:50:35.609789+00:00"
     },
     {
       "category": "bhavcopy",
@@ -320,6 +397,48 @@
     },
     {
       "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_50_Feb2026.pdf",
+      "size_bytes": 133602,
+      "sha256": "bc05545b75575cd690ce691b6924fcb4b8f7563267caf49c3c071021514f1288",
+      "modified_at_utc": "2026-03-15T04:28:54.109633+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_Bank_Feb2026.pdf",
+      "size_bytes": 127702,
+      "sha256": "1c9af81ed2601df0125f7242ce620f7f4275a7572b956875694db7c9f66dca79",
+      "modified_at_utc": "2026-03-15T04:28:54.125043+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_Financial_Services_Feb2026.pdf",
+      "size_bytes": 128480,
+      "sha256": "e6592dbf6665300d1787b22fbf30343405eba030acaf1933f6c5a5301bb43793",
+      "modified_at_utc": "2026-03-15T04:28:54.137061+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_IT_Feb2026.pdf",
+      "size_bytes": 127225,
+      "sha256": "63b3cdb56163e2cf3f36cdf69588cb9790130c8d3d25ade19076b7a6dca3b0f8",
+      "modified_at_utc": "2026-03-15T04:28:54.157648+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_Midcap_Select_Feb2026.pdf",
+      "size_bytes": 129251,
+      "sha256": "19c7d1319cd0ae428d4de36c38ed231b05f185242e040c299fd9abe6879a9b8c",
+      "modified_at_utc": "2026-03-15T04:28:54.149649+00:00"
+    },
+    {
+      "category": "index_weights",
+      "relative_path": "01_sources/nse_index_weights_pdf/indices_dataFeb2026/NIFTY_Next_50_Feb2026.pdf",
+      "size_bytes": 133699,
+      "sha256": "89e79c7f2dd4e9cadb31307a77640d1c787262d891275b17b559b5a34d7e8a49",
+      "modified_at_utc": "2026-03-15T04:28:54.170209+00:00"
+    },
+    {
+      "category": "index_weights",
       "relative_path": "01_sources/nse_index_weights_pdf/indices_dataJan2025/NIFTY_50_Jan2025.pdf",
       "size_bytes": 133724,
       "sha256": "043197ff8f3e4a2144ecfcf78369bb573cb41bc4df5fbd5bfed1fd9129f064a8",
@@ -388,6 +507,6 @@
       "corporate_actions": 0,
       "index_weights": 0
     },
-    "total_entries": 54
+    "total_entries": 71
   }
 }

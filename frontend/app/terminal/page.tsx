@@ -232,7 +232,8 @@ export default function TerminalPage() {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Chart state - reserved for future chart view implementation
+  // TODO(_PriceChart): convert these refs back to useState when chart rendering is enabled,
+  // otherwise ref-only updates will not trigger UI re-renders for chart content.
   const chartDataRef = useRef<CandlePoint[]>([]);
   const chartSourceRef = useRef('');
   const chartLoadingRef = useRef(false);

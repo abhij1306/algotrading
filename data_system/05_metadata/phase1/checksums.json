@@ -1,78 +1,78 @@
 {
-  "generated_at_utc": "2026-02-19T17:34:51.384925+00:00",
-  "run_id": "phase1-20260219173451-36e6bef9",
+  "generated_at_utc": "2026-03-15T04:32:01.258427+00:00",
+  "run_id": "phase1-20260315043157-976b6a8f",
   "artifacts": [
     {
       "dataset_name": "equity_ohlcv",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\equity_ohlcv.parquet",
-      "checksum": "a88c72dfbf0d9b1bf78aeb542a384e6dd6a9b849a3e5fbf47fa8cf4aa3db959a",
-      "row_count": 81635,
+      "checksum": "d519ed9596df93193ec7c7cf0fa33b793159508deed0a1904c02d253ccf018b7",
+      "row_count": 103496,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-02-19T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "equity_ohlcv_adj",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\equity_ohlcv_adj.parquet",
-      "checksum": "c68bcd0f903c85d9332a4eb9ec38f7075eaccf92c9fef39e417e8da5eea03d12",
-      "row_count": 81635,
+      "checksum": "796c85a8c6b7f2bf42b264edbe95bf56cf59608d3699a514ba9f2aab8c381dd6",
+      "row_count": 103496,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-02-19T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "snapshot_stock_daily",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\snapshot_stock_daily.parquet",
-      "checksum": "da6e3a8945663fd86322af32ff478e79452587fde0d9945203f33f32457528b3",
-      "row_count": 81635,
+      "checksum": "08e7f717c632dcb1fd6f6c31a40faba31e75e58cb1dd5fcb34b8645f2e63a614",
+      "row_count": 103496,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-02-19T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "nifty50_weights_monthly",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\nifty50_weights_monthly.parquet",
-      "checksum": "f8fcc0b0501e8d172383769161f4df68a39f22a72ab612ed076cb4a8d1589160",
-      "row_count": 50,
+      "checksum": "2179ab41fbdce545f925ef1413cbebc77efe7230bdf696a52eb716c1aee6ca3f",
+      "row_count": 148,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-01T00:00:00"
+      "max_date": "2026-03-01T00:00:00"
     },
     {
       "dataset_name": "nifty50_membership_daily",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\nifty50_membership_daily.parquet",
-      "checksum": "89589c247a529a48e04555c015441744dc21b17b852db3c40a0a8103101e955c",
-      "row_count": 1550,
+      "checksum": "23261ed233aaae2bd370576afc234e190b7db3bd55b9ecbd59a4b75401b63fce",
+      "row_count": 2127,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-31T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "snapshot_nifty50_daily",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\snapshot_nifty50_daily.parquet",
-      "checksum": "cbf5dfde0f58e36e959d27333108eea514f8dbadba371e586911ed19950aaea2",
-      "row_count": 1550,
+      "checksum": "5b3de40c984b7f0616a716af3f1cbe74747d3ed7b765c191de522a0a9e36e6e6",
+      "row_count": 2127,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-31T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "banknifty_weights_monthly",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\banknifty_weights_monthly.parquet",
-      "checksum": "db1d7637ff4677757b848199223a5b325a61bb696a49f7ed6f3f6d1427860885",
-      "row_count": 12,
+      "checksum": "141e128e53e070e355f99578108d051089f166ae223a0230c460d7ae4b989ae1",
+      "row_count": 36,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-01T00:00:00"
+      "max_date": "2026-03-01T00:00:00"
     },
     {
       "dataset_name": "banknifty_membership_daily",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\banknifty_membership_daily.parquet",
-      "checksum": "1166e705e9f0f444e3baaf6e747d986daad61ac7443d0a6fb57d8ad59b4da819",
-      "row_count": 372,
+      "checksum": "813b7f468bbc160b1144a131f6d2b89ef8c95ab9515b4d04af71d623f6fa0ea5",
+      "row_count": 516,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-31T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     },
     {
       "dataset_name": "snapshot_banknifty_daily",
       "path": "C:\\Projects\\AlgoTrading\\data_system\\04_curated\\phase1\\snapshot_banknifty_daily.parquet",
-      "checksum": "65f3385eb5f406bcdc2ce62da50ad131970f410f870d0c9bbaa1208ad8d2cce4",
-      "row_count": 372,
+      "checksum": "11bd09064053cfcd470cb02ab825652ff7c50675ef86f9b93f0179e9b7d8f203",
+      "row_count": 516,
       "min_date": "2026-01-01T00:00:00",
-      "max_date": "2026-01-31T00:00:00"
+      "max_date": "2026-03-13T00:00:00"
     }
   ]
 }

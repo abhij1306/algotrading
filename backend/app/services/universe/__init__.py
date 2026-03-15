@@ -4,10 +4,16 @@ Universe Service
 Unified service for managing index universes and constituents.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from typing import Any
+
+from sqlalchemy.orm import Session
+
+from ...database import SessionLocal
+from ...models import IndexConstituentHistory, IndexUniverseDefinition, UniverseSnapshot
 
 
 class UniverseMode(Enum):
@@ -47,6 +53,113 @@ class UniverseServiceImpl:
     Uses index_universe_loader for data.
     """
 
+    @staticmethod
+    def _load_db_definition(index_code: str, db: Session) -> IndexUniverseDefinition | None:
+        return (
+            db.query(IndexUniverseDefinition)
+            .filter(IndexUniverseDefinition.index_code == index_code)
+            .first()
+        )
+
+    def _load_db_constituents(self, index_code: str, lookup_date: date) -> list[UniverseConstituent]:
+        db: Session = SessionLocal()
+        try:
+            definition = self._load_db_definition(index_code, db)
+            if definition is None:
+                return []
+
+            rows = (
+                db.query(IndexConstituentHistory)
+                .filter(
+                    IndexConstituentHistory.universe_id == definition.id,
+                    IndexConstituentHistory.effective_from <= lookup_date,
+                    (
+                        IndexConstituentHistory.effective_to.is_(None)
+                        | (IndexConstituentHistory.effective_to >= lookup_date)
+                    ),
+                )
+                .order_by(IndexConstituentHistory.symbol.asc())
+                .all()
+            )
+
+            return [
+                UniverseConstituent(
+                    symbol=row.symbol,
+                    company_name=row.company_name or row.symbol,
+                    industry=row.industry or "",
+                    weight=row.weight,
+                    index_code=index_code,
+                    isin=row.isin,
+                )
+                for row in rows
+            ]
+        finally:
+            db.close()
+
+    def _load_db_symbols(self, index_code: str, lookup_date: date) -> list[str]:
+        db: Session = SessionLocal()
+        try:
+            definition = self._load_db_definition(index_code, db)
+            if definition is None:
+                return []
+
+            snapshot = (
+                db.query(UniverseSnapshot)
+                .filter(
+                    UniverseSnapshot.universe_id == definition.id,
+                    UniverseSnapshot.snapshot_date == lookup_date,
+                )
+                .first()
+            )
+            if snapshot and snapshot.symbols:
+                try:
+                    return sorted(set(json.loads(snapshot.symbols)))
+                except Exception:
+                    pass
+
+            rows = (
+                db.query(IndexConstituentHistory.symbol)
+                .filter(
+                    IndexConstituentHistory.universe_id == definition.id,
+                    IndexConstituentHistory.effective_from <= lookup_date,
+                    (
+                        IndexConstituentHistory.effective_to.is_(None)
+                        | (IndexConstituentHistory.effective_to >= lookup_date)
+                    ),
+                )
+                .order_by(IndexConstituentHistory.symbol.asc())
+                .all()
+            )
+            return [row[0] for row in rows]
+        finally:
+            db.close()
+
+    def _list_db_indices(self) -> list[dict]:
+        db: Session = SessionLocal()
+        try:
+            definitions = db.query(IndexUniverseDefinition).order_by(IndexUniverseDefinition.index_code).all()
+            indices: list[dict[str, Any]] = []
+            for definition in definitions:
+                rows = (
+                    db.query(IndexConstituentHistory.symbol)
+                    .filter(
+                        IndexConstituentHistory.universe_id == definition.id,
+                        IndexConstituentHistory.effective_to.is_(None),
+                    )
+                    .count()
+                )
+                indices.append(
+                    {
+                        "index_code": definition.index_code,
+                        "name": definition.index_name,
+                        "description": f"{definition.index_name} - {rows} stocks",
+                        "count": rows,
+                    }
+                )
+            return indices
+        finally:
+            db.close()
+
     def get_constituents(
         self,
         index_code: str,
@@ -61,13 +174,22 @@ class UniverseServiceImpl:
             )
         from ..index_universe_loader import index_universe_loader
 
-        constituents = []
-        loader = index_universe_loader
         lookup_date = target_date or date.today()
+        constituents = self._load_db_constituents(index_code, lookup_date)
+        if constituents:
+            return UniverseResult(
+                index_code=index_code,
+                lookup_date=lookup_date,
+                constituents=constituents,
+                source="database.index_constituents_history",
+                is_historical=(mode == UniverseMode.HISTORICAL),
+            )
 
         # Get constituents from loader
+        loader = index_universe_loader
         universe = loader.get_index_universe(index_code)
         if universe and universe.constituents:
+            constituents = []
             for c in universe.constituents:
                 constituents.append(
                     UniverseConstituent(
@@ -103,6 +225,10 @@ class UniverseServiceImpl:
             )
         from ..index_universe_loader import index_universe_loader
 
+        lookup_date = _target_date or date.today()
+        db_symbols = self._load_db_symbols(index_code, lookup_date)
+        if db_symbols:
+            return db_symbols
         return index_universe_loader.get_index_symbols(index_code)
 
     def is_constituent(
@@ -115,17 +241,18 @@ class UniverseServiceImpl:
 
     def list_available_indices(self) -> list[dict]:
         """List all available indices with their metadata."""
+        indices = self._list_db_indices()
+        if indices:
+            return indices
+
         from ..index_universe_loader import index_universe_loader
 
-        indices = []
-        available = index_universe_loader.get_available_indices()
-
-        for index_id in available:
+        fallback: list[dict[str, Any]] = []
+        for index_id in index_universe_loader.get_available_indices():
             description = index_universe_loader.get_index_description(index_id)
             universe = index_universe_loader.get_index_universe(index_id)
             count = len(universe.symbols) if universe else 0
-
-            indices.append(
+            fallback.append(
                 {
                     "index_code": index_id,
                     "name": description,
@@ -133,8 +260,7 @@ class UniverseServiceImpl:
                     "count": count,
                 }
             )
-
-        return indices
+        return fallback
 
     def get_universe_changes(
         self, _index_code: str, _start_date: date, _end_date: date

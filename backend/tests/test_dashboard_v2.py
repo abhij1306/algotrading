@@ -47,4 +47,5 @@ def test_dashboard() -> None:
         logger.exception("Failed top gainers request: %s", e)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     test_dashboard()

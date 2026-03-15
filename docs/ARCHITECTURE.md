@@ -37,7 +37,8 @@
 
 3. Domain Services
 - `symbol_master.py`: symbol normalization and provider boundary conversion
-- `index_universe_loader.py`: loads 33 index constituent CSVs from `data_system/03_universe/constituents`
+- `index_universe_loader.py`: loads canonical index constituent CSVs from `data_system/03_universe/constituents`
+- `services/universe`: canonical runtime universe lookup; reads DB-backed universe tables first and falls back to `index_universe_loader` when DB is not seeded yet
 - `live_market_service.py`: market-hours gating, provider connect/reconnect, tick normalization, broadcast dispatch
 - `order_execution_service.py`: unified PAPER/LIVE execution routing
 - `option_chain_service.py`: option chain fetch/cache + Greeks
@@ -56,6 +57,7 @@
 - `data_system/01_sources/nse_corporate_actions/*.csv`
 - `data_system/01_sources/nse_index_weights_pdf/**/NIFTY_50_*.pdf`
 - `data_system/03_universe/monthly_universe_raw/*/nifty50.csv`
+- `data_system/03_universe/constituents/*.csv`
 - `data_system/05_metadata/reference/*.csv`
 
 ### Active Outputs (Phase-1)

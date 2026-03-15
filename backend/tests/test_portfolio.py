@@ -13,10 +13,8 @@ def test_read_main() -> None:
     assert "status" in data
 
 
-def test_market_status() -> None:
-    # The market status endpoint is at /market/status (no /api prefix)
-    # But it's not registered with a prefix, so it's actually at /market/status
-    # Let's test the root endpoint instead
+def test_root_endpoint() -> None:
+    # Verify the root health-style endpoint contract.
     response = client.get("/")
     assert response.status_code == 200
     data = response.json()
