@@ -210,6 +210,10 @@ def ensure_strategy_schema(*, bind=None) -> None:
         existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
         missing_columns = [column for column in table.columns if column.name not in existing_columns]
         if not missing_columns:
+            if table.name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in existing_columns:
+                with db_engine.begin() as connection:
+                    connection.execute(text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"))
+                logger.warning("Backfilled positions.pnl_inr from legacy pnl_rs")
             continue
 
         added: list[str] = []
@@ -218,6 +222,13 @@ def ensure_strategy_schema(*, bind=None) -> None:
                 column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
                 connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
                 added.append(column.name)
+            if table.name == "vcp_scan_results":
+                if "scan_id" in added:
+                    connection.execute(text("UPDATE vcp_scan_results SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"))
+                if "scan_timestamp" in added:
+                    connection.execute(text("UPDATE vcp_scan_results SET scan_timestamp = COALESCE(scan_timestamp, created_at)"))
+            if table.name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
+                connection.execute(text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"))
 
         logger.warning("Backfilled missing columns on %s: %s", table.name, ", ".join(added))
 

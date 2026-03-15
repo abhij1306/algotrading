@@ -1,0 +1,32 @@
+{
+  "DUMMYALCAR": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  },
+  "DUMMYHDLVR": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  },
+  "EMBDL": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  },
+  "RELINFRA": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  },
+  "SCHNEIDER": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  },
+  "TVSSCS": {
+    "code": -300,
+    "message": "Invalid symbol provided",
+    "s": "error"
+  }
+}

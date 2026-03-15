@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-03-15T06:11:55.539558+00:00",
+  "universes_requested": [
+    "NIFTY50",
+    "NIFTY500"
+  ],
+  "universes_processed": 2,
+  "rows_total": 24760,
+  "universes_total": 10,
+  "min_date": "2016-02-22",
+  "max_date": "2026-02-19",
+  "failed_universes": [],
+  "refresh_summary": {
+    "NIFTY50": {
+      "fyers_symbol": "NSE:NIFTY50-INDEX",
+      "range_from": "2026-02-20",
+      "range_to": "2026-03-15"
+    },
+    "NIFTY500": {
+      "fyers_symbol": "NSE:NIFTY500-INDEX",
+      "range_from": "2026-02-20",
+      "range_to": "2026-03-15"
+    }
+  },
+  "output_parquet": "data_system/01_sources/fyers_index_prices/universe_index_price_daily.parquet",
+  "output_csv": "data_system/01_sources/fyers_index_prices/universe_index_price_daily.csv",}

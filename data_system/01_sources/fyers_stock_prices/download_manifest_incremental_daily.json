@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-03-15T05:43:20.996492+00:00",
+  "requested_symbol_count": 769,
+  "db_max_date_before": "2025-12-22",
+  "dataset_max_date_before": "2026-02-20",
+  "range_from": "2025-12-23",
+  "requested_range_to": "2026-03-15",
+  "rows_total": 101730,
+  "dataset_unique_symbols_total": 2409,
+  "min_date": "2025-12-23",
+  "max_date": "2026-03-13",
+  "failed_symbols": 6,
+  "field_definitions": {
+    "requested_symbol_count": "Unique DB symbols requested for refresh in this run.",
+    "rows_total": "Total symbol-date rows present in the consolidated dataset after refresh.",
+    "dataset_unique_symbols_total": "Unique symbols present in the consolidated dataset after refresh.",
+    "dataset_max_date_before": "Latest date already present in the local provider cache before this run.",
+    "requested_range_to": "Requested provider fetch end date for this run.",
+    "max_date": "Latest date actually present in the consolidated dataset after refresh."
+  },
+  "output_parquet": "data_system\\01_sources\\fyers_stock_prices\\stock_price_daily.parquet",
+  "output_csv": "data_system\\01_sources\\fyers_stock_prices\\stock_price_daily.csv"
+}

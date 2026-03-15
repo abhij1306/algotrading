@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "hooks/**/*.ts",
+    "hooks/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "next-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
+  ]
+}
