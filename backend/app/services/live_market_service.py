@@ -428,7 +428,7 @@ class LiveMarketService:
             except Exception as e:
                 logger.error(f"Fyers unsubscription failed: {e}")
 
-    def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         return {
             "market_status": self._market_status,
             "fyers_connected": (
@@ -438,7 +438,7 @@ class LiveMarketService:
             ),
             "pending_subscriptions": len(self.pending_subscriptions),
             "metrics": runtime_metrics.snapshot(prefix="live_market.", strip_prefix=True),
-            "websocket": manager.get_health_snapshot(),
+            "websocket": await manager.get_health_snapshot(),
         }
 
     def get_latest_tick(self, symbol: str) -> dict | None:

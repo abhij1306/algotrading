@@ -138,10 +138,14 @@ def get_db_session() -> Session:
 
 @contextmanager
 def db_session_scope() -> Generator[Session, None, None]:
-    """Context-managed service session boundary for non-request code."""
+    """Context-managed service session boundary with commit/rollback semantics."""
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

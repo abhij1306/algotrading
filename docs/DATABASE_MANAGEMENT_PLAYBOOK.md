@@ -255,6 +255,20 @@ Service-owned DB access should prefer a context-managed session boundary such as
 `db_session_scope()` instead of ad hoc open/close patterns. This keeps backbone
 services easier to reason about and makes future repository refactors simpler.
 
+Implementation guidance:
+- `db_session_scope()` is implemented in `backend/app/database.py`.
+- It should acquire `SessionLocal()`, yield the session, commit on successful exit,
+  roll back on exception, and always call `Session.close()`.
+
+Example:
+```python
+from app.database import db_session_scope
+
+with db_session_scope() as session:
+    rows = session.query(MyModel).all()
+    session.add(MyOtherModel(...))
+```
+
 ## Coverage Semantics
 1. Price coverage gap is not the same as membership gap.
 2. Missing price data must remain explicit.

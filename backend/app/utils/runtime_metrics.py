@@ -14,7 +14,7 @@ class TimingStats:
     max_ms: float = 0.0
     last_ms: float = 0.0
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, int | float]:
         avg_ms = (self.total_ms / self.count) if self.count else 0.0
         return {
             "count": self.count,

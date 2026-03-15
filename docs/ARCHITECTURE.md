@@ -7,6 +7,9 @@
 - Frontend: Next.js App Router (`frontend/app`)
 - Backend: FastAPI (`backend/app`)
 - Realtime: Fyers WS -> `LiveMarketService` -> `ws_manager` -> backend WS clients
+  `ws_manager` is the connection/dispatcher layer that owns client sockets, subscription routing,
+  slow-client backpressure handling, and lightweight websocket protocol dispatch so
+  `LiveMarketService` does not own low-level client connection concerns.
 - Storage:
   - Transactional: PostgreSQL/SQLite via SQLAlchemy models
   - Phase-1 datasets: `data_system/` (2025+ active scope)
@@ -41,6 +44,8 @@
 - `services/universe`: canonical runtime universe lookup; reads DB-backed universe tables first and falls back to `index_universe_loader` when DB is not seeded yet
 - `symbol_history` / lifecycle services: date-effective rename, merger, demerger, delisting, successor-predecessor mapping
 - `live_market_service.py`: market-hours gating, provider connect/reconnect, tick normalization, broadcast dispatch
+- `ws_manager.py`: websocket client multiplexing, subscription fanout, bounded per-client queues,
+  and connection cleanup/backpressure handling
 - `order_execution_service.py`: unified PAPER/LIVE execution routing
 - `option_chain_service.py`: option chain fetch/cache + Greeks
 - `risk_manager.py`: pre-trade risk checks for live path
@@ -166,9 +171,18 @@ Provider scripts should accept:
 2. Client subscribes symbols (DB/Fyers accepted; normalized to DB)
 3. Router computes subscription deltas across all clients
 4. `LiveMarketService.subscribe()` converts to Fyers and subscribes provider
-5. Incoming provider tick -> normalized (`symbol`, `change_pct`, `change`, `volume`) -> buffered for batch flush
+5. Incoming provider tick -> normalized (`symbol`, `change_pct`, `change`, `volume`) -> buffered for timer-based batch flush
+   Flush policy:
+   `flushIntervalMs = 200` via the `_flush_loop()` timer in `LiveMarketService`.
+   There is no size-based flush trigger today and no explicit `maxBufferSize`; the buffer is a symbol-keyed map,
+   so newer ticks replace older ticks for the same symbol until the next flush.
+   Backpressure strategy: websocket fanout uses bounded per-client queues in `ws_manager` (`CLIENT_QUEUE_SIZE = 8`);
+   if a client queue overflows, that client is disconnected rather than slowing provider ingestion or spilling to disk.
+   Expected latency is sub-second under normal local use, with a nominal additional flush delay of up to 200ms.
 6. `ws_manager` filters per-client by subscription set before send
-7. `GET /api/websocket/status` exposes provider plus websocket health metrics for local operations
+
+Operational endpoint:
+- `GET /api/websocket/status` exposes provider state plus websocket health metrics for local development and on-host operational health checks.
 
 ## Terminal Execution Flow
 1. UI sets mode through `POST /api/trading/mode`.

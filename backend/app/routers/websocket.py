@@ -73,12 +73,12 @@ def disconnect_websocket():
 
 
 @router.get("/status")
-def get_websocket_status():
+async def get_websocket_status():
     """Check WebSocket connection status"""
     try:
         from ..services.live_market_service import live_market
 
-        return live_market.get_status()
+        return await live_market.get_status()
     except Exception as e:
         return {"connected": False, "error": str(e)}
 

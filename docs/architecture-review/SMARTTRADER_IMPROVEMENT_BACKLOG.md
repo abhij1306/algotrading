@@ -7,8 +7,20 @@
 ## Implementation Notes
 - 2026-03-15 quick wins implemented:
   - lightweight websocket health/runtime metrics on the existing status path
+    - maps to Phase D item 2 and WebSocket management `P2` metrics work
+    - status: `Partial — basic local counters/timings complete`
+    - covers: active clients, subscriptions, queue pressure, queue overflow, batch sizes, provider connect/reconnect counters
+    - remains: persistent metrics sink, dashboards, alerting, longitudinal reporting
   - lightweight timing metrics for canonical history loads and VCP scan/backtest hot paths
+    - maps to Phase D items 1, 2, 3 and Performance improvement `P1/P2` hotspot benchmarking work
+    - status: `Partial — local timing instrumentation complete`
+    - covers: canonical history load timings, websocket broadcast timings, VCP scan/backtest timings
+    - remains: endpoint-level benchmark suite, memory profiling, cross-endpoint SLA reporting
   - `db_session_scope()` introduced as the preferred service-owned DB session boundary
+    - implemented in `backend/app/database.py` as `db_session_scope()`
+    - maps to Phase B item 1 and Database management `P1` session-centralization work
+    - status: `Partial — helper introduced and adopted in touched backbone services`
+    - remains: broader repository/service-boundary rollout across routers and services
 
 ## Purpose
 This backlog translates the review conclusions into phased work that another engineer or agent can execute later without re-deciding the architecture.

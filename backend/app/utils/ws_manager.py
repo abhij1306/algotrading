@@ -188,10 +188,6 @@ class ConnectionManager:
                 try:
                     client.queue.put_nowait(outbound)
                     runtime_metrics.increment("websocket.messages.enqueued")
-                    runtime_metrics.set_gauge(
-                        "websocket.queue.pending_total",
-                        float(sum(conn.queue.qsize() for conn in active_connections)),
-                    )
                 except asyncio.QueueFull:
                     runtime_metrics.increment("websocket.queue_overflow")
                     logger.warning("[WSManager] Dropping slow websocket client")
@@ -224,18 +220,18 @@ class ConnectionManager:
             logger.exception("[WSManager] Sender loop failed for client %s", client.websocket, exc_info=exc)
             await self.disconnect(client.websocket)
 
-    def get_health_snapshot(self) -> dict[str, Any]:
-        active_connections = list(self.connections.values())
-        runtime_metrics.set_gauge("websocket.connections.active", float(len(active_connections)))
-        runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
-        runtime_metrics.set_gauge(
-            "websocket.queue.pending_total",
-            float(sum(conn.queue.qsize() for conn in active_connections)),
-        )
+    async def get_health_snapshot(self) -> dict[str, Any]:
+        async with self._lock:
+            active_connections = list(self.connections.values())
+            active_symbols = len(self._global_subscriptions)
+            pending_messages = sum(conn.queue.qsize() for conn in active_connections)
+            runtime_metrics.set_gauge("websocket.connections.active", float(len(active_connections)))
+            runtime_metrics.set_gauge("websocket.subscriptions.active", float(active_symbols))
+            runtime_metrics.set_gauge("websocket.queue.pending_total", float(pending_messages))
         return {
             "active_clients": len(active_connections),
-            "active_symbols": len(self._global_subscriptions),
-            "pending_messages": sum(conn.queue.qsize() for conn in active_connections),
+            "active_symbols": active_symbols,
+            "pending_messages": pending_messages,
             "captured_at": datetime.now(UTC).isoformat(),
             "metrics": runtime_metrics.snapshot(prefix="websocket.", strip_prefix=True),
         }
