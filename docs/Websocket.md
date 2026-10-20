@@ -1,7 +1,7 @@
 # WebSocket Reference
 
 **Status:** Canonical
-**Last updated:** 2026-02-19
+**Last updated:** 2026-10-20
 
 ## Endpoints
 - `POST /api/websocket/connect`
@@ -9,6 +9,23 @@
 - `POST /api/websocket/disconnect`
 - `GET /api/websocket/status`
 - `WS /api/websocket/stream`
+
+## Startup Sequence
+`backend/app/main.py` lifespan, in order:
+1. Get the event loop
+2. Set the loop on the WebSocket manager
+3. Validate `symbol_master`
+4. Validate the database (create/upgrade the schema, `SELECT 1`)
+5. Validate the Fyers token (warn-only)
+6. Check the index universe data path (warn-only)
+7. `live_market.connect(loop, prevalidated_token)`; market-hours rules apply, so off-hours it returns `market_closed` and the monitor loop connects once the market opens
+
+Steps 5-7 do not use the database. If step 4 finds Postgres down it is deferred, not fatal: steps 5-7
+still run, so live market streaming works without the DB. A background task retries the deferred schema
+work with backoff (5s doubling to 60s), runs it once when the DB answers, logs
+`[OK] Database reachable again; deferred startup completed` and stops. Shutdown cancels it.
+`GET /api/websocket/status` and `GET /api/system/health` report it as `startup`: `DEFERRED` while
+retrying, `FAILED` if the work hit a non-connection error after the DB came back, else `COMPLETE`.
 
 ## Current Runtime Flow
 1. Client connects to `WS /api/websocket/stream`
@@ -90,6 +107,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 - The Fyers client is resolved per use (broker and option chain do not cache it), and `reset_fyers_client()` also drops the class singleton, so re-login takes effect without restart
 - `GET /api/websocket/status` is the operational health view for local runtime checks:
   - provider connection state
+  - `startup`: `COMPLETE`, `DEFERRED` (DB was down at startup, schema work still retrying) or `FAILED`
   - pending subscriptions
   - websocket client/subscription counts
   - queue pressure and overflow counters

@@ -77,6 +77,11 @@ def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(_handler)
 
 
+# Backoff for retrying the database startup work after starting with the DB down.
+DB_RETRY_INITIAL_DELAY_S = 5.0
+DB_RETRY_MAX_DELAY_S = 60.0
+
+
 async def _step_get_event_loop(app: FastAPI) -> None:
     loop = asyncio.get_running_loop()
     app.state.loop = loop
@@ -105,13 +110,13 @@ async def _step_validate_symbol_master() -> None:
     await asyncio.sleep(0)
 
 
-async def _step_validate_database() -> None:
+def _ensure_database_schema() -> None:
+    """Create/upgrade the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
     from sqlalchemy import text
 
     from .database import (
         Base,
         SessionLocal,
-        describe_database_target,
         engine,
         ensure_backtest_schema,
         ensure_strategy_schema,
@@ -131,12 +136,21 @@ async def _step_validate_database() -> None:
     except Exception as exc:
         if not is_db_unavailable(exc):
             raise
+        raise DatabaseUnavailableError() from None
+
+
+async def _step_validate_database() -> None:
+    from .database import describe_database_target
+
+    try:
+        _ensure_database_schema()
+    except DatabaseUnavailableError:
         # One clear line, no traceback and no password; requests answer 503 until it is up.
         logger.error(
             "[ERROR] Database unreachable at %s (start Postgres: net start postgresql-x64-18)",
             describe_database_target(),
         )
-        raise DatabaseUnavailableError() from None
+        raise
     logger.info("[OK] Database validated")
     await asyncio.sleep(0)
 
@@ -203,18 +217,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     Application lifespan manager with structured startup sequence.
 
-    Startup sequence (from Websocket.md v2.2):
+    Startup sequence (docs/Websocket.md, "Startup Sequence"):
     1. Get event loop
     2. Set loop for WebSocket manager
     3. Validate symbol_master
-    4. Validate database
+    4. Validate database (deferred, not fatal, when the DB is down)
     5. Validate Fyers token (warn-only)
     6. Load index universe (warn-only)
     7. Connect live_market with event loop
+
+    Steps 5-7 do not use the database, so they run even when step 4 finds it down. The
+    deferred schema work is retried in the background until the database answers.
     """
+    from .services.deferred_startup import DeferredStartup
     from .services.startup_validator import StartupSequence, StartupStep
 
     sequence = StartupSequence()
+    deferred_startup = DeferredStartup(
+        _ensure_database_schema,
+        initial_delay=DB_RETRY_INITIAL_DELAY_S,
+        max_delay=DB_RETRY_MAX_DELAY_S,
+    )
+    app.state.deferred_startup = deferred_startup
 
     try:
         await sequence.execute_step(
@@ -248,21 +272,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             lambda: _step_connect_live_market(app),
             required=False,
         )
+        if StartupStep.VALIDATE_DATABASE in sequence.deferred_steps:
+            # Keep serving: health reports the DB as down and DB routes answer 503 meanwhile.
+            deferred_startup.start()
         sequence.log_summary()
         if sequence.is_complete():
             logger.info("[OK] WebSocket services initialized successfully")
 
-    except DatabaseUnavailableError:
-        # Keep serving: health reports the DB as down and DB routes answer 503.
-        sequence.log_summary()
     except Exception as e:
         logger.exception(f"[ERROR] Startup sequence failed: {e}")
         sequence.log_summary()
 
-    yield
-
-    # Shutdown
-    logger.info("Shutdown complete")
+    try:
+        yield
+    finally:
+        await deferred_startup.stop()
+        del app.state.deferred_startup
+        logger.info("Shutdown complete")
 
 
 app = FastAPI(

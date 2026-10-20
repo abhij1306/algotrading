@@ -5,6 +5,10 @@ This module provides a structured way to execute and validate the application
 startup sequence. It tracks completed steps, handles failures gracefully, and
 prevents subsequent steps from executing after a failure.
 
+A step that fails with DatabaseUnavailableError is deferred instead: a stopped
+database is never a reason to skip the steps that do not need it. The caller
+finishes deferred steps once the database is back (see deferred_startup.py).
+
 Requirements: 6.1, 6.4
 """
 
@@ -59,6 +63,7 @@ class StartupSequence:
         """Initialize the startup sequence tracker."""
         self.completed_steps: list[StartupStep] = []
         self.optional_failed_steps: list[StartupStep] = []
+        self.deferred_steps: list[StartupStep] = []
         self.failed_step: StartupStep | None = None
         self._has_failure = False
 
@@ -77,7 +82,8 @@ class StartupSequence:
             True if the step completed successfully, False otherwise
 
         Raises:
-            Exception: Re-raises the exception if the step is required and fails
+            Exception: Re-raises the exception if the step is required and fails, unless it
+                is a DatabaseUnavailableError: that defers the step and returns False.
         """
         # Prevent execution if a previous required step failed
         if self._has_failure:
@@ -93,10 +99,19 @@ class StartupSequence:
             logger.info(f"[Startup] Completed: {step.value}")
             return True
 
+        except DatabaseUnavailableError:
+            # The step already logged where and how to start the DB: one line, no traceback.
+            self.deferred_steps.append(step)
+            logger.warning(
+                f"[Startup] Deferred: {step.value} - database unavailable; "
+                "it completes in the background once the database is reachable"
+            )
+            return False
+
         except Exception as e:
             if required:
                 self.failed_step = step
-                self._log_required_failure(step, e)
+                logger.error(f"[Startup] Failed: {step.value} - {e}", exc_info=e)
                 self._has_failure = True
                 logger.error(
                     f"[Startup] Required step {step.value} failed. "
@@ -110,16 +125,6 @@ class StartupSequence:
                     f"[Startup] Optional step {step.value} failed. Continuing with remaining steps."
                 )
                 return False
-
-    @staticmethod
-    def _log_required_failure(step: StartupStep, exc: Exception) -> None:
-        """Log a required step's failure, with a traceback unless the database is down."""
-        message = f"[Startup] Failed: {step.value} - {exc}"
-        if isinstance(exc, DatabaseUnavailableError):
-            # The step already logged where and how to start the DB: one line, no traceback.
-            logger.error(message)
-        else:
-            logger.error(message, exc_info=exc)
 
     def is_complete(self) -> bool:
         """
@@ -141,6 +146,7 @@ class StartupSequence:
             "completed_steps": [step.value for step in self.completed_steps],
             "failed_step": self.failed_step.value if self.failed_step else None,
             "optional_failed_steps": [step.value for step in self.optional_failed_steps],
+            "deferred_steps": [step.value for step in self.deferred_steps],
             "is_complete": self.is_complete(),
             "total_completed": len(self.completed_steps),
         }
@@ -148,11 +154,12 @@ class StartupSequence:
     def log_summary(self) -> None:
         """Log a summary of the startup sequence execution."""
         if self.is_complete():
-            if self.optional_failed_steps:
+            if self.optional_failed_steps or self.deferred_steps:
                 logger.warning(
                     f"[Startup] Startup completed with warnings. "
                     f"Completed: {len(self.completed_steps)} steps, "
-                    f"Optional failures: {[step.value for step in self.optional_failed_steps]}"
+                    f"Optional failures: {[step.value for step in self.optional_failed_steps]}, "
+                    f"Deferred: {[step.value for step in self.deferred_steps]}"
                 )
             else:
                 logger.info(

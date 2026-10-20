@@ -213,7 +213,12 @@ Operational endpoint:
 ## Database Unavailable
 - The Postgres engine uses `connect_timeout=3`, so a stopped server fails a request in seconds.
 - Startup logs one line, `[ERROR] Database unreachable at host:port/db (start Postgres: net start postgresql-x64-18)`,
-  and the server keeps running.
+  and the server keeps running. The database step is deferred, not fatal: the Fyers token check, index universe
+  and live market connect still run (see `docs/Websocket.md`, Startup Sequence). A background task
+  (`app/services/deferred_startup.py`) retries the schema work (5s doubling to 60s) and, once the DB answers, runs it
+  once and logs `[OK] Database reachable again; deferred startup completed`. Shutdown cancels it.
+- `GET /api/system/health` and `GET /api/websocket/status` carry `startup`: `DEFERRED` while that retry is pending
+  (health is then at best `DEGRADED`), `FAILED` if the work hit a non-connection error, else `COMPLETE`.
 - Any request that hits a down database answers HTTP 503
   `{"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}`. This holds when a
   router wraps the error (`raise HTTPException(...) from exc`). Driver text never reaches the client.
