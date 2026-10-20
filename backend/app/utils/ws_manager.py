@@ -185,7 +185,7 @@ class ConnectionManager:
                 json_msg = json.dumps(message)
 
         except Exception as e:
-            logger.error(f"[WSManager] Failed to serialize message: {e}")
+            logger.exception(f"[WSManager] Failed to serialize message: {e}")
             return
 
         for client in active_connections:

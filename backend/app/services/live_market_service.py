@@ -147,7 +147,7 @@ class LiveMarketService:
             except Exception as e:
                 last_error = e
                 retry_count += 1
-                logger.error(f"[WS] Connection attempt {retry_count} failed: {e}")
+                logger.exception(f"[WS] Connection attempt {retry_count} failed: {e}")
                 if retry_count >= WS_MAX_RETRIES:
                     break
                 # Exponential backoff: 5, 10, 20, 40, 60...; wakes early on explicit disconnect.
@@ -324,7 +324,7 @@ class LiveMarketService:
                     # Buffer for batch broadcast to avoid duplicate immediate sends.
                     asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
             except Exception as e:
-                logger.error(f"Error processing incoming tick: {e}")
+                logger.exception(f"Error processing incoming tick: {e}")
 
     @staticmethod
     def _validate_fyers_token() -> bool:
@@ -435,7 +435,7 @@ class LiveMarketService:
 
             except Exception as e:
                 self._is_connecting = False
-                logger.error(f"Failed to connect to Fyers: {e}")
+                logger.exception(f"Failed to connect to Fyers: {e}")
                 return "error"
         else:
             if self._last_connect_block_reason != "market_closed":
@@ -483,7 +483,7 @@ class LiveMarketService:
                 await loop.run_in_executor(None, self.ws_service.subscribe, fyers_symbols)
                 logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
             except Exception as e:
-                logger.error(f"Fyers subscription failed: {e}")
+                logger.exception(f"Fyers subscription failed: {e}")
         else:
             # Add to pending subscriptions
             self.pending_subscriptions.update(symbols)
@@ -527,7 +527,7 @@ class LiveMarketService:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
             except Exception as e:
-                logger.error(f"Fyers unsubscription failed: {e}")
+                logger.exception(f"Fyers unsubscription failed: {e}")
 
     async def get_status(self) -> dict[str, Any]:
         return {

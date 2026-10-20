@@ -52,7 +52,7 @@ class MarketDataService:
 
             return adx
         except Exception as e:
-            logger.error(f"Error calculating ADX: {str(e)}")
+            logger.exception(f"Error calculating ADX: {str(e)}")
             if hasattr(high, "index"):
                 return pd.Series([0] * len(high), index=high.index)
             return None
@@ -148,11 +148,11 @@ class MarketDataService:
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Error processing {name} ({symbol}): {str(e)}")
+                    logger.exception(f"Error processing {name} ({symbol}): {str(e)}")
                     pass
 
         except Exception as e:
-            logger.error(f"Error fetching global indices: {str(e)}")
+            logger.exception(f"Error fetching global indices: {str(e)}")
 
         return results
 
@@ -286,7 +286,7 @@ class MarketDataService:
                         "source": "vix_fallback",
                     }
             except Exception as vix_error:
-                logger.error(f"VIX fallback also failed: {str(vix_error)}")
+                logger.exception(f"VIX fallback also failed: {str(vix_error)}")
 
         return sentiment
 
@@ -369,5 +369,5 @@ class MarketDataService:
             }
 
         except Exception as e:
-            logger.error(f"Error analyzing market condition: {str(e)}", exc_info=True)
+            logger.exception(f"Error analyzing market condition: {str(e)}")
             return {"status": "Unavailable", "adx": 0}

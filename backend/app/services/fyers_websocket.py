@@ -128,10 +128,10 @@ class FyersWebSocketService:
                 try:
                     self.on_tick_handler(message)
                 except Exception as e:
-                    logger.error("[FyersWS] Main handler error: %s", e)
+                    logger.exception("[FyersWS] Main handler error: %s", e)
 
         except Exception as e:
-            logger.error("[FyersWS] Error processing message: %s", e)
+            logger.exception("[FyersWS] Error processing message: %s", e)
 
     def _on_error(self, error: object) -> None:
         """Handle WebSocket error"""
@@ -156,7 +156,7 @@ class FyersWebSocketService:
             try:
                 self.on_open_handler()
             except Exception as e:
-                logger.error("[FyersWS] Open handler error: %s", e)
+                logger.exception("[FyersWS] Open handler error: %s", e)
 
     def disconnect(self) -> None:
         """Close WebSocket connection"""

@@ -183,7 +183,7 @@ class IndexUniverseLoader:
                     try:
                         self._load_index_csv(index_id, filepath)
                     except Exception as e:
-                        logger.error(f"Failed to load {filename}: {e}")
+                        logger.exception(f"Failed to load {filename}: {e}")
                 else:
                     logger.warning(f"Index file not found: {filepath}")
 

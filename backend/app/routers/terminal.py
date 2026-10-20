@@ -426,7 +426,7 @@ def get_chart_data(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Terminal chart fetch failed: %s", exc, exc_info=True)
+        logger.exception("Terminal chart fetch failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load chart data") from exc
     finally:
         if db:
@@ -464,7 +464,7 @@ def get_options_board(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Terminal options board failed: %s", exc, exc_info=True)
+        logger.exception("Terminal options board failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load options board") from exc
 
 
@@ -503,7 +503,7 @@ def get_options_depth(symbol: Annotated[str, Query(..., min_length=2)]) -> dict[
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Terminal options depth failed: %s", exc, exc_info=True)
+        logger.exception("Terminal options depth failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load options depth") from exc
 
 
@@ -547,7 +547,7 @@ def get_options_orderflow(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Terminal options orderflow failed: %s", exc, exc_info=True)
+        logger.exception("Terminal options orderflow failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load options orderflow") from exc
 
 
@@ -608,7 +608,7 @@ def preview_options_order(
             "risk": risk,
         }
     except Exception as exc:
-        logger.error("Terminal options preview failed: %s", exc, exc_info=True)
+        logger.exception("Terminal options preview failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -656,7 +656,7 @@ def place_options_order(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Terminal options order failed: %s", exc, exc_info=True)
+        logger.exception("Terminal options order failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to place options order") from exc
 
 
@@ -718,7 +718,7 @@ def place_paper_order(order: PaperOrderRequest) -> dict[str, Any]:
     except Exception as exc:
         if db:
             db.rollback()
-        logger.error("Paper order placement failed: %s", exc, exc_info=True)
+        logger.exception("Paper order placement failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to place paper order") from exc
     finally:
         if db:

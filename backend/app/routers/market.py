@@ -182,7 +182,7 @@ def get_single_quote(symbol: str) -> dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error fetching quote for {symbol}: {e}")
+        logger.exception(f"Error fetching quote for {symbol}: {e}")
         return {"symbol": symbol, "price": 0, "changePercent": 0}
 
 
@@ -518,7 +518,7 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         return {"gainers": gainers, "losers": losers}
 
     except Exception as e:
-        logger.error(f"Error fetching top movers: {e}")
+        logger.exception(f"Error fetching top movers: {e}")
         return {"gainers": [], "losers": []}
 
 
@@ -585,7 +585,7 @@ def get_sector_performance() -> list[dict[str, Any]]:
         return results
 
     except Exception as e:
-        logger.error(f"Error fetching sector performance: {e}", exc_info=True)
+        logger.exception(f"Error fetching sector performance: {e}")
         return []
 
 
@@ -626,7 +626,7 @@ def get_commodities() -> list[dict[str, Any]]:
         return results
 
     except Exception as e:
-        logger.error(f"Error fetching commodities: {e}")
+        logger.exception(f"Error fetching commodities: {e}")
         return []
 
 
@@ -655,5 +655,5 @@ def get_currency(pair: str) -> dict[str, Any]:
         return {"pair": pair, "rate": round(current, 2), "changePercent": round(change_pct, 2)}
 
     except Exception as e:
-        logger.error(f"Error fetching currency {pair}: {e}")
+        logger.exception(f"Error fetching currency {pair}: {e}")
         return {"pair": pair, "rate": 0, "changePercent": 0}

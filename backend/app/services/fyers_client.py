@@ -109,7 +109,7 @@ class FyersClient:
                     self._missing_credentials_logged = False
 
         except Exception as e:
-            logger.error(f"Failed to load Fyers credentials: {e}")
+            logger.exception(f"Failed to load Fyers credentials: {e}")
 
     def _refresh_credentials_if_changed(self) -> bool:
         """
@@ -131,7 +131,7 @@ class FyersClient:
             self._load_credentials()
             return bool(self.access_token and self.access_token != old_token)
         except Exception as e:
-            logger.error(f"Failed checking token file changes: {e}")
+            logger.exception(f"Failed checking token file changes: {e}")
             return False
 
     def _connect(
@@ -162,7 +162,7 @@ class FyersClient:
                 logger.warning("[WARN] Fyers token validation failed.")
 
         except Exception as e:
-            logger.error(f"Error connecting to Fyers: {e}")
+            logger.exception(f"Error connecting to Fyers: {e}")
         finally:
             self._connecting = False
 
@@ -207,13 +207,13 @@ class FyersClient:
                     return _profile_ok()
                 return False
             except Exception as e:
-                logger.error(f"[ERROR] Token validation failed: {e}")
+                logger.exception(f"[ERROR] Token validation failed: {e}")
                 if self._refresh_credentials_if_changed():
                     try:
                         self._connect(skip_validation=True)
                         return _profile_ok()
                     except Exception as retry_error:
-                        logger.error(f"[ERROR] Token validation retry failed: {retry_error}")
+                        logger.exception(f"[ERROR] Token validation retry failed: {retry_error}")
                 return False
         finally:
             self._validating_token = False
@@ -235,7 +235,7 @@ class FyersClient:
             response = self.fyers.quotes({"symbols": sym_str})
             return response
         except Exception as e:
-            logger.error(f"Error fetching quotes: {e}")
+            logger.exception(f"Error fetching quotes: {e}")
             return {}
 
     def get_parsed_quotes(self, symbols: list[str]) -> dict[str, dict]:
@@ -293,7 +293,7 @@ class FyersClient:
             response = self.fyers.history(data)
             return response
         except Exception as e:
-            logger.error(f"Error fetching history for {symbol}: {e}")
+            logger.exception(f"Error fetching history for {symbol}: {e}")
             return {}
 
     def get_orderbook(self) -> dict[str, Any]:

@@ -258,7 +258,7 @@ class OptionChainService:
 
             return 0.0
         except Exception as e:
-            logger.error(f"Error getting spot price: {e}")
+            logger.exception(f"Error getting spot price: {e}")
             return 0.0
 
     def _parse_option_chain(
@@ -539,7 +539,7 @@ class OptionChainService:
                 return []
             return self._extract_expiries(response.get("data", {}))
         except Exception as e:
-            logger.error(f"Error getting expiries for {underlying}: {e}")
+            logger.exception(f"Error getting expiries for {underlying}: {e}")
             return []
 
     def get_atm_strike(self, underlying: str, expiry: date | None = None) -> float:

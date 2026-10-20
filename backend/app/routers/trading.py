@@ -453,7 +453,7 @@ def place_order(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error placing order: {e}")
+        logger.exception(f"Error placing order: {e}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
 

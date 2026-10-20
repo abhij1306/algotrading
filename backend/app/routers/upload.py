@@ -72,7 +72,7 @@ async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading bhavcopy: {e}", exc_info=True)
+        logger.exception(f"Error uploading bhavcopy: {e}")
         raise handle_api_error(e, "Failed to process bhavcopy file") from e
 
 
@@ -91,5 +91,5 @@ def get_upload_status() -> dict[str, Any]:
             )
         return {"files": files, "count": len(files)}
     except Exception as e:
-        logger.error(f"Error listing files: {e}")
+        logger.exception(f"Error listing files: {e}")
         return {"files": [], "count": 0, "error": str(e)}

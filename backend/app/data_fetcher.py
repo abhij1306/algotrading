@@ -98,7 +98,7 @@ def fetch_fyers_quotes(symbols: list) -> dict:
         return result
 
     except Exception as e:
-        logger.error("[fetch_fyers_quotes] Error: %s", str(e))
+        logger.exception("[fetch_fyers_quotes] Error: %s", str(e))
         return {}
 
 

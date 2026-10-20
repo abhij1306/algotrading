@@ -390,7 +390,7 @@ class OrderExecutionService:
             return response
 
         except Exception as e:
-            logger.error(f"Order Placement Failed: {e}")
+            logger.exception(f"Order Placement Failed: {e}")
             db.rollback()
             return {"status": "ERROR", "message": str(e)}
 

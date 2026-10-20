@@ -80,7 +80,7 @@ class PositionSyncService:
                 await asyncio.sleep(self._sync_interval)
 
             except Exception as e:
-                logger.error(f"Error in position sync loop: {e}")
+                logger.exception(f"Error in position sync loop: {e}")
                 await asyncio.sleep(self._sync_interval)
 
     def sync_positions(self) -> dict:
@@ -190,7 +190,7 @@ class PositionSyncService:
 
         except Exception as e:
             db.rollback()
-            logger.error(f"Error syncing positions: {e}")
+            logger.exception(f"Error syncing positions: {e}")
             return {"status": "error", "message": str(e)}
         finally:
             db.close()

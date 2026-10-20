@@ -172,7 +172,7 @@ def load_bhavcopy(csv_path: str, target_date: date = None) -> dict:
         logger.info(f"Successfully processed {stats['success']} records")
 
     except Exception as e:
-        logger.error(f"Database error: {e}")
+        logger.exception(f"Database error: {e}")
         db.rollback()
         stats["errors"].append(f"Database error: {str(e)}")
     finally:

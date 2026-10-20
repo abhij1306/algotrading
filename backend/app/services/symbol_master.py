@@ -526,7 +526,7 @@ class SymbolMaster:
             loader = _get_index_universe_loader()
             return loader.get_index_symbols(index_id)
         except Exception as e:
-            logger.error(f"Failed to get index symbols for {index_id}: {e}")
+            logger.exception(f"Failed to get index symbols for {index_id}: {e}")
             return []
 
     def is_index_constituent(self, symbol: str, index_id: str) -> bool:

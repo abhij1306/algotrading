@@ -76,7 +76,7 @@ def get_fyers_status() -> dict[str, Any]:
 
             return {"connected": False, "user_id": None}
     except Exception as e:
-        logger.error("[Fyers] Error checking status: %s", e)
+        logger.exception("[Fyers] Error checking status: %s", e)
         return {"connected": False, "user_id": None, "error": str(e)}
 
 
@@ -108,7 +108,7 @@ def disconnect_fyers() -> dict[str, Any]:
 
         return {"status": "success", "message": "Disconnected from Fyers"}
     except Exception as e:
-        logger.error("[Fyers] Error disconnecting: %s", e)
+        logger.exception("[Fyers] Error disconnecting: %s", e)
         raise handle_api_error(e, "Failed to disconnect from Fyers") from e
 
 
@@ -162,7 +162,7 @@ def get_fyers_auth_url() -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("[Fyers Auth] Error generating auth URL: %s", e)
+        logger.exception("[Fyers Auth] Error generating auth URL: %s", e)
         raise handle_api_error(e, "Failed to generate authentication URL") from e
 
 
@@ -254,5 +254,5 @@ def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("[Fyers Auth] Error during token exchange: %s", e)
+        logger.exception("[Fyers Auth] Error during token exchange: %s", e)
         raise handle_api_error(e, "Token exchange failed") from e

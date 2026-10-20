@@ -31,7 +31,7 @@ def retry_on_failure(
                     return func(*args, **kwargs)
                 except Exception as e:
                     if attempt == max_retries - 1:
-                        logger.error(f"Failed after {max_retries} attempts: {e}")
+                        logger.exception(f"Failed after {max_retries} attempts: {e}")
                         return None
                     time.sleep(delay)
             return None
@@ -109,7 +109,7 @@ class YFinanceService:
                     quotes[symbol] = None
 
         except Exception as e:
-            logger.error(f"Failed to bulk fetch from yfinance: {e}")
+            logger.exception(f"Failed to bulk fetch from yfinance: {e}")
             return {}
 
         return quotes
