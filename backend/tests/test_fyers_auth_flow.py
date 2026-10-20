@@ -1,10 +1,12 @@
 """FyersAuthService and the /api/auth/fyers routes, with a fake SessionModel (no Fyers calls)."""
 
+import asyncio
 import logging
+import threading
 from collections.abc import Callable, Generator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
@@ -77,6 +79,7 @@ def make_service(
     *,
     on_token_change: Recorder | None = None,
     on_disconnect: Recorder | None = None,
+    on_login: Recorder | None = None,
     credentials: Callable[[], FyersCredentials] = lambda: CREDS,
     clock: Clock | None = None,
 ) -> tuple[FyersAuthService, FakeSession]:
@@ -87,6 +90,7 @@ def make_service(
         credentials=credentials,
         on_token_change=on_token_change or Recorder(),
         on_disconnect=on_disconnect or Recorder(),
+        on_login=on_login or Recorder(),
         clock=clock or Clock(),
     )
     return service, session
@@ -241,6 +245,87 @@ def test_logout_is_an_explicit_live_feed_disconnect(
     # The runner is stopped and stays down until an explicit connect, even after a new login.
     assert live_market._explicitly_disconnected is True
     assert live_market._runner_stop.is_set()
+
+
+def test_login_after_logout_reconnects_the_live_feed_once(tmp_path: Path) -> None:
+    feed_down = Recorder()
+    feed_up = Recorder()
+    service, _ = make_service(tmp_path, on_disconnect=feed_down, on_login=feed_up)
+    service.exchange("code-1")
+    service.disconnect()
+    feed_up.calls = 0
+
+    service.exchange("code-2")
+
+    assert (feed_down.calls, feed_up.calls) == (1, 1)
+
+
+def test_rejected_login_does_not_reconnect_the_live_feed(tmp_path: Path) -> None:
+    feed_up = Recorder()
+    service, _ = make_service(tmp_path, {"s": "error", "code": -413}, on_login=feed_up)
+
+    with pytest.raises(TokenRejectedError):
+        service.exchange("bad-code")
+
+    assert feed_up.calls == 0
+
+
+def test_a_failed_live_feed_reconnect_does_not_fail_the_login(
+    tmp_path: Path, use_service: Installer
+) -> None:
+    service, _ = make_service(tmp_path, on_login=Recorder(RuntimeError("leak-marker socket")))
+    api = use_service(service)
+
+    response = api.post("/api/auth/fyers/token", json={"auth_code": "code"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert service.store.load() is not None
+
+
+def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.live_market_service import live_market
+
+    loop = asyncio.new_event_loop()
+    worker = threading.Thread(target=loop.run_forever, daemon=True)
+    worker.start()
+    calls: list[tuple[asyncio.AbstractEventLoop, bool, asyncio.AbstractEventLoop]] = []
+    done = threading.Event()
+
+    async def fake_connect_async(
+        loop: asyncio.AbstractEventLoop | None = None, explicit: bool = False, **_: object
+    ) -> str:
+        calls.append((loop, explicit, asyncio.get_running_loop()))
+        done.set()
+        return "market_closed"
+
+    monkeypatch.setattr(live_market, "loop", loop)
+    monkeypatch.setattr(live_market, "connect_async", fake_connect_async)
+    try:
+        auth_flow._connect_live_feed()
+        assert done.wait(timeout=5)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        worker.join(timeout=5)
+        loop.close()
+
+    assert calls == [(loop, True, loop)]
+
+
+def test_default_login_hook_without_an_app_loop_does_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.live_market_service import live_market
+
+    def fail(**_: object) -> NoReturn:
+        raise AssertionError("connect must not be scheduled without a loop")
+
+    monkeypatch.setattr(live_market, "loop", None)
+    monkeypatch.setattr(live_market, "connect_async", fail)
+
+    auth_flow._connect_live_feed()  # no loop, no error
 
 
 def test_credentials_from_env_names_the_missing_variable(

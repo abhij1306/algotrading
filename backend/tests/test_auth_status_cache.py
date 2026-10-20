@@ -34,6 +34,7 @@ def token_dir(tmp_path: Path) -> Generator[Path, None, None]:
         credentials=lambda: FyersCredentials("client", "secret", "https://example.test/"),
         on_token_change=lambda: None,
         on_disconnect=lambda: None,
+        on_login=lambda: None,
     )
     app.dependency_overrides[get_fyers_auth] = lambda: service
     yield tmp_path

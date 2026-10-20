@@ -10,6 +10,8 @@ or raised.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
 import os
 import time
@@ -105,6 +107,33 @@ def _disconnect_live_feed() -> None:
     logger.info("[Fyers] Live feed disconnected")
 
 
+def _connect_live_feed() -> None:
+    """The same explicit connect as POST /api/websocket/connect, scheduled on the app's event
+    loop (the login route runs in a worker thread). Market hours and DEV_MODE apply as usual.
+
+    Fire and forget: the login response does not wait for the provider, and the outcome is
+    logged in one line.
+    """
+    from app.services.live_market_service import live_market
+
+    loop = live_market.loop
+    if loop is None or loop.is_closed():
+        logger.info("[Fyers] Live feed not reconnected after login: no app event loop yet")
+        return
+    future = asyncio.run_coroutine_threadsafe(
+        live_market.connect_async(loop=loop, explicit=True), loop
+    )
+    future.add_done_callback(_log_connect_outcome)
+
+
+def _log_connect_outcome(future: concurrent.futures.Future[str]) -> None:
+    error = future.exception()
+    if error is not None:
+        logger.warning("[Fyers] Live feed reconnect after login failed: %s", type(error).__name__)
+    else:
+        logger.info("[Fyers] Live feed reconnect after login: %s", future.result())
+
+
 class FyersAuthService:
     def __init__(
         self,
@@ -114,6 +143,7 @@ class FyersAuthService:
         credentials: Callable[[], FyersCredentials] = credentials_from_env,
         on_token_change: Callable[[], None] = _reset_fyers_client,
         on_disconnect: Callable[[], None] = _disconnect_live_feed,
+        on_login: Callable[[], None] = _connect_live_feed,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.store = store
@@ -121,6 +151,7 @@ class FyersAuthService:
         self._credentials = credentials
         self._on_token_change = on_token_change
         self._on_disconnect = on_disconnect
+        self._on_login = on_login
         self._clock = clock
         self._cached_status: FyersStatus | None = None
         self._cached_at = 0.0
@@ -163,6 +194,13 @@ class FyersAuthService:
         logger.info("[Fyers Auth] Access token saved; expires at %s", saved.expires_at)
         self.invalidate_status()
         self._refresh_client()
+        # A logout explicitly disconnected the live feed; logging in lifts that.
+        try:
+            self._on_login()
+        except Exception as error:
+            logger.warning(
+                "[Fyers Auth] Could not reconnect the live feed: %s", type(error).__name__
+            )
         return FyersStatus(connected=True, user_id=saved.user_id)
 
     def status(self) -> FyersStatus:
