@@ -22,8 +22,11 @@ if TYPE_CHECKING:
     from fyers_apiv3.fyersModel import FyersModel
 
 CLIENT_NOT_INITIALIZED = "Client not initialized"
-# Client-facing text when the broker call itself raises; the exception is only logged.
-BROKER_ORDER_FAILED = "Broker order request failed"
+# OrderResponse status when the order may have reached the broker but no reply confirmed it
+# (timeout, transport error, malformed reply). It is neither placed nor rejected.
+SUBMIT_UNCONFIRMED = "SUBMIT_UNCONFIRMED"
+BROKER_ORDER_UNCONFIRMED = "Order sent but not confirmed by the broker"
+BROKER_CIRCUIT_OPEN = "Broker unavailable; order not sent"
 logger = logging.getLogger(__name__)
 
 # Fyers order "type": 1 = LIMIT, 2 = MARKET, 3 = SL-M (stop market), 4 = SL (stop limit)
@@ -36,6 +39,8 @@ FYERS_ORDER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9]{1,20}$")
 ORDER_TAG_PREFIX = "ST"
 # Fyers orderbook statuses for an order that can still fill: 4 = transit, 6 = pending.
 FYERS_WORKING_ORDER_STATUSES = {4, 6}
+# Fyers orderbook status -> our order status; working states (4, 6) read as SUBMITTED.
+FYERS_ORDER_STATUSES = {1: "CANCELLED", 2: "FILLED", 4: "SUBMITTED", 5: "REJECTED", 6: "SUBMITTED"}
 
 
 def _order_tag_fields(order_tag: object) -> tuple[dict[str, str], OrderResponse | None]:
@@ -216,34 +221,69 @@ class FyersBroker(IBroker):
             **tag_fields,
         }
 
+        if self._circuit_open():
+            # Nothing is sent while the circuit is open: a definite rejection.
+            return OrderResponse(
+                order_id="", status="REJECTED", message=BROKER_CIRCUIT_OPEN, details=None
+            )
+
+        unconfirmed = OrderResponse(
+            order_id="", status=SUBMIT_UNCONFIRMED, message=BROKER_ORDER_UNCONFIRMED, details=None
+        )
+        no_reply: dict[str, Any] = {}
         try:
             response = self._call_with_guard(
                 "place_order",
                 lambda: self.client.place_order(data=data),
                 timeout_sec=1.5,
-                fallback={"s": "error", "message": "Fyers order timeout/unavailable"},
+                fallback=no_reply,
             )
-
+            if response is no_reply:
+                # Timed out or raised mid-request: the order may still have been placed.
+                return unconfirmed
             if response.get("s") == "ok":
+                if not response.get("id"):
+                    logger.error("Fyers accepted an order without returning its id")
+                    return unconfirmed
                 return OrderResponse(
-                    order_id=response.get("id", ""),
+                    order_id=str(response["id"]),
                     status="SUBMITTED",
                     message=response.get("message", "Order Placed"),
                     details=response,
                 )
-            else:
-                return OrderResponse(
-                    order_id="",
-                    status="REJECTED",
-                    message=response.get("message", "Fyers rejected order"),
-                    details=response,
-                )
-
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=response.get("message", "Fyers rejected order"),
+                details=response,
+            )
         except Exception:
             logger.exception("Fyers place_order failed")
-            return OrderResponse(
-                order_id="", status="ERROR", message=BROKER_ORDER_FAILED, details=None
-            )
+            return unconfirmed
+
+    def find_order_by_tag(self, order_tag: str) -> dict[str, Any] | None:
+        """The orderbook entry carrying `order_tag` as {order_id, status}, else None.
+
+        Raises BrokerUnavailableError when the orderbook cannot be read.
+        """
+        if not self.client:
+            raise BrokerUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
+        response = self._call_with_guard(
+            "orderbook",
+            lambda: self.client.orderbook(),
+            timeout_sec=2.0,
+            fallback={"s": "error"},
+        )
+        if not isinstance(response, dict) or response.get("s") != "ok":
+            raise BrokerUnavailableError("Fyers orderbook request failed")
+        for order in response.get("orderBook") or []:
+            # Fyers may echo the tag with a "<n>:" prefix.
+            if str(order.get("orderTag") or "").split(":")[-1] == order_tag and order.get("id"):
+                return {
+                    "order_id": str(order["id"]),
+                    "status": FYERS_ORDER_STATUSES.get(int(order.get("status") or 0), "SUBMITTED"),
+                }
+        return None
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not self.client:

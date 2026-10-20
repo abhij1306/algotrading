@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..brokers.plugins.fyers import (
     FYERS_ORDER_TYPES,
+    SUBMIT_UNCONFIRMED,
     FyersBroker,
     fyers_order_tag,
     quote_last_price,
@@ -41,9 +42,19 @@ INVALID_CLIENT_ORDER_ID_MESSAGE = "client_order_id must be a UUID v4"
 DUPLICATE_ORDER_MESSAGE = "Duplicate client_order_id: returning the existing order"
 # A LIVE row is committed in this state before the broker is called.
 PENDING_SUBMIT = "PENDING_SUBMIT"
+# The broker call failed in a way that leaves it unknown whether the order was placed.
+UNCONFIRMED_MESSAGE = (
+    "Order sent but not confirmed by the broker. Check the broker orderbook before "
+    "placing it again."
+)
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
 # A LIVE row in one of these states has no working broker order to modify.
-LIVE_UNMODIFIABLE_STATES = {PENDING_SUBMIT, "ERROR", *PAPER_TERMINAL_STATES}
+LIVE_UNMODIFIABLE_STATES = {
+    PENDING_SUBMIT,
+    SUBMIT_UNCONFIRMED,
+    "ERROR",
+    *PAPER_TERMINAL_STATES,
+}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
 
@@ -363,9 +374,7 @@ class OrderExecutionService:
 
         if not isinstance(broker_resp, dict):
             logger.error("Broker returned non-dict response for %s", new_order.internal_id)
-            new_order.status = "ERROR"
-            new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
-            return {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
+            return self._unconfirmed(new_order, client_order_id)
 
         if broker_resp.get("status") == "SUBMITTED" and broker_resp.get("order_id"):
             order_id = str(broker_resp.get("order_id"))
@@ -379,17 +388,48 @@ class OrderExecutionService:
             # A structured rejection: a fixed message plus the broker's short reason.
             message = with_broker_reason(LIVE_REJECTED_MESSAGE, broker_resp)
             new_order.status = "REJECTED"
-        else:
-            # ERROR (the broker call raised) or an unknown status: its text stays in the log.
-            logger.error(
-                "Live order %s failed at the broker: %s",
-                new_order.internal_id,
-                safe_log_value(broker_resp.get("message")),
-            )
-            message = LIVE_SUBMIT_FAILED_MESSAGE
-            new_order.status = "ERROR"
-        new_order.reject_reason = message
-        return {"status": new_order.status, "message": message}
+            new_order.reject_reason = message
+            return {"status": "REJECTED", "message": message}
+
+        # ERROR, SUBMIT_UNCONFIRMED, SUBMITTED without an id or an unknown status: the
+        # order may have reached the broker, so it is never reported as rejected.
+        logger.error(
+            "Live order %s has no confirmed broker outcome: status=%s message=%s",
+            new_order.internal_id,
+            safe_log_value(broker_resp.get("status")),
+            safe_log_value(broker_resp.get("message")),
+        )
+        return self._unconfirmed(new_order, client_order_id)
+
+    def _unconfirmed(self, new_order: LiveOrder, client_order_id: str | None) -> dict[str, Any]:
+        """Settle an order whose broker call gave no clear answer.
+
+        Looks the order up once in the broker orderbook by its order tag. If found, the
+        row takes the broker id and status. Otherwise it is marked SUBMIT_UNCONFIRMED
+        and the client is told to check the orderbook rather than to retry.
+        """
+        found = None
+        if client_order_id:
+            try:
+                found = self.broker.find_order_by_tag(fyers_order_tag(client_order_id))
+            except Exception:
+                logger.exception("Orderbook lookup failed for %s", new_order.internal_id)
+        if found:
+            order_id = str(found["order_id"])
+            status = str(found["status"])
+            new_order.id = order_id
+            new_order.status = status
+            new_order.broker_message = "Confirmed from the broker orderbook"
+            logger.info("Live order %s found in the orderbook as %s", order_id, status)
+            return {"status": status, "order_id": order_id, "message": new_order.broker_message}
+        new_order.status = SUBMIT_UNCONFIRMED
+        new_order.reject_reason = None
+        new_order.broker_message = UNCONFIRMED_MESSAGE
+        return {
+            "status": SUBMIT_UNCONFIRMED,
+            "order_id": new_order.internal_id,
+            "message": UNCONFIRMED_MESSAGE,
+        }
 
     @staticmethod
     def _apply_paper_fill(
@@ -433,16 +473,14 @@ class OrderExecutionService:
         new_order: LiveOrder,
         client_order_id: str | None,
     ) -> dict[str, Any]:
-        """Submit a LIVE order; a broker exception becomes a fixed ERROR on the order."""
+        """Submit a LIVE order; a broker exception leaves its outcome unconfirmed."""
         try:
             return self._submit_live_order(order_params, fyers_symbol, new_order, client_order_id)
         except Exception:
-            # Full error stays in the server log; the client and the stored
-            # order get a fixed message (no broker error text leaks).
+            # Full error stays in the server log; the order may still have been placed,
+            # so it is reconciled or marked SUBMIT_UNCONFIRMED, never REJECTED.
             logger.exception("Live order submission failed for %s", fyers_symbol)
-            new_order.status = "ERROR"
-            new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
-            return {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
+            return self._unconfirmed(new_order, client_order_id)
 
     @staticmethod
     def _find_by_client_order_id(client_order_id: str | None, db: Session) -> LiveOrder | None:

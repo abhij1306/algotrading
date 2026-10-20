@@ -284,6 +284,8 @@ export interface SquareInput {
 }
 
 const SQUARE_RETRY_DELAY_MS = 250;
+/** Status of a LIVE order or exit that may have reached the broker without confirmation. */
+export const SUBMIT_UNCONFIRMED = "SUBMIT_UNCONFIRMED";
 
 /**
  * Squares a position and drops it from the cached book; a rejected square-off throws.
@@ -313,13 +315,18 @@ export function useSquarePosition() {
           message: result.message || "Failed to square position",
         });
       }
+      // Sent but not confirmed: not a rejection, so the user must not square again.
+      const unconfirmed = result.status === SUBMIT_UNCONFIRMED;
+      return { unconfirmed, message: result.message ?? "" };
     },
     retry: shouldRetry,
     retryDelay: SQUARE_RETRY_DELAY_MS,
-    onSuccess: (_data, { row }) => {
-      queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
-        prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
-      );
+    onSuccess: (result, { row }) => {
+      if (!result.unconfirmed) {
+        queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
+          prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+        );
+      }
       return queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() });
     },
   });

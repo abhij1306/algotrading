@@ -39,6 +39,13 @@ class FakeBroker:
         self.modify_reply: dict[str, Any] | Exception = {"s": "ok", "message": "Modified"}
         self.cancel_reply: dict[str, Any] | Exception = {"s": "ok"}
         self.place_reply: dict[str, Any] | Exception | None = None
+        self.tagged_order: dict[str, Any] | Exception | None = None
+
+    def find_order_by_tag(self, order_tag: str) -> dict[str, Any] | None:
+        self.calls.append(("find_order_by_tag", order_tag))
+        if isinstance(self.tagged_order, Exception):
+            raise self.tagged_order
+        return self.tagged_order
 
     def get_quote(self, symbol: str) -> dict[str, Any]:
         self.calls.append(("get_quote", symbol))
@@ -235,7 +242,9 @@ def test_live_modify_blocked_by_each_risk_check_never_reaches_broker(
     assert (order.quantity, order.price, order.order_type) == (5, 800.0, "LIMIT")
 
 
-@pytest.mark.parametrize("status", ["PENDING_SUBMIT", "REJECTED", "ERROR", "CANCELLED"])
+@pytest.mark.parametrize(
+    "status", ["PENDING_SUBMIT", "SUBMIT_UNCONFIRMED", "REJECTED", "ERROR", "CANCELLED"]
+)
 def test_live_modify_of_an_order_with_no_working_broker_order_is_rejected(
     orders: Session, service: oes.OrderExecutionService, broker: FakeBroker, status: str
 ) -> None:
@@ -444,16 +453,15 @@ def test_live_cancel_failure_returns_fixed_message(
     assert order.status == "SUBMITTED"
 
 
-def test_live_place_with_broker_error_text_stores_and_returns_a_fixed_message(
-    orders: Session,
-    service: oes.OrderExecutionService,
-    broker: FakeBroker,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # FyersBroker.place_order turns an exception into status ERROR with its text.
-    broker.place_reply = {"order_id": "", "status": "ERROR", "message": SECRET, "details": None}
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
-    params = {
+UNCONFIRMED_MESSAGE = (
+    "Order sent but not confirmed by the broker. Check the broker orderbook before "
+    "placing it again."
+)
+ORDER_TAG = oes.fyers_order_tag(CLIENT_ORDER_ID)
+
+
+def live_market_params() -> dict[str, Any]:
+    return {
         "symbol": "SBIN",
         "side": "BUY",
         "quantity": 1,
@@ -462,16 +470,77 @@ def test_live_place_with_broker_error_text_stores_and_returns_a_fixed_message(
         "client_order_id": CLIENT_ORDER_ID,
     }
 
-    result = service.place_order(params, orders, mode="LIVE")
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        RuntimeError(SECRET),
+        {"order_id": "", "status": "ERROR", "message": SECRET, "details": None},
+        {"order_id": "", "status": "SUBMIT_UNCONFIRMED", "message": SECRET, "details": None},
+        {"order_id": "", "status": "SUBMITTED", "message": SECRET, "details": None},
+        "not a dict",
+    ],
+)
+@pytest.mark.parametrize("lookup", [None, BrokerUnavailableError(SECRET)])
+def test_ambiguous_live_submit_is_unconfirmed_never_rejected(
+    orders: Session,
+    service: oes.OrderExecutionService,
+    broker: FakeBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: object,
+    lookup: object,
+) -> None:
+    broker.place_reply = reply  # type: ignore[assignment]
+    broker.tagged_order = lookup  # type: ignore[assignment]
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+
+    result = service.place_order(live_market_params(), orders, mode="LIVE")
+
+    row = orders.query(LiveOrder).one()
+    assert result == {
+        "status": "SUBMIT_UNCONFIRMED",
+        "order_id": row.internal_id,
+        "message": UNCONFIRMED_MESSAGE,
+        "client_order_id": CLIENT_ORDER_ID,
+        "duplicate": False,
+    }
+    assert (row.id, row.status, row.reject_reason) == (
+        row.internal_id,
+        "SUBMIT_UNCONFIRMED",
+        None,
+    )
+    # One orderbook lookup by the order's tag before giving up.
+    assert broker.calls_named("find_order_by_tag") == [ORDER_TAG]
+
+    retry = service.place_order(live_market_params(), orders, mode="LIVE")
+
+    assert (retry["status"], retry["duplicate"]) == ("SUBMIT_UNCONFIRMED", True)
+    assert broker.count("place_order") == 1
+
+
+@pytest.mark.parametrize("found_status", ["SUBMITTED", "FILLED", "REJECTED"])
+def test_ambiguous_live_submit_found_in_the_orderbook_records_broker_id_and_status(
+    orders: Session,
+    service: oes.OrderExecutionService,
+    broker: FakeBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    found_status: str,
+) -> None:
+    broker.place_reply = RuntimeError(SECRET)
+    broker.tagged_order = {"order_id": "B-77", "status": found_status}
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+
+    result = service.place_order(live_market_params(), orders, mode="LIVE")
 
     assert result == {
-        "status": "ERROR",
-        "message": "Broker order submission failed",
+        "status": found_status,
+        "order_id": "B-77",
+        "message": "Confirmed from the broker orderbook",
         "client_order_id": CLIENT_ORDER_ID,
         "duplicate": False,
     }
     row = orders.query(LiveOrder).one()
-    assert (row.status, row.reject_reason) == ("ERROR", "Broker order submission failed")
+    assert (row.id, row.status) == ("B-77", found_status)
 
 
 def test_live_place_rejection_drops_the_raw_broker_reply(
@@ -845,7 +914,6 @@ def test_exit_with_db_down_raises_and_never_calls_the_broker(
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
-        (RuntimeError(SECRET), "Broker order submission failed"),
         (
             {"order_id": "", "status": "REJECTED", "message": "RMS: blocked", "details": SECRET},
             "Broker rejected the order: RMS: blocked",
@@ -866,6 +934,24 @@ def test_failed_exit_reports_error_without_broker_text(
     assert (result["status"], result["message"]) == ("ERROR", "One or more exit orders failed")
     assert result["orders"][0]["message"] == message
     assert SECRET not in repr(result)
+
+
+@pytest.mark.usefixtures("market_open")
+def test_exit_with_an_ambiguous_broker_reply_is_unconfirmed_not_failed(
+    orders: Session, exits: les.LiveExitService, broker: FakeBroker
+) -> None:
+    broker.place_reply = RuntimeError(SECRET)
+
+    result = run_exit(exits, orders)
+
+    assert (result["status"], result["message"]) == (
+        "SUBMIT_UNCONFIRMED",
+        "Exit sent but not confirmed by the broker. Check the broker orderbook before "
+        "squaring again.",
+    )
+    assert [o["status"] for o in result["orders"]] == ["SUBMIT_UNCONFIRMED"]
+    assert SECRET not in repr(result)
+    assert orders.query(LiveOrder).one().status == "SUBMIT_UNCONFIRMED"
 
 
 # --- Routes ------------------------------------------------------------------------
@@ -958,9 +1044,12 @@ class OrderbookBroker(FyersBroker):
 
 @pytest.fixture
 def reset_circuit() -> Generator[None, None, None]:
-    FyersBroker._record_success()
+    # The circuit state is per class: the subclass keeps its own once it records a call.
+    for broker_cls in (FyersBroker, OrderbookBroker):
+        broker_cls._record_success()
     yield
-    FyersBroker._record_success()
+    for broker_cls in (FyersBroker, OrderbookBroker):
+        broker_cls._record_success()
 
 
 def fyers_order(symbol: str, status: int, side: int, qty: int, filled: int) -> dict[str, Any]:
@@ -1004,3 +1093,77 @@ def test_working_orders_fail_closed_when_the_orderbook_is_unreadable(
 ) -> None:
     with pytest.raises(BrokerUnavailableError):
         OrderbookBroker(client).get_working_orders()
+
+
+# --- FyersBroker.place_order outcome and find_order_by_tag ---------------------------
+
+
+class PlaceClient:
+    def __init__(self, reply: object) -> None:
+        self.reply = reply
+        self.sent: list[dict[str, Any]] = []
+
+    def place_order(self, data: dict[str, Any]) -> object:
+        self.sent.append(data)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+MARKET_BUY = {"symbol": "NSE:SBIN-EQ", "side": "BUY", "quantity": 1, "type": "MARKET"}
+
+
+@pytest.mark.usefixtures("reset_circuit")
+@pytest.mark.parametrize(
+    "reply",
+    [
+        TimeoutError(SECRET),  # the SDK call raised mid-request
+        {"s": "ok", "message": "placed"},  # accepted but no id
+    ],
+)
+def test_fyers_place_without_a_clear_reply_is_unconfirmed(reply: object) -> None:
+    client = PlaceClient(reply)
+
+    result = OrderbookBroker(client).place_order(MARKET_BUY)  # type: ignore[arg-type]
+
+    assert result == {
+        "order_id": "",
+        "status": "SUBMIT_UNCONFIRMED",
+        "message": "Order sent but not confirmed by the broker",
+        "details": None,
+    }
+    assert len(client.sent) == 1
+
+
+def test_fyers_place_with_the_circuit_open_is_rejected_without_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OrderbookBroker, "_circuit_open_until", float("inf"))
+    client = PlaceClient({"s": "ok", "id": "B-1"})
+
+    result = OrderbookBroker(client).place_order(MARKET_BUY)  # type: ignore[arg-type]
+
+    assert (result["status"], result["message"]) == (
+        "REJECTED",
+        "Broker unavailable; order not sent",
+    )
+    assert client.sent == []
+
+
+@pytest.mark.usefixtures("reset_circuit")
+def test_find_order_by_tag_returns_the_tagged_order_and_its_status() -> None:
+    tagged = {**fyers_order("NSE:SBIN-EQ", 2, 1, 1, 1), "id": "B-9", "orderTag": "2:" + ORDER_TAG}
+    other = {**fyers_order("NSE:SBIN-EQ", 6, 1, 1, 0), "id": "B-8", "orderTag": "ST0"}
+    broker = OrderbookBroker(OrderbookClient({"s": "ok", "orderBook": [other, tagged]}))
+
+    assert broker.find_order_by_tag(ORDER_TAG) == {"order_id": "B-9", "status": "FILLED"}
+    assert broker.find_order_by_tag("STNOTTHERE") is None
+
+
+@pytest.mark.usefixtures("reset_circuit")
+@pytest.mark.parametrize("client", [None, OrderbookClient({"s": "error"})])
+def test_find_order_by_tag_fails_closed_when_the_orderbook_is_unreadable(
+    client: OrderbookClient | None,
+) -> None:
+    with pytest.raises(BrokerUnavailableError):
+        OrderbookBroker(client).find_order_by_tag(ORDER_TAG)

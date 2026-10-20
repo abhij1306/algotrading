@@ -369,15 +369,20 @@ def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
         mode="LIVE",
     )
 
+    # The call may have reached the broker: unconfirmed, never rejected, no exception text.
+    stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-leak").one()
     assert result == {
-        "status": "ERROR",
-        "message": "Broker order submission failed",
+        "status": "SUBMIT_UNCONFIRMED",
+        "order_id": stored.internal_id,
+        "message": (
+            "Order sent but not confirmed by the broker. Check the broker orderbook before "
+            "placing it again."
+        ),
         "client_order_id": CLIENT_ORDER_ID,
         "duplicate": False,
     }
     assert len(broker.calls) == 1
-    stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-leak").one()
-    assert (stored.status, stored.reject_reason) == ("ERROR", "Broker order submission failed")
+    assert (stored.status, stored.reject_reason) == ("SUBMIT_UNCONFIRMED", None)
     db_session.delete(stored)
     db_session.commit()
 

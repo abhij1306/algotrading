@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..brokers.base import Position, WorkingOrder
+from ..brokers.plugins.fyers import SUBMIT_UNCONFIRMED
 from ..models.live_order import LiveOrder
 from .order_execution_service import (
     CLIENT_ORDER_ID_REQUIRED_MESSAGE,
@@ -43,6 +44,9 @@ EXIT_WORKING_MESSAGE = "An exit order for this position is already working"
 DUPLICATE_EXIT_MESSAGE = "Duplicate client_order_id: returning the existing exit orders"
 EXIT_PLACED_MESSAGE = "Exit orders placed"
 EXIT_FAILED_MESSAGE = "One or more exit orders failed"
+EXIT_UNCONFIRMED_MESSAGE = (
+    "Exit sent but not confirmed by the broker. Check the broker orderbook before squaring again."
+)
 # Namespace for the per-position client_order_id derived from the request's id.
 EXIT_ORDER_NAMESPACE = uuid.UUID("6f1c2a58-3b7e-4d0a-9c55-0e8f4b2d7a19")
 FAILED_EXIT_STATUSES = {"ERROR", "REJECTED"}
@@ -156,12 +160,19 @@ class LiveExitService:
         orders = [
             self._exit_one(position, working, request_id, user_id, db) for position in targets
         ]
-        failed = any(order["status"] in FAILED_EXIT_STATUSES for order in orders)
+        statuses = {order["status"] for order in orders}
+        if statuses & FAILED_EXIT_STATUSES:
+            status, message = "ERROR", EXIT_FAILED_MESSAGE
+        elif SUBMIT_UNCONFIRMED in statuses:
+            # Not a failure: the exit may be live. A new click must not send another.
+            status, message = SUBMIT_UNCONFIRMED, EXIT_UNCONFIRMED_MESSAGE
+        else:
+            status, message = "SUCCESS", EXIT_PLACED_MESSAGE
         return {
-            "status": "ERROR" if failed else "SUCCESS",
+            "status": status,
             "mode": "LIVE",
             "symbol": symbol,
-            "message": EXIT_FAILED_MESSAGE if failed else EXIT_PLACED_MESSAGE,
+            "message": message,
             "client_order_id": request_id,
             "duplicate": False,
             "orders": orders,

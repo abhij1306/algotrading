@@ -25,6 +25,7 @@ import { queryKeys } from "@/lib/queries/keys";
 import { shouldRetry } from "@/lib/queries/query-client";
 import { ApiError, apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
 import {
+  SUBMIT_UNCONFIRMED,
   useAddToWatchlist,
   useOptionsBoard,
   usePositionsBook,
@@ -219,6 +220,10 @@ async function submitOrder(input: OrderInput): Promise<string> {
       statusText: response.statusText,
       body: data,
     });
+  }
+  if (data?.status === SUBMIT_UNCONFIRMED) {
+    // Not rejected: the order may be live, so the user must not place it again.
+    return `${mode} ${side} unconfirmed: ${data.message || "check the broker orderbook"}`;
   }
   const summary = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
   return data?.duplicate ? `${summary} - already placed` : summary;
@@ -560,7 +565,12 @@ function useSquareAction(onMessage: (message: string | null) => void) {
       square.mutate(
         { row, clientOrderId: crypto.randomUUID() },
         {
-          onSuccess: () => onMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`),
+          onSuccess: (result) =>
+            onMessage(
+              result.unconfirmed
+                ? `${row.mode || "PAPER"} square for ${row.symbol} unconfirmed: ${result.message}`
+                : `${row.mode || "PAPER"} square submitted for ${row.symbol}`,
+            ),
           onError: (error) => onMessage(errorText(error, "Failed to square position")),
         },
       );

@@ -262,10 +262,11 @@ def test_fyers_place_order_exception_message_is_fixed(monkeypatch: pytest.Monkey
         {"symbol": "NSE:SBIN-EQ", "side": "BUY", "quantity": 1, "type": "MARKET"}
     )
 
+    # The reply failed after the request was sent, so the order may exist: unconfirmed.
     assert result == {
         "order_id": "",
-        "status": "ERROR",
-        "message": "Broker order request failed",
+        "status": "SUBMIT_UNCONFIRMED",
+        "message": "Order sent but not confirmed by the broker",
         "details": None,
     }
 
