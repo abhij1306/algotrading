@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FYERS_SPEC = "fyers-apiv3==3.1.10"
+FYERS_SPEC = "fyers-apiv3==3.2.0"
 
 
 def venv_python() -> Path:

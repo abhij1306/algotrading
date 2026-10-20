@@ -93,7 +93,8 @@ if os.getenv("USE_SQLITE_TEST", "False") == "True":
 else:
     from sqlalchemy.pool import QueuePool
 
-    DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    # Explicit driver: SQLAlchemy 2.1 made psycopg (v3) the default for postgresql://.
+    DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     engine = create_engine(
         DATABASE_URL,
         echo=False,

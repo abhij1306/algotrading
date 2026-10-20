@@ -554,14 +554,16 @@ def reconcile():
     Detect and log discrepancies.
     """
     fyers_positions = fyers_client.get_positions()
-    internal_positions = db.query(Position).filter(status.in_(['OPEN', 'OPEN_PARTIAL'])).all()
+    internal_positions = db.query(Position).filter(status.in_(["OPEN", "OPEN_PARTIAL"])).all()
 
     for internal in internal_positions:
         fyers_match = find_in_fyers(internal.symbol, fyers_positions)
         if not fyers_match:
             log_discrepancy(f"MISSING: {internal.symbol} in internal records but not in Fyers")
         elif abs(fyers_match.qty - internal.shares_remaining) > 0:
-            log_discrepancy(f"QTY MISMATCH: {internal.symbol} internal={internal.shares_remaining} fyers={fyers_match.qty}")
+            log_discrepancy(
+                f"QTY MISMATCH: {internal.symbol} internal={internal.shares_remaining} fyers={fyers_match.qty}"
+            )
 
     for fyers_pos in fyers_positions:
         if not find_in_internal(fyers_pos.symbol, internal_positions):
@@ -582,8 +584,8 @@ class PositionMonitor:
     """
 
     async def on_tick(self, tick: dict):
-        symbol = tick['symbol']
-        ltp = tick['ltp']
+        symbol = tick["symbol"]
+        ltp = tick["ltp"]
 
         position = self.open_positions.get(symbol)
         if not position:
