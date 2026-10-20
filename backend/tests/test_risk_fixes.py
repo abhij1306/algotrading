@@ -67,7 +67,7 @@ def manager_for(
 @pytest.fixture
 def summary_db(monkeypatch: pytest.MonkeyPatch, test_engine: Engine) -> None:
     """get_exposure_summary opens its own session: point it at the test database."""
-    monkeypatch.setattr("app.services.risk_manager.SessionLocal", sessionmaker(bind=test_engine))
+    monkeypatch.setattr("app.database.SessionLocal", sessionmaker(bind=test_engine))
 
 
 def add_position(
@@ -505,9 +505,7 @@ def synced(
     """position_sync_service on the test database with a FakeBroker, and one stored
     LIVE position from an earlier sync."""
     fake = fake_broker
-    monkeypatch.setattr(
-        "app.services.position_sync_service.SessionLocal", sessionmaker(bind=test_engine)
-    )
+    monkeypatch.setattr("app.database.SessionLocal", sessionmaker(bind=test_engine))
     monkeypatch.setattr(position_sync_service, "_last_sync", datetime(2026, 10, 20, 10, 0))
     add_position(rows, "default_user", symbol="SBIN", net_qty=10)
     clear_cache()
@@ -608,7 +606,7 @@ def test_a_down_database_during_sync_is_reported_as_a_database_outage(
     client: TestClient, synced: FakeBroker, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     synced.positions = [broker_position(12)]
-    monkeypatch.setattr("app.services.position_sync_service.SessionLocal", DownSession)
+    monkeypatch.setattr("app.database.SessionLocal", DownSession)
 
     response = client.get(path)
 

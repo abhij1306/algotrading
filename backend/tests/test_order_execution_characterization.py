@@ -650,7 +650,7 @@ def position_factory(
     test_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[sessionmaker, None, None]:
     factory = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-    monkeypatch.setattr("app.services.position_sync_service.SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
     with factory() as db:
         db.query(LivePosition).delete()
         db.add(
