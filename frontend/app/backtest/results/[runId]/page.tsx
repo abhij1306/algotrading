@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, memo } from "react";
+import { useMemo, memo } from "react";
 import { useNavigate, useParams } from "react-router";
 import dynamic from "@/lib/dynamic";
 import {
@@ -16,44 +16,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui";
-import { apiClient } from "@/lib/api-client";
+import { useBacktestResult } from "@/lib/queries/backtest";
 
 type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
-
-type BacktestJobResponse = {
-  job_id: string;
-  status: "running" | "completed" | "failed";
-  created_at: string;
-  error?: string;
-  params: {
-    instrument_type: string;
-    selection: { mode: string; universe?: string; symbols?: string[] };
-    start_date: string;
-    end_date: string;
-  };
-  result?: {
-    selection: { scope: string };
-    metrics: {
-      final_equity: number;
-      total_return_pct: number;
-      sharpe_ratio: number;
-      max_drawdown_pct: number;
-      total_trades: number;
-      win_rate_pct: number;
-    };
-    equity_curve: Array<{ date: string; equity: number }>;
-    benchmark_curve: Array<{ date: string; equity: number }>;
-    drawdown_curve: Array<{ date: string; drawdown_pct: number }>;
-    trade_log: Array<{
-      symbol: string;
-      entry_date: string;
-      exit_date: string;
-      entry_price: number;
-      exit_price: number;
-      return_pct: number;
-    }>;
-  };
-};
 
 function formatRupeeLakh(value: number): string {
   if (!Number.isFinite(value)) return "--";
@@ -203,47 +168,9 @@ export default function BacktestResultPage() {
   const params = useParams<{ runId: string }>();
   const navigate = useNavigate();
   const runId = params.runId;
-  const [payload, setPayload] = useState<BacktestJobResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    let intervalId: NodeJS.Timeout | null = null;
-    let errorCount = 0;
-
-    const poll = async () => {
-      const res = await apiClient.get<BacktestJobResponse>(`/api/backtest/result/${runId}`);
-      if (!active) return;
-
-      if (res.error) {
-        errorCount++;
-        setError(res.error.message);
-        // Stop polling after 3 consecutive errors (e.g., 404 not found)
-        if (errorCount >= 3 && intervalId) {
-          clearInterval(intervalId);
-        }
-        return;
-      }
-
-      // Reset error count on success
-      errorCount = 0;
-      const data = res.data ?? null;
-      setPayload(data);
-
-      // Stop polling if backtest is completed or failed
-      if (data && (data.status === "completed" || data.status === "failed")) {
-        if (intervalId) clearInterval(intervalId);
-      }
-    };
-
-    void poll();
-    intervalId = setInterval(() => void poll(), 1200);
-
-    return () => {
-      active = false;
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [runId]);
+  const resultQuery = useBacktestResult(runId);
+  const payload = resultQuery.data;
+  const error = resultQuery.error?.message ?? null;
 
   // OPTIMIZATION: Memoize chart data to prevent recalculation on every render
   const chartRows = useMemo(() => {

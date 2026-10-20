@@ -11,31 +11,22 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { screenerAPI, apiClient } from "@/lib/api-client";
+import {
+  fetchLiveQuotes,
+  useScreenerIndices,
+  useScreenerResults,
+  type ScreenerIndex,
+  type ScreenerRow,
+} from "@/lib/queries/screener";
 import { debounce } from "@/lib/debounce";
 import { isMarketOpen } from "@/lib/market-hours";
 import { Badge, Button } from "@/components/ui";
 import { formatPercentage, roundToDecimals } from "@/lib/utils";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
-interface ScreenerResult {
-  symbol: string;
-  name: string;
-  sector: string;
-  marketCap: number;
-  change: number;
-  price: number;
-  volume: number;
-  rsi: number;
-  macd: number;
-  adx: number;
-}
-
-interface IndexItem {
-  id: string;
-  name: string;
-  count: number;
-}
+type ScreenerResult = ScreenerRow;
+type IndexItem = ScreenerIndex;
+type LiveFields = Pick<ScreenerResult, "price" | "change" | "volume">;
 
 interface TickData {
   symbol?: string;
@@ -344,26 +335,16 @@ export default function ScreenerPage() {
   const navigate = useNavigate();
   const { isConnected, sendMessage, registerCallback } = useWebSocket({ skipStateUpdates: true });
 
-  const [indices, setIndices] = useState<IndexItem[]>([]);
-  const [selectedUniverse, setSelectedUniverse] = useState("NIFTY50");
-  const [indicesError, setIndicesError] = useState<string | null>(null);
-  const [isIndicesLoading, setIsIndicesLoading] = useState(true);
+  const [universeChoice, setUniverseChoice] = useState("NIFTY50");
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-
-  const [results, setResults] = useState<ScreenerResult[]>([]);
-  const [totalResults, setTotalResults] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [sortField, setSortField] = useState<SortField>("symbol");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
-  const requestIdRef = useRef(0);
   const subscribedSymbolsKeyRef = useRef("");
-  const resultsRef = useRef<ScreenerResult[]>([]);
   const pendingTicksRef = useRef<Record<string, TickData>>({});
   const lastTickAtRef = useRef(0);
   const fallbackFetchInFlightRef = useRef(false);
@@ -383,108 +364,44 @@ export default function ScreenerPage() {
     [],
   );
 
-  useEffect(() => {
-    let cancelled = false;
+  const indicesQuery = useScreenerIndices();
+  const indices = useMemo(() => sortIndicesForUi(indicesQuery.data ?? []), [indicesQuery.data]);
+  const isIndicesLoading = indicesQuery.isPending;
+  const indicesError = indicesQuery.error?.message ?? null;
+  // Until the universe list arrives, query the user's initial choice directly.
+  const selectedUniverse = indicesQuery.data
+    ? resolveSelectedUniverse(universeChoice, indices)
+    : universeChoice;
 
-    async function loadIndices() {
-      setIsIndicesLoading(true);
-      setIndicesError(null);
-      const response = await screenerAPI.getIndices();
-      const indicesPayload = (response.data ?? {}) as {
-        indices?: Array<{ id: string; name: string; count: number }>;
-      };
-      if (cancelled) return;
+  const resultsQuery = useScreenerResults({
+    universe: selectedUniverse,
+    page: currentPage,
+    limit: itemsPerPage,
+    sortBy: sortField,
+    sortOrder: sortDirection,
+    query: debouncedQuery,
+  });
+  const isLoading = resultsQuery.isFetching;
+  const error = resultsQuery.error?.message ?? null;
+  const totalResults = resultsQuery.data?.total ?? 0;
 
-      if (response.error || !indicesPayload.indices) {
-        setIndices([]);
-        setIndicesError(response.error?.message || "Failed to load universes");
-        setIsIndicesLoading(false);
-        return;
-      }
-
-      const list = indicesPayload.indices.map((item) => ({
-        id: item.id,
-        name: item.name,
-        count: item.count,
-      }));
-      const sortedList = sortIndicesForUi(list);
-      setIndices(sortedList);
-      setSelectedUniverse((current) => resolveSelectedUniverse(current, sortedList));
-      setIsIndicesLoading(false);
-    }
-
-    void loadIndices();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const requestId = ++requestIdRef.current;
-    let cancelled = false;
-
-    async function loadResults() {
-      if (!selectedUniverse) {
-        setResults([]);
-        setTotalResults(0);
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      const params: Record<string, string> = {
-        universe: selectedUniverse,
-        page: String(currentPage),
-        limit: String(itemsPerPage),
-        sort_by: sortField,
-        sort_order: sortDirection,
-      };
-
-      if (debouncedQuery) params.query = debouncedQuery;
-
-      const response = await screenerAPI.getStocks(params);
-      const screenerPayload = (response.data ?? {}) as {
-        results?: ScreenerResult[];
-        total?: number;
-      };
-      if (cancelled || requestId !== requestIdRef.current) return;
-
-      if (response.error) {
-        setResults([]);
-        setTotalResults(0);
-        setError(response.error?.message || "Failed to load screener results");
-        setIsLoading(false);
-        return;
-      }
-
-      const normalizedResults = (screenerPayload.results || []).map((row) => ({
-        ...row,
-        price: roundToDecimals(row.price, 2),
-        change: roundToDecimals(row.change, 2),
-      }));
-      setResults(normalizedResults);
-      resultsRef.current = normalizedResults;
-      setTotalResults(
-        typeof screenerPayload.total === "number"
-          ? screenerPayload.total
-          : normalizedResults.length,
-      );
-      setIsLoading(false);
-    }
-
-    void loadResults();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedUniverse, debouncedQuery, sortField, sortDirection, currentPage, itemsPerPage]);
+  // Server rows with live tick values (websocket / polling fallback) layered on top.
+  const [liveBySymbol, setLiveBySymbol] = useState<Record<string, LiveFields>>({});
+  const results = useMemo<ScreenerResult[]>(
+    () =>
+      (resultsQuery.data?.rows ?? []).map((row) => {
+        const live = liveBySymbol[row.symbol];
+        return {
+          ...row,
+          price: roundToDecimals(live?.price ?? row.price, 2),
+          change: roundToDecimals(live?.change ?? row.change, 2),
+          volume: live?.volume ?? row.volume,
+        };
+      }),
+    [resultsQuery.data, liveBySymbol],
+  );
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
-
-  const currentPageRows = useMemo(() => {
-    return results;
-  }, [results]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -500,11 +417,11 @@ export default function ScreenerPage() {
   }, [results]);
 
   const fallbackSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort((a, b) =>
+    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) =>
       a.localeCompare(b),
     );
     return symbols.join(",");
-  }, [currentPageRows]);
+  }, [results]);
 
   useEffect(() => {
     if (!isConnected) {
@@ -638,10 +555,7 @@ export default function ScreenerPage() {
 
       fallbackFetchInFlightRef.current = true;
       try {
-        const response = await apiClient.get(
-          `/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(","))}`,
-        );
-        const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
+        const quoteMap = await fetchLiveQuotes(fallbackSymbols);
         for (const [symbol, quote] of Object.entries(quoteMap)) {
           const ltp = typeof quote.ltp === "number" ? quote.ltp : undefined;
           const changePct = getFallbackChange(quote);
@@ -680,36 +594,26 @@ export default function ScreenerPage() {
       if (symbols.length === 0) return;
 
       pendingTicksRef.current = {};
-      const currentResults = resultsRef.current;
-      if (!currentResults || currentResults.length === 0) return;
+      const currentResults = results;
+      if (currentResults.length === 0) return;
 
       const flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }> = [];
-      let nextResults: ScreenerResult[] | null = null;
+      const updates: Record<string, LiveFields> = {};
 
-      for (let i = 0; i < currentResults.length; i++) {
-        const row = currentResults[i];
+      for (const row of currentResults) {
         const tick = pending[row.symbol];
         if (!tick) continue;
-
-        const price = roundToDecimals(tick.ltp ?? row.price, 2);
-        const change = roundToDecimals(tick.change_pct ?? row.change, 2);
-        const volume = tick.volume ?? row.volume;
-
-        if (price === row.price && change === row.change && volume === row.volume) {
-          continue;
-        }
-
-        nextResults ??= [...currentResults];
         const updatedRow = updateRowFromTick(row, tick, flashes);
-        if (!updatedRow) {
-          continue;
-        }
-        nextResults[i] = updatedRow;
+        if (!updatedRow) continue;
+        updates[row.symbol] = {
+          price: updatedRow.price,
+          change: updatedRow.change,
+          volume: updatedRow.volume,
+        };
       }
 
-      if (nextResults) {
-        resultsRef.current = nextResults;
-        setResults(nextResults);
+      if (Object.keys(updates).length > 0) {
+        setLiveBySymbol((prev) => ({ ...prev, ...updates }));
         if (flashes.length > 0) {
           applyFlashes(flashes);
         }
@@ -717,7 +621,7 @@ export default function ScreenerPage() {
     }, TICK_FLUSH_MS);
 
     return () => clearInterval(timer);
-  }, [applyFlashes]);
+  }, [applyFlashes, results]);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -765,7 +669,7 @@ export default function ScreenerPage() {
           <select
             value={selectedUniverse}
             onChange={(event) => {
-              setSelectedUniverse(event.target.value);
+              setUniverseChoice(event.target.value);
               setCurrentPage(1);
             }}
             disabled={isIndicesLoading || indices.length === 0}
@@ -872,7 +776,7 @@ export default function ScreenerPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {currentPageRows.map((stock) => {
+            {results.map((stock) => {
               // OPTIMIZATION: Create stable flash state object to prevent unnecessary re-renders
               const flashStateByField = getFlashStateByField(stock.symbol, flashByCell);
 
@@ -889,7 +793,7 @@ export default function ScreenerPage() {
           </tbody>
         </table>
 
-        {currentPageRows.length === 0 && !isLoading && (
+        {results.length === 0 && !isLoading && (
           <div className="p-8 text-center text-foreground-muted">{emptyStateMessage}</div>
         )}
       </div>
