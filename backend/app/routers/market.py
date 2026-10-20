@@ -424,7 +424,11 @@ def get_watchlist(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
     return results
 
 
-@router.post("/watchlist", response_model=None)
+@router.post(
+    "/watchlist",
+    response_model=None,
+    responses={400: {"description": "Symbol required"}},
+)
 def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Add to watchlist"""
     from ..database import Watchlist

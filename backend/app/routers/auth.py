@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+AUTH_URL_RESPONSES = {
+    500: {"description": "Fyers credentials missing or auth URL generation failed"}
+}
+TOKEN_RESPONSES = {
+    400: {"description": "Fyers rejected the auth code"},
+    500: {"description": "Fyers credentials missing or token exchange failed"},
+}
+
 
 # Get base directory for saving access tokens
 def get_base_dir() -> str:
@@ -112,7 +120,7 @@ def disconnect_fyers() -> dict[str, Any]:
         raise handle_api_error(e, "Failed to disconnect from Fyers") from e
 
 
-@router.get("/fyers/url", response_model=None)
+@router.get("/fyers/url", response_model=None, responses=AUTH_URL_RESPONSES)
 def get_fyers_auth_url() -> dict[str, Any]:
     """
     Generate Fyers Login URL using credentials from environment variables.
@@ -166,7 +174,7 @@ def get_fyers_auth_url() -> dict[str, Any]:
         raise handle_api_error(e, "Failed to generate authentication URL") from e
 
 
-@router.post("/fyers/token", response_model=None)
+@router.post("/fyers/token", response_model=None, responses=TOKEN_RESPONSES)
 def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
     """
     Exchange auth code for access token and save to file.

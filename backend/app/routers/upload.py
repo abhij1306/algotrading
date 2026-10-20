@@ -23,7 +23,14 @@ UPLOAD_DIR = Path(__file__).parent.parent.parent / "data_system" / "01_sources" 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-@router.post("/upload/bhavcopy", response_model=None)
+@router.post(
+    "/upload/bhavcopy",
+    response_model=None,
+    responses={
+        400: {"description": "Only CSV files are allowed"},
+        500: {"description": "Failed to process bhavcopy file"},
+    },
+)
 async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE) -> dict[str, Any]:
     """
     Upload a bhavcopy CSV file and process it.

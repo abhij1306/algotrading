@@ -16,7 +16,11 @@ router = APIRouter(prefix="/api/portfolio")
 DB_DEPENDENCY = Depends(get_db)
 
 
-@router.get("/stats", response_model=None)
+@router.get(
+    "/stats",
+    response_model=None,
+    responses={500: {"description": "Failed to fetch portfolio stats"}},
+)
 def get_portfolio_stats(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get portfolio statistics including total value, P&L, and returns.

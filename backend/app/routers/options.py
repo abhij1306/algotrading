@@ -323,7 +323,10 @@ async def get_greeks(
         raise HTTPException(status_code=500, detail=f"Error fetching Greeks: {e}") from e
 
 
-@router.post("/cache/clear")
+@router.post(
+    "/cache/clear",
+    responses={403: {"description": "Cache clear is disabled outside DEBUG_INTERNAL"}},
+)
 async def clear_cache() -> dict[str, str]:
     """
     Clear the option chain cache.
