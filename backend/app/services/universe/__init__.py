@@ -5,7 +5,8 @@ Unified service for managing index universes and constituents.
 """
 
 import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import Any
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
 from ...models import IndexConstituentHistory, IndexUniverseDefinition, UniverseSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class UniverseMode(Enum):
@@ -117,7 +120,7 @@ class UniverseServiceImpl:
                 try:
                     return sorted(set(json.loads(snapshot.symbols)))
                 except Exception:
-                    pass
+                    logger.debug("Unreadable universe snapshot symbols", exc_info=True)
 
             rows = (
                 db.query(IndexConstituentHistory.symbol)
@@ -333,7 +336,7 @@ class UniverseService:
     - Live mode data
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._impl = UniverseServiceImpl()
 
     def get_constituents(

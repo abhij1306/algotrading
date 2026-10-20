@@ -77,11 +77,11 @@ class OrderExecutionService:
     - Performs pre-trade validation
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._broker = None
 
     @property
-    def broker(self):
+    def broker(self) -> FyersBroker:
         if not self._broker:
             self._broker = FyersBroker()
         return self._broker

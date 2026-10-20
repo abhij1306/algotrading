@@ -22,7 +22,7 @@ class SymbolLifecycleService:
     old symbols to their current equivalents and vice versa.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cache: dict[tuple, str | None] = {}
 
     def resolve_symbol(self, symbol: str, target_date: date, session: Session | None = None) -> str:
@@ -308,7 +308,7 @@ class SymbolLifecycleService:
                     else:
                         symbols.add(record.old_symbol)
 
-            return sorted(list(symbols))
+            return sorted(symbols)
         finally:
             if close_session:
                 session.close()

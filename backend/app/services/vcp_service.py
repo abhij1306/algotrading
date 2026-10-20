@@ -25,9 +25,9 @@ from ..models import (
     SystemConfig,
     VCPScanResult,
 )
+from ..utils.runtime_metrics import runtime_metrics
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
-from ..utils.runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +618,8 @@ class VCPService:
             runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.scan_runs")
             logger.info(
-                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s duration_ms=%.2f",
+                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s "
+                "duration_ms=%.2f",
                 universe.upper(),
                 scan_id,
                 len(symbol_frames),
@@ -1247,7 +1248,8 @@ class VCPService:
                         }
                     )
 
-            # Membership is resolved per trading date; only fully point-in-time runs are bias-corrected.
+            # Membership is resolved per trading date;
+            # only fully point-in-time runs are bias-corrected.
             mode = (
                 "bias_corrected"
                 if modes == {"bias_corrected"}
@@ -1351,7 +1353,8 @@ class VCPService:
             runtime_metrics.observe_ms("strategy.vcp.backtest_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.backtest_runs")
             logger.info(
-                "VCP backtest complete universe=%s run_id=%s trades=%s trading_dates=%s duration_ms=%.2f",
+                "VCP backtest complete universe=%s run_id=%s trades=%s trading_dates=%s "
+                "duration_ms=%.2f",
                 universe,
                 run_id,
                 len(trades),

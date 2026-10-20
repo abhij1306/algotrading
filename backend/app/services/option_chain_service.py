@@ -9,9 +9,13 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from ..strategies.black_scholes import calculate_implied_volatility, get_option_greeks
 from .symbol_master import symbol_master
+
+if TYPE_CHECKING:
+    from .fyers_client import FyersClient
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +93,7 @@ class OptionChainService:
     Wraps Fyers optionchain API with caching and Greeks calculation.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cache: dict[str, dict] = {}  # symbol -> {expiry -> (data, timestamp)}
         self._cache_ttl = 5  # 5 seconds for live market
         self._last_log_times: dict[str, float] = {}
@@ -99,7 +103,7 @@ class OptionChainService:
         key: str,
         level: str,
         message: str,
-        *args,
+        *args: object,
         cooldown_seconds: int = 60,
     ) -> None:
         now = time.time()
@@ -110,7 +114,7 @@ class OptionChainService:
         log_fn = getattr(logger, level, logger.warning)
         log_fn(message, *args)
 
-    def _get_fyers_client(self):
+    def _get_fyers_client(self) -> "FyersClient":
         """Resolve the current Fyers client (never cached, so re-login is picked up)."""
         from ..services.fyers_client import get_fyers_client
 
@@ -326,7 +330,7 @@ class OptionChainService:
         expiries.sort()
         return expiries
 
-    def _parse_expiry_value(self, value) -> date | None:
+    def _parse_expiry_value(self, value: object) -> date | None:
         if value is None:
             return None
         text = str(value).strip()
@@ -568,7 +572,7 @@ class OptionChainService:
 
         return {}
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """Clear the option chain cache"""
         self._cache.clear()
         logger.info("Option chain cache cleared")

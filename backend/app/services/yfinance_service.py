@@ -5,20 +5,27 @@ Fallback service for fetching market data when Fyers is unavailable.
 
 import logging
 import time
+from collections.abc import Callable
 from functools import wraps
+from typing import ParamSpec, TypeVar
 
 import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def retry_on_failure(max_retries=3, delay=1):
+
+def retry_on_failure(
+    max_retries: int = 3, delay: float = 1
+) -> Callable[[Callable[P, R]], Callable[P, R | None]]:
     """Decorator to retry on failure"""
 
-    def decorator(func):
+    def decorator(func: Callable[P, R]) -> Callable[P, R | None]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R | None:
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)

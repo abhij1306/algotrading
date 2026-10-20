@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -11,8 +12,6 @@ from sqlalchemy import func
 from ..database import db_session_scope
 from ..models import Company, HistoricalPrice
 from ..utils.runtime_metrics import runtime_metrics
-
-import logging
 
 logger = logging.getLogger(__name__)
 

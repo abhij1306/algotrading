@@ -7,22 +7,23 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import Any, Self
 
 from ..utils.logger import get_logger
 from .symbol_master import symbol_master
 
 # Lazy import fyers_apiv3 to speed up startup
-fyersModel = None
+_fyers_model_module: ModuleType | None = None
 
 
-def _get_fyers_model():
-    global fyersModel
-    if fyersModel is None:
-        from fyers_apiv3 import fyersModel as _fm
+def _get_fyers_model() -> ModuleType:
+    global _fyers_model_module
+    if _fyers_model_module is None:
+        from fyers_apiv3 import fyersModel
 
-        fyersModel = _fm
-    return fyersModel
+        _fyers_model_module = fyersModel
+    return _fyers_model_module
 
 
 # Setup Logging
@@ -41,13 +42,13 @@ class FyersClient:
 
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls) -> Self:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if self._initialized:
             return
 
@@ -73,7 +74,7 @@ class FyersClient:
         self._connect(skip_validation=True)
         self._initialized = True
 
-    def _load_credentials(self):
+    def _load_credentials(self) -> None:
         """Load credentials from file with expiry checking"""
         if not FYERS_TOKEN_PATH.exists():
             if not self._missing_token_file_logged:
@@ -102,7 +103,8 @@ class FyersClient:
                         logger.warning("Malformed expires_str %r: %s", expires_str, e)
                         self.token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
-                # Credentials are available again, allow future missing-credentials warning if needed.
+                # Credentials are available again;
+                # allow a future missing-credentials warning if needed.
                 if self.client_id and self.access_token:
                     self._missing_credentials_logged = False
 
@@ -134,7 +136,7 @@ class FyersClient:
 
     def _connect(
         self, *, skip_validation: bool = False, suppress_missing_credentials_log: bool = False
-    ):
+    ) -> None:
         """Initialize FyersModel instance"""
         if self._connecting:
             logger.debug("Skipping nested Fyers _connect call")
@@ -198,7 +200,8 @@ class FyersClient:
                 if _profile_ok():
                     return True
 
-                # Retry once after reloading from disk to handle fresh-login while backend is running.
+                # Retry once after reloading from disk to handle a fresh login
+                # while the backend is running.
                 if self._refresh_credentials_if_changed():
                     self._connect(skip_validation=True)
                     return _profile_ok()
@@ -293,17 +296,17 @@ class FyersClient:
             logger.error(f"Error fetching history for {symbol}: {e}")
             return {}
 
-    def get_orderbook(self):
+    def get_orderbook(self) -> dict[str, Any]:
         if not self.fyers:
             return {}
         return self.fyers.orderbook()
 
-    def get_positions(self):
+    def get_positions(self) -> dict[str, Any]:
         if not self.fyers:
             return {}
         return self.fyers.positions()
 
-    def place_order(self, data: dict[str, Any]):
+    def place_order(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.fyers:
             return {"s": "error", "message": "Client not connected"}
         return self.fyers.place_order(data)

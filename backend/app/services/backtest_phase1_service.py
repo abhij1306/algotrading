@@ -25,9 +25,9 @@ import pandas as pd
 
 from ..database import get_db_session
 from ..models.backtest import BacktestRun
+from ..utils.helpers import safe_float
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
-from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
 
