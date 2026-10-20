@@ -64,20 +64,20 @@ def test_five_minute_history_returns_the_stored_candles(intraday_company: Sessio
 
 
 def test_intraday_timeframe_without_candles_raises_not_found(intraday_company: Session) -> None:
+    provider = DataProvider(intraday_company)
+    start, end = datetime(2025, 6, 2, 9, 0), datetime(2025, 6, 2, 15, 30)
+
     with pytest.raises(DataNotFoundError) as excinfo:
-        DataProvider(intraday_company).get_history(
-            "INTRATEST",
-            timeframe="15MIN",
-            start_date=datetime(2025, 6, 2, 9, 0),
-            end_date=datetime(2025, 6, 2, 15, 30),
-        )
+        provider.get_history("INTRATEST", timeframe="15MIN", start_date=start, end_date=end)
 
     assert excinfo.value.detail == "No 15MIN intraday data available for INTRATEST"
 
 
 def test_unknown_timeframe_is_rejected(intraday_company: Session) -> None:
+    provider = DataProvider(intraday_company)
+
     with pytest.raises(NotImplementedError) as excinfo:
-        DataProvider(intraday_company).get_history("INTRATEST", timeframe="2H")
+        provider.get_history("INTRATEST", timeframe="2H")
 
     assert str(excinfo.value) == (
         "Timeframe '2H' not supported. Use '1D' or one of: 1MIN, 5MIN, 15MIN, 30MIN, 1H."

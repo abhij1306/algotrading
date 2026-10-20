@@ -1170,8 +1170,9 @@ class VCPService:
             future, entry_open, stop_price, risk_distance, shares
         )
 
-        pnl_pct = (realized / (entry_open * shares)) * 100.0 if shares > 0 else 0.0
-        r_multiple = realized / (risk_distance * shares) if shares > 0 else 0.0
+        # shares > 0 is guaranteed by the early return above
+        pnl_pct = (realized / (entry_open * shares)) * 100.0
+        r_multiple = realized / (risk_distance * shares)
         return {
             "symbol": signal["symbol"],
             "grade": signal["grade"],

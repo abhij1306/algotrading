@@ -14,7 +14,8 @@ INVALID_SCAN_RESPONSES = {400: {"description": "Invalid scan request"}}
 SIGNAL_NOT_FOUND_RESPONSES = {404: {"description": "Signal not found or invalid scan date"}}
 POSITION_NOT_FOUND_RESPONSES = {404: {"description": "Strategy position not found"}}
 INVALID_BACKTEST_RESPONSES = {400: {"description": "Invalid backtest request"}}
-BACKTEST_NOT_FOUND_RESPONSES = {404: {"description": "Backtest run not found"}}
+BACKTEST_NOT_FOUND = "Backtest run not found"
+BACKTEST_NOT_FOUND_RESPONSES = {404: {"description": BACKTEST_NOT_FOUND}}
 
 
 class ScanRunRequest(BaseModel):
@@ -155,7 +156,7 @@ def get_vcp_backtest_history(universe: str | None = None) -> dict[str, Any]:
 def get_vcp_backtest(run_id: str) -> dict[str, Any]:
     payload = vcp_service.get_backtest(run_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="Backtest run not found")
+        raise HTTPException(status_code=404, detail=BACKTEST_NOT_FOUND)
     return payload
 
 
@@ -167,5 +168,5 @@ def get_vcp_backtest(run_id: str) -> dict[str, Any]:
 def get_vcp_backtest_trades(run_id: str) -> dict[str, Any]:
     payload = vcp_service.get_backtest(run_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="Backtest run not found")
+        raise HTTPException(status_code=404, detail=BACKTEST_NOT_FOUND)
     return {"trades": (payload.get("result") or {}).get("trade_log", [])}

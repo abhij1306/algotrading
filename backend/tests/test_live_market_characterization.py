@@ -107,12 +107,8 @@ def test_monitor_iteration_outcome(
 
     connects = run_one_monitor_iteration(monkeypatch, live)
 
-    assert (
-        len(connects),
-        live.ws_connected,
-        live._is_connecting,
-        provider.disconnect_calls,
-    ) == expected
+    observed = (len(connects), live.ws_connected, live._is_connecting, provider.disconnect_calls)
+    assert observed == expected
 
 
 # --- Tick normalisation --------------------------------------------------------

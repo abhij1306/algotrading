@@ -267,13 +267,14 @@ def test_backtest_trade_exit_paths(
     )
 
     assert trade is not None
-    assert (
+    observed = (
         trade["exit_reason"],
         trade["exit_date"],
         trade["exit_price"],
         trade["shares"],
         trade["pnl_inr"],
-    ) == expected
+    )
+    assert observed == expected
 
 
 def test_backtest_trade_record_fields() -> None:

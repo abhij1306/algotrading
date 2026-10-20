@@ -146,13 +146,14 @@ def test_resync_updates_closes_and_rewrites_snapshots(
             session, as_of_date=date(2026, 2, 2), update_company_categories=False
         )
 
-        assert (
+        second_counts = (
             second.definitions_created,
             second.constituents_added,
             second.constituents_closed,
             second.snapshots_written,
             second.companies_updated,
-        ) == (0, 1, 1, 2, 1)
+        )
+        assert second_counts == (0, 1, 1, 2, 1)
         assert (third.constituents_added, third.constituents_closed) == (0, 0)
         assert third.companies_updated == 0
         rows = {

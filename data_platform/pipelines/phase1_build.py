@@ -80,7 +80,6 @@ MONTH_ABBR = {
 }
 NIFTY50_SYMBOL_TOKEN_RE = re.compile(r"[A-Z0-9&\-.]+")
 NUMBER_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
-CORP_ACTION_RATIO_RE = re.compile(r"(\d+)\s*:\s*(\d+)")
 UNIVERSE_SYMBOL_ALIASES = {
     "TATAMOTORS": "TMPV",
 }
@@ -107,6 +106,40 @@ def parse_nifty50_weight_line(line: str) -> tuple[str, float] | None:
     return symbol, float(weight)
 
 
+def _digit_run_end(text: str, i: int) -> int:
+    while i < len(text) and text[i].isdecimal():
+        i += 1
+    return i
+
+
+def _space_run_end(text: str, i: int) -> int:
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+
+def _find_ratio(text: str, pos: int) -> tuple[int, int, int] | None:
+    """(start, a, b) of the first "a:b" (spaces allowed around ":") at or after pos.
+
+    Linear-time equivalent of re.search(r"(\\d+)\\s*:\\s*(\\d+)", text, pos).
+    """
+    i = pos
+    while i < len(text):
+        if not text[i].isdecimal():
+            i += 1
+            continue
+        first_end = _digit_run_end(text, i)
+        colon = _space_run_end(text, first_end)
+        if colon < len(text) and text[colon] == ":":
+            second = _space_run_end(text, colon + 1)
+            second_end = _digit_run_end(text, second)
+            if second_end > second:
+                return i, int(text[i:first_end]), int(text[second:second_end])
+        # No ratio can start inside this digit run either: skip past it.
+        i = first_end
+    return None
+
+
 def find_bonus_ratio(text: str) -> tuple[int, int] | None:
     """First "a:b" ratio after "bonus" whose first number starts on the same line, if any."""
     pos = 0
@@ -114,9 +147,9 @@ def find_bonus_ratio(text: str) -> tuple[int, int] | None:
         line_end = text.find("\n", start)
         if line_end < 0:
             line_end = len(text)
-        m = CORP_ACTION_RATIO_RE.search(text, start + len("bonus"))
-        if m and m.start() < line_end:
-            return int(m.group(1)), int(m.group(2))
+        found = _find_ratio(text, start + len("bonus"))
+        if found and found[0] < line_end:
+            return found[1], found[2]
         pos = line_end + 1
     return None
 
