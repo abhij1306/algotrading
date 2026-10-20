@@ -151,7 +151,7 @@ def test_market_status_payload(monkeypatch: pytest.MonkeyPatch) -> None:
         "is_open": True,
         "message": "Market open",
         "current_time_ist": "10:30:07 IST",
-        "current_day": "A",
+        "current_day": "Monday",
         "market_open_time": "09:15 IST",
         "market_close_time": "15:30 IST",
     }

@@ -121,7 +121,7 @@ def get_market_status(policy: MarketHoursPolicy = DEFAULT_POLICY) -> dict:
         "is_open": phase.is_open,
         "message": _PHASE_MESSAGES[phase],
         "current_time_ist": now.strftime("%H:%M:%S IST"),
-        "current_day": now.strftime("A"),
+        "current_day": now.strftime("%A"),
         "market_open_time": f"{SESSION_OPEN:%H:%M} IST",
         "market_close_time": f"{SESSION_CLOSE:%H:%M} IST",
     }
