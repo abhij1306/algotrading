@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   Badge,
@@ -18,49 +18,26 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui";
-import { apiClient } from "@/lib/api-client";
-
-type StrategyMeta = {
-  id: string;
-  name: string;
-  default_weight?: number;
-};
-
-type BacktestStatus = {
-  data_ready: boolean;
-  instrument_capabilities: Record<string, { enabled: boolean; note: string }>;
-  universe_ranges: Record<
-    string,
-    { available: boolean; min_date: string | null; max_date: string | null; rows?: number }
-  >;
-  stock_range: {
-    available: boolean;
-    min_date: string | null;
-    max_date: string | null;
-    rows?: number;
-  };
-};
-
-type BacktestRunItem = {
-  job_id: string;
-  status: "running" | "completed" | "failed";
-  created_at: string;
-  params: {
-    instrument_type?: string;
-    start_date?: string;
-    end_date?: string;
-    initial_capital?: number;
-    selection?: { mode?: string; universe?: string };
-  };
-};
-
-type RunResponse = { job_id: string; status: string };
+import {
+  useBacktestRuns,
+  useBacktestStatus,
+  useBacktestStrategies,
+  useRunBacktest,
+  type BacktestRunPayload,
+  type StrategyMeta,
+} from "@/lib/queries/backtest";
+import { deriveFormDefaults, type SelectionMode } from "./form-defaults";
 
 type StrategyAllocation = {
   strategy_id: string;
   enabled: boolean;
   weight: string;
 };
+
+type AllocationEdit = Partial<Pick<StrategyAllocation, "enabled" | "weight">>;
+
+const RECENT_RUNS_LIMIT = 12;
+const NO_STRATEGIES: StrategyMeta[] = [];
 
 function formatCompactCapital(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -71,92 +48,70 @@ function formatCompactCapital(value: number | null | undefined): string {
 
 export default function BacktestPage() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<BacktestStatus | null>(null);
-  const [strategies, setStrategies] = useState<StrategyMeta[]>([]);
-  const [runs, setRuns] = useState<BacktestRunItem[]>([]);
+  const statusQuery = useBacktestStatus();
+  const strategiesQuery = useBacktestStrategies();
+  const runsQuery = useBacktestRuns();
+  const runBacktest = useRunBacktest();
+
+  const status = statusQuery.data;
+  const strategies = strategiesQuery.data ?? NO_STRATEGIES;
+  const runs = useMemo(() => (runsQuery.data ?? []).slice(0, RECENT_RUNS_LIMIT), [runsQuery.data]);
+  const loading = statusQuery.isPending || strategiesQuery.isPending || runsQuery.isPending;
+  const running = runBacktest.isPending;
+  const queryError =
+    statusQuery.error?.message ??
+    (strategiesQuery.error && `Failed to load strategies: ${strategiesQuery.error.message}`) ??
+    (runsQuery.error && `Failed to load recent runs: ${runsQuery.error.message}`) ??
+    null;
+  const error = queryError ?? runBacktest.error?.message ?? null;
+
   const [name, setName] = useState("");
   const [instrumentType, setInstrumentType] = useState<"equity" | "options">("equity");
-  const [selectionMode, setSelectionMode] = useState<"universe" | "symbols">("universe");
-  const [universe, setUniverse] = useState("NIFTY50");
   const [symbols, setSymbols] = useState("RELIANCE,SBIN,TCS");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
   const [initialCapital, setInitialCapital] = useState("1000000");
-  const [allocations, setAllocations] = useState<StrategyAllocation[]>([]);
-  const [running, setRunning] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Fields the user has edited; anything null/absent falls back to the server-derived default.
+  const [selectionModeEdit, setSelectionMode] = useState<SelectionMode | null>(null);
+  const [universeEdit, setUniverse] = useState<string | null>(null);
+  const [startDateEdit, setStartDate] = useState<string | null>(null);
+  const [endDateEdit, setEndDate] = useState<string | null>(null);
+  const [allocationEdits, setAllocationEdits] = useState<Record<string, AllocationEdit>>({});
 
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      setError(null);
+  const defaults = useMemo(() => deriveFormDefaults(status), [status]);
+  const selectionMode = selectionModeEdit ?? defaults.selectionMode;
+  const universe = universeEdit ?? defaults.universe;
+  const startDate = startDateEdit ?? defaults.startDate;
+  const endDate = endDateEdit ?? defaults.endDate;
 
-      const [statusRes, strategyRes, runsRes] = await Promise.all([
-        apiClient.get<BacktestStatus>("/api/backtest/status"),
-        apiClient.get<{ strategies: StrategyMeta[] }>("/api/backtest/strategies"),
-        apiClient.get<{ runs: BacktestRunItem[] }>("/api/backtest/runs"),
-      ]);
-
-      if (statusRes.error) {
-        setError(statusRes.error.message);
-        setLoading(false);
-        return;
-      }
-
-      const statusPayload = statusRes.data ?? null;
-      setStatus(statusPayload);
-
-      const strategyRows = strategyRes.data?.strategies ?? [];
-      setStrategies(strategyRows);
-      setAllocations(
-        strategyRows.map((s) => ({
-          strategy_id: s.id,
-          enabled: s.id === "MOMENTUM_2D",
-          weight: String(s.default_weight ?? 1),
-        })),
-      );
-
-      const firstUniverse = Object.keys(statusPayload?.universe_ranges ?? {})[0];
-      const prefillUniverse =
-        (statusPayload?.universe_ranges?.NIFTY50 ? "NIFTY50" : firstUniverse) || "NIFTY50";
-      setUniverse(prefillUniverse);
-
-      const range = statusPayload?.universe_ranges?.[prefillUniverse];
-      if (range?.min_date && range?.max_date) {
-        setStartDate(range.min_date);
-        setEndDate(range.max_date);
-      } else if (statusPayload?.stock_range.min_date && statusPayload?.stock_range.max_date) {
-        setStartDate(statusPayload.stock_range.min_date);
-        setEndDate(statusPayload.stock_range.max_date);
-      }
-
-      if (!runsRes.error && runsRes.data?.runs) {
-        setRuns(runsRes.data.runs.slice(0, 12));
-      }
-      setLoading(false);
-    };
-    void load();
-  }, []);
+  const allocations = useMemo<StrategyAllocation[]>(
+    () =>
+      strategies.map((s) => ({
+        strategy_id: s.id,
+        enabled: allocationEdits[s.id]?.enabled ?? s.id === "MOMENTUM_2D",
+        weight: allocationEdits[s.id]?.weight ?? String(s.default_weight ?? 1),
+      })),
+    [strategies, allocationEdits],
+  );
 
   const selectedCount = useMemo(() => allocations.filter((a) => a.enabled).length, [allocations]);
+  let runDisabledReason: string | null = null;
+  if (strategiesQuery.isError) runDisabledReason = "Run disabled: strategies could not be loaded.";
+  else if (!loading && selectedCount === 0) {
+    runDisabledReason = "Run disabled: select at least one strategy.";
+  }
   const selectedWeightSum = useMemo(
     () => allocations.filter((a) => a.enabled).reduce((sum, a) => sum + (Number(a.weight) || 0), 0),
     [allocations],
   );
 
   const onToggleStrategy = (id: string, enabled: boolean) => {
-    setAllocations((prev) => prev.map((a) => (a.strategy_id === id ? { ...a, enabled } : a)));
+    setAllocationEdits((prev) => ({ ...prev, [id]: { ...prev[id], enabled } }));
   };
 
   const onWeightChange = (id: string, weight: string) => {
-    setAllocations((prev) => prev.map((a) => (a.strategy_id === id ? { ...a, weight } : a)));
+    setAllocationEdits((prev) => ({ ...prev, [id]: { ...prev[id], weight } }));
   };
 
-  const onRun = async () => {
-    setRunning(true);
-    setError(null);
-
+  const onRun = () => {
     const strategiesPayload = allocations
       .filter((a) => a.enabled)
       .map((a) => ({
@@ -166,7 +121,7 @@ export default function BacktestPage() {
         params: {},
       }));
 
-    const payload = {
+    const payload: BacktestRunPayload = {
       name: name || undefined,
       instrument_type: instrumentType,
       start_date: startDate,
@@ -177,6 +132,7 @@ export default function BacktestPage() {
           ? { mode: "universe", universe }
           : {
               mode: "symbols",
+              universe: null,
               symbols: symbols
                 .split(",")
                 .map((s) => s.trim().toUpperCase())
@@ -186,14 +142,11 @@ export default function BacktestPage() {
       execution: { rebalance: "daily" },
     };
 
-    const res = await apiClient.post<RunResponse>("/api/backtest/run", payload);
-    setRunning(false);
-
-    if (res.error || !res.data) {
-      setError(res.error?.message || "Failed to run backtest");
-      return;
-    }
-    void navigate(`/backtest/results/${res.data.job_id}`);
+    runBacktest.mutate(payload, {
+      onSuccess: (res) => {
+        void navigate(`/backtest/results/${res.job_id}`);
+      },
+    });
   };
 
   return (
@@ -275,7 +228,9 @@ export default function BacktestPage() {
                     <Select
                       label="Selection Mode"
                       value={selectionMode}
-                      onChange={(e) => setSelectionMode(e.target.value as "universe" | "symbols")}
+                      onChange={(e) =>
+                        setSelectionMode(e.target.value === "symbols" ? "symbols" : "universe")
+                      }
                     >
                       <option value="universe">Index Universe</option>
                       <option value="symbols">Specific Symbols</option>
@@ -338,6 +293,9 @@ export default function BacktestPage() {
                       >
                         {running ? "Running..." : "Run Backtest"}
                       </Button>
+                      {runDisabledReason && (
+                        <div className="text-xs text-foreground-muted">{runDisabledReason}</div>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
