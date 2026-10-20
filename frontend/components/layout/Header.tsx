@@ -3,6 +3,8 @@ import { useNavigate } from "react-router";
 import { Search, Bell, Moon, Sun, Command } from "lucide-react";
 import { cn } from "@/lib/utils";
 import LoginButton from "@/components/LoginButton";
+import { modifierKeyLabel } from "@/lib/platform";
+import { useTheme } from "@/lib/theme";
 
 interface HeaderProps {
   onCommandPaletteOpen: () => void;
@@ -10,18 +12,7 @@ interface HeaderProps {
 
 export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
   const navigate = useNavigate();
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains("dark"));
-
-  const toggleTheme = () => {
-    const html = document.documentElement;
-    if (html.classList.contains("dark")) {
-      html.classList.remove("dark");
-      setIsDark(false);
-    } else {
-      html.classList.add("dark");
-      setIsDark(true);
-    }
-  };
+  const { isDark, toggleTheme } = useTheme();
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", path: "/dashboard" },
@@ -75,7 +66,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
           <Search className="w-4 h-4" />
           <span className="hidden sm:inline">Search...</span>
           <kbd className="hidden md:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xxs font-medium bg-background-tertiary">
-            <span>⌘</span>
+            <span>{modifierKeyLabel()}</span>
             <span>K</span>
           </kbd>
         </button>

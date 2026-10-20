@@ -1,7 +1,23 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Apply the saved (else system) theme before first paint. Mirrors lib/theme.ts.
+      (function () {
+        let theme = null;
+        try {
+          theme = localStorage.getItem("smarttrader-theme");
+        } catch {
+          // Storage unavailable: fall back to the system preference.
+        }
+        if (theme !== "light" && theme !== "dark") {
+          const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+          theme = prefersDark ? "dark" : "light";
+        }
+        document.documentElement.classList.toggle("dark", theme === "dark");
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"

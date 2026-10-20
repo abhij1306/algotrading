@@ -74,6 +74,14 @@ export function useQuotes(symbols: readonly string[], store: QuoteStore = quoteS
   return symbolsKey === "" ? NO_QUOTES : all;
 }
 
+/**
+ * Every quote the store already holds, without opening the socket or subscribing symbols:
+ * shows live numbers only where another consumer is streaming them.
+ */
+export function useKnownQuotes(store: QuoteStore = quoteStore): QuoteMap {
+  return useSyncExternalStore(store.subscribe, store.getQuotes);
+}
+
 type WebSocketOptions = {
   /** Do not re-render on every message (consumers that use `registerCallback`). */
   skipStateUpdates?: boolean;
