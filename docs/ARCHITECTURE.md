@@ -17,7 +17,7 @@
 ## Runtime Layers
 1. UI Layer
 - Pages: Dashboard, Screener, Terminal, Strategies, Backtest
-- Shared realtime hook: `frontend/hooks/useWebSocket.ts`
+- Shared realtime store: `frontend/lib/realtime` (one socket; `useQuote`/`useQuotes`/`useConnectionStatus`)
 - Terminal trading surfaces:
   - `frontend/app/terminal/page.tsx` (options-first board + execution ticket + panels)
 

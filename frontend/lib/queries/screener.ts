@@ -1,6 +1,8 @@
 import { keepPreviousData, queryOptions, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { api, parseResponse, unwrap } from "@/lib/api/client";
+import { isMarketOpen } from "@/lib/market-hours";
+import type { Quote, QuoteMap } from "@/lib/realtime/quote-store";
 import { queryKeys } from "./keys";
 
 const indicesSchema = z.object({
@@ -87,8 +89,8 @@ export function useScreenerResults(params: ScreenerParams) {
   });
 }
 
-/** One-shot live quote fetch (used as a polling fallback when the websocket is stale). */
-export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuotes> {
+/** One live quote fetch from the REST endpoint. */
+export async function fetchLiveQuotes(symbols: readonly string[]): Promise<LiveQuotes> {
   return parseResponse(
     liveQuotesSchema,
     await unwrap(
@@ -106,4 +108,54 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuotes> {
 export function liveQuoteChangePercent(quote: LiveQuotes[string]): number | undefined {
   if (quote.source === "database") return undefined;
   return typeof quote.change_pct === "number" ? quote.change_pct : undefined;
+}
+
+const LIVE_POLL_OPEN_MS = 3000;
+const LIVE_POLL_CLOSED_MS = 60_000;
+/** The REST fallback is skipped above this many symbols. */
+export const MAX_LIVE_POLL_SYMBOLS = 100;
+const NO_SYMBOLS: readonly string[] = [];
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * REST quotes in the quote store's shape, stamped with when they arrived; entries with no price,
+ * percent or volume are dropped.
+ */
+export function toQuoteMap(quotes: LiveQuotes, receivedAt: number): QuoteMap {
+  const map: Record<string, Quote> = {};
+  for (const [symbol, entry] of Object.entries(quotes)) {
+    const quote: Quote = {
+      ltp: numberOrUndefined(entry.ltp),
+      changePct: liveQuoteChangePercent(entry),
+      volume: numberOrUndefined(entry.volume),
+      receivedAt,
+    };
+    if (quote.ltp === undefined && quote.changePct === undefined && quote.volume === undefined) {
+      continue;
+    }
+    map[symbol] = quote;
+  }
+  return map;
+}
+
+/**
+ * REST polling fallback for symbols the websocket is not streaming (or streams stale quotes for):
+ * every 3s while the market is
+ * open, every minute otherwise, paused while the tab is hidden. Polls nothing for an empty list
+ * or more than `MAX_LIVE_POLL_SYMBOLS` symbols.
+ */
+export function useLiveQuotePoll(symbols: readonly string[]) {
+  const enabled = symbols.length > 0 && symbols.length <= MAX_LIVE_POLL_SYMBOLS;
+  const sorted = enabled ? [...symbols].sort((a, b) => a.localeCompare(b)) : NO_SYMBOLS;
+  return useQuery({
+    queryKey: queryKeys.screener.liveQuotes(sorted),
+    queryFn: async () => toQuoteMap(await fetchLiveQuotes(sorted), Date.now()),
+    enabled,
+    staleTime: 0,
+    refetchInterval: () => (isMarketOpen().isOpen ? LIVE_POLL_OPEN_MS : LIVE_POLL_CLOSED_MS),
+    placeholderData: keepPreviousData,
+  });
 }

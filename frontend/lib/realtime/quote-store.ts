@@ -15,11 +15,13 @@ export type Quote = {
   readonly ltp?: number;
   readonly changePct?: number;
   readonly volume?: number;
+  /** Epoch ms when the last tick for the symbol was applied, changed or not. */
+  readonly receivedAt?: number;
 };
 
 export type QuoteMap = Readonly<Record<string, Quote>>;
 
-export type SocketMessage = {
+type SocketMessage = {
   type?: string;
   data?: unknown;
   [key: string]: unknown;
@@ -81,7 +83,6 @@ function parseMessage(raw: string): SocketMessage | null {
 export function createQuoteStore() {
   let status: ConnectionStatus = "disconnected";
   let quotes: QuoteMap = {};
-  let lastMessage: SocketMessage | null = null;
 
   let socket: WebSocket | null = null;
   let retainCount = 0;
@@ -95,7 +96,6 @@ export function createQuoteStore() {
   const symbolCounts = new Map<string, number>();
   const serverSubscribed = new Set<string>();
   const listeners = new Set<() => void>();
-  const messageListeners = new Set<(message: SocketMessage) => void>();
 
   function notify() {
     for (const listener of listeners) listener();
@@ -141,6 +141,7 @@ export function createQuoteStore() {
 
   function applyMessage(message: SocketMessage) {
     let nextQuotes: Record<string, Quote> | null = null;
+    const receivedAt = Date.now();
     for (const tick of extractTicks(message)) {
       const update = toQuoteUpdate(tick);
       if (!update) continue;
@@ -149,26 +150,14 @@ export function createQuoteStore() {
         ltp: update.quote.ltp ?? previous?.ltp,
         changePct: update.quote.changePct ?? previous?.changePct,
         volume: update.quote.volume ?? previous?.volume,
+        // A repeat tick still proves the stream is alive, so it refreshes the timestamp.
+        receivedAt,
       };
-      if (
-        previous?.ltp === merged.ltp &&
-        previous?.changePct === merged.changePct &&
-        previous?.volume === merged.volume
-      ) {
-        continue;
-      }
       nextQuotes ??= { ...quotes };
       nextQuotes[update.symbol] = merged;
     }
-    if (nextQuotes) quotes = nextQuotes;
-    lastMessage = message;
-    for (const listener of messageListeners) {
-      try {
-        listener(message);
-      } catch {
-        // Isolate callback errors so one consumer cannot break others.
-      }
-    }
+    if (!nextQuotes) return;
+    quotes = nextQuotes;
     notify();
   }
 
@@ -323,23 +312,14 @@ export function createQuoteStore() {
     };
   }
 
-  function onMessage(listener: (message: SocketMessage) => void): () => void {
-    messageListeners.add(listener);
-    return () => {
-      messageListeners.delete(listener);
-    };
-  }
-
   return {
     retain,
     subscribe,
     subscribeSymbols,
-    onMessage,
     send,
     getStatus: () => status,
     getQuotes: () => quotes,
     getQuote: (symbol: string): Quote | undefined => quotes[symbol],
-    getLastMessage: () => lastMessage,
   };
 }
 

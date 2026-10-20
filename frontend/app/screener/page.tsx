@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from "react";
+import { useState, useMemo, useCallback, memo, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import {
   Search,
@@ -10,17 +10,18 @@ import {
   ArrowDown,
   ExternalLink,
 } from "lucide-react";
-import { useWebSocket } from "@/hooks/useWebSocket";
 import {
-  fetchLiveQuotes,
-  liveQuoteChangePercent,
+  useLiveQuotePoll,
   useScreenerIndices,
   useScreenerResults,
   type ScreenerIndex,
   type ScreenerRow,
 } from "@/lib/queries/screener";
+import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
+import type { Quote, QuoteMap } from "@/lib/realtime/quote-store";
 import { debounce } from "@/lib/debounce";
 import { isMarketOpen } from "@/lib/market-hours";
+import { useNow } from "@/lib/use-now";
 import { Badge, Button } from "@/components/ui";
 import {
   formatCompactNumber,
@@ -32,33 +33,18 @@ import { getTradingViewUrl } from "@/lib/tradingview";
 
 type ScreenerResult = ScreenerRow;
 type IndexItem = ScreenerIndex;
-type LiveFields = Pick<ScreenerResult, "price" | "change" | "volume">;
-type LiveOverride = LiveFields & { receivedAt: number };
-
-interface TickData {
-  symbol?: string;
-  ltp?: number;
-  change_pct?: number;
-  volume?: number;
-  lp?: number;
-  chp?: number;
-  v?: number;
-  vol_traded_today?: number;
-}
 
 type SortField = "symbol" | "price" | "change" | "volume" | "marketCap" | "rsi" | "macd" | "adx";
 type SortDirection = "asc" | "desc";
 type FlashDirection = "up" | "down";
-type FlashField = "price" | "change" | "volume";
 type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 
 const RPP_OPTIONS = [25, 50, 100];
-const TICK_FLUSH_MS = 200;
-const FALLBACK_POLL_OPEN_MS = 3000;
-const FALLBACK_POLL_CLOSED_MS = 60000;
-const WS_STALE_MS = 5000;
-const FLASH_DURATION_MS = 600;
-const MAX_FALLBACK_SYMBOLS = 100;
+const NO_ROWS: ScreenerResult[] = [];
+const NO_QUOTES: QuoteMap = {};
+/** A streamed quote older than this counts as missing while the market is open. */
+const STREAM_STALE_MS = 5000;
+const CLOCK_TICK_MS = 1000;
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -73,6 +59,23 @@ function getFlashClassName(flash?: FlashState): string | undefined {
   if (flash.direction === "up")
     return flash.phase === 0 ? "screener-flash-up-a" : "screener-flash-up-b";
   return flash.phase === 0 ? "screener-flash-down-a" : "screener-flash-down-b";
+}
+
+/**
+ * Flash class for a displayed value: when the value changes between renders the cell glows up
+ * or down. The phase alternates so back-to-back changes restart the CSS animation; the class can
+ * stay on afterwards because the animation does not repeat.
+ */
+function useFlash(value: number): string | undefined {
+  const [seen, setSeen] = useState<{ value: number; flash?: FlashState }>({ value });
+  if (seen.value === value) return getFlashClassName(seen.flash);
+  const flash: FlashState = {
+    direction: value > seen.value ? "up" : "down",
+    phase: seen.flash?.phase === 0 ? 1 : 0,
+  };
+  // Storing information from the previous render (adjusting state during render, not in an effect).
+  setSeen({ value, flash });
+  return getFlashClassName(flash);
 }
 
 function getRsiClassName(rsi: number): string {
@@ -93,58 +96,6 @@ function getMacdClassName(macd: number): string {
     return "text-loss";
   }
   return "text-foreground-muted";
-}
-
-function normalizeTickerMessage(raw: TickData): TickData | null {
-  if (!raw.symbol) {
-    return null;
-  }
-
-  let ltp: number | undefined;
-  if (typeof raw.ltp === "number") {
-    ltp = raw.ltp;
-  } else if (typeof raw.lp === "number") {
-    ltp = raw.lp;
-  }
-
-  let changePct: number | undefined;
-  if (typeof raw.change_pct === "number") {
-    changePct = raw.change_pct;
-  } else if (typeof raw.chp === "number") {
-    changePct = raw.chp;
-  }
-
-  let volume: number | undefined;
-  if (typeof raw.volume === "number") {
-    volume = raw.volume;
-  } else if (typeof raw.v === "number") {
-    volume = raw.v;
-  } else if (typeof raw.vol_traded_today === "number") {
-    volume = raw.vol_traded_today;
-  }
-
-  return {
-    symbol: raw.symbol,
-    ltp,
-    change_pct: changePct,
-    volume,
-  };
-}
-
-function getFlashStateByField(
-  symbol: string,
-  flashByCell: Record<string, FlashState>,
-): Partial<Record<FlashField, FlashState>> {
-  const priceKey = `${symbol}:price`;
-  const changeKey = `${symbol}:change`;
-  const volumeKey = `${symbol}:volume`;
-  const price = flashByCell[priceKey];
-  const change = flashByCell[changeKey];
-  const volume = flashByCell[volumeKey];
-  if (!price && !change && !volume) {
-    return {};
-  }
-  return { price, change, volume };
 }
 
 function getResultCountContent(
@@ -171,42 +122,40 @@ function getEmptyStateMessage(indices: IndexItem[], error: string | null): strin
   return "No results found";
 }
 
-function updateRowFromTick(
+/** A server row with live values laid over it, field by field: `first`, then `second`. */
+function withLiveQuote(
   row: ScreenerResult,
-  tick: TickData,
-  flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>,
-): ScreenerResult | null {
-  const price = roundToDecimals(tick.ltp ?? row.price, 2);
-  const change = roundToDecimals(tick.change_pct ?? row.change, 2);
-  const volume = tick.volume ?? row.volume;
+  first: Quote | undefined,
+  second: Quote | undefined,
+): ScreenerResult {
+  return {
+    ...row,
+    price: roundToDecimals(first?.ltp ?? second?.ltp ?? row.price, 2),
+    change: roundToDecimals(first?.changePct ?? second?.changePct ?? row.change, 2),
+    volume: first?.volume ?? second?.volume ?? row.volume,
+  };
+}
 
-  if (price === row.price && change === row.change && volume === row.volume) {
-    return null;
-  }
+/** The symbols the socket has not streamed a quote for. */
+function unstreamedSymbols(symbols: string[], streamed: QuoteMap): string[] {
+  return symbols.filter((symbol) => streamed[symbol] === undefined);
+}
 
-  if (price !== row.price) {
-    flashes.push({
-      symbol: row.symbol,
-      field: "price",
-      direction: price > row.price ? "up" : "down",
-    });
-  }
-  if (change !== row.change) {
-    flashes.push({
-      symbol: row.symbol,
-      field: "change",
-      direction: change > row.change ? "up" : "down",
-    });
-  }
-  if (volume !== row.volume) {
-    flashes.push({
-      symbol: row.symbol,
-      field: "volume",
-      direction: volume > row.volume ? "up" : "down",
-    });
-  }
+/** Whether a streamed quote is missing or older than `STREAM_STALE_MS` at `now`. */
+function isStale(quote: Quote | undefined, now: number): boolean {
+  return quote?.receivedAt === undefined || now - quote.receivedAt > STREAM_STALE_MS;
+}
 
-  return { ...row, price, change, volume };
+/** The two quotes with the one that arrived last first. */
+function newestFirst(
+  a: Quote | undefined,
+  b: Quote | undefined,
+): [Quote | undefined, Quote | undefined] {
+  return (b?.receivedAt ?? -Infinity) > (a?.receivedAt ?? -Infinity) ? [b, a] : [a, b];
+}
+
+function openTradingView(symbol: string) {
+  window.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
 }
 
 const SortIcon = memo(function SortIcon({
@@ -242,16 +191,22 @@ function resolveSelectedUniverse(current: string, indices: IndexItem[]): string 
 }
 
 const StockRow = memo(function StockRow({
-  stock,
-  onClick,
-  onOpenTradingView,
-  flashStateByField,
+  row,
+  live,
+  fallback,
+  onOpen,
 }: {
-  stock: ScreenerResult;
-  onClick: () => void;
-  onOpenTradingView: (symbol: string) => void;
-  flashStateByField: Partial<Record<FlashField, FlashState>>;
+  row: ScreenerResult;
+  /** The quote that wins; quotes are stable references until they change. */
+  live: Quote | undefined;
+  /** Fills the fields `live` lacks. */
+  fallback: Quote | undefined;
+  onOpen: (symbol: string) => void;
 }) {
+  const stock = withLiveQuote(row, live, fallback);
+  const priceFlash = useFlash(toNumber(stock.price));
+  const changeFlash = useFlash(toNumber(stock.change));
+  const volumeFlash = useFlash(toNumber(stock.volume));
   const isUp = toNumber(stock.change) >= 0;
   const rsi = toNumber(stock.rsi);
   const macd = toNumber(stock.macd);
@@ -260,7 +215,7 @@ const StockRow = memo(function StockRow({
 
   return (
     <tr
-      onClick={onClick}
+      onClick={() => onOpen(stock.symbol)}
       className="cursor-pointer hover:bg-surface transition-colors border-b border-border"
     >
       <td className="py-2 pl-4">
@@ -270,7 +225,7 @@ const StockRow = memo(function StockRow({
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              onOpenTradingView(stock.symbol);
+              openTradingView(stock.symbol);
             }}
             className="text-foreground-muted hover:text-foreground"
             title="Open on TradingView"
@@ -285,22 +240,16 @@ const StockRow = memo(function StockRow({
         <span className="text-xs px-1.5 py-0.5 rounded bg-background-tertiary">{stock.sector}</span>
       </td>
       <td className="py-2 text-right tabular-nums">
-        <span className={getFlashClassName(flashStateByField.price)}>
-          {toNumber(stock.price).toFixed(2)}
-        </span>
+        <span className={priceFlash}>{toNumber(stock.price).toFixed(2)}</span>
       </td>
       <td className={`py-2 text-right tabular-nums ${isUp ? "text-profit" : "text-loss"}`}>
         <div className="flex items-center justify-end gap-1">
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          <span className={getFlashClassName(flashStateByField.change)}>
-            {formatSignedPercent(toNumber(stock.change))}
-          </span>
+          <span className={changeFlash}>{formatSignedPercent(toNumber(stock.change))}</span>
         </div>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
-        <span className={getFlashClassName(flashStateByField.volume)}>
-          {formatCompactNumber(toNumber(stock.volume))}
-        </span>
+        <span className={volumeFlash}>{formatCompactNumber(toNumber(stock.volume))}</span>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
         {formatCrores(toNumber(stock.marketCap))}
@@ -317,7 +266,7 @@ const StockRow = memo(function StockRow({
 
 export default function ScreenerPage() {
   const navigate = useNavigate();
-  const { isConnected, sendMessage, registerCallback } = useWebSocket({ skipStateUpdates: true });
+  const connected = useConnectionStatus() === "connected";
 
   const [universeChoice, setUniverseChoice] = useState("NIFTY50");
   const [searchQuery, setSearchQuery] = useState("");
@@ -327,16 +276,6 @@ export default function ScreenerPage() {
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [sortField, setSortField] = useState<SortField>("symbol");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-
-  const subscribedSymbolsKeyRef = useRef("");
-  const pendingTicksRef = useRef<Record<string, TickData>>({});
-  const lastTickAtRef = useRef(0);
-  const fallbackFetchInFlightRef = useRef(false);
-  const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const [flashByCell, setFlashByCell] = useState<Record<string, FlashState>>({});
-  const openTradingView = (symbol: string) => {
-    window.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
-  };
 
   const debouncedSetQuery = useMemo(
     () =>
@@ -368,25 +307,34 @@ export default function ScreenerPage() {
   const isLoading = resultsQuery.isFetching;
   const error = resultsQuery.error?.message ?? null;
   const totalResults = resultsQuery.data?.total ?? 0;
+  const results = resultsQuery.data?.rows ?? NO_ROWS;
 
-  // Server rows with live tick values (websocket / polling fallback) layered on top. A live
-  // value only wins while it is newer than the server data it overrides.
-  const [liveBySymbol, setLiveBySymbol] = useState<Record<string, LiveOverride>>({});
-  const results = useMemo<ScreenerResult[]>(
-    () =>
-      (resultsQuery.data?.rows ?? []).map((row) => {
-        const candidate = liveBySymbol[row.symbol];
-        const live =
-          candidate && candidate.receivedAt > resultsQuery.dataUpdatedAt ? candidate : undefined;
-        return {
-          ...row,
-          price: roundToDecimals(live?.price ?? row.price, 2),
-          change: roundToDecimals(live?.change ?? row.change, 2),
-          volume: live?.volume ?? row.volume,
-        };
-      }),
-    [resultsQuery.data, resultsQuery.dataUpdatedAt, liveBySymbol],
-  );
+  // Live values for the rendered rows: the store subscribes exactly these symbols and drops
+  // them when the rows change or the page unmounts. Symbols the socket is not streaming fall
+  // back to REST polling.
+  const visibleSymbols = useMemo(() => results.map((row) => row.symbol), [results]);
+  const streamedQuotes = useQuotes(visibleSymbols);
+  // While the market is open a connected socket can still go silent, so streamed quotes age
+  // out: stale ones are polled too, and whichever quote arrived last wins. The clock re-renders
+  // the page so a silent socket is noticed.
+  const now = useNow(CLOCK_TICK_MS);
+  const agingStream = connected && isMarketOpen(new Date(now)).isOpen;
+  let symbolsToPoll = visibleSymbols;
+  if (agingStream) {
+    symbolsToPoll = visibleSymbols.filter((symbol) => isStale(streamedQuotes[symbol], now));
+  } else if (connected) {
+    symbolsToPoll = unstreamedSymbols(visibleSymbols, streamedQuotes);
+  }
+  const polledQuotes = useLiveQuotePoll(symbolsToPoll).data ?? NO_QUOTES;
+
+  /** A row's quotes in priority order. */
+  const quotesFor = (symbol: string): [Quote | undefined, Quote | undefined] => {
+    const streamed = streamedQuotes[symbol];
+    const polled = polledQuotes[symbol];
+    if (agingStream) return newestFirst(streamed, polled);
+    // While connected the stream wins; while down the store stops updating, so the poll does.
+    return connected ? [streamed, polled] : [polled, streamed];
+  };
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
 
@@ -395,221 +343,10 @@ export default function ScreenerPage() {
     setCurrentPage(totalPages);
   }
 
-  const subscribedSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) =>
-      a.localeCompare(b),
-    );
-    return symbols.join(",");
-  }, [results]);
-
-  const fallbackSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) =>
-      a.localeCompare(b),
-    );
-    return symbols.join(",");
-  }, [results]);
-
-  useEffect(() => {
-    if (!isConnected) {
-      subscribedSymbolsKeyRef.current = "";
-    }
-  }, [isConnected]);
-
-  useEffect(() => {
-    if (!isConnected || !subscribedSymbolsKey) return;
-    if (subscribedSymbolsKey === subscribedSymbolsKeyRef.current) return;
-
-    if (subscribedSymbolsKeyRef.current) {
-      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
-    }
-
-    sendMessage({ action: "subscribe", symbols: subscribedSymbolsKey.split(",") });
-    subscribedSymbolsKeyRef.current = subscribedSymbolsKey;
-  }, [isConnected, subscribedSymbolsKey, sendMessage]);
-
-  useEffect(() => {
-    return () => {
-      if (!subscribedSymbolsKeyRef.current) return;
-      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
-      subscribedSymbolsKeyRef.current = "";
-    };
-  }, [sendMessage]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(flashTimeoutsRef.current).forEach((timer) => clearTimeout(timer));
-      flashTimeoutsRef.current = {};
-    };
-  }, []);
-
-  const applyFlashes = useCallback(
-    (flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>) => {
-      if (flashes.length === 0) return;
-      const entries: Record<string, FlashDirection> = {};
-      for (const flash of flashes) {
-        const key = `${flash.symbol}:${flash.field}`;
-        entries[key] = flash.direction;
-      }
-
-      setFlashByCell((prev) => {
-        // OPTIMIZATION: Check if any values actually changed before creating new object
-        const hasChanges = Object.keys(entries).some(
-          (key) => prev[key]?.direction !== entries[key],
-        );
-
-        if (!hasChanges) return prev; // Prevent unnecessary re-render
-
-        const next = { ...prev };
-        for (const [key, direction] of Object.entries(entries)) {
-          const current = prev[key];
-          next[key] = {
-            direction,
-            phase: current?.phase === 0 ? 1 : 0,
-          };
-        }
-        return next;
-      });
-
-      for (const [key] of Object.entries(entries)) {
-        const existing = flashTimeoutsRef.current[key];
-        if (existing) clearTimeout(existing);
-
-        flashTimeoutsRef.current[key] = setTimeout(() => {
-          setFlashByCell((current) => {
-            if (!current[key]) return current;
-            const updated = { ...current };
-            delete updated[key];
-            return updated;
-          });
-          delete flashTimeoutsRef.current[key];
-        }, FLASH_DURATION_MS);
-      }
-    },
-    [],
+  const openTerminal = useCallback(
+    (symbol: string) => void navigate(`/terminal?symbol=${encodeURIComponent(symbol)}`),
+    [navigate],
   );
-
-  useEffect(() => {
-    const unregister = registerCallback((message) => {
-      if (message?.type !== "ticker" || !message.data) return;
-      const raw = message.data as TickData;
-      if (!raw.symbol) return;
-
-      const normalized = normalizeTickerMessage(raw);
-      if (!normalized) return;
-      pendingTicksRef.current[raw.symbol] = normalized;
-      lastTickAtRef.current = Date.now();
-    });
-
-    return unregister;
-  }, [registerCallback]);
-
-  useEffect(() => {
-    if (!fallbackSymbolsKey) {
-      return;
-    }
-
-    let cancelled = false;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleNext = () => {
-      if (cancelled) return;
-      const pollMs = isMarketOpen().isOpen ? FALLBACK_POLL_OPEN_MS : FALLBACK_POLL_CLOSED_MS;
-      timeout = setTimeout(() => {
-        void poll();
-      }, pollMs);
-    };
-
-    const poll = async () => {
-      if (cancelled) return;
-      if (document.hidden || fallbackFetchInFlightRef.current) {
-        scheduleNext();
-        return;
-      }
-
-      const now = Date.now();
-      const wsStale = !lastTickAtRef.current || now - lastTickAtRef.current > WS_STALE_MS;
-      if (!wsStale) {
-        scheduleNext();
-        return;
-      }
-
-      const fallbackSymbols = fallbackSymbolsKey.split(",").filter(Boolean);
-      if (fallbackSymbols.length === 0 || fallbackSymbols.length > MAX_FALLBACK_SYMBOLS) {
-        scheduleNext();
-        return;
-      }
-
-      fallbackFetchInFlightRef.current = true;
-      try {
-        const quoteMap = await fetchLiveQuotes(fallbackSymbols);
-        for (const [symbol, quote] of Object.entries(quoteMap)) {
-          const ltp = typeof quote.ltp === "number" ? quote.ltp : undefined;
-          const changePct = liveQuoteChangePercent(quote);
-          const volume = typeof quote.volume === "number" ? quote.volume : undefined;
-
-          if (ltp === undefined && changePct === undefined && volume === undefined) continue;
-          pendingTicksRef.current[symbol] = {
-            symbol,
-            ltp,
-            change_pct: changePct,
-            volume,
-          };
-        }
-      } catch {
-        // Keep silent; websocket will continue trying and poll retries automatically.
-      } finally {
-        fallbackFetchInFlightRef.current = false;
-        scheduleNext();
-      }
-    };
-
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-      fallbackFetchInFlightRef.current = false;
-    };
-  }, [fallbackSymbolsKey]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const pending = pendingTicksRef.current;
-      const symbols = Object.keys(pending);
-      if (symbols.length === 0) return;
-
-      pendingTicksRef.current = {};
-      const currentResults = results;
-      if (currentResults.length === 0) return;
-
-      const flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }> = [];
-      const updates: Record<string, LiveOverride> = {};
-      const receivedAt = Date.now();
-
-      for (const row of currentResults) {
-        const tick = pending[row.symbol];
-        if (!tick) continue;
-        const updatedRow = updateRowFromTick(row, tick, flashes);
-        if (!updatedRow) continue;
-        updates[row.symbol] = {
-          price: updatedRow.price,
-          change: updatedRow.change,
-          volume: updatedRow.volume,
-          receivedAt,
-        };
-      }
-
-      if (Object.keys(updates).length > 0) {
-        setLiveBySymbol((prev) => ({ ...prev, ...updates }));
-        if (flashes.length > 0) {
-          applyFlashes(flashes);
-        }
-      }
-    }, TICK_FLUSH_MS);
-
-    return () => clearInterval(timer);
-  }, [applyFlashes, results]);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -632,7 +369,7 @@ export default function ScreenerPage() {
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface px-4">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-foreground">Stock Screener</h1>
-          {isConnected && (
+          {connected && (
             <Badge variant="profit" pulse>
               LIVE
             </Badge>
@@ -764,17 +501,15 @@ export default function ScreenerPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {results.map((stock) => {
-              // OPTIMIZATION: Create stable flash state object to prevent unnecessary re-renders
-              const flashStateByField = getFlashStateByField(stock.symbol, flashByCell);
-
+            {results.map((row) => {
+              const [live, fallback] = quotesFor(row.symbol);
               return (
                 <StockRow
-                  key={stock.symbol}
-                  stock={stock}
-                  flashStateByField={flashStateByField}
-                  onClick={() => void navigate(`/terminal?symbol=${stock.symbol}`)}
-                  onOpenTradingView={openTradingView}
+                  key={row.symbol}
+                  row={row}
+                  live={live}
+                  fallback={fallback}
+                  onOpen={openTerminal}
                 />
               );
             })}

@@ -123,13 +123,20 @@ Implemented in `backend/app/services/live_market_service.py`:
   - broadcast and provider timing metrics
 
 ## Frontend Hook Integration
-`frontend/hooks/useWebSocket.ts` behavior:
+`frontend/lib/realtime/quote-store.ts` owns the single socket; components read it through the hooks in `frontend/lib/realtime/hooks.ts`:
 - URL resolution:
   - `VITE_WS_URL`, else derived from `VITE_API_URL`, else same origin `/api/websocket/stream` (proxied to the backend by Vite)
 - Heartbeat every 30s
 - Reconnect backoff with `max_retries=10`
-- `registerCallback()` for low-rerender high-frequency consumption
+- `useQuotes(symbols)` / `useQuote(symbol)` subscribe while mounted; subscriptions are ref-counted and only the aggregate delta is sent
+- `useConnectionStatus()` for the connection badge
 - Supports `ticker` and `ticker_batch` messages (batch currently optional)
+
+## Screener Usage Pattern
+- The screener subscribes the symbols of the rows on screen through `useQuotes`, so paging, sorting or filtering moves the subscription and unmounting drops it.
+- Rows stay in the server's sort order; live values only overlay price, change and volume.
+- Symbols with no streamed quote (or all of them while the socket is down) are polled from `GET /api/market/quotes/live`: every 3s while the market is open, every minute otherwise, at most 100 symbols.
+- While the market is open a streamed quote older than 5s (by the store's `receivedAt`) counts as missing, so a connected but silent socket falls back to polling; the quote that arrived last wins. Outside market hours the stream wins while connected.
 
 ## Terminal Usage Pattern
 - Terminal subscribes to the selected symbol, watchlist symbols, and open-position symbols.
