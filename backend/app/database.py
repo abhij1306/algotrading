@@ -10,7 +10,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Column, Engine, Table, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.schema import CreateColumn
 
@@ -217,6 +217,16 @@ def ensure_universe_schema(*, bind: Engine | None = None) -> None:
     logger.warning("Widened index_universe_definitions.index_code to VARCHAR(50)")
 
 
+_COPY_LEGACY_PNL_SQL = "UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"
+# vcp_scan_results column -> backfill statement run when that column is newly added
+_VCP_SCAN_BACKFILLS = {
+    "scan_id": ("UPDATE vcp_scan_results SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"),
+    "scan_timestamp": (
+        "UPDATE vcp_scan_results SET scan_timestamp = COALESCE(scan_timestamp, created_at)"
+    ),
+}
+
+
 def ensure_strategy_schema(*, bind: Engine | None = None) -> None:
     """Backfill missing strategy tables/columns on existing databases."""
     db_engine = bind or engine
@@ -230,44 +240,37 @@ def ensure_strategy_schema(*, bind: Engine | None = None) -> None:
         missing_columns = [
             column for column in table.columns if column.name not in existing_columns
         ]
-        if not missing_columns:
-            if (
-                table.name == "positions"
-                and "pnl_rs" in existing_columns
-                and "pnl_inr" in existing_columns
-            ):
-                with db_engine.begin() as connection:
-                    connection.execute(
-                        text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)")
-                    )
-                logger.warning("Backfilled positions.pnl_inr from legacy pnl_rs")
-            continue
+        if missing_columns:
+            _add_strategy_columns(db_engine, table, missing_columns, existing_columns)
+        elif table.name == "positions" and {"pnl_rs", "pnl_inr"} <= existing_columns:
+            with db_engine.begin() as connection:
+                connection.execute(text(_COPY_LEGACY_PNL_SQL))
+            logger.warning("Backfilled positions.pnl_inr from legacy pnl_rs")
 
-        added: list[str] = []
-        with db_engine.begin() as connection:
-            for column in missing_columns:
-                column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
-                connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
-                added.append(column.name)
-            if table.name == "vcp_scan_results":
-                if "scan_id" in added:
-                    connection.execute(
-                        text(
-                            "UPDATE vcp_scan_results "
-                            "SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"
-                        )
-                    )
-                if "scan_timestamp" in added:
-                    connection.execute(
-                        text(
-                            "UPDATE vcp_scan_results "
-                            "SET scan_timestamp = COALESCE(scan_timestamp, created_at)"
-                        )
-                    )
-            if table.name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
-                connection.execute(text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"))
 
-        logger.warning("Backfilled missing columns on %s: %s", table.name, ", ".join(added))
+def _add_strategy_columns(
+    db_engine: Engine, table: Table, missing_columns: list[Column], existing_columns: set[str]
+) -> None:
+    """ALTER TABLE ADD each missing column, then backfill the new columns from legacy data."""
+    added: list[str] = []
+    with db_engine.begin() as connection:
+        for column in missing_columns:
+            column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
+            connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
+            added.append(column.name)
+        for statement in _strategy_backfills(table.name, added, existing_columns):
+            connection.execute(text(statement))
+
+    logger.warning("Backfilled missing columns on %s: %s", table.name, ", ".join(added))
+
+
+def _strategy_backfills(table_name: str, added: list[str], existing_columns: set[str]) -> list[str]:
+    """Backfill statements for the columns just added to a strategy table."""
+    if table_name == "vcp_scan_results":
+        return [_VCP_SCAN_BACKFILLS[name] for name in _VCP_SCAN_BACKFILLS if name in added]
+    if table_name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
+        return [_COPY_LEGACY_PNL_SQL]
+    return []
 
 
 # Avoid import-time schema creation; startup owns database validation/initialization.
