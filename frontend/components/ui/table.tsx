@@ -140,35 +140,4 @@ const TableCaption = React.forwardRef<
 ));
 TableCaption.displayName = "TableCaption";
 
-// Dense Table Row (for high-density data)
-const DenseTableRow = React.forwardRef<
-  HTMLTableRowElement,
-  React.HTMLAttributes<HTMLTableRowElement>
->(({ className, ...props }, ref) => (
-  <TableRow ref={ref} className={cn("h-8 text-xs", className)} {...props} />
-));
-DenseTableRow.displayName = "DenseTableRow";
-
-/**
- * Dense Table Cell
- */
-const DenseTableCell = React.forwardRef<
-  HTMLTableCellElement,
-  React.TdHTMLAttributes<HTMLTableCellElement> & { numeric?: boolean }
->(({ className, ...props }, ref) => (
-  <TableCell ref={ref} className={cn("py-1", className)} {...props} />
-));
-DenseTableCell.displayName = "DenseTableCell";
-
-export {
-  Table,
-  TableHeader,
-  TableBody,
-  TableFooter,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableCaption,
-  DenseTableRow,
-  DenseTableCell,
-};
+export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption };

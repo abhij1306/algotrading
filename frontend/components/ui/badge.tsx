@@ -1,7 +1,6 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
-import { formatPercent } from "@/lib/utils";
 
 /**
  * Badge Component
@@ -81,42 +80,6 @@ function Badge({
       {icon}
       {children}
     </div>
-  );
-}
-
-/**
- * Specialized Status Badge
- */
-export function StatusBadge({
-  status,
-  className,
-}: Readonly<{ status: string; className?: string }>) {
-  const normalizedStatus = status.toLowerCase();
-
-  const getVariant = (): BadgeProps["variant"] => {
-    if (["active", "open", "live", "running", "success"].includes(normalizedStatus))
-      return "profit";
-    if (["inactive", "closed", "stopped", "failed", "error"].includes(normalizedStatus))
-      return "loss";
-    if (["pending", "warning", "maintenance"].includes(normalizedStatus)) return "warning";
-    return "neutral";
-  };
-
-  return (
-    <Badge variant={getVariant()} className={cn("capitalize", className)}>
-      {status}
-    </Badge>
-  );
-}
-
-/**
- * Price Change Badge
- */
-export function ChangeBadge({ value, className }: Readonly<{ value: number; className?: string }>) {
-  return (
-    <Badge variant={value >= 0 ? "profit" : "loss"} className={className}>
-      {formatPercent(value)}
-    </Badge>
   );
 }
 
