@@ -1,15 +1,16 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { api, parseResponse, unwrap } from "@/lib/api/client";
-import { getISTTime, type MarketStatus } from "@/lib/market-hours";
-import { roundToDecimals } from "@/lib/utils";
+import { roundToDecimals } from "@/lib/format";
+import type { MarketStatus } from "@/lib/market-hours";
+import { formatIstTime, type DateInput } from "@/lib/time";
 import { queryKeys } from "./keys";
 
 /** Dashboard panels refresh every minute; TanStack Query pauses the polls while the tab is hidden. */
 const DASHBOARD_REFRESH_MS = 60_000;
 const WATCHLIST_ROWS = 10;
 const US_INDEX_NAMES = new Set(["S&P 500", "Nasdaq", "Dow Jones"]);
-const COMMODITY_NAMES = new Set(["Gold", "Silver", "Crude Oil"]);
+const COMMODITY_NAMES = new Set(["Gold", "Silver"]);
 
 const optionalNumber = z.number().nullish().catch(null);
 const optionalString = z.string().nullish().catch(null);
@@ -79,6 +80,13 @@ const overviewSchema = z.object({
   }),
   condition: conditionSchema,
   timestamp: optionalString,
+});
+
+const commoditySchema = z.object({
+  name: z.string().catch(""),
+  symbol: z.string().catch(""),
+  price: optionalNumber,
+  changePercent: optionalNumber,
 });
 
 const currencySchema = z.object({ rate: optionalNumber, changePercent: optionalNumber });
@@ -193,6 +201,11 @@ export interface PostMarketData {
   timestamp: string | null;
 }
 
+/** The IST wall clock as the backend's market status prints it: "14:05:09 IST". */
+export function formatIstClock(now: DateInput = Date.now()): string {
+  return `${formatIstTime(now)} IST`;
+}
+
 function roundOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" ? roundToDecimals(value, 2) : null;
 }
@@ -242,12 +255,12 @@ async function fetchMarketStatus(): Promise<MarketStatusSnapshot> {
     const body = parseResponse(marketStatusSchema, await unwrap(api.GET("/api/market/status")));
     return {
       status: { isOpen: body.is_open, message: body.message || "Market status unavailable" },
-      istTime: body.current_time_ist || getISTTime(),
+      istTime: body.current_time_ist || formatIstClock(),
     };
   } catch {
     return {
       status: { isOpen: false, message: "Market status unavailable" },
-      istTime: getISTTime(),
+      istTime: formatIstClock(),
     };
   }
 }
@@ -388,6 +401,36 @@ export function usePostMarketInsights(enabled: boolean) {
     enabled,
     ...POLL_OPTIONS,
   });
+}
+
+/**
+ * Yahoo futures quotes (Gold, Crude Oil) from /api/market/commodities. The overview carries Gold
+ * and Silver but not Crude Oil, so the post-market panel adds the rows the overview lacks.
+ */
+export function useCommodities(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.dashboard.commodities(),
+    queryFn: async (): Promise<CommodityData[]> =>
+      parseResponse(z.array(commoditySchema), await unwrap(api.GET("/api/market/commodities")))
+        .filter((row) => row.name.length > 0)
+        .map((row) => ({
+          name: row.name,
+          symbol: row.symbol,
+          price: row.price ?? null,
+          changePercent: row.changePercent ?? null,
+        })),
+    enabled,
+    ...POLL_OPTIONS,
+  });
+}
+
+/** The overview's commodity rows, then each extra row whose name the overview does not have. */
+export function mergeCommodities(
+  overviewRows: readonly CommodityData[],
+  extraRows: readonly CommodityData[],
+): CommodityData[] {
+  const known = new Set(overviewRows.map((row) => row.name));
+  return [...overviewRows, ...extraRows.filter((row) => !known.has(row.name))];
 }
 
 /** Symbols shown by the market insights, for live quote subscription. */

@@ -47,5 +47,6 @@ export const queryKeys = {
     indices: (marketOpen: boolean) => ["dashboard", "indices", { marketOpen }] as const,
     marketInsights: () => ["dashboard", "market-insights"] as const,
     postMarketInsights: () => ["dashboard", "post-market-insights"] as const,
+    commodities: () => ["dashboard", "commodities"] as const,
   },
 };
