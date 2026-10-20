@@ -153,13 +153,22 @@ class FyersBroker(IBroker):
                 details={"type": order_type, "trigger_price": order.get("trigger_price")},
             )
 
+        limit_price = safe_float(order.get("price"), 0.0)
+        if order_type in LIMIT_PRICED_ORDER_TYPES and limit_price <= 0:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=f"{order_type} order requires a positive limit price.",
+                details={"type": order_type, "price": order.get("price")},
+            )
+
         data = {
             "symbol": order["symbol"],
             "qty": order["quantity"],
             "type": FYERS_ORDER_TYPES[order_type],
             "side": 1 if side == "BUY" else -1,
             "productType": product_map.get(order.get("product", "INTRADAY").upper(), "INTRADAY"),
-            "limitPrice": order.get("price", 0) if order_type in LIMIT_PRICED_ORDER_TYPES else 0,
+            "limitPrice": limit_price if order_type in LIMIT_PRICED_ORDER_TYPES else 0,
             "stopPrice": trigger_price if order_type in STOP_ORDER_TYPES else 0,
             "validity": "DAY",
             "disclosedQty": 0,

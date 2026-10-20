@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
+from .symbol_master import SymbolFormat, symbol_master
 
 logger = logging.getLogger(__name__)
 
@@ -79,24 +80,35 @@ class RiskManager:
             self._broker = FyersBroker()
         return self._broker
 
-    def _get_estimated_price(self, symbol: str) -> float:
+    @staticmethod
+    def _quote_symbol(symbol: str, fyers_symbol: str | None) -> str:
+        """Fyers symbol to quote: the explicit fyers_symbol, else symbol converted."""
+        if fyers_symbol:
+            return fyers_symbol
+        if symbol_master.is_valid(symbol, SymbolFormat.FYERS_FORMAT):
+            return symbol
+        return symbol_master.to_fyers(symbol)
+
+    def _get_estimated_price(self, symbol: str, fyers_symbol: str | None = None) -> float:
         """
         Get estimated price for a symbol.
         Tries to fetch from broker quote first, falls back to config default.
 
         Args:
-            symbol: Symbol to get price for
+            symbol: Symbol to get price for, in DB ("SBIN") or Fyers format
+            fyers_symbol: Fyers symbol to quote, when the caller already has it
 
         Returns:
             Estimated price or 0 if unavailable
         """
-        if not symbol:
+        if not symbol and not fyers_symbol:
             return 0
 
         try:
             from ..brokers.plugins.fyers import quote_last_price
 
-            price = quote_last_price(self._get_broker().get_quote(symbol))
+            quote_symbol = self._quote_symbol(symbol, fyers_symbol)
+            price = quote_last_price(self._get_broker().get_quote(quote_symbol))
             if price > 0:
                 return price
         except Exception as e:
@@ -277,7 +289,7 @@ class RiskManager:
             # For market orders, try to get actual quote or use configured default
             if price == 0:
                 symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(order_params.get("fyers_symbol") or symbol)
+                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
                 if price == 0:
                     return RiskCheckResult(
                         status=RiskStatus.FAIL,
@@ -321,7 +333,7 @@ class RiskManager:
             # For market orders, try to get actual quote or use configured default
             if price == 0:
                 symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(order_params.get("fyers_symbol") or symbol)
+                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
 
             # Rough estimate: 20% margin for intraday, 100% for CNC
             product = order_params.get("product", "INTRADAY")
@@ -492,7 +504,7 @@ class RiskManager:
         # For market orders, get current price
         if price == 0:
             symbol = order_params.get("symbol", "")
-            price = self._get_estimated_price(order_params.get("fyers_symbol") or symbol)
+            price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
             if price == 0:
                 return RiskCheckResult(
                     status=RiskStatus.WARNING,

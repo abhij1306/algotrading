@@ -113,6 +113,38 @@ def test_risk_price_estimate_fails_when_quote_has_no_price(
     assert result.status.value == "WARNING"
 
 
+@pytest.mark.parametrize(
+    ("symbol", "fyers_symbol", "quoted_symbol"),
+    [
+        ("SBIN", None, "NSE:SBIN-EQ"),
+        ("NSE:SBIN-EQ", None, "NSE:SBIN-EQ"),
+        ("NSE:NIFTY2520622500CE", None, "NSE:NIFTY2520622500CE"),
+        ("NIFTY2520622500CE", "NSE:NIFTY2520622500CE", "NSE:NIFTY2520622500CE"),
+    ],
+)
+def test_risk_price_estimate_quotes_fyers_symbol(
+    symbol: str, fyers_symbol: str | None, quoted_symbol: str
+) -> None:
+    client = FakeFyersClient()
+    manager = RiskManager()
+    manager._broker = make_broker(client)
+
+    assert manager._get_estimated_price(symbol, fyers_symbol) == 812.5
+    assert client.calls == [("quotes", {"symbols": quoted_symbol})]
+
+
+def test_large_order_check_from_bare_symbol_quotes_fyers_symbol() -> None:
+    client = FakeFyersClient()
+    manager = RiskManager(RiskConfig(large_order_notional=10000))
+    manager._broker = make_broker(client)
+
+    result = manager.check_large_order({"symbol": "SBIN", "quantity": 20, "price": 0})
+
+    assert result.code == "LARGE_ORDER_CONFIRMATION"
+    assert result.details == {"notional": 16250.0, "threshold": 10000}
+    assert client.calls == [("quotes", {"symbols": "NSE:SBIN-EQ"})]
+
+
 # --- 2. Live stop-loss orders reach Fyers with the trigger price -----------
 
 
@@ -194,6 +226,29 @@ def test_stop_order_without_trigger_is_rejected_before_broker(
 
     assert response["status"] == "REJECTED"
     assert response["message"] == f"{order_type} order requires a positive trigger price."
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("order_type", ["LIMIT", "SL"])
+@pytest.mark.parametrize("price", [None, 0, -1])
+def test_limit_priced_order_without_price_is_rejected_before_broker(
+    order_type: str, price: float | None
+) -> None:
+    client = FakeFyersClient()
+
+    response = make_broker(client).place_order(
+        {
+            "symbol": "NSE:SBIN-EQ",
+            "side": "BUY",
+            "quantity": 1,
+            "type": order_type,
+            "price": price,
+            "trigger_price": 806.0,
+        }
+    )
+
+    assert response["status"] == "REJECTED"
+    assert response["message"] == f"{order_type} order requires a positive limit price."
     assert client.calls == []
 
 
