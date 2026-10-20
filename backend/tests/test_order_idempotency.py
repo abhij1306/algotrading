@@ -16,23 +16,13 @@ from sqlalchemy.orm import Session
 from app.database import ensure_live_order_schema, get_db
 from app.main import app
 from app.models.live_order import CLIENT_ORDER_ID_INDEX, LiveOrder
-from app.routers import trading
 from app.services import order_execution_service as oes
+
+from fakes.broker import FakeBroker
 
 CLIENT_ORDER_ID = "3f2b8c1e-9d4a-4b6e-8f10-2a7c5e9d1b34"
 OTHER_CLIENT_ORDER_ID = "9a1d7c55-2e3f-4b8a-a6c4-71e0d2f8b903"
 DUPLICATE_MESSAGE = "Duplicate client_order_id: returning the existing order"
-
-
-class RecordingBroker:
-    """Broker stand-in: records every place_order payload and accepts it."""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(order)
-        return {"status": "SUBMITTED", "order_id": f"B-{len(self.calls)}", "message": "ok"}
 
 
 @pytest.fixture
@@ -46,12 +36,14 @@ def orders(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def broker() -> RecordingBroker:
-    return RecordingBroker()
+def broker(fake_broker: FakeBroker) -> FakeBroker:
+    """Accepts every place_order as B-<n> with the message "ok"."""
+    fake_broker.place_message = "ok"
+    return fake_broker
 
 
 @pytest.fixture
-def service(broker: RecordingBroker, monkeypatch: pytest.MonkeyPatch) -> oes.OrderExecutionService:
+def service(broker: FakeBroker, monkeypatch: pytest.MonkeyPatch) -> oes.OrderExecutionService:
     svc = oes.OrderExecutionService()
     svc._broker = broker
     monkeypatch.setattr(svc, "_run_live_risk_checks", lambda params, db: (None, []))
@@ -86,7 +78,7 @@ def stored_rows(db: Session) -> list[tuple[str, str, str | None, int]]:
 
 
 def test_live_retry_returns_the_existing_order_without_a_second_broker_call(
-    orders: Session, service: oes.OrderExecutionService, broker: RecordingBroker
+    orders: Session, service: oes.OrderExecutionService, broker: FakeBroker
 ) -> None:
     first = service.place_order(order_params(), orders, mode="LIVE")
     retry = service.place_order(order_params(), orders, mode="LIVE")
@@ -107,15 +99,15 @@ def test_live_retry_returns_the_existing_order_without_a_second_broker_call(
         "client_order_id": CLIENT_ORDER_ID,
         "duplicate": True,
     }
-    assert len(broker.calls) == 1
-    assert broker.calls[0]["order_tag"] == "ST3F2B8C1E9D4A4B6E8F"
+    assert broker.count("place_order") == 1
+    assert broker.calls_named("place_order")[0]["order_tag"] == "ST3F2B8C1E9D4A4B6E8F"
     assert stored_rows(orders) == [("B-1", "SUBMITTED", CLIENT_ORDER_ID, 0)]
 
 
 def test_live_retry_is_deduplicated_even_when_the_risk_check_would_now_fail(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service.place_order(order_params(), orders, mode="LIVE")
@@ -130,11 +122,11 @@ def test_live_retry_is_deduplicated_even_when_the_risk_check_would_now_fail(
     retry = service.place_order(order_params(), orders, mode="LIVE")
 
     assert (retry["status"], retry["duplicate"], retry["order_id"]) == ("SUBMITTED", True, "B-1")
-    assert len(broker.calls) == 1
+    assert broker.count("place_order") == 1
 
 
 def test_new_client_order_id_places_a_new_order(
-    orders: Session, service: oes.OrderExecutionService, broker: RecordingBroker
+    orders: Session, service: oes.OrderExecutionService, broker: FakeBroker
 ) -> None:
     service.place_order(order_params(), orders, mode="LIVE")
     second = service.place_order(
@@ -142,7 +134,7 @@ def test_new_client_order_id_places_a_new_order(
     )
 
     assert (second["order_id"], second["duplicate"]) == ("B-2", False)
-    assert [call["order_tag"] for call in broker.calls] == [
+    assert [call["order_tag"] for call in broker.calls_named("place_order")] == [
         "ST3F2B8C1E9D4A4B6E8F",
         "ST9A1D7C552E3F4B8AA6",
     ]
@@ -160,7 +152,7 @@ def test_new_client_order_id_places_a_new_order(
 def test_live_order_without_a_valid_client_order_id_never_reaches_broker(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     client_order_id: str | None,
     message: str,
 ) -> None:
@@ -175,7 +167,7 @@ def test_live_order_without_a_valid_client_order_id_never_reaches_broker(
 def test_pending_row_is_committed_before_the_broker_is_called(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     test_engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -203,7 +195,7 @@ def _connection_refused() -> OperationalError:
 def test_db_down_on_the_pending_commit_raises_and_never_calls_the_broker(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def lost_commit() -> NoReturn:
@@ -223,7 +215,7 @@ def test_db_down_on_the_pending_commit_raises_and_never_calls_the_broker(
 def test_other_pending_commit_failure_returns_fixed_error_and_never_calls_the_broker(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def broken_commit() -> NoReturn:
@@ -240,7 +232,7 @@ def test_other_pending_commit_failure_returns_fixed_error_and_never_calls_the_br
 def test_db_lost_after_broker_accepts_keeps_pending_row_so_a_retry_does_not_reorder(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -274,7 +266,7 @@ def test_db_lost_after_broker_accepts_keeps_pending_row_so_a_retry_does_not_reor
         "PENDING_SUBMIT",
         True,
     )
-    assert len(broker.calls) == 1
+    assert broker.count("place_order") == 1
 
 
 # --- Concurrent duplicates ------------------------------------------------------
@@ -320,7 +312,7 @@ def lookup_misses_once(
 def test_concurrent_duplicate_loses_the_insert_race_and_returns_the_winner(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
     is_paper: int,
@@ -348,7 +340,7 @@ def test_concurrent_duplicate_loses_the_insert_race_and_returns_the_winner(
 def test_integrity_error_without_a_matching_row_is_a_fixed_error(
     orders: Session,
     service: oes.OrderExecutionService,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unrelated_violation() -> NoReturn:
@@ -366,7 +358,7 @@ def test_integrity_error_without_a_matching_row_is_a_fixed_error(
 
 
 def test_paper_retry_returns_the_existing_fill_and_never_touches_the_broker(
-    orders: Session, service: oes.OrderExecutionService, broker: RecordingBroker
+    orders: Session, service: oes.OrderExecutionService, broker: FakeBroker
 ) -> None:
     first = service.place_order(order_params(), orders, mode="PAPER")
     retry = service.place_order(order_params(), orders, mode="PAPER")
@@ -432,11 +424,10 @@ ORDER_BODY = {
 )
 def test_live_order_api_requires_a_uuid4_client_order_id(
     api: TestClient,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
     extra: dict[str, Any],
 ) -> None:
-    monkeypatch.setattr(trading.order_execution_service, "_broker", broker)
 
     response = api.post(
         "/api/trading/order", headers={"x-user-id": "u1"}, json={**ORDER_BODY, **extra}
@@ -470,10 +461,9 @@ def test_options_order_api_requires_client_order_id_for_live(api: TestClient) ->
 def test_duplicate_of_a_failed_order_answers_200_with_its_state(
     api: TestClient,
     orders: Session,
-    broker: RecordingBroker,
+    broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(trading.order_execution_service, "_broker", broker)
     add_existing_order(orders, is_paper=0, status="ERROR")
 
     response = api.post(

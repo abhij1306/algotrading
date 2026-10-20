@@ -1,7 +1,7 @@
 """Characterization tests that pin current paper-fill, place, modify, cancel and position-sync
 behaviour before those functions are refactored for readability."""
 
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -14,6 +14,9 @@ from app.models.live_position import LivePosition
 from app.services import order_execution_service as oes
 from app.services.position_sync_service import PositionSyncService
 from app.services.risk_manager import risk_manager
+
+from fakes.broker import FakeBroker
+from fakes.market import FreezeMarket
 
 # --- Paper fill simulation ---------------------------------------------------
 # Reference price 100.0, quantity 10, default 5 bps slippage and 3.5 bps fees.
@@ -248,29 +251,6 @@ def test_paper_fill_applies_custom_slippage_and_fees(monkeypatch: pytest.MonkeyP
 # --- Modify order ------------------------------------------------------------
 
 
-class StubModifyBroker:
-    """Broker stand-in whose modify_order returns a fixed reply or raises.
-
-    Its quote (LTP 800) keeps a modify near 800 inside the risk price band.
-    """
-
-    def __init__(self, reply: dict[str, Any] | Exception) -> None:
-        self.reply = reply
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def get_quote(self, symbol: str) -> dict[str, Any]:
-        return {"n": symbol, "v": {"lp": 800.0}}
-
-    def get_funds(self) -> dict[str, float]:
-        return {"available": 100_000.0, "used": 0.0, "total": 100_000.0}
-
-    def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append((order_id, params))
-        if isinstance(self.reply, Exception):
-            raise self.reply
-        return self.reply
-
-
 @pytest.fixture
 def orders(db_session: Session) -> Generator[Session, None, None]:
     db_session.query(LiveOrder).delete()
@@ -325,12 +305,12 @@ def test_live_modify_failure_leaves_order_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     reply: dict[str, Any] | Exception,
     expected: str,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
 ) -> None:
     freeze_market(True)
     order = add_order(orders, is_paper=0)
     service = oes.OrderExecutionService()
-    broker = StubModifyBroker(reply)
+    broker = FakeBroker(modify_reply=reply, available=100_000.0)
     service._broker = broker
     # The +1 notional is margin-checked through the risk manager's broker.
     monkeypatch.setattr(risk_manager, "_broker", broker)
@@ -338,7 +318,7 @@ def test_live_modify_failure_leaves_order_unchanged(
     result = service.modify_order("ORD-1", {"price": 801.0}, orders)
 
     assert result == {"status": "ERROR", "message": expected}
-    assert broker.calls == [
+    assert broker.calls_named("modify_order") == [
         ("ORD-1", {"order_type": "LIMIT", "quantity": 5, "price": 801.0, "trigger_price": 0.0})
     ]
     orders.refresh(order)
@@ -392,18 +372,6 @@ def test_paper_modify_converts_numeric_strings(
 # --- Place order -------------------------------------------------------------
 
 
-class StubPlaceBroker:
-    """Broker stand-in whose place_order records the payload and returns a fixed reply."""
-
-    def __init__(self, reply: dict[str, Any]) -> None:
-        self.reply = reply
-        self.calls: list[dict[str, Any]] = []
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(order)
-        return self.reply
-
-
 CLIENT_ORDER_ID = "3f2b8c1e-9d4a-4b6e-8f10-2a7c5e9d1b34"
 ORDER_TAG = "ST3F2B8C1E9D4A4B6E8F"
 
@@ -440,7 +408,7 @@ def test_place_order_rejects_bad_request_without_broker_or_row(
     orders: Session, mode: str, quantity: object, message: str
 ) -> None:
     service = oes.OrderExecutionService()
-    broker = StubPlaceBroker({"status": "SUBMITTED", "order_id": "B-1"})
+    broker = FakeBroker(place_reply={"status": "SUBMITTED", "order_id": "B-1"})
     service._broker = broker
 
     result = service.place_order(live_params(quantity=quantity), orders, mode=mode)
@@ -452,7 +420,7 @@ def test_place_order_rejects_bad_request_without_broker_or_row(
 
 def test_live_order_failing_risk_checks_never_reaches_broker(orders: Session) -> None:
     service = oes.OrderExecutionService()
-    broker = StubPlaceBroker({"status": "SUBMITTED", "order_id": "B-1"})
+    broker = FakeBroker(place_reply={"status": "SUBMITTED", "order_id": "B-1"})
     service._broker = broker
 
     result = service.place_order(live_params(), orders, mode="LIVE")
@@ -486,7 +454,7 @@ def test_live_order_records_broker_outcome(
     stored: tuple[str | None, str, str | None, str | None],
 ) -> None:
     service = oes.OrderExecutionService()
-    broker = StubPlaceBroker(reply)
+    broker = FakeBroker(place_reply=reply)
     service._broker = broker
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
@@ -499,7 +467,7 @@ def test_live_order_records_broker_outcome(
         "client_order_id": CLIENT_ORDER_ID,
         "duplicate": False,
     }
-    assert broker.calls == [
+    assert broker.calls_named("place_order") == [
         {
             "symbol": "NSE:SBIN-EQ",
             "quantity": 2,
@@ -543,7 +511,9 @@ def test_db_lost_after_broker_rejects_raises_without_unsaved_order_log(
     orders: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     service = oes.OrderExecutionService()
-    service._broker = StubPlaceBroker({"status": "REJECTED", "message": "Insufficient margin"})
+    service._broker = FakeBroker(
+        place_reply={"status": "REJECTED", "message": "Insufficient margin"}
+    )
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
     real_commit = orders.commit
     commits: list[str] = []
@@ -567,23 +537,9 @@ def test_db_lost_after_broker_rejects_raises_without_unsaved_order_log(
 # --- Cancel order ------------------------------------------------------------
 
 
-class StubCancelBroker:
-    """Broker stand-in whose cancel_order returns a fixed reply or raises."""
-
-    def __init__(self, reply: dict[str, Any] | Exception) -> None:
-        self.reply = reply
-        self.calls: list[str] = []
-
-    def cancel_order(self, order_id: str) -> dict[str, Any]:
-        self.calls.append(order_id)
-        if isinstance(self.reply, Exception):
-            raise self.reply
-        return self.reply
-
-
 def test_cancel_unknown_order_is_an_error(orders: Session) -> None:
     service = oes.OrderExecutionService()
-    broker = StubCancelBroker({"s": "ok"})
+    broker = FakeBroker(cancel_reply={"s": "ok"})
     service._broker = broker
 
     result = service.cancel_order("NOPE", orders)
@@ -623,13 +579,13 @@ def test_live_cancel_outcome_per_broker_reply(
 ) -> None:
     order = add_order(orders, is_paper=0)
     service = oes.OrderExecutionService()
-    broker = StubCancelBroker(reply)
+    broker = FakeBroker(cancel_reply=reply)
     service._broker = broker
 
     result = service.cancel_order("ORD-1", orders)
 
     assert result == expected
-    assert broker.calls == ["ORD-1"]
+    assert broker.calls_named("cancel_order") == ["ORD-1"]
     orders.refresh(order)
     assert order.status == status
 
@@ -637,13 +593,13 @@ def test_live_cancel_outcome_per_broker_reply(
 def test_live_cancel_by_internal_id_sends_the_broker_id(orders: Session) -> None:
     order = add_order(orders, is_paper=0, order_id="B-77")
     service = oes.OrderExecutionService()
-    broker = StubCancelBroker({"s": "ok"})
+    broker = FakeBroker(cancel_reply={"s": "ok"})
     service._broker = broker
 
     result = service.cancel_order("ORD-1", orders)
 
     assert result == {"status": "SUCCESS", "message": "Order Cancelled"}
-    assert broker.calls == ["B-77"]
+    assert broker.calls_named("cancel_order") == ["B-77"]
     orders.refresh(order)
     assert order.status == "CANCELLED"
 
@@ -651,8 +607,8 @@ def test_live_cancel_by_internal_id_sends_the_broker_id(orders: Session) -> None
 def test_live_cancel_with_db_down_raises(orders: Session) -> None:
     add_order(orders, is_paper=0)
     service = oes.OrderExecutionService()
-    service._broker = StubCancelBroker(
-        OperationalError("COMMIT", {}, Exception("connection refused"))
+    service._broker = FakeBroker(
+        cancel_reply=OperationalError("COMMIT", {}, Exception("connection refused"))
     )
 
     with pytest.raises(OperationalError):
@@ -675,7 +631,7 @@ def test_paper_cancel_never_reaches_broker(
 ) -> None:
     order = add_order(orders, is_paper=1, status=status)
     service = oes.OrderExecutionService()
-    broker = StubCancelBroker({"s": "ok"})
+    broker = FakeBroker(cancel_reply={"s": "ok"})
     service._broker = broker
 
     result = service.cancel_order("ORD-1", orders)
@@ -687,14 +643,6 @@ def test_paper_cancel_never_reaches_broker(
 
 
 # --- Position sync -----------------------------------------------------------
-
-
-class StubPositionsBroker:
-    def __init__(self, positions: list[dict[str, Any]]) -> None:
-        self.positions = positions
-
-    def get_positions(self) -> list[dict[str, Any]]:
-        return self.positions
 
 
 @pytest.fixture
@@ -740,8 +688,8 @@ def broker_position(symbol: str, side: str, qty: int, entry: float, ltp: float, 
 
 def test_position_sync_updates_creates_and_maps_sides(position_factory: sessionmaker) -> None:
     service = PositionSyncService()
-    service._broker = StubPositionsBroker(
-        [
+    service._broker = FakeBroker(
+        positions=[
             broker_position("NSE:SBIN-EQ", "SELL", 3, 810.0, 805.0, 15.0),
             broker_position("NSE:TCS-EQ", "BUY", 2, 3500.0, 3510.0, 20.0),
             broker_position("NSE:INFY-EQ", "SHORT", 4, 1500.0, 1490.0, 40.0),

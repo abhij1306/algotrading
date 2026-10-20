@@ -6,8 +6,9 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from app.brokers.plugins import fyers as fyers_plugin
 from app.routers import trading
+
+from fakes.broker import FakeBroker
 
 SECRET = "token=abc123 internal broker detail"
 
@@ -59,14 +60,6 @@ def test_live_square_and_exit_server_errors_are_generic(
     assert db.rolled_back is True
 
 
-class FailingBroker:
-    def get_funds(self) -> object:
-        raise RuntimeError(SECRET)
-
-    def get_tradebook(self) -> list[dict[str, Any]]:
-        raise RuntimeError(SECRET)
-
-
 @pytest.mark.parametrize(
     ("route", "detail"),
     [
@@ -75,9 +68,10 @@ class FailingBroker:
     ],
 )
 def test_broker_route_errors_do_not_leak_exception_text(
-    monkeypatch: pytest.MonkeyPatch, route: Callable[[], object], detail: str
+    fake_broker: FakeBroker, route: Callable[[], object], detail: str
 ) -> None:
-    monkeypatch.setattr(fyers_plugin, "FyersBroker", FailingBroker)
+    fake_broker.available = RuntimeError(SECRET)
+    fake_broker.tradebook = RuntimeError(SECRET)
 
     with pytest.raises(HTTPException) as raised:
         route()

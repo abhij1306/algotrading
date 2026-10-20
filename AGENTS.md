@@ -153,8 +153,19 @@ ruff format --check .
 ruff check .
 
 cd backend
-pytest        # test deps: pip install -r requirements-dev.txt
+python -m pytest   # test deps: pip install -r requirements-dev.txt; -m puts backend/ on sys.path
+python -m pytest --cov=app --cov-report=term-missing:skip-covered   # coverage is opt-in; CI passes these
 ```
+
+Trading test fixtures (`backend/tests/conftest.py`):
+- `fake_broker`: a `FakeBroker` (`backend/tests/fakes/broker.py`) behind every broker handle the app
+  holds. It records each call and is configured by attributes (`ltp`, `positions`, `working`,
+  `place_reply`, `circuit_open`, ...) or per call with `script(method, *outcomes)`. Do not write a new
+  fake broker in a test file; extend this one.
+- `freeze_market`: the one way to pin market hours. `freeze_market(True)` (open), `False` (a
+  Saturday) or an IST `datetime`; it freezes the risk manager, `live_market` (plus any
+  `LiveMarketService` passed after the instant) and the `market_hours` helpers on a `FixedClock`.
+  Do not monkeypatch `is_market_open` / `is_market_hours` or `datetime` instead.
 
 ### CI
 `.github/workflows/ci.yml` runs both blocks above on every pull request and on pushes to main.

@@ -2,7 +2,7 @@
 exposure, exits that can only reduce a position, exit idempotency, and no broker or
 exception text in client responses (trading rules 3, 5, 7 and 10)."""
 
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from datetime import datetime
 from typing import Any, NoReturn
 
@@ -18,103 +18,15 @@ from app.models.live_position import LivePosition
 from app.routers import trading
 from app.services import live_exit_service as les
 from app.services import order_execution_service as oes
-from app.services.risk_manager import RiskManager, RiskStatus, risk_manager
+from app.services.risk_manager import RiskManager, RiskStatus
+
+from fakes.broker import FakeBroker
+from fakes.broker import broker_position as position
+from fakes.market import FreezeMarket
 
 SECRET = "token=abc123 internal broker detail"
 CLIENT_ORDER_ID = "5b0e4c2a-7d1f-4e3b-9a6c-2f8d1e0b7c45"
 OTHER_CLIENT_ORDER_ID = "8c3d1f6e-2a4b-4c7d-9e0f-1a2b3c4d5e6f"
-
-
-class FakeBroker:
-    """Broker stand-in that records every call. Defaults: LTP 800, funds 1,000,000,
-    one long SBIN INTRADAY position of 10, no working orders; every call is accepted."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
-        self.ltp: float | Exception = 800.0
-        self.available = 1_000_000.0
-        self.positions: list[dict[str, Any]] | Exception = [position("NSE:SBIN-EQ", 10)]
-        self.working: list[dict[str, Any]] | Exception = []
-        self.modify_reply: dict[str, Any] | Exception = {"s": "ok", "message": "Modified"}
-        self.cancel_reply: dict[str, Any] | Exception = {"s": "ok"}
-        self.place_reply: dict[str, Any] | Exception | None = None
-        self.tagged_order: dict[str, Any] | Exception | None = None
-
-    def find_order_by_tag(self, order_tag: str) -> dict[str, Any] | None:
-        self.calls.append(("find_order_by_tag", order_tag))
-        if isinstance(self.tagged_order, Exception):
-            raise self.tagged_order
-        return self.tagged_order
-
-    def get_quote(self, symbol: str) -> dict[str, Any]:
-        self.calls.append(("get_quote", symbol))
-        if isinstance(self.ltp, Exception):
-            raise self.ltp
-        return {"n": symbol, "v": {"lp": self.ltp}} if self.ltp > 0 else {}
-
-    def get_funds(self) -> dict[str, float]:
-        self.calls.append(("get_funds", None))
-        return {"available": self.available, "used": 0.0, "total": self.available}
-
-    def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(("modify_order", (order_id, params)))
-        if isinstance(self.modify_reply, Exception):
-            raise self.modify_reply
-        return self.modify_reply
-
-    def cancel_order(self, order_id: str) -> dict[str, Any]:
-        self.calls.append(("cancel_order", order_id))
-        if isinstance(self.cancel_reply, Exception):
-            raise self.cancel_reply
-        return self.cancel_reply
-
-    def get_positions(self) -> list[dict[str, Any]]:
-        self.calls.append(("get_positions", None))
-        if isinstance(self.positions, Exception):
-            raise self.positions
-        return self.positions
-
-    def get_working_orders(self) -> list[dict[str, Any]]:
-        self.calls.append(("get_working_orders", None))
-        if isinstance(self.working, Exception):
-            raise self.working
-        return self.working
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(("place_order", order))
-        if isinstance(self.place_reply, Exception):
-            raise self.place_reply
-        if self.place_reply is not None:
-            return self.place_reply
-        # An accepted exit keeps working at the broker until it fills.
-        if isinstance(self.working, list):
-            self.working.append(
-                {
-                    "symbol": order["symbol"],
-                    "side": order["side"],
-                    "quantity": order["quantity"],
-                    "product_type": order["product"],
-                }
-            )
-        return {"status": "SUBMITTED", "order_id": f"B-{self.count('place_order')}"}
-
-    def count(self, name: str) -> int:
-        return len(self.calls_named(name))
-
-    def calls_named(self, name: str) -> list[Any]:
-        return [args for call, args in self.calls if call == name]
-
-
-def position(symbol: str, net_qty: int, product: str = "INTRADAY") -> dict[str, Any]:
-    return {
-        "symbol": symbol,
-        "side": "LONG" if net_qty > 0 else "SHORT",
-        "quantity": abs(net_qty),
-        "entry_price": 790.0,
-        "current_price": 800.0,
-        "pnl": 100.0,
-        "product_type": product,
-    }
 
 
 @pytest.fixture
@@ -130,16 +42,15 @@ def orders(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def market_open(freeze_market: Callable[[bool], None]) -> None:
+def market_open(freeze_market: FreezeMarket) -> None:
     freeze_market(True)
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
-    fake = FakeBroker()
-    # The risk manager reads funds from its own broker handle.
-    monkeypatch.setattr(risk_manager, "_broker", fake)
-    return fake
+def broker(fake_broker: FakeBroker) -> FakeBroker:
+    """One long SBIN INTRADAY position of 10; everything else is the FakeBroker default."""
+    fake_broker.positions = [position("NSE:SBIN-EQ", 10)]
+    return fake_broker
 
 
 @pytest.fixture
@@ -219,7 +130,7 @@ def test_live_modify_blocked_by_each_risk_check_never_reaches_broker(
     setup: str,
     params: dict[str, Any],
     code: str,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
 ) -> None:
     freeze_market(setup != "closed")
     if setup == "no_quote":
@@ -740,7 +651,7 @@ def test_exit_with_market_closed_never_reaches_broker(
     exits: les.LiveExitService,
     broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
 ) -> None:
     freeze_market(False)
 
@@ -870,7 +781,7 @@ def test_exit_retry_is_deduplicated_even_after_the_market_closes(
     exits: les.LiveExitService,
     broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
 ) -> None:
     run_exit(exits, orders)
     freeze_market(False)
