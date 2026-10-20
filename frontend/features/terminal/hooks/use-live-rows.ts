@@ -2,14 +2,23 @@ import { useMemo } from "react";
 import { isMarketOpen } from "@/lib/market-hours";
 import type { PositionItem, WatchlistItem } from "@/lib/queries/terminal";
 import { useQuotes } from "@/lib/realtime/hooks";
+import { useNow } from "@/lib/use-now";
 import { screenSymbols, withQuote, withQuotePnl } from "../lib/terminal-view";
 
-/** Live quotes for everything on screen; outside market hours nothing is subscribed. */
+const CLOCK_TICK_MS = 1000;
+const NO_SYMBOLS: string[] = [];
+
+/**
+ * Live quotes for everything on screen; outside market hours nothing is subscribed. The clock
+ * re-reads market hours each tick, so subscriptions start at the open and stop at the close
+ * even when the symbols on screen do not change.
+ */
 function useScreenQuotes(groups: readonly (readonly string[])[]) {
-  const symbols = useMemo(() => {
-    if (!isMarketOpen().isOpen) return [];
-    return screenSymbols(groups);
-  }, [groups]);
+  // The tick only re-renders; market hours are read at the real instant, not the floored tick,
+  // so the first tick after 15:30:00.000 already reads closed.
+  useNow(CLOCK_TICK_MS);
+  const open = isMarketOpen().isOpen;
+  const symbols = useMemo(() => (open ? screenSymbols(groups) : NO_SYMBOLS), [groups, open]);
   return useQuotes(symbols);
 }
 

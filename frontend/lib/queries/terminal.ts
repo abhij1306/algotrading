@@ -230,7 +230,10 @@ export function useOptionsBoard(params: { underlying: string; expiry: string; en
       return { board, orderflow: buildOptionsOrderflow(board) };
     },
     enabled,
-    placeholderData: keepPreviousData,
+    // No placeholder, and a chain the selectors return to is always fetched again: the caller
+    // shows only a board fetched after its selectors last changed.
+    staleTime: 0,
+    gcTime: 0,
     refetchInterval: () => (isMarketOpen().isOpen ? OPTIONS_POLL_OPEN_MS : OPTIONS_POLL_CLOSED_MS),
   });
 }
@@ -465,10 +468,14 @@ export interface RiskCheck {
 /**
  * The backend's pre-trade risk check for an order, without placing it. Advisory: placing the
  * order runs the same checks again and is what decides.
+ *
+ * `openId` names one opening of the confirmation dialog. Each opening is its own query, never
+ * served from an earlier one's cache, so the result shown is always a fresh check of this order,
+ * and nothing is kept once the dialog closes.
  */
-export function useRiskCheck(order: RiskCheckBody) {
+export function useRiskCheck(order: RiskCheckBody, openId: number) {
   return useQuery({
-    queryKey: queryKeys.terminal.riskCheck(order),
+    queryKey: queryKeys.terminal.riskCheck(order, openId),
     queryFn: async (): Promise<RiskCheck> => {
       const result = parseResponse(
         riskCheckSchema,
@@ -481,5 +488,6 @@ export function useRiskCheck(order: RiskCheckBody) {
       };
     },
     staleTime: 0,
+    gcTime: 0,
   });
 }

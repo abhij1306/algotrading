@@ -6,6 +6,7 @@ import {
   orderDraft,
   orderInputError,
   orderResultMessage,
+  quantityError,
   type OrderDraft,
   type OrderSide,
 } from "../lib/order";
@@ -38,6 +39,8 @@ export function useOrderTicket(params: {
     orderQty,
     optionLots,
   });
+  // A fractional quantity or lot count is refused here, before the backend ever sees it.
+  const sizeError = quantity === null ? null : quantityError(quantity, lots);
 
   const send = (draft: OrderDraft, liveConfirmed: boolean) => {
     // A new click is a new intent; retries of this mutation reuse this id.
@@ -105,6 +108,7 @@ export function useOrderTicket(params: {
     lotsMode,
     lotSize,
     quantity,
+    sizeError,
     isSubmitting: submit.isPending,
     placeOrder,
     pendingLive,

@@ -1,27 +1,53 @@
 import { useState } from "react";
 import { useOptionsBoard } from "@/lib/queries/terminal";
-import { errorText } from "../lib/terminal-view";
+import {
+  errorText,
+  optionChainKey,
+  shownOptionSymbol,
+  type OptionPick,
+} from "../lib/terminal-view";
 
 /**
  * Options chain state. Until the user picks an expiry the backend chooses the nearest one,
  * and the board's own expiry is shown as the effective expiry.
+ *
+ * A picked option belongs to the chain it was picked on: once the underlying or expiry changes,
+ * or the contract leaves the shown board, it is derived away on render, so the order ticket
+ * never trades a contract that is not on screen.
  */
 export function useOptionsChain(enabled: boolean) {
   const [underlying, setUnderlying] = useState("NIFTY");
   const [chosenExpiry, setChosenExpiry] = useState("");
-  const [selectedOptionSymbol, setSelectedOptionSymbol] = useState("");
+  const [pick, setPick] = useState<OptionPick | null>(null);
+  // When the selectors last changed (epoch ms); 0 until the user changes them.
+  const [chainChangedAt, setChainChangedAt] = useState(0);
+  const chain = optionChainKey(underlying, chosenExpiry);
   const boardQuery = useOptionsBoard({ underlying, expiry: chosenExpiry, enabled });
-  const snapshot = boardQuery.data ?? null;
+  // Only a board fetched after the selectors last changed is shown: a cached copy of a chain
+  // the user comes back to stays hidden (and unpickable) until its refetch answers.
+  const snapshot =
+    boardQuery.data && boardQuery.dataUpdatedAt > chainChangedAt ? boardQuery.data : null;
+  // Changing the chain drops the pick outright, so coming back to a chain never revives it.
+  const changeChain = () => {
+    setPick(null);
+    setChainChangedAt(Date.now());
+  };
   return {
     underlying,
-    setUnderlying,
+    setUnderlying: (value: string) => {
+      setUnderlying(value);
+      changeChain();
+    },
     expiry: chosenExpiry || (snapshot?.board.expiry ?? ""),
-    setExpiry: setChosenExpiry,
+    setExpiry: (value: string) => {
+      setChosenExpiry(value);
+      changeChain();
+    },
     snapshot,
     isLoading: boardQuery.isFetching,
     error: boardQuery.error ? errorText(boardQuery.error, "Failed to load options board") : null,
-    selectedOptionSymbol,
-    setSelectedOptionSymbol,
+    selectedOptionSymbol: shownOptionSymbol(pick, chain, snapshot?.board ?? null),
+    setSelectedOptionSymbol: (symbol: string) => setPick({ chain, symbol }),
   };
 }
 

@@ -51,10 +51,27 @@ export interface TicketInput {
   riskOverrideReason: string;
 }
 
+/**
+ * Why a quantity cannot be sent, else null. The backend takes whole units only, and an option
+ * sized in lots must be a whole number of lots.
+ */
+export function quantityError(quantity: number, lots: TicketInput["lots"]): string | null {
+  const lotsMessage = lots ? `Lots must be a whole number (lot size ${lots.size})` : null;
+  if (lots && !Number.isInteger(lots.count)) return lotsMessage;
+  // Safe integers only: a larger one may already have been rounded on the way in.
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    return "Quantity must be a whole number greater than 0";
+  }
+  if (lots && quantity !== lots.count * lots.size) return lotsMessage;
+  return null;
+}
+
 /** A user-facing message when the order inputs are unusable, else null. */
 export function orderInputError(input: TicketInput): string | null {
   const { symbol, quantity, orderType, price, trigger } = input;
   if (!symbol || quantity <= 0) return "Select symbol and enter valid quantity";
+  const badQuantity = quantityError(quantity, input.lots);
+  if (badQuantity) return badQuantity;
   if (orderType !== "MARKET" && orderType !== "SL-M" && !isPositive(price)) {
     return "Enter a price greater than 0";
   }
