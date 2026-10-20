@@ -34,15 +34,20 @@ const runsSchema = z.object({
       job_id: z.string(),
       status: runStatusSchema,
       created_at: z.string(),
+      // Each field falls back on its own so one bad value cannot erase the whole summary.
       params: z
         .object({
-          instrument_type: z.string().optional(),
-          start_date: z.string().optional(),
-          end_date: z.string().optional(),
-          initial_capital: z.number().optional(),
+          instrument_type: z.string().nullish().catch(undefined),
+          start_date: z.string().nullish().catch(undefined),
+          end_date: z.string().nullish().catch(undefined),
+          initial_capital: z.number().nullish().catch(undefined),
           selection: z
-            .object({ mode: z.string().optional(), universe: z.string().optional() })
-            .optional(),
+            .object({
+              mode: z.string().nullish().catch(undefined),
+              universe: z.string().nullish().catch(undefined),
+            })
+            .nullish()
+            .catch(undefined),
         })
         .catch({}),
     }),
