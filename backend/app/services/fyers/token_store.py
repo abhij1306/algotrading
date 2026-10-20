@@ -197,12 +197,13 @@ def _parse_expiry(value: object) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(str(value))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        # A year-1 or year-9999 time with an offset parses but overflows on conversion.
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
         logger.warning("Fyers token file has a malformed expiry; treating the token as expired")
         return datetime.min.replace(tzinfo=UTC)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 token_store = TokenStore()

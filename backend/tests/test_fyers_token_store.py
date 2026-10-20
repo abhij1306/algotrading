@@ -159,6 +159,9 @@ def test_usable_needs_a_client_id_and_a_live_expiry() -> None:
     [
         {"access_token": "t", "client_id": "c"},  # no expires_at
         {"access_token": "t", "client_id": "c", "expires_at": "soon"},  # unparseable
+        # parses, but overflows when converted to UTC
+        {"access_token": "t", "client_id": "c", "expires_at": "0001-01-01T00:00:00+05:30"},
+        {"access_token": "t", "client_id": "c", "expires_at": "9999-12-31T23:59:59-05:00"},
         {"access_token": "t", "expires_at": "2999-01-01T00:00:00+00:00"},  # no client_id
     ],
 )
