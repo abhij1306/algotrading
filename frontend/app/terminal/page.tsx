@@ -17,7 +17,7 @@ import {
   type TradingMode,
 } from "./order-defaults";
 import { formatPercentage, roundToDecimals } from "@/lib/utils";
-import { useWebSocket } from "@/hooks/useWebSocket";
+import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import { isMarketOpen } from "@/lib/market-hours";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
@@ -29,23 +29,6 @@ interface WatchlistItem {
   ltp: number | null;
 }
 
-interface CandlePoint {
-  ts: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  ema20: number;
-  ema50: number;
-}
-
-interface ChartResponse {
-  symbol: string;
-  timeframe: string;
-  source: string;
-  candles: CandlePoint[];
-}
 interface SearchResultItem {
   symbol: string;
   name: string;
@@ -222,17 +205,12 @@ const WatchlistRow = memo(function WatchlistRow({
 });
 
 export default function TerminalPage() {
-  const { isConnected, lastMessage, sendMessage } = useWebSocket();
+  const isConnected = useConnectionStatus() === "connected";
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState("D");
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [baseWatchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Chart data is fetched but not rendered yet; see the frontend architecture plan.
-  const chartDataRef = useRef<CandlePoint[]>([]);
-  const chartSourceRef = useRef("");
-  const chartLoadingRef = useRef(false);
-  const chartErrorRef = useRef<string | null>(null);
   const [tradingMode, setTradingMode] = useState<TradingMode>(DEFAULT_TRADING_MODE);
   const [orderType, setOrderType] = useState<OrderType>(DEFAULT_ORDER_TYPE);
   const [orderQty, setOrderQty] = useState<number>(1);
@@ -241,7 +219,7 @@ export default function TerminalPage() {
   const [orderTrigger, setOrderTrigger] = useState<number>(0);
   const [orderBusy, setOrderBusy] = useState(false);
   const [orderMessage, setOrderMessage] = useState<string | null>(null);
-  const [positions, setPositions] = useState<PositionItem[]>([]);
+  const [basePositions, setPositions] = useState<PositionItem[]>([]);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [watchlistQuery, setWatchlistQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
@@ -256,7 +234,6 @@ export default function TerminalPage() {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [selectedOptionSymbol, setSelectedOptionSymbol] = useState<string>("");
   const [riskOverrideReason, setRiskOverrideReason] = useState<string>("");
-  const subscribedSymbolsKeyRef = useRef("");
   const optionsFetchInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -302,7 +279,7 @@ export default function TerminalPage() {
         setIsLoading(false);
       }
     };
-    fetchWatchlist();
+    void fetchWatchlist();
   }, []);
 
   useEffect(() => {
@@ -323,45 +300,6 @@ export default function TerminalPage() {
       ];
     });
   }, [selectedSymbol]);
-
-  useEffect(() => {
-    const fetchChartData = async () => {
-      if (terminalView !== "chart") {
-        return;
-      }
-      if (!selectedSymbol) {
-        chartDataRef.current = [];
-        chartErrorRef.current = null;
-        return;
-      }
-
-      try {
-        chartLoadingRef.current = true;
-        chartErrorRef.current = null;
-
-        const params = new URLSearchParams({
-          symbol: selectedSymbol,
-          timeframe: selectedTimeframe,
-          limit: "240",
-        });
-        const response = await fetch(`/api/terminal/chart?${params.toString()}`);
-        if (!response.ok) {
-          throw new Error(`Chart API failed (${response.status})`);
-        }
-
-        const data = (await response.json()) as ChartResponse;
-        chartDataRef.current = Array.isArray(data.candles) ? data.candles : [];
-        chartSourceRef.current = data.source || "";
-      } catch (err) {
-        chartDataRef.current = [];
-        chartErrorRef.current = err instanceof Error ? err.message : "Failed to load chart";
-      } finally {
-        chartLoadingRef.current = false;
-      }
-    };
-
-    void fetchChartData();
-  }, [terminalView, selectedSymbol, selectedTimeframe]);
 
   useEffect(() => {
     if (terminalView !== "options") {
@@ -474,97 +412,38 @@ export default function TerminalPage() {
     };
   }, [watchlistQuery]);
 
-  useEffect(() => {
-    if (!isConnected) {
-      subscribedSymbolsKeyRef.current = "";
-    }
-  }, [isConnected]);
-
-  useEffect(() => {
-    if (!isConnected || !isMarketOpen().isOpen) return;
-
-    const symbols = Array.from(
+  // Live quotes come from the shared quote store; rows below are derived, not synced via effects.
+  const subscribedSymbols = useMemo(() => {
+    if (!isMarketOpen().isOpen) return [];
+    return Array.from(
       new Set(
         [
-          ...watchlist.map((item: WatchlistItem) => item.symbol),
+          ...baseWatchlist.map((item) => item.symbol),
           selectedSymbol,
           selectedOptionSymbol,
-          ...positions.map((position) => position.symbol),
+          ...basePositions.map((position) => position.symbol),
         ].filter(Boolean),
       ),
-    ).sort((a, b) => a.localeCompare(b));
-    if (symbols.length === 0) return;
+    );
+  }, [baseWatchlist, selectedSymbol, selectedOptionSymbol, basePositions]);
+  const quotes = useQuotes(subscribedSymbols);
 
-    const symbolsKey = symbols.join(",");
-    if (symbolsKey === subscribedSymbolsKeyRef.current) return;
-
-    if (subscribedSymbolsKeyRef.current) {
-      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
-    }
-
-    sendMessage({ action: "subscribe", symbols });
-    subscribedSymbolsKeyRef.current = symbolsKey;
-  }, [isConnected, watchlist, selectedSymbol, selectedOptionSymbol, positions, sendMessage]);
-
-  useEffect(() => {
-    return () => {
-      if (!subscribedSymbolsKeyRef.current) return;
-      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
-      subscribedSymbolsKeyRef.current = "";
-    };
-  }, [sendMessage]);
-
-  // Handle live ticks
-  useEffect(() => {
-    if (lastMessage?.type === "ticker" && lastMessage.data) {
-      const tick = lastMessage.data as {
-        symbol?: string;
-        ltp?: number;
-        change_pct?: number;
-        change?: number;
-        volume?: number;
-      };
-      if (tick.symbol) {
-        setWatchlist((prev) =>
-          prev.map((item) =>
-            item.symbol === tick.symbol
-              ? {
-                  ...item,
-                  ltp: typeof tick.ltp === "number" ? roundToDecimals(tick.ltp, 2) : item.ltp,
-                  price: typeof tick.ltp === "number" ? roundToDecimals(tick.ltp, 2) : item.price,
-                  change:
-                    typeof tick.change_pct === "number"
-                      ? roundToDecimals(tick.change_pct, 2)
-                      : item.change,
-                }
-              : item,
-          ),
-        );
-
-        if (tick.symbol === selectedSymbol && typeof tick.ltp === "number") {
-          chartDataRef.current = ((prev) => {
-            if (prev.length === 0) return prev;
-            const next = [...prev];
-            const lastCandle = next.at(-1);
-            if (!lastCandle) {
-              return prev;
-            }
-            const last = { ...lastCandle };
-            const nextPrice = tick.ltp as number;
-
-            last.close = Number(nextPrice.toFixed(2));
-            last.high = Number(Math.max(last.high, nextPrice).toFixed(2));
-            last.low = Number(Math.min(last.low, nextPrice).toFixed(2));
-            if (typeof tick.volume === "number") {
-              last.volume = Math.max(last.volume, tick.volume);
-            }
-            next[next.length - 1] = last;
-            return next;
-          })(chartDataRef.current);
-        }
-      }
-    }
-  }, [lastMessage, selectedSymbol]);
+  const watchlist = useMemo(
+    () =>
+      baseWatchlist.map((item) => {
+        const quote = quotes[item.symbol];
+        if (!quote) return item;
+        const ltp = typeof quote.ltp === "number" ? roundToDecimals(quote.ltp, 2) : item.ltp;
+        return {
+          ...item,
+          ltp,
+          price: typeof quote.ltp === "number" ? ltp : item.price,
+          change:
+            typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.change,
+        };
+      }),
+    [baseWatchlist, quotes],
+  );
 
   const addSymbolToWatchlist = async (item: SearchResultItem) => {
     const symbol = item.symbol.trim().toUpperCase();
@@ -645,15 +524,12 @@ export default function TerminalPage() {
     return () => clearInterval(interval);
   }, [terminalView]);
 
-  useEffect(() => {
-    if (lastMessage?.type !== "ticker" || !lastMessage.data) return;
-    const tick = lastMessage.data as { symbol?: string; ltp?: number };
-    if (!tick.symbol || typeof tick.ltp !== "number") return;
-
-    setPositions((prev) =>
-      prev.map((pos) => {
-        if (pos.symbol !== tick.symbol) return pos;
-        const currentPrice = roundToDecimals(tick.ltp as number, 2);
+  const positions = useMemo(
+    () =>
+      basePositions.map((pos) => {
+        const ltp = quotes[pos.symbol]?.ltp;
+        if (typeof ltp !== "number") return pos;
+        const currentPrice = roundToDecimals(ltp, 2);
         const qty = Number(pos.net_qty || 0);
         const unrealized = roundToDecimals((currentPrice - Number(pos.entry_price || 0)) * qty, 2);
         const realized = Number(pos.realized_pnl || 0);
@@ -664,8 +540,8 @@ export default function TerminalPage() {
           net_pnl: roundToDecimals(realized + unrealized, 2),
         };
       }),
-    );
-  }, [lastMessage]);
+    [basePositions, quotes],
+  );
 
   const currentSymbol = useMemo(
     () => watchlist.find((s) => s.symbol === selectedSymbol) || watchlist[0] || null,
