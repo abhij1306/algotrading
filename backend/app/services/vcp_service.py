@@ -137,7 +137,7 @@ class VCPService:
         self, db: Session, universe: str, start_date: date, end_date: date
     ) -> list[str]:
         """Every symbol that was a member at any point in [start_date, end_date]."""
-        symbols = set(self._constituents_for_date(db, universe, start_date)[0])
+        symbols: set[str] = set()
         definition = (
             db.query(IndexUniverseDefinition)
             .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
@@ -1057,6 +1057,13 @@ class VCPService:
 
             meta = self._company_meta(db, list(symbol_frames.keys()))
             modes: set[str] = set()
+            membership_cache: dict[date, tuple[list[str], str]] = {}
+
+            def members_on(as_of: date) -> tuple[list[str], str]:
+                if as_of not in membership_cache:
+                    membership_cache[as_of] = self._constituents_for_date(db, universe, as_of)
+                return membership_cache[as_of]
+
             for trading_date in trading_dates[:-1]:
                 completed_pnl = sum(
                     float(trade["pnl_inr"])
@@ -1064,7 +1071,7 @@ class VCPService:
                     if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= trading_date
                 )
                 available_capital = capital + completed_pnl
-                constituents_list, date_mode = self._constituents_for_date(db, universe, trading_date)
+                constituents_list, date_mode = members_on(trading_date)
                 constituents = set(constituents_list)
                 modes.add("indicative_pre_history" if date_mode.startswith("indicative_pre_") else date_mode)
                 day_frames = {
@@ -1096,6 +1103,9 @@ class VCPService:
                 next_date = self._next_trading_date(trading_dates, trading_date)
                 if next_date is None:
                     continue
+                # Trades enter on next_date, so the symbol must still be a member then.
+                entry_members = set(members_on(next_date)[0])
+                candidates = [signal for signal in candidates if signal["symbol"] in entry_members]
                 for signal in sorted(candidates, key=lambda item: (item["grade"], -item["rs_rating"]))[:5]:
                     trade = self._build_backtest_trade(
                         signal=signal,

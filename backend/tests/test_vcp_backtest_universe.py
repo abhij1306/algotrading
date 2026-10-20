@@ -76,6 +76,7 @@ def test_backtest_membership_is_point_in_time(
             db.close()
 
     signals: list[tuple[str, date]] = []
+    entries: list[tuple[str, date]] = []
     service = VCPService()
     monkeypatch.setattr(vcp_module, "db_session_scope", scope)
     # Like the real loader, only return the symbols that were asked for.
@@ -107,6 +108,7 @@ def test_backtest_membership_is_point_in_time(
         signal: dict[str, Any], signal_date: date, entry_date: date, **_: object
     ) -> dict[str, Any]:
         signals.append((signal["symbol"], signal_date))
+        entries.append((signal["symbol"], entry_date))
         return {
             "symbol": signal["symbol"],
             "pnl_inr": 0.0,
@@ -136,6 +138,8 @@ def test_backtest_membership_is_point_in_time(
     # Removed name is still traded before it left, never after.
     assert dropped
     assert max(dropped) < LEAVE_DATE
+    # Trades enter the next session, which must also fall inside membership.
+    assert max(d for s, d in entries if s == "DROPPED") < LEAVE_DATE
     # Late joiner is never traded before it joined, but is traded afterwards.
     assert joiner
     assert min(joiner) >= JOIN_DATE
