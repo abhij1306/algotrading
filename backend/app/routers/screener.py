@@ -1,308 +1,61 @@
-import logging
+"""Screener HTTP mapping; the use case lives in `services/screener/service.py`."""
+
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import and_, desc, func
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session
 
 from ..constants.indices import DEFAULT_SCREENER_UNIVERSE
-from ..data_fetcher import fetch_fyers_quotes
-from ..database import SessionLocal
-from ..models import Company, HistoricalPrice
-from ..services.screener import TTLCache, get_screener_cache
+from ..database import get_db
+from ..services.screener import (
+    InvalidSortFieldError,
+    QuoteSource,
+    ScreenerRequest,
+    ScreenerService,
+    SqlScreenerRepository,
+    TTLCache,
+    UniverseDirectory,
+    UniversesUnavailableError,
+    UnknownUniverseError,
+    get_quote_source,
+    get_screener_cache,
+)
 from ..services.universe import get_universe_service
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 RESULTS_ERROR_RESPONSES = {
     400: {"description": "Invalid screener input"},
     500: {"description": "Failed to load screener results"},
 }
 INDICES_ERROR_RESPONSES = {500: {"description": "Failed to load screener universes"}}
-LIVE_SORT_FIELDS = {"price", "change", "volume"}
 
 
-def _normalize_screener_request(
-    universe: str,
-    query: str | None,
-    page: int,
-    limit: int,
-    full: bool,
-    sort_by: str,
-    sort_order: str,
-) -> tuple[tuple[Any, ...], str, str | None, str, str]:
-    normalized_universe = universe.upper()
-    normalized_query = query.strip().lower() if query else None
-    normalized_sort = (sort_by or "symbol").lower()
-    normalized_order = (sort_order or "asc").lower()
-    cache_key = (
-        normalized_universe,
-        normalized_query,
-        page,
-        limit,
-        bool(full),
-        normalized_sort,
-        normalized_order,
-    )
-    return cache_key, normalized_universe, normalized_query, normalized_sort, normalized_order
+def get_screener_service(
+    db: Annotated[Session, Depends(get_db)],
+    cache: Annotated[TTLCache[dict[str, Any]], Depends(get_screener_cache)],
+    quotes: Annotated[QuoteSource, Depends(get_quote_source)],
+    universes: Annotated[UniverseDirectory, Depends(get_universe_service)],
+) -> ScreenerService:
+    return ScreenerService(SqlScreenerRepository(db), universes, quotes, cache)
 
 
-def _build_screener_query(
-    db: Session, normalized_universe: str, normalized_query: str | None
-) -> object:
-    universe_service = get_universe_service()
-    prev_hist = aliased(HistoricalPrice)
-    latest_prices_subquery = (
-        db.query(
-            HistoricalPrice.company_id,
-            func.max(HistoricalPrice.date).label("latest_date"),
-        )
-        .group_by(HistoricalPrice.company_id)
-        .subquery()
-    )
-    previous_prices_subquery = (
-        db.query(
-            HistoricalPrice.company_id.label("company_id"),
-            latest_prices_subquery.c.latest_date.label("latest_date"),
-            func.max(HistoricalPrice.date).label("previous_date"),
-        )
-        .join(
-            latest_prices_subquery,
-            HistoricalPrice.company_id == latest_prices_subquery.c.company_id,
-        )
-        .filter(HistoricalPrice.date < latest_prices_subquery.c.latest_date)
-        .group_by(HistoricalPrice.company_id, latest_prices_subquery.c.latest_date)
-        .subquery()
-    )
-
-    companies_query = (
-        db.query(Company, HistoricalPrice, prev_hist.close.label("previous_close"))
-        .join(latest_prices_subquery, Company.id == latest_prices_subquery.c.company_id)
-        .join(
-            HistoricalPrice,
-            and_(
-                HistoricalPrice.company_id == Company.id,
-                HistoricalPrice.date == latest_prices_subquery.c.latest_date,
-            ),
-        )
-        .outerjoin(
-            previous_prices_subquery,
-            and_(
-                previous_prices_subquery.c.company_id == Company.id,
-                previous_prices_subquery.c.latest_date == latest_prices_subquery.c.latest_date,
-            ),
-        )
-        .outerjoin(
-            prev_hist,
-            and_(
-                prev_hist.company_id == Company.id,
-                prev_hist.date == previous_prices_subquery.c.previous_date,
-            ),
-        )
-        .filter(Company.is_active.is_(True))
-    )
-    if normalized_universe != "ALL":
-        index_symbols = universe_service.get_symbols(normalized_universe)
-        if not index_symbols:
-            return None
-        companies_query = companies_query.filter(Company.symbol.in_(index_symbols))
-
-    if normalized_query:
-        companies_query = companies_query.filter(
-            Company.symbol.ilike(f"%{normalized_query}%")
-            | Company.name.ilike(f"%{normalized_query}%")
-        )
-    return companies_query
-
-
-def _apply_screener_sort(
-    companies_query: object, normalized_order: str, normalized_sort: str
-) -> object:
-    descending = normalized_order == "desc"
-    change_expr = (
-        (HistoricalPrice.close - HistoricalPrice.open) / func.nullif(HistoricalPrice.open, 0)
-    ) * 100
-    sort_mapping = {
-        "symbol": Company.symbol,
-        "price": HistoricalPrice.close,
-        "change": change_expr,
-        "volume": HistoricalPrice.volume,
-        "marketcap": Company.market_cap,
-        "rsi": HistoricalPrice.rsi_14,
-        "macd": HistoricalPrice.macd,
-        "adx": HistoricalPrice.adx,
-    }
-    sort_expr = sort_mapping.get(normalized_sort)
-    if sort_expr is None:
-        raise HTTPException(status_code=400, detail=f"Invalid sort field: {normalized_sort}")
-    primary_order = desc(sort_expr) if descending else sort_expr
-    secondary_order = (
-        desc(Company.symbol) if descending and normalized_sort == "symbol" else Company.symbol.asc()
-    )
-    return companies_query.order_by(None).order_by(primary_order, secondary_order)
-
-
-def _hydrate_quotes(symbols: list[str], full: bool) -> dict[str, dict[str, Any]]:
-    if not symbols or full:
-        return {}
-    try:
-        return fetch_fyers_quotes(symbols) or {}
-    except Exception as exc:
-        logger.warning("Live quote hydration failed: %s", exc)
-        return {}
-
-
-def _serialize_screener_row(
-    company: Company,
-    hist: HistoricalPrice,
-    previous_close: float | None,
-    quote: dict[str, Any] | None,
-) -> dict[str, Any]:
-    price = float(hist.close or 0)
-    volume = int(hist.volume or 0)
-    prev_close = float(previous_close or 0)
-    change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
-
-    price, volume, change = _apply_quote_to_row(price, volume, change, quote)
-
-    return {
-        "symbol": company.symbol,
-        "name": company.name,
-        "sector": company.sector or "Unknown",
-        "marketCap": float(company.market_cap or 0),
-        "change": round(float(change), 2),
-        "price": round(float(price), 2),
-        "volume": volume,
-        "rsi": round(float(hist.rsi_14 or 0), 2),
-        "macd": round(float(hist.macd or 0), 4),
-        "adx": round(float(hist.adx or 0), 2),
-    }
-
-
-def _sort_serialized_rows(
-    rows: list[dict[str, Any]], normalized_sort: str, normalized_order: str
-) -> list[dict[str, Any]]:
-    reverse = normalized_order == "desc"
-
-    def sort_key(row: dict[str, Any]) -> tuple[Any, str]:
-        if normalized_sort == "symbol":
-            return (str(row["symbol"]), str(row["symbol"]))
-        value = row.get(normalized_sort)
-        if value is None:
-            value = 0
-        return (value, str(row["symbol"]))
-
-    return sorted(rows, key=sort_key, reverse=reverse)
-
-
-def _apply_quote_to_row(
-    price: float,
-    volume: int,
-    change: float,
-    quote: dict[str, Any] | None,
-) -> tuple[float, int, float]:
-    if not quote:
-        return price, volume, change
-
-    quote_price = quote.get("ltp")
-    quote_volume = quote.get("volume")
-    prev_close = quote.get("prev_close")
-
-    if isinstance(quote_price, (int, float)) and quote_price > 0:
-        price = float(quote_price)
-        if isinstance(prev_close, (int, float)) and prev_close > 0:
-            change = ((price - prev_close) / prev_close) * 100
-
-    if isinstance(quote_volume, (int, float)) and quote_volume > 0:
-        volume = int(quote_volume)
-
-    return price, volume, change
-
-
-def _load_screener_payload(
-    db: Session,
-    normalized_universe: str,
-    normalized_query: str | None,
-    normalized_sort: str,
-    normalized_order: str,
-    page: int,
-    limit: int,
-    full: bool,
-) -> dict[str, Any]:
-    companies_query = _build_screener_query(db, normalized_universe, normalized_query)
-    if companies_query is None:
-        return {"results": [], "total": 0, "page": page, "limit": limit}
-
-    total_records = companies_query.order_by(None).count()
-
-    if normalized_sort in LIVE_SORT_FIELDS:
-        rows = companies_query.all()
-        live_quotes = _hydrate_quotes([company.symbol for company, _, _ in rows], False)
-        serialized = [
-            _serialize_screener_row(company, hist, previous_close, live_quotes.get(company.symbol))
-            for company, hist, previous_close in rows
-        ]
-        sorted_rows = _sort_serialized_rows(serialized, normalized_sort, normalized_order)
-        paged_rows = sorted_rows if full else sorted_rows[(page - 1) * limit : page * limit]
-        return {
-            "results": paged_rows,
-            "total": total_records,
-            "page": page,
-            "limit": limit,
-        }
-
-    companies_query = _apply_screener_sort(companies_query, normalized_order, normalized_sort)
-    rows = (
-        companies_query.all()
-        if full
-        else companies_query.offset((page - 1) * limit).limit(limit).all()
-    )
-    live_quotes = _hydrate_quotes([company.symbol for company, _, _ in rows], full)
-    return {
-        "results": [
-            _serialize_screener_row(company, hist, previous_close, live_quotes.get(company.symbol))
-            for company, hist, previous_close in rows
-        ],
-        "total": total_records,
-        "page": page,
-        "limit": limit,
-    }
+Screener = Annotated[ScreenerService, Depends(get_screener_service)]
 
 
 @router.get("/indices", responses=INDICES_ERROR_RESPONSES)
-def get_indices(response: Response) -> dict[str, Any]:
+def get_indices(response: Response, service: Screener) -> dict[str, Any]:
     """Return available screener universes from the canonical universe service."""
     response.headers["Cache-Control"] = "public, max-age=3600"
-
     try:
-        universe_service = get_universe_service()
-        available_indices = universe_service.list_available_indices()
-        indices: list[dict[str, Any]] = []
-
-        for item in available_indices:
-            indices.append(
-                {
-                    "id": item.get("index_code", ""),
-                    "name": item.get("name") or item.get("index_code", ""),
-                    "count": int(item.get("count") or 0),
-                }
-            )
-
-        indices.sort(key=lambda item: item["name"])
-        return {
-            "indices": indices,
-            "default": DEFAULT_SCREENER_UNIVERSE,
-            "total_loaded": len(indices),
-        }
-    except Exception as exc:
-        logger.exception("Failed to load screener indices: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to load screener universes") from exc
+        return service.indices()
+    except UniversesUnavailableError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/results", responses=RESULTS_ERROR_RESPONSES)
 def get_screener_results(
-    cache: Annotated[TTLCache[dict[str, Any]], Depends(get_screener_cache)],
+    service: Screener,
     universe: Annotated[str, Query(min_length=1)] = DEFAULT_SCREENER_UNIVERSE,
     query: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
@@ -315,52 +68,8 @@ def get_screener_results(
     Return screener rows using DB technicals with initial live quote hydration.
     Canonical Phase-1 endpoint contract.
     """
-    db = None
+    request = ScreenerRequest.from_params(universe, query, page, limit, full, sort_by, sort_order)
     try:
-        db = SessionLocal()
-
-        (
-            cache_key,
-            normalized_universe,
-            normalized_query,
-            normalized_sort,
-            normalized_order,
-        ) = _normalize_screener_request(
-            universe,
-            query,
-            page,
-            limit,
-            full,
-            sort_by,
-            sort_order,
-        )
-
-        if not full:
-            cached = cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        universe_service = get_universe_service()
-        available_universes = {
-            item.get("index_code", "") for item in universe_service.list_available_indices()
-        }
-
-        if normalized_universe != "ALL" and normalized_universe not in available_universes:
-            raise HTTPException(status_code=400, detail=f"Unknown universe: {universe}")
-
-        payload = _load_screener_payload(
-            db,
-            normalized_universe,
-            normalized_query,
-            normalized_sort,
-            normalized_order,
-            page,
-            limit,
-            full,
-        )
-        if not full:
-            cache.set(cache_key, payload)
-        return payload
-    finally:
-        if db:
-            db.close()
+        return service.results(request)
+    except (UnknownUniverseError, InvalidSortFieldError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
