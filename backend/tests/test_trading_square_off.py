@@ -12,64 +12,50 @@ from app.routers import trading
 SECRET = "token=abc123 internal broker detail"
 
 
-class FakeBroker:
-    """Rejects the DB symbol; the Fyers-symbol retry raises an exception with private text."""
-
-    calls: list[str] = []
-
-    def exit_position(self, symbol: str) -> dict[str, Any]:
-        self.calls.append(symbol)
-        if len(self.calls) == 1:
-            return {"status": "REJECTED", "message": "Position not found"}
-        raise RuntimeError(SECRET)
+CLIENT_ORDER_ID = "5b0e4c2a-7d1f-4e3b-9a6c-2f8d1e0b7c45"
 
 
-@pytest.fixture
-def fake_broker(monkeypatch: pytest.MonkeyPatch) -> type[FakeBroker]:
-    FakeBroker.calls = []
-    monkeypatch.setattr(fyers_plugin, "FyersBroker", FakeBroker)
-    return FakeBroker
+class FakeDb:
+    rolled_back = False
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
 
-def test_failed_fallback_returns_error_code_without_exception_text(
-    fake_broker: type[FakeBroker], caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    ("route", "request_model", "detail"),
+    [
+        (
+            trading.square_position,
+            trading.SquarePositionRequest(
+                symbol="SBIN", mode="LIVE", client_order_id=CLIENT_ORDER_ID
+            ),
+            "Error squaring position",
+        ),
+        (
+            trading.exit_position,
+            trading.ExitPositionRequest(symbol="SBIN", client_order_id=CLIENT_ORDER_ID),
+            "Error exiting position",
+        ),
+    ],
+)
+def test_live_square_and_exit_server_errors_are_generic(
+    monkeypatch: pytest.MonkeyPatch,
+    route: Callable[[Any, Any], object],
+    request_model: object,
+    detail: str,
 ) -> None:
-    response = trading._square_live_positions(
-        trading.SquarePositionRequest(symbol="SBIN", mode="LIVE")
-    )
-
-    assert fake_broker.calls == ["SBIN", "NSE:SBIN-EQ"]
-    assert response["status"] == "ERROR"
-    assert response["message"] == "Position not found"
-    assert response["details"]["error_code"] == trading.LIVE_SQUARE_FALLBACK_FAILED
-    assert response["details"]["fyers_symbol"] == "NSE:SBIN-EQ"
-    assert SECRET not in repr(response)
-    assert "fallback_error" not in response["details"]
-    # The failure is still logged server-side, sanitized and on one line.
-    logged = [r.getMessage() for r in caplog.records if "fallback failed" in r.getMessage()]
-    assert len(logged) == 1
-    assert "RuntimeError" in logged[0]
-
-
-def test_square_position_server_error_is_generic(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeDb:
-        rolled_back = False
-
-        def rollback(self) -> None:
-            self.rolled_back = True
-
-    def explode(_req: trading.SquarePositionRequest) -> dict[str, Any]:
+    def explode(**_kwargs: object) -> dict[str, Any]:
         raise RuntimeError(SECRET)
 
-    monkeypatch.setattr(trading, "_square_live_positions", explode)
+    monkeypatch.setattr(trading.live_exit_service, "exit_positions", explode)
     db = FakeDb()
-    req = trading.SquarePositionRequest(symbol="SBIN", mode="LIVE")
 
     with pytest.raises(HTTPException) as raised:
-        trading.square_position(req, db)
+        route(request_model, db)
 
     assert raised.value.status_code == 500
-    assert raised.value.detail == "Error squaring position"
+    assert raised.value.detail == detail
     assert db.rolled_back is True
 
 

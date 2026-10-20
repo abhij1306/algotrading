@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.brokers.plugins.fyers import FyersBroker
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
+from app.services import risk_manager as risk_module
 from app.services.live_market_service import live_market
 from app.services.order_execution_service import OrderExecutionService
 from app.services.position_sync_service import PositionSyncService
 from app.services.risk_manager import RiskConfig, RiskManager, RiskStatus
+from app.utils import market_hours
 
 # A quote as FyersBroker.get_quote() returns it: one entry of the Fyers "d" list.
 SBIN_QUOTE = {"n": "NSE:SBIN-EQ", "s": "ok", "v": {"lp": 812.5, "bid": 812.4, "ask": 812.6}}
@@ -842,10 +844,15 @@ def add_live_order(db: Session, order_id: str, order_type: str, trigger_price: f
 )
 def test_live_modify_preserves_order_type_and_trigger(
     order_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
     params: dict[str, Any],
     payload: dict[str, Any],
     stored: tuple[str, int, float, float],
 ) -> None:
+    # Market open and enough margin, so the modify risk checks pass.
+    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
+    risk_client = FakeFyersClient(funds_response=funds_response(40000.0))
+    monkeypatch.setattr(risk_module.risk_manager, "_broker", make_broker(risk_client))
     order = add_live_order(order_db, "FY-1", "SL", 806.0)
     client = FakeFyersClient()
     service = OrderExecutionService()
@@ -854,7 +861,7 @@ def test_live_modify_preserves_order_type_and_trigger(
     result = service.modify_order("FY-1", params, order_db)
 
     assert result == {"status": "SUCCESS", "message": "Order Modified"}
-    assert client.calls == [("modify_order", payload)]
+    assert client.calls == [("quotes", {"symbols": "NSE:SBIN-EQ"}), ("modify_order", payload)]
     order_db.refresh(order)
     modified = (order.order_type, order.quantity, order.price, order.trigger_price)
     assert modified == stored

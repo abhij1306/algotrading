@@ -21,6 +21,15 @@ class Position(TypedDict):
     product_type: str
 
 
+class WorkingOrder(TypedDict):
+    """An order still working at the broker (pending or in transit), unfilled part only."""
+
+    symbol: str
+    side: str  # BUY/SELL
+    quantity: int  # remaining (unfilled) quantity
+    product_type: str
+
+
 class BrokerFunds(TypedDict):
     available: float
     used: float

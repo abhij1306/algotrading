@@ -65,7 +65,11 @@ let paperPositions: Record<string, unknown>[] = [];
 let orderNetworkFailures = 0;
 // Order POSTs answered 200 with a body cut off mid-JSON.
 let orderTruncatedResponses = 0;
+// Body every order POST answers with.
+let orderResult: Record<string, unknown> = { status: "accepted", order_id: "ord-1" };
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
+// Square-off POSTs that fail as a dropped connection before any response arrives.
+let squareNetworkFailures = 0;
 
 function respond(url: string): Response {
   if (url.includes("/api/trading/positions/square")) {
@@ -82,7 +86,7 @@ function respond(url: string): Response {
   if (url.includes("/api/trading/positions/book")) {
     return Response.json({ live_positions: [], paper_positions: paperPositions });
   }
-  if (url.includes(ORDER_PATH)) return Response.json({ status: "accepted", order_id: "ord-1" });
+  if (url.includes(ORDER_PATH)) return Response.json(orderResult);
   return Response.json([]);
 }
 
@@ -100,6 +104,10 @@ function installFetch(): Captured[] {
       calls.push({ url: source.url, method: source.method, body });
       if (source.url.includes(ORDER_PATH) && orderNetworkFailures > 0) {
         orderNetworkFailures -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      if (source.url.includes("/positions/square") && squareNetworkFailures > 0) {
+        squareNetworkFailures -= 1;
         throw new TypeError("Failed to fetch");
       }
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
@@ -231,6 +239,7 @@ describe("terminal order idempotency", () => {
     paperPositions = [];
     orderNetworkFailures = 0;
     orderTruncatedResponses = 0;
+    orderResult = { status: "accepted", order_id: "ord-1" };
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -238,6 +247,26 @@ describe("terminal order idempotency", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("reports an unconfirmed submit as unconfirmed, not as placed or rejected", async () => {
+    orderResult = {
+      status: "SUBMIT_UNCONFIRMED",
+      order_id: "ORD-1A2B",
+      message: "Order sent but not confirmed by the broker. Check the broker orderbook.",
+    };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "801.5");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    expect(
+      await screen.findByText(
+        "PAPER BUY unconfirmed: Order sent but not confirmed by the broker. Check the broker orderbook.",
+      ),
+    ).toBeInTheDocument();
+    expect(orderBodies(calls)).toHaveLength(1);
   });
 
   it("retries a dropped submit with the same client_order_id, then a new click gets a new one", async () => {
@@ -280,13 +309,20 @@ describe("terminal data", () => {
   beforeEach(() => {
     paperPositions = [];
     squareResult = { status: "SUCCESS" };
+    squareNetworkFailures = 0;
     calls = installFetch();
+    stubClientOrderIds();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     globalThis.history.replaceState(null, "", "/");
   });
+
+  function squareBodies(): string[] {
+    return calls.filter((call) => call.url.includes("/square")).map((call) => call.body);
+  }
 
   function boardUrls(): string[] {
     return calls
@@ -366,9 +402,47 @@ describe("terminal data", () => {
 
     expect(await screen.findByText("PAPER square submitted for SBIN")).toBeInTheDocument();
     expect(await screen.findByText("No open positions")).toBeInTheDocument();
-    expect(calls.filter((call) => call.url.includes("/square")).map((call) => call.body)).toEqual([
-      '{"symbol":"SBIN","mode":"PAPER"}',
+    expect(squareBodies()).toEqual([
+      '{"symbol":"SBIN","mode":"PAPER","product_type":"INTRADAY","client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
+  });
+
+  it("retries a dropped square-off with the same client_order_id, then a new click gets a new one", async () => {
+    paperPositions = [OPEN_POSITION];
+    squareNetworkFailures = 1;
+    squareResult = { status: "ERROR", message: "Order rejected by broker" };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Square" }));
+
+    expect(await screen.findByText("Order rejected by broker")).toBeInTheDocument();
+    const ids = () => squareBodies().map((body) => JSON.parse(body).client_order_id);
+    expect(ids()).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0]]);
+
+    squareResult = { status: "SUCCESS" };
+    fireEvent.click(screen.getByRole("button", { name: "Square" }));
+
+    expect(await screen.findByText("PAPER square submitted for SBIN")).toBeInTheDocument();
+    expect(ids()).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[1]]);
+  });
+
+  it("keeps a position whose square-off is unconfirmed and says so", async () => {
+    paperPositions = [OPEN_POSITION];
+    squareResult = { status: "SUBMIT_UNCONFIRMED", message: "Check the broker orderbook." };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Square" }));
+
+    expect(
+      await screen.findByText("PAPER square for SBIN unconfirmed: Check the broker orderbook."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Square" }).closest("tr")?.textContent).toBe(
+      "SBINPAPERLONG10790.00800.00100.00100.00Square",
+    );
   });
 
   it("keeps a position whose square-off the broker rejected and shows the reason", async () => {

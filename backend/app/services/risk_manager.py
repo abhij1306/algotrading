@@ -66,6 +66,10 @@ class RiskConfig:
     # Order confirmation threshold
     large_order_notional: float = 10000  # Orders above this require confirmation
 
+    # Price sanity: a modified limit or trigger price may sit at most this far from the LTP.
+    # 20% is the widest NSE circuit band, so a price outside it cannot be a real intent.
+    max_price_deviation_pct: float = 20.0
+
 
 class RiskManager:
     """
@@ -175,6 +179,151 @@ class RiskManager:
 
         return RiskCheckResult(
             status=RiskStatus.PASS, message="All risk checks passed", code="RISK_PASS"
+        )
+
+    @staticmethod
+    def _effective_price(order: dict, ltp: float) -> float:
+        """Price an order is valued at: its limit for LIMIT/SL, else the live price."""
+        if str(order.get("type") or "MARKET").upper() in {"LIMIT", "SL"}:
+            return float(order.get("price") or 0)
+        return ltp
+
+    def pre_modify_check(
+        self, order_params: dict, current: dict, ltp: float, db: Session | None = None
+    ) -> RiskCheckResult:
+        """Checks for changing a working LIVE order.
+
+        Args:
+            order_params: the order as it will be after the change (symbol, side, quantity,
+                type, price, trigger_price, product, instrument_type)
+            current: the order as it is now (quantity, type, price)
+            ltp: last traded price from a fresh quote; 0 when none was available
+            db: Database session
+
+        Every modify must pass market hours, the per-order size limit and the price band.
+        A modify that raises the order's notional (more quantity, a higher limit, or a
+        switch to a dearer type) runs the exposure and margin checks on the notional
+        increase; one that adds quantity also runs the daily-loss and naked-short checks.
+        Fails closed when either notional cannot be priced. A PASS carries any warnings
+        in details["warnings"].
+        """
+        checks = [
+            self._check_market_hours,
+            lambda: self._check_position_size(order_params, db),
+            lambda: self._check_price_band(order_params, ltp),
+        ]
+        new_qty = int(order_params.get("quantity") or 0)
+        old_qty = int(current.get("quantity") or 0)
+        new_price = self._effective_price(order_params, ltp)
+        old_price = self._effective_price(current, ltp)
+        if new_price <= 0 or old_price <= 0:
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message=(
+                    f"Cannot price the order for {order_params.get('symbol', '')}; modify rejected."
+                ),
+                code="PRICE_ESTIMATE_FAILED",
+            )
+        notional_increase = new_qty * new_price - old_qty * old_price
+        if notional_increase > 0:
+            # Valued as one unit at the notional increase: exposure and margin both
+            # multiply quantity by price.
+            added_value = {**order_params, "quantity": 1, "price": notional_increase}
+            checks += [
+                lambda: self._check_total_exposure(added_value, db),
+                lambda: self._check_available_margin(added_value),
+            ]
+        quantity_increase = new_qty - old_qty
+        if quantity_increase > 0:
+            added_qty = {**order_params, "quantity": quantity_increase}
+            checks.append(lambda: self._check_daily_loss_limit(db))
+            if order_params.get("instrument_type") in ["CE", "PE"]:
+                checks.append(lambda: self._check_naked_short_option(added_qty, db))
+
+        warnings: list[str] = []
+        for check in checks:
+            result = check()
+            if result.status == RiskStatus.FAIL:
+                return result
+            if result.status == RiskStatus.WARNING:
+                warnings.append(result.message)
+        return RiskCheckResult(
+            status=RiskStatus.PASS,
+            message="All modify risk checks passed",
+            code="RISK_PASS",
+            details={"warnings": warnings},
+        )
+
+    def _check_price_band(self, order_params: dict, ltp: float) -> RiskCheckResult:
+        """A limit or trigger price must lie within max_price_deviation_pct of the LTP.
+
+        Fails closed when there is no live price to compare against.
+        """
+        symbol = order_params.get("symbol", "")
+        if ltp <= 0:
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message=f"No live price for {symbol}; cannot verify the order price.",
+                code="PRICE_UNAVAILABLE",
+            )
+        order_type = str(order_params.get("type") or "MARKET").upper()
+        prices = []
+        if order_type in {"LIMIT", "SL"}:
+            prices.append(("limit", float(order_params.get("price") or 0)))
+        if order_type in {"SL", "SL-M"}:
+            prices.append(("trigger", float(order_params.get("trigger_price") or 0)))
+        band = self.config.max_price_deviation_pct
+        for label, price in prices:
+            deviation_pct = abs(price - ltp) / ltp * 100
+            if deviation_pct > band:
+                return RiskCheckResult(
+                    status=RiskStatus.FAIL,
+                    message=(
+                        f"The {label} price {price:.2f} is more than {band:.0f}% "
+                        f"from the last price {ltp:.2f}."
+                    ),
+                    code="PRICE_OUT_OF_BAND",
+                    details={"price": price, "ltp": ltp, "band_pct": band},
+                )
+        return RiskCheckResult(
+            status=RiskStatus.PASS, message="Price within band", code="PRICE_BAND_OK"
+        )
+
+    def pre_exit_check(self) -> RiskCheckResult:
+        """Checks before any LIVE exit or square-off: the market must be open.
+
+        Exits only reduce exposure, so the loss, exposure, margin and order-count limits do
+        not apply: they must never trap an open position. Each exit order is then checked
+        against its position with exit_order_check.
+        """
+        return self._check_market_hours()
+
+    @staticmethod
+    def exit_order_check(net_qty: int, side: str, quantity: int) -> RiskCheckResult:
+        """An exit order may only reduce an open position: the opposite side, and no more
+        than the open quantity. It must never flip or add to a position."""
+        if net_qty == 0:
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message="No open position to exit.",
+                code="NO_OPEN_POSITION",
+            )
+        expected_side = "SELL" if net_qty > 0 else "BUY"
+        if side != expected_side:
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message=f"An exit of a {'long' if net_qty > 0 else 'short'} position "
+                f"must {expected_side}.",
+                code="EXIT_WRONG_SIDE",
+            )
+        if quantity <= 0 or quantity > abs(net_qty):
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message=f"Exit quantity {quantity} exceeds the open quantity {abs(net_qty)}.",
+                code="EXIT_EXCEEDS_POSITION",
+            )
+        return RiskCheckResult(
+            status=RiskStatus.PASS, message="Exit reduces the position", code="EXIT_OK"
         )
 
     def _check_market_hours(self) -> RiskCheckResult:
@@ -383,9 +532,9 @@ class RiskManager:
                 code="MARGIN_OK",
                 details={"available": available, "required": estimated_margin},
             )
-        except Exception as e:
-            logger.exception(f"Error checking margin: {e}")
-            # DENY trade if margin check fails (fail-closed for security)
+        except Exception:
+            logger.exception("Error checking margin")
+            # DENY trade if margin check fails (fail-closed). The error stays in the log.
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
                 message="Could not verify margin. Trade denied for safety.",

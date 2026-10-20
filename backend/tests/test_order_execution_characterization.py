@@ -13,6 +13,8 @@ from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
 from app.services import order_execution_service as oes
 from app.services.position_sync_service import PositionSyncService
+from app.services.risk_manager import risk_manager
+from app.utils import market_hours
 
 # --- Paper fill simulation ---------------------------------------------------
 # Reference price 100.0, quantity 10, default 5 bps slippage and 3.5 bps fees.
@@ -248,11 +250,20 @@ def test_paper_fill_applies_custom_slippage_and_fees(monkeypatch: pytest.MonkeyP
 
 
 class StubModifyBroker:
-    """Broker stand-in whose modify_order returns a fixed reply or raises."""
+    """Broker stand-in whose modify_order returns a fixed reply or raises.
+
+    Its quote (LTP 800) keeps a modify near 800 inside the risk price band.
+    """
 
     def __init__(self, reply: dict[str, Any] | Exception) -> None:
         self.reply = reply
         self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_quote(self, symbol: str) -> dict[str, Any]:
+        return {"n": symbol, "v": {"lp": 800.0}}
+
+    def get_funds(self) -> dict[str, float]:
+        return {"available": 100_000.0, "used": 0.0, "total": 100_000.0}
 
     def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((order_id, params))
@@ -302,18 +313,27 @@ def test_modify_unknown_order_is_an_error(orders: Session) -> None:
 @pytest.mark.parametrize(
     ("reply", "expected"),
     [
-        ({"s": "error", "message": "Order already executed"}, "Order already executed"),
-        ({"s": "error"}, "Modify failed"),
-        (RuntimeError("broker down"), "broker down"),
+        (
+            {"s": "error", "message": "Order already executed"},
+            "Broker rejected the modify: Order already executed",
+        ),
+        ({"s": "error"}, "Broker rejected the modify"),
+        (RuntimeError("broker down"), "Broker order modify failed"),
     ],
 )
 def test_live_modify_failure_leaves_order_unchanged(
-    orders: Session, reply: dict[str, Any] | Exception, expected: str
+    orders: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: dict[str, Any] | Exception,
+    expected: str,
 ) -> None:
+    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
     order = add_order(orders, is_paper=0)
     service = oes.OrderExecutionService()
     broker = StubModifyBroker(reply)
     service._broker = broker
+    # The +1 notional is margin-checked through the risk manager's broker.
+    monkeypatch.setattr(risk_manager, "_broker", broker)
 
     result = service.modify_order("ORD-1", {"price": 801.0}, orders)
 
@@ -438,7 +458,7 @@ def test_live_order_failing_risk_checks_never_reaches_broker(orders: Session) ->
         ),
         (
             {"status": "REJECTED", "message": "Insufficient margin"},
-            (None, "REJECTED", "Insufficient margin", None),
+            (None, "REJECTED", "Broker rejected the order: Insufficient margin", None),
         ),
     ],
 )
@@ -455,7 +475,13 @@ def test_live_order_records_broker_outcome(
 
     result = service.place_order(live_params(), orders, mode="LIVE")
 
-    assert result == {**reply, "client_order_id": CLIENT_ORDER_ID, "duplicate": False}
+    expected_message = stored[2] or reply["message"]
+    assert result == {
+        **reply,
+        "message": expected_message,
+        "client_order_id": CLIENT_ORDER_ID,
+        "duplicate": False,
+    }
     assert broker.calls == [
         {
             "symbol": "NSE:SBIN-EQ",
@@ -560,12 +586,16 @@ def test_cancel_unknown_order_is_an_error(orders: Session) -> None:
         ),
         (
             {"s": "error", "message": "Order already executed"},
-            {"status": "ERROR", "message": "Order already executed"},
+            {"status": "ERROR", "message": "Broker rejected the cancel: Order already executed"},
             "SUBMITTED",
         ),
-        ({"s": "error"}, {"status": "ERROR", "message": "Cancel failed"}, "SUBMITTED"),
-        ({}, {"status": "ERROR", "message": "Cancel failed"}, "SUBMITTED"),
-        (RuntimeError("broker down"), {"status": "ERROR", "message": "broker down"}, "SUBMITTED"),
+        ({"s": "error"}, {"status": "ERROR", "message": "Broker rejected the cancel"}, "SUBMITTED"),
+        ({}, {"status": "ERROR", "message": "Broker rejected the cancel"}, "SUBMITTED"),
+        (
+            RuntimeError("broker down"),
+            {"status": "ERROR", "message": "Broker order cancel failed"},
+            "SUBMITTED",
+        ),
     ],
 )
 def test_live_cancel_outcome_per_broker_reply(

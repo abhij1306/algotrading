@@ -8,14 +8,15 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import UUID4, BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.live_order import LiveOrder
+from ..services.live_exit_service import live_exit_service
 from ..services.live_market_service import live_market
 from ..services.order_execution_service import (
     ClientOrderIdField,
@@ -23,11 +24,7 @@ from ..services.order_execution_service import (
 )
 from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
-from ..services.symbol_master import symbol_master
 from ..utils.logger import safe_log_value
-
-if TYPE_CHECKING:
-    from ..brokers.plugins.fyers import FyersBroker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/trading", tags=["Trading"])
@@ -37,7 +34,6 @@ DBSession = Annotated[Session, Depends(get_db)]
 BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request"}}
 AUTH_RESPONSE = {401: {"description": "Authentication required"}}
 SERVER_ERROR_RESPONSE = {500: {"description": "Server error"}}
-LIVE_SQUARE_FALLBACK_FAILED = "LIVE_SQUARE_FALLBACK_FAILED"
 
 # ============== Pydantic Models ==============
 
@@ -69,13 +65,19 @@ class ModifyOrderRequest(BaseModel):
 
 
 class ExitPositionRequest(BaseModel):
+    """LIVE exit. client_order_id is the idempotency key: one per click, reused on retry."""
+
     symbol: str | None = None  # If None, exit all positions
     product_type: str | None = None
+    client_order_id: UUID4
 
 
-class SquarePositionRequest(BaseModel):
+class SquarePositionRequest(ClientOrderIdField):
+    """Square-off; a LIVE request needs a client_order_id (one per click, reused on retry)."""
+
     symbol: str | None = None
     mode: str = "PAPER"  # PAPER / LIVE
+    product_type: str | None = None  # LIVE only: limit the exit to this product
 
 
 class RiskCheckRequest(BaseModel):
@@ -289,62 +291,6 @@ def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[d
         if position:
             positions.append(position)
     return positions
-
-
-def _live_square_response(symbol: str | None, result: dict[str, Any]) -> dict[str, Any]:
-    ok = result.get("status") in {"SUCCESS", "OK", "SUBMITTED"} or result.get("s") == "ok"
-    response = {
-        "status": "SUCCESS" if ok else "ERROR",
-        "mode": "LIVE",
-        "symbol": symbol,
-        "message": result.get("message", "Live square sent" if symbol else "Live exit-all sent"),
-    }
-    if not ok:
-        response["details"] = result
-    return response
-
-
-def _square_live_positions(req: SquarePositionRequest) -> dict[str, Any]:
-    from ..brokers.plugins.fyers import FyersBroker
-
-    broker = FyersBroker()
-    if not req.symbol:
-        return _live_square_response(None, broker.exit_all_positions())
-
-    result = broker.exit_position(req.symbol)
-    if result.get("status") in {"ERROR", "REJECTED"} or result.get("s") == "error":
-        result = _retry_square_with_fyers_symbol(broker, req.symbol, result)
-    return _live_square_response(req.symbol, result)
-
-
-def _retry_square_with_fyers_symbol(
-    broker: "FyersBroker", symbol: str, first_result: dict[str, Any]
-) -> dict[str, Any]:
-    """Retry a rejected live square-off with the Fyers symbol.
-
-    A failure is logged server-side on one sanitized line and the
-    caller gets a fixed error code; the exception text is never returned (trading rule 10).
-    """
-    fyers_symbol = symbol
-    error = ""
-    try:
-        fyers_symbol = symbol_master.to_fyers(symbol)
-        return broker.exit_position(fyers_symbol)
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-    logger.error(
-        "Live square fallback failed for symbol=%s fyers_symbol=%s error=%s",
-        safe_log_value(symbol),
-        safe_log_value(fyers_symbol),
-        safe_log_value(error),
-    )
-    return {
-        **first_result,
-        "status": "ERROR",
-        "message": first_result.get("message", "Live square-off failed"),
-        "error_code": LIVE_SQUARE_FALLBACK_FAILED,
-        "fyers_symbol": fyers_symbol,
-    }
 
 
 def _create_square_order(pos: dict[str, Any], timestamp: datetime) -> LiveOrder | None:
@@ -597,7 +543,13 @@ def square_position(req: SquarePositionRequest, db: DBSession) -> dict[str, Any]
             raise HTTPException(status_code=400, detail="mode must be PAPER or LIVE")
 
         if mode == "LIVE":
-            return _square_live_positions(req)
+            return live_exit_service.exit_positions(
+                symbol=req.symbol,
+                product_type=req.product_type,
+                client_order_id=req.client_order_id,
+                user_id=SINGLE_USER_ID,
+                db=db,
+            )
         return _square_paper_positions(req, db)
     except HTTPException:
         raise
@@ -614,35 +566,19 @@ def square_position(req: SquarePositionRequest, db: DBSession) -> dict[str, Any]
         500: {"description": "Server error"},
     },
 )
-def exit_position(req: ExitPositionRequest) -> dict[str, Any]:
-    """Exit a specific position or all positions"""
+def exit_position(req: ExitPositionRequest, db: DBSession) -> dict[str, Any]:
+    """Exit a specific LIVE position, or all LIVE positions when no symbol is given."""
     try:
-        from ..brokers.plugins.fyers import FyersBroker
-
-        broker = FyersBroker()
-
-        if req.symbol:
-            # Exit specific position
-            result = broker.exit_position(req.symbol)
-            result_ok = result.get("status") in {"OK", "SUCCESS", "SUBMITTED"} or (
-                result.get("s") == "ok"
-            )
-            return {
-                "status": "SUCCESS" if result_ok else "ERROR",
-                "message": result.get("message", "Exit order placed"),
-                "symbol": req.symbol,
-                "results": result.get("results"),
-            }
-        else:
-            # Exit all positions (panic button)
-            result = broker.exit_all_positions()
-            return {
-                "status": "SUCCESS" if result.get("s") == "ok" else "ERROR",
-                "message": result.get("message", "All positions exited"),
-                "action": "EXIT_ALL",
-            }
+        return live_exit_service.exit_positions(
+            symbol=req.symbol,
+            product_type=req.product_type,
+            client_order_id=req.client_order_id,
+            user_id=SINGLE_USER_ID,
+            db=db,
+        )
     except Exception as e:
-        logger.exception("Error exiting position")
+        db.rollback()
+        logger.exception("Error exiting position for symbol=%s", safe_log_value(req.symbol))
         raise HTTPException(status_code=500, detail="Error exiting position") from e
 
 

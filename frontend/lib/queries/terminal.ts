@@ -5,6 +5,7 @@ import { ApiError } from "@/lib/api/errors";
 import { isMarketOpen } from "@/lib/market-hours";
 import { roundToDecimals } from "@/lib/utils";
 import { queryKeys } from "./keys";
+import { shouldRetry } from "./query-client";
 
 const OPTIONS_POLL_OPEN_MS = 3000;
 const OPTIONS_POLL_CLOSED_MS = 20_000;
@@ -276,16 +277,34 @@ export function useAddToWatchlist() {
   });
 }
 
-/** Squares a position and drops it from the cached book; a rejected square-off throws. */
+export interface SquareInput {
+  row: PositionItem;
+  /** Idempotency key: one per click, reused by every retry of that click. */
+  clientOrderId: string;
+}
+
+const SQUARE_RETRY_DELAY_MS = 250;
+/** Status of a LIVE order or exit that may have reached the broker without confirmation. */
+export const SUBMIT_UNCONFIRMED = "SUBMIT_UNCONFIRMED";
+
+/**
+ * Squares a position and drops it from the cached book; a rejected square-off throws.
+ * A dropped request is retried with the same client_order_id, so the backend exits at most once.
+ */
 export function useSquarePosition() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (row: PositionItem) => {
+    mutationFn: async ({ row, clientOrderId }: SquareInput) => {
       const result = parseResponse(
         squareResultSchema,
         await unwrap(
           api.POST("/api/trading/positions/square", {
-            body: { symbol: row.symbol, mode: row.mode || "PAPER" },
+            body: {
+              symbol: row.symbol,
+              mode: row.mode || "PAPER",
+              product_type: row.product_type || null,
+              client_order_id: clientOrderId,
+            },
           }),
         ),
       );
@@ -296,11 +315,18 @@ export function useSquarePosition() {
           message: result.message || "Failed to square position",
         });
       }
+      // Sent but not confirmed: not a rejection, so the user must not square again.
+      const unconfirmed = result.status === SUBMIT_UNCONFIRMED;
+      return { unconfirmed, message: result.message ?? "" };
     },
-    onSuccess: (_data, row) => {
-      queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
-        prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
-      );
+    retry: shouldRetry,
+    retryDelay: SQUARE_RETRY_DELAY_MS,
+    onSuccess: (result, { row }) => {
+      if (!result.unconfirmed) {
+        queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
+          prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+        );
+      }
       return queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() });
     },
   });

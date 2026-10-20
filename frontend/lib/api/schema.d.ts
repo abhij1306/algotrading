@@ -1624,7 +1624,7 @@ export interface paths {
     put?: never;
     /**
      * Exit Position
-     * @description Exit a specific position or all positions
+     * @description Exit a specific LIVE position, or all LIVE positions when no symbol is given.
      */
     post: operations["exit_position_api_trading_positions_exit_post"];
     delete?: never;
@@ -2133,8 +2133,16 @@ export interface components {
       /** Universe Code */
       universe_code: string;
     };
-    /** ExitPositionRequest */
+    /**
+     * ExitPositionRequest
+     * @description LIVE exit. client_order_id is the idempotency key: one per click, reused on retry.
+     */
     ExitPositionRequest: {
+      /**
+       * Client Order Id
+       * Format: uuid4
+       */
+      client_order_id: string;
       /** Product Type */
       product_type?: string | null;
       /** Symbol */
@@ -2479,13 +2487,20 @@ export interface components {
        */
       universe: string;
     };
-    /** SquarePositionRequest */
+    /**
+     * SquarePositionRequest
+     * @description Square-off; a LIVE request needs a client_order_id (one per click, reused on retry).
+     */
     SquarePositionRequest: {
+      /** Client Order Id */
+      client_order_id?: string | null;
       /**
        * Mode
        * @default PAPER
        */
       mode: string;
+      /** Product Type */
+      product_type?: string | null;
       /** Symbol */
       symbol?: string | null;
     };

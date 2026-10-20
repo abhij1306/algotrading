@@ -71,10 +71,10 @@ Files: `fyers_client.py`, `data_fetcher.py`, `routers/market.py`, `market_dashbo
 ### Lane 3: trading execution
 Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_manager.py`, `position_sync_service.py`, `brokers/`.
 
-- [ ] Risk checks on live modify, exit and square-off (part of S4).
+- [x] Risk checks on live modify, exit and square-off (part of S4).
 - [ ] Paper money math moved to Decimal.
 - [ ] Paper modify re-runs the fill simulation.
-- [ ] LIVE modify and cancel stop returning `str(e)`.
+- [x] LIVE modify and cancel stop returning `str(e)`.
 - [ ] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S).
 - [ ] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user.
 - [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
