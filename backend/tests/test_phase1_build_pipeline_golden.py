@@ -224,3 +224,69 @@ def test_phase1_pipeline_matches_golden(phase1: ModuleType) -> None:
     for key in golden:
         assert results[key] == golden[key], key
     assert results.keys() == golden.keys()
+
+
+# --- regressions from the PR #34 review --------------------------------------------
+
+
+def _builder(phase1: ModuleType) -> object:
+    return phase1.Phase1Builder(
+        asof=date(2025, 2, 3), mode="full", start_date=date(2025, 1, 30), universes=["NIFTY50"]
+    )
+
+
+def test_corp_actions_adjust_integer_price_columns(phase1: ModuleType) -> None:
+    """All-integer OHLC columns must not crash the split division (TypeError on int64)."""
+    builder = _builder(phase1)
+    builder.paths.curated_root.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "trade_date": [date(2025, 1, 30), date(2025, 1, 31)],
+            "symbol": ["AAA", "AAA"],
+            "open": [100, 52],
+            "high": [110, 56],
+            "low": [96, 50],
+            "close": [105, 54],
+            "volume": [1000, 2200],
+        }
+    ).to_parquet(builder.paths.curated_root / phase1.EQUITY_OHLCV_FILE, index=False)
+
+    builder.apply_corp_actions()
+
+    adjusted = pd.read_parquet(builder.paths.curated_root / phase1.EQUITY_OHLCV_ADJ_FILE)
+    # AAA split 10 -> 5 on 31-Jan: the earlier bar is halved, its volume doubled.
+    assert adjusted["close"].tolist() == [52.5, 54.0]
+    assert adjusted["volume"].tolist() == [2000, 2200]
+
+
+def test_universe_index_publish_is_atomic(phase1: ModuleType, tmp_path: Path) -> None:
+    """A failed insert must leave the previous rows: delete and inserts share one commit."""
+    builder = _builder(phase1)
+    snapshot = tmp_path / "snapshot_nifty50.parquet"
+    pd.DataFrame({"date": [date(2025, 1, 31)], "universe_id": ["NIFTY50"]}).to_parquet(snapshot)
+    session_factory = phase1.SessionLocal
+    with session_factory() as db:
+        db.add(
+            phase1.SnapshotIndexUniverse(
+                snapshot_date=date(2025, 1, 31),
+                universe_id="NIFTY50",
+                artifact_path="old.parquet",
+                run_id="old-run",
+                version="v1",
+            )
+        )
+        db.commit()
+
+    with session_factory() as db:
+
+        def failing_insert(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("insert failed")
+
+        db.bulk_insert_mappings = failing_insert
+        with pytest.raises(RuntimeError, match="insert failed"):
+            builder._publish_universe_index(db, "NIFTY50", snapshot)
+        db.rollback()
+
+    with session_factory() as db:
+        rows = db.query(phase1.SnapshotIndexUniverse.artifact_path).all()
+    assert [row[0] for row in rows] == ["old.parquet"]

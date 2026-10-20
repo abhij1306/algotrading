@@ -1030,7 +1030,10 @@ class Phase1Builder:
         adjusted[["open", "high", "low", "close", "volume"]] = adjusted[
             ["open", "high", "low", "close", "volume"]
         ].apply(pd.to_numeric, errors="coerce")
-        adjusted["volume"] = adjusted["volume"].astype(float)
+        # Float before dividing: integer price columns cannot hold the adjusted values.
+        adjusted[["open", "high", "low", "close", "volume"]] = adjusted[
+            ["open", "high", "low", "close", "volume"]
+        ].astype(float)
 
         audit_rows: list[dict[str, Any]] = []
         for symbol, grp in ca_df.groupby("symbol"):
@@ -1499,7 +1502,7 @@ class Phase1Builder:
         db.commit()
 
     def _publish_universe_index(self, db: Session, universe_id: str, snapshot_path: Path) -> None:
-        """Replace one universe's snapshot index rows for the run's date range."""
+        """Replace one universe's snapshot index rows for the run's date range, atomically."""
         uni_df = pd.read_parquet(snapshot_path, columns=["date", "universe_id"]).drop_duplicates()
         uni_df["date"] = pd.to_datetime(uni_df["date"], errors="coerce").dt.date
         db.query(SnapshotIndexUniverse).filter(
@@ -1507,7 +1510,6 @@ class Phase1Builder:
             SnapshotIndexUniverse.snapshot_date <= self.asof,
             SnapshotIndexUniverse.universe_id == universe_id.upper(),
         ).delete(synchronize_session=False)
-        db.commit()
         universe_records = [
             {
                 "snapshot_date": row.date,
@@ -1522,7 +1524,8 @@ class Phase1Builder:
             db.bulk_insert_mappings(
                 SnapshotIndexUniverse, universe_records[i : i + PUBLISH_CHUNK_SIZE]
             )
-            db.commit()
+        # One commit for the delete and every insert: a failure leaves the old rows intact.
+        db.commit()
 
 
 def _run_step(builder: Phase1Builder, step: str, universe: str | None = None) -> None:
