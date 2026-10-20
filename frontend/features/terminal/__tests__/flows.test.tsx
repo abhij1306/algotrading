@@ -6,7 +6,7 @@ import { createQueryClient } from "@/lib/queries/query-client";
 
 // The API client reads VITE_API_URL at import time; node cannot build a Request from a relative URL.
 vi.stubEnv("VITE_API_URL", "http://api.test");
-const { default: TerminalPage } = await import("../page");
+const { TerminalScreen: TerminalPage } = await import("../TerminalScreen");
 
 vi.mock("@/lib/realtime/hooks", () => ({
   useConnectionStatus: () => "disconnected",
