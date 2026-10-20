@@ -3,6 +3,8 @@
 **Status:** Proposed, 2026-10-20
 **Scope:** whole repo. The setup is about six months old, so every module, script and dependency is open to deletion or redesign.
 
+**Progress:** see [STATUS.md](STATUS.md) for what is done, in flight and left.
+
 This plan collects four area reviews. Each area file has the evidence (file and line references), target design, PR slices, risks and tests to add:
 
 | Area | File |
