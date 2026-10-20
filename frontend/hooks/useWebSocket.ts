@@ -250,6 +250,9 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
         };
 
         socket.onclose = (event) => {
+          // A superseded socket closes after its replacement is installed (enabled flip,
+          // StrictMode remount); it must not touch the newer socket's state.
+          if (socketRef.current !== socket) return;
           if (cancelledRef.current) return;
 
           setIsConnected(false);
