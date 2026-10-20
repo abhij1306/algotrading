@@ -9,7 +9,6 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -48,6 +47,7 @@ from .routers import (  # noqa: E402
     upload,
     websocket,
 )
+from .utils.origins import FrontendCORSMiddleware  # noqa: E402
 
 
 def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
@@ -387,9 +387,10 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
 
-# CORS. config.ALLOWED_ORIGINS (CORS_ORIGINS) is also the Origin allow-list of WS /stream.
+# CORS: the configured origins plus any http loopback origin (utils/origins.py), the same
+# rule as the Origin check on WS /stream.
 app.add_middleware(
-    CORSMiddleware,
+    FrontendCORSMiddleware,
     allow_origins=list(config.ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
