@@ -3,11 +3,14 @@ Unified Fyers Client - Robust and Singleton
 Handles authentication, token management, and data fetching.
 """
 
+from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any, Self
 
 from ..utils.logger import get_logger
+from .fyers.quotes import Quote, parse_quotes
 from .fyers.token_store import TokenStoreError, fyers_client_disabled, token_store
 from .symbol_master import symbol_master
 
@@ -26,6 +29,32 @@ def _get_fyers_model() -> ModuleType:
 
 # Setup Logging
 logger = get_logger("services.fyers_client")
+
+# Most symbols the Fyers quotes endpoint accepts in one call.
+QUOTES_BATCH_SIZE = 50
+
+
+def _to_fyers_symbols(symbols: Iterable[str]) -> dict[str, list[str]]:
+    """{Fyers symbol: the requested symbols that map to it}, in request order.
+
+    Two requests can share a Fyers symbol (``LTIM`` and ``LTM`` both give ``NSE:LTM-EQ``);
+    unconvertible symbols are dropped.
+    """
+    converted: dict[str, list[str]] = {}
+    for symbol in dict.fromkeys(symbols):
+        if not symbol:
+            continue
+        try:
+            converted.setdefault(symbol_master.to_fyers(symbol), []).append(symbol)
+        except ValueError:
+            logger.warning("Skipping quote for unconvertible symbol %r", symbol)
+    return converted
+
+
+def _keyed_by_request(quote: Quote, asked_by_db: dict[str, list[str]]) -> list[Quote]:
+    """``quote`` once under each symbol it was asked for (its DB symbol when unmatched)."""
+    asked = asked_by_db.get(quote.symbol, [quote.symbol])
+    return [quote if symbol == quote.symbol else replace(quote, symbol=symbol) for symbol in asked]
 
 
 class FyersClient:
@@ -268,53 +297,35 @@ class FyersClient:
         now_utc = datetime.now(UTC)
         return now_utc > self.token_expires_at
 
-    def get_quotes(self, symbols: list[str]) -> dict[str, Any]:
-        """Fetch raw quotes for a list of symbols"""
-        if not self.fyers:
+    def quotes(self, symbols: Iterable[str]) -> dict[str, Quote]:
+        """Quotes keyed by the requested DB symbol; symbols Fyers has no quote for are absent.
+
+        Symbols are converted with SymbolMaster (one it cannot convert is skipped) and sent in
+        batches of QUOTES_BATCH_SIZE (the Fyers per-call limit). A reply for a renamed symbol
+        (asked as ``LTIM``, answered as ``LTM``) is keyed by each symbol asked for. A batch
+        whose request fails is skipped; this never raises.
+        """
+        model = self.fyers
+        if model is None:
+            return {}
+        requested = _to_fyers_symbols(symbols)
+        if not requested:
             return {}
 
-        try:
-            sym_str = ",".join(symbols)
-            response = self.fyers.quotes({"symbols": sym_str})
-            return response
-        except Exception as e:
-            logger.exception(f"Error fetching quotes: {e}")
-            return {}
-
-    def get_parsed_quotes(self, symbols: list[str]) -> dict[str, dict]:
-        """Fetch and parse quotes into a standardized format"""
-        response = self.get_quotes(symbols)
-        if response.get("s") != "ok" or "d" not in response:
-            return {}
-
-        quotes_dict = {}
-        for quote in response["d"]:
-            symbol_raw = quote.get("n")
-            if not symbol_raw:
+        fyers_symbols = list(requested)
+        asked_by_db = {symbol_master.to_db(f): asked for f, asked in requested.items()}
+        quotes: dict[str, Quote] = {}
+        for start in range(0, len(fyers_symbols), QUOTES_BATCH_SIZE):
+            batch = fyers_symbols[start : start + QUOTES_BATCH_SIZE]
+            try:
+                response = model.quotes({"symbols": ",".join(batch)})
+            except Exception:
+                logger.exception("Fyers quotes request failed for %d symbols", len(batch))
                 continue
-
-            symbol = symbol_master.to_db(symbol_raw)
-            v = quote.get("v", {})
-
-            ltp = v.get("lp", 0)
-            prev_close = v.get("prev_close_price", ltp)
-
-            if prev_close and prev_close > 0:
-                change_pct = ((ltp - prev_close) / prev_close) * 100
-            else:
-                change_pct = 0
-
-            quotes_dict[symbol] = {
-                "ltp": ltp,
-                "volume": v.get("volume", 0),
-                "high": v.get("high_price", 0),
-                "low": v.get("low_price", 0),
-                "open": v.get("open_price", 0),
-                "prev_close": prev_close,
-                "change_pct": round(change_pct, 2),
-            }
-
-        return quotes_dict
+            for quote in parse_quotes(response).values():
+                for keyed in _keyed_by_request(quote, asked_by_db):
+                    quotes[keyed.symbol] = keyed
+        return quotes
 
     def get_historical_data(
         self, symbol: str, timeframe: str, range_from: str, range_to: str

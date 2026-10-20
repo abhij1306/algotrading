@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..services.fyers.quotes import Quote
 from ..services.symbol_master import symbol_master
 from ..utils.db_errors import is_db_unavailable
 from ..utils.market_hours import get_market_status
@@ -13,6 +14,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 DB_DEPENDENCY = Depends(get_db)
 NIFTY_50_NAME = "NIFTY 50"
+
+
+def _fyers_quotes(symbols: list[str]) -> dict[str, Quote]:
+    """Live Fyers quotes keyed by DB symbol, through the gateway; {} when it is unavailable."""
+    from ..services.fyers_client import get_fyers_client
+
+    fyers = get_fyers_client()
+    return fyers.quotes(symbols) if fyers else {}
+
+
+def _percent(quote: Quote) -> float:
+    """The quote's change percent rounded to 2 places; 0 when the previous close is unknown."""
+    return round(float(quote.change_pct), 2) if quote.change_pct is not None else 0.0
 
 
 @router.get("/market/status", response_model=None)
@@ -28,55 +42,29 @@ def get_market_indices() -> list[dict[str, Any]]:
     Returns NIFTY 50, SENSEX, BANKNIFTY, NIFTY IT
     """
     try:
-        from ..services.fyers_client import get_fyers_client
-
-        fyers = get_fyers_client()
-
-        if not fyers or not fyers.fyers:
-            return []
-
-        # Index symbols
+        # Index name -> DB symbol
         indices = {
-            NIFTY_50_NAME: {"fyers_symbol": "NSE:NIFTY50-INDEX", "symbol": "NIFTY50"},
-            "SENSEX": {"fyers_symbol": "BSE:SENSEX-INDEX", "symbol": "SENSEX"},
-            "BANKNIFTY": {"fyers_symbol": "NSE:NIFTYBANK-INDEX", "symbol": "BANKNIFTY"},
-            "NIFTY IT": {"fyers_symbol": "NSE:NIFTYIT-INDEX", "symbol": "NIFTYIT"},
+            NIFTY_50_NAME: "NIFTY50",
+            "SENSEX": "SENSEX",
+            "BANKNIFTY": "BANKNIFTY",
+            "NIFTY IT": "NIFTYIT",
         }
+        quotes = _fyers_quotes(list(indices.values()))
 
         results = []
-
-        for name, entry in indices.items():
-            try:
-                symbol = entry["fyers_symbol"]
-                quote = fyers.get_parsed_quotes([symbol])
-                if not quote:
-                    continue
-
-                # get_parsed_quotes can return either fyers-format key or DB-format key
-                data = quote.get(symbol) or quote.get(symbol_master.to_db(symbol))
-                if not data:
-                    continue
-
-                ltp = data.get("ltp")
-                prev_close = data.get("prev_close")
-                if ltp is None or prev_close in (None, 0):
-                    continue
-
-                change = ltp - prev_close
-                change_pct = change / prev_close * 100
-
-                results.append(
-                    {
-                        "name": name,
-                        "symbol": entry["symbol"],
-                        "value": ltp,
-                        "change": change,
-                        "changePercent": change_pct,
-                    }
-                )
-            except Exception:
-                logger.exception("Failed to fetch index quote for %s", name)
-                continue
+        for name, symbol in indices.items():
+            quote = quotes.get(symbol)
+            if quote is None or quote.ltp is None or quote.change is None:
+                continue  # no price or no previous close
+            results.append(
+                {
+                    "name": name,
+                    "symbol": symbol,
+                    "value": float(quote.ltp),
+                    "change": float(quote.change),
+                    "changePercent": float(quote.change_pct or 0),
+                }
+            )
 
         return results
     except Exception:
@@ -108,22 +96,12 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]
         if not raw_symbols:
             return {}
 
-        # Try to get live quotes from Fyers
-        from ..services.fyers_client import get_fyers_client
-
-        fyers = get_fyers_client()
-
-        quotes = {}
-
-        if fyers and fyers.fyers:
-            # Convert to Fyers format
-            symbol_list = [symbol_master.to_fyers(s) for s in raw_symbols]
-            fyers_quotes = fyers.get_parsed_quotes(symbol_list)
-
-            # Convert keys back to DB format
-            for fyers_sym, data in fyers_quotes.items():
-                db_sym = symbol_master.to_db(fyers_sym)
-                quotes[db_sym] = data
+        # Live quotes from Fyers; a symbol without a last price is left out
+        quotes = {
+            symbol: _live_quote_row(quote)
+            for symbol, quote in _fyers_quotes(raw_symbols).items()
+            if quote.ltp is not None
+        }
 
         # If no live data, fall back to database
         if not quotes:
@@ -155,6 +133,20 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]
             raise  # an empty map would read as "no quotes"; the API answers 503
         logger.warning("Error fetching quotes: %s", e)
         return {}
+
+
+def _live_quote_row(quote: Quote) -> dict[str, Any]:
+    """A /quotes/live row: missing prices read 0 and a missing previous close reads as the ltp."""
+    ltp = float(quote.ltp)
+    return {
+        "ltp": ltp,
+        "volume": quote.volume or 0,
+        "high": float(quote.high or 0),
+        "low": float(quote.low or 0),
+        "open": float(quote.open or 0),
+        "prev_close": float(quote.prev_close) if quote.prev_close is not None else ltp,
+        "change_pct": _percent(quote),
+    }
 
 
 @router.get("/quote/{symbol}", response_model=None)
@@ -479,7 +471,6 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         limit: Number of top gainers/losers to return
     """
     try:
-        from ..services.fyers_client import get_fyers_client
         from ..services.universe import get_universe_service
 
         # Get index constituents
@@ -487,42 +478,20 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         if not symbols:
             return {"gainers": [], "losers": []}
 
-        # Get Fyers client
-        fyers = get_fyers_client()
-        if not fyers or not fyers.fyers:
-            return {"gainers": [], "losers": []}
-
-        # Convert to Fyers format
-        fyers_symbols = [symbol_master.to_fyers(s) for s in symbols]
-
-        # Fetch quotes in batches (Fyers has limits)
-        all_quotes = {}
-        batch_size = 50
-        for i in range(0, len(fyers_symbols), batch_size):
-            batch = fyers_symbols[i : i + batch_size]
-            quotes = fyers.get_parsed_quotes(batch)
-            all_quotes.update(quotes)
-
-        # Calculate changes and sort
-        movers = []
-        for fyers_sym, data in all_quotes.items():
-            db_sym = symbol_master.to_db(fyers_sym)
-            ltp = data.get("ltp", 0)
-            prev_close = data.get("prev_close", ltp)
-
-            if prev_close and ltp:
-                change_pct = ((ltp - prev_close) / prev_close) * 100
-                movers.append(
-                    {
-                        "symbol": db_sym,
-                        "name": data.get("name", db_sym),
-                        "price": round(ltp, 2),
-                        "changePercent": round(change_pct, 2),
-                    }
-                )
-
-        # Sort by change percent
-        movers.sort(key=lambda x: x["changePercent"], reverse=True)
+        # Fetch quotes (the gateway batches them to the Fyers per-call limit); a symbol without a
+        # known change (no price or no previous close) is not a mover. Sort by the unrounded
+        # change, so returns that round alike still rank correctly
+        priced = [q for q in _fyers_quotes(symbols).values() if q.change_pct is not None]
+        priced.sort(key=lambda quote: quote.change_pct, reverse=True)
+        movers = [
+            {
+                "symbol": quote.symbol,
+                "name": quote.symbol,
+                "price": round(float(quote.ltp), 2),
+                "changePercent": _percent(quote),
+            }
+            for quote in priced
+        ]
 
         # Get top gainers and losers
         gainers = movers[:limit]
@@ -544,58 +513,32 @@ def get_sector_performance() -> list[dict[str, Any]]:
     Returns real-time data from Fyers during market hours.
     """
     try:
-        from ..services.fyers_client import get_fyers_client
-        from ..services.symbol_master import symbol_master
-
-        # Sector indices mapping (Fyers format)
+        # Sector name -> DB symbol of its index
         sectors = {
-            "Banking": {"fyers_symbol": "NSE:NIFTYBANK-INDEX", "symbol": "BANKNIFTY"},
-            "IT": {"fyers_symbol": "NSE:NIFTYIT-INDEX", "symbol": "NIFTYIT"},
-            "Pharma": {"fyers_symbol": "NSE:NIFTYPHARMA-INDEX", "symbol": "NIFTYPHARMA"},
-            "Auto": {"fyers_symbol": "NSE:NIFTYAUTO-INDEX", "symbol": "NIFTYAUTO"},
-            "Metal": {"fyers_symbol": "NSE:NIFTYMETAL-INDEX", "symbol": "NIFTYMETAL"},
+            "Banking": "BANKNIFTY",
+            "IT": "NIFTYIT",
+            "Pharma": "NIFTYPHARMA",
+            "Auto": "NIFTYAUTO",
+            "Metal": "NIFTYMETAL",
         }
 
-        fyers = get_fyers_client()
-        if not fyers or not fyers.fyers:
-            logger.warning("Fyers client not available for sector performance")
-            return []
-
-        # Fetch quotes
-        fyers_symbols = [entry["fyers_symbol"] for entry in sectors.values()]
-        logger.debug("Fetching sector quotes for: %s", fyers_symbols)
-        quotes = fyers.get_parsed_quotes(fyers_symbols)
+        quotes = _fyers_quotes(list(sectors.values()))
         logger.debug("Received %d sector quotes", len(quotes))
 
         results = []
-        for name, entry in sectors.items():
-            fyers_symbol = entry["fyers_symbol"]
-            # Convert to DB format for lookup (get_parsed_quotes returns DB format keys)
-            db_symbol = symbol_master.to_db(fyers_symbol)
-
-            if db_symbol in quotes:
-                data = quotes[db_symbol]
-                ltp = data.get("ltp", 0)
-                prev_close = data.get("prev_close", ltp)
-                change = ltp - prev_close
-                change_pct = (change / prev_close * 100) if prev_close else 0
-
-                results.append(
-                    {
-                        "name": name,
-                        "symbol": entry["symbol"],
-                        "value": round(ltp, 2),
-                        "changePercent": round(change_pct, 2),
-                    }
-                )
-                logger.debug("Sector %s: %s (%.2f%%)", name, ltp, change_pct)
-            else:
-                logger.debug(
-                    "No data for sector %s (Fyers: %s, DB: %s).",
-                    name,
-                    fyers_symbol,
-                    db_symbol,
-                )
+        for name, symbol in sectors.items():
+            quote = quotes.get(symbol)
+            if quote is None or quote.ltp is None:
+                logger.debug("No data for sector %s (%s).", name, symbol)
+                continue
+            results.append(
+                {
+                    "name": name,
+                    "symbol": symbol,
+                    "value": round(float(quote.ltp), 2),
+                    "changePercent": _percent(quote),
+                }
+            )
 
         return results
 

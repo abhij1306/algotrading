@@ -63,7 +63,7 @@ Files: `ws_manager.py`, `routers/websocket.py`, `live_market_service.py`, `fyers
 ### Lane 2: Fyers gateway and market routers
 Files: `fyers_client.py`, `data_fetcher.py`, `routers/market.py`, `market_dashboard.py`, `options.py`, `auth.py`, `option_chain_service.py`, `data_layer/`, `system_health.py`.
 
-- [ ] 2. A Quote type and one parser in the gateway (M). Delete `get_parsed_quotes`.
+- [x] 2. A Quote type and one parser in the gateway (M). Delete `get_parsed_quotes`. (#78) `services/fyers/quotes.py` (`Quote`, `parse_quotes`) behind `FyersClient.quotes()`; `fetch_fyers_quotes` stays as a legacy-shape adapter until VCP, the screener and `data_layer` switch.
 - [ ] 3. Gateway `option_chain()`, `profile()` and `depth()` (M).
 - [x] 4. A TokenStore, with the auth flow moved out of `routers/auth.py` (S-M). Use zoneinfo for IST and write the token file as 0600. Done: `services/fyers/token_store.py` and `services/fyers/auth_flow.py`.
 - [ ] 5. MarketQuoteService and SymbolSearchService, extracted from `market.py` (M).
