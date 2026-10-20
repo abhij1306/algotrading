@@ -722,6 +722,10 @@ export default function TerminalPage() {
       setOrderMessage("Enter a price greater than 0");
       return;
     }
+    if ((orderType === "SL" || orderType === "SL-M") && !(orderTrigger > 0)) {
+      setOrderMessage("Enter a trigger price greater than 0");
+      return;
+    }
 
     try {
       setOrderBusy(true);
