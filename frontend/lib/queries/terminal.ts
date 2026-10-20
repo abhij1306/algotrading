@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { api, parseResponse, unwrap } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/errors";
 import { isMarketOpen } from "@/lib/market-hours";
 import { roundToDecimals } from "@/lib/utils";
 import { queryKeys } from "./keys";
@@ -56,6 +57,11 @@ const positionSchema = z.object({
 const positionsBookSchema = z.object({
   live_positions: z.array(positionSchema).catch([]),
   paper_positions: z.array(positionSchema).catch([]),
+});
+
+const squareResultSchema = z.object({
+  status: z.string().optional().catch(undefined),
+  message: z.string().optional().catch(undefined),
 });
 
 export interface WatchlistItem {
@@ -266,16 +272,26 @@ export function useAddToWatchlist() {
   });
 }
 
-/** Squares a position and drops it from the cached book until the next poll. */
+/** Squares a position and drops it from the cached book; a rejected square-off throws. */
 export function useSquarePosition() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (row: PositionItem) => {
-      await unwrap(
-        api.POST("/api/trading/positions/square", {
-          body: { symbol: row.symbol, mode: row.mode || "PAPER" },
-        }),
+      const result = parseResponse(
+        squareResultSchema,
+        await unwrap(
+          api.POST("/api/trading/positions/square", {
+            body: { symbol: row.symbol, mode: row.mode || "PAPER" },
+          }),
+        ),
       );
+      // A rejected LIVE square-off comes back as HTTP 200 with status ERROR: fail closed.
+      if (result.status === "ERROR") {
+        throw new ApiError({
+          code: "SQUARE_REJECTED",
+          message: result.message || "Failed to square position",
+        });
+      }
     },
     onSuccess: (_data, row) => {
       queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>

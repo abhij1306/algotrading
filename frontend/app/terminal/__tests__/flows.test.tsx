@@ -46,11 +46,12 @@ const OPEN_POSITION = {
 };
 
 let paperPositions: (typeof OPEN_POSITION)[] = [];
+let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
 
 function respond(url: string): Response {
   if (url.includes("/api/trading/positions/square")) {
-    paperPositions = [];
-    return Response.json({ status: "ok" });
+    if (squareResult.status === "SUCCESS") paperPositions = [];
+    return Response.json(squareResult);
   }
   if (url.includes("/api/market/watchlist")) {
     return Response.json([{ symbol: "SBIN", name: "State Bank", price: 800, change: 1.2 }]);
@@ -190,6 +191,7 @@ describe("terminal data", () => {
 
   beforeEach(() => {
     paperPositions = [];
+    squareResult = { status: "SUCCESS" };
     calls = installFetch();
   });
 
@@ -247,5 +249,20 @@ describe("terminal data", () => {
     expect(calls.filter((call) => call.url.includes("/square")).map((call) => call.body)).toEqual([
       '{"symbol":"SBIN","mode":"PAPER"}',
     ]);
+  });
+
+  it("keeps a position whose square-off the broker rejected and shows the reason", async () => {
+    paperPositions = [OPEN_POSITION];
+    squareResult = { status: "ERROR", message: "Order rejected by broker" };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Square" }));
+
+    expect(await screen.findByText("Order rejected by broker")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Square" }).closest("tr")?.textContent).toBe(
+      "SBINPAPERLONG10790.00800.00100.00100.00Square",
+    );
   });
 });

@@ -306,11 +306,14 @@ function PositionsPanel({
   summary: positionsSummary,
   error: positionsError,
   positions,
+  squaring,
   onSquare: squarePosition,
 }: Readonly<{
   summary: PositionsSummary;
   error: string | null;
   positions: PositionItem[];
+  /** A square-off is in flight; a second click could send a duplicate exit. */
+  squaring: boolean;
   onSquare: (row: PositionItem) => void;
 }>) {
   return (
@@ -369,6 +372,7 @@ function PositionsPanel({
                   size="sm"
                   variant="secondary"
                   className="h-6 px-2 text-xs"
+                  disabled={squaring}
                   onClick={() => squarePosition(pos)}
                 >
                   Square
@@ -513,12 +517,15 @@ function useScreenQuotes(groups: readonly (readonly string[])[]) {
 /** Squares a position and reports the outcome through the order ticket message. */
 function useSquareAction(onMessage: (message: string | null) => void) {
   const square = useSquarePosition();
-  return (row: PositionItem) => {
-    onMessage(null);
-    square.mutate(row, {
-      onSuccess: () => onMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`),
-      onError: (error) => onMessage(errorText(error, "Failed to square position")),
-    });
+  return {
+    squaring: square.isPending,
+    squarePosition: (row: PositionItem) => {
+      onMessage(null);
+      square.mutate(row, {
+        onSuccess: () => onMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`),
+        onError: (error) => onMessage(errorText(error, "Failed to square position")),
+      });
+    },
   };
 }
 
@@ -1185,7 +1192,7 @@ export default function TerminalPage() {
   const symbols = useTerminalSymbols();
   const chain = useOptionsChain(terminalView === "options");
   const positionsQuery = usePositionsBook(terminalView === "positions");
-  const squarePosition = useSquareAction(setOrderMessage);
+  const { squaring, squarePosition } = useSquareAction(setOrderMessage);
   const basePositions = positionsQuery.data ?? NO_POSITIONS;
 
   // Live quotes come from the shared quote store; rows below are derived, not synced via effects.
@@ -1255,6 +1262,7 @@ export default function TerminalPage() {
                 summary={summarizePositions(positions)}
                 error={positionsQuery.isError ? "Failed to load positions" : null}
                 positions={positions}
+                squaring={squaring}
                 onSquare={squarePosition}
               />
             )}
