@@ -5,6 +5,7 @@ import {
   formatCrores,
   formatInr,
   formatNumber,
+  formatPercent,
   formatSignedPercent,
   roundToDecimals,
   roundsNegative,
@@ -22,6 +23,7 @@ const MISSING: ReadonlyArray<[string, number | Missing]> = [
 const FORMATTERS: ReadonlyArray<[string, (value: number | Missing) => string]> = [
   ["formatNumber", (value) => formatNumber(value)],
   ["formatInr", (value) => formatInr(value)],
+  ["formatPercent", (value) => formatPercent(value)],
   ["formatSignedPercent", (value) => formatSignedPercent(value)],
   ["formatCompactInr", (value) => formatCompactInr(value)],
   ["formatCompactNumber", (value) => formatCompactNumber(value)],
@@ -63,6 +65,18 @@ describe("formatInr", () => {
     [1500, 0, "₹1,500"],
   ])("formatInr(%s, %s) is %s", (value, decimals, expected) => {
     expect(formatInr(value, decimals)).toBe(expected);
+  });
+});
+
+describe("formatPercent", () => {
+  it.each([
+    [12.345, 1, "12.3%"],
+    [-4.5, 2, "-4.50%"],
+    [1250, 1, "1,250.0%"],
+    [-0.04, 1, "0.0%"],
+    [0, 2, "0.00%"],
+  ])("formats %s with %s decimals as %s", (value, decimals, expected) => {
+    expect(formatPercent(value, decimals)).toBe(expected);
   });
 });
 

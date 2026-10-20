@@ -26,7 +26,7 @@ import {
   type BacktestRunPayload,
   type StrategyMeta,
 } from "@/lib/queries/backtest";
-import { formatCompactInr } from "@/lib/format";
+import { formatCompactInr, formatNumber } from "@/lib/format";
 import { runStatusVariant } from "@/lib/status-variants";
 import { deriveFormDefaults, type SelectionMode } from "./form-defaults";
 
@@ -277,7 +277,7 @@ export default function BacktestPage() {
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Strategies</span>
                         <span className="mono-num text-foreground">
-                          {selectedCount} active · Σw={selectedWeightSum.toFixed(2)}
+                          {selectedCount} active · Σw={formatNumber(selectedWeightSum)}
                         </span>
                       </div>
                       <Button
@@ -311,7 +311,7 @@ export default function BacktestPage() {
                       </p>
                     </div>
                     <Badge variant="outline">
-                      {selectedCount} active · Σw={selectedWeightSum.toFixed(2)}
+                      {selectedCount} active · Σw={formatNumber(selectedWeightSum)}
                     </Badge>
                   </CardHeader>
                   <CardContent className="grid gap-3 px-5 pb-4 pt-0 md:grid-cols-2 xl:grid-cols-3">

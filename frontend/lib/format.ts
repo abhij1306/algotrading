@@ -91,6 +91,12 @@ export function formatInr(value: MaybeNumber, decimals: number = 2): string {
   return enIn(decimals, decimals, "currency").format(value);
 }
 
+/** "12.3%", "-4.50%", "1,250.0%": a percent with Indian grouping and no plus sign. */
+export function formatPercent(value: MaybeNumber, decimals: number = 2): string {
+  if (!isFiniteNumber(value)) return PLACEHOLDER;
+  return `${enIn(decimals, decimals).format(value)}%`;
+}
+
 /** "+1.23%", "-0.50%", "+0.00%": the sign is always shown; a value that rounds to zero is "+". */
 export function formatSignedPercent(value: MaybeNumber, decimals: number = 2): string {
   if (!isFiniteNumber(value)) return PLACEHOLDER;

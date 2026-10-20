@@ -1,231 +1,35 @@
-import { useMemo, memo } from "react";
+import { useMemo } from "react";
 import { useNavigate, useParams } from "react-router";
-import dynamic from "@/lib/dynamic";
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  PageContainer,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui";
+import { Card, CardContent, PageContainer } from "@/components/ui";
+import { DrawdownCard, EquityCurveCard } from "@/components/backtest/ResultCharts";
+import { ResultHeader } from "@/components/backtest/ResultHeader";
+import { ResultMetricsStrip } from "@/components/backtest/ResultMetricsStrip";
+import { RunSummaryBar } from "@/components/backtest/RunSummaryBar";
+import { TradeLogPanel } from "@/components/backtest/TradeLogPanel";
+import { buildEquityRows } from "@/components/backtest/result-view";
 import { useBacktestResult } from "@/lib/queries/backtest";
-import { formatCompactInr, formatSignedPercent, roundsNegative } from "@/lib/format";
-import { runStatusVariant } from "@/lib/status-variants";
 
-type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
-
-function winRateTone(winRate: number): string {
-  if (winRate > 50) return "text-profit";
-  return winRate < 50 ? "text-loss" : "text-foreground";
-}
-
-// Dynamic import for recharts to reduce initial bundle size
-const DynamicEquityChart = dynamic(
-  () =>
-    import("recharts").then((mod) => {
-      const { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
-
-      return function EquityChartComponent({
-        data,
-      }: {
-        data: Array<{ date: string; equity: number; benchmark: number | null }>;
-      }) {
-        if (data.length === 0) {
-          return (
-            <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-sm text-foreground-muted">
-              No equity curve data available for this run.
-            </div>
-          );
-        }
-
-        return (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 10, right: 30, left: 60, bottom: 40 }}>
-              <XAxis
-                dataKey="date"
-                height={60}
-                angle={-45}
-                textAnchor="end"
-                stroke="var(--color-foreground-muted)"
-                tick={{ fill: "var(--color-foreground-muted)", fontSize: 10 }}
-                axisLine={{ stroke: "var(--color-border)" }}
-                tickLine={{ stroke: "var(--color-border)" }}
-              />
-              <YAxis
-                width={60}
-                stroke="var(--color-foreground-muted)"
-                tick={{ fill: "var(--color-foreground-secondary)", fontSize: 11 }}
-                axisLine={{ stroke: "var(--color-border)" }}
-                tickLine={{ stroke: "var(--color-border)" }}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "var(--color-elevated)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--color-foreground)",
-                  fontSize: "12px",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="equity"
-                stroke="var(--color-primary)"
-                strokeWidth={2.5}
-                dot={false}
-                name="Portfolio"
-              />
-              <Line
-                type="monotone"
-                dataKey="benchmark"
-                stroke="var(--color-foreground-muted)"
-                strokeWidth={1.8}
-                strokeDasharray="5 5"
-                dot={false}
-                name="Benchmark"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        );
-      };
-    }),
-  {
-    loading: () => (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
-      </div>
-    ),
-  },
-);
-
-const DynamicDrawdownChart = dynamic(
-  () =>
-    import("recharts").then((mod) => {
-      const { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
-
-      return function DrawdownChartComponent({ data }: { data: CurvePoint[] }) {
-        if (data.length === 0) {
-          return (
-            <div className="flex h-full items-center justify-center rounded-md border border-border bg-background-secondary text-xs text-foreground-muted">
-              No drawdown data
-            </div>
-          );
-        }
-
-        return (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data}>
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 10, fill: "var(--color-foreground-muted)" }}
-                hide
-              />
-              <YAxis
-                tick={{ fontSize: 10, fill: "var(--color-foreground-secondary)" }}
-                width={40}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "var(--color-surface)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: "var(--radius-md)",
-                  fontSize: "11px",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="drawdown_pct"
-                stroke="var(--color-loss)"
-                dot={false}
-                strokeWidth={2}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        );
-      };
-    }),
-  {
-    loading: () => (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
-      </div>
-    ),
-  },
-);
-
-// OPTIMIZATION: Memoized chart components to prevent unnecessary re-renders
-const EquityChart = memo(DynamicEquityChart);
-const DrawdownChart = memo(DynamicDrawdownChart);
+const NO_POINTS: never[] = [];
 
 export default function BacktestResultPage() {
-  const params = useParams<{ runId: string }>();
+  const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
-  const runId = params.runId;
   const resultQuery = useBacktestResult(runId);
   const payload = resultQuery.data;
+  const result = payload?.result;
   const error = resultQuery.error?.message ?? null;
 
-  // OPTIMIZATION: Memoize chart data to prevent recalculation on every render
-  const chartRows = useMemo(() => {
-    const eq = payload?.result?.equity_curve ?? [];
-    const benchmark = payload?.result?.benchmark_curve ?? [];
-    const benchMap = new Map(benchmark.map((b) => [b.date, b.equity]));
-    const rows = eq.map((e) => ({
-      date: e.date,
-      equity: e.equity,
-      benchmark: benchMap.get(e.date) ?? null,
-    }));
-
-    // Sample data to show max 200 points for cleaner chart
-    const sampleRate = Math.max(1, Math.floor(rows.length / 200));
-    const sampled = rows.filter((_, i) => i % sampleRate === 0);
-
-    return sampled;
-  }, [payload?.result?.equity_curve, payload?.result?.benchmark_curve]);
-
-  // OPTIMIZATION: Memoize drawdown data
-  const drawdownRows = useMemo(
-    () => payload?.result?.drawdown_curve ?? [],
-    [payload?.result?.drawdown_curve],
+  const equityCurve = result?.equity_curve;
+  const benchmarkCurve = result?.benchmark_curve;
+  const equityRows = useMemo(
+    () => buildEquityRows(equityCurve ?? NO_POINTS, benchmarkCurve ?? NO_POINTS),
+    [equityCurve, benchmarkCurve],
   );
-
-  // OPTIMIZATION: Memoize trades and metrics
-  const trades = useMemo(() => payload?.result?.trade_log ?? [], [payload?.result?.trade_log]);
-
-  const metrics = useMemo(() => payload?.result?.metrics, [payload?.result?.metrics]);
-
-  const winRate = metrics?.win_rate_pct ?? 0;
 
   return (
     <PageContainer fullWidth>
-      {/* CACHE BUSTER v3 */}
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface px-4">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-foreground-secondary">Backtest</span>
-            <span className="text-foreground-muted">/</span>
-            <span className="font-semibold text-foreground">Results</span>
-            <Badge variant="outline" className="ml-2">
-              {runId}
-            </Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void navigate("/backtest")}>
-              ← Back
-            </Button>
-            <Button variant="primary" size="sm" onClick={() => void navigate("/backtest")}>
-              + New Run
-            </Button>
-          </div>
-        </div>
+        <ResultHeader runId={runId} onBack={() => void navigate("/backtest")} />
 
         {error && <div className="bg-loss-bg p-4 text-sm text-loss">{error}</div>}
 
@@ -251,191 +55,19 @@ export default function BacktestResultPage() {
 
         {payload?.status === "completed" && (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="grid h-16 shrink-0 grid-cols-2 border-b border-border bg-surface md:grid-cols-3 xl:grid-cols-6">
-              <div className="border-r border-border px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Total Return
-                </div>
-                <div
-                  className={`mono-num text-2xl font-semibold ${(metrics?.total_return_pct ?? 0) >= 0 ? "text-profit" : "text-loss"}`}
-                >
-                  {metrics ? `${metrics.total_return_pct.toFixed(1)}%` : "--"}
-                </div>
-              </div>
-              <div className="border-r border-border px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Final Equity
-                </div>
-                <div className="mono-num text-2xl font-semibold text-foreground">
-                  {metrics ? formatCompactInr(metrics.final_equity) : "--"}
-                </div>
-              </div>
-              <div className="border-r border-border px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Sharpe
-                </div>
-                <div
-                  className={`mono-num text-2xl font-semibold ${(metrics?.sharpe_ratio ?? 0) >= 1 ? "text-profit" : "text-foreground"}`}
-                >
-                  {metrics ? metrics.sharpe_ratio.toFixed(2) : "--"}
-                </div>
-              </div>
-              <div className="border-r border-border px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Max Drawdown
-                </div>
-                <div className="mono-num text-2xl font-semibold text-loss">
-                  {metrics ? `${metrics.max_drawdown_pct.toFixed(1)}%` : "--"}
-                </div>
-              </div>
-              <div className="border-r border-border px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Trades
-                </div>
-                <div className="mono-num text-2xl font-semibold text-foreground">
-                  {metrics ? metrics.total_trades : "--"}
-                </div>
-              </div>
-              <div className="px-4 py-2">
-                <div className="text-xxs uppercase tracking-wider text-foreground-muted">
-                  Win Rate
-                </div>
-                <div className={`mono-num text-2xl font-semibold ${winRateTone(winRate)}`}>
-                  {metrics ? `${winRate.toFixed(1)}%` : "--"}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-background-secondary px-4 text-xs text-foreground-secondary">
-              <Badge variant={runStatusVariant(payload.status)}>{payload.status}</Badge>
-              <span className="h-3 w-px bg-border" />
-              <span>
-                Instrument{" "}
-                <strong className="text-foreground">
-                  {payload.params.instrument_type.toUpperCase()}
-                </strong>
-              </span>
-              <span className="h-3 w-px bg-border" />
-              <span>
-                Range{" "}
-                <strong className="mono-num text-foreground">
-                  {payload.params.start_date} → {payload.params.end_date}
-                </strong>
-              </span>
-              <span className="h-3 w-px bg-border" />
-              <span>
-                Scope{" "}
-                <strong className="text-foreground">
-                  {payload.result?.selection.scope || payload.params.selection.mode}
-                </strong>
-              </span>
-            </div>
+            <ResultMetricsStrip metrics={result?.metrics} />
+            <RunSummaryBar job={payload} />
 
             <div className="grid min-h-0 flex-1 grid-cols-[1fr_360px] overflow-hidden">
               <div className="flex h-full min-h-0 flex-col overflow-hidden border-r border-border bg-background">
-                <Card
-                  variant="void"
-                  className="shrink-0 rounded-none border-0 border-b border-border bg-surface"
-                >
-                  <CardHeader className="flex-row items-center justify-between px-4 py-3">
-                    <CardTitle className="text-foreground">Equity Curve vs Benchmark</CardTitle>
-                    <div className="flex items-center gap-4 text-sm">
-                      <span className="flex items-center gap-2 text-primary">
-                        <span className="h-0.5 w-5 bg-primary" />
-                        <span>Portfolio</span>
-                      </span>
-                      <span className="flex items-center gap-2 text-foreground-muted">
-                        <span className="h-0.5 w-5 bg-foreground-muted" />
-                        <span>Benchmark</span>
-                      </span>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-4" style={{ height: "360px" }}>
-                    <EquityChart data={chartRows} />
-                  </CardContent>
-                </Card>
-
-                <Card
-                  variant="void"
-                  className="shrink-0 rounded-none border-0 border-b border-border bg-surface"
-                >
-                  <CardHeader className="px-4 py-3">
-                    <CardTitle className="text-sm uppercase tracking-wider text-foreground-muted">
-                      Drawdown
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="h-24 p-3">
-                    <DrawdownChart data={drawdownRows} />
-                  </CardContent>
-                </Card>
+                <EquityCurveCard rows={equityRows} />
+                <DrawdownCard points={result?.drawdown_curve ?? NO_POINTS} />
               </div>
 
-              <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background-secondary">
-                <Card
-                  variant="void"
-                  className="shrink-0 rounded-none border-0 border-b border-border bg-surface"
-                >
-                  <CardHeader className="px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-foreground">Trade Log v2</CardTitle>
-                      <Badge variant="outline">{trades.length} trades</Badge>
-                    </div>
-                    <p className="text-xs text-foreground-muted">
-                      {winRate.toFixed(1)}% win rate · by date
-                    </p>
-                  </CardHeader>
-                </Card>
-
-                <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
-                  {trades.length === 0 ? (
-                    <div className="p-4 text-sm text-foreground-secondary">
-                      No trades generated for this configuration.
-                    </div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Symbol</TableHead>
-                          <TableHead>Dates</TableHead>
-                          <TableHead numeric>Prices</TableHead>
-                          <TableHead numeric>Return</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {trades.slice(0, 200).map((t, i) => (
-                          <TableRow key={`${t.symbol}-${t.entry_date}-${i}`}>
-                            <TableCell className="font-semibold text-foreground">
-                              {t.symbol}
-                            </TableCell>
-                            <TableCell>
-                              <div className="mono-num text-xs text-foreground-muted">
-                                ↑ {t.entry_date}
-                              </div>
-                              <div className="mono-num text-xs text-foreground-muted">
-                                ↓ {t.exit_date}
-                              </div>
-                            </TableCell>
-                            <TableCell numeric>
-                              <div className="mono-num text-foreground">
-                                {t.entry_price.toFixed(2)}
-                              </div>
-                              <div className="mono-num text-foreground-muted">
-                                {t.exit_price.toFixed(2)}
-                              </div>
-                            </TableCell>
-                            <TableCell
-                              numeric
-                              variant={roundsNegative(t.return_pct) ? "loss" : "profit"}
-                            >
-                              {formatSignedPercent(t.return_pct)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-              </div>
+              <TradeLogPanel
+                trades={result?.trade_log ?? NO_POINTS}
+                winRate={result?.metrics.win_rate_pct ?? 0}
+              />
             </div>
           </div>
         )}

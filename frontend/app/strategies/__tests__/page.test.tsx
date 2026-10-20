@@ -102,6 +102,40 @@ describe("strategies page", { timeout: 15_000 }, () => {
     );
   });
 
+  it("shows the selected signal's levels in rupees", async () => {
+    stubBackend();
+    renderStrategies();
+
+    expect(await screen.findByText("SBIN · A-Grade")).toBeInTheDocument();
+    expect(screen.getByText("₹812.50")).toBeInTheDocument();
+    expect(screen.getByText("₹780.00")).toBeInTheDocument();
+    expect(screen.getByText("₹81,250.00")).toBeInTheDocument();
+    expect(screen.getByText("₹877.50")).toBeInTheDocument();
+    expect(screen.getByText("18% → 9% → 4%")).toBeInTheDocument();
+  });
+
+  it("sends one halt request when Halt is clicked twice", async () => {
+    let releaseHalt: () => void = () => {};
+    const haltReply = new Promise<Response>((resolve) => {
+      releaseHalt = () => resolve(Response.json({ status: "ok" }));
+    });
+    const calls = stubBackend({ "/api/strategies/halt": () => haltReply });
+    renderStrategies();
+    await screen.findByText("2026-10-16");
+
+    const halt = screen.getByRole("button", { name: "Halt" });
+    fireEvent.click(halt);
+    await waitFor(() => expect(halt).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Running..." })).toBeDisabled();
+    fireEvent.click(halt);
+    releaseHalt();
+
+    await waitFor(() => expect(halt).not.toBeDisabled());
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/api/strategies/halt",
+    ]);
+  });
+
   it("shows the database outage message when the workspace cannot load", async () => {
     stubBackend({
       "/api/strategies/status": () =>
