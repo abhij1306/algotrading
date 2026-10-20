@@ -98,7 +98,7 @@ def test_every_valid_combination_builds_the_intent(
     )
 
     price, trigger = KEPT_PRICES[order_type]
-    assert fields(intent) == (
+    expected = (
         mode,
         side,
         order_type,
@@ -108,6 +108,7 @@ def test_every_valid_combination_builds_the_intent(
         price,
         trigger,
     )
+    assert fields(intent) == expected
 
 
 @pytest.mark.parametrize("instrument_type", INSTRUMENT_TYPES)
