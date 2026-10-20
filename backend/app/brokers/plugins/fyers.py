@@ -209,23 +209,41 @@ class FyersBroker(IBroker):
     def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Modify pending order.
-        params: {type, limitPrice, qty}
+        params: {order_type, quantity, price, trigger_price} describing the order
+        after the change. order_type is required so the Fyers type is never guessed.
         """
         if not self.client:
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
-        data = {"id": order_id, "type": 1 if params.get("order_type") != "MARKET" else 2}
+        order_type = str(params.get("order_type") or "").upper()
+        if order_type not in FYERS_ORDER_TYPES:
+            return {
+                "status": "REJECTED",
+                "message": "Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
+            }
 
-        if "quantity" in params:
+        trigger_price = safe_float(params.get("trigger_price"), 0.0)
+        if order_type in STOP_ORDER_TYPES and trigger_price <= 0:
+            return {
+                "status": "REJECTED",
+                "message": f"{order_type} order requires a positive trigger price.",
+            }
+
+        limit_price = safe_float(params.get("price"), 0.0)
+        if order_type in LIMIT_PRICED_ORDER_TYPES and limit_price <= 0:
+            return {
+                "status": "REJECTED",
+                "message": f"{order_type} order requires a positive limit price.",
+            }
+
+        data: dict[str, Any] = {
+            "id": order_id,
+            "type": FYERS_ORDER_TYPES[order_type],
+            "limitPrice": limit_price if order_type in LIMIT_PRICED_ORDER_TYPES else 0,
+            "stopPrice": trigger_price if order_type in STOP_ORDER_TYPES else 0,
+        }
+        if params.get("quantity") is not None:
             data["qty"] = params["quantity"]
-        if "price" in params:
-            data["limitPrice"] = params["price"]
-            data["type"] = 1  # Force Limit
-
-        # If changing to MARKET, set type=2 and limitPrice=0
-        if params.get("order_type") == "MARKET":
-            data["type"] = 2
-            data["limitPrice"] = 0
 
         return self._call_with_guard(
             "modify_order",
@@ -376,9 +394,18 @@ class FyersBroker(IBroker):
         if not self.client:
             return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
 
-        matching_positions = [
-            position for position in self.get_positions() if position.symbol == symbol
-        ]
+        try:
+            positions = self.get_positions()
+        except BrokerUnavailableError as exc:
+            # symbol is request input; keep it out of the log line (log injection).
+            logger.warning("Exit position aborted: positions unavailable (%s)", exc)
+            return {
+                "status": "REJECTED",
+                "code": "BROKER_UNAVAILABLE",
+                "message": "Broker positions unavailable; no exit order was placed",
+            }
+
+        matching_positions = [position for position in positions if position["symbol"] == symbol]
         if not matching_positions:
             return {"status": "OK", "message": "No positions found"}
 
@@ -387,7 +414,7 @@ class FyersBroker(IBroker):
         for position in matching_positions:
             exit_result = self.place_order(self._build_exit_order(position))
             results.append(exit_result)
-            if exit_result.status not in {"SUBMITTED", "SUCCESS", "OK"}:
+            if exit_result["status"] not in {"SUBMITTED", "SUCCESS", "OK"}:
                 has_failure = True
 
         return {

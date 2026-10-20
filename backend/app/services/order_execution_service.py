@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 import uuid
 from datetime import date
 from typing import Any
@@ -6,13 +8,65 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..brokers.plugins.fyers import FyersBroker, quote_last_price
+from ..brokers.plugins.fyers import FyersBroker
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
+
+NO_PAPER_PRICE_MESSAGE = (
+    "No market price available for {symbol}; paper {order_type} order rejected. "
+    "Subscribe the symbol to live data or use a LIMIT order."
+)
+PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
+STOP_ORDER_TYPES = {"SL", "SL-M"}
+LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
+# Fyers tick fields carrying the exchange time, in epoch seconds, most precise first.
+TICK_TIME_FIELDS = ("exch_feed_time", "last_traded_time")
+DEFAULT_PAPER_TICK_MAX_AGE_SEC = 60.0
+
+
+def order_price_error(order_type: str, price: float, trigger_price: float) -> str | None:
+    """Message when an order's prices are invalid for its type, else None.
+
+    Same rules and wording as FyersBroker.place_order / modify_order.
+    """
+    if order_type in STOP_ORDER_TYPES and trigger_price <= 0:
+        return f"{order_type} order requires a positive trigger price."
+    if order_type in LIMIT_PRICED_ORDER_TYPES and price <= 0:
+        return f"{order_type} order requires a positive limit price."
+    return None
+
+
+def paper_tick_max_age_sec() -> float:
+    max_age = safe_float(os.getenv("PAPER_TICK_MAX_AGE_SEC"), DEFAULT_PAPER_TICK_MAX_AGE_SEC)
+    return max_age if max_age > 0 else DEFAULT_PAPER_TICK_MAX_AGE_SEC
+
+
+def latest_tick_price(db_symbol: str) -> float:
+    """Last traded price from the live market-data tick cache, or 0.0 if none.
+
+    This reads the market-data feed, never the order broker, so PAPER fills can
+    use it without reaching the live broker. The cache keeps ticks after a
+    disconnect or market close, so a tick is used only while the market is open
+    (DEV_MODE counts as open, as in LiveMarketService) and its exchange time is
+    within PAPER_TICK_MAX_AGE_SEC (default 60s). A tick without a time is stale.
+    """
+    from .live_market_service import live_market
+
+    tick = live_market.get_latest_tick(db_symbol)
+    if not isinstance(tick, dict) or not live_market.is_market_open():
+        return 0.0
+    tick_time = next(
+        (safe_float(tick.get(f), 0.0) for f in TICK_TIME_FIELDS if tick.get(f) is not None),
+        0.0,
+    )
+    if tick_time <= 0 or time.time() - tick_time > paper_tick_max_age_sec():
+        return 0.0
+    price = safe_float(tick.get("ltp"), 0.0)
+    return price if price > 0 else 0.0
 
 
 class OrderExecutionService:
@@ -32,29 +86,46 @@ class OrderExecutionService:
             self._broker = FyersBroker()
         return self._broker
 
-    def _estimate_market_reference_price(
-        self, fyers_symbol: str, fallback_price: float = 0.0
-    ) -> float:
+    @staticmethod
+    def _paper_reference_price(db_symbol: str, limit_price: float) -> float:
+        """Reference price for a PAPER fill: the latest market-data tick, else
+        the order's own limit price, else 0.0 (caller rejects). Never the broker."""
         try:
-            lp = quote_last_price(self.broker.get_quote(fyers_symbol))
-            return lp if lp > 0 else fallback_price
+            tick_price = latest_tick_price(db_symbol)
         except Exception:
-            return fallback_price
+            logger.exception("Paper reference price lookup failed for %s", db_symbol)
+            tick_price = 0.0
+        if tick_price > 0:
+            return tick_price
+        return limit_price if limit_price > 0 else 0.0
 
-    def _simulate_paper_fill(
-        self, order_params: dict[str, Any], fyers_symbol: str
-    ) -> dict[str, Any]:
+    def _simulate_paper_fill(self, order_params: dict[str, Any], db_symbol: str) -> dict[str, Any]:
         side = str(order_params.get("side", "BUY")).upper()
         order_type = str(order_params.get("type", "MARKET")).upper()
         qty = max(0, int(order_params.get("quantity", 0)))
-        price = self._safe_float(order_params.get("price"), 0.0)
-        trigger_price = self._safe_float(order_params.get("trigger_price"), 0.0)
-        ref = self._estimate_market_reference_price(fyers_symbol, fallback_price=price)
-        if ref <= 0:
-            ref = price
+        price = safe_float(order_params.get("price"), 0.0)
+        trigger_price = safe_float(order_params.get("trigger_price"), 0.0)
+        slippage_bps = safe_float(order_params.get("paper_slippage_bps", 5.0), 5.0)
+        fee_bps = safe_float(order_params.get("paper_fee_bps", 3.5), 3.5)
 
-        slippage_bps = self._safe_float(order_params.get("paper_slippage_bps", 5.0), 5.0)
-        fee_bps = self._safe_float(order_params.get("paper_fee_bps", 3.5), 3.5)
+        def rejected(message: str) -> dict[str, Any]:
+            return {
+                "status": "REJECTED",
+                "fill_price": 0.0,
+                "filled_qty": 0,
+                "estimated_charges": 0.0,
+                "slippage_bps": slippage_bps,
+                "fill_source": "paper_sim",
+                "message": message,
+            }
+
+        price_error = order_price_error(order_type, price, trigger_price)
+        if price_error:
+            return rejected(price_error)
+
+        ref = self._paper_reference_price(db_symbol, price)
+        if ref <= 0:
+            return rejected(NO_PAPER_PRICE_MESSAGE.format(symbol=db_symbol, order_type=order_type))
 
         status = "SUBMITTED"
         fill_price = 0.0
@@ -65,6 +136,11 @@ class OrderExecutionService:
             slip = px * (slippage_bps / 10000.0)
             return px + slip if side == "BUY" else max(0.0, px - slip)
 
+        def limit_fill(px: float) -> float:
+            # Slippage never fills a limit order beyond its limit price.
+            filled = market_fill(px)
+            return min(filled, price) if side == "BUY" else max(filled, price)
+
         if order_type == "MARKET":
             fill_price = market_fill(ref)
             status = "FILLED"
@@ -72,7 +148,7 @@ class OrderExecutionService:
             reason = "Paper simulated market fill"
         elif order_type == "LIMIT":
             if (side == "BUY" and price >= ref) or (side == "SELL" and price <= ref):
-                fill_price = market_fill(min(price, ref) if side == "BUY" else max(price, ref))
+                fill_price = limit_fill(ref)
                 status = "FILLED"
                 filled_qty = qty
                 reason = "Paper simulated marketable limit fill"
@@ -87,7 +163,7 @@ class OrderExecutionService:
                 and price > 0
                 and ((side == "BUY" and price >= ref) or (side == "SELL" and price <= ref))
             ):
-                fill_price = market_fill(min(price, ref) if side == "BUY" else max(price, ref))
+                fill_price = limit_fill(ref)
                 status = "FILLED"
                 filled_qty = qty
                 reason = "Paper simulated stop-limit fill"
@@ -193,8 +269,8 @@ class OrderExecutionService:
             quantity=quantity,
             order_type=order_params.get("type", "MARKET"),
             product_type=order_params.get("product", "INTRADAY"),
-            price=float(order_params.get("price", 0)),
-            trigger_price=float(order_params.get("trigger_price", 0)),
+            price=safe_float(order_params.get("price"), 0.0),
+            trigger_price=safe_float(order_params.get("trigger_price"), 0.0),
             status="PENDING",
             instrument_type=order_params.get("instrument_type", "EQ"),
             strike_price=order_params.get("strike_price"),
@@ -212,7 +288,7 @@ class OrderExecutionService:
             "side": order_params.get("side", "BUY"),
             "type": order_params.get("type", "MARKET"),
             "product": order_params.get("product", "INTRADAY"),
-            "price": float(order_params.get("price", 0.0)),
+            "price": safe_float(order_params.get("price"), 0.0),
             "trigger_price": safe_float(order_params.get("trigger_price"), 0.0),
         }
         broker_resp = self.broker.place_order(broker_order)
@@ -240,6 +316,8 @@ class OrderExecutionService:
         new_order.status = paper_fill["status"]
         new_order.filled_qty = int(paper_fill["filled_qty"])
         new_order.average_price = float(paper_fill["fill_price"])
+        if paper_fill["status"] == "REJECTED":
+            new_order.reject_reason = paper_fill["message"]
         new_order.broker_message = (
             f"{paper_fill['message']} | fill_source={paper_fill['fill_source']} "
             f"| slippage_bps={paper_fill['slippage_bps']} "
@@ -303,7 +381,7 @@ class OrderExecutionService:
                     new_order.reject_reason = str(e)
                     response = {"status": "ERROR", "message": str(e)}
             else:
-                paper_fill = self._simulate_paper_fill(order_params, fyers_symbol)
+                paper_fill = self._simulate_paper_fill(order_params, db_symbol)
                 response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
 
             db.commit()
@@ -321,18 +399,24 @@ class OrderExecutionService:
             return {"status": "ERROR", "message": "Order not found"}
 
         if not order.is_paper:
+            # Send the full resulting order so an unchanged type and trigger are
+            # preserved (an SL stays an SL) instead of collapsing to a LIMIT.
+            broker_params = {
+                "order_type": str(params.get("order_type") or order.order_type or "MARKET").upper(),
+                "quantity": params.get("quantity", order.quantity),
+                "price": params.get("price", order.price),
+                "trigger_price": params.get("trigger_price", order.trigger_price),
+            }
             try:
-                resp = self.broker.modify_order(order_id, params)
-                # Fyers validation needed here
-                # Assuming resp is consistent dict
+                resp = self.broker.modify_order(order_id, broker_params)
                 status = resp.get("s", "error")
                 msg = resp.get("message", "Modify failed")
 
                 if status == "ok":
-                    if "quantity" in params:
-                        order.quantity = params["quantity"]
-                    if "price" in params:
-                        order.price = params["price"]
+                    order.order_type = broker_params["order_type"]
+                    order.quantity = broker_params["quantity"]
+                    order.price = safe_float(broker_params["price"], 0.0)
+                    order.trigger_price = safe_float(broker_params["trigger_price"], 0.0)
                     order.broker_message = f"Modified: {msg}"
                     db.commit()
                     return {"status": "SUCCESS", "message": "Order Modified"}
@@ -360,10 +444,28 @@ class OrderExecutionService:
                 return {"status": "ERROR", "message": "Price must be a positive number"}
             params["price"] = price
 
+        if "trigger_price" in params:
+            trigger_price = safe_float(params["trigger_price"], -1.0)
+            if trigger_price <= 0:
+                return {"status": "ERROR", "message": "Trigger price must be a positive number"}
+            params["trigger_price"] = trigger_price
+
+        if order.status in PAPER_TERMINAL_STATES:
+            return {"status": "ERROR", "message": f"Cannot modify order in {order.status} state"}
+
+        # Validate the order as it will be after the change, like live modify does.
+        order_type = str(params.get("order_type") or order.order_type or "MARKET").upper()
+        price = safe_float(params.get("price", order.price), 0.0)
+        trigger_price = safe_float(params.get("trigger_price", order.trigger_price), 0.0)
+        error = order_price_error(order_type, price, trigger_price)
+        if error:
+            return {"status": "ERROR", "message": error}
+
+        order.order_type = order_type
         if "quantity" in params:
             order.quantity = params["quantity"]
-        if "price" in params:
-            order.price = params["price"]
+        order.price = price
+        order.trigger_price = trigger_price
         db.commit()
         return {"status": "SUCCESS", "message": "Paper Order Modified"}
 
@@ -397,8 +499,7 @@ class OrderExecutionService:
                 return {"status": "ERROR", "message": str(e)}
 
         # Paper Mode
-        terminal_states = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
-        if order.status in terminal_states:
+        if order.status in PAPER_TERMINAL_STATES:
             return {"status": "ERROR", "message": f"Cannot cancel order in {order.status} state"}
         order.status = "CANCELLED"
         db.commit()

@@ -1,6 +1,8 @@
 """Regression tests for live-trading defects: quote parsing in risk checks,
-stop-loss order mapping, and position sync during a broker outage."""
+stop-loss order mapping, position sync during a broker outage, the margin
+check, paper fills, live modify and exit-position."""
 
+import time
 from collections.abc import Generator
 from typing import Any
 
@@ -11,9 +13,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.brokers.plugins.fyers import FyersBroker
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
+from app.services.live_market_service import live_market
 from app.services.order_execution_service import OrderExecutionService
 from app.services.position_sync_service import PositionSyncService
-from app.services.risk_manager import RiskConfig, RiskManager
+from app.services.risk_manager import RiskConfig, RiskManager, RiskStatus
 
 # A quote as FyersBroker.get_quote() returns it: one entry of the Fyers "d" list.
 SBIN_QUOTE = {"n": "NSE:SBIN-EQ", "s": "ok", "v": {"lp": 812.5, "bid": 812.4, "ask": 812.6}}
@@ -26,10 +29,12 @@ class FakeFyersClient:
         self,
         positions_response: dict[str, Any] | None = None,
         quotes_response: dict[str, Any] | None = None,
+        funds_response: dict[str, Any] | None = None,
     ) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.positions_response = positions_response or {"s": "ok", "netPositions": []}
         self.quotes_response = quotes_response or {"s": "ok", "d": [SBIN_QUOTE]}
+        self.funds_response = funds_response or {"s": "ok", "fund_limit": []}
 
     def place_order(self, data: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("place_order", data))
@@ -42,6 +47,14 @@ class FakeFyersClient:
     def quotes(self, data: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("quotes", data))
         return self.quotes_response
+
+    def funds(self) -> dict[str, Any]:
+        self.calls.append(("funds", None))
+        return self.funds_response
+
+    def modify_order(self, data: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("modify_order", data))
+        return {"s": "ok", "id": data["id"], "message": "Order modified"}
 
 
 class FakeClientBroker(FyersBroker):
@@ -363,3 +376,513 @@ def test_position_sync_updates_and_closes_by_symbol_and_product(
         ("default_user-NSE:SBIN-EQ-CNC", 4, 30.0),
         ("default_user-NSE:SBIN-EQ-INTRADAY", 0, 0.0),
     ]
+
+
+# --- 4. Margin check reads BrokerFunds by key ------------------------------
+
+
+def funds_response(available: float) -> dict[str, Any]:
+    return {
+        "s": "ok",
+        "fund_limit": [
+            {"title": "Total Balance", "equityAmount": 50000.0},
+            {"title": "Available Balance", "equityAmount": available},
+            {"title": "Utilized Amount", "equityAmount": 50000.0 - available},
+        ],
+    }
+
+
+def test_margin_check_passes_with_sufficient_funds() -> None:
+    client = FakeFyersClient(funds_response=funds_response(20000.0))
+    manager = RiskManager()
+    manager._broker = make_broker(client)
+
+    result = manager._check_available_margin(
+        {"symbol": "SBIN", "quantity": 10, "price": 800.0, "product": "CNC"}
+    )
+
+    assert result.status == RiskStatus.PASS
+    assert result.code == "MARGIN_OK"
+    assert result.details == {"available": 20000.0, "required": 8000.0}
+    assert client.calls == [("funds", None)]
+
+
+def test_margin_check_fails_with_insufficient_funds() -> None:
+    manager = RiskManager()
+    manager._broker = make_broker(FakeFyersClient(funds_response=funds_response(5000.0)))
+
+    result = manager._check_available_margin(
+        {"symbol": "SBIN", "quantity": 10, "price": 800.0, "product": "CNC"}
+    )
+
+    assert result.status == RiskStatus.FAIL
+    assert result.code == "INSUFFICIENT_MARGIN"
+    assert result.details == {"available": 5000.0, "required": 8000.0, "shortfall": 3000.0}
+
+
+# --- 5. PAPER orders fill end-to-end and never touch the broker ------------
+
+
+@pytest.fixture
+def order_db(db_session: Session) -> Generator[Session, None, None]:
+    db_session.query(LiveOrder).delete()
+    db_session.commit()
+    yield db_session
+    db_session.query(LiveOrder).delete()
+    db_session.commit()
+
+
+@pytest.fixture
+def market_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_market, "is_market_open", lambda: True)
+
+
+@pytest.fixture
+def sbin_tick(monkeypatch: pytest.MonkeyPatch, market_open: None) -> None:
+    tick = {"symbol": "SBIN", "ltp": 812.5, "exch_feed_time": int(time.time())}
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
+
+
+def place_paper_order(
+    db: Session, client: FakeFyersClient, **overrides: object
+) -> tuple[dict[str, Any], LiveOrder]:
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+    params: dict[str, Any] = {
+        "symbol": "SBIN",
+        "fyers_symbol": "NSE:SBIN-EQ",
+        "side": "BUY",
+        "quantity": 10,
+        "type": "MARKET",
+        "product": "INTRADAY",
+        "price": 0.0,
+        "trigger_price": None,
+        "user_id": "paper_user",
+        **overrides,
+    }
+    response = service.place_order(params, db, mode="PAPER")
+    stored = db.query(LiveOrder).filter(LiveOrder.internal_id == response["order_id"]).one()
+    return response, stored
+
+
+@pytest.mark.usefixtures("sbin_tick")
+def test_paper_market_order_fills_from_market_data_tick(order_db: Session) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(order_db, client)
+
+    assert {k: response[k] for k in ("status", "average_price", "filled_qty")} == {
+        "status": "FILLED",
+        "average_price": 812.91,
+        "filled_qty": 10,
+    }
+    assert response["estimated_charges"] == 2.85
+    assert (
+        stored.status,
+        stored.is_paper,
+        stored.filled_qty,
+        stored.average_price,
+        stored.trigger_price,
+    ) == ("FILLED", 1, 10, 812.91, 0.0)
+    assert client.calls == []
+
+
+@pytest.mark.usefixtures("sbin_tick")
+@pytest.mark.parametrize(
+    ("side", "limit_price", "status", "average_price", "filled_qty"),
+    [
+        ("BUY", 815.0, "FILLED", 812.91, 10),  # marketable: tick + slippage
+        ("BUY", 812.6, "FILLED", 812.6, 10),  # slippage capped at the limit
+        ("BUY", 810.0, "SUBMITTED", 0.0, 0),  # below market: rests
+        ("SELL", 810.0, "FILLED", 812.09, 10),
+    ],
+)
+def test_paper_limit_order_against_market_data_tick(
+    order_db: Session,
+    side: str,
+    limit_price: float,
+    status: str,
+    average_price: float,
+    filled_qty: int,
+) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(
+        order_db, client, side=side, type="LIMIT", price=limit_price
+    )
+
+    assert (response["status"], response["average_price"], response["filled_qty"]) == (
+        status,
+        average_price,
+        filled_qty,
+    )
+    assert (stored.status, stored.price, stored.average_price) == (
+        status,
+        limit_price,
+        average_price,
+    )
+    assert client.calls == []
+
+
+def test_paper_limit_order_without_tick_uses_its_limit_price(order_db: Session) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(order_db, client, type="LIMIT", price=810.0)
+
+    assert (response["status"], response["average_price"]) == ("FILLED", 810.0)
+    assert stored.status == "FILLED"
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("order_type", "price", "trigger_price"),
+    [("MARKET", 0.0, None), ("SL-M", 0.0, 806.0)],
+)
+def test_paper_order_without_any_price_is_rejected_without_broker(
+    order_db: Session, order_type: str, price: float, trigger_price: float | None
+) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(
+        order_db, client, type=order_type, price=price, trigger_price=trigger_price
+    )
+
+    message = (
+        f"No market price available for SBIN; paper {order_type} order rejected. "
+        "Subscribe the symbol to live data or use a LIMIT order."
+    )
+    assert (response["status"], response["message"]) == ("REJECTED", message)
+    assert (stored.status, stored.reject_reason, stored.filled_qty) == ("REJECTED", message, 0)
+    assert client.calls == []
+
+
+NO_SBIN_MARKET_PRICE = (
+    "No market price available for SBIN; paper MARKET order rejected. "
+    "Subscribe the symbol to live data or use a LIMIT order."
+)
+
+
+@pytest.mark.parametrize(
+    ("tick_age_sec", "is_open", "has_time"),
+    [
+        (120, True, True),  # older than the 60s default
+        (0, False, True),  # fresh, but the market is closed
+        (0, True, False),  # no exchange time on the tick
+    ],
+)
+def test_paper_order_ignores_stale_or_closed_market_tick(
+    order_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tick_age_sec: int,
+    is_open: bool,
+    has_time: bool,
+) -> None:
+    monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
+    monkeypatch.setattr(live_market, "is_market_open", lambda: is_open)
+    tick: dict[str, Any] = {"symbol": "SBIN", "ltp": 812.5}
+    if has_time:
+        tick["exch_feed_time"] = int(time.time()) - tick_age_sec
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
+    client = FakeFyersClient()
+
+    market_response, _ = place_paper_order(order_db, client)
+    limit_response, _ = place_paper_order(order_db, client, type="LIMIT", price=800.0)
+
+    assert (market_response["status"], market_response["message"]) == (
+        "REJECTED",
+        NO_SBIN_MARKET_PRICE,
+    )
+    # A LIMIT falls back to its own price instead of the stale 812.5 tick.
+    assert (limit_response["status"], limit_response["average_price"]) == ("FILLED", 800.0)
+    assert client.calls == []
+
+
+@pytest.mark.usefixtures("market_open")
+def test_paper_tick_max_age_is_configurable(
+    order_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PAPER_TICK_MAX_AGE_SEC", "300")
+    tick = {"symbol": "SBIN", "ltp": 812.5, "last_traded_time": int(time.time()) - 120}
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
+
+    response, _ = place_paper_order(order_db, FakeFyersClient())
+
+    assert (response["status"], response["average_price"]) == ("FILLED", 812.91)
+
+
+@pytest.mark.usefixtures("sbin_tick")
+@pytest.mark.parametrize("order_type", ["SL", "SL-M"])
+@pytest.mark.parametrize("trigger_price", [None, 0, -1])
+def test_paper_stop_order_without_trigger_is_rejected(
+    order_db: Session, order_type: str, trigger_price: float | None
+) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(
+        order_db, client, type=order_type, price=815.0, trigger_price=trigger_price
+    )
+
+    message = f"{order_type} order requires a positive trigger price."
+    assert (response["status"], response["message"], response["filled_qty"]) == (
+        "REJECTED",
+        message,
+        0,
+    )
+    assert (stored.status, stored.reject_reason) == ("REJECTED", message)
+    assert client.calls == []
+
+
+# --- 6a. Paper modify applies or rejects every change ----------------------
+
+
+def add_paper_order(
+    db: Session, order_type: str, price: float, trigger_price: float, status: str = "SUBMITTED"
+) -> LiveOrder:
+    order = LiveOrder(
+        id="ORD-PAPER1",
+        internal_id="ORD-PAPER1",
+        user_id="paper_user",
+        symbol="SBIN",
+        fyers_symbol="NSE:SBIN-EQ",
+        side="SELL",
+        quantity=5,
+        order_type=order_type,
+        product_type="INTRADAY",
+        price=price,
+        trigger_price=trigger_price,
+        status=status,
+        is_paper=1,
+    )
+    db.add(order)
+    db.commit()
+    return order
+
+
+@pytest.mark.parametrize(
+    ("params", "stored"),
+    [
+        ({"trigger_price": 807.0}, ("SL", 5, 805.0, 807.0)),
+        ({"price": 804.0, "quantity": 8}, ("SL", 8, 804.0, 806.0)),
+        ({"order_type": "SL-M"}, ("SL-M", 5, 805.0, 806.0)),
+        ({"order_type": "LIMIT", "price": 803.0}, ("LIMIT", 5, 803.0, 806.0)),
+    ],
+)
+def test_paper_modify_applies_type_price_and_trigger(
+    order_db: Session, params: dict[str, Any], stored: tuple[str, int, float, float]
+) -> None:
+    order = add_paper_order(order_db, "SL", 805.0, 806.0)
+    client = FakeFyersClient()
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+
+    result = service.modify_order("ORD-PAPER1", params, order_db)
+
+    assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
+    order_db.refresh(order)
+    assert (order.order_type, order.quantity, order.price, order.trigger_price) == stored
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("order_type", "price", "trigger_price", "status", "params", "message"),
+    [
+        (
+            "LIMIT",
+            805.0,
+            0.0,
+            "SUBMITTED",
+            {"order_type": "SL-M"},
+            "SL-M order requires a positive trigger price.",
+        ),
+        (
+            "SL",
+            805.0,
+            806.0,
+            "SUBMITTED",
+            {"trigger_price": 0},
+            "Trigger price must be a positive number",
+        ),
+        (
+            "SL",
+            805.0,
+            806.0,
+            "FILLED",
+            {"trigger_price": 807.0},
+            "Cannot modify order in FILLED state",
+        ),
+    ],
+)
+def test_paper_modify_rejects_invalid_change_without_saving(
+    order_db: Session,
+    order_type: str,
+    price: float,
+    trigger_price: float,
+    status: str,
+    params: dict[str, Any],
+    message: str,
+) -> None:
+    order = add_paper_order(order_db, order_type, price, trigger_price, status)
+
+    result = OrderExecutionService().modify_order("ORD-PAPER1", params, order_db)
+
+    assert result == {"status": "ERROR", "message": message}
+    order_db.refresh(order)
+    assert (order.order_type, order.price, order.trigger_price) == (
+        order_type,
+        price,
+        trigger_price,
+    )
+
+
+# --- 6. Live modify keeps the order type and trigger -----------------------
+
+
+def add_live_order(db: Session, order_id: str, order_type: str, trigger_price: float) -> LiveOrder:
+    order = LiveOrder(
+        id=order_id,
+        internal_id=f"ORD-{order_id}",
+        user_id="u1",
+        symbol="SBIN",
+        fyers_symbol="NSE:SBIN-EQ",
+        side="SELL",
+        quantity=5,
+        order_type=order_type,
+        product_type="INTRADAY",
+        price=805.0,
+        trigger_price=trigger_price,
+        status="SUBMITTED",
+        is_paper=0,
+    )
+    db.add(order)
+    db.commit()
+    return order
+
+
+@pytest.mark.parametrize(
+    ("params", "payload", "stored"),
+    [
+        (
+            {"price": 804.0},
+            {"id": "FY-1", "type": 4, "limitPrice": 804.0, "stopPrice": 806.0, "qty": 5},
+            ("SL", 5, 804.0, 806.0),
+        ),
+        (
+            {"quantity": 8},
+            {"id": "FY-1", "type": 4, "limitPrice": 805.0, "stopPrice": 806.0, "qty": 8},
+            ("SL", 8, 805.0, 806.0),
+        ),
+        (
+            {"trigger_price": 807.0, "price": 806.0},
+            {"id": "FY-1", "type": 4, "limitPrice": 806.0, "stopPrice": 807.0, "qty": 5},
+            ("SL", 5, 806.0, 807.0),
+        ),
+        (
+            {"order_type": "SL-M"},
+            {"id": "FY-1", "type": 3, "limitPrice": 0, "stopPrice": 806.0, "qty": 5},
+            ("SL-M", 5, 805.0, 806.0),
+        ),
+        (
+            {"order_type": "MARKET"},
+            {"id": "FY-1", "type": 2, "limitPrice": 0, "stopPrice": 0, "qty": 5},
+            ("MARKET", 5, 805.0, 806.0),
+        ),
+    ],
+)
+def test_live_modify_preserves_order_type_and_trigger(
+    order_db: Session,
+    params: dict[str, Any],
+    payload: dict[str, Any],
+    stored: tuple[str, int, float, float],
+) -> None:
+    order = add_live_order(order_db, "FY-1", "SL", 806.0)
+    client = FakeFyersClient()
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+
+    result = service.modify_order("FY-1", params, order_db)
+
+    assert result == {"status": "SUCCESS", "message": "Order Modified"}
+    assert client.calls == [("modify_order", payload)]
+    order_db.refresh(order)
+    assert (order.order_type, order.quantity, order.price, order.trigger_price) == stored
+
+
+def test_live_modify_to_stop_without_trigger_is_rejected_before_broker(
+    order_db: Session,
+) -> None:
+    add_live_order(order_db, "FY-2", "LIMIT", 0.0)
+    client = FakeFyersClient()
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+
+    result = service.modify_order("FY-2", {"order_type": "SL-M"}, order_db)
+
+    assert result == {"status": "ERROR", "message": "SL-M order requires a positive trigger price."}
+    assert client.calls == []
+
+
+# --- 7. Exit position uses dict keys and fails closed ----------------------
+
+
+def test_exit_position_places_opposite_market_order_for_matching_symbol() -> None:
+    client = FakeFyersClient(
+        positions_response={
+            "s": "ok",
+            "netPositions": [
+                {
+                    "symbol": "NSE:SBIN-EQ",
+                    "netQty": 4,
+                    "buyAvg": 805.0,
+                    "sellAvg": 0,
+                    "ltp": 812.5,
+                    "pl": 30.0,
+                    "productType": "CNC",
+                },
+                {
+                    "symbol": "NSE:INFY-EQ",
+                    "netQty": -2,
+                    "buyAvg": 0,
+                    "sellAvg": 1500.0,
+                    "ltp": 1490.0,
+                    "pl": 20.0,
+                    "productType": "INTRADAY",
+                },
+            ],
+        }
+    )
+
+    result = make_broker(client).exit_position("NSE:SBIN-EQ")
+
+    assert (result["status"], result["message"]) == ("OK", "Exit orders placed")
+    assert [r["status"] for r in result["results"]] == ["SUBMITTED"]
+    assert client.calls == [
+        ("positions", None),
+        (
+            "place_order",
+            {
+                "symbol": "NSE:SBIN-EQ",
+                "qty": 4,
+                "type": 2,
+                "side": -1,
+                "productType": "CNC",
+                "limitPrice": 0,
+                "stopPrice": 0,
+                "validity": "DAY",
+                "disclosedQty": 0,
+                "offlineOrder": False,
+            },
+        ),
+    ]
+
+
+def test_exit_position_rejects_when_positions_unavailable() -> None:
+    client = FakeFyersClient(positions_response={"s": "error", "message": "token expired"})
+
+    result = make_broker(client).exit_position("NSE:SBIN-EQ")
+
+    assert result == {
+        "status": "REJECTED",
+        "code": "BROKER_UNAVAILABLE",
+        "message": "Broker positions unavailable; no exit order was placed",
+    }
+    assert client.calls == [("positions", None)]
