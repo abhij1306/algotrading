@@ -4160,6 +4160,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Broker not connected or the broker call failed (BROKER_UNAVAILABLE) */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   get_positions_api_smart_trader_positions_get: {
@@ -4179,6 +4186,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Broker not connected or the broker call failed (BROKER_UNAVAILABLE) */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -4352,6 +4366,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description NIFTY50 index history missing (DATA_UNAVAILABLE) */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -5049,6 +5070,13 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
+      };
+      /** @description Preview failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
