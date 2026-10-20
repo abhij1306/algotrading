@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session
 from ..brokers.base import Position, WorkingOrder
 from ..brokers.plugins.fyers import SUBMIT_UNCONFIRMED
 from ..models.live_order import LiveOrder
+from .execution.intent import normalize_client_order_id
 from .order_execution_service import (
     CLIENT_ORDER_ID_REQUIRED_MESSAGE,
     OrderExecutionService,
-    normalize_client_order_id,
     order_execution_service,
 )
 from .risk_manager import RiskStatus, risk_manager

@@ -166,7 +166,18 @@ class FyersBroker(IBroker):
 
         # Map generic order dict to the broker order payload.
 
-        product_map = {"MIS": "INTRADAY", "INTRADAY": "INTRADAY", "CNC": "CNC", "MARGIN": "MARGIN"}
+        # Every Fyers product type is sent as itself (MIS is INTRADAY), so an MTF, CO or BO
+        # order or exit never goes out as a different product. Fyers itself rejects a CO or
+        # BO without its stop legs.
+        product_map = {
+            "MIS": "INTRADAY",
+            "INTRADAY": "INTRADAY",
+            "CNC": "CNC",
+            "MARGIN": "MARGIN",
+            "MTF": "MTF",
+            "CO": "CO",
+            "BO": "BO",
+        }
         side = order.get("side")
         if side not in {"BUY", "SELL"}:
             return OrderResponse(

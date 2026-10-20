@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import UUID4, BaseModel
+from pydantic import UUID4, BaseModel, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -21,6 +21,15 @@ from ..exceptions import BrokerUnavailableApiError
 from ..models.live_order import LiveOrder
 from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.execution import paper_book
+from ..services.execution.intent import (
+    Choice,
+    InstrumentType,
+    Mode,
+    OrderType,
+    Product,
+    Side,
+    parse_choice,
+)
 from ..services.live_exit_service import live_exit_service
 from ..services.live_market_service import live_market
 from ..services.order_execution_service import (
@@ -44,34 +53,66 @@ BROKER_UNAVAILABLE_RESPONSE = {
     503: {"description": "Positions could not be refreshed from the broker (BROKER_UNAVAILABLE)"}
 }
 LIVE_POSITIONS_UNAVAILABLE_MESSAGE = "Live positions could not be refreshed from the broker"
+SQUARE_MODE_MESSAGE = "mode must be PAPER or LIVE"
 
 # ============== Pydantic Models ==============
 
 
+_REQUEST_CHOICES: dict[str, type[Choice]] = {
+    "mode": Mode,
+    "side": Side,
+    "type": OrderType,
+    "new_type": OrderType,
+    "product": Product,
+    "instrument_type": InstrumentType,
+}
+
+
+def _request_choice(value: object, info: ValidationInfo, message: str | None = None) -> object:
+    """A request's choice field as its enum member, in any letter case.
+
+    An invalid value answers 400 with the enum's fixed message (the code and body these
+    fields gave before they were enums), not FastAPI's 422. None passes through for the
+    optional fields; a required one then fails as a missing value would.
+    """
+    if value is None:
+        return None
+    try:
+        return parse_choice(_REQUEST_CHOICES[info.field_name], value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=message or str(exc)) from None
+
+
 class OrderRequest(ClientOrderIdField):
-    mode: str = "PAPER"  # PAPER / LIVE
+    mode: Mode = Mode.PAPER
     symbol: str
-    side: str  # BUY / SELL
+    side: Side
     quantity: int
-    product: str  # INTRADAY / CNC / MARGIN
-    type: str  # MARKET / LIMIT / SL / SL-M
+    product: Product
+    type: OrderType
     price: float | None = 0.0
     trigger_price: float | None = 0.0
     tag: str | None = "manual"
-    instrument_type: str | None = "EQ"  # EQ, FUT, CE, PE
+    instrument_type: InstrumentType | None = InstrumentType.EQ
     strike_price: float | None = None
     expiry_date: str | None = None  # YYYY-MM-DD
     option_type: str | None = None  # CE/PE
     is_live_confirmation_ack: bool = False
     risk_override_reason: str | None = None
 
+    _choices = field_validator("mode", "side", "product", "type", "instrument_type", mode="before")(
+        _request_choice
+    )
+
 
 class ModifyOrderRequest(BaseModel):
     order_id: str
     new_quantity: int | None = None
     new_price: float | None = None
-    new_type: str | None = None
+    new_type: OrderType | None = None
     new_trigger_price: float | None = None
+
+    _choices = field_validator("new_type", mode="before")(_request_choice)
 
 
 class ExitPositionRequest(BaseModel):
@@ -86,18 +127,27 @@ class SquarePositionRequest(ClientOrderIdField):
     """Square-off; a LIVE request needs a client_order_id (one per click, reused on retry)."""
 
     symbol: str | None = None
-    mode: str = "PAPER"  # PAPER / LIVE
+    mode: Mode = Mode.PAPER
     product_type: str | None = None  # LIVE only: limit the exit to this product
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _mode(cls, value: object, info: ValidationInfo) -> object:
+        return _request_choice(value, info, SQUARE_MODE_MESSAGE)
 
 
 class RiskCheckRequest(BaseModel):
     symbol: str
-    side: str
+    side: Side
     quantity: int
-    product: str = "INTRADAY"
-    type: str = "MARKET"
+    product: Product = Product.INTRADAY
+    type: OrderType = OrderType.MARKET
     price: float = 0.0
-    instrument_type: str = "EQ"
+    instrument_type: InstrumentType = InstrumentType.EQ
+
+    _choices = field_validator("side", "product", "type", "instrument_type", mode="before")(
+        _request_choice
+    )
 
 
 class RiskCheckResponse(BaseModel):
@@ -404,7 +454,7 @@ def modify_order(req: ModifyOrderRequest, db: DBSession) -> dict[str, Any]:
     if req.new_price is not None:
         params["price"] = req.new_price
     if req.new_type is not None:
-        params["order_type"] = req.new_type
+        params["order_type"] = req.new_type.value
     if req.new_trigger_price is not None:
         params["trigger_price"] = req.new_trigger_price
 
@@ -541,11 +591,7 @@ def get_position_summary(
 def square_position(req: SquarePositionRequest, db: DBSession) -> dict[str, Any]:
     """Square open position(s) in PAPER or LIVE mode."""
     try:
-        mode = req.mode.strip().upper()
-        if mode not in {"PAPER", "LIVE"}:
-            raise HTTPException(status_code=400, detail="mode must be PAPER or LIVE")
-
-        if mode == "LIVE":
+        if req.mode is Mode.LIVE:
             return live_exit_service.exit_positions(
                 symbol=req.symbol,
                 product_type=req.product_type,
