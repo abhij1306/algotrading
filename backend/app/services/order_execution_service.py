@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import date
+from decimal import Decimal
 from typing import Any, Self
 
 from pydantic import UUID4, BaseModel, model_validator
@@ -16,6 +17,7 @@ from ..brokers.plugins.fyers import (
     quote_last_price,
 )
 from ..models.live_order import LiveOrder
+from ..services.execution import paper_book
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.db_errors import is_db_unavailable
@@ -47,6 +49,9 @@ UNCONFIRMED_MESSAGE = (
     "Order sent but not confirmed by the broker. Check the broker orderbook before "
     "placing it again."
 )
+# PAPER simulator defaults, overridable per order with paper_slippage_bps / paper_fee_bps.
+DEFAULT_PAPER_SLIPPAGE_BPS = Decimal("5")
+DEFAULT_PAPER_FEE_BPS = Decimal("3.5")
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
 # A LIVE row in one of these states has no working broker order to modify.
 LIVE_UNMODIFIABLE_STATES = {
@@ -123,16 +128,16 @@ class ClientOrderIdField(BaseModel):
         return self
 
 
-def _is_marketable(side: str, limit_price: float, ref: float) -> bool:
+def _is_marketable(side: str, limit_price: Decimal, ref: Decimal) -> bool:
     return (side == "BUY" and limit_price >= ref) or (side == "SELL" and limit_price <= ref)
 
 
-def _is_triggered(side: str, trigger_price: float, ref: float) -> bool:
+def _is_triggered(side: str, trigger_price: Decimal, ref: Decimal) -> bool:
     return (side == "BUY" and trigger_price <= ref) or (side == "SELL" and trigger_price >= ref)
 
 
 def _paper_fill_decision(
-    order_type: str, side: str, price: float, trigger_price: float, ref: float
+    order_type: str, side: str, price: Decimal, trigger_price: Decimal, ref: Decimal
 ) -> tuple[str | None, str]:
     """How a PAPER order fills against reference price `ref`.
 
@@ -158,11 +163,6 @@ def _paper_fill_decision(
             return "market", "Paper simulated stop-market fill"
         return None, "Paper stop-market pending trigger"
     return None, f"Paper unsupported order type {order_type}"
-
-
-def _slipped_price(side: str, ref: float, slippage_bps: float) -> float:
-    slip = ref * (slippage_bps / 10000.0)
-    return ref + slip if side == "BUY" else max(0.0, ref - slip)
 
 
 def latest_tick_price(db_symbol: str) -> float:
@@ -199,71 +199,66 @@ class OrderExecutionService:
         return self._broker
 
     @staticmethod
-    def _paper_reference_price(db_symbol: str, limit_price: float) -> float:
+    def _paper_reference_price(db_symbol: str, limit_price: Decimal) -> Decimal:
         """Reference price for a PAPER fill: the latest market-data tick, else
-        the order's own limit price, else 0.0 (caller rejects). Never the broker."""
+        the order's own limit price, else 0 (caller rejects). Never the broker."""
         try:
-            tick_price = latest_tick_price(db_symbol)
+            tick_price = paper_book.to_decimal(latest_tick_price(db_symbol))
         except Exception:
             logger.exception("Paper reference price lookup failed for %s", db_symbol)
-            tick_price = 0.0
+            tick_price = paper_book.ZERO
         if tick_price > 0:
             return tick_price
-        return limit_price if limit_price > 0 else 0.0
+        return limit_price if limit_price > 0 else paper_book.ZERO
 
     def _simulate_paper_fill(self, order_params: dict[str, Any], db_symbol: str) -> dict[str, Any]:
+        """Simulate a PAPER fill. Money math is Decimal (paper_book); the returned prices
+        and charges are quantized to paise and given as floats for the row and the API."""
         side = str(order_params.get("side", "BUY")).upper()
         order_type = str(order_params.get("type", "MARKET")).upper()
         qty = max(0, int(order_params.get("quantity", 0)))
-        price = safe_float(order_params.get("price"), 0.0)
-        trigger_price = safe_float(order_params.get("trigger_price"), 0.0)
-        slippage_bps = safe_float(order_params.get("paper_slippage_bps", 5.0), 5.0)
-        fee_bps = safe_float(order_params.get("paper_fee_bps", 3.5), 3.5)
+        price = paper_book.to_decimal(order_params.get("price"))
+        trigger_price = paper_book.to_decimal(order_params.get("trigger_price"))
+        slippage_bps = paper_book.to_decimal(
+            order_params.get("paper_slippage_bps", DEFAULT_PAPER_SLIPPAGE_BPS),
+            DEFAULT_PAPER_SLIPPAGE_BPS,
+        )
+        fee_bps = paper_book.to_decimal(
+            order_params.get("paper_fee_bps", DEFAULT_PAPER_FEE_BPS), DEFAULT_PAPER_FEE_BPS
+        )
 
-        def rejected(message: str) -> dict[str, Any]:
+        def outcome(
+            status: str, fill: Decimal, filled_qty: int, charges: Decimal, message: str
+        ) -> dict[str, Any]:
             return {
-                "status": "REJECTED",
-                "fill_price": 0.0,
-                "filled_qty": 0,
-                "estimated_charges": 0.0,
-                "slippage_bps": slippage_bps,
+                "status": status,
+                "fill_price": paper_book.money_float(fill),
+                "filled_qty": filled_qty,
+                "estimated_charges": paper_book.money_float(charges),
+                "slippage_bps": float(slippage_bps),
                 "fill_source": "paper_sim",
                 "message": message,
             }
 
-        price_error = order_price_error(order_type, price, trigger_price)
+        zero = paper_book.ZERO
+        price_error = order_price_error(order_type, float(price), float(trigger_price))
         if price_error:
-            return rejected(price_error)
+            return outcome("REJECTED", zero, 0, zero, price_error)
 
         ref = self._paper_reference_price(db_symbol, price)
         if ref <= 0:
-            return rejected(NO_PAPER_PRICE_MESSAGE.format(symbol=db_symbol, order_type=order_type))
+            message = NO_PAPER_PRICE_MESSAGE.format(symbol=db_symbol, order_type=order_type)
+            return outcome("REJECTED", zero, 0, zero, message)
 
         fill_kind, reason = _paper_fill_decision(order_type, side, price, trigger_price, ref)
-        status = "SUBMITTED"
-        fill_price = 0.0
-        filled_qty = 0
-        if fill_kind is not None:
-            fill_price = _slipped_price(side, ref, slippage_bps)
-            if fill_kind == "limit":
-                # Slippage never fills a limit order beyond its limit price.
-                fill_price = min(fill_price, price) if side == "BUY" else max(fill_price, price)
-            status = "FILLED"
-            filled_qty = qty
+        if fill_kind is None:
+            return outcome("SUBMITTED", zero, 0, zero, reason)
 
-        notional = fill_price * filled_qty
-        estimated_charges = round(notional * (fee_bps / 10000.0), 2) if filled_qty > 0 else 0.0
-        fill_price = round(fill_price, 2) if fill_price > 0 else 0.0
-
-        return {
-            "status": status,
-            "fill_price": fill_price,
-            "filled_qty": filled_qty,
-            "estimated_charges": estimated_charges,
-            "slippage_bps": slippage_bps,
-            "fill_source": "paper_sim",
-            "message": reason,
-        }
+        # Slippage never fills a limit order beyond its limit price.
+        limit = price if fill_kind == "limit" else None
+        fill = paper_book.fill_price(side, ref, slippage_bps, limit)
+        charges = paper_book.estimated_charges(fill, qty, fee_bps)
+        return outcome("FILLED", fill, qty, charges, reason)
 
     @staticmethod
     def _resolve_mode(order_params: dict[str, Any], mode: str | None) -> str:
@@ -812,19 +807,50 @@ class OrderExecutionService:
 
         # Validate the order as it will be after the change, like live modify does.
         order_type = str(params.get("order_type") or order.order_type or "MARKET").upper()
+        if order_type not in FYERS_ORDER_TYPES:
+            return {
+                "status": "ERROR",
+                "message": "Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
+            }
+        quantity = int(params.get("quantity", order.quantity))
         price = safe_float(params.get("price", order.price), 0.0)
         trigger_price = safe_float(params.get("trigger_price", order.trigger_price), 0.0)
         error = order_price_error(order_type, price, trigger_price)
         if error:
             return {"status": "ERROR", "message": error}
 
+        # Re-run the fill simulation exactly as on placement: a LIMIT moved through the
+        # market fills now, a stop moved past the market triggers, anything else rests.
+        paper_fill = self._simulate_paper_fill(
+            {
+                "side": order.side,
+                "type": order_type,
+                "quantity": quantity,
+                "price": price,
+                "trigger_price": trigger_price,
+            },
+            order.symbol,
+        )
+        if paper_fill["status"] == "REJECTED":
+            # Like a broker refusing a modify: the working order stays as it was.
+            return {"status": "ERROR", "message": paper_fill["message"]}
+
         order.order_type = order_type
-        if "quantity" in params:
-            order.quantity = params["quantity"]
+        order.quantity = quantity
         order.price = price
         order.trigger_price = trigger_price
+        fill = self._apply_paper_fill(order, order.internal_id, paper_fill)
         db.commit()
-        return {"status": "SUCCESS", "message": "Paper Order Modified"}
+        return {
+            "status": "SUCCESS",
+            "message": "Paper Order Modified",
+            "order_id": order.id,
+            "order_status": fill["status"],
+            "fill_message": fill["message"],
+            "average_price": fill["average_price"],
+            "filled_qty": fill["filled_qty"],
+            "estimated_charges": fill["estimated_charges"],
+        }
 
     def cancel_order(self, order_id: str, db: Session) -> dict[str, Any]:
         """Cancel an order"""

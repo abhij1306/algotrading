@@ -73,15 +73,15 @@ Files: `fyers_client.py`, `data_fetcher.py`, `routers/market.py`, `market_dashbo
 Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_manager.py`, `position_sync_service.py`, `brokers/`.
 
 - [x] Risk checks on live modify, exit and square-off (part of S4).
-- [ ] Paper money math moved to Decimal.
-- [ ] Paper modify re-runs the fill simulation.
+- [x] Paper money math moved to Decimal (`services/execution/paper_book.py`; paise, ROUND_HALF_UP).
+- [x] Paper modify re-runs the fill simulation.
 - [x] LIVE modify and cancel stop returning `str(e)`.
 - [ ] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S).
 - [ ] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user.
 - [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
 - [ ] 4. An OrderIntent with enums (S).
 - [ ] 5. A `current_user_id` dependency (S). Remove the hard-coded default, terminal and dev users, and add a backfill.
-- [ ] 6. Extract `paper_book.py`, with position-math and reversal tests (M).
+- [ ] 6. Extract `paper_book.py`, with position-math and reversal tests (M). Started: the pure math and its tests are in `services/execution/paper_book.py`; the DB-backed book and square-off still live in `routers/trading.py`.
 - [ ] 7. A broker contract (S-M): Quote and Ack types, `get_broker()`, and no more dual-key sniffing.
 - [ ] 8. PaperVenue and LiveVenue (M-L). Delete terminal `/paper/order`, and add an import-guard test.
 - [ ] 9. Typed service errors, mapped in `main.py` (M).
