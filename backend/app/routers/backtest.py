@@ -65,7 +65,7 @@ class BacktestRunRequest(BaseModel):
 
 
 @router.get("/status", response_model=None)
-async def get_backtest_status() -> dict[str, Any]:
+def get_backtest_status() -> dict[str, Any]:
     return backtest_phase1_service.get_status()
 
 
@@ -75,12 +75,12 @@ async def list_backtest_strategies() -> dict[str, Any]:
 
 
 @router.get("/runs", response_model=None)
-async def list_backtest_runs() -> dict[str, Any]:
+def list_backtest_runs() -> dict[str, Any]:
     return {"runs": backtest_phase1_service.list_runs()}
 
 
 @router.post("/run", response_model=None, responses=RUN_RESPONSES)
-async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
+def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
     payload = request.model_dump()
     if not payload.get("strategies"):
         payload["strategies"] = [
@@ -94,7 +94,7 @@ async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
 
 
 @router.get("/result/{job_id}", response_model=None, responses=RESULT_RESPONSES)
-async def get_backtest_result(job_id: str) -> dict[str, Any]:
+def get_backtest_result(job_id: str) -> dict[str, Any]:
     payload = backtest_phase1_service.get_job(job_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="Backtest job not found")

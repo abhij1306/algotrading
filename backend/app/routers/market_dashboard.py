@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 import time
@@ -107,15 +108,24 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     # Fallback for indices without a fresh live tick or if market is closed
     missing_indices = [idx for idx in indices if idx not in data["indices"]]
     if missing_indices:
-        # Try yfinance, then the database, per index: a short or empty yfinance reply
-        # still falls back to the stored close.
-        quotes = yfinance_service.get_quotes(missing_indices) or {}
-        for index in missing_indices:
-            fallback = quotes.get(index) or _database_index_quote(db, index)
-            if fallback:
-                data["indices"][index] = fallback
+        # yfinance and the DB query block, so run them off the event loop.
+        data["indices"].update(await asyncio.to_thread(_fallback_index_quotes, db, missing_indices))
 
     return data
+
+
+def _fallback_index_quotes(db: Session, indices: list[str]) -> dict[str, dict[str, Any]]:
+    """yfinance quote, else the latest stored close, per index; indices with neither are left out.
+
+    Falling back per index means a short or empty yfinance reply still uses the stored close.
+    """
+    quotes = yfinance_service.get_quotes(indices) or {}
+    fallbacks = {}
+    for index in indices:
+        fallback = quotes.get(index) or _database_index_quote(db, index)
+        if fallback:
+            fallbacks[index] = fallback
+    return fallbacks
 
 
 def _live_index_quotes(indices: list[str]) -> dict[str, dict[str, Any]]:

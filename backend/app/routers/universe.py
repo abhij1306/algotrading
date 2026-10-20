@@ -114,7 +114,7 @@ def _parse_universe_mode(mode: str) -> UniverseMode:
 
 
 @router.get("/list")
-async def list_universes() -> dict[str, Any]:
+def list_universes() -> dict[str, Any]:
     """
     List all available index universes.
     """
@@ -146,7 +146,7 @@ async def list_universes() -> dict[str, Any]:
         501: {"description": "Historical universe mode not implemented"},
     },
 )
-async def get_constituents(
+def get_constituents(
     index_code: str,
     target_date: Annotated[str | None, Query(description="Date in YYYY-MM-DD format")] = None,
     mode: Annotated[str, Query(description="Mode: 'historical' or 'live'")] = "live",
@@ -199,7 +199,7 @@ async def get_constituents(
         501: {"description": "Historical universe mode not implemented"},
     },
 )
-async def get_symbols(
+def get_symbols(
     index_code: str,
     target_date: Annotated[str | None, Query(description="Date in YYYY-MM-DD format")] = None,
     mode: Annotated[str, Query(description="Mode: 'historical' or 'live'")] = "live",
@@ -245,7 +245,7 @@ async def get_symbols(
         501: {"description": "Historical universe mode not implemented"},
     },
 )
-async def get_universe_changes(
+def get_universe_changes(
     index_code: str,
     start_date: Annotated[str, Query(description="Start date in YYYY-MM-DD format")],
     end_date: Annotated[str, Query(description="End date in YYYY-MM-DD format")],
@@ -297,9 +297,7 @@ class CreateCustomUniverseRequest(BaseModel):
 
 
 @router.post("/custom")
-async def create_custom_universe(
-    req: CreateCustomUniverseRequest, db: DB_DEPENDENCY
-) -> dict[str, Any]:
+def create_custom_universe(req: CreateCustomUniverseRequest, db: DB_DEPENDENCY) -> dict[str, Any]:
     """
     Create a custom universe with specified symbols.
     """
@@ -330,7 +328,7 @@ async def create_custom_universe(
 
 
 @router.get("/custom/{universe_code}", responses=NOT_FOUND_RESPONSE)
-async def get_custom_universe(universe_code: str, db: DB_DEPENDENCY) -> dict[str, Any]:
+def get_custom_universe(universe_code: str, db: DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get a custom universe by code.
     """
