@@ -13,6 +13,13 @@ from sqlalchemy.pool import StaticPool
 from app import data_fetcher
 from app.base import Base
 from app.models import StrategyPosition
+from app.services.vcp.config import (
+    LAST_SCAN_DATE_KEY,
+    LAST_SCAN_UNIVERSE_KEY,
+    ScanRun,
+    record_scan_run,
+    set_config,
+)
 from app.services.vcp.positions import PositionService
 from app.services.vcp.quotes import FyersQuoteSource
 from app.services.vcp_service import VCPService
@@ -257,6 +264,22 @@ def test_halt_resume_and_status_counts(factory: sessionmaker) -> None:
 
     positions.resume()
     assert positions.get_status(None, regime=dict)["halted"] is False
+
+
+def test_status_reports_the_universes_latest_scan_run(factory: sessionmaker) -> None:
+    with factory() as db:
+        # NIFTY500 last scanned on 1 Oct; NIFTY50's newest scan (15 Oct) found nothing.
+        set_config(db, LAST_SCAN_DATE_KEY, "2026-10-01")
+        set_config(db, LAST_SCAN_UNIVERSE_KEY, "NIFTY500")
+        record_scan_run(db, "NIFTY50", ScanRun("empty-scan", date(2026, 10, 15), NOW))
+    positions = service(factory, {})
+
+    dates = [
+        positions.get_status(universe, regime=dict)["latest_scan_date"]
+        for universe in (" nifty50 ", "NIFTY100")
+    ]
+
+    assert dates == ["2026-10-15", None]
 
 
 def test_vcp_service_delegates_positions(factory: sessionmaker) -> None:

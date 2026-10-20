@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -24,12 +25,33 @@ from .config import (
     DEFAULT_UNIVERSE,
     HALT_REASON_KEY,
     HALTED_AT_KEY,
+    LAST_SCAN_UNIVERSE_KEY,
     TRADING_HALTED_KEY,
     get_config,
     last_scan_date,
+    last_scan_run,
     set_config,
 )
 from .quotes import QuoteSource
+from .universe import is_stored_universe, normalize_universe
+
+
+def _latest_scan_date(db: Session, code: str) -> date | None:
+    """The scan date of the universe's newest completed scan, empty scans included.
+
+    Scans stored before run markers fall back to the newest stored row, then to the
+    global last-scan date when that scan was of this universe.
+    """
+    run = last_scan_run(db, code)
+    if run is not None:
+        return run.scan_date
+    stored = db.query(func.max(VCPScanResult.scan_date)).filter(is_stored_universe(code)).scalar()
+    if stored is not None:
+        return stored
+    if normalize_universe(get_config(db, LAST_SCAN_UNIVERSE_KEY, "")) == code:
+        return last_scan_date(db)
+    return None
+
 
 OPEN_STATUSES = ("OPEN", "OPEN_PARTIAL")
 MIN_RISK_DISTANCE = Decimal("0.01")
@@ -198,18 +220,12 @@ class PositionService:
     ) -> dict[str, Any]:
         """Halt state, latest scan, queue and open-position counts; `regime` serializes today's."""
         with self._session_scope() as db:
-            universe_filter = (universe or DEFAULT_UNIVERSE).upper()
-            latest_scan = (
-                db.query(func.max(VCPScanResult.scan_date))
-                .filter(VCPScanResult.universe == universe_filter)
-                .scalar()
-            )
-            if latest_scan is None:
-                latest_scan = last_scan_date(db)
+            universe_filter = normalize_universe(universe or DEFAULT_UNIVERSE)
+            latest_scan = _latest_scan_date(db, universe_filter)
             pending_entries = (
                 db.query(VCPScanResult)
                 .filter(
-                    VCPScanResult.universe == universe_filter,
+                    is_stored_universe(universe_filter),
                     VCPScanResult.signal_status == "PENDING_ENTRY",
                 )
                 .count()

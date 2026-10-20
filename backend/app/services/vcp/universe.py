@@ -12,16 +12,30 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func
+from sqlalchemy import ColumnElement, func
 from sqlalchemy.orm import Session
 
-from ...models import Company, IndexConstituentHistory, IndexUniverseDefinition
+from ...models import Company, IndexConstituentHistory, IndexUniverseDefinition, VCPScanResult
+
+
+def normalize_universe(universe: str) -> str:
+    """The canonical universe code: surrounding spaces removed, upper case."""
+    return universe.strip().upper()
+
+
+def is_stored_universe(code: str) -> ColumnElement[bool]:
+    """Filter for scan rows of the normalised `code`.
+
+    Rows stored before the code was normalised may carry surrounding spaces, so the stored
+    value is trimmed before comparing.
+    """
+    return func.trim(VCPScanResult.universe) == code
 
 
 def _definition(db: Session, universe: str) -> IndexUniverseDefinition | None:
     return (
         db.query(IndexUniverseDefinition)
-        .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
+        .filter(IndexUniverseDefinition.index_code == normalize_universe(universe))
         .first()
     )
 
