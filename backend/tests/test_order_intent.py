@@ -142,7 +142,8 @@ def test_choices_are_case_insensitive_with_defaults(
 ) -> None:
     intent = OrderIntent.from_params(params(**overrides))
 
-    assert (intent.mode, intent.side, intent.order_type, intent.product) == expected
+    choices = (intent.mode, intent.side, intent.order_type, intent.product)
+    assert choices == expected
 
 
 @pytest.mark.parametrize(
