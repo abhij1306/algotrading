@@ -143,8 +143,8 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [ ] 3. Split the page, with tests for sort and format (M).
 
 ### Lane 11: strategies and backtest pages
-- [ ] 1. Split the strategies page, and turn queue, cancel and halt into mutations (M-L).
-- [ ] 2. Split the backtest results page (S-M).
+- [x] 1. Split the strategies page, and turn queue, cancel and halt into mutations (M-L). Mutations in PR #46; the page is now `useStrategyData`, `useStrategyActions` and `components/strategies/`, every action stays disabled while one is in flight, and the local formatters are gone for `lib/format.ts`.
+- [x] 2. Split the backtest results page (S-M). Header, metrics strip, run summary, charts and trade log are in `components/backtest/`; chart rows and tones are tested pure functions.
 
 ### Lane 12: shared frontend libraries and contracts
 - [ ] 1. `format.ts` and an IST `time.ts`, with table-driven tests. They replace `market-hours.ts`, including the `getDay` holiday bug (S-M).
