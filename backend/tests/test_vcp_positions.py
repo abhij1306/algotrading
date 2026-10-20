@@ -207,8 +207,10 @@ def test_closing_twice_is_refused_and_keeps_the_first_result(factory: sessionmak
     position_id = add_position(factory, "SBIN")
     service(factory, {"SBIN": "103.25"}).close_position(position_id)
 
+    second = service(factory, {"SBIN": "90"})
+
     with pytest.raises(ValueError, match="Position is not open"):
-        service(factory, {"SBIN": "90"}).close_position(position_id)
+        second.close_position(position_id)
 
     with factory() as db:
         row = db.get(StrategyPosition, position_id)
@@ -216,8 +218,10 @@ def test_closing_twice_is_refused_and_keeps_the_first_result(factory: sessionmak
 
 
 def test_close_unknown_position_raises(factory: sessionmaker) -> None:
+    positions = service(factory, {})
+
     with pytest.raises(ValueError, match="Position not found"):
-        service(factory, {}).close_position(999)
+        positions.close_position(999)
 
 
 def test_update_stop_moves_the_stop_status_reads(factory: sessionmaker) -> None:
