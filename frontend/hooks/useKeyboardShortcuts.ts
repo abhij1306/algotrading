@@ -1,14 +1,12 @@
-"use client";
-
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useNavigate } from 'react-router';
 
 /**
  * Global keyboard shortcuts hook
  * Implements Raycast-style keyboard navigation
  */
 export function useKeyboardShortcuts() {
-  const router = useRouter();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -27,25 +25,25 @@ export function useKeyboardShortcuts() {
       // Cmd/Ctrl + B: Run Backtest
       if (e.key === "b" && modKey) {
         e.preventDefault();
-        router.push("/strategies");
+        navigate("/strategies");
       }
 
       // Cmd/Ctrl + P: Portfolio
       if (e.key === "p" && modKey) {
         e.preventDefault();
-        router.push("/");
+        navigate("/");
       }
 
       // Cmd/Ctrl + S: Screener (override browser save)
       if (e.key === "s" && modKey) {
         e.preventDefault();
-        router.push("/");
+        navigate("/");
       }
 
       // Cmd/Ctrl + ,: Settings
       if (e.key === "," && modKey) {
         e.preventDefault();
-        // router.push('/settings')
+        // navigate('/settings')
         // Settings shortcut - implementation pending
       }
 
@@ -64,7 +62,7 @@ export function useKeyboardShortcuts() {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [router]);
+  }, [navigate]);
 }
 
 /**

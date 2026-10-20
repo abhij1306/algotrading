@@ -1,7 +1,5 @@
-'use client';
-
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { Search, Bell, Moon, Sun, Command } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import LoginButton from '@/components/LoginButton';
@@ -11,7 +9,7 @@ interface HeaderProps {
 }
 
 export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
@@ -49,7 +47,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
       <div className={navLeftClasses}>
         {/* Logo */}
         <button
-          onClick={() => router.push('/dashboard')}
+          onClick={() => navigate('/dashboard')}
           className="flex items-center gap-2 hover:opacity-80 transition-opacity"
         >
           <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover shadow-sm">
@@ -65,7 +63,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
           {navItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => router.push(item.path)}
+              onClick={() => navigate(item.path)}
               className="px-3 py-1.5 text-sm font-medium transition-all rounded-md text-foreground-secondary hover:text-foreground hover:bg-background-tertiary"
             >
               {item.label}
@@ -114,7 +112,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
 
 // Mobile Navigation
 export function MobileNav() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('dashboard');
 
   const tabs = [
@@ -136,7 +134,7 @@ export function MobileNav() {
             key={tab.id}
             onClick={() => {
               setActiveTab(tab.id);
-              router.push(tab.path);
+              navigate(tab.path);
             }}
             className={cn(
               'flex flex-col items-center gap-1 px-4 py-2 rounded-lg transition-all',

@@ -1,5 +1,3 @@
-'use client';
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MarketStatus } from '@/lib/market-hours';
 import { apiClient } from '@/lib/api-client';

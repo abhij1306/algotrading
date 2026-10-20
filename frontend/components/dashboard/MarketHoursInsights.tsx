@@ -1,5 +1,3 @@
-'use client';
-
 import { memo } from 'react';
 import { TrendingUp, TrendingDown, Activity } from 'lucide-react';
 import { formatPercentage } from '@/lib/utils';

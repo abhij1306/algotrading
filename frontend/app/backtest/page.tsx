@@ -1,7 +1,5 @@
-'use client';
-
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import {
   Badge,
   Button,
@@ -64,7 +62,7 @@ function formatCompactCapital(value: number | null | undefined): string {
 }
 
 export default function BacktestPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<BacktestStatus | null>(null);
   const [strategies, setStrategies] = useState<StrategyMeta[]>([]);
   const [runs, setRuns] = useState<BacktestRunItem[]>([]);
@@ -180,7 +178,7 @@ export default function BacktestPage() {
       setError(res.error?.message || 'Failed to run backtest');
       return;
     }
-    router.push(`/backtest/results/${res.data.job_id}`);
+    navigate(`/backtest/results/${res.data.job_id}`);
   };
 
   return (
@@ -393,7 +391,7 @@ export default function BacktestPage() {
                             <TableCell className="text-foreground-secondary">{r.params.selection?.mode === 'symbols' ? 'Symbols' : (r.params.selection?.universe || 'NIFTY50')}</TableCell>
                             <TableCell numeric className="text-foreground">{formatCompactCapital(r.params.initial_capital)}</TableCell>
                             <TableCell className="text-right">
-                              <Button size="sm" variant={r.status === 'failed' ? 'secondary' : 'link'} onClick={() => router.push(`/backtest/results/${r.job_id}`)}>
+                              <Button size="sm" variant={r.status === 'failed' ? 'secondary' : 'link'} onClick={() => navigate(`/backtest/results/${r.job_id}`)}>
                                 {r.status === 'failed' ? 'Retry' : 'View →'}
                               </Button>
                             </TableCell>

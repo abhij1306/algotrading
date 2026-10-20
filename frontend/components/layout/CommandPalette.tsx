@@ -1,7 +1,5 @@
-'use client';
-
 import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -38,7 +36,7 @@ const MOCK_SYMBOLS: SymbolResult[] = [
 ];
 
 export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [symbols, setSymbols] = useState<SymbolResult[]>([]);
@@ -51,7 +49,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         subtitle: 'View your portfolio and market overview',
         shortcut: '⌘1',
         icon: <Home className="w-4 h-4" />,
-        action: () => { router.push('/dashboard'); onClose(); },
+        action: () => { navigate('/dashboard'); onClose(); },
         category: 'Navigation',
       },
       {
@@ -60,7 +58,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         subtitle: 'Advanced charts and trading',
         shortcut: '⌘2',
         icon: <LineChart className="w-4 h-4" />,
-        action: () => { router.push('/terminal'); onClose(); },
+        action: () => { navigate('/terminal'); onClose(); },
         category: 'Navigation',
       },
       {
@@ -69,7 +67,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         subtitle: 'Find stocks matching your criteria',
         shortcut: '⌘3',
         icon: <BarChart3 className="w-4 h-4" />,
-        action: () => { router.push('/screener'); onClose(); },
+        action: () => { navigate('/screener'); onClose(); },
         category: 'Navigation',
       },
       {
@@ -78,7 +76,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         subtitle: 'Test your strategies',
         shortcut: '⌘4',
         icon: <Activity className="w-4 h-4" />,
-        action: () => { router.push('/backtest'); onClose(); },
+        action: () => { navigate('/backtest'); onClose(); },
         category: 'Navigation',
       },
       {
@@ -87,7 +85,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         subtitle: 'Run the VCP scanner and manage strategy signals',
         shortcut: '⌘5',
         icon: <TrendingUp className="w-4 h-4" />,
-        action: () => { router.push('/strategies'); onClose(); },
+        action: () => { navigate('/strategies'); onClose(); },
         category: 'Navigation',
       },
       {
@@ -95,7 +93,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         title: 'Run Quick Backtest',
         subtitle: 'Start a new backtest with default settings',
         icon: <Activity className="w-4 h-4" />,
-        action: () => { router.push('/backtest/new'); onClose(); },
+        action: () => { navigate('/backtest/new'); onClose(); },
         category: 'Actions',
       },
       {
@@ -118,7 +116,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
         cmd.subtitle?.toLowerCase().includes(lowerQuery) ||
         cmd.category.toLowerCase().includes(lowerQuery)
     );
-  }, [query, router, onClose]);
+  }, [query, navigate, onClose]);
 
   useEffect(() => {
     if (query.length >= 1) {
@@ -158,7 +156,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
           e.preventDefault();
           if (selectedIndex < symbols.length) {
             const symbol = symbols[selectedIndex];
-            router.push(`/terminal?symbol=${symbol.symbol}`);
+            navigate(`/terminal?symbol=${symbol.symbol}`);
             onClose();
           } else {
             const cmd = commands[selectedIndex - symbols.length];
@@ -173,7 +171,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
 
     globalThis.addEventListener('keydown', handleKeyDown);
     return () => globalThis.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, selectedIndex, symbols, getCommands, router, onClose]);
+  }, [isOpen, selectedIndex, symbols, getCommands, navigate, onClose]);
 
   useEffect(() => {
     if (isOpen) {
@@ -231,7 +229,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                     <button
                       key={symbol.symbol}
                       onClick={() => {
-                        router.push(`/terminal?symbol=${symbol.symbol}`);
+                        navigate(`/terminal?symbol=${symbol.symbol}`);
                         onClose();
                       }}
                       className={cn(

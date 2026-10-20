@@ -1,7 +1,5 @@
-'use client';
-
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/dynamic';
 import {
   Badge,
   Button,
@@ -160,8 +158,7 @@ const DynamicSignalChart = dynamic(
           </ResponsiveContainer>
         );
       };
-    }),
-  { ssr: false }
+    })
 );
 
 function formatCurrency(value: number | null | undefined): string {

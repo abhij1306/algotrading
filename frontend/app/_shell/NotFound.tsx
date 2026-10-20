@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { Link } from "react-router";
 import { Button, PageContainer } from "@/components/ui";
 
 export default function NotFoundPage() {
@@ -9,7 +9,7 @@ export default function NotFoundPage() {
         <p className="text-sm text-foreground-secondary">
           The page you requested does not exist.
         </p>
-        <Link href="/dashboard">
+        <Link to="/dashboard">
           <Button size="sm" variant="primary">
             Go to Dashboard
           </Button>

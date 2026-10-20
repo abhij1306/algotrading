@@ -1,7 +1,5 @@
-"use client";
-
 import React, { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
+import dynamic from '@/lib/dynamic';
 import { formatPrice, formatPercent, formatCompact } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/type-guards";
 
@@ -64,7 +62,7 @@ const DynamicLineChart = dynamic(
               itemStyle={{ color: "var(--color-primary)" }}
               formatter={(value) => [`₹${formatPrice(Number(value) || 0)}`, "Close"]}
               labelFormatter={(label) => {
-                const d = new Date(label);
+                const d = new Date(String(label));
                 return d.toLocaleDateString("en-IN", {
                   year: "numeric",
                   month: "short",
@@ -91,7 +89,6 @@ const DynamicLineChart = dynamic(
         <div className="w-full h-full animate-pulse rounded-md bg-background-secondary" />
       </div>
     ),
-    ssr: false
   }
 );
 

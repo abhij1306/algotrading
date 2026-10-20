@@ -3,11 +3,9 @@
  * Provides unified error handling, loading states, and retry logic
  */
 
-// Default to same-origin in the browser so Next.js rewrites can proxy `/api/*`
-// to the backend without CORS issues. On the server (SSR/build), fall back to a
-// loopback backend URL unless explicitly configured.
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || (globalThis.window === undefined ? "http://127.0.0.1:8000" : "");
+// Default to same-origin so the Vite dev proxy forwards `/api/*` to the backend
+// without CORS issues. Set VITE_API_URL to call a backend on another origin.
+const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 function joinUrl(baseURL: string, endpoint: string): string {
   // Allow relative baseURL (''), and avoid accidental double slashes.

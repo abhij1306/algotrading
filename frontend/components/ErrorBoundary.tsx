@@ -1,5 +1,3 @@
-"use client";
-
 import { Component, ReactNode, ErrorInfo } from "react";
 
 interface Props {
@@ -39,7 +37,7 @@ export class ErrorBoundary extends Component<Props, State> {
     });
 
     // Log to external service (e.g., Sentry) in production
-    if (process.env.NODE_ENV === "production") {
+    if (import.meta.env.PROD) {
       // logErrorToService(error, errorInfo)
     }
   }
@@ -59,7 +57,7 @@ export class ErrorBoundary extends Component<Props, State> {
               investigated.
             </p>
 
-            {process.env.NODE_ENV === "development" && this.state.error && (
+            {import.meta.env.DEV && this.state.error && (
               <div className="space-y-4">
                 <div className="glass rounded-lg p-4">
                   <h2 className="text-sm font-semibold text-text-primary mb-2">Error Details:</h2>

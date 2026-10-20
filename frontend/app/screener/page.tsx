@@ -1,7 +1,5 @@
-'use client';
-
 import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import {
   Search,
   TrendingUp,
@@ -341,7 +339,7 @@ const StockRow = memo(function StockRow({
 });
 
 export default function ScreenerPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const { isConnected, sendMessage, registerCallback } = useWebSocket({ skipStateUpdates: true });
 
   const [indices, setIndices] = useState<IndexItem[]>([]);
@@ -843,7 +841,7 @@ export default function ScreenerPage() {
                   key={stock.symbol}
                   stock={stock}
                   flashStateByField={flashStateByField}
-                  onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+                  onClick={() => navigate(`/terminal?symbol=${stock.symbol}`)}
                   onOpenTradingView={openTradingView}
                 />
               );

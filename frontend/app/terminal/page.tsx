@@ -1,7 +1,5 @@
-'use client';
-
 import { useState, useEffect, useMemo, memo, useRef, type ReactNode } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/dynamic';
 import { Search, Plus, Settings, Bell, CandlestickChart, ListOrdered, Loader2, ExternalLink } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
 import { formatPercentage, roundToDecimals } from '@/lib/utils';
@@ -168,7 +166,6 @@ function formatLtp(value: number | null | undefined): string {
 const _PriceChart = dynamic(
   () => import('@/components/terminal/PriceChart').then((mod) => mod.PriceChart),
   {
-    ssr: false,
     loading: () => (
       <div className="text-center">
         <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-foreground-muted" />

@@ -1,8 +1,6 @@
-'use client';
-
 import { useEffect, useMemo, useState, memo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import dynamic from 'next/dynamic';
+import { useNavigate, useParams } from 'react-router';
+import dynamic from '@/lib/dynamic';
 import {
   Badge,
   Button,
@@ -137,7 +135,6 @@ const DynamicEquityChart = dynamic(
         <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
       </div>
     ),
-    ssr: false
   }
 );
 
@@ -172,7 +169,6 @@ const DynamicDrawdownChart = dynamic(
         <div className="h-full w-full animate-pulse rounded-md bg-background-secondary" />
       </div>
     ),
-    ssr: false
   }
 );
 
@@ -182,7 +178,7 @@ const DrawdownChart = memo(DynamicDrawdownChart);
 
 export default function BacktestResultPage() {
   const params = useParams<{ runId: string }>();
-  const router = useRouter();
+  const navigate = useNavigate();
   const runId = params.runId;
   const [payload, setPayload] = useState<BacktestJobResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -271,8 +267,8 @@ export default function BacktestResultPage() {
             <Badge variant="outline" className="ml-2">{runId}</Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => router.push('/backtest')}>← Back</Button>
-            <Button variant="primary" size="sm" onClick={() => router.push('/backtest')}>+ New Run</Button>
+            <Button variant="outline" size="sm" onClick={() => navigate('/backtest')}>← Back</Button>
+            <Button variant="primary" size="sm" onClick={() => navigate('/backtest')}>+ New Run</Button>
           </div>
         </div>
 

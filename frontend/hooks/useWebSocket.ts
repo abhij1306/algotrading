@@ -1,5 +1,3 @@
-'use client';
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { isObject, isTickerData } from '@/lib/type-guards';
 
@@ -92,11 +90,11 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
   optionsRef.current = options;
 
   const getWsUrl = useCallback(() => {
-    if (process.env.NEXT_PUBLIC_WS_URL) {
-      return process.env.NEXT_PUBLIC_WS_URL;
+    if (import.meta.env.VITE_WS_URL) {
+      return import.meta.env.VITE_WS_URL;
     }
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    const apiUrl = import.meta.env.VITE_API_URL;
     if (apiUrl && /^https?:\/\//.test(apiUrl)) {
       const u = new URL(apiUrl);
       u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';

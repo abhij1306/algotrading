@@ -1,8 +1,6 @@
-'use client';
-
 import type { ReactNode } from 'react';
 import { useState, useEffect, useCallback, memo, useRef, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { TrendingUp, TrendingDown, Activity, Zap, Globe, ChevronRight, Target, BarChart3, Radio, Moon, ExternalLink } from 'lucide-react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { apiClient } from '@/lib/api-client';
@@ -350,7 +348,7 @@ const WatchlistRow = memo(function WatchlistRow({
 });
 
 export default function DashboardPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [marketStatus, setMarketStatus] = useState<MarketStatus>({ isOpen: false, message: 'Loading market status' });
   const { isConnected, lastMessage, sendMessage } = useWebSocket({ enabled: marketStatus.isOpen });
 
@@ -561,7 +559,7 @@ export default function DashboardPage() {
             <IndexRow
               key={idx.name}
               idx={idx}
-              onClick={() => router.push(`/terminal?symbol=${idx.symbol}`)}
+              onClick={() => navigate(`/terminal?symbol=${idx.symbol}`)}
               onOpenTradingView={openTradingView}
             />
           ))}
@@ -594,7 +592,7 @@ export default function DashboardPage() {
             <WatchlistRow
               key={stock.symbol}
               stock={stock}
-              onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+              onClick={() => navigate(`/terminal?symbol=${stock.symbol}`)}
               onOpenTradingView={openTradingView}
             />
           ))}
@@ -650,7 +648,7 @@ export default function DashboardPage() {
           <span className="text-xs text-foreground-muted">{istTime}</span>
           <div className="flex items-center gap-1">
             {QUICK_ACTIONS.map(action => (
-              <Button key={action.label} onClick={() => router.push(action.path)} variant="ghost" size="sm" className="h-8">
+              <Button key={action.label} onClick={() => navigate(action.path)} variant="ghost" size="sm" className="h-8">
                 <action.icon className="w-4 h-4 mr-1" />
                 {action.label}
               </Button>
@@ -716,7 +714,7 @@ export default function DashboardPage() {
                 <span className="font-medium text-sm">Watchlist</span>
                 {marketStatus.isOpen && isConnected && <span className="w-1.5 h-1.5 rounded-full bg-profit" />}
               </div>
-              <Button onClick={() => router.push('/screener')} variant="ghost" size="sm" className="h-6 text-xs">
+              <Button onClick={() => navigate('/screener')} variant="ghost" size="sm" className="h-6 text-xs">
                 View All <ChevronRight className="w-3 h-3 ml-0.5" />
               </Button>
             </div>

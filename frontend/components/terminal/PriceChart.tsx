@@ -1,6 +1,4 @@
-'use client';
-
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/dynamic';
 
 interface CandlePoint {
   ts: string;
@@ -41,11 +39,11 @@ const DynamicChart = dynamic(
             />
             <YAxis yAxisId="volume" orientation="right" tick={false} width={30} />
             <Tooltip
-              formatter={(value: number, name: string) => {
-                if (name === 'volume') return [Math.round(value).toLocaleString('en-IN'), 'Volume'];
-                return [Number(value).toFixed(2), name.toUpperCase()];
+              formatter={(value, name) => {
+                if (name === 'volume') return [Math.round(Number(value)).toLocaleString('en-IN'), 'Volume'];
+                return [Number(value).toFixed(2), String(name).toUpperCase()];
               }}
-              labelFormatter={(label: string) => new Date(label).toLocaleString('en-IN')}
+              labelFormatter={(label) => new Date(String(label)).toLocaleString('en-IN')}
             />
             <Bar yAxisId="volume" dataKey="volume" fill="var(--color-border)" opacity={0.35} />
             <Line yAxisId="price" type="monotone" dataKey="close" stroke="var(--color-primary)" dot={false} strokeWidth={1.8} />
@@ -62,7 +60,6 @@ const DynamicChart = dynamic(
         <div className="w-full h-full animate-pulse rounded-md bg-background-secondary" />
       </div>
     ),
-    ssr: false
   }
 );
 

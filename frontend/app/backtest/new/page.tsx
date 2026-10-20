@@ -1,14 +1,12 @@
-'use client';
-
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 
 export default function BacktestNewRedirectPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
 
   useEffect(() => {
-    router.replace('/backtest');
-  }, [router]);
+    navigate('/backtest', { replace: true });
+  }, [navigate]);
 
   return null;
 }

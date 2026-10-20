@@ -1,5 +1,3 @@
-'use client';
-
 import { AppHeader, MobileNav } from './Header';
 import { CommandPalette, useCommandPalette } from './CommandPalette';
 

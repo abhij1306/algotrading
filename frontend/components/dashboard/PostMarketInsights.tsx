@@ -1,5 +1,3 @@
-'use client';
-
 import { memo } from 'react';
 import { Globe, TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
 import { formatPercentage } from '@/lib/utils';
