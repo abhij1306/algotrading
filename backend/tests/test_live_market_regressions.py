@@ -241,3 +241,205 @@ def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(monkeypatc
         return live.ws_service.ws.unsubscribed
 
     assert asyncio.run(scenario()) == [_fyers("TCS")]
+
+
+class SlowConnectProvider(FakeProviderService):
+    """connect() returns without raising; the socket only reports connected if `connect_after` set."""
+
+    def __init__(self, connect_after: float | None, live=None, open_in_connect: bool = False):
+        super().__init__()
+        self.connect_calls = 0
+        self.connect_after = connect_after
+        self.live = live
+        self.open_in_connect = open_in_connect
+        self.ws.closed = True  # is_connected() is `not closed`
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if self.connect_after is not None:
+            self.ws.closed = False
+        if self.open_in_connect:
+            self.live.on_provider_open()  # the SDK calls on_connect from inside connect()
+
+
+def _fast_runner(monkeypatch, retries: int = 3) -> None:
+    monkeypatch.setattr(lms, "WS_MAX_RETRIES", retries)
+    monkeypatch.setattr(lms, "WS_CONNECT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(lms, "WS_CONNECT_POLL_S", 0.01)
+    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 0.01)
+    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 0.02)
+
+
+def test_runner_retries_and_fails_when_connect_returns_without_connecting(monkeypatch):
+    _fast_runner(monkeypatch, retries=3)
+    live = lms.LiveMarketService()
+    live._is_connecting = True
+    live.ws_service = SlowConnectProvider(connect_after=None)
+
+    live._run_provider_connect()
+
+    assert live.ws_service.connect_calls == 3
+    assert live.ws_connected is False
+    assert live._is_connecting is False
+
+
+def test_runner_connects_once_and_replays_without_double_subscribe(monkeypatch):
+    _fast_runner(monkeypatch)
+
+    async def scenario():
+        live = lms.LiveMarketService()
+        live.loop = asyncio.get_running_loop()
+        live.dev_mode = True
+        live.api_subscriptions = {"SBIN"}
+        # connect() fires the SDK on-open hook (first connect); the runner must not replay again.
+        live.ws_service = SlowConnectProvider(connect_after=0, live=live, open_in_connect=True)
+        await asyncio.to_thread(live._run_provider_connect)
+        await asyncio.sleep(0.05)
+        return live
+
+    live = asyncio.run(scenario())
+    assert live.ws_connected is True
+    assert live.ws_service.connect_calls == 1
+    assert live.ws_service.ws.subscribed == [_fyers("SBIN")]
+
+
+def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(monkeypatch):
+    _fast_runner(monkeypatch)
+
+    async def scenario():
+        live = lms.LiveMarketService()
+        live.loop = asyncio.get_running_loop()
+        live.dev_mode = True
+        live.api_subscriptions = {"TCS"}
+        live.ws_service = SlowConnectProvider(connect_after=0)
+        await asyncio.to_thread(live._run_provider_connect)
+        await asyncio.sleep(0.05)
+        return live
+
+    live = asyncio.run(scenario())
+    assert live.ws_service.ws.subscribed == [_fyers("TCS")]
+
+
+def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch):
+    import threading
+    import time
+
+    _fast_runner(monkeypatch, retries=10)
+    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 30.0)
+    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 30.0)
+    live = lms.LiveMarketService()
+    live.ws_service = SlowConnectProvider(connect_after=None)
+
+    thread = threading.Thread(target=live._run_provider_connect, daemon=True)
+    thread.start()
+    time.sleep(0.2)  # first attempt timed out, runner is now backing off for 30s
+    live.disconnect()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert live.ws_service.connect_calls == 1
+
+
+def test_sdk_reconnect_open_callback_replays_subscriptions():
+    async def scenario():
+        live = lms.LiveMarketService()
+        live.loop = asyncio.get_running_loop()
+        live.dev_mode = True
+        live.api_subscriptions = {"SBIN"}
+        service = fyers_websocket.FyersWebSocketService()
+        service.ws = FakeSocket()
+        service.on_open_handler = live.on_provider_open
+        live.ws_service = service
+
+        # The SDK's own reconnect=True path re-invokes the on_connect callback with no runner.
+        await asyncio.to_thread(service._on_open)
+        await asyncio.sleep(0.05)
+        await asyncio.to_thread(service._on_open)
+        await asyncio.sleep(0.05)
+        return service.ws.subscribed
+
+    assert asyncio.run(scenario()) == [_fyers("SBIN")] * 2
+
+
+def test_flush_loop_survives_a_broadcast_error(monkeypatch):
+    async def scenario():
+        mgr = ConnectionManager()
+        calls: list[dict] = []
+
+        async def flaky_broadcast(msg):
+            calls.append(msg)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(mgr, "broadcast", flaky_broadcast)
+        monkeypatch.setattr(lms, "manager", mgr)
+        monkeypatch.setattr(lms, "LOOP_ERROR_PAUSE_S", 0.01)
+        live = lms.LiveMarketService()
+        task = asyncio.create_task(live._flush_loop())
+        live.tick_buffer = {"A": {"symbol": "A"}}
+        await asyncio.sleep(0.3)
+        live.tick_buffer = {"B": {"symbol": "B"}}
+        await asyncio.sleep(0.3)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return calls, True
+        return calls, False
+
+    calls, cancelled = asyncio.run(scenario())
+    assert [c["data"][0]["symbol"] for c in calls] == ["A", "B"]
+    assert cancelled is True
+
+
+def test_monitor_loop_survives_an_unexpected_error(monkeypatch):
+    real_sleep = asyncio.sleep
+
+    async def scenario():
+        async def fast_sleep(_delay):
+            await real_sleep(0.001)
+
+        live = lms.LiveMarketService()
+        checks = {"n": 0}
+
+        def flaky_is_market_open() -> bool:
+            checks["n"] += 1
+            if checks["n"] == 1:
+                raise RuntimeError("boom")
+            return True
+
+        monkeypatch.setattr(live, "is_market_open", flaky_is_market_open)
+        monkeypatch.setattr(lms.asyncio, "sleep", fast_sleep)
+        task = asyncio.create_task(live._monitor_loop())
+        await real_sleep(0.1)
+        alive = not task.done()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return alive, checks["n"]
+
+    alive, checks = asyncio.run(scenario())
+    assert alive is True
+    assert checks > 1
+
+
+def test_connect_async_validates_token_off_the_event_loop(monkeypatch):
+    import threading
+
+    seen: dict[str, int] = {}
+
+    def fake_validate() -> bool:
+        seen["thread"] = threading.get_ident()
+        return False
+
+    async def scenario():
+        live = lms.LiveMarketService()
+        monkeypatch.setattr(live, "_validate_fyers_token", fake_validate)
+        status = await live.connect_async()
+        return status, threading.get_ident()
+
+    status, loop_thread = asyncio.run(scenario())
+    assert status == "token_invalid"
+    assert seen["thread"] != loop_thread
