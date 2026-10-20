@@ -4,6 +4,7 @@ Handles connection lifecycle and broadcasting
 """
 
 import asyncio
+import itertools
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,7 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
+from ..services.subscription_registry import SubscriptionRegistry
 from .runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
@@ -23,11 +25,14 @@ ACTIVE_SUBSCRIPTIONS_GAUGE = "websocket.subscriptions.active"
 SEND_TIMEOUT_SEC = 1.0
 CLIENT_QUEUE_SIZE = 8
 
+_client_ids = itertools.count(1)
+
 
 @dataclass
 class ClientConnection:
     websocket: WebSocket
-    subscriptions: set[str] = field(default_factory=set)
+    # Owner id of this client's symbols in the SubscriptionRegistry.
+    client_id: str = field(default_factory=lambda: f"ws-{next(_client_ids)}")
     queue: asyncio.Queue[dict[str, Any]] = field(
         default_factory=lambda: asyncio.Queue(maxsize=CLIENT_QUEUE_SIZE)
     )
@@ -35,10 +40,11 @@ class ClientConnection:
 
 
 class ConnectionManager:
-    def __init__(self) -> None:
+    def __init__(self, registry: SubscriptionRegistry | None = None) -> None:
         self.connections: dict[WebSocket, ClientConnection] = {}
-        self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
-        # Awaited with symbols no remaining client needs after a client is removed.
+        # Who wants which symbols (clients and the REST API owner); the provider delta source.
+        self.registry = registry or SubscriptionRegistry()
+        # Awaited with symbols no owner needs any more after a client is removed.
         self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()
 
@@ -78,29 +84,24 @@ class ConnectionManager:
         return True
 
     async def disconnect(self, websocket: WebSocket) -> set[str]:
-        """Remove a client and release provider subscriptions nobody else needs.
+        """Remove a client and release provider subscriptions no other owner holds.
 
         Returns the released symbols (empty if the client was already removed).
         """
-        removed_symbols: set[str] = set()
+        released_symbols: set[str] = set()
         async with self._lock:
             client = self.connections.pop(websocket, None)
             if client:
-                removed_symbols = set(client.subscriptions)
-                if client.sender_task:
+                # The sender loop disconnects its own client on a send error; cancelling
+                # itself would abort the provider release awaited below.
+                if client.sender_task and client.sender_task is not asyncio.current_task():
                     client.sender_task.cancel()
-                self._global_subscriptions = (
-                    set().union(*(conn.subscriptions for conn in self.connections.values()))
-                    if self.connections
-                    else set()
-                )
+                released_symbols = self.registry.drop_owner(client.client_id)
         runtime_metrics.increment("websocket.connections.disconnected")
         runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(self.connections)))
-        runtime_metrics.set_gauge(
-            ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
-        )
+        self._set_subscriptions_gauge()
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
-        released = sorted(removed_symbols - self._global_subscriptions)
+        released = sorted(released_symbols)
         if released and self.on_symbols_released:
             try:
                 await self.on_symbols_released(released)
@@ -108,52 +109,52 @@ class ConnectionManager:
                 logger.warning("[WSManager] Releasing provider symbols failed: %s", exc)
         return set(released)
 
-    async def subscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
-        """Subscribe a specific connection to symbols"""
+    async def subscribe(self, websocket: WebSocket, symbols: list[str]) -> list[str]:
+        """Subscribe a connection to symbols.
+
+        Returns the symbols no owner held before (the provider subscribe delta), sorted;
+        empty when the connection is unknown.
+        """
+        newly_needed: set[str] = set()
         async with self._lock:
             client = self.connections.get(websocket)
             if client:
-                for symbol in symbols:
-                    client.subscriptions.add(symbol)
-                    self._global_subscriptions.add(symbol)
+                newly_needed = self.registry.add(client.client_id, symbols)
                 runtime_metrics.increment("websocket.subscriptions.added", float(len(symbols)))
-                runtime_metrics.set_gauge(
-                    ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
-                )
+                self._set_subscriptions_gauge()
                 logger.debug(
                     "[WSManager] Client subscribed to %s symbols. Total symbols for client: %s",
                     len(symbols),
-                    len(client.subscriptions),
+                    len(self.registry.symbols_of(client.client_id)),
                 )
         await asyncio.sleep(0)
+        return sorted(newly_needed)
 
-    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
-        """Unsubscribe a specific connection from symbols"""
+    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]) -> list[str]:
+        """Unsubscribe a connection from symbols.
+
+        Returns the symbols no owner holds any more (the provider unsubscribe delta), sorted;
+        empty when the connection is unknown.
+        """
+        no_longer_needed: set[str] = set()
         async with self._lock:
             client = self.connections.get(websocket)
             if client:
-                for symbol in symbols:
-                    client.subscriptions.discard(symbol)
-                self._global_subscriptions = (
-                    set().union(*(conn.subscriptions for conn in self.connections.values()))
-                    if self.connections
-                    else set()
-                )
+                no_longer_needed = self.registry.remove(client.client_id, symbols)
                 runtime_metrics.increment("websocket.subscriptions.removed", float(len(symbols)))
-                runtime_metrics.set_gauge(
-                    ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
-                )
+                self._set_subscriptions_gauge()
                 logger.debug(
                     "[WSManager] Client unsubscribed from %s symbols. Remaining: %s",
                     len(symbols),
-                    len(client.subscriptions),
+                    len(self.registry.symbols_of(client.client_id)),
                 )
         await asyncio.sleep(0)
+        return sorted(no_longer_needed)
 
-    def get_all_subscribed_symbols(self) -> set[str]:
-        """Get union of subscribed symbols across all active clients (O(1) cached)."""
-        # Return a copy so callers can safely diff before/after subscribe/unsubscribe.
-        return set(self._global_subscriptions)
+    def _set_subscriptions_gauge(self) -> None:
+        runtime_metrics.set_gauge(
+            ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self.registry.all_symbols()))
+        )
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         """
@@ -196,9 +197,10 @@ class ConnectionManager:
             if connection.client_state != WebSocketState.CONNECTED:
                 await self.disconnect(connection)
                 return
+            client_subs = self.registry.symbols_of(client.client_id)
             if json_msg is None:
-                outbound = self._client_batch(message, client.subscriptions)
-            elif target_symbol and target_symbol not in client.subscriptions:
+                outbound = self._client_batch(message, client_subs)
+            elif target_symbol and target_symbol not in client_subs:
                 outbound = None
             else:
                 outbound = {"__pre_serialized__": json_msg}
@@ -217,7 +219,9 @@ class ConnectionManager:
         return target_symbol, json.dumps(message)
 
     @staticmethod
-    def _client_batch(message: dict[str, Any], client_subs: set[str]) -> dict[str, Any] | None:
+    def _client_batch(
+        message: dict[str, Any], client_subs: frozenset[str]
+    ) -> dict[str, Any] | None:
         """The part of a ticker_batch a client subscribes to, or None if nothing applies."""
         batch_data = message.get("data", [])
         client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
@@ -270,7 +274,7 @@ class ConnectionManager:
     async def get_health_snapshot(self) -> dict[str, Any]:
         async with self._lock:
             active_connections = list(self.connections.values())
-            active_symbols = len(self._global_subscriptions)
+            active_symbols = len(self.registry.all_symbols())
             pending_messages = sum(conn.queue.qsize() for conn in active_connections)
             runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(active_connections)))
             runtime_metrics.set_gauge(ACTIVE_SUBSCRIPTIONS_GAUGE, float(active_symbols))

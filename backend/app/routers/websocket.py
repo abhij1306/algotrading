@@ -114,7 +114,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Connection already dead
         logger.debug("WebSocket stream ended with an error", exc_info=True)
     finally:
-        # manager.disconnect releases symbols no other client needs via on_symbols_released.
+        # manager.disconnect drops this client from the registry and releases the symbols
+        # no other owner holds via on_symbols_released.
         await manager.disconnect(websocket)
 
 
@@ -148,10 +149,8 @@ async def _stream_subscribe(
     if not symbols:
         return
     db_symbols = [symbol_master.to_db(s) for s in symbols]
-    before_symbols = manager.get_all_subscribed_symbols()
-    await manager.subscribe(websocket, db_symbols)
-    after_symbols = manager.get_all_subscribed_symbols()
-    newly_added = sorted(after_symbols - before_symbols)
+    # The registry returns the symbols no owner held before: the provider subscribe delta.
+    newly_added = await manager.subscribe(websocket, db_symbols)
 
     try:
         if newly_added:
@@ -176,10 +175,8 @@ async def _stream_unsubscribe(
     if not symbols:
         return
     db_symbols = [symbol_master.to_db(s) for s in symbols]
-    before_symbols = manager.get_all_subscribed_symbols()
-    await manager.unsubscribe(websocket, db_symbols)
-    after_symbols = manager.get_all_subscribed_symbols()
-    removed_symbols = sorted(before_symbols - after_symbols)
+    # The registry returns the symbols no owner holds any more: the provider unsubscribe delta.
+    removed_symbols = await manager.unsubscribe(websocket, db_symbols)
     if removed_symbols:
         await live_market.unsubscribe(removed_symbols)
     await _safe_send(
