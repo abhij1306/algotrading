@@ -24,6 +24,8 @@ ACTIVE_CONNECTIONS_GAUGE = "websocket.connections.active"
 ACTIVE_SUBSCRIPTIONS_GAUGE = "websocket.subscriptions.active"
 SEND_TIMEOUT_SEC = 1.0
 CLIENT_QUEUE_SIZE = 8
+# RFC 6455 "going away": the server is shutting down.
+SHUTDOWN_CLOSE_CODE = 1001
 
 _client_ids = itertools.count(1)
 
@@ -108,6 +110,38 @@ class ConnectionManager:
             except Exception as exc:
                 logger.warning("[WSManager] Releasing provider symbols failed: %s", exc)
         return set(released)
+
+    async def close_all(self, code: int = SHUTDOWN_CLOSE_CODE) -> int:
+        """App shutdown: close every client socket and stop its sender task.
+
+        Provider symbols are not released (the provider is shutting down too).
+        Returns how many clients were closed.
+        """
+        async with self._lock:
+            clients = list(self.connections.values())
+            self.connections.clear()
+            for client in clients:
+                self.registry.drop_owner(client.client_id)
+        running_loop = asyncio.get_running_loop()
+        senders = [
+            c.sender_task
+            for c in clients
+            if c.sender_task
+            and not c.sender_task.done()
+            and c.sender_task.get_loop() is running_loop
+        ]
+        for task in senders:
+            task.cancel()
+        for client in clients:
+            try:
+                await asyncio.wait_for(client.websocket.close(code=code), timeout=SEND_TIMEOUT_SEC)
+            except Exception as exc:
+                # Usually the client is already gone; nothing to do at shutdown.
+                logger.debug("[WSManager] Closing client at shutdown failed: %s", exc)
+        await asyncio.gather(*senders, return_exceptions=True)
+        runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, 0.0)
+        self._set_subscriptions_gauge()
+        return len(clients)
 
     async def subscribe(self, websocket: WebSocket, symbols: list[str]) -> list[str]:
         """Subscribe a connection to symbols.

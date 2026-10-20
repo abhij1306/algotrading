@@ -15,7 +15,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..data_repository import DataRepository
-from ..database import Company, FinancialStatement, HistoricalPrice
+from ..models import Company, FinancialStatement, HistoricalPrice
 from ..utils.db_errors import is_db_unavailable
 from ..utils.logger import log_warning_throttled, safe_log_value
 from .exceptions import (

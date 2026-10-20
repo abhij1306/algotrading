@@ -5,13 +5,27 @@ Service for resolving symbols across historical time periods.
 Handles mergers, name changes, de-listings, and symbol changes.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from ..database import get_db_session
+from ..database import db_session_scope
 from ..models.symbol_history import SymbolChangeType, SymbolHistory
+
+
+@contextmanager
+def _given_or_owned_session(session: Session | None) -> Iterator[Session]:
+    """The caller's session as is, or a db_session_scope() owned by this call."""
+    if session is not None:
+        yield session
+        return
+    with db_session_scope() as owned:
+        yield owned
+        # Detach loaded rows before the scope commits so returned records stay readable.
+        owned.expunge_all()
 
 
 class SymbolLifecycleService:
@@ -41,12 +55,7 @@ class SymbolLifecycleService:
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        close_session = False
-        if session is None:
-            session = get_db_session()
-            close_session = True
-
-        try:
+        with _given_or_owned_session(session) as session:
             # First check: is this symbol active on target_date?
             # Look for any change that affects this symbol on target_date
 
@@ -100,10 +109,6 @@ class SymbolLifecycleService:
             self._cache[cache_key] = symbol
             return symbol
 
-        finally:
-            if close_session:
-                session.close()
-
     def get_symbol_history(
         self, symbol: str, session: Session | None = None
     ) -> list[SymbolHistory]:
@@ -117,12 +122,7 @@ class SymbolLifecycleService:
         Returns:
             List of SymbolHistory records (ordered by effective_from)
         """
-        close_session = False
-        if session is None:
-            session = get_db_session()
-            close_session = True
-
-        try:
+        with _given_or_owned_session(session) as session:
             records = (
                 session.query(SymbolHistory)
                 .filter(or_(SymbolHistory.old_symbol == symbol, SymbolHistory.new_symbol == symbol))
@@ -131,9 +131,6 @@ class SymbolLifecycleService:
             )
 
             return records
-        finally:
-            if close_session:
-                session.close()
 
     def get_current_symbol(self, symbol: str, session: Session | None = None) -> str:
         """
@@ -160,12 +157,7 @@ class SymbolLifecycleService:
         Returns:
             True if symbol was listed/active on the date
         """
-        close_session = False
-        if session is None:
-            session = get_db_session()
-            close_session = True
-
-        try:
+        with _given_or_owned_session(session) as session:
             # Check if there's any record that overlaps with check_date
             record = (
                 session.query(SymbolHistory)
@@ -200,9 +192,6 @@ class SymbolLifecycleService:
                 return False
 
             return True
-        finally:
-            if close_session:
-                session.close()
 
     def add_symbol_change(
         self,
@@ -237,12 +226,7 @@ class SymbolLifecycleService:
         Returns:
             Created SymbolHistory record
         """
-        close_session = False
-        if session is None:
-            session = get_db_session()
-            close_session = True
-
-        try:
+        with _given_or_owned_session(session) as session:
             history = SymbolHistory(
                 old_symbol=old_symbol,
                 new_symbol=new_symbol,
@@ -264,9 +248,6 @@ class SymbolLifecycleService:
             self._cache.clear()
 
             return history
-        finally:
-            if close_session:
-                session.close()
 
     def get_active_symbols(self, target_date: date, session: Session | None = None) -> list[str]:
         """
@@ -279,12 +260,7 @@ class SymbolLifecycleService:
         Returns:
             List of active symbols
         """
-        close_session = False
-        if session is None:
-            session = get_db_session()
-            close_session = True
-
-        try:
+        with _given_or_owned_session(session) as session:
             # Get all records active on target_date
             records = (
                 session.query(SymbolHistory)
@@ -309,9 +285,6 @@ class SymbolLifecycleService:
                         symbols.add(record.old_symbol)
 
             return sorted(symbols)
-        finally:
-            if close_session:
-                session.close()
 
 
 # Singleton instance

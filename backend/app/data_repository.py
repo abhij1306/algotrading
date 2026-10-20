@@ -11,7 +11,7 @@ import pandas as pd
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
-from .database import (
+from .models import (
     Company,
     DataUpdateLog,
     FinancialStatement,

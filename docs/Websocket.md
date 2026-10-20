@@ -26,6 +26,14 @@ work with backoff (5s doubling to 60s), runs it once when the DB answers, logs
 `GET /api/websocket/status` and `GET /api/system/health` report it as `startup`: `DEFERRED` while
 retrying, `FAILED` if the work hit a non-connection error after the DB came back, else `COMPLETE`.
 
+## Shutdown Sequence
+The lifespan `finally` runs each step even if an earlier one failed; a failure is one
+`[WARN] Shutdown step <name> failed: ...` line with no traceback:
+1. `deferred_startup`: cancel the deferred schema retry task
+2. `live_market`: `live_market.shutdown()` cancels the monitor and flush loops and closes the provider socket
+3. `websocket_clients`: `manager.close_all()` closes every client socket with code 1001 (going away)
+4. `database_engine`: `engine.dispose()` closes the pooled DB connections
+
 ## Current Runtime Flow
 1. Client connects to `WS /api/websocket/stream`
 2. `ws_manager.connect()` accepts + handshake (`connection_established`)

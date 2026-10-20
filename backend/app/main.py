@@ -4,7 +4,7 @@ SmartTrader 3.0 API - FastAPI Application
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -106,27 +106,12 @@ def _ensure_database_schema() -> None:
     """Create/upgrade the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
     from sqlalchemy import text
 
-    from .database import (
-        Base,
-        SessionLocal,
-        engine,
-        ensure_backtest_schema,
-        ensure_live_order_schema,
-        ensure_strategy_schema,
-        ensure_universe_schema,
-    )
+    from . import database
 
     try:
-        Base.metadata.create_all(bind=engine)
-        ensure_backtest_schema(bind=engine)
-        ensure_universe_schema(bind=engine)
-        ensure_strategy_schema(bind=engine)
-        ensure_live_order_schema(bind=engine)
-        db = SessionLocal()
-        try:
-            db.execute(text("SELECT 1"))
-        finally:
-            db.close()
+        database.init_db()
+        with database.engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
     except Exception as exc:
         if not is_db_unavailable(exc):
             raise
@@ -275,9 +260,58 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await deferred_startup.stop()
-        del app.state.deferred_startup
+        await _shutdown(app)
+
+
+async def _stop_deferred_startup(app: FastAPI) -> None:
+    deferred_startup = app.state.deferred_startup
+    del app.state.deferred_startup
+    await deferred_startup.stop()
+
+
+async def _stop_live_market() -> None:
+    from .services import live_market_service
+
+    await live_market_service.live_market.shutdown()
+
+
+async def _close_websocket_clients() -> None:
+    from .utils import ws_manager
+
+    await ws_manager.manager.close_all()
+
+
+async def _dispose_engine() -> None:
+    from . import database
+
+    database.engine.dispose()
+    await asyncio.sleep(0)
+
+
+async def _run_shutdown_step(name: str, step: Callable[[], Awaitable[None]]) -> bool:
+    """Run one shutdown step; a failure is one warning line (no traceback), never raised."""
+    try:
+        await step()
+    except Exception as exc:
+        logger.warning("[WARN] Shutdown step %s failed: %s", name, exc)
+        return False
+    return True
+
+
+async def _shutdown(app: FastAPI) -> None:
+    """Stop background work, close sockets and release the DB pool; each step runs even if
+    an earlier one failed."""
+    steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+        ("deferred_startup", lambda: _stop_deferred_startup(app)),
+        ("live_market", _stop_live_market),
+        ("websocket_clients", _close_websocket_clients),
+        ("database_engine", _dispose_engine),
+    ]
+    results = [await _run_shutdown_step(name, step) for name, step in steps]
+    if all(results):
         logger.info("Shutdown complete")
+    else:
+        logger.info("Shutdown complete (%d step(s) failed)", results.count(False))
 
 
 app = FastAPI(

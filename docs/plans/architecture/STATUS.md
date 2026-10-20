@@ -97,8 +97,8 @@ Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_
 ### Lane 4: platform
 Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`.
 
-- [ ] 1. Shutdown hooks, and reuse `init_db` (S).
-- [ ] 2. `URL.create` and boolean env parsing (S-M). Delete `get_db_session` and `MODEL_*`.
+- [x] 1. Shutdown hooks, and reuse `init_db` (S).
+- [x] 2. `URL.create` and boolean env parsing (S-M). Delete `get_db_session` and `MODEL_*`.
 - [ ] 3. Move routers off `utils/errors`, drop the alias, and fold in `data_layer/exceptions` (S).
 - [ ] 4. pydantic Settings in place of `getenv`/Config (M). Do this last.
 - [ ] 5. A decision note on migration tooling (S).
