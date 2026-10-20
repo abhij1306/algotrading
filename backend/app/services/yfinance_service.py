@@ -94,29 +94,43 @@ YAHOO_INDEX_SYMBOLS = {"NIFTY50": "^NSEI", "BANKNIFTY": "^NSEBANK"}
 
 
 def _quote_from_bars(ticker_data: pd.DataFrame) -> dict | None:
-    """Latest price and change vs. the previous close (or today's open), or None if empty."""
+    """Latest price and change vs. the previous close (or today's open).
+
+    None when there are no bars or the latest bar has neither a Close nor an Open: a NaN
+    price is no quote. A missing previous close gives a change of 0.
+    """
     if ticker_data.empty:
         return None
 
     latest = ticker_data.iloc[-1]
-    prev_close = ticker_data.iloc[-2]["Close"] if len(ticker_data) >= 2 else latest["Open"]
+    current_price = _bar_value(latest, "Close")
+    if current_price is None:
+        current_price = _bar_value(latest, "Open")
+    if current_price is None:
+        return None
 
-    current_price = latest["Close"]
-    if pd.isna(current_price):
-        current_price = latest["Open"]
-
-    change = current_price - prev_close
-    change_pct = (change / prev_close) * 100 if prev_close != 0 else 0
+    prev_close = (
+        _bar_value(ticker_data.iloc[-2], "Close")
+        if len(ticker_data) >= 2
+        else _bar_value(latest, "Open")
+    )
+    change_pct = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
 
     return {
-        "price": float(current_price),
+        "price": current_price,
         "change_pct": float(change_pct),
-        "volume": int(latest.get("Volume", 0)),
-        "open": float(latest.get("Open", 0)),
-        "high": float(latest.get("High", 0)),
-        "low": float(latest.get("Low", 0)),
+        "volume": int(_bar_value(latest, "Volume") or 0),
+        "open": _bar_value(latest, "Open") or 0.0,
+        "high": _bar_value(latest, "High") or 0.0,
+        "low": _bar_value(latest, "Low") or 0.0,
         "source": "yfinance",
     }
+
+
+def _bar_value(bar: pd.Series, column: str) -> float | None:
+    """A bar column as float, or None when missing or NaN."""
+    value = bar.get(column)
+    return None if value is None or pd.isna(value) else float(value)
 
 
 # Singleton instance

@@ -2,6 +2,7 @@
 pinned ahead of a complexity refactor."""
 
 from datetime import date, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -162,3 +163,80 @@ def test_parse_strikes_from_legacy_per_strike_schema() -> None:
             put=leg("", 22100.0, "PE", ltp=30.0, change_pct=1.5, prev_close=30.0),
         ),
     ]
+
+
+# --- flat optionsChain rows belong to one expiry (PR #34 review) ------------------
+
+NEAR, FAR = date(2025, 2, 27), date(2025, 3, 6)
+EXPIRY_DATA = [
+    {"date": "27-02-2025", "expiry": "1740650400"},
+    {"date": "06-03-2025", "expiry": "1741255200"},
+]
+
+
+def test_flat_rows_of_another_expiry_are_not_relabelled() -> None:
+    raw = {"optionsChain": [{"strike_price": 22000, "option_type": "CE", "ltp": 1.0}]}
+    service = OptionChainService()
+
+    assert service._parse_strikes(raw, FAR, 22000.0, False, rows_expiry=NEAR) == []
+    assert len(service._parse_strikes(raw, NEAR, 22000.0, False, rows_expiry=NEAR)) == 1
+
+
+class FakeFyers:
+    """optionchain(): the nearest expiry by default, the named one with a timestamp."""
+
+    def __init__(self, dated_ok: bool = True) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.dated_ok = dated_ok
+
+    def quotes(self, _data: dict[str, Any]) -> dict[str, Any]:
+        return {"s": "ok", "d": [{"v": {"lp": 22000.0}}]}
+
+    def optionchain(self, data: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(data)
+        far = data.get("timestamp") == "1741255200"
+        if far and not self.dated_ok:
+            return {"s": "error", "message": "bad timestamp"}
+        ltp = 99.0 if far else 11.0
+        row = {"strike_price": 22000, "option_type": "CE", "ltp": ltp}
+        return {"s": "ok", "data": {"expiryData": EXPIRY_DATA, "optionsChain": [row]}}
+
+
+def _service(monkeypatch: pytest.MonkeyPatch, fyers: FakeFyers) -> OptionChainService:
+    service = OptionChainService()
+    monkeypatch.setattr(service, "_get_fyers_client", lambda: SimpleNamespace(fyers=fyers))
+    return service
+
+
+def test_requested_expiry_is_fetched_by_its_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    fyers = FakeFyers()
+
+    chain = _service(monkeypatch, fyers).get_option_chain("NIFTY", expiry=FAR, strike_count=2)
+
+    assert chain is not None
+    assert chain.expiry == FAR
+    assert [s.call.ltp for s in chain.strikes] == [99.0]
+    assert fyers.requests[-1]["timestamp"] == "1741255200"
+
+
+def test_nearest_expiry_needs_no_second_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    fyers = FakeFyers()
+
+    chain = _service(monkeypatch, fyers).get_option_chain("NIFTY", expiry=None, strike_count=2)
+
+    assert chain is not None
+    assert chain.expiry == NEAR
+    assert [s.call.ltp for s in chain.strikes] == [11.0]
+    assert all("timestamp" not in r for r in fyers.requests)
+
+
+def test_failed_dated_request_returns_no_strikes_rather_than_wrong_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = _service(monkeypatch, FakeFyers(dated_ok=False)).get_option_chain(
+        "NIFTY", expiry=FAR, strike_count=2
+    )
+
+    assert chain is not None
+    assert chain.expiry == FAR
+    assert chain.strikes == []

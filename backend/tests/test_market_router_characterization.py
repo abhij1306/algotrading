@@ -80,8 +80,10 @@ def test_search_options_rows_and_limits(monkeypatch: pytest.MonkeyPatch) -> None
         "NIFTY600PE",
         "NIFTY700CE",
         "NIFTY700PE",
+        # The limit is per underlying (PR #34 review): NIFTY's 12 rows leave NIFTY50 whole.
         "NIFTY501CE",
         "NIFTY501PE",
+        "NIFTY502PE",
         "BANKNIFTY5CE",
         "BANKNIFTY5PE",
     ]

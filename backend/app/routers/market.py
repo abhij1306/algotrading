@@ -259,7 +259,7 @@ OPTIONABLE_UNDERLYINGS = {
     "LT": "Larsen & Toubro",
     "HINDUNILVR": "Hindustan Unilever",
 }
-# Stop adding strikes once this many option rows have been collected
+# Stop adding strikes of one underlying once it has this many option rows
 MAX_OPTION_SEARCH_ROWS = 12
 
 
@@ -314,8 +314,12 @@ def _matching_underlyings(query: str, existing_results: list) -> list[str]:
 def _append_chain_options(
     underlying: str, chain: object, option_results: list[dict[str, Any]]
 ) -> None:
-    """Add call/put rows strike by strike until the running total reaches the limit."""
+    """Add call/put rows strike by strike until this underlying has MAX_OPTION_SEARCH_ROWS.
+
+    The limit is per underlying, so a long first chain cannot crowd out the others.
+    """
     expiry = chain.expiry.isoformat() if chain.expiry else None
+    start = len(option_results)
     for strike in chain.strikes:
         if strike.call:
             option_results.append(
@@ -325,8 +329,7 @@ def _append_chain_options(
             option_results.append(
                 _option_row(underlying, strike.strike_price, strike.put, "PE", "Put", expiry)
             )
-        # Limit options per underlying
-        if len(option_results) >= MAX_OPTION_SEARCH_ROWS:
+        if len(option_results) - start >= MAX_OPTION_SEARCH_ROWS:
             break
 
 

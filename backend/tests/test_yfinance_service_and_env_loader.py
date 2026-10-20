@@ -61,6 +61,24 @@ def test_get_quotes_bulk(monkeypatch: pytest.MonkeyPatch) -> None:
     assert quotes["MISSING"] is None
 
 
+def test_bar_without_close_or_open_is_no_quote() -> None:
+    """PR #34 review: a bar with High/Low/Volume but NaN Close and Open must not become
+    a quote with a NaN price."""
+    bars = _bars([(100.0, 100.0), (float("nan"), float("nan"))])
+
+    assert yfs_module._quote_from_bars(bars.dropna(how="all")) is None
+
+
+def test_missing_previous_close_gives_zero_change() -> None:
+    bars = _bars([(100.0, float("nan")), (101.0, 110.0)])
+    bars.loc[bars.index[0], "Volume"] = float("nan")
+
+    quote = yfs_module._quote_from_bars(bars)
+
+    assert quote is not None
+    assert (quote["price"], quote["change_pct"], quote["volume"]) == (110.0, 0.0, 1000)
+
+
 def test_get_quotes_single_symbol_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         yfs_module.yf, "download", lambda *a, **k: _bars([(10.0, 10.0), (10.0, 12.0)])

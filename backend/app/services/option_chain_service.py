@@ -191,17 +191,9 @@ class OptionChainService:
                 )
                 return None
 
-            # Fetch option chain from Fyers
-            # Format: {"symbols": "NSE:NIFTY50-INDEX", "strikeCount": 20}
-            payloads = [
-                {"symbol": fyers_symbol, "strikecount": strike_count * 2},
-                {"symbol": fyers_symbol, "strikeCount": strike_count * 2},
-            ]
-            response = {"s": "error", "message": "Option chain request failed"}
-            for data in payloads:
-                response = client.fyers.optionchain(data=data)
-                if response.get("s") == "ok":
-                    break
+            response, chain_expiry = self._fetch_chain_response(
+                client, fyers_symbol, strike_count, expiry
+            )
 
             if response.get("s") != "ok":
                 self._log_with_cooldown(
@@ -215,7 +207,13 @@ class OptionChainService:
 
             # Parse response
             option_chain = self._parse_option_chain(
-                response, underlying, spot_price, expiry, strike_count, include_greeks
+                response,
+                underlying,
+                spot_price,
+                expiry,
+                strike_count,
+                include_greeks,
+                chain_expiry=chain_expiry,
             )
 
             # Cache result
@@ -241,6 +239,53 @@ class OptionChainService:
                 e,
             )
             return None
+
+    def _fetch_chain_response(
+        self,
+        client: "FyersClient",
+        fyers_symbol: str,
+        strike_count: int,
+        expiry: date | None,
+    ) -> tuple[dict, date | None]:
+        """Fyers optionchain reply, and the expiry its flat optionsChain rows belong to
+        when a specific expiry was requested (None: the default, nearest expiry).
+
+        Fyers returns the nearest expiry unless the request names one by its expiryData
+        timestamp, so a non-nearest `expiry` is fetched again with that timestamp.
+        """
+        # Format: {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 20}
+        payloads = [
+            {"symbol": fyers_symbol, "strikecount": strike_count * 2},
+            {"symbol": fyers_symbol, "strikeCount": strike_count * 2},
+        ]
+        response: dict = {"s": "error", "message": "Option chain request failed"}
+        for data in payloads:
+            response = client.fyers.optionchain(data=data)
+            if response.get("s") == "ok":
+                break
+        if response.get("s") != "ok" or expiry is None:
+            return response, None
+
+        timestamp = self._expiry_timestamp(response.get("data", {}), expiry)
+        if timestamp is None:
+            return response, None
+        dated = client.fyers.optionchain(data={**data, "timestamp": timestamp})
+        if dated.get("s") == "ok":
+            return dated, expiry
+        return response, None
+
+    def _expiry_timestamp(self, raw_data: dict, expiry: date) -> str | None:
+        """The expiryData timestamp Fyers uses to request the chain of `expiry`."""
+        expiry_data = raw_data.get("expiryData", []) if isinstance(raw_data, dict) else []
+        for item in expiry_data if isinstance(expiry_data, list) else []:
+            if not isinstance(item, dict) or not item.get("expiry"):
+                continue
+            item_date = self._parse_expiry_value(item.get("date")) or self._parse_expiry_value(
+                item.get("expiry")
+            )
+            if item_date == expiry:
+                return str(item["expiry"])
+        return None
 
     def _get_spot_price(self, fyers_symbol: str) -> float:
         """Get current spot price for underlying"""
@@ -269,10 +314,16 @@ class OptionChainService:
         target_expiry: date | None,
         strike_count: int,
         include_greeks: bool,
+        chain_expiry: date | None = None,
     ) -> OptionChainData:
-        """Parse Fyers option chain response"""
+        """Parse Fyers option chain response.
+
+        `chain_expiry` is the expiry the flat optionsChain rows were requested for; None
+        means the default request, whose rows are the nearest expiry's.
+        """
         raw_data = response.get("data", {})
         expiries = self._extract_expiries(raw_data)
+        rows_expiry = chain_expiry or (expiries[0] if expiries else None)
 
         # Select expiry
         if target_expiry:
@@ -282,7 +333,9 @@ class OptionChainService:
         else:
             raise ValueError(f"No expiries returned for {underlying}")
 
-        strikes = self._parse_strikes(raw_data, selected_expiry, spot_price, include_greeks)
+        strikes = self._parse_strikes(
+            raw_data, selected_expiry, spot_price, include_greeks, rows_expiry=rows_expiry
+        )
 
         # Sort by strike
         strikes.sort(key=lambda x: x.strike_price)
@@ -358,10 +411,19 @@ class OptionChainService:
         selected_expiry: date,
         spot_price: float,
         include_greeks: bool,
+        rows_expiry: date | None = None,
     ) -> list[OptionStrike]:
+        """Strikes of `selected_expiry`.
+
+        Flat optionsChain rows carry no expiry of their own: they belong to `rows_expiry`
+        (the expiry they were requested for), so they are used only when that is the
+        selected expiry. Otherwise another expiry's prices would be labelled as this one.
+        """
         # New schema parser: data.optionsChain is a flat list with CE/PE rows
         options_chain = raw_data.get("optionsChain", [])
         if isinstance(options_chain, list) and options_chain:
+            if rows_expiry is not None and rows_expiry != selected_expiry:
+                return []
             return self._parse_flat_chain(
                 options_chain, selected_expiry, spot_price, include_greeks
             )
