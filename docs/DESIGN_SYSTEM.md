@@ -61,8 +61,9 @@ This file is the single design-system reference for colors, typography, spacing,
 - `--color-warning-bg`: `rgba(245, 158, 11, 0.15)`
 
 ## Typography
-- `--font-sans`: `var(--font-sans), "IBM Plex Sans", system-ui, -apple-system, sans-serif`
-- `--font-mono`: `var(--font-mono), "DM Mono", "Consolas", monospace`
+- `--font-sans`: `"Geist Variable"` (fallback `--font-sans-fallback`: system UI stack). All UI and body text.
+- `--font-mono`: `"Geist Mono Variable"` (fallback `--font-mono-fallback`: system monospace stack). Prices, percentages and financial metrics, with tabular numbers.
+- Both are self-hosted with `@fontsource-variable/geist` and `@fontsource-variable/geist-mono`, imported in `frontend/main.tsx` and mapped in `frontend/app/globals.css`.
 - Sizes:
   - `--text-xxs`: `10px`
   - `--text-xs`: `11px`

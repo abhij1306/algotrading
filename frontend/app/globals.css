@@ -40,9 +40,11 @@
   --color-warning: #b45309;
   --color-warning-bg: #fef3c7;
 
-  /* Typography fallback stacks (primary faces are injected by next/font vars) */
-  --font-sans-fallback: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  --font-mono-fallback: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  /* Typography: Geist variable fonts, self-hosted via @fontsource-variable (see main.tsx). */
+  --font-sans: "Geist Variable";
+  --font-mono: "Geist Mono Variable";
+  --font-sans-fallback: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono-fallback: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Font Sizes */
   --text-xxs: 10px;
@@ -400,9 +402,7 @@
   }
 
   .font-mono {
-    font-family:
-      var(--font-mono), var(--font-mono-fallback), ui-monospace, SFMono-Regular, Menlo, Monaco,
-      "Roboto Mono", monospace;
+    font-family: var(--font-mono), var(--font-mono-fallback);
   }
 
   /* Font Weight Utilities */
