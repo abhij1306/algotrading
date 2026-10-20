@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from ..strategies.black_scholes import calculate_implied_volatility, get_option_greeks
+from .options.black_scholes import (
+    IST,
+    calculate_implied_volatility,
+    get_option_greeks,
+    years_to_expiry,
+)
 from .symbol_master import symbol_master
 
 if TYPE_CHECKING:
@@ -400,7 +405,7 @@ class OptionChainService:
         # Epoch seconds fallback
         if text.isdigit():
             try:
-                return datetime.fromtimestamp(int(text)).date()
+                return datetime.fromtimestamp(int(text), tz=IST).date()
             except Exception:
                 return None
         return None
@@ -582,22 +587,10 @@ class OptionChainService:
             prev_close=prev_close,
         )
 
-    def _calculate_tte(self, expiry: date) -> float:
-        """Calculate time to expiry in years"""
-        now = datetime.now()
-        expiry_datetime = datetime.combine(expiry, datetime.strptime("15:30", "%H:%M").time())
-
-        if now > expiry_datetime:
-            return 0.001  # Minimum time
-
-        # Calculate trading hours remaining (6.25 hours per day)
-        time_diff = expiry_datetime - now
-        hours_remaining = time_diff.total_seconds() / 3600
-
-        # Trading hours per year: 6.25 * 252 = 1575
-        trading_hours_per_year = 6.25 * 252
-
-        return max(hours_remaining / trading_hours_per_year, 0.001)
+    def _calculate_tte(self, expiry: date, now: datetime | None = None) -> float:
+        """Years (ACT/365) from `now` (default: the current IST time) to 15:30 IST on
+        `expiry`; 0.0 at or after expiry, where IV and greeks are not computed."""
+        return years_to_expiry(expiry, now or datetime.now(IST))
 
     def get_expiries(self, underlying: str) -> list[date]:
         """Get list of available expiry dates for an underlying"""
