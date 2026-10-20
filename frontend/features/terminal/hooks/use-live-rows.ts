@@ -14,7 +14,10 @@ const NO_SYMBOLS: string[] = [];
  * even when the symbols on screen do not change.
  */
 function useScreenQuotes(groups: readonly (readonly string[])[]) {
-  const open = isMarketOpen(new Date(useNow(CLOCK_TICK_MS))).isOpen;
+  // The tick only re-renders; market hours are read at the real instant, not the floored tick,
+  // so the first tick after 15:30:00.000 already reads closed.
+  useNow(CLOCK_TICK_MS);
+  const open = isMarketOpen().isOpen;
   const symbols = useMemo(() => (open ? screenSymbols(groups) : NO_SYMBOLS), [groups, open]);
   return useQuotes(symbols);
 }

@@ -957,9 +957,9 @@ describe("terminal stale selections", () => {
     advanceClock(1000);
     expect(quoteSubscriptions.at(-1)).toEqual(["SBIN"]);
 
-    // 15:29:59.5 IST; the clock reads whole seconds and 15:30:00 is still in session.
+    // 15:29:59.5 IST, still in session; the next tick, at 15:30:00.5, is past the close.
     vi.setSystemTime(new Date("2026-10-19T09:59:59.500Z"));
-    advanceClock(1000);
+    advanceClock(0);
     expect(quoteSubscriptions.at(-1)).toEqual(["SBIN"]);
     advanceClock(1000);
     expect(quoteSubscriptions.at(-1)).toEqual([]);

@@ -169,8 +169,10 @@ export function searchView(input: {
   const active = query.length >= 2;
   if (!active) return { active, results: NO_RESULTS, loading: false };
   const current = input.searchTerm === query && !input.isPlaceholderData;
-  if (!current || input.isFetching) return { active, results: NO_RESULTS, loading: true };
-  return { active, results: input.data ?? NO_RESULTS, loading: false };
+  if (!current) return { active, results: NO_RESULTS, loading: true };
+  // A refresh of this same query keeps its results usable; only a first fetch reads as pending.
+  const results = input.data ?? NO_RESULTS;
+  return { active, results, loading: input.isFetching && input.data === undefined };
 }
 
 /** At least 1, as the quantity and lots inputs always were. */
