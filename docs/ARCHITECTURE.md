@@ -210,5 +210,22 @@ Operational endpoint:
 - `start.bat` -> `start_dev.py` -> backend `backend/start_server.py`
 - Backend health probe: `/ping`
 
+## Database Unavailable
+- The Postgres engine uses `connect_timeout=3`, so a stopped server fails a request in seconds.
+- Startup logs one line, `[ERROR] Database unreachable at host:port/db (start Postgres: net start postgresql-x64-18)`,
+  and the server keeps running.
+- Any request that hits a down database answers HTTP 503
+  `{"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}`. This holds when a
+  router wraps the error (`raise HTTPException(...) from exc`). Driver text never reaches the client.
+- `GET /api/system/health` answers 503 with its normal report (`status: DOWN`, `postgresql: DOWN`) plus that envelope.
+  If the database answers but the probe query fails (schema drift, SQL bug), it reports `postgresql: ERROR` and
+  `status: DEGRADED` with HTTP 200, not an outage.
+- "Database unavailable" means connection loss only (`app/utils/db_errors.py`): OperationalError, InterfaceError,
+  or a connection-invalidated DBAPIError. SQL bugs (ProgrammingError, IntegrityError) stay 500.
+- Services must not turn a down database into empty lists or zeros. Order placement fails closed: the PENDING
+  row is flushed before the broker call, so a LIVE order never reaches the broker while the DB is down.
+- Logging: the handler writes one throttled warning per minute. A log filter strips the traceback from any
+  `logger.exception` record whose exception is a down DB, and lets through one such line per call site per minute.
+
 ## Drift Policy
 If code and docs diverge, code is authoritative; docs must be updated in the same PR/commit.

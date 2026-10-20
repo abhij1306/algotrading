@@ -10,6 +10,7 @@ from ..brokers.plugins.fyers import FyersBroker
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
+from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ NO_PAPER_PRICE_MESSAGE = (
     "No market price available for {symbol}; paper {order_type} order rejected. "
     "Subscribe the symbol to live data or use a LIMIT order."
 )
+LIVE_SUBMIT_FAILED_MESSAGE = "Broker order submission failed"
+ORDER_FAILED_MESSAGE = "Order placement failed"
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
@@ -338,6 +341,7 @@ class OrderExecutionService:
         Returns:
             Dict with order_id, status, message
         """
+        new_order: LiveOrder | None = None
         try:
             effective_mode = self._resolve_mode(order_params, mode)
             quantity = self._validate_quantity(order_params)
@@ -358,10 +362,13 @@ class OrderExecutionService:
             if effective_mode == "LIVE":
                 try:
                     response = self._submit_live_order(order_params, fyers_symbol, new_order)
-                except Exception as e:
+                except Exception:
+                    # Full error stays in the server log; the client and the stored
+                    # order get a fixed message (no broker error text leaks).
+                    logger.exception("Live order submission failed for %s", fyers_symbol)
                     new_order.status = "ERROR"
-                    new_order.reject_reason = str(e)
-                    response = {"status": "ERROR", "message": str(e)}
+                    new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
+                    response = {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
             else:
                 paper_fill = self._simulate_paper_fill(order_params, db_symbol)
                 response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
@@ -369,10 +376,29 @@ class OrderExecutionService:
             db.commit()
             return response
 
-        except Exception as e:
-            logger.exception(f"Order Placement Failed: {e}")
+        except ValueError as e:
+            # Request validation (mode, quantity, symbol); the message is written for the user.
             db.rollback()
             return {"status": "ERROR", "message": str(e)}
+        except Exception as e:
+            # Read before rollback, which expunges the flushed row.
+            submitted_id = (
+                new_order.id if new_order is not None and new_order.status == "SUBMITTED" else None
+            )
+            db.rollback()
+            if is_db_unavailable(e):
+                # Fail closed: the API answers 503, never "placed". A LIVE order only reaches
+                # the broker after its PENDING row is flushed, so a DB that is already down
+                # stops it first. If the DB drops between the broker call and the commit,
+                # the broker order exists but is not recorded: say so in the log.
+                if submitted_id is not None:
+                    logger.error(
+                        "LIVE order %s accepted by broker but not recorded: database unavailable",
+                        submitted_id,
+                    )
+                raise
+            logger.exception("Order placement failed")
+            return {"status": "ERROR", "message": ORDER_FAILED_MESSAGE}
 
     def modify_order(self, order_id: str, params: dict[str, Any], db: Session) -> dict[str, Any]:
         """Modify an existing order"""
@@ -410,6 +436,8 @@ class OrderExecutionService:
             db.commit()
             return {"status": "SUCCESS", "message": "Order Modified"}
         except Exception as e:
+            if is_db_unavailable(e):
+                raise
             return {"status": "ERROR", "message": str(e)}
 
     @staticmethod
@@ -496,6 +524,8 @@ class OrderExecutionService:
                         return {"status": "SUCCESS", "message": "Order Already Cancelled"}
                     return {"status": "ERROR", "message": msg}
             except Exception as e:
+                if is_db_unavailable(e):
+                    raise
                 return {"status": "ERROR", "message": str(e)}
 
         # Paper Mode

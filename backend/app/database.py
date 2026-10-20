@@ -86,6 +86,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "algotrading")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_CONNECT_TIMEOUT_S = 3
 
 if os.getenv("USE_SQLITE_TEST", "False") == "True":
     DATABASE_URL = "sqlite:///./test_quant.db"
@@ -104,9 +105,20 @@ else:
         max_overflow=40,  # Increased from 20 for peak load handling
         pool_recycle=3600,  # Recycle connections after 1 hour
         pool_timeout=30,  # Add timeout to prevent indefinite waiting
+        # A down server fails a request in seconds instead of hanging on the TCP connect.
+        connect_args={"connect_timeout": DB_CONNECT_TIMEOUT_S},
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def describe_database_target() -> str:
+    """Where the engine connects, for log lines: host:port/name, never the password."""
+    url = engine.url
+    if url.get_backend_name() == "sqlite":
+        return f"sqlite:{url.database}"
+    return f"{url.host}:{url.port}/{url.database}"
+
 
 # ============================================
 # Database Helpers

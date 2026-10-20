@@ -65,6 +65,76 @@ def log_exception_throttled(logger: logging.Logger, site: str, msg: str, *args: 
     return False
 
 
+_last_warning_at: dict[str, float] = {}
+
+
+def log_warning_throttled(logger: logging.Logger, site: str, msg: str, *args: object) -> bool:
+    """Log one warning line (no traceback) at most once per TRACEBACK_INTERVAL_S for this
+    site; in between, log at debug and count it under runtime metric
+    "logging.suppressed_warnings.<site>".
+
+    Returns True when the warning was written.
+    """
+    now = time.monotonic()
+    with _traceback_lock:
+        last = _last_warning_at.get(site)
+        full = last is None or now - last >= TRACEBACK_INTERVAL_S
+        if full:
+            _last_warning_at[site] = now
+    if full:
+        logger.warning(msg, *args)
+        return True
+
+    from .runtime_metrics import runtime_metrics
+
+    runtime_metrics.increment(f"logging.suppressed_warnings.{site}")
+    logger.debug(msg, *args)
+    return False
+
+
+class DatabaseUnavailableLogFilter(logging.Filter):
+    """Keep a down database from flooding the log.
+
+    While Postgres is down every DB-backed request fails, and many routers log the
+    failure with logger.exception: about 100 lines of traceback per request. For a record
+    whose exception is a DB-unavailable error (see utils.db_errors) this filter drops the
+    traceback, keeps only the first line of the message, and lets one such record through
+    per logger and call site every TRACEBACK_INTERVAL_S. Other records pass untouched.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_at: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is None:
+            return True
+        from .db_errors import is_db_unavailable
+
+        if not is_db_unavailable(exc):
+            return True
+
+        site = f"{record.name}:{record.funcName}:{record.lineno}"
+        now = time.monotonic()
+        with self._lock:
+            last = self._last_at.get(site)
+            if last is not None and now - last < TRACEBACK_INTERVAL_S:
+                return False
+            self._last_at[site] = now
+
+        first_line = (record.getMessage().strip().splitlines() or [""])[0]
+        record.msg = f"{first_line} [database unavailable; traceback suppressed]"
+        record.args = None
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
+_db_unavailable_filter = DatabaseUnavailableLogFilter()
+
+
 def setup_logging(name: str = "smarttrader") -> logging.Logger:
     """
     Set up centralized logging with rotation and console output.
@@ -82,6 +152,7 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
     # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(_db_unavailable_filter)
     logger.addHandler(console_handler)
 
     # File Handler (Rotating: 10MB per file, keep 5 backups)
@@ -90,6 +161,7 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
         log_file = LOG_DIR / f"{name}.log"
         file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(_db_unavailable_filter)
         logger.addHandler(file_handler)
     except OSError as e:
         logger.warning("Could not create file handler: %s. Using console logging only.", e)
