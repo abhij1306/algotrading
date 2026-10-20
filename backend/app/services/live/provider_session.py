@@ -170,10 +170,6 @@ class ProviderSession:
         """Explicit disconnect: stop the runner and close the socket."""
         self._teardown(SessionState.CLOSED)
 
-    def disconnect(self) -> None:
-        """stop(), for the legacy `live_market.ws_service.disconnect()` call in routers/auth.py."""
-        self.stop()
-
     def _teardown(self, final_state: SessionState) -> None:
         with self._lock:
             self._stop.set()

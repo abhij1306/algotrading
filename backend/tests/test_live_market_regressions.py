@@ -490,3 +490,28 @@ def test_connect_route_reports_a_generic_message_for_an_unknown_status(
         "status": "something_new",
         "message": "WebSocket initialization completed",
     }
+
+
+@pytest.mark.parametrize("state", ["connected", "connecting"])
+def test_legacy_ws_service_disconnect_is_the_explicit_disconnect(state: str) -> None:
+    """routers/auth.py logout calls `ws_service.disconnect()`: it must keep the feed down."""
+    if state == "connecting":
+        live, factory = make_live(spawn=lambda _target: None)  # runner not done yet
+    else:
+        live, factory = make_live()
+    live.dev_mode = True
+    assert live.session.start() is True
+
+    shim = live.ws_service
+    assert shim is not None
+    shim.disconnect()
+
+    assert live.session.state is SessionState.CLOSED
+    assert all(s.closed for s in factory.sockets)
+    assert live.connect(prevalidated_token=True) == "disconnected"  # the monitor stays down
+
+
+def test_legacy_ws_service_is_none_while_idle() -> None:
+    live, _factory = make_live()
+
+    assert live.ws_service is None

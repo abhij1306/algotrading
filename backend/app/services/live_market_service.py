@@ -103,13 +103,15 @@ class LiveMarketService:
         return manager.registry
 
     @property
-    def ws_service(self) -> ProviderSession | None:
-        """The session while it holds a socket, else None.
+    def ws_service(self) -> LiveMarketService | None:
+        """Legacy shim: this service while a provider socket or connect is live, else None.
 
-        Kept for routers/auth.py, which still calls `ws_service.disconnect()` until the
-        TokenStore PR moves it to disconnect().
+        routers/auth.py (logout) still calls `ws_service.disconnect()`, and the TokenStore PR
+        checks `ws_service is not None`. Returning the service makes that call the explicit
+        disconnect(), so a connect in flight or the monitor cannot reconnect after logout.
         """
-        return self.session if self.session.has_socket else None
+        busy = self.session.has_socket or self.session.state is SessionState.CONNECTING
+        return self if busy else None
 
     def _desired_provider_symbols(self) -> list[str]:
         """Every symbol any owner holds, in provider format: the session's replay set."""
