@@ -81,6 +81,10 @@ Implemented in `backend/app/services/live_market_service.py`:
 - `ws_manager.broadcast()` removes dead sockets on `WebSocketDisconnect`/`RuntimeError`
 - Live service queues pending subscriptions when provider WS is not yet connected
 - Provider reconnect uses exponential backoff in thread runner (`max_retries=10`)
+- On every provider (re)connect, `LiveMarketService.on_ws_connected()` replays the aggregate symbol set of all connected clients plus any queued symbols
+- Dropping a client (disconnect, slow-client overflow, dead socket) goes through `ws_manager.disconnect()`, which releases provider symbols no remaining client needs via `on_symbols_released`; slow clients are closed with code 1013
+- `POST /api/websocket/disconnect` calls `LiveMarketService.disconnect()`; the monitor loop and `subscribe()` do not reconnect until an explicit `POST /api/websocket/connect` (non-explicit connects return `disconnected`)
+- The Fyers client is resolved per use (broker and option chain do not cache it), and `reset_fyers_client()` also drops the class singleton, so re-login takes effect without restart
 - `GET /api/websocket/status` is the operational health view for local runtime checks:
   - provider connection state
   - pending subscriptions

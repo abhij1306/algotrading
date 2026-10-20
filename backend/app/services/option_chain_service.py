@@ -92,7 +92,6 @@ class OptionChainService:
     def __init__(self):
         self._cache: dict[str, dict] = {}  # symbol -> {expiry -> (data, timestamp)}
         self._cache_ttl = 5  # 5 seconds for live market
-        self._fyers_client = None
         self._last_log_times: dict[str, float] = {}
 
     def _log_with_cooldown(
@@ -112,12 +111,10 @@ class OptionChainService:
         log_fn(message, *args)
 
     def _get_fyers_client(self):
-        """Lazy load Fyers client"""
-        if self._fyers_client is None:
-            from ..services.fyers_client import get_fyers_client
+        """Resolve the current Fyers client (never cached, so re-login is picked up)."""
+        from ..services.fyers_client import get_fyers_client
 
-            self._fyers_client = get_fyers_client()
-        return self._fyers_client
+        return get_fyers_client()
 
     def _underlying_to_fyers(self, underlying: str) -> str:
         """Convert underlying symbol to Fyers format for option chain"""

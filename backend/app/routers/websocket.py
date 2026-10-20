@@ -29,10 +29,11 @@ async def connect_websocket():
         from ..services.live_market_service import live_market
 
         # Ensure live_market captures the running loop for thread-safe broadcasting.
-        connect_status = live_market.connect(loop=asyncio.get_running_loop())
+        connect_status = live_market.connect(loop=asyncio.get_running_loop(), explicit=True)
         message_map = {
             "started": "WebSocket initialization triggered",
             "already_connected": "WebSocket already connected",
+            "disconnected": "WebSocket was explicitly disconnected",
             "market_closed": "WebSocket deferred because market is closed",
             "token_invalid": "WebSocket deferred because Fyers token is invalid/expired",
             "error": "WebSocket initialization failed",
@@ -63,10 +64,9 @@ async def subscribe_symbols(request: SubscribeRequest):
 def disconnect_websocket():
     """Close WebSocket connection"""
     try:
-        from ..services.fyers_websocket import get_websocket_service
+        from ..services.live_market_service import live_market
 
-        ws_service = get_websocket_service()
-        ws_service.disconnect()
+        live_market.disconnect()
         return {"status": "disconnected"}
     except Exception as e:
         raise handle_api_error(e, "Failed to disconnect WebSocket")
@@ -173,15 +173,8 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         pass  # Connection already dead
     finally:
-        before_symbols = manager.get_all_subscribed_symbols()
+        # manager.disconnect releases symbols no other client needs via on_symbols_released.
         await manager.disconnect(websocket)
-        after_symbols = manager.get_all_subscribed_symbols()
-        removed_symbols = sorted(before_symbols - after_symbols)
-        if removed_symbols:
-            try:
-                await live_market.unsubscribe(removed_symbols)
-            except Exception as unsub_e:
-                logger.warning(f"[WebSocket] LiveMarket cleanup unsubscribe failed: {unsub_e}")
 
 
 async def _safe_send(websocket: WebSocket, data: dict):

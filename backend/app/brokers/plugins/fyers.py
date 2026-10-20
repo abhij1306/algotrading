@@ -26,10 +26,6 @@ class FyersBroker(IBroker):
     _circuit_failure_threshold = 3
     _circuit_recovery_sec = 20.0
 
-    def __init__(self) -> None:
-        self.client = None
-        self.connect()
-
     @classmethod
     def _circuit_open(cls) -> bool:
         with cls._circuit_lock:
@@ -80,28 +76,26 @@ class FyersBroker(IBroker):
             logger.exception("Fyers operation %s failed", operation, exc_info=exc)
             return fallback
 
-    def connect(self) -> None:
-        """Attempt to load authenticated client"""
+    @property
+    def client(self) -> Any:
+        """Current Fyers SDK model, resolved on each use so re-login is picked up."""
         try:
-            fyers_service = get_fyers_client()
-            self.client = fyers_service.fyers
+            return get_fyers_client().fyers
         except Exception as e:
             logger.warning("Fyers Broker: Not connected (%s)", e)
-            self.client = None
+            return None
 
     def place_order(self, order: dict[str, Any]) -> OrderResponse:
         """
         Execute order on Fyers.
         """
         if not self.client:
-            self.connect()  # Try one last time
-            if not self.client:
-                return OrderResponse(
-                    order_id="",
-                    status="REJECTED",
-                    message=f"Fyers {CLIENT_NOT_INITIALIZED}. Please Login.",
-                    details=None,
-                )
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=f"Fyers {CLIENT_NOT_INITIALIZED}. Please Login.",
+                details=None,
+            )
 
         # Map generic order dict to the broker order payload.
 
