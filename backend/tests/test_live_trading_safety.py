@@ -44,18 +44,26 @@ class FakeFyersClient:
         return self.quotes_response
 
 
+class FakeClientBroker(FyersBroker):
+    """FyersBroker with a fixed client instead of the live Fyers login."""
+
+    client: Any = None  # shadows FyersBroker.client so tests can assign it
+
+    def __init__(self, client: FakeFyersClient | None) -> None:
+        self.client = client
+
+
 @pytest.fixture(autouse=True)
 def reset_circuit_breaker() -> Generator[None, None, None]:
-    FyersBroker._record_success()
+    for broker_cls in (FyersBroker, FakeClientBroker):
+        broker_cls._record_success()
     yield
-    FyersBroker._record_success()
+    for broker_cls in (FyersBroker, FakeClientBroker):
+        broker_cls._record_success()
 
 
 def make_broker(client: FakeFyersClient | None) -> FyersBroker:
-    broker = FyersBroker.__new__(FyersBroker)
-    broker.client = client
-    broker.connect = lambda: None  # never reach the real Fyers login
-    return broker
+    return FakeClientBroker(client)
 
 
 # --- 1. Risk price estimate reads the real Fyers quote shape ---------------
