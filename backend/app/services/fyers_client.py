@@ -52,6 +52,7 @@ class FyersClient:
         self.access_token = None
         self.token_expires_at = None
         self._token_file_mtime_ns = None
+        self._expired_token_mtime_ns: int | None = None
         self._connecting = False
         self._validating_token = False
         self._missing_token_file_logged = False
@@ -94,11 +95,18 @@ class FyersClient:
             self._drop_credentials()  # the store logged why the file is not a usable token
             return
 
+        if token.is_expired():
+            # Fail closed: an expired token is never installed, so calls that skip
+            # validate_token() cannot use it either. Warn once per token file.
+            if self._expired_token_mtime_ns != mtime_ns:
+                logger.warning("Fyers token expired on %s", token.expires_at)
+                self._expired_token_mtime_ns = mtime_ns
+            self._drop_credentials()
+            return
+
         self.client_id = token.client_id
         self.access_token = token.access_token
         self.token_expires_at = token.expires_at
-        if token.is_expired():
-            logger.warning("Fyers token expired on %s", token.expires_at)
 
         # Credentials are available again;
         # allow a future missing-credentials warning if needed.

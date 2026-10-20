@@ -301,7 +301,15 @@ def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
         done.set()
         return "market_closed"
 
+    disconnects: list[int] = []
+
+    def fake_disconnect() -> None:
+        assert not calls, "the old socket must close before the new connect"
+        disconnects.append(1)
+
     monkeypatch.setattr(live_market, "loop", loop)
+    monkeypatch.setattr(live_market, "ws_service", object())  # a socket built with the old token
+    monkeypatch.setattr(live_market, "disconnect", fake_disconnect)
     monkeypatch.setattr(live_market, "connect_async", fake_connect_async)
     try:
         auth_flow._connect_live_feed()
@@ -311,6 +319,7 @@ def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
         worker.join(timeout=5)
         loop.close()
 
+    assert disconnects == [1]
     assert calls == [(loop, True, loop)]
 
 

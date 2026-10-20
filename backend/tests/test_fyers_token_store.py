@@ -206,11 +206,29 @@ def test_fyers_client_reads_credentials_through_the_store(
 
     assert client._refresh_credentials_if_changed() is False  # no file yet
 
-    store.save(REPLY, client_id="CLIENT-100", now=datetime(2020, 3, 10, 9, 0, tzinfo=UTC))
+    store.save(REPLY, client_id="CLIENT-100")
     assert client._refresh_credentials_if_changed() is True
     assert (client.client_id, client.access_token) == ("CLIENT-100", "tok-secret-abc")
-    assert client.token_expires_at == datetime(2020, 3, 10, 18, 30, tzinfo=UTC)
-    assert client.is_token_expired() is True
+    assert client.token_expires_at is not None
+    assert client.is_token_expired() is False
+
+
+def test_client_never_installs_an_expired_token(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = _isolated_client(store, monkeypatch)
+    store.save(REPLY, client_id="CLIENT-100")
+    client._load_credentials()
+    client.fyers = "sdk-model-with-old-token"
+
+    store.save(REPLY, client_id="CLIENT-100", now=datetime(2020, 3, 10, 9, 0, tzinfo=UTC))
+    os.utime(store.path, ns=(1, 1))  # a distinct mtime, however fast the two saves were
+    with caplog.at_level("WARNING"):
+        assert client._refresh_credentials_if_changed() is False
+        assert client._refresh_credentials_if_changed() is False
+
+    assert (client.client_id, client.access_token, client.fyers) == (None, None, None)
+    assert caplog.text.count("Fyers token expired") == 1  # warned once, not on every check
 
 
 def _isolated_client(store: TokenStore, monkeypatch: pytest.MonkeyPatch) -> FyersClient:
@@ -225,6 +243,7 @@ def _isolated_client(store: TokenStore, monkeypatch: pytest.MonkeyPatch) -> Fyer
             self.access_token = None
             self.token_expires_at = None
             self._token_file_mtime_ns = None
+            self._expired_token_mtime_ns = None
             self._missing_token_file_logged = False
             self._missing_credentials_logged = False
 
