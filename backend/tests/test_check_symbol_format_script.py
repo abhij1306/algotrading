@@ -15,6 +15,7 @@ a = s.replace("NSE:", "")
 "d.replace('-EQ', '')"
 "e" + x.replace('-EQ', '') if y else z
 "f = s.split(':')"
+def h(s):
     return s.split(":")
 g = s.replace('-EQ', '').split(':')
 """
@@ -34,13 +35,24 @@ def test_check_file_reports_code_lines_only(checker: ModuleType, tmp_path: Path)
 
     found = [(v.code, v.line, v.column, v.context) for v in checker.check_file(path)]
 
+    # Tokenized (PR #34 review): code after a leading string literal is reported (line 5);
+    # a string-only line is skipped even when the string contains "=" (line 6).
     assert found == [
         ("SYM001", 1, 6, 'a = s.replace("NSE:", "")'),
-        ("SYM002", 8, 6, "g = s.replace('-EQ', '').split(':')"),
-        ("SYM003", 6, 7, "\"f = s.split(':')\""),
-        ("SYM003", 7, 13, 'return s.split(":")'),
-        ("SYM003", 8, 25, "g = s.replace('-EQ', '').split(':')"),
+        ("SYM002", 5, 8, "\"e\" + x.replace('-EQ', '') if y else z"),
+        ("SYM002", 9, 6, "g = s.replace('-EQ', '').split(':')"),
+        ("SYM003", 8, 13, 'return s.split(":")'),
+        ("SYM003", 9, 25, "g = s.replace('-EQ', '').split(':')"),
     ]
+
+
+def test_check_file_falls_back_to_line_heuristic_when_untokenizable(
+    checker: ModuleType, tmp_path: Path
+) -> None:
+    path = tmp_path / "broken.py"
+    path.write_text('a = s.split(":")\n"b.split(\':\')"\nc = (\n', encoding="utf-8")
+
+    assert [(v.code, v.line) for v in checker.check_file(path)] == [("SYM003", 1)]
 
 
 @pytest.mark.parametrize(

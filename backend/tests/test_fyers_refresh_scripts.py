@@ -130,12 +130,14 @@ def test_equity_refresh_merges_and_reports(
         "dataset_unique_symbols_total": 1,
         "min_date": "2026-01-05",
         "max_date": "2026-01-06",
-        "failed_symbols": 2,
+        "failed_symbols": 3,
     }
     failures = json.loads(equity.FAILED_PATH.read_text(encoding="utf-8"))
     assert failures == {
         "BBB": {"s": "error", "message": "no data"},
         "CCC": {"error": "token expired"},
+        # Candles returned but all malformed counts as failed (PR #34 review).
+        "DDD": {"error": "no valid candles", "candles": 1},
     }
     written = pd.read_parquet(equity.OUT_PARQUET)
     assert written[["symbol", "close", "year"]].values.tolist() == [

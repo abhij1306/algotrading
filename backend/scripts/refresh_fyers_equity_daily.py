@@ -271,9 +271,13 @@ def _fetch_symbols(
                 throttle_s=throttle,
             )
             candles = response.get("candles") if isinstance(response, dict) else None
-            if not candles:
+            frame = candles_to_frame(symbol, fyers_symbol, candles) if candles else None
+            if frame is None:
                 failures[symbol] = response
-            elif not (frame := candles_to_frame(symbol, fyers_symbol, candles)).empty:
+            elif frame.empty:
+                # Candles came back but none was usable: count it as failed, not fetched.
+                failures[symbol] = {"error": "no valid candles", "candles": len(candles)}
+            else:
                 parts.append(frame)
         except Exception as exc:
             failures[symbol] = {"error": str(exc)}
