@@ -16,7 +16,8 @@ from app.brokers.plugins import fyers as fyers_plugin
 from app.data_layer.exceptions import DataNotFoundError, DataSourceUnavailableError
 from app.data_layer.provider import DataProvider
 from app.main import app
-from app.routers import auth, terminal, upload
+from app.routers import terminal, upload
+from app.services.fyers.auth_flow import fyers_auth
 from app.services.history_service import daily_history_service
 from app.services.live_market_service import live_market
 from app.services.risk_manager import RiskManager, RiskStatus
@@ -153,9 +154,8 @@ def test_websocket_status_error_is_fixed_text(
 
 
 def test_fyers_status_error_is_fixed_text(api: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(auth._status_cache, "cached_at", 0)
-    monkeypatch.setattr(auth.os.path, "exists", lambda _path: True)
-    monkeypatch.setattr(auth, "open", _boom, raising=False)
+    fyers_auth.invalidate_status()
+    monkeypatch.setattr(fyers_auth.store, "load", _boom)
 
     response = api.get("/api/auth/fyers/status")
 

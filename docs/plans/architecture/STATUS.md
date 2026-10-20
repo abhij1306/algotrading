@@ -64,7 +64,7 @@ Files: `fyers_client.py`, `data_fetcher.py`, `routers/market.py`, `market_dashbo
 
 - [ ] 2. A Quote type and one parser in the gateway (M). Delete `get_parsed_quotes`.
 - [ ] 3. Gateway `option_chain()`, `profile()` and `depth()` (M).
-- [ ] 4. A TokenStore, with the auth flow moved out of `routers/auth.py` (S-M). Use zoneinfo for IST and write the token file as 0600.
+- [x] 4. A TokenStore, with the auth flow moved out of `routers/auth.py` (S-M). Use zoneinfo for IST and write the token file as 0600. Done: `services/fyers/token_store.py` and `services/fyers/auth_flow.py`.
 - [ ] 5. MarketQuoteService and SymbolSearchService, extracted from `market.py` (M).
 - [ ] 6. MarketOverviewService on `utils/cache` (S). It must not cache error payloads.
 - [ ] 7. Retire DataProvider and `data_layer`, and move `data_fetcher` to `services/quotes.py` (M).

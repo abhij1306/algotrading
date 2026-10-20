@@ -3,14 +3,12 @@ Unified Fyers Client - Robust and Singleton
 Handles authentication, token management, and data fetching.
 """
 
-import json
-import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any, Self
 
-from ..paths import FYERS_TOKEN_PATH
 from ..utils.logger import get_logger
+from .fyers.token_store import TokenStoreError, fyers_client_disabled, token_store
 from .symbol_master import symbol_master
 
 # Lazy import fyers_apiv3 to speed up startup
@@ -37,6 +35,25 @@ class FyersClient:
     """
 
     _instance = None
+    _fyers: Any = None
+
+    @property
+    def fyers(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+        """The SDK model, or None once the loaded token has passed its expiry.
+
+        Every caller that reaches the SDK goes through here, so a token that expires while
+        the app runs (the file, and so its mtime, unchanged) stops being used at once,
+        even by calls that skip validate_token().
+        """
+        if self._fyers is not None and self.token_expires_at is not None:
+            if datetime.now(UTC) > self.token_expires_at:
+                logger.warning("Fyers token expired on %s; dropping it", self.token_expires_at)
+                self._drop_credentials()
+        return self._fyers
+
+    @fyers.setter
+    def fyers(self, model: Any) -> None:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+        self._fyers = model
 
     def __new__(cls) -> Self:
         if cls._instance is None:
@@ -53,13 +70,14 @@ class FyersClient:
         self.access_token = None
         self.token_expires_at = None
         self._token_file_mtime_ns = None
+        self._expired_token_mtime_ns: int | None = None
         self._connecting = False
         self._validating_token = False
         self._missing_token_file_logged = False
         self._missing_credentials_logged = False
 
         # Skip initialization if DEV_MODE is set
-        if os.getenv("DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        if fyers_client_disabled():
             logger.info("[DEV_MODE] Skipping Fyers client initialization")
             self._initialized = True
             return
@@ -71,51 +89,72 @@ class FyersClient:
         self._initialized = True
 
     def _load_credentials(self) -> None:
-        """Load credentials from file with expiry checking"""
-        if not FYERS_TOKEN_PATH.exists():
-            if not self._missing_token_file_logged:
-                logger.warning(f"Fyers token file not found at {FYERS_TOKEN_PATH}")
-                self._missing_token_file_logged = True
+        """Load credentials from the token file, with expiry checking.
+
+        Fails closed: when the file is gone, unusable or unreadable, the cached credentials
+        and SDK model are dropped so no call goes out with an old token.
+        """
+        store = token_store
+        try:
+            mtime_ns = store.mtime_ns()
+            if mtime_ns is None:
+                if not self._missing_token_file_logged:
+                    logger.warning("Fyers token file not found at %s", store.path)
+                    self._missing_token_file_logged = True
+                self._drop_credentials()
+                return
+            self._token_file_mtime_ns = mtime_ns
+            token = store.load()
+        except TokenStoreError:
+            logger.exception("Failed to load Fyers credentials")
+            self._drop_credentials()
+            return
+        if token is None:
+            self._drop_credentials()  # the store logged why the file is not a usable token
             return
 
-        try:
-            self._token_file_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
-            with open(FYERS_TOKEN_PATH) as f:
-                data = json.load(f)
-                self.client_id = data.get("client_id")
-                self.access_token = data.get("access_token")
+        if not token.is_usable():
+            # Fail closed: an expired token (or one without a client id) is never installed,
+            # so calls that skip validate_token() cannot use it either. Warn once per file.
+            if self._expired_token_mtime_ns != mtime_ns:
+                if token.client_id:
+                    logger.warning("Fyers token expired on %s", token.expires_at)
+                else:
+                    logger.warning("Fyers token file has no client id; ignoring it")
+                self._expired_token_mtime_ns = mtime_ns
+            self._drop_credentials()
+            return
 
-                expires_str = data.get("expires_at")
-                if expires_str:
-                    try:
-                        self.token_expires_at = datetime.fromisoformat(expires_str)
-                        if self.token_expires_at.tzinfo is None:
-                            self.token_expires_at = self.token_expires_at.replace(tzinfo=UTC)
+        self.client_id = token.client_id
+        self.access_token = token.access_token
+        self.token_expires_at = token.expires_at
 
-                        now_utc = datetime.now(UTC)
-                        if now_utc > self.token_expires_at:
-                            logger.warning(f"Fyers token expired on {self.token_expires_at}")
-                    except ValueError as e:
-                        logger.warning("Malformed expires_str %r: %s", expires_str, e)
-                        self.token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        # Credentials are available again;
+        # allow a future missing-credentials warning if needed.
+        if self.client_id and self.access_token:
+            self._missing_credentials_logged = False
 
-                # Credentials are available again;
-                # allow a future missing-credentials warning if needed.
-                if self.client_id and self.access_token:
-                    self._missing_credentials_logged = False
-
-        except Exception as e:
-            logger.exception(f"Failed to load Fyers credentials: {e}")
+    def _drop_credentials(self) -> None:
+        """Forget the token and the SDK model built from it (logout or unusable file)."""
+        self.client_id = None
+        self.access_token = None
+        self.token_expires_at = None
+        self._token_file_mtime_ns = None
+        self.fyers = None
 
     def _refresh_credentials_if_changed(self) -> bool:
         """
         Reload token credentials when token file changes on disk.
-        Returns True if credentials were reloaded.
+        Returns True if credentials were reloaded. A removed token file drops the
+        cached credentials (logout) and returns False.
         """
         try:
-            if not FYERS_TOKEN_PATH.exists():
+            current_mtime_ns = token_store.mtime_ns()
+            if current_mtime_ns is None:
+                if self.access_token or self.fyers is not None:
+                    logger.info("Fyers token file removed; dropping cached credentials")
+                    self._drop_credentials()
                 return False
-            current_mtime_ns = FYERS_TOKEN_PATH.stat().st_mtime_ns
             if (
                 self._token_file_mtime_ns == current_mtime_ns
                 and self.client_id
@@ -126,6 +165,10 @@ class FyersClient:
             old_token = self.access_token
             self._load_credentials()
             return bool(self.access_token and self.access_token != old_token)
+        except TokenStoreError:
+            logger.exception("Failed checking token file changes")
+            self._drop_credentials()
+            return False
         except Exception as e:
             logger.exception(f"Failed checking token file changes: {e}")
             return False

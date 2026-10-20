@@ -2,11 +2,10 @@
 Configuration module for loading environment variables and settings
 """
 
-import json
 import logging
 import os
 
-from .paths import FYERS_TOKEN_PATH
+from .services.fyers.token_store import TokenStoreError, fyers_client_disabled, token_store
 from .utils.env_loader import load_dotenv
 
 load_dotenv()
@@ -14,40 +13,29 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def fyers_available() -> bool:
+    """Whether Fyers API calls can be made right now, read at call time.
+
+    True only for an unexpired saved login token with a client id: the Fyers client reads its
+    credentials from the same TokenStore, so this never reports a source the client can't use.
+    False under DEV_MODE, where FyersClient skips loading the token. Never raises: an
+    unreadable token file is "no".
+    """
+    if fyers_client_disabled():
+        return False
+    try:
+        token = token_store.load()
+    except TokenStoreError:
+        logger.warning("Failed to read the Fyers token file %s", token_store.path)
+        return False
+    return token is not None and token.is_usable()
+
+
 class Config:
-    # Try to load Fyers credentials from fyers/config/access_token.json
-    FYERS_TOKEN_FILE = FYERS_TOKEN_PATH
-
-    FYERS_CLIENT_ID = ""
-    FYERS_SECRET_KEY = ""
-    FYERS_ACCESS_TOKEN = ""
-
-    # Load from token file if it exists
-    if FYERS_TOKEN_FILE.exists():
-        try:
-            with open(FYERS_TOKEN_FILE) as f:
-                token_data = json.load(f)
-                FYERS_CLIENT_ID = token_data.get("client_id", "")
-                FYERS_ACCESS_TOKEN = token_data.get("access_token", "")
-                FYERS_SECRET_KEY = token_data.get("secret_key", os.getenv("FYERS_SECRET_KEY", ""))
-        except Exception as exc:
-            logger.warning("Failed to load FYERS token file %s: %s", FYERS_TOKEN_FILE, exc)
-
-    # Fallback to environment variables
-    if not FYERS_CLIENT_ID:
-        FYERS_CLIENT_ID = os.getenv("FYERS_CLIENT_ID", "")
-    if not FYERS_SECRET_KEY:
-        FYERS_SECRET_KEY = os.getenv("FYERS_SECRET_KEY", "")
-    if not FYERS_ACCESS_TOKEN:
-        FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN", "")
-
     # Server settings
     PORT = int(os.getenv("PORT", 8000))
     CACHE_TTL = int(os.getenv("CACHE_TTL", 3600))
     ENV = os.getenv("ENV", "development")
-
-    # Fyers API availability
-    HAS_FYERS = bool(FYERS_CLIENT_ID and FYERS_SECRET_KEY and FYERS_ACCESS_TOKEN)
 
     # Data paths - now using index_universe_loader service
     # NSE_FNO_UNIVERSE_PATH is deprecated - use index_universe_loader.get_index_symbols("NIFTY500")
@@ -57,10 +45,10 @@ class Config:
     MIN_INTRADAY_SCORE = 0  # Show all stocks
     MIN_SWING_SCORE = 0  # Show all stocks
 
-    @classmethod
-    def get_mode(cls) -> str:
+    @staticmethod
+    def get_mode() -> str:
         """Return data fetching mode"""
-        return "Fyers" if cls.HAS_FYERS else "Database only"
+        return "Fyers" if fyers_available() else "Database only"
 
 
 config = Config()
