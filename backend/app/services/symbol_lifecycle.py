@@ -28,6 +28,28 @@ def _given_or_owned_session(session: Session | None) -> Iterator[Session]:
         owned.expunge_all()
 
 
+def _listing_effect(record: SymbolHistory, symbol: str) -> bool | None:
+    """True if ``record`` lists ``symbol``, False if it ends its listing, None if neither.
+
+    ``record`` is one of the symbol's own records (old_symbol or new_symbol is ``symbol``).
+    """
+    change = record.change_type
+    renames = {SymbolChangeType.NAME_CHANGE, SymbolChangeType.SYMBOL_CHANGE}
+    if change == SymbolChangeType.LISTING:
+        return True
+    if record.old_symbol != symbol:
+        # Renamed into it: the symbol starts trading. A merger/acquisition into it leaves
+        # the (already listed) surviving or acquiring symbol unchanged.
+        return True if change in renames and record.new_symbol == symbol else None
+    if change == SymbolChangeType.DE_LISTING:
+        return False
+    if change in {SymbolChangeType.MERGER, SymbolChangeType.ACQUISITION}:
+        return None if record.new_symbol == symbol else False  # absorbed into another
+    if change in renames:
+        return False if record.new_symbol not in (None, symbol) else None
+    return None
+
+
 class SymbolLifecycleService:
     """
     Service for resolving symbols to their historical equivalents.
@@ -156,42 +178,39 @@ class SymbolLifecycleService:
 
         Returns:
             True if symbol was listed/active on the date
+
+        The symbol's records are replayed in effective_from order (ties by id); the last
+        one effective on or before ``check_date`` decides:
+        - LISTING of the symbol, or a name/symbol change into it -> listed;
+        - DE_LISTING of the symbol, a merger/acquisition of it, or a name/symbol change
+          from it to a different symbol -> not listed;
+        - splits, FPOs, rights issues and same-symbol renames leave the status unchanged.
+        Before its first status record the symbol counts as listed unless that first
+        record lists it (a new listing or a rename into it). A symbol with no records
+        is assumed listed. A delisted symbol that relists needs a later LISTING record.
         """
         with _given_or_owned_session(session) as session:
-            # Check if there's any record that overlaps with check_date
-            record = (
+            records = (
                 session.query(SymbolHistory)
-                .filter(
-                    or_(
-                        and_(
-                            SymbolHistory.old_symbol == symbol,
-                            or_(
-                                SymbolHistory.effective_to.is_(None),
-                                SymbolHistory.effective_to >= check_date,
-                            ),
-                        ),
-                        and_(
-                            SymbolHistory.new_symbol == symbol,
-                            SymbolHistory.effective_from <= check_date,
-                        ),
-                    )
-                )
-                .first()
+                .filter(or_(SymbolHistory.old_symbol == symbol, SymbolHistory.new_symbol == symbol))
+                .order_by(SymbolHistory.effective_from, SymbolHistory.id)
+                .all()
             )
 
-            # If no record exists, assume it was listed (current symbol)
-            if record is None:
-                return True
-
-            # Check if the symbol wasn't listed yet on check_date
-            if record.list_date is not None and record.list_date > check_date:
-                return False
-
-            # Check if the symbol was de-listed before or on check_date
-            if record.de_list_date is not None and record.de_list_date <= check_date:
-                return False
-
+        events = [
+            (record.effective_from, listed)
+            for record in records
+            if (listed := _listing_effect(record, symbol)) is not None
+        ]
+        if not events:
             return True
+
+        listed = not events[0][1]
+        for effective_from, becomes_listed in events:
+            if effective_from > check_date:
+                break
+            listed = becomes_listed
+        return listed
 
     def add_symbol_change(
         self,

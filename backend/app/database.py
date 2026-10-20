@@ -11,17 +11,30 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Column, Engine, Table, create_engine, inspect, text
+from sqlalchemy import (
+    Column,
+    Connection,
+    Engine,
+    MetaData,
+    Table,
+    create_engine,
+    insert,
+    inspect,
+    select,
+    text,
+)
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
-from sqlalchemy.schema import CreateColumn
+from sqlalchemy.schema import CreateColumn, CreateTable
 
 from .base import Base
 from .models import (
     BacktestDailyResult,
     BacktestRun,
     Company,
+    CustomUniverse,
+    CustomUniverseMember,
     LiveOrder,
     StrategyPosition,
     SystemConfig,
@@ -188,8 +201,20 @@ def ensure_backtest_schema(*, bind: Engine | None = None) -> None:
 
 
 def ensure_universe_schema(*, bind: Engine | None = None) -> None:
-    """Widen legacy universe table columns to support current index codes."""
+    """Bring universe tables on existing databases up to the current models.
+
+    Idempotent, safe on every start and on a fresh database:
+    - widens index_universe_definitions.index_code to VARCHAR(50) (Postgres only);
+    - repoints custom_universe_members.universe_id at custom_universes.id (it used to
+      reference index_universe_definitions.id), see _ensure_custom_member_fk.
+    """
     db_engine = bind or engine
+    _widen_index_code(db_engine)
+    _ensure_custom_member_fk(db_engine)
+
+
+def _widen_index_code(db_engine: Engine) -> None:
+    """Widen legacy index_universe_definitions.index_code to support current index codes."""
     if db_engine.dialect.name != "postgresql":
         return
 
@@ -211,6 +236,93 @@ def ensure_universe_schema(*, bind: Engine | None = None) -> None:
             text("ALTER TABLE index_universe_definitions ALTER COLUMN index_code TYPE VARCHAR(50)")
         )
     logger.warning("Widened index_universe_definitions.index_code to VARCHAR(50)")
+
+
+_CUSTOM_MEMBERS = "custom_universe_members"
+_CUSTOM_MEMBER_FK = "custom_universe_members_universe_id_fkey"  # Postgres' default name
+_CUSTOM_MEMBER_ORPHANS = (
+    "FROM custom_universe_members WHERE universe_id NOT IN (SELECT id FROM custom_universes)"
+)
+
+
+def _custom_member_fks(connection: Connection) -> tuple[bool, list[str]]:
+    """(has the correct FK, names of the other FKs on universe_id) for custom_universe_members."""
+    fks = [
+        fk
+        for fk in inspect(connection).get_foreign_keys(_CUSTOM_MEMBERS)
+        if fk["constrained_columns"] == ["universe_id"]
+    ]
+    correct = any(
+        fk["referred_table"] == "custom_universes" and fk["referred_columns"] == ["id"]
+        for fk in fks
+    )
+    wrong = [fk["name"] for fk in fks if fk["referred_table"] != "custom_universes" and fk["name"]]
+    return correct, wrong
+
+
+def _ensure_custom_member_fk(db_engine: Engine) -> None:
+    """Point custom_universe_members.universe_id at custom_universes.id.
+
+    Older databases have it referencing index_universe_definitions.id, so every insert
+    from POST /api/universe/custom failed the FK check on Postgres. Member rows whose
+    universe_id is not a custom_universes id cannot belong to any custom universe (the
+    service only ever writes custom_universes ids), so they are counted, logged and
+    deleted before the correct FK is added. index_universe_* tables are never touched.
+    """
+    if not {"custom_universes", _CUSTOM_MEMBERS} <= set(inspect(db_engine).get_table_names()):
+        return
+    with db_engine.connect() as connection:
+        if _custom_member_fks(connection)[0]:
+            return
+
+    is_postgres = db_engine.dialect.name == "postgresql"
+    with db_engine.begin() as connection:
+        if is_postgres:
+            # Serialise concurrent starts, then re-check under the lock.
+            connection.execute(text(f"LOCK TABLE {_CUSTOM_MEMBERS} IN ACCESS EXCLUSIVE MODE"))
+        correct, wrong_fk_names = _custom_member_fks(connection)
+        if correct:
+            return
+        orphans = connection.execute(text(f"SELECT COUNT(*) {_CUSTOM_MEMBER_ORPHANS}")).scalar_one()
+        if orphans:
+            logger.warning(
+                "Deleting %d custom_universe_members rows with no matching custom_universes id",
+                orphans,
+            )
+        if is_postgres:
+            for name in wrong_fk_names:
+                connection.execute(text(f'ALTER TABLE {_CUSTOM_MEMBERS} DROP CONSTRAINT "{name}"'))
+            connection.execute(text(f"DELETE {_CUSTOM_MEMBER_ORPHANS}"))
+            connection.execute(
+                text(
+                    f"ALTER TABLE {_CUSTOM_MEMBERS} ADD CONSTRAINT {_CUSTOM_MEMBER_FK} "
+                    "FOREIGN KEY (universe_id) REFERENCES custom_universes (id)"
+                )
+            )
+        else:
+            _rebuild_sqlite_custom_members(connection)
+    logger.warning("Repointed custom_universe_members.universe_id FK at custom_universes.id")
+
+
+def _rebuild_sqlite_custom_members(connection: Connection) -> None:
+    """SQLite cannot alter constraints: copy the valid rows into a table built from the model."""
+    model = CustomUniverseMember.__table__
+    scratch = MetaData()
+    CustomUniverse.__table__.to_metadata(scratch)
+    rebuilt = model.to_metadata(scratch, name=f"{_CUSTOM_MEMBERS}__fkfix")
+    existing = {column["name"] for column in inspect(connection).get_columns(_CUSTOM_MEMBERS)}
+    columns = [column.name for column in model.columns if column.name in existing]
+
+    connection.execute(CreateTable(rebuilt))
+    # `model` names the old table here: same name, and only columns it already has.
+    valid_rows = select(*(model.c[name] for name in columns)).where(
+        model.c.universe_id.in_(select(CustomUniverse.__table__.c.id))
+    )
+    connection.execute(insert(rebuilt).from_select(columns, valid_rows))
+    connection.execute(text(f"DROP TABLE {_CUSTOM_MEMBERS}"))
+    connection.execute(text(f"ALTER TABLE {rebuilt.name} RENAME TO {_CUSTOM_MEMBERS}"))
+    for index in model.indexes:
+        index.create(connection)
 
 
 _COPY_LEGACY_PNL_SQL = "UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"

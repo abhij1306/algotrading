@@ -1,16 +1,33 @@
-"""Custom universes: the service in services/universe/custom.py and the /api/universe/custom
-routes, against a throwaway SQLite file."""
+"""Custom universes: the service in services/universe/custom.py, the /api/universe/custom
+routes and the ensure_universe_schema FK migration, against a throwaway SQLite file with
+foreign keys enforced."""
 
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Engine,
+    Float,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    event,
+    inspect,
+    text,
+)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
-from app.database import get_db
+from app.database import ensure_universe_schema, get_db
 from app.main import app
 from app.models.universe import CustomUniverse, CustomUniverseMember
 from app.services.universe.custom import (
@@ -20,11 +37,20 @@ from app.services.universe.custom import (
 )
 
 
+def _sqlite_engine(path: Path) -> Engine:
+    """A SQLite engine that enforces foreign keys, as Postgres does."""
+    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def _enforce_foreign_keys(dbapi_connection: sqlite3.Connection, _record: object) -> None:
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    return engine
+
+
 @pytest.fixture
 def session_factory(tmp_path: Path) -> Generator[sessionmaker, None, None]:
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'cuni.db'}", connect_args={"check_same_thread": False}
-    )
+    engine = _sqlite_engine(tmp_path / "cuni.db")
     Base.metadata.create_all(
         bind=engine,
         tables=[CustomUniverse.__table__, CustomUniverseMember.__table__],
@@ -158,3 +184,133 @@ def test_get_unknown_custom_universe_is_a_404(api: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Custom universe 'MISSING' not found"
+
+
+# --- schema migration ------------------------------------------------------------------
+
+
+def _member_fk_targets(engine: Engine) -> list[tuple[str, list[str]]]:
+    return [
+        (fk["referred_table"], fk["referred_columns"])
+        for fk in inspect(engine).get_foreign_keys("custom_universe_members")
+        if fk["constrained_columns"] == ["universe_id"]
+    ]
+
+
+def _legacy_engine(path: Path) -> Engine:
+    """A database as main left it: members.universe_id -> index_universe_definitions.id."""
+    engine = _sqlite_engine(path)
+    legacy = MetaData()
+    Table(
+        "index_universe_definitions",
+        legacy,
+        Column("id", Integer, primary_key=True),
+        Column("index_code", String(50)),
+    )
+    CustomUniverse.__table__.to_metadata(legacy)
+    Table(
+        "custom_universe_members",
+        legacy,
+        Column("id", Integer, primary_key=True),
+        Column("universe_id", Integer, ForeignKey("index_universe_definitions.id"), nullable=False),
+        Column("symbol", String(20), nullable=False, index=True),
+        Column("weight", Float),
+        Column("added_at", DateTime),
+    )
+    legacy.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO index_universe_definitions VALUES (1, 'NIFTY50')"))
+        conn.execute(text("INSERT INTO index_universe_definitions VALUES (7, 'BANKNIFTY')"))
+        conn.execute(
+            text(
+                "INSERT INTO custom_universes (id, universe_code, universe_name) "
+                "VALUES (1, 'MINE', 'Mine')"
+            )
+        )
+        # id 1 is both an index definition and a custom universe: the only way a member
+        # could be written under the wrong FK. id 7 is an index definition only (orphan).
+        conn.execute(
+            text(
+                "INSERT INTO custom_universe_members (id, universe_id, symbol, weight) "
+                "VALUES (1, 1, 'SBIN', 0.5), (2, 1, 'TCS', NULL), (3, 7, 'HDFCBANK', NULL)"
+            )
+        )
+    return engine
+
+
+def _rows(engine: Engine, sql: str) -> list[tuple]:
+    with engine.connect() as conn:
+        return [tuple(row) for row in conn.execute(text(sql))]
+
+
+def test_model_fk_targets_custom_universes() -> None:
+    assert [
+        fk.target_fullname for fk in CustomUniverseMember.__table__.c.universe_id.foreign_keys
+    ] == ["custom_universes.id"]
+
+
+def test_migration_repoints_the_fk_drops_orphans_and_reruns_as_a_no_op(tmp_path: Path) -> None:
+    engine = _legacy_engine(tmp_path / "legacy.db")
+    assert _member_fk_targets(engine) == [("index_universe_definitions", ["id"])]
+
+    ensure_universe_schema(bind=engine)
+
+    assert _member_fk_targets(engine) == [("custom_universes", ["id"])]
+    members_sql = "SELECT id, universe_id, symbol, weight FROM custom_universe_members ORDER BY id"
+    assert _rows(engine, members_sql) == [(1, 1, "SBIN", 0.5), (2, 1, "TCS", None)]
+    assert _rows(engine, "SELECT id, index_code FROM index_universe_definitions ORDER BY id") == [
+        (1, "NIFTY50"),
+        (7, "BANKNIFTY"),
+    ]
+    assert sorted(i["name"] for i in inspect(engine).get_indexes("custom_universe_members")) == [
+        "idx_custom_universe_symbol",
+        "ix_custom_universe_members_symbol",
+    ]
+
+    ensure_universe_schema(bind=engine)
+
+    assert _member_fk_targets(engine) == [("custom_universes", ["id"])]
+    assert _rows(engine, members_sql) == [(1, 1, "SBIN", 0.5), (2, 1, "TCS", None)]
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO custom_universe_members (universe_id, symbol) VALUES (7, 'X')")
+        )
+    engine.dispose()
+
+
+def test_migration_is_a_no_op_on_a_fresh_or_empty_database(tmp_path: Path) -> None:
+    empty = _sqlite_engine(tmp_path / "empty.db")
+    ensure_universe_schema(bind=empty)
+    assert inspect(empty).get_table_names() == []
+    empty.dispose()
+
+    fresh = _sqlite_engine(tmp_path / "fresh.db")
+    Base.metadata.create_all(fresh)
+    ensure_universe_schema(bind=fresh)
+    assert _member_fk_targets(fresh) == [("custom_universes", ["id"])]
+    fresh.dispose()
+
+
+def test_post_then_get_works_on_a_migrated_legacy_database(tmp_path: Path) -> None:
+    engine = _legacy_engine(tmp_path / "legacy_api.db")
+    ensure_universe_schema(bind=engine)
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        created = client.post(
+            "/api/universe/custom",
+            json={"universe_code": "IT", "name": "IT names", "symbols": ["TCS", "INFY"]},
+        )
+        fetched = client.get("/api/universe/custom/IT")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+    assert created.status_code == 200
+    assert sorted(fetched.json()["constituents"]) == ["INFY", "TCS"]

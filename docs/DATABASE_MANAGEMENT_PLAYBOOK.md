@@ -93,6 +93,28 @@ Required capabilities:
 - historical lookup by effective date
 - explicit fallback mode when historical coverage is unavailable
 
+User-defined universes live in `custom_universes` and `custom_universe_members`
+(`backend/app/services/universe/custom.py`). `custom_universe_members.universe_id` is a foreign
+key to `custom_universes.id`.
+
+Schema upkeep: `init_db()` runs `ensure_universe_schema()` on every start. It is idempotent
+and a no-op on a fresh or up-to-date database. It:
+- widens `index_universe_definitions.index_code` to `VARCHAR(50)` (Postgres only);
+- repairs `custom_universe_members.universe_id`, which older databases created as a foreign key
+  to `index_universe_definitions.id` (every `POST /api/universe/custom` then failed the FK check
+  on Postgres). When the live FK does not point at `custom_universes.id`, it drops the wrong
+  constraint, logs and deletes member rows whose `universe_id` is not a `custom_universes` id
+  (they cannot belong to any custom universe), and adds
+  `custom_universe_members_universe_id_fkey REFERENCES custom_universes (id)`. On Postgres this
+  runs in one transaction under `LOCK TABLE ... ACCESS EXCLUSIVE`, so concurrent starts are safe.
+  SQLite cannot alter constraints, so there the table is rebuilt from the model and the valid
+  rows copied across. The `index_universe_*` tables are never modified.
+
+Postgres-only behaviour is tested by `pytest -m postgres` (`backend/tests/*_postgres.py`), which
+CI's `backend-postgres` job runs against a `postgres:18.6` service container. Locally those tests
+skip unless `SMARTTRADER_PG_TESTS=1` and `DB_NAME` names a throwaway `*_test` database (they drop
+and recreate the universe tables).
+
 ### 3. Symbol Management
 Owns:
 - provider symbol normalization
@@ -139,6 +161,13 @@ Owns:
 - successor/predecessor mapping
 
 Lifecycle rules must be queryable by date and must remain outside feature code.
+
+`SymbolLifecycleService.was_listed_on(symbol, date)` replays the symbol's `symbol_history`
+records in `effective_from` order; the last one effective on or before the date decides.
+`LISTING` (or a rename/symbol change into the symbol) lists it; `DE_LISTING`, a merger or
+acquisition of it, or a rename/symbol change away from it ends the listing; splits, FPOs,
+rights issues and a merger/acquisition *into* an existing symbol change nothing. A symbol with no records is assumed listed, and a relisting is a
+later `LISTING` record.
 
 ## Canonical Data Lanes
 ### A. Universe / Index Lane

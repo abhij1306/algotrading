@@ -175,7 +175,7 @@ class CustomUniverseMember(Base):
     __tablename__ = "custom_universe_members"
 
     id = Column(Integer, primary_key=True)
-    universe_id = Column(Integer, ForeignKey("index_universe_definitions.id"), nullable=False)
+    universe_id = Column(Integer, ForeignKey("custom_universes.id"), nullable=False)
     symbol = Column(String(20), nullable=False, index=True)
     weight = Column(Float)
 
