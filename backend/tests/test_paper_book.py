@@ -166,6 +166,28 @@ def test_fill_price_slips_against_the_trader_and_respects_the_limit(
     assert fill_price(side, Decimal(ref), Decimal("5"), limit_price) == expected
 
 
+@pytest.mark.parametrize(
+    ("side", "ref", "slippage_bps", "limit", "expected"),
+    [
+        # Capped at an off-paisa limit: BUY rounds down, SELL rounds up.
+        ("BUY", "810.40", "5", "810.405", Decimal("810.40")),
+        ("SELL", "810.41", "5", "810.405", Decimal("810.41")),
+        # Uncapped, but half up would cross the limit (810.4050 -> 810.41 > 810.4051).
+        ("BUY", "810.4050", "0", "810.4051", Decimal("810.40")),
+        ("SELL", "810.4049", "0", "810.4049", Decimal("810.41")),
+        # A limit already on a paisa is kept exactly.
+        ("BUY", "810.40", "5", "810.40", Decimal("810.40")),
+    ],
+)
+def test_capped_fill_never_crosses_the_limit(
+    side: str, ref: str, slippage_bps: str, limit: str, expected: Decimal
+) -> None:
+    fill = fill_price(side, Decimal(ref), Decimal(slippage_bps), Decimal(limit))
+
+    assert fill == expected
+    assert fill <= Decimal(limit) if side == "BUY" else fill >= Decimal(limit)
+
+
 def test_estimated_charges_are_quantized_on_the_notional() -> None:
     # 100.05 * 10 * 3.5 / 10000 = 0.350175
     assert estimated_charges(Decimal("100.05"), 10, Decimal("3.5")) == Decimal("0.35")

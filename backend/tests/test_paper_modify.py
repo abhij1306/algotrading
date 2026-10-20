@@ -275,6 +275,30 @@ def test_paper_fill_price_and_charges_are_quantized_half_up(
     assert broker.calls == []
 
 
+@pytest.mark.parametrize(
+    ("side", "ref", "expected"),
+    [("BUY", 810.40, 810.40), ("SELL", 810.41, 810.41)],
+)
+def test_paper_limit_fill_at_an_off_paisa_limit_never_crosses_it(
+    orders: Session,
+    service: oes.OrderExecutionService,
+    tick: Callable[[float], None],
+    side: str,
+    ref: float,
+    expected: float,
+) -> None:
+    tick(ref)
+
+    result = service.place_order(
+        paper_params(side=side, type="LIMIT", price=810.405), orders, mode="PAPER"
+    )
+
+    assert (result["status"], result["average_price"]) == ("FILLED", expected)
+    assert (
+        result["average_price"] <= 810.405 if side == "BUY" else result["average_price"] >= 810.405
+    )
+
+
 def test_paper_retry_after_a_modify_returns_the_modified_order(
     orders: Session,
     service: oes.OrderExecutionService,

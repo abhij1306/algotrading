@@ -6,7 +6,8 @@ through `to_money`, which quantizes to paise (0.01) with ROUND_HALF_UP, the roun
 human expects (100.005 -> 100.01). Quantization happens only at boundaries:
 
 - a simulated fill price and its estimated charges are quantized when produced, because
-  they are stored on the order row;
+  they are stored on the order row; a fill capped at a limit rounds toward the trader
+  (BUY down, SELL up) so it never crosses the limit;
 - a position keeps its exact cost basis (unquantized) so realised P&L on later
   reductions does not drift; its average entry price is quantized only when serialised;
 - realised, unrealised and net P&L are quantized when serialised.
@@ -19,7 +20,7 @@ This module imports no broker code: nothing here can reach the live broker.
 """
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 
 PAISE = Decimal("0.01")
 ZERO = Decimal("0")
@@ -61,11 +62,19 @@ def slipped_price(side: str, ref: Decimal, slippage_bps: Decimal) -> Decimal:
 
 
 def fill_price(side: str, ref: Decimal, slippage_bps: Decimal, limit: Decimal | None) -> Decimal:
-    """Quantized fill price. A limit caps the slipped price (never fills past the limit)."""
-    price = slipped_price(side, ref, slippage_bps)
-    if limit is not None:
-        price = min(price, limit) if side == "BUY" else max(price, limit)
-    return to_money(price)
+    """Quantized fill price that never crosses a limit.
+
+    An uncapped fill rounds half up. A limit caps the fill at the limit rounded toward the
+    trader: down (ROUND_FLOOR) for a BUY, up (ROUND_CEILING) for a SELL. A limit already on
+    a paisa is kept exactly. The cap applies after rounding, so half-up rounding of a price
+    just inside an off-paisa limit cannot cross it either.
+    """
+    price = to_money(slipped_price(side, ref, slippage_bps))
+    if limit is None:
+        return price
+    if side == "BUY":
+        return min(price, limit.quantize(PAISE, rounding=ROUND_FLOOR))
+    return max(price, limit.quantize(PAISE, rounding=ROUND_CEILING))
 
 
 def estimated_charges(price: Decimal, quantity: int, fee_bps: Decimal) -> Decimal:
