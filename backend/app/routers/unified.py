@@ -95,7 +95,11 @@ async def get_total_pnl() -> dict[str, Any]:
         return {"total_pnl": 0.0}
 
 
-@router.post("/order", response_model=None)
+@router.post(
+    "/order",
+    response_model=None,
+    responses={503: {"description": "Order placement is disabled in this version"}},
+)
 async def place_order(request: StandardOrderRequest) -> Never:
     """Place a unified order"""
     raise HTTPException(

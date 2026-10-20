@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from pypdf import PdfReader
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = PROJECT_ROOT / "data_system"
@@ -77,13 +78,80 @@ MONTH_ABBR = {
     "NOV": 11,
     "DEC": 12,
 }
-NIFTY50_LINE_RE = re.compile(r"^([A-Z0-9&\-.]+)\s+.+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$")
+NIFTY50_SYMBOL_TOKEN_RE = re.compile(r"[A-Z0-9&\-.]+")
+NUMBER_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
 UNIVERSE_SYMBOL_ALIASES = {
     "TATAMOTORS": "TMPV",
 }
 EQUITY_OHLCV_FILE = "equity_ohlcv.parquet"
 EQUITY_OHLCV_ADJ_FILE = "equity_ohlcv_adj.parquet"
 SNAPSHOT_STOCK_DAILY_FILE = "snapshot_stock_daily.parquet"
+PUBLISH_CHUNK_SIZE = 5000
+
+
+def parse_nifty50_weight_line(line: str) -> tuple[str, float] | None:
+    """Parse one constituent line of a NIFTY 50 weights PDF.
+
+    A line is "<SYMBOL> <company name...> <number> <weight>", whitespace separated.
+    Returns (symbol token, weight), or None when the line is not a constituent row.
+    """
+    tokens = line.split()
+    if len(tokens) < 4:
+        return None
+    symbol, *_, second_last, weight = tokens
+    if not NIFTY50_SYMBOL_TOKEN_RE.fullmatch(symbol):
+        return None
+    if not (NUMBER_TOKEN_RE.fullmatch(second_last) and NUMBER_TOKEN_RE.fullmatch(weight)):
+        return None
+    return symbol, float(weight)
+
+
+def _digit_run_end(text: str, i: int) -> int:
+    while i < len(text) and text[i].isdecimal():
+        i += 1
+    return i
+
+
+def _space_run_end(text: str, i: int) -> int:
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+
+def _find_ratio(text: str, pos: int) -> tuple[int, int, int] | None:
+    """(start, a, b) of the first "a:b" (spaces allowed around ":") at or after pos.
+
+    Linear-time equivalent of re.search(r"(\\d+)\\s*:\\s*(\\d+)", text, pos).
+    """
+    i = pos
+    while i < len(text):
+        if not text[i].isdecimal():
+            i += 1
+            continue
+        first_end = _digit_run_end(text, i)
+        colon = _space_run_end(text, first_end)
+        if colon < len(text) and text[colon] == ":":
+            second = _space_run_end(text, colon + 1)
+            second_end = _digit_run_end(text, second)
+            if second_end > second:
+                return i, int(text[i:first_end]), int(text[second:second_end])
+        # No ratio can start inside this digit run either: skip past it.
+        i = first_end
+    return None
+
+
+def find_bonus_ratio(text: str) -> tuple[int, int] | None:
+    """First "a:b" ratio after "bonus" whose first number starts on the same line, if any."""
+    pos = 0
+    while (start := text.find("bonus", pos)) >= 0:
+        line_end = text.find("\n", start)
+        if line_end < 0:
+            line_end = len(text)
+        found = _find_ratio(text, start + len("bonus"))
+        if found and found[0] < line_end:
+            return found[1], found[2]
+        pos = line_end + 1
+    return None
 
 
 @dataclass
@@ -234,6 +302,115 @@ def _build_paths(project_root: Path) -> Phase1Paths:
     )
 
 
+LEGACY_INVENTORY_ITEMS = [
+    {
+        "path": "data_platform/pipelines/phase1_build.py",
+        "status": "active",
+        "reason": "canonical Phase-1 orchestrator",
+    },
+    {
+        "path": ("archive/data-legacy/2026-02-19/data_platform/pipelines/consolidate.py"),
+        "status": "archived",
+        "reason": "references deprecated non-canonical raw source folders",
+    },
+    {
+        "path": ("archive/data-legacy/2026-02-19/data_platform/processors/master_store_builder.py"),
+        "status": "archived",
+        "reason": "legacy merge flow for deprecated source topology",
+    },
+    {
+        "path": ("archive/data-legacy/2026-02-19/data_platform/pipelines/load_index_membership.py"),
+        "status": "archived",
+        "reason": "fallback logic with placeholder intervals",
+    },
+    {
+        "path": "scripts/README.md",
+        "status": "legacy",
+        "reason": "documents deprecated yahoo pipeline scripts",
+    },
+]
+BHAVCOPY_OHLCV_COLUMNS = {
+    "SYMBOL",
+    "SERIES",
+    "OPEN_PRICE",
+    "HIGH_PRICE",
+    "LOW_PRICE",
+    "CLOSE_PRICE",
+    "TTL_TRD_QNTY",
+}
+UNIVERSE_SNAPSHOT_REQUIRED_COLS = {
+    "date",
+    "universe_id",
+    "symbol",
+    "in_universe",
+    "weight",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "volume",
+    "corporate_action_flag",
+}
+MONTHLY_WEIGHT_COLUMNS = [
+    "month",
+    "symbol",
+    "weight",
+    "source_file",
+    "source_priority",
+    "parse_confidence",
+]
+
+
+@dataclass
+class _MonthWeights:
+    """One month's constituent weights and where they came from."""
+
+    df: pd.DataFrame
+    source_file: str
+    source_priority: str
+    parse_conf: float
+
+
+def _weight_anomalies(
+    mkey: str, count: int, weight_sum: float, expected_count: int | None, source: str
+) -> list[dict[str, Any]]:
+    """Constituent-count and weight-sum anomalies for one month."""
+    anomalies = []
+    if expected_count is not None and count != expected_count:
+        anomalies.append(
+            {
+                "month": mkey,
+                "type": "constituent_count",
+                "message": f"Expected {expected_count} constituents, found {count}",
+                "source": source,
+            }
+        )
+    if abs(weight_sum - 100.0) > 1.5:
+        anomalies.append(
+            {
+                "month": mkey,
+                "type": "weight_sum",
+                "message": f"Weight sum {weight_sum:.4f} deviates from 100",
+                "source": source,
+            }
+        )
+    return anomalies
+
+
+def _date_range_iso(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    """ISO min/max of the first of trade_date/date/month present, else (None, None)."""
+    date_col = next((c for c in ["trade_date", "date", "month"] if c in df.columns), None)
+    if date_col is None:
+        return None, None
+    values = pd.to_datetime(df[date_col], errors="coerce")
+    min_date, max_date = values.min(), values.max()
+    return (
+        min_date.isoformat() if pd.notna(min_date) else None,
+        max_date.isoformat() if pd.notna(max_date) else None,
+    )
+
+
 class Phase1Builder:
     def __init__(self, asof: date, mode: str, start_date: date, universes: list[str]) -> None:
         self.asof = asof
@@ -248,6 +425,9 @@ class Phase1Builder:
         self.summary: dict[str, Any] = {}
         self._trade_dates_cache: list[date] | None = None
         self._write_data_contract()
+
+    def _bhavcopy_files(self) -> list[Path]:
+        return sorted(self.paths.source_bhavcopy.glob("*.csv"))
 
     def _log(self, step: str, status: str, details: dict[str, Any] | None = None) -> None:
         payload = {
@@ -372,50 +552,8 @@ class Phase1Builder:
         step = "ingest-sources"
         self._log(step, "started")
         copied = {"bhavcopy": 0, "corporate_actions": 0, "index_weights": 0}
-
-        index_weights_source = Path(
-            os.getenv("PHASE1_INDEX_WEIGHTS_SRC", str(DEFAULT_INDEX_WEIGHTS_SOURCE))
-        )
-        if (
-            index_weights_source.exists()
-            and index_weights_source.resolve() != self.paths.source_index_weights.resolve()
-        ):
-            for src in sorted(index_weights_source.rglob("NIFTY_50_*.pdf")):
-                month = _month_from_filename(src.name)
-                if (
-                    month is None
-                    or month < _month_start(self.start_date)
-                    or month > _month_start(self.asof)
-                ):
-                    continue
-                rel = src.relative_to(index_weights_source)
-                dst = self.paths.source_index_weights / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                if not dst.exists() or _sha256(dst) != _sha256(src):
-                    shutil.copy2(src, dst)
-                    copied["index_weights"] += 1
-
-        manifest_entries = []
-        for kind, root in [
-            ("bhavcopy", self.paths.source_bhavcopy),
-            ("corporate_actions", self.paths.source_corporate_actions),
-            ("index_weights", self.paths.source_index_weights),
-        ]:
-            for f in sorted(root.rglob("*")):
-                if not f.is_file():
-                    continue
-                rel = f.relative_to(self.paths.phase1_root).as_posix()
-                manifest_entries.append(
-                    {
-                        "category": kind,
-                        "relative_path": rel,
-                        "size_bytes": f.stat().st_size,
-                        "sha256": _sha256(f),
-                        "modified_at_utc": datetime.fromtimestamp(
-                            f.stat().st_mtime, UTC
-                        ).isoformat(),
-                    }
-                )
+        copied["index_weights"] = self._copy_index_weight_pdfs()
+        manifest_entries = self._source_manifest_entries()
 
         _json_dump(
             self.paths.source_manifest,
@@ -430,163 +568,74 @@ class Phase1Builder:
 
         _json_dump(
             self.paths.legacy_inventory,
-            {
-                "generated_at_utc": datetime.now(UTC).isoformat(),
-                "items": [
-                    {
-                        "path": "data_platform/pipelines/phase1_build.py",
-                        "status": "active",
-                        "reason": "canonical Phase-1 orchestrator",
-                    },
-                    {
-                        "path": (
-                            "archive/data-legacy/2026-02-19/data_platform/pipelines/consolidate.py"
-                        ),
-                        "status": "archived",
-                        "reason": "references deprecated non-canonical raw source folders",
-                    },
-                    {
-                        "path": (
-                            "archive/data-legacy/2026-02-19/data_platform/processors/"
-                            "master_store_builder.py"
-                        ),
-                        "status": "archived",
-                        "reason": "legacy merge flow for deprecated source topology",
-                    },
-                    {
-                        "path": (
-                            "archive/data-legacy/2026-02-19/data_platform/pipelines/"
-                            "load_index_membership.py"
-                        ),
-                        "status": "archived",
-                        "reason": "fallback logic with placeholder intervals",
-                    },
-                    {
-                        "path": "scripts/README.md",
-                        "status": "legacy",
-                        "reason": "documents deprecated yahoo pipeline scripts",
-                    },
-                ],
-            },
+            {"generated_at_utc": datetime.now(UTC).isoformat(), "items": LEGACY_INVENTORY_ITEMS},
         )
 
         self.summary["ingest"] = {"copied": copied, "manifest_entries": len(manifest_entries)}
         self._log(step, "completed", self.summary["ingest"])
 
+    def _copy_index_weight_pdfs(self) -> int:
+        """Copy new or changed in-range NIFTY 50 weight PDFs into the sources tree."""
+        index_weights_source = Path(
+            os.getenv("PHASE1_INDEX_WEIGHTS_SRC", str(DEFAULT_INDEX_WEIGHTS_SOURCE))
+        )
+        if (
+            not index_weights_source.exists()
+            or index_weights_source.resolve() == self.paths.source_index_weights.resolve()
+        ):
+            return 0
+
+        copied = 0
+        first_month, last_month = _month_start(self.start_date), _month_start(self.asof)
+        for src in sorted(index_weights_source.rglob("NIFTY_50_*.pdf")):
+            month = _month_from_filename(src.name)
+            if month is None or not first_month <= month <= last_month:
+                continue
+            dst = self.paths.source_index_weights / src.relative_to(index_weights_source)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.exists() or _sha256(dst) != _sha256(src):
+                shutil.copy2(src, dst)
+                copied += 1
+        return copied
+
+    def _source_manifest_entries(self) -> list[dict[str, Any]]:
+        """Size, hash and mtime of every file under the bhavcopy, CA and weights sources."""
+        manifest_entries = []
+        for kind, root in [
+            ("bhavcopy", self.paths.source_bhavcopy),
+            ("corporate_actions", self.paths.source_corporate_actions),
+            ("index_weights", self.paths.source_index_weights),
+        ]:
+            for f in sorted(root.rglob("*")):
+                if not f.is_file():
+                    continue
+                manifest_entries.append(
+                    {
+                        "category": kind,
+                        "relative_path": f.relative_to(self.paths.phase1_root).as_posix(),
+                        "size_bytes": f.stat().st_size,
+                        "sha256": _sha256(f),
+                        "modified_at_utc": datetime.fromtimestamp(
+                            f.stat().st_mtime, UTC
+                        ).isoformat(),
+                    }
+                )
+        return manifest_entries
+
     def build_equity(self) -> None:
         step = "build-equity"
         self._log(step, "started")
-        equity_rows: list[pd.DataFrame] = []
-
-        eq_symbols = set()
-        eq_list_path = (
-            self.paths.project_root
-            / "data_system"
-            / "05_metadata"
-            / "reference"
-            / "equity_list.csv"
-        )
-        if eq_list_path.exists():
-            eq_list = pd.read_csv(eq_list_path)
-            if "SYMBOL" in eq_list.columns and "SERIES" in eq_list.columns:
-                eq_symbols.update(
-                    eq_list[eq_list["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"]
-                    .astype(str)
-                    .str.upper()
-                )
-
-        # Add symbols from ingested bhavcopy for in-range dates.
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
-            try:
-                bhav = pd.read_csv(bhav_file)
-            except Exception as exc:
-                logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
-                continue
-            bhav.columns = [c.strip().upper() for c in bhav.columns]
-            if "SYMBOL" not in bhav.columns or "SERIES" not in bhav.columns:
-                continue
-            if "DATE1" in bhav.columns:
-                bhav["trade_date"] = pd.to_datetime(
-                    bhav["DATE1"], errors="coerce", dayfirst=True
-                ).dt.date
-                bhav = bhav[
-                    (bhav["trade_date"] >= self.start_date) & (bhav["trade_date"] <= self.asof)
-                ]
-            eq_symbols.update(
-                bhav[bhav["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"]
-                .astype(str)
-                .str.upper()
-            )
 
         # Include bhavcopy snapshots for freshest phase-1 dates.
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
-            try:
-                bhav = pd.read_csv(bhav_file)
-            except Exception as exc:
-                logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
-                continue
-            bhav.columns = [c.strip().upper() for c in bhav.columns]
-            required = {
-                "SYMBOL",
-                "SERIES",
-                "OPEN_PRICE",
-                "HIGH_PRICE",
-                "LOW_PRICE",
-                "CLOSE_PRICE",
-                "TTL_TRD_QNTY",
-            }
-            if not required.issubset(set(bhav.columns)):
-                continue
-            if "DATE1" in bhav.columns:
-                trade_date = pd.to_datetime(bhav["DATE1"], errors="coerce", dayfirst=True).dt.date
-            else:
-                m = re.search(r"(\d{2})(\d{2})(\d{4})", bhav_file.name)
-                if not m:
-                    continue
-                fallback_date = datetime.strptime(m.group(0), "%d%m%Y").date()
-                trade_date = pd.Series([fallback_date] * len(bhav))
-            part = pd.DataFrame(
-                {
-                    "trade_date": trade_date,
-                    "symbol": bhav["SYMBOL"].astype(str).str.upper().str.strip(),
-                    "open": pd.to_numeric(bhav["OPEN_PRICE"], errors="coerce"),
-                    "high": pd.to_numeric(bhav["HIGH_PRICE"], errors="coerce"),
-                    "low": pd.to_numeric(bhav["LOW_PRICE"], errors="coerce"),
-                    "close": pd.to_numeric(bhav["CLOSE_PRICE"], errors="coerce"),
-                    "volume": pd.to_numeric(bhav["TTL_TRD_QNTY"], errors="coerce"),
-                    "turnover": pd.to_numeric(bhav.get("TURNOVER_LACS", np.nan), errors="coerce")
-                    * 100000,
-                    "source": "bhavcopy",
-                    "series": bhav["SERIES"].astype(str).str.upper().str.strip(),
-                }
-            )
-            part = part[
-                (part["series"] == "EQ")
-                & (part["trade_date"] >= self.start_date)
-                & (part["trade_date"] <= self.asof)
-            ].drop(columns=["series"])
-            if not part.empty:
-                equity_rows.append(part)
-
+        equity_rows = [
+            part
+            for bhav_file in self._bhavcopy_files()
+            if (part := self._bhavcopy_equity_rows(bhav_file)) is not None and not part.empty
+        ]
         if not equity_rows:
             raise RuntimeError("No equity rows found for Phase-1 date range.")
 
-        equity_rows = [df for df in equity_rows if not df.empty]
-        equity_df = pd.concat(equity_rows, ignore_index=True)
-        symbol_map = {s: symbol_master.to_db(s) for s in equity_df["symbol"].dropna().unique()}
-        equity_df["symbol"] = equity_df["symbol"].map(symbol_map).fillna(equity_df["symbol"])
-
-        equity_df = equity_df.sort_values(["trade_date", "symbol"])
-        equity_df = equity_df.drop_duplicates(subset=["trade_date", "symbol"], keep="last")
-        equity_df = equity_df.dropna(
-            subset=["trade_date", "symbol", "open", "high", "low", "close"]
-        )
-        equity_df["volume"] = (
-            pd.to_numeric(equity_df["volume"], errors="coerce").fillna(0).astype("int64")
-        )
-        equity_df = equity_df[
-            ["trade_date", "symbol", "open", "high", "low", "close", "volume", "turnover", "source"]
-        ].sort_values(["trade_date", "symbol"])
+        equity_df = self._clean_equity(pd.concat(equity_rows, ignore_index=True))
 
         out = self.paths.curated_root / EQUITY_OHLCV_FILE
         equity_df.to_parquet(out, index=False)
@@ -601,12 +650,69 @@ class Phase1Builder:
         }
         self._log(step, "completed", self.summary["equity"])
 
+    def _bhavcopy_equity_rows(self, bhav_file: Path) -> pd.DataFrame | None:
+        """In-range EQ OHLCV rows of one bhavcopy file, or None when it cannot be used."""
+        try:
+            bhav = pd.read_csv(bhav_file)
+        except Exception as exc:
+            logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
+            return None
+        bhav.columns = [c.strip().upper() for c in bhav.columns]
+        if not BHAVCOPY_OHLCV_COLUMNS.issubset(set(bhav.columns)):
+            return None
+        if "DATE1" in bhav.columns:
+            trade_date = pd.to_datetime(bhav["DATE1"], errors="coerce", dayfirst=True).dt.date
+        else:
+            m = re.search(r"(\d{2})(\d{2})(\d{4})", bhav_file.name)
+            if not m:
+                return None
+            fallback_date = datetime.strptime(m.group(0), "%d%m%Y").date()
+            trade_date = pd.Series([fallback_date] * len(bhav))
+        part = pd.DataFrame(
+            {
+                "trade_date": trade_date,
+                "symbol": bhav["SYMBOL"].astype(str).str.upper().str.strip(),
+                "open": pd.to_numeric(bhav["OPEN_PRICE"], errors="coerce"),
+                "high": pd.to_numeric(bhav["HIGH_PRICE"], errors="coerce"),
+                "low": pd.to_numeric(bhav["LOW_PRICE"], errors="coerce"),
+                "close": pd.to_numeric(bhav["CLOSE_PRICE"], errors="coerce"),
+                "volume": pd.to_numeric(bhav["TTL_TRD_QNTY"], errors="coerce"),
+                "turnover": pd.to_numeric(bhav.get("TURNOVER_LACS", np.nan), errors="coerce")
+                * 100000,
+                "source": "bhavcopy",
+                "series": bhav["SERIES"].astype(str).str.upper().str.strip(),
+            }
+        )
+        return part[
+            (part["series"] == "EQ")
+            & (part["trade_date"] >= self.start_date)
+            & (part["trade_date"] <= self.asof)
+        ].drop(columns=["series"])
+
+    @staticmethod
+    def _clean_equity(equity_df: pd.DataFrame) -> pd.DataFrame:
+        """DB symbols, last row per (date, symbol), complete OHLC and integer volume."""
+        symbol_map = {s: symbol_master.to_db(s) for s in equity_df["symbol"].dropna().unique()}
+        equity_df["symbol"] = equity_df["symbol"].map(symbol_map).fillna(equity_df["symbol"])
+
+        equity_df = equity_df.sort_values(["trade_date", "symbol"])
+        equity_df = equity_df.drop_duplicates(subset=["trade_date", "symbol"], keep="last")
+        equity_df = equity_df.dropna(
+            subset=["trade_date", "symbol", "open", "high", "low", "close"]
+        )
+        equity_df["volume"] = (
+            pd.to_numeric(equity_df["volume"], errors="coerce").fillna(0).astype("int64")
+        )
+        return equity_df[
+            ["trade_date", "symbol", "open", "high", "low", "close", "volume", "turnover", "source"]
+        ].sort_values(["trade_date", "symbol"])
+
     def _available_trade_dates(self) -> list[date]:
         if self._trade_dates_cache is not None:
             return self._trade_dates_cache
 
         trade_dates: set[date] = set()
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
+        for bhav_file in self._bhavcopy_files():
             try:
                 bhav = pd.read_csv(bhav_file, usecols=lambda c: c.strip().upper() in {"DATE1"})
             except Exception:
@@ -647,11 +753,11 @@ class Phase1Builder:
                     or line.startswith("Constituents of NIFTY 50")
                 ):
                     continue
-                m = NIFTY50_LINE_RE.match(line)
-                if not m:
+                parsed = parse_nifty50_weight_line(line)
+                if not parsed:
                     continue
-                symbol = symbol_master.to_db(m.group(1).upper())
-                weight = float(m.group(3))
+                raw_symbol, weight = parsed
+                symbol = symbol_master.to_db(raw_symbol.upper())
                 rows.append({"symbol": symbol, "weight": weight})
         if not rows:
             return pd.DataFrame(columns=["symbol", "weight"]), 0.0
@@ -719,127 +825,72 @@ class Phase1Builder:
         step = "build-universe"
         self._log(step, "started")
 
-        pdf_path_by_month: dict[str, Path] = {}
-        pdf_pattern = spec.get("pdf_pattern")
-        if spec.get("allow_pdf_fallback") and pdf_pattern:
-            for pdf in sorted(self.paths.source_index_weights.rglob(pdf_pattern)):
-                month = _month_from_filename(pdf.name)
-                if month is None:
-                    continue
-                if month < _month_start(self.start_date) or month > _month_start(self.asof):
-                    continue
-                pdf_path_by_month[_month_key(month)] = pdf
-
-        target_months = _iter_months(self.start_date, _month_start(self.asof))
+        pdf_path_by_month = self._universe_pdfs_by_month(spec)
         monthly_rows: list[pd.DataFrame] = []
         anomalies: list[dict[str, Any]] = []
-        last_available_month_df = pd.DataFrame(columns=["symbol", "weight"])
-        last_available_source_file = ""
-        last_available_parse_conf = 0.0
-        last_available_month_key: str | None = None
+        last: _MonthWeights | None = None
+        last_month_key: str | None = None
 
-        for month in target_months:
+        for month in _iter_months(self.start_date, _month_start(self.asof)):
             mkey = _month_key(month)
-            source_file = ""
-            source_priority = "none"
-            parse_conf = 0.0
-            month_df = pd.DataFrame(columns=["symbol", "weight"])
+            current = self._month_weights(spec, month, pdf_path_by_month.get(mkey))
+            if current is None and last is None:
+                anomalies.append(
+                    {
+                        "month": mkey,
+                        "type": "missing_month",
+                        "message": "No source available for month",
+                    }
+                )
+                continue
+            if current is None:
+                current = _MonthWeights(
+                    last.df.copy(),
+                    last.source_file,
+                    f"carry_forward_from_{last_month_key}",
+                    last.parse_conf,
+                )
+                anomalies.append(
+                    {
+                        "month": mkey,
+                        "type": "carry_forward_weights",
+                        "message": (
+                            "No source available for month; reused last available weights "
+                            f"from {last_month_key}"
+                        ),
+                        "source": current.source_priority,
+                    }
+                )
 
-            csv_ref, csv_source_path = self._load_universe_from_monthly_raw(spec["csv_slug"], month)
-            csv_ref = csv_ref.drop_duplicates(subset=["symbol"], keep="last")
-            if not csv_ref.empty:
-                csv_weight_sum = float(pd.to_numeric(csv_ref["weight"], errors="coerce").sum())
-                if csv_weight_sum <= 1.5:
-                    csv_ref["weight"] = csv_ref["weight"] * 100.0
-                month_df = csv_ref
-                source_file = csv_source_path
-                source_priority = "repo_raw_csv_primary"
-                parse_conf = 0.95
-
-            if month_df.empty and mkey in pdf_path_by_month:
-                parsed_df, conf = self._parse_nifty50_pdf(pdf_path_by_month[mkey])
-                parsed_df = parsed_df.drop_duplicates(subset=["symbol"], keep="last")
-                if not parsed_df.empty:
-                    month_df = parsed_df
-                    source_file = str(pdf_path_by_month[mkey])
-                    source_priority = "downloads_pdf_fallback"
-                    parse_conf = conf
-
-            if month_df.empty:
-                if not last_available_month_df.empty:
-                    month_df = last_available_month_df.copy()
-                    source_file = last_available_source_file
-                    source_priority = f"carry_forward_from_{last_available_month_key}"
-                    parse_conf = last_available_parse_conf
-                    anomalies.append(
-                        {
-                            "month": mkey,
-                            "type": "carry_forward_weights",
-                            "message": (
-                                "No source available for month; reused last available weights "
-                                f"from {last_available_month_key}"
-                            ),
-                            "source": source_priority,
-                        }
-                    )
-                else:
-                    anomalies.append(
-                        {
-                            "month": mkey,
-                            "type": "missing_month",
-                            "message": "No source available for month",
-                        }
-                    )
-                    continue
-
-            month_df = month_df.drop_duplicates(subset=["symbol"], keep="last")
+            month_df = current.df.drop_duplicates(subset=["symbol"], keep="last")
             weight_sum = float(pd.to_numeric(month_df["weight"], errors="coerce").sum())
             if weight_sum <= 1.5:
                 month_df["weight"] = month_df["weight"] * 100.0
                 weight_sum = float(month_df["weight"].sum())
-
-            expected_count = spec.get("expected_count")
-            if expected_count is not None and len(month_df) != expected_count:
-                anomalies.append(
-                    {
-                        "month": mkey,
-                        "type": "constituent_count",
-                        "message": f"Expected {expected_count} constituents, found {len(month_df)}",
-                        "source": source_priority,
-                    }
+            anomalies.extend(
+                _weight_anomalies(
+                    mkey,
+                    len(month_df),
+                    weight_sum,
+                    spec.get("expected_count"),
+                    current.source_priority,
                 )
-            if abs(weight_sum - 100.0) > 1.5:
-                anomalies.append(
-                    {
-                        "month": mkey,
-                        "type": "weight_sum",
-                        "message": f"Weight sum {weight_sum:.4f} deviates from 100",
-                        "source": source_priority,
-                    }
-                )
+            )
 
             month_payload = month_df.copy()
             month_payload["month"] = month
-            month_payload["source_file"] = source_file
-            month_payload["source_priority"] = source_priority
-            month_payload["parse_confidence"] = parse_conf
+            month_payload["source_file"] = current.source_file
+            month_payload["source_priority"] = current.source_priority
+            month_payload["parse_confidence"] = current.parse_conf
+            monthly_rows.append(month_payload[MONTHLY_WEIGHT_COLUMNS])
 
-            monthly_rows.append(
-                month_payload[
-                    [
-                        "month",
-                        "symbol",
-                        "weight",
-                        "source_file",
-                        "source_priority",
-                        "parse_confidence",
-                    ]
-                ]
+            last = _MonthWeights(
+                month_df[["symbol", "weight"]].copy(),
+                current.source_file,
+                current.source_priority,
+                current.parse_conf,
             )
-            last_available_month_df = month_df[["symbol", "weight"]].copy()
-            last_available_source_file = source_file
-            last_available_parse_conf = parse_conf
-            last_available_month_key = mkey
+            last_month_key = mkey
 
         if not monthly_rows:
             raise RuntimeError(f"Failed to build {universe_id} monthly weights.")
@@ -848,29 +899,7 @@ class Phase1Builder:
         monthly_out = self.paths.curated_root / f"{slug}_weights_monthly.parquet"
         monthly_df.to_parquet(monthly_out, index=False)
 
-        daily_rows: list[pd.DataFrame] = []
-        months_sorted = sorted(monthly_df["month"].drop_duplicates().tolist())
-        available_trade_dates = self._available_trade_dates()
-        for m in months_sorted:
-            month_start = pd.Timestamp(m).date().replace(day=1)
-            next_m = _next_month(month_start)
-            day_end = min(next_m - timedelta(days=1), self.asof)
-            symbols = monthly_df[monthly_df["month"] == m][
-                ["symbol", "source_file", "source_priority"]
-            ]
-            if symbols.empty:
-                continue
-            dates = [d for d in available_trade_dates if month_start <= d <= day_end]
-            if not dates:
-                continue
-            expanded = symbols.loc[symbols.index.repeat(len(dates))].reset_index(drop=True)
-            expanded["date"] = dates * len(symbols)
-            expanded["in_universe"] = True
-            daily_rows.append(
-                expanded[["date", "symbol", "in_universe", "source_file", "source_priority"]]
-            )
-
-        daily_df = pd.concat(daily_rows, ignore_index=True).sort_values(["date", "symbol"])
+        daily_df = self._membership_daily(monthly_df)
         daily_out = self.paths.curated_root / f"{slug}_membership_daily.parquet"
         daily_df.to_parquet(daily_out, index=False)
 
@@ -894,6 +923,59 @@ class Phase1Builder:
         }
         self._log(step, "completed", self.summary[slug])
 
+    def _universe_pdfs_by_month(self, spec: dict[str, Any]) -> dict[str, Path]:
+        """In-range weight PDFs by month key, for universes that allow the PDF fallback."""
+        pdf_pattern = spec.get("pdf_pattern")
+        if not (spec.get("allow_pdf_fallback") and pdf_pattern):
+            return {}
+        first_month, last_month = _month_start(self.start_date), _month_start(self.asof)
+        pdf_path_by_month: dict[str, Path] = {}
+        for pdf in sorted(self.paths.source_index_weights.rglob(pdf_pattern)):
+            month = _month_from_filename(pdf.name)
+            if month is not None and first_month <= month <= last_month:
+                pdf_path_by_month[_month_key(month)] = pdf
+        return pdf_path_by_month
+
+    def _month_weights(
+        self, spec: dict[str, Any], month: date, pdf_path: Path | None
+    ) -> _MonthWeights | None:
+        """The month's weights from the repo CSV, else the weights PDF, else None."""
+        csv_ref, csv_source_path = self._load_universe_from_monthly_raw(spec["csv_slug"], month)
+        csv_ref = csv_ref.drop_duplicates(subset=["symbol"], keep="last")
+        if not csv_ref.empty:
+            csv_weight_sum = float(pd.to_numeric(csv_ref["weight"], errors="coerce").sum())
+            if csv_weight_sum <= 1.5:
+                csv_ref["weight"] = csv_ref["weight"] * 100.0
+            return _MonthWeights(csv_ref, csv_source_path, "repo_raw_csv_primary", 0.95)
+
+        if pdf_path is not None:
+            parsed_df, conf = self._parse_nifty50_pdf(pdf_path)
+            parsed_df = parsed_df.drop_duplicates(subset=["symbol"], keep="last")
+            if not parsed_df.empty:
+                return _MonthWeights(parsed_df, str(pdf_path), "downloads_pdf_fallback", conf)
+        return None
+
+    def _membership_daily(self, monthly_df: pd.DataFrame) -> pd.DataFrame:
+        """One in-universe row per month constituent per available trade date in that month."""
+        daily_rows: list[pd.DataFrame] = []
+        available_trade_dates = self._available_trade_dates()
+        for m in sorted(monthly_df["month"].drop_duplicates().tolist()):
+            month_start = pd.Timestamp(m).date().replace(day=1)
+            day_end = min(_next_month(month_start) - timedelta(days=1), self.asof)
+            symbols = monthly_df[monthly_df["month"] == m][
+                ["symbol", "source_file", "source_priority"]
+            ]
+            dates = [d for d in available_trade_dates if month_start <= d <= day_end]
+            if symbols.empty or not dates:
+                continue
+            expanded = symbols.loc[symbols.index.repeat(len(dates))].reset_index(drop=True)
+            expanded["date"] = dates * len(symbols)
+            expanded["in_universe"] = True
+            daily_rows.append(
+                expanded[["date", "symbol", "in_universe", "source_file", "source_priority"]]
+            )
+        return pd.concat(daily_rows, ignore_index=True).sort_values(["date", "symbol"])
+
     def build_nifty50(self) -> None:
         self.build_universe("NIFTY50")
 
@@ -907,9 +989,9 @@ class Phase1Builder:
             nums = list(map(int, re.findall(r"\d+", text)))
             if len(nums) >= 2 and nums[1] != 0:
                 return "split", nums[0] / nums[1]
-        m = re.search(r"bonus.*?(\d+)\s*:\s*(\d+)", text)
-        if m:
-            a, b = map(int, m.groups())
+        ratio = find_bonus_ratio(text)
+        if ratio:
+            a, b = ratio
             if b != 0:
                 return "bonus", (a + b) / b
         return None, None
@@ -948,7 +1030,10 @@ class Phase1Builder:
         adjusted[["open", "high", "low", "close", "volume"]] = adjusted[
             ["open", "high", "low", "close", "volume"]
         ].apply(pd.to_numeric, errors="coerce")
-        adjusted["volume"] = adjusted["volume"].astype(float)
+        # Float before dividing: integer price columns cannot hold the adjusted values.
+        adjusted[["open", "high", "low", "close", "volume"]] = adjusted[
+            ["open", "high", "low", "close", "volume"]
+        ].astype(float)
 
         audit_rows: list[dict[str, Any]] = []
         for symbol, grp in ca_df.groupby("symbol"):
@@ -1015,6 +1100,7 @@ class Phase1Builder:
             on=["trade_date", "symbol"],
             how="left",
             suffixes=("", "_adj"),
+            validate="one_to_one",
         )
         merged["corporate_action_flag"] = (merged["close"] - merged["close_adj"]).abs() > 1e-9
         stock_snapshot = pd.DataFrame(
@@ -1062,6 +1148,7 @@ class Phase1Builder:
                 monthly[["month_key", "symbol", "weight"]],
                 on=["month_key", "symbol"],
                 how="left",
+                validate="many_to_one",
             )
             uni = uni.merge(
                 stock_snapshot[
@@ -1080,6 +1167,7 @@ class Phase1Builder:
                 left_on=["date_str", "symbol"],
                 right_on=["date", "symbol"],
                 how="left",
+                validate="many_to_one",
             )
             universe_snapshot = pd.DataFrame(
                 {
@@ -1109,35 +1197,21 @@ class Phase1Builder:
         }
         self._log(step, "completed", self.summary["snapshots"])
 
-    def validate(self) -> bool:
-        step = "validate"
-        self._log(step, "started")
-        issues: list[str] = []
-        warnings: list[str] = []
-        metrics: dict[str, Any] = {}
-        universe_snapshot_required_cols = {
-            "date",
-            "universe_id",
-            "symbol",
-            "in_universe",
-            "weight",
-            "open",
-            "high",
-            "low",
-            "close",
-            "adj_close",
-            "volume",
-            "corporate_action_flag",
-        }
+    def _universe_slugs(self) -> list[tuple[str, dict[str, Any], str]]:
+        """(universe id, spec, slug) for each configured universe."""
+        out = []
+        for universe_id in self.universes:
+            spec = self._get_universe_spec(universe_id)
+            out.append((universe_id, spec, spec["slug"]))
+        return out
 
+    def _required_artifacts(self) -> list[Path]:
         required_files = [
             self.paths.curated_root / EQUITY_OHLCV_FILE,
             self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE,
             self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE,
         ]
-        for universe_id in self.universes:
-            spec = self._get_universe_spec(universe_id)
-            slug = spec["slug"]
+        for _universe_id, _spec, slug in self._universe_slugs():
             required_files.extend(
                 [
                     self.paths.curated_root / f"{slug}_weights_monthly.parquet",
@@ -1145,7 +1219,16 @@ class Phase1Builder:
                     self.paths.curated_root / f"snapshot_{slug}_daily.parquet",
                 ]
             )
-        missing = [str(f) for f in required_files if not f.exists()]
+        return required_files
+
+    def validate(self) -> bool:
+        step = "validate"
+        self._log(step, "started")
+        issues: list[str] = []
+        warnings: list[str] = []
+        metrics: dict[str, Any] = {}
+
+        missing = [str(f) for f in self._required_artifacts() if not f.exists()]
         if missing:
             issues.extend([f"missing_artifact:{m}" for m in missing])
             _json_dump(
@@ -1156,37 +1239,9 @@ class Phase1Builder:
             self.issues.extend(issues)
             return False
 
-        eq = pd.read_parquet(self.paths.curated_root / EQUITY_OHLCV_FILE)
-        dup_count = int(eq.duplicated(subset=["trade_date", "symbol"]).sum())
-        metrics["equity_duplicates"] = dup_count
-        if dup_count > 0:
-            issues.append(f"equity_duplicate_keys:{dup_count}")
-        eq_min = pd.to_datetime(eq["trade_date"], errors="coerce").min().date()
-        if eq_min > self.start_date:
-            issues.append(f"equity_min_date_after_phase_start:{eq_min.isoformat()}")
-        metrics["equity_rows"] = int(len(eq))
-        metrics["equity_symbols"] = int(eq["symbol"].nunique())
-
-        for universe_id in self.universes:
-            spec = self._get_universe_spec(universe_id)
-            slug = spec["slug"]
-            monthly = pd.read_parquet(self.paths.curated_root / f"{slug}_weights_monthly.parquet")
-            month_stats = (
-                monthly.groupby("month")
-                .agg(cnt=("symbol", "count"), weight_sum=("weight", "sum"))
-                .reset_index()
-            )
-            expected_count = spec.get("expected_count")
-            if expected_count is not None:
-                bad_count = month_stats[month_stats["cnt"] != expected_count]
-                if not bad_count.empty:
-                    warnings.append(f"{slug}_bad_count_months:{len(bad_count)}")
-            bad_weight = month_stats[
-                (month_stats["weight_sum"] < 98.5) | (month_stats["weight_sum"] > 101.5)
-            ]
-            if not bad_weight.empty:
-                warnings.append(f"{slug}_bad_weight_sum_months:{len(bad_weight)}")
-            metrics[f"{slug}_months"] = int(month_stats.shape[0])
+        self._validate_equity(issues, metrics)
+        for _universe_id, spec, slug in self._universe_slugs():
+            self._validate_weights(spec, slug, warnings, metrics)
 
         stock_snap = pd.read_parquet(self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE)
         snap_dups = int(stock_snap.duplicated(subset=["date", "symbol"]).sum())
@@ -1194,67 +1249,8 @@ class Phase1Builder:
         if snap_dups > 0:
             issues.append(f"snapshot_stock_duplicate_keys:{snap_dups}")
 
-        for universe_id in self.universes:
-            spec = self._get_universe_spec(universe_id)
-            slug = spec["slug"]
-            universe_snap = pd.read_parquet(
-                self.paths.curated_root / f"snapshot_{slug}_daily.parquet"
-            )
-            snap_cols = set(universe_snap.columns)
-            missing_cols = sorted(universe_snapshot_required_cols - snap_cols)
-            if missing_cols:
-                issues.append(f"snapshot_{slug}_missing_columns:{','.join(missing_cols)}")
-
-            membership = pd.read_parquet(
-                self.paths.curated_root / f"{slug}_membership_daily.parquet"
-            )
-            membership["date"] = pd.to_datetime(membership["date"], errors="coerce").dt.strftime(
-                "%Y-%m-%d"
-            )
-            universe_snap["date"] = pd.to_datetime(
-                universe_snap["date"], errors="coerce"
-            ).dt.strftime("%Y-%m-%d")
-
-            uni_dups = int(universe_snap.duplicated(subset=["date", "symbol"]).sum())
-            metrics[f"snapshot_{slug}_duplicates"] = uni_dups
-            if uni_dups > 0:
-                issues.append(f"snapshot_{slug}_duplicate_keys:{uni_dups}")
-
-            membership_keys = set(
-                zip(membership["date"].astype(str), membership["symbol"].astype(str), strict=True)
-            )
-            snapshot_keys = set(
-                zip(
-                    universe_snap["date"].astype(str),
-                    universe_snap["symbol"].astype(str),
-                    strict=True,
-                )
-            )
-            missing_keys = membership_keys - snapshot_keys
-            metrics[f"snapshot_{slug}_missing_membership_keys"] = len(missing_keys)
-            if missing_keys:
-                issues.append(f"snapshot_{slug}_missing_membership_keys:{len(missing_keys)}")
-
-            snap_dates = pd.to_datetime(universe_snap["date"], errors="coerce").dt.date
-            if snap_dates.notna().any():
-                if snap_dates.min() < self.start_date:
-                    issues.append(
-                        f"snapshot_{slug}_min_date_before_start:{snap_dates.min().isoformat()}"
-                    )
-                if snap_dates.max() > self.asof:
-                    issues.append(
-                        f"snapshot_{slug}_max_date_after_asof:{snap_dates.max().isoformat()}"
-                    )
-
-            in_uni_mask = universe_snap["in_universe"].eq(True)
-            missing_weight = int(universe_snap.loc[in_uni_mask, "weight"].isna().sum())
-            missing_close = int(universe_snap.loc[in_uni_mask, "close"].isna().sum())
-            metrics[f"snapshot_{slug}_missing_weight_rows"] = missing_weight
-            metrics[f"snapshot_{slug}_missing_close_rows"] = missing_close
-            if missing_weight > 0:
-                issues.append(f"snapshot_{slug}_missing_weight_rows:{missing_weight}")
-            if missing_close > 0:
-                issues.append(f"snapshot_{slug}_missing_close_rows:{missing_close}")
+        for _universe_id, _spec, slug in self._universe_slugs():
+            self._validate_universe_snapshot(slug, issues, metrics)
 
         status = "passed" if not issues else "failed"
         report = {
@@ -1272,17 +1268,104 @@ class Phase1Builder:
         self._log(step, status, {"issue_count": len(issues)})
         return not issues
 
-    def publish(self) -> None:
-        step = "publish"
-        self._log(step, "started")
+    def _validate_equity(self, issues: list[str], metrics: dict[str, Any]) -> None:
+        eq = pd.read_parquet(self.paths.curated_root / EQUITY_OHLCV_FILE)
+        dup_count = int(eq.duplicated(subset=["trade_date", "symbol"]).sum())
+        metrics["equity_duplicates"] = dup_count
+        if dup_count > 0:
+            issues.append(f"equity_duplicate_keys:{dup_count}")
+        eq_min = pd.to_datetime(eq["trade_date"], errors="coerce").min().date()
+        if eq_min > self.start_date:
+            issues.append(f"equity_min_date_after_phase_start:{eq_min.isoformat()}")
+        metrics["equity_rows"] = int(len(eq))
+        metrics["equity_symbols"] = int(eq["symbol"].nunique())
+
+    def _validate_weights(
+        self, spec: dict[str, Any], slug: str, warnings: list[str], metrics: dict[str, Any]
+    ) -> None:
+        monthly = pd.read_parquet(self.paths.curated_root / f"{slug}_weights_monthly.parquet")
+        month_stats = (
+            monthly.groupby("month")
+            .agg(cnt=("symbol", "count"), weight_sum=("weight", "sum"))
+            .reset_index()
+        )
+        expected_count = spec.get("expected_count")
+        if expected_count is not None:
+            bad_count = month_stats[month_stats["cnt"] != expected_count]
+            if not bad_count.empty:
+                warnings.append(f"{slug}_bad_count_months:{len(bad_count)}")
+        bad_weight = month_stats[
+            (month_stats["weight_sum"] < 98.5) | (month_stats["weight_sum"] > 101.5)
+        ]
+        if not bad_weight.empty:
+            warnings.append(f"{slug}_bad_weight_sum_months:{len(bad_weight)}")
+        metrics[f"{slug}_months"] = int(month_stats.shape[0])
+
+    def _validate_universe_snapshot(
+        self, slug: str, issues: list[str], metrics: dict[str, Any]
+    ) -> None:
+        universe_snap = pd.read_parquet(self.paths.curated_root / f"snapshot_{slug}_daily.parquet")
+        missing_cols = sorted(UNIVERSE_SNAPSHOT_REQUIRED_COLS - set(universe_snap.columns))
+        if missing_cols:
+            issues.append(f"snapshot_{slug}_missing_columns:{','.join(missing_cols)}")
+
+        membership = pd.read_parquet(self.paths.curated_root / f"{slug}_membership_daily.parquet")
+        membership["date"] = pd.to_datetime(membership["date"], errors="coerce").dt.strftime(
+            "%Y-%m-%d"
+        )
+        universe_snap["date"] = pd.to_datetime(universe_snap["date"], errors="coerce").dt.strftime(
+            "%Y-%m-%d"
+        )
+
+        uni_dups = int(universe_snap.duplicated(subset=["date", "symbol"]).sum())
+        metrics[f"snapshot_{slug}_duplicates"] = uni_dups
+        if uni_dups > 0:
+            issues.append(f"snapshot_{slug}_duplicate_keys:{uni_dups}")
+
+        membership_keys = set(
+            zip(membership["date"].astype(str), membership["symbol"].astype(str), strict=True)
+        )
+        snapshot_keys = set(
+            zip(universe_snap["date"].astype(str), universe_snap["symbol"].astype(str), strict=True)
+        )
+        missing_keys = membership_keys - snapshot_keys
+        metrics[f"snapshot_{slug}_missing_membership_keys"] = len(missing_keys)
+        if missing_keys:
+            issues.append(f"snapshot_{slug}_missing_membership_keys:{len(missing_keys)}")
+
+        issues.extend(self._snapshot_date_issues(slug, universe_snap["date"]))
+
+        in_uni_mask = universe_snap["in_universe"].eq(True)
+        missing_weight = int(universe_snap.loc[in_uni_mask, "weight"].isna().sum())
+        missing_close = int(universe_snap.loc[in_uni_mask, "close"].isna().sum())
+        metrics[f"snapshot_{slug}_missing_weight_rows"] = missing_weight
+        metrics[f"snapshot_{slug}_missing_close_rows"] = missing_close
+        issues.extend(
+            f"snapshot_{slug}_missing_{label}_rows:{count}"
+            for label, count in (("weight", missing_weight), ("close", missing_close))
+            if count > 0
+        )
+
+    def _snapshot_date_issues(self, slug: str, dates: pd.Series) -> list[str]:
+        """Snapshot dates before the phase start or after the as-of date."""
+        snap_dates = pd.to_datetime(dates, errors="coerce").dt.date
+        if not snap_dates.notna().any():
+            return []
+        issues = []
+        if snap_dates.min() < self.start_date:
+            issues.append(f"snapshot_{slug}_min_date_before_start:{snap_dates.min().isoformat()}")
+        if snap_dates.max() > self.asof:
+            issues.append(f"snapshot_{slug}_max_date_after_asof:{snap_dates.max().isoformat()}")
+        return issues
+
+    def _artifact_paths(self) -> dict[str, Path]:
+        """Core artifacts plus each universe's artifacts that exist."""
         artifact_paths = {
             "equity_ohlcv": self.paths.curated_root / EQUITY_OHLCV_FILE,
             "equity_ohlcv_adj": self.paths.curated_root / EQUITY_OHLCV_ADJ_FILE,
             "snapshot_stock_daily": self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE,
         }
-        for universe_id in self.universes:
-            spec = self._get_universe_spec(universe_id)
-            slug = spec["slug"]
+        for _universe_id, _spec, slug in self._universe_slugs():
             universe_artifacts = {
                 f"{slug}_weights_monthly": self.paths.curated_root
                 / f"{slug}_weights_monthly.parquet",
@@ -1294,6 +1377,12 @@ class Phase1Builder:
             for key, path in universe_artifacts.items():
                 if path.exists():
                     artifact_paths[key] = path
+        return artifact_paths
+
+    def publish(self) -> None:
+        step = "publish"
+        self._log(step, "started")
+        artifact_paths = self._artifact_paths()
 
         checksums = {
             "generated_at_utc": datetime.now(UTC).isoformat(),
@@ -1302,21 +1391,15 @@ class Phase1Builder:
         }
         for name, path in artifact_paths.items():
             df = pd.read_parquet(path)
-            date_col = next((c for c in ["trade_date", "date", "month"] if c in df.columns), None)
-            if date_col is not None:
-                min_date = pd.to_datetime(df[date_col], errors="coerce").min()
-                max_date = pd.to_datetime(df[date_col], errors="coerce").max()
-            else:
-                min_date = pd.NaT
-                max_date = pd.NaT
+            min_date, max_date = _date_range_iso(df)
             checksums["artifacts"].append(
                 {
                     "dataset_name": name,
                     "path": str(path),
                     "checksum": _sha256(path),
                     "row_count": int(len(df)),
-                    "min_date": min_date.isoformat() if pd.notna(min_date) else None,
-                    "max_date": max_date.isoformat() if pd.notna(max_date) else None,
+                    "min_date": min_date,
+                    "max_date": max_date,
                 }
             )
         _json_dump(self.paths.checksums, checksums)
@@ -1326,86 +1409,12 @@ class Phase1Builder:
 
         db = SessionLocal()
         try:
-            run = DatasetRun(
-                run_id=self.run_id,
-                asof_date=self.asof,
-                mode=self.mode,
-                status="running",
-                source_manifest_hash=manifest_hash,
-                details_json=json.dumps({"summary": self.summary}),
-            )
-            db.add(run)
-            db.commit()
-
-            for item in checksums["artifacts"]:
-                row = DatasetArtifact(
-                    run_id=self.run_id,
-                    dataset_name=item["dataset_name"],
-                    artifact_path=item["path"],
-                    row_count=item["row_count"],
-                    min_date=pd.to_datetime(item["min_date"]).date() if item["min_date"] else None,
-                    max_date=pd.to_datetime(item["max_date"]).date() if item["max_date"] else None,
-                    checksum=item["checksum"],
-                    metadata_json=json.dumps({"published_at_utc": datetime.now(UTC).isoformat()}),
-                )
-                db.add(row)
-            db.commit()
-
-            stock_df = pd.read_parquet(
-                artifact_paths["snapshot_stock_daily"], columns=["date", "symbol"]
-            ).drop_duplicates()
-            stock_df["date"] = pd.to_datetime(stock_df["date"], errors="coerce").dt.date
-            db.query(SnapshotIndexStock).filter(
-                SnapshotIndexStock.snapshot_date >= self.start_date,
-                SnapshotIndexStock.snapshot_date <= self.asof,
-            ).delete(synchronize_session=False)
-            stock_records = [
-                {
-                    "snapshot_date": row.date,
-                    "symbol": row.symbol,
-                    "artifact_path": str(artifact_paths["snapshot_stock_daily"]),
-                    "run_id": self.run_id,
-                    "row_pointer": None,
-                }
-                for row in stock_df.itertuples(index=False)
-            ]
-            chunk_size = 5000
-            for i in range(0, len(stock_records), chunk_size):
-                db.bulk_insert_mappings(SnapshotIndexStock, stock_records[i : i + chunk_size])
-            db.commit()
-
-            for universe_id in self.universes:
-                spec = self._get_universe_spec(universe_id)
-                slug = spec["slug"]
-                snapshot_key = f"snapshot_{slug}_daily"
-                snapshot_path = artifact_paths.get(snapshot_key)
-                if snapshot_path is None:
-                    continue
-                uni_df = pd.read_parquet(
-                    snapshot_path, columns=["date", "universe_id"]
-                ).drop_duplicates()
-                uni_df["date"] = pd.to_datetime(uni_df["date"], errors="coerce").dt.date
-                db.query(SnapshotIndexUniverse).filter(
-                    SnapshotIndexUniverse.snapshot_date >= self.start_date,
-                    SnapshotIndexUniverse.snapshot_date <= self.asof,
-                    SnapshotIndexUniverse.universe_id == universe_id.upper(),
-                ).delete(synchronize_session=False)
-                db.commit()
-                universe_records = [
-                    {
-                        "snapshot_date": row.date,
-                        "universe_id": row.universe_id,
-                        "artifact_path": str(snapshot_path),
-                        "run_id": self.run_id,
-                        "version": "v1",
-                    }
-                    for row in uni_df.itertuples(index=False)
-                ]
-                for i in range(0, len(universe_records), chunk_size):
-                    db.bulk_insert_mappings(
-                        SnapshotIndexUniverse, universe_records[i : i + chunk_size]
-                    )
-                    db.commit()
+            self._record_run(db, manifest_hash, checksums["artifacts"])
+            self._publish_stock_index(db, artifact_paths["snapshot_stock_daily"])
+            for universe_id, _spec, slug in self._universe_slugs():
+                snapshot_path = artifact_paths.get(f"snapshot_{slug}_daily")
+                if snapshot_path is not None:
+                    self._publish_universe_index(db, universe_id, snapshot_path)
 
             db.query(DatasetRun).filter(DatasetRun.run_id == self.run_id).update(
                 {
@@ -1438,6 +1447,85 @@ class Phase1Builder:
             "checksums_file": str(self.paths.checksums),
         }
         self._log(step, "completed", self.summary["publish"])
+
+    def _record_run(
+        self, db: Session, manifest_hash: str | None, artifacts: list[dict[str, Any]]
+    ) -> None:
+        """Insert the running DatasetRun, then one DatasetArtifact per published artifact."""
+        db.add(
+            DatasetRun(
+                run_id=self.run_id,
+                asof_date=self.asof,
+                mode=self.mode,
+                status="running",
+                source_manifest_hash=manifest_hash,
+                details_json=json.dumps({"summary": self.summary}),
+            )
+        )
+        db.commit()
+
+        for item in artifacts:
+            db.add(
+                DatasetArtifact(
+                    run_id=self.run_id,
+                    dataset_name=item["dataset_name"],
+                    artifact_path=item["path"],
+                    row_count=item["row_count"],
+                    min_date=pd.to_datetime(item["min_date"]).date() if item["min_date"] else None,
+                    max_date=pd.to_datetime(item["max_date"]).date() if item["max_date"] else None,
+                    checksum=item["checksum"],
+                    metadata_json=json.dumps({"published_at_utc": datetime.now(UTC).isoformat()}),
+                )
+            )
+        db.commit()
+
+    def _publish_stock_index(self, db: Session, snapshot_path: Path) -> None:
+        """Replace the stock snapshot index rows for the run's date range."""
+        stock_df = pd.read_parquet(snapshot_path, columns=["date", "symbol"]).drop_duplicates()
+        stock_df["date"] = pd.to_datetime(stock_df["date"], errors="coerce").dt.date
+        db.query(SnapshotIndexStock).filter(
+            SnapshotIndexStock.snapshot_date >= self.start_date,
+            SnapshotIndexStock.snapshot_date <= self.asof,
+        ).delete(synchronize_session=False)
+        stock_records = [
+            {
+                "snapshot_date": row.date,
+                "symbol": row.symbol,
+                "artifact_path": str(snapshot_path),
+                "run_id": self.run_id,
+                "row_pointer": None,
+            }
+            for row in stock_df.itertuples(index=False)
+        ]
+        for i in range(0, len(stock_records), PUBLISH_CHUNK_SIZE):
+            db.bulk_insert_mappings(SnapshotIndexStock, stock_records[i : i + PUBLISH_CHUNK_SIZE])
+        db.commit()
+
+    def _publish_universe_index(self, db: Session, universe_id: str, snapshot_path: Path) -> None:
+        """Replace one universe's snapshot index rows for the run's date range, atomically."""
+        uni_df = pd.read_parquet(snapshot_path, columns=["date", "universe_id"]).drop_duplicates()
+        uni_df["date"] = pd.to_datetime(uni_df["date"], errors="coerce").dt.date
+        db.query(SnapshotIndexUniverse).filter(
+            SnapshotIndexUniverse.snapshot_date >= self.start_date,
+            SnapshotIndexUniverse.snapshot_date <= self.asof,
+            SnapshotIndexUniverse.universe_id == universe_id.upper(),
+        ).delete(synchronize_session=False)
+        universe_records = [
+            {
+                "snapshot_date": row.date,
+                "universe_id": row.universe_id,
+                "artifact_path": str(snapshot_path),
+                "run_id": self.run_id,
+                "version": "v1",
+            }
+            for row in uni_df.itertuples(index=False)
+        ]
+        for i in range(0, len(universe_records), PUBLISH_CHUNK_SIZE):
+            db.bulk_insert_mappings(
+                SnapshotIndexUniverse, universe_records[i : i + PUBLISH_CHUNK_SIZE]
+            )
+        # One commit for the delete and every insert: a failure leaves the old rows intact.
+        db.commit()
 
 
 def _run_step(builder: Phase1Builder, step: str, universe: str | None = None) -> None:

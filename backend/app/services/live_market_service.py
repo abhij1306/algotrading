@@ -10,6 +10,8 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from ..utils.helpers import safe_float
+from ..utils.logger import log_exception_throttled
 from ..utils.runtime_metrics import runtime_metrics
 from ..utils.ws_manager import manager
 from .symbol_master import symbol_master
@@ -34,6 +36,23 @@ WS_BACKOFF_BASE_S = 5.0
 WS_BACKOFF_MAX_S = 60.0
 # Pause after an unexpected loop error so a persistent failure cannot busy-spin.
 LOOP_ERROR_PAUSE_S = 1.0
+# Fyers tick fields carrying the exchange time, in epoch seconds, most precise first.
+TICK_TIME_FIELDS = ("exch_feed_time", "last_traded_time")
+DEFAULT_TICK_MAX_AGE_SEC = 60.0
+
+
+def tick_max_age_sec() -> float:
+    """Max age of a cached tick used as a live price (env PAPER_TICK_MAX_AGE_SEC)."""
+    max_age = safe_float(os.getenv("PAPER_TICK_MAX_AGE_SEC"), DEFAULT_TICK_MAX_AGE_SEC)
+    return max_age if max_age > 0 else DEFAULT_TICK_MAX_AGE_SEC
+
+
+def tick_time(tick: TickPayload) -> float:
+    """Exchange time of a tick in epoch seconds, or 0.0 when it carries none."""
+    return next(
+        (safe_float(tick.get(f), 0.0) for f in TICK_TIME_FIELDS if tick.get(f) is not None),
+        0.0,
+    )
 
 
 class LiveMarketService:
@@ -66,6 +85,8 @@ class LiveMarketService:
         self._disconnect_event = threading.Event()
         # True once the current connect attempt has replayed subscriptions (avoids double replay).
         self._replayed_for_attempt = False
+        # Stop signal of the current connect runner thread; each runner gets a fresh event.
+        self._runner_stop = threading.Event()
 
     def on_ws_connected(self) -> None:
         """Callback when WebSocket connection is established"""
@@ -115,7 +136,7 @@ class LiveMarketService:
         """Poll until the provider socket reports connected; False on timeout or disconnect."""
         deadline = time.monotonic() + timeout
         while True:
-            if self._explicitly_disconnected:
+            if self._explicitly_disconnected or self._runner_stop.is_set():
                 return False
             if self._provider_is_connected():
                 return True
@@ -123,44 +144,66 @@ class LiveMarketService:
                 return False
             self._disconnect_event.wait(WS_CONNECT_POLL_S)
 
-    def _run_provider_connect(self) -> None:
-        """Blocking connect with bounded wait, retry count and backoff (runs in a thread)."""
+    def _attempt_provider_connect(self) -> None:
+        """One provider connect attempt. Raises when the provider did not connect in time.
+
+        Returns normally once connected, or when an explicit disconnect arrived meanwhile.
+        """
+        runtime_metrics.increment("live_market.provider.connect_attempts")
+        self._replayed_for_attempt = False
+        self.ws_service.connect()
+        if self._explicitly_disconnected or self._runner_stop.is_set():
+            # disconnect() or off-hours cleanup raced with connect(): no live socket left behind.
+            self.ws_service.disconnect()
+            return
+        if not self._wait_for_provider_connection(WS_CONNECT_TIMEOUT_S):
+            if self._explicitly_disconnected or self._runner_stop.is_set():
+                return
+            raise ConnectionError(f"provider not connected within {WS_CONNECT_TIMEOUT_S}s")
+        if not self._replayed_for_attempt:
+            self.on_ws_connected()
+
+    def _stop_requested(self, stop: threading.Event) -> bool:
+        return self._explicitly_disconnected or stop.is_set()
+
+    def _run_provider_connect(self, stop: threading.Event | None = None) -> None:
+        """Blocking connect with bounded wait, retry count and backoff (runs in a thread).
+
+        Stops early when `stop` (this runner's event) is set by an explicit disconnect
+        or by the monitor's off-hours cleanup.
+        """
+        stop = stop or self._runner_stop
         retry_count = 0
         last_error: Exception = ConnectionError("provider connection failed")
-        while retry_count < WS_MAX_RETRIES and not self._explicitly_disconnected:
+        while retry_count < WS_MAX_RETRIES and not self._stop_requested(stop):
             try:
                 logger.debug(f"[WS] Connection attempt {retry_count + 1}/{WS_MAX_RETRIES}")
-                runtime_metrics.increment("live_market.provider.connect_attempts")
-                self._replayed_for_attempt = False
-                self.ws_service.connect()
-                if self._explicitly_disconnected:
-                    # disconnect() raced with connect(): do not leave a live socket behind.
-                    self.ws_service.disconnect()
-                    return
-                if not self._wait_for_provider_connection(WS_CONNECT_TIMEOUT_S):
-                    if self._explicitly_disconnected:
-                        return
-                    raise ConnectionError(f"provider not connected within {WS_CONNECT_TIMEOUT_S}s")
-                if not self._replayed_for_attempt:
-                    self.on_ws_connected()
+                self._attempt_provider_connect()
                 return
             except Exception as e:
                 last_error = e
                 retry_count += 1
-                logger.error(f"[WS] Connection attempt {retry_count} failed: {e}")
+                log_exception_throttled(
+                    logger,
+                    "live_market.connect_retry",
+                    "[WS] Connection attempt %s failed: %s",
+                    retry_count,
+                    e,
+                )
                 if retry_count >= WS_MAX_RETRIES:
                     break
                 # Exponential backoff: 5, 10, 20, 40, 60...; wakes early on explicit disconnect.
                 delay = min(WS_BACKOFF_BASE_S * (2 ** (retry_count - 1)), WS_BACKOFF_MAX_S)
                 logger.debug(f"[WS] Reconnection attempt in {delay} seconds...")
-                self._disconnect_event.wait(delay)
-        if not self._explicitly_disconnected:
+                stop.wait(delay)
+        if not self._stop_requested(stop):
             self.on_ws_failure(last_error)
 
     def disconnect(self) -> None:
         """Explicit disconnect: close the provider socket; stay down until an explicit connect."""
         self._explicitly_disconnected = True
         self._disconnect_event.set()
+        self._runner_stop.set()
         if self.ws_service:
             self.ws_service.disconnect()
         self.ws_connected = False
@@ -181,7 +224,7 @@ class LiveMarketService:
 
         now = datetime.datetime.now(IST)
         # Weekends check
-        if now.weekday() >= 5:  # 5=Sat, 6=Sun
+        if now.weekday() >= 5:  # Saturday or Sunday
             self._market_status = "CLOSED_WEEKEND"
             return False
 
@@ -235,6 +278,35 @@ class LiveMarketService:
                 runtime_metrics.increment("live_market.flush.loop_errors")
                 await asyncio.sleep(LOOP_ERROR_PAUSE_S)
 
+    async def _check_connection_health(self) -> None:
+        """One monitor check: reconnect during market hours, disconnect off-hours."""
+        if not self.is_market_open():
+            # Ensure we are disconnected off-hours
+            if self.ws_connected or self._is_connecting:
+                logger.info("[WS] Market closed. Cleaning up connection.")
+                # Stop a runner that is retrying so it cannot reconnect off-hours.
+                self._runner_stop.set()
+                if self.ws_service:
+                    self.ws_service.disconnect()
+                self.ws_connected = False
+                self._is_connecting = False
+            return
+
+        if self._provider_is_connected():
+            # The socket may be connected while our flag is still false.
+            self.ws_connected = True
+            return
+
+        if self.ws_connected:
+            logger.info("[WS] Connection dropped during market hours. Triggering reconnect...")
+            runtime_metrics.increment("live_market.provider.reconnect_triggered")
+            self.ws_connected = False
+            await self.connect_async()
+        elif not self._is_connecting:
+            logger.debug("[WS] Market is open but not connected. Triggering connection...")
+            runtime_metrics.increment("live_market.provider.reconnect_triggered")
+            await self.connect_async()
+
     async def _monitor_loop(self) -> None:
         """
         Background task to monitor connection health.
@@ -244,37 +316,7 @@ class LiveMarketService:
         while True:
             try:
                 await asyncio.sleep(30)  # Check every 30s
-
-                if self.is_market_open():
-                    is_connected = self._provider_is_connected()
-
-                    if not is_connected:
-                        if self.ws_connected:
-                            logger.info(
-                                "[WS] Connection dropped during market hours. "
-                                "Triggering reconnect..."
-                            )
-                            runtime_metrics.increment("live_market.provider.reconnect_triggered")
-                            self.ws_connected = False
-                            await self.connect_async()
-                        elif not self._is_connecting:
-                            logger.debug(
-                                "[WS] Market is open but not connected. Triggering connection..."
-                            )
-                            runtime_metrics.increment("live_market.provider.reconnect_triggered")
-                            await self.connect_async()
-                    elif not self.ws_connected:
-                        # Case where it's connected but our flag is false
-                        self.ws_connected = True
-                else:
-                    # Ensure we are disconnected off-hours
-                    if self.ws_connected or self._is_connecting:
-                        logger.info("[WS] Market closed. Cleaning up connection.")
-                        if self.ws_service:
-                            self.ws_service.disconnect()
-                        self.ws_connected = False
-                        self._is_connecting = False
-
+                await self._check_connection_health()
             except asyncio.CancelledError:
                 logger.info("Connection monitor cancelled")
                 raise
@@ -285,46 +327,52 @@ class LiveMarketService:
 
     def handle_tick_incoming(self, tick: TickPayload) -> None:
         """Entry point for ticks from Fyers Thread - buffer for batch broadcast"""
-        if self.loop and not self.loop.is_closed():
-            try:
-                # Convert symbol to DB_FORMAT before buffering
-                fyers_symbol = tick.get("symbol")
-                if fyers_symbol:
-                    db_symbol = symbol_master.to_db(fyers_symbol)
-                    tick_db = tick.copy()
-                    tick_db["symbol"] = db_symbol
+        if not self.loop or self.loop.is_closed():
+            return
+        try:
+            fyers_symbol = tick.get("symbol")
+            if not fyers_symbol:
+                return
+            # Convert symbol to DB_FORMAT before buffering
+            db_symbol = symbol_master.to_db(fyers_symbol)
+            tick_db = self._normalize_tick(tick, db_symbol)
 
-                    # Ensure change_pct is calculated if not provided
-                    # Fyers sends 'chp' (change percent) field
-                    if "chp" in tick_db:
-                        tick_db["change_pct"] = tick_db["chp"]
-                    elif "ltp" in tick_db and "prev_close_price" in tick_db:
-                        # Calculate change_pct: (current - prev_close) / prev_close * 100
-                        ltp = tick_db["ltp"]
-                        prev_close = tick_db["prev_close_price"]
-                        if prev_close and prev_close > 0:
-                            tick_db["change_pct"] = ((ltp - prev_close) / prev_close) * 100
+            # Update latest values cache
+            self.latest_values[db_symbol] = tick_db
+            runtime_metrics.set_gauge("live_market.latest_values", float(len(self.latest_values)))
 
-                    # Normalize absolute change for consumers expecting `change`
-                    if "ch" in tick_db and "change" not in tick_db:
-                        tick_db["change"] = tick_db["ch"]
+            # Buffer for batch broadcast to avoid duplicate immediate sends.
+            asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
+        except Exception as e:
+            log_exception_throttled(
+                logger, "live_market.tick", "Error processing incoming tick: %s", e
+            )
 
-                    # Ensure volume is passed through (Fyers sends 'volume' or 'v')
-                    if "v" in tick_db and "volume" not in tick_db:
-                        tick_db["volume"] = tick_db["v"]
-                    elif "vol_traded_today" in tick_db and "volume" not in tick_db:
-                        tick_db["volume"] = tick_db["vol_traded_today"]
+    @staticmethod
+    def _normalize_tick(tick: TickPayload, db_symbol: str) -> TickPayload:
+        """Copy of a Fyers tick keyed by DB symbol, with change_pct, change and volume."""
+        tick_db = tick.copy()
+        tick_db["symbol"] = db_symbol
 
-                    # Update latest values cache
-                    self.latest_values[db_symbol] = tick_db
-                    runtime_metrics.set_gauge(
-                        "live_market.latest_values", float(len(self.latest_values))
-                    )
+        # Fyers sends 'chp' (change percent); otherwise derive it from the previous close.
+        if "chp" in tick_db:
+            tick_db["change_pct"] = tick_db["chp"]
+        elif "ltp" in tick_db and "prev_close_price" in tick_db:
+            prev_close = tick_db["prev_close_price"]
+            if prev_close and prev_close > 0:
+                tick_db["change_pct"] = ((tick_db["ltp"] - prev_close) / prev_close) * 100
 
-                    # Buffer for batch broadcast to avoid duplicate immediate sends.
-                    asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
-            except Exception as e:
-                logger.error(f"Error processing incoming tick: {e}")
+        # Normalize absolute change for consumers expecting `change`
+        if "ch" in tick_db and "change" not in tick_db:
+            tick_db["change"] = tick_db["ch"]
+
+        # Ensure volume is passed through (Fyers sends 'volume' or 'v')
+        if "volume" not in tick_db:
+            if "v" in tick_db:
+                tick_db["volume"] = tick_db["v"]
+            elif "vol_traded_today" in tick_db:
+                tick_db["volume"] = tick_db["vol_traded_today"]
+        return tick_db
 
     @staticmethod
     def _validate_fyers_token() -> bool:
@@ -366,7 +414,41 @@ class LiveMarketService:
         elif self._explicitly_disconnected:
             return "disconnected"
 
-        # 1. Capture and set event loop
+        self._capture_loop(loop)
+        self._ensure_background_tasks()
+
+        if self._is_connecting or self.ws_connected:
+            self._last_connect_block_reason = None
+            return "already_connected"
+
+        token_valid = prevalidated_token
+        if token_valid is None:
+            token_valid = self._validate_fyers_token()
+        if not token_valid:
+            if self._last_connect_block_reason != "token_invalid":
+                logger.debug("Live market connect skipped: Fyers token is invalid or expired.")
+                self._last_connect_block_reason = "token_invalid"
+            return "token_invalid"
+
+        if not self.is_market_open():
+            if self._last_connect_block_reason != "market_closed":
+                logger.info(
+                    f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
+                )
+                self._last_connect_block_reason = "market_closed"
+            return "market_closed"
+
+        self._last_connect_block_reason = None
+        logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
+        try:
+            return self._start_provider_connection()
+        except Exception as e:
+            self._is_connecting = False
+            logger.exception(f"Failed to connect to Fyers: {e}")
+            return "error"
+
+    def _capture_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        """Remember the event loop that ticks and background tasks are scheduled on."""
         if loop:
             self.loop = loop
         elif not self.loop:
@@ -376,74 +458,47 @@ class LiveMarketService:
                 logger.warning("LiveMarketService connected outside async loop context")
                 self.loop = None
 
-        # 2. Start monitor loop if not running
-        if self.loop and (self.monitor_task is None or self.monitor_task.done()):
+    def _ensure_background_tasks(self) -> None:
+        """Start the monitor and broadcast flush loops if they are not running."""
+        if not self.loop:
+            return
+        if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = self.loop.create_task(self._monitor_loop())
-        # Start broadcast flush loop if not running.
-        if self.loop and (self.broadcast_task is None or self.broadcast_task.done()):
+        if self.broadcast_task is None or self.broadcast_task.done():
             self.broadcast_task = self.loop.create_task(self._flush_loop())
 
-        # 4. Check if already connecting or connected
-        if self._is_connecting or self.ws_connected:
-            self._last_connect_block_reason = None
+    def _start_provider_connection(self) -> str:
+        """Attach to the provider socket, connecting it on a background thread if needed.
+
+        Returns "started" when a connect thread was launched, "already_connected" when the
+        provider socket was already connected.
+        """
+        self._is_connecting = True
+        # A new connection supersedes any stop request aimed at an earlier runner.
+        self._runner_stop = threading.Event()
+        from .fyers_websocket import get_websocket_service
+
+        self.ws_service = get_websocket_service()
+
+        # Register handlers
+        self.ws_service.on_tick_handler = self.handle_tick_incoming
+        # Fires on first connect and every SDK auto-reconnect (replays subscriptions).
+        self.ws_service.on_open_handler = self.on_provider_open
+
+        ws = self.ws_service.ws
+        if ws and hasattr(ws, "is_connected") and ws.is_connected():
+            logger.info("[OK] WebSocket already connected")
+            self.ws_connected = True
+            self._is_connecting = False
             return "already_connected"
 
-        # 5. Validate Fyers Token
-        token_valid = prevalidated_token
-        if token_valid is None:
-            token_valid = self._validate_fyers_token()
-
-        if not token_valid:
-            if self._last_connect_block_reason != "token_invalid":
-                logger.debug("Live market connect skipped: Fyers token is invalid or expired.")
-                self._last_connect_block_reason = "token_invalid"
-            return "token_invalid"
-
-        # 6. Check Market Hours
-        if self.is_market_open():
-            self._last_connect_block_reason = None
-            logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
-
-            try:
-                self._is_connecting = True
-                from .fyers_websocket import get_websocket_service
-
-                self.ws_service = get_websocket_service()
-
-                # Register handlers
-                self.ws_service.on_tick_handler = self.handle_tick_incoming
-                # Fires on first connect and every SDK auto-reconnect (replays subscriptions).
-                self.ws_service.on_open_handler = self.on_provider_open
-
-                # Check if already connected
-                if (
-                    self.ws_service.ws
-                    and hasattr(self.ws_service.ws, "is_connected")
-                    and self.ws_service.ws.is_connected()
-                ):
-                    logger.info("[OK] WebSocket already connected")
-                    self.ws_connected = True
-                    self._is_connecting = False
-                else:
-                    # Run connection in a separate thread to avoid blocking startup
-                    self._ws_thread = threading.Thread(
-                        target=self._run_provider_connect, daemon=True
-                    )
-                    self._ws_thread.start()
-                    logger.info("[START] WebSocket connection started in background thread")
-                    return "started"
-
-            except Exception as e:
-                self._is_connecting = False
-                logger.error(f"Failed to connect to Fyers: {e}")
-                return "error"
-        else:
-            if self._last_connect_block_reason != "market_closed":
-                logger.info(
-                    f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
-                )
-                self._last_connect_block_reason = "market_closed"
-            return "market_closed"
+        # Run connection in a separate thread to avoid blocking startup
+        self._ws_thread = threading.Thread(
+            target=self._run_provider_connect, args=(self._runner_stop,), daemon=True
+        )
+        self._ws_thread.start()
+        logger.info("[START] WebSocket connection started in background thread")
+        return "started"
 
     async def subscribe(self, symbols: list[str]) -> None:
         """Subscribe to symbols non-blocking"""
@@ -459,37 +514,45 @@ class LiveMarketService:
                     self._last_subscribe_market_closed_log_ts = now
                 return
 
-        if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():
-            try:
-                # Convert to Fyers format one-by-one to avoid rejecting the whole batch.
-                fyers_symbols: list[str] = []
-                invalid_symbols: list[str] = []
-                for symbol in symbols:
-                    try:
-                        fyers_symbols.append(symbol_master.to_fyers(symbol))
-                    except Exception:
-                        invalid_symbols.append(symbol)
-
-                if invalid_symbols:
-                    logger.warning(
-                        "Skipping invalid symbols for provider subscribe: %s", invalid_symbols
-                    )
-
-                if not fyers_symbols:
-                    return
-
-                # CRITICAL FIX: Run blocking SDK call in executor
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.ws_service.subscribe, fyers_symbols)
-                logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
-            except Exception as e:
-                logger.error(f"Fyers subscription failed: {e}")
-        else:
+        if not self._provider_socket_connected():
             # Add to pending subscriptions
             self.pending_subscriptions.update(symbols)
             logger.warning(
                 f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
             )
+            return
+
+        try:
+            # Convert to Fyers format one-by-one to avoid rejecting the whole batch.
+            fyers_symbols, invalid_symbols = self._to_fyers_symbols(symbols)
+            if invalid_symbols:
+                logger.warning(
+                    "Skipping invalid symbols for provider subscribe: %s", invalid_symbols
+                )
+            if not fyers_symbols:
+                return
+
+            # CRITICAL FIX: Run blocking SDK call in executor
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.ws_service.subscribe, fyers_symbols)
+            logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
+        except Exception as e:
+            logger.exception(f"Fyers subscription failed: {e}")
+
+    def _provider_socket_connected(self) -> bool:
+        return bool(self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected())
+
+    @staticmethod
+    def _to_fyers_symbols(symbols: list[str] | set[str]) -> tuple[list[str], list[str]]:
+        """(Fyers symbols, symbols that could not be converted), in input order."""
+        fyers_symbols: list[str] = []
+        invalid_symbols: list[str] = []
+        for symbol in symbols:
+            try:
+                fyers_symbols.append(symbol_master.to_fyers(symbol))
+            except Exception:
+                invalid_symbols.append(symbol)
+        return fyers_symbols, invalid_symbols
 
     async def subscribe_api(self, symbols: list[str]) -> None:
         """Subscribe on behalf of the HTTP API; these symbols are never released by client drops."""
@@ -511,23 +574,21 @@ class LiveMarketService:
         if symbols_set:
             self.pending_subscriptions.difference_update(symbols_set)
 
-        if self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected():
-            try:
-                fyers_symbols: list[str] = []
-                for symbol in symbols_set:
-                    try:
-                        fyers_symbols.append(symbol_master.to_fyers(symbol))
-                    except Exception as exc:
-                        logger.warning(
-                            "Skipping invalid symbol for unsubscribe %s: %s", symbol, exc
-                        )
-                        continue
-                if not fyers_symbols:
-                    return
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
-            except Exception as e:
-                logger.error(f"Fyers unsubscription failed: {e}")
+        if not self._provider_socket_connected():
+            return
+        try:
+            fyers_symbols: list[str] = []
+            for symbol in symbols_set:
+                try:
+                    fyers_symbols.append(symbol_master.to_fyers(symbol))
+                except Exception as exc:
+                    logger.warning("Skipping invalid symbol for unsubscribe %s: %s", symbol, exc)
+            if not fyers_symbols:
+                return
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
+        except Exception as e:
+            logger.exception(f"Fyers unsubscription failed: {e}")
 
     async def get_status(self) -> dict[str, Any]:
         return {
@@ -548,6 +609,26 @@ class LiveMarketService:
         Returns cached live tick if available.
         """
         return self.latest_values.get(symbol)
+
+    def get_fresh_tick(self, symbol: str) -> dict | None:
+        """Cached tick usable as a live price, else None.
+
+        The cache keeps ticks after a disconnect or market close, so a tick counts only
+        while the market is open (DEV_MODE counts as open) and its exchange time is within
+        tick_max_age_sec(). A tick without a time is stale.
+        """
+        tick = self.latest_values.get(symbol)
+        if not isinstance(tick, dict) or not self.is_market_open():
+            return None
+        ts = tick_time(tick)
+        if ts <= 0 or time.time() - ts > tick_max_age_sec():
+            return None
+        return tick
+
+    def get_fresh_ticks(self, symbols: list[str]) -> dict[str, dict]:
+        """Fresh ticks (see get_fresh_tick) of the symbols that have one."""
+        fresh = {symbol: self.get_fresh_tick(symbol) for symbol in symbols}
+        return {symbol: tick for symbol, tick in fresh.items() if tick is not None}
 
     def get_latest_ticks(self, symbols: list[str]) -> dict:
         """Get latest ticks for multiple symbols"""

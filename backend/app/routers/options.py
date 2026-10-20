@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..services.option_chain_service import OptionChainData, OptionLeg, option_chain_service
+from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/options", tags=["Options"])
@@ -177,8 +178,8 @@ async def get_option_chain(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching option chain for %s", symbol)
-        raise HTTPException(status_code=500, detail=f"Error fetching option chain: {e}") from e
+        logger.exception("Error fetching option chain for %s", safe_log_value(symbol))
+        raise HTTPException(status_code=500, detail="Error fetching option chain") from e
 
 
 @router.get(
@@ -211,8 +212,8 @@ async def get_expiries(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching expiries for %s", symbol)
-        raise HTTPException(status_code=500, detail=f"Error fetching expiries: {e}") from e
+        logger.exception("Error fetching expiries for %s", safe_log_value(symbol))
+        raise HTTPException(status_code=500, detail="Error fetching expiries") from e
 
 
 @router.get(
@@ -257,8 +258,8 @@ async def get_atm_strike(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching ATM strike for %s", symbol)
-        raise HTTPException(status_code=500, detail=f"Error fetching ATM strike: {e}") from e
+        logger.exception("Error fetching ATM strike for %s", safe_log_value(symbol))
+        raise HTTPException(status_code=500, detail="Error fetching ATM strike") from e
 
 
 @router.get(
@@ -313,11 +314,19 @@ async def get_greeks(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching Greeks for %s %s %s", symbol, strike, option_type)
-        raise HTTPException(status_code=500, detail=f"Error fetching Greeks: {e}") from e
+        logger.exception(
+            "Error fetching Greeks for %s %s %s",
+            safe_log_value(symbol),
+            strike,
+            safe_log_value(option_type),
+        )
+        raise HTTPException(status_code=500, detail="Error fetching Greeks") from e
 
 
-@router.post("/cache/clear")
+@router.post(
+    "/cache/clear",
+    responses={403: {"description": "Cache clear is disabled outside DEBUG_INTERNAL"}},
+)
 async def clear_cache() -> dict[str, str]:
     """
     Clear the option chain cache.

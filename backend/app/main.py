@@ -238,7 +238,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("[OK] WebSocket services initialized successfully")
 
     except Exception as e:
-        logger.error(f"[ERROR] Startup sequence failed: {e}", exc_info=True)
+        logger.exception(f"[ERROR] Startup sequence failed: {e}")
         sequence.log_summary()
 
     yield

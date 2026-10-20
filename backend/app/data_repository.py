@@ -4,6 +4,7 @@ Provides clean interface for data access
 """
 
 import logging
+import os
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
@@ -20,6 +21,84 @@ from .database import (
 )
 
 logger = logging.getLogger(__name__)
+
+# HistoricalPrice indicator column -> compute_features key
+PRICE_FEATURE_COLUMNS = {
+    "ema_20": "ema20",
+    "ema_50": "ema50",
+    "rsi_14": "rsi",
+    "atr_14": "atr",
+    "high_20d": "20d_high",
+    "trend_7d": "trend_7d",
+    "trend_30d": "trend_30d",
+    "macd": "macd",
+    "macd_signal": "macd_signal",
+    "adx": "adx",
+    "stoch_k": "stoch_k",
+    "stoch_d": "stoch_d",
+    "bb_upper": "bb_upper",
+    "bb_middle": "bb_middle",
+    "bb_lower": "bb_lower",
+    "obv": "obv",
+}
+
+INTRADAY_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+
+# Canonical intraday fallback source under data_system (app/.. is backend, backend/.. is root).
+_INTRADAY_FALLBACK_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data_system",
+    "01_sources",
+    "nse_intraday",
+)
+
+
+def _intraday_fallback_csv(symbol: str, timeframe: int) -> str | None:
+    """data_system 5-minute CSV for NIFTY 50 / BANKNIFTY, else None."""
+    if timeframe != 5:
+        return None
+    # Normalize symbol for CSV lookup
+    normalized_symbol = symbol.upper().replace(" ", "").replace("-", "")
+    if "NIFTY" in normalized_symbol and "50" in normalized_symbol:
+        return os.path.join(_INTRADAY_FALLBACK_ROOT, "NIFTY50_5min_complete.csv")
+    if "BANKNIFTY" in normalized_symbol:
+        return os.path.join(_INTRADAY_FALLBACK_ROOT, "BANKNIFTY_5min_complete.csv")
+    return None
+
+
+def _intraday_csv_fallback(
+    symbol: str,
+    timeframe: int,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    days: int | None,
+) -> pd.DataFrame:
+    """Intraday candles from the data_system CSV, filtered like the DB query."""
+    csv_path = _intraday_fallback_csv(symbol, timeframe)
+    if not csv_path or not os.path.exists(csv_path):
+        return pd.DataFrame()
+
+    logger.info("[DATA] Reading intraday data from CSV: %s", csv_path)
+    df = pd.read_csv(csv_path)
+    # Map 'datetime' from CSV to 'timestamp'
+    if "datetime" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["datetime"])
+    elif "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    # Filter by date range
+    if start_date:
+        df = df[df["timestamp"] >= start_date]
+    if end_date:
+        df = df[df["timestamp"] <= end_date]
+    if days and not start_date:
+        cutoff = datetime.now() - timedelta(days=days)
+        df = df[df["timestamp"] >= cutoff]
+
+    # Ensure correct columns
+    if all(col in df.columns for col in INTRADAY_COLUMNS):
+        return df[INTRADAY_COLUMNS].copy()
+    return pd.DataFrame()
 
 
 class DataRepository:
@@ -64,31 +143,7 @@ class DataRepository:
 
             records_added = 0
             for idx, row in df.iterrows():
-                # Check if record exists
-                existing = (
-                    self.db.query(HistoricalPrice)
-                    .filter(
-                        and_(
-                            HistoricalPrice.company_id == company.id,
-                            HistoricalPrice.date == idx.date(),
-                        )
-                    )
-                    .first()
-                )
-
-                if not existing:
-                    price = HistoricalPrice(
-                        company_id=company.id,
-                        date=idx.date(),
-                        open=float(row["Open"]),
-                        high=float(row["High"]),
-                        low=float(row["Low"]),
-                        close=float(row["Close"]),
-                        volume=int(row["Volume"]),
-                        # adj_close removed as it's not in the model
-                        source=source,
-                    )
-                    self.db.add(price)
+                if self._add_price_if_missing(company.id, idx.date(), row, source):
                     records_added += 1
 
             self.db.commit()
@@ -96,50 +151,12 @@ class DataRepository:
             # Calculate and save technical indicators for the latest data
             if records_added > 0:
                 try:
-                    from .indicators import compute_features
-
-                    # Get last 200 days of data to calculate indicators
-                    hist = self.get_historical_prices(symbol, days=200)
-
-                    if hist is not None and not hist.empty and len(hist) >= 20:
-                        features = compute_features(symbol, hist)
-
-                        if features:
-                            # Update the latest price record with calculated indicators
-                            latest_price = (
-                                self.db.query(HistoricalPrice)
-                                .filter(HistoricalPrice.company_id == company.id)
-                                .order_by(HistoricalPrice.date.desc())
-                                .first()
-                            )
-
-                            if latest_price and features:
-                                latest_price.ema_20 = features.get("ema20")
-                                latest_price.ema_50 = features.get("ema50")
-                                latest_price.rsi_14 = features.get("rsi")
-                                latest_price.atr_14 = features.get("atr")
-                                latest_price.high_20d = features.get("20d_high")
-                                latest_price.is_breakout = features.get("is_20d_breakout", False)
-
-                                # Save Trends
-                                latest_price.trend_7d = features.get("trend_7d")
-                                latest_price.trend_30d = features.get("trend_30d")
-
-                                # Save Advanced Indicators
-                                latest_price.macd = features.get("macd")
-                                latest_price.macd_signal = features.get("macd_signal")
-                                latest_price.adx = features.get("adx")
-                                latest_price.stoch_k = features.get("stoch_k")
-                                latest_price.stoch_d = features.get("stoch_d")
-                                latest_price.bb_upper = features.get("bb_upper")
-                                latest_price.bb_middle = features.get("bb_middle")
-                                latest_price.bb_lower = features.get("bb_lower")
-                                latest_price.obv = features.get("obv")
-
-                                self.db.commit()
+                    self._store_latest_features(symbol, company.id)
                 except Exception as e:
+                    # Prices are already committed; drop the half-written indicator update
+                    # so the session stays usable for the update log below.
+                    self.db.rollback()
                     logger.warning("Failed to calculate indicators for %s: %s", symbol, e)
-                    # Don't fail the whole operation if indicator calculation fails
 
             # Log update
             try:
@@ -159,6 +176,62 @@ class DataRepository:
         except Exception as e:
             self.db.rollback()
             raise e
+
+    def _add_price_if_missing(
+        self, company_id: int, price_date: date, row: pd.Series, source: str
+    ) -> bool:
+        """Stage a HistoricalPrice for the row unless that date is already stored."""
+        existing = (
+            self.db.query(HistoricalPrice)
+            .filter(
+                and_(
+                    HistoricalPrice.company_id == company_id,
+                    HistoricalPrice.date == price_date,
+                )
+            )
+            .first()
+        )
+        if existing:
+            return False
+        self.db.add(
+            HistoricalPrice(
+                company_id=company_id,
+                date=price_date,
+                open=float(row["Open"]),
+                high=float(row["High"]),
+                low=float(row["Low"]),
+                close=float(row["Close"]),
+                volume=int(row["Volume"]),
+                source=source,
+            )
+        )
+        return True
+
+    def _store_latest_features(self, symbol: str, company_id: int) -> None:
+        """Compute indicators over the last 200 days and store them on the latest price row."""
+        from .indicators import compute_features
+
+        hist = self.get_historical_prices(symbol, days=200)
+        if hist is None or hist.empty or len(hist) < 20:
+            return
+
+        features = compute_features(symbol, hist)
+        if not features:
+            return
+
+        latest_price = (
+            self.db.query(HistoricalPrice)
+            .filter(HistoricalPrice.company_id == company_id)
+            .order_by(HistoricalPrice.date.desc())
+            .first()
+        )
+        if not latest_price:
+            return
+
+        for column, feature in PRICE_FEATURE_COLUMNS.items():
+            setattr(latest_price, column, features.get(feature))
+        latest_price.is_breakout = features.get("is_20d_breakout", False)
+        self.db.commit()
 
     def get_historical_prices(
         self,
@@ -349,7 +422,8 @@ class DataRepository:
         """
         company = self.get_company(symbol)
         if not company:
-            return pd.DataFrame()
+            # Indices such as NIFTY/BANKNIFTY may have CSV candles but no Company row.
+            return _intraday_csv_fallback(symbol, timeframe, start_date, end_date, days)
 
         query = self.db.query(IntradayCandle).filter(
             and_(IntradayCandle.company_id == company.id, IntradayCandle.timeframe == timeframe)
@@ -368,63 +442,11 @@ class DataRepository:
 
         if not candles:
             # Fallback: Read from CSV if database is empty
-            import os
-
-            csv_path = None
-
-            # Normalize symbol for CSV lookup
-            normalized_symbol = symbol.upper().replace(" ", "").replace("-", "")
-
-            if timeframe == 5:
-                # Canonical intraday fallback source under data_system.
-                base_dir = os.path.dirname(
-                    os.path.dirname(os.path.abspath(__file__))
-                )  # app/.. -> backend
-                project_root = os.path.dirname(base_dir)  # backend/.. -> root
-                intraday_root = os.path.join(
-                    project_root, "data_system", "01_sources", "nse_intraday"
-                )
-                if "NIFTY" in normalized_symbol and "50" in normalized_symbol:
-                    csv_path = os.path.join(intraday_root, "NIFTY50_5min_complete.csv")
-                elif "BANKNIFTY" in normalized_symbol:
-                    csv_path = os.path.join(intraday_root, "BANKNIFTY_5min_complete.csv")
-
-            if csv_path and os.path.exists(csv_path):
-                logger.info("[DATA] Reading intraday data from CSV: %s", csv_path)
-                df = pd.read_csv(csv_path)
-                # Map 'datetime' from CSV to 'timestamp'
-                if "datetime" in df.columns:
-                    df["timestamp"] = pd.to_datetime(df["datetime"])
-                elif "timestamp" in df.columns:
-                    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-                # Filter by date range
-                if start_date:
-                    df = df[df["timestamp"] >= start_date]
-                if end_date:
-                    df = df[df["timestamp"] <= end_date]
-                if days and not start_date:
-                    cutoff = datetime.now() - timedelta(days=days)
-                    df = df[df["timestamp"] >= cutoff]
-
-                # Ensure correct columns
-                required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                if all(col in df.columns for col in required_cols):
-                    return df[required_cols].copy()
-
-            return pd.DataFrame()
+            return _intraday_csv_fallback(symbol, timeframe, start_date, end_date, days)
 
         # Convert to DataFrame
-        data = {
-            "timestamp": [c.timestamp for c in candles],
-            "open": [c.open for c in candles],
-            "high": [c.high for c in candles],
-            "low": [c.low for c in candles],
-            "close": [c.close for c in candles],
-            "volume": [c.volume for c in candles],
-        }
-        df = pd.DataFrame(data)
-        return df
+        data = {column: [getattr(c, column) for c in candles] for column in INTRADAY_COLUMNS}
+        return pd.DataFrame(data)
 
     # ==================== FINANCIAL STATEMENT OPERATIONS ====================
 

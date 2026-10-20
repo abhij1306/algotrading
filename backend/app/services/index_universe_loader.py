@@ -183,7 +183,7 @@ class IndexUniverseLoader:
                     try:
                         self._load_index_csv(index_id, filepath)
                     except Exception as e:
-                        logger.error(f"Failed to load {filename}: {e}")
+                        logger.exception(f"Failed to load {filename}: {e}")
                 else:
                     logger.warning(f"Index file not found: {filepath}")
 
@@ -315,23 +315,6 @@ class IndexUniverseLoader:
             self.load_all()
         universe = self._indices.get(index_id)
         return universe.description if universe else ""
-
-    def get_symbols_by_date(self, index_id: str, _target_date: date) -> list[str]:
-        """
-        Get symbols for an index as of a specific date.
-
-        Note: Currently returns current constituents. Historical changes
-        would require parsing IndexInclExcl.xls for rebalance history.
-
-        Args:
-            index_id: Index identifier
-            target_date: Target date (currently ignored, returns current constituents)
-
-        Returns:
-            List of symbols
-        """
-        # TODO(#9): Implement historical constituent lookup using IndexInclExcl.xls
-        return self.get_index_symbols(index_id)
 
     def refresh(self) -> None:
         """Force reload of all index data"""

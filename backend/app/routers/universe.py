@@ -135,7 +135,7 @@ async def list_universes() -> dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error listing universes: {e}", exc_info=True)
+        logger.exception(f"Error listing universes: {e}")
         raise handle_api_error(e, "Failed to list universes") from e
 
 
@@ -188,7 +188,7 @@ async def get_constituents(
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
-        logger.error(f"Error getting constituents: {e}", exc_info=True)
+        logger.exception(f"Error getting constituents: {e}")
         raise handle_api_error(e, "Failed to get constituents") from e
 
 
@@ -234,7 +234,7 @@ async def get_symbols(
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
-        logger.error(f"Error getting symbols: {e}", exc_info=True)
+        logger.exception(f"Error getting symbols: {e}")
         raise handle_api_error(e, "Failed to get symbols") from e
 
 
@@ -284,7 +284,7 @@ async def get_universe_changes(
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
-        logger.error(f"Error getting universe changes: {e}", exc_info=True)
+        logger.exception(f"Error getting universe changes: {e}")
         raise handle_api_error(e, "Failed to get universe changes") from e
 
 
@@ -325,7 +325,7 @@ async def create_custom_universe(
     except ValueError as e:
         raise handle_validation_error(e) from e
     except Exception as e:
-        logger.error(f"Error creating custom universe: {e}", exc_info=True)
+        logger.exception(f"Error creating custom universe: {e}")
         raise handle_api_error(e, "Failed to create custom universe") from e
 
 
@@ -361,5 +361,5 @@ async def get_custom_universe(universe_code: str, db: DB_DEPENDENCY) -> dict[str
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting custom universe: {e}", exc_info=True)
+        logger.exception(f"Error getting custom universe: {e}")
         raise handle_api_error(e, "Failed to get custom universe") from e

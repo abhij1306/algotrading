@@ -94,7 +94,7 @@ class StartupSequence:
         except Exception as e:
             if required:
                 self.failed_step = step
-                logger.error(f"[Startup] Failed: {step.value} - {e}", exc_info=True)
+                logger.exception(f"[Startup] Failed: {step.value} - {e}")
                 self._has_failure = True
                 logger.error(
                     f"[Startup] Required step {step.value} failed. "

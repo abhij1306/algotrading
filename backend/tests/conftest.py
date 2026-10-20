@@ -29,7 +29,7 @@ def test_engine() -> Generator[Engine, None, None]:
     engine.dispose()
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def db_session(test_engine: Engine) -> Generator[Session, None, None]:
     """Create a new database session for each test"""
     testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
@@ -40,7 +40,7 @@ def db_session(test_engine: Engine) -> Generator[Session, None, None]:
         session.close()
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create a test client with database override"""
 

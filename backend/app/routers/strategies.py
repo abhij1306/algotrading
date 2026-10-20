@@ -10,6 +10,13 @@ from ..services.vcp_service import DEFAULT_CAPITAL, DEFAULT_UNIVERSE, vcp_servic
 
 router = APIRouter(prefix="/api/strategies", tags=["Strategies"])
 
+INVALID_SCAN_RESPONSES = {400: {"description": "Invalid scan request"}}
+SIGNAL_NOT_FOUND_RESPONSES = {404: {"description": "Signal not found or invalid scan date"}}
+POSITION_NOT_FOUND_RESPONSES = {404: {"description": "Strategy position not found"}}
+INVALID_BACKTEST_RESPONSES = {400: {"description": "Invalid backtest request"}}
+BACKTEST_NOT_FOUND = "Backtest run not found"
+BACKTEST_NOT_FOUND_RESPONSES = {404: {"description": BACKTEST_NOT_FOUND}}
+
 
 class ScanRunRequest(BaseModel):
     universe: str = DEFAULT_UNIVERSE
@@ -41,7 +48,7 @@ def get_latest_vcp_scan(universe: str = DEFAULT_UNIVERSE, show_all: bool = False
     return vcp_service.get_latest_scan(universe=universe, show_all=show_all)
 
 
-@router.post("/vcp/scan/run", response_model=None)
+@router.post("/vcp/scan/run", response_model=None, responses=INVALID_SCAN_RESPONSES)
 def run_vcp_scan(request: ScanRunRequest) -> dict[str, Any]:
     try:
         return vcp_service.run_scan(
@@ -51,7 +58,7 @@ def run_vcp_scan(request: ScanRunRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/vcp/signal/{symbol}", response_model=None)
+@router.get("/vcp/signal/{symbol}", response_model=None, responses=SIGNAL_NOT_FOUND_RESPONSES)
 def get_vcp_signal(symbol: str, scan_date: str | None = None) -> dict[str, Any]:
     try:
         return vcp_service.get_signal_detail(symbol=symbol, scan_date=_parse_date(scan_date))
@@ -59,7 +66,11 @@ def get_vcp_signal(symbol: str, scan_date: str | None = None) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/vcp/signal/{signal_id}/queue", response_model=None)
+@router.post(
+    "/vcp/signal/{signal_id}/queue",
+    response_model=None,
+    responses=SIGNAL_NOT_FOUND_RESPONSES,
+)
 def queue_vcp_signal(signal_id: int) -> dict[str, Any]:
     try:
         return vcp_service.queue_signal(signal_id)
@@ -67,7 +78,11 @@ def queue_vcp_signal(signal_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/vcp/signal/{signal_id}/cancel", response_model=None)
+@router.post(
+    "/vcp/signal/{signal_id}/cancel",
+    response_model=None,
+    responses=SIGNAL_NOT_FOUND_RESPONSES,
+)
 def cancel_vcp_signal(signal_id: int) -> dict[str, Any]:
     try:
         return vcp_service.cancel_signal(signal_id)
@@ -80,7 +95,11 @@ def get_strategy_positions() -> dict[str, Any]:
     return vcp_service.list_positions()
 
 
-@router.post("/positions/{position_id}/close", response_model=None)
+@router.post(
+    "/positions/{position_id}/close",
+    response_model=None,
+    responses=POSITION_NOT_FOUND_RESPONSES,
+)
 def close_strategy_position(position_id: int) -> dict[str, Any]:
     try:
         return vcp_service.close_position(position_id)
@@ -88,7 +107,11 @@ def close_strategy_position(position_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/positions/{position_id}/stop", response_model=None)
+@router.post(
+    "/positions/{position_id}/stop",
+    response_model=None,
+    responses=POSITION_NOT_FOUND_RESPONSES,
+)
 def update_strategy_stop(position_id: int, request: StopUpdateRequest) -> dict[str, Any]:
     try:
         return vcp_service.update_stop(position_id, request.stop_price)
@@ -116,7 +139,7 @@ def get_strategy_status(universe: str = DEFAULT_UNIVERSE) -> dict[str, Any]:
     return vcp_service.get_status(universe=universe)
 
 
-@router.post("/vcp/backtest/run", response_model=None)
+@router.post("/vcp/backtest/run", response_model=None, responses=INVALID_BACKTEST_RESPONSES)
 def run_vcp_backtest(request: BacktestRequest) -> dict[str, Any]:
     try:
         return vcp_service.run_backtest(request.model_dump())
@@ -129,17 +152,21 @@ def get_vcp_backtest_history(universe: str | None = None) -> dict[str, Any]:
     return {"runs": vcp_service.list_backtests(universe=universe)}
 
 
-@router.get("/vcp/backtest/{run_id}", response_model=None)
+@router.get("/vcp/backtest/{run_id}", response_model=None, responses=BACKTEST_NOT_FOUND_RESPONSES)
 def get_vcp_backtest(run_id: str) -> dict[str, Any]:
     payload = vcp_service.get_backtest(run_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="Backtest run not found")
+        raise HTTPException(status_code=404, detail=BACKTEST_NOT_FOUND)
     return payload
 
 
-@router.get("/vcp/backtest/{run_id}/trades", response_model=None)
+@router.get(
+    "/vcp/backtest/{run_id}/trades",
+    response_model=None,
+    responses=BACKTEST_NOT_FOUND_RESPONSES,
+)
 def get_vcp_backtest_trades(run_id: str) -> dict[str, Any]:
     payload = vcp_service.get_backtest(run_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="Backtest run not found")
+        raise HTTPException(status_code=404, detail=BACKTEST_NOT_FOUND)
     return {"trades": (payload.get("result") or {}).get("trade_log", [])}

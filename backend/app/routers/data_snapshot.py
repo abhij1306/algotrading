@@ -27,13 +27,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PHASE1_ROOT = PROJECT_ROOT / "data_system"
 CURATED_ROOT = PHASE1_ROOT / "04_curated" / "phase1"
 METADATA_ROOT = PHASE1_ROOT / "05_metadata" / "phase1"
-SNAPSHOT_UNAVAILABLE_RESPONSE = {
-    503: {
-        "description": "Snapshot dependencies or artifacts are not available",
-    }
+SNAPSHOT_RESPONSES = {
+    400: {"description": "Invalid request parameters"},
+    404: {"description": "Requested snapshot data was not found"},
+    503: {"description": "Snapshot dependencies or artifacts are not available"},
 }
-SNAPSHOT_NOT_FOUND_RESPONSE = {404: {"description": "Requested snapshot data was not found"}}
-SNAPSHOT_BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request parameters"}}
 
 
 def _artifact_status(path: Path) -> dict[str, int | bool]:
@@ -98,11 +96,7 @@ def _parse_date(value: str) -> date:
 
 @router.get(
     "/snapshot/stock",
-    responses={
-        **SNAPSHOT_BAD_REQUEST_RESPONSE,
-        **SNAPSHOT_NOT_FOUND_RESPONSE,
-        **SNAPSHOT_UNAVAILABLE_RESPONSE,
-    },
+    responses=SNAPSHOT_RESPONSES,
 )
 def get_stock_snapshot(
     date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],
@@ -139,11 +133,7 @@ def get_stock_snapshot(
 
 @router.get(
     "/snapshot/universe",
-    responses={
-        **SNAPSHOT_BAD_REQUEST_RESPONSE,
-        **SNAPSHOT_NOT_FOUND_RESPONSE,
-        **SNAPSHOT_UNAVAILABLE_RESPONSE,
-    },
+    responses=SNAPSHOT_RESPONSES,
 )
 def get_universe_snapshot(
     date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],

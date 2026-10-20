@@ -20,6 +20,9 @@ from ..services.backtest_phase1_service import backtest_phase1_service
 
 router = APIRouter()
 
+RUN_RESPONSES = {400: {"description": "Invalid backtest request"}}
+RESULT_RESPONSES = {404: {"description": "Backtest job not found"}}
+
 
 class StrategyAllocation(BaseModel):
     strategy_id: str
@@ -76,7 +79,7 @@ async def list_backtest_runs() -> dict[str, Any]:
     return {"runs": backtest_phase1_service.list_runs()}
 
 
-@router.post("/run", response_model=None)
+@router.post("/run", response_model=None, responses=RUN_RESPONSES)
 async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
     payload = request.model_dump()
     if not payload.get("strategies"):
@@ -90,7 +93,7 @@ async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/result/{job_id}", response_model=None)
+@router.get("/result/{job_id}", response_model=None, responses=RESULT_RESPONSES)
 async def get_backtest_result(job_id: str) -> dict[str, Any]:
     payload = backtest_phase1_service.get_job(job_id)
     if payload is None:

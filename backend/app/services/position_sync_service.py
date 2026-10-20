@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from sqlalchemy.orm import Session
+
 from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
 from ..models.live_position import LivePosition
@@ -80,8 +82,62 @@ class PositionSyncService:
                 await asyncio.sleep(self._sync_interval)
 
             except Exception as e:
-                logger.error(f"Error in position sync loop: {e}")
+                logger.exception(f"Error in position sync loop: {e}")
                 await asyncio.sleep(self._sync_interval)
+
+    @staticmethod
+    def _position_side(raw_side: str, symbol: str) -> str:
+        """LONG or SHORT from a broker side given as LONG/SHORT or BUY/SELL."""
+        if raw_side in ("LONG", "BUY"):
+            return "LONG"
+        if raw_side in ("SHORT", "SELL"):
+            return "SHORT"
+        logger.warning(f"Unknown side '{raw_side}' for {symbol}, defaulting to LONG")
+        return "LONG"
+
+    def _apply_broker_position(
+        self, db: Session, db_position_map: dict[str, LivePosition], pos: dict
+    ) -> bool:
+        """Upsert one broker position. Returns True if an existing row was updated."""
+        symbol = pos["symbol"]
+        product_type = pos["product_type"]
+        position_id = f"default_user-{symbol}-{product_type}"
+        side = self._position_side(pos["side"], symbol)
+        qty = pos["quantity"]
+        net_qty = qty if side == "LONG" else -qty
+
+        db_pos = db_position_map.get(position_id)
+        if db_pos is not None:
+            db_pos.net_qty = net_qty
+            db_pos.side = side
+            db_pos.ltp = pos["current_price"]
+            db_pos.net_avg = pos["entry_price"]
+            db_pos.unrealized_pl = pos["pnl"]
+            db_pos.pl_total = pos["pnl"]
+            db_pos.last_synced_at = datetime.now()
+            return True
+
+        db.add(
+            LivePosition(
+                id=position_id,
+                user_id="default_user",
+                symbol=symbol_master.to_db(symbol),
+                fyers_symbol=symbol,
+                product_type=product_type,
+                side=side,
+                net_qty=net_qty,
+                buy_qty=qty if side == "LONG" else 0,
+                sell_qty=qty if side == "SHORT" else 0,
+                buy_avg=pos["entry_price"] if side == "LONG" else 0,
+                sell_avg=pos["entry_price"] if side == "SHORT" else 0,
+                net_avg=pos["entry_price"],
+                ltp=pos["current_price"],
+                unrealized_pl=pos["pnl"],
+                pl_total=pos["pnl"],
+                last_synced_at=datetime.now(),
+            )
+        )
+        return False
 
     def sync_positions(self) -> dict:
         """
@@ -114,55 +170,10 @@ class PositionSyncService:
             # Process broker positions
             current_keys = set()
             for pos in broker_positions:
-                symbol = pos["symbol"]
-                product_type = pos["product_type"]
-                current_keys.add((symbol, product_type))
-
-                # Create composite ID
-                position_id = f"default_user-{symbol}-{product_type}"
-
-                # Determine side - handle both LONG/SHORT and BUY/SELL formats
-                if pos["side"] == "LONG" or pos["side"] == "BUY":
-                    side = "LONG"
-                elif pos["side"] == "SHORT" or pos["side"] == "SELL":
-                    side = "SHORT"
-                else:
-                    logger.warning(f"Unknown side '{pos['side']}' for {symbol}, defaulting to LONG")
-                    side = "LONG"
-                qty = pos["quantity"]
-
-                if position_id in db_position_map:
-                    # Update existing position
-                    db_pos = db_position_map[position_id]
-                    db_pos.net_qty = qty if side == "LONG" else -qty
-                    db_pos.side = side
-                    db_pos.ltp = pos["current_price"]
-                    db_pos.net_avg = pos["entry_price"]
-                    db_pos.unrealized_pl = pos["pnl"]
-                    db_pos.pl_total = pos["pnl"]
-                    db_pos.last_synced_at = datetime.now()
+                current_keys.add((pos["symbol"], pos["product_type"]))
+                if self._apply_broker_position(db, db_position_map, pos):
                     updated_count += 1
                 else:
-                    # Create new position
-                    new_pos = LivePosition(
-                        id=position_id,
-                        user_id="default_user",
-                        symbol=symbol_master.to_db(symbol),
-                        fyers_symbol=symbol,
-                        product_type=product_type,
-                        side=side,
-                        net_qty=qty if side == "LONG" else -qty,
-                        buy_qty=qty if side == "LONG" else 0,
-                        sell_qty=qty if side == "SHORT" else 0,
-                        buy_avg=pos["entry_price"] if side == "LONG" else 0,
-                        sell_avg=pos["entry_price"] if side == "SHORT" else 0,
-                        net_avg=pos["entry_price"],
-                        ltp=pos["current_price"],
-                        unrealized_pl=pos["pnl"],
-                        pl_total=pos["pnl"],
-                        last_synced_at=datetime.now(),
-                    )
-                    db.add(new_pos)
                     synced_count += 1
 
             # Mark closed positions (not in broker but in DB), matched by symbol and product
@@ -190,7 +201,7 @@ class PositionSyncService:
 
         except Exception as e:
             db.rollback()
-            logger.error(f"Error syncing positions: {e}")
+            logger.exception(f"Error syncing positions: {e}")
             return {"status": "error", "message": str(e)}
         finally:
             db.close()

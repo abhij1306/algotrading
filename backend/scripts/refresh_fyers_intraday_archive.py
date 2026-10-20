@@ -130,7 +130,10 @@ def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -
     )
 
 
-def main() -> int:
+ARCHIVE_COLUMNS = ["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"]
+
+
+def main() -> None:
     args = parse_args()
     explicit_symbols = _parse_csv_list(args.symbols)
     symbols = resolve_symbols(args.universe, explicit_symbols)
@@ -150,101 +153,113 @@ def main() -> int:
         "status": "dry_run" if args.dry_run else "completed",
     }
     if args.dry_run:
-        for year, range_from, range_to in windows:
-            summary["windows"].append(
-                {
-                    "year": year,
-                    "range_from": range_from.isoformat(),
-                    "range_to": range_to.isoformat(),
-                }
-            )
+        summary["windows"] = [
+            {"year": year, "range_from": range_from.isoformat(), "range_to": range_to.isoformat()}
+            for year, range_from, range_to in windows
+        ]
         print(json.dumps(summary, indent=2))
-        return 0
+        return
 
     out_root.mkdir(parents=True, exist_ok=True)
+    file_prefix = f"{scope_label.lower()}_{args.timeframe}min"
     for year, range_from, range_to in windows:
-        year_parts: list[pd.DataFrame] = []
-        failures: list[dict[str, Any]] = []
-        for idx, symbol in enumerate(symbols, start=1):
-            fyers_symbol = symbol_master.to_fyers(symbol)
-            all_chunks: list[pd.DataFrame] = []
-            symbol_failed = False
-            for chunk_from, chunk_to in iter_subranges(range_from, range_to):
-                response = fetch_history(
-                    fyers_symbol=fyers_symbol,
-                    timeframe=args.timeframe,
-                    range_from=chunk_from,
-                    range_to=chunk_to,
-                    throttle_s=args.throttle,
-                )
-                if not isinstance(response, dict) or response.get("s") != "ok":
-                    failures.append(
-                        {
-                            "symbol": symbol,
-                            "fyers_symbol": fyers_symbol,
-                            "year": year,
-                            "chunk_from": chunk_from.isoformat(),
-                            "chunk_to": chunk_to.isoformat(),
-                            "response": response,
-                        }
-                    )
-                    symbol_failed = True
-                    break
-                frame = candles_to_frame(symbol, fyers_symbol, response.get("candles", []))
-                if not frame.empty:
-                    all_chunks.append(frame)
-                time.sleep(args.throttle)
-            if not symbol_failed and all_chunks:
-                year_parts.append(pd.concat(all_chunks, ignore_index=True))
-            if idx % 100 == 0:
-                print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
-
-        combined = (
-            pd.concat(year_parts, ignore_index=True)
-            if year_parts
-            else pd.DataFrame(
-                columns=[
-                    "symbol",
-                    "fyers_symbol",
-                    "timestamp",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                ]
-            )
-        )
-        if not combined.empty:
-            combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-            combined = (
-                combined.dropna(subset=["symbol", "timestamp"])
-                .drop_duplicates(subset=["symbol", "timestamp"], keep="last")
-                .sort_values(["timestamp", "symbol"])
-                .reset_index(drop=True)
-            )
-        out_path = out_root / f"{scope_label.lower()}_{args.timeframe}min_{year}.parquet"
-        combined.to_parquet(out_path, index=False)
-        fail_path = out_root / f"{scope_label.lower()}_{args.timeframe}min_{year}_failures.json"
-        fail_path.write_text(json.dumps(failures, indent=2), encoding="utf-8")
         summary["windows"].append(
-            {
-                "year": year,
-                "range_from": range_from.isoformat(),
-                "range_to": range_to.isoformat(),
-                "rows": int(len(combined)),
-                "symbols": int(combined["symbol"].nunique()) if not combined.empty else 0,
-                "failed_symbols": len({item["symbol"] for item in failures}),
-                "output_parquet": str(out_path.relative_to(PROJECT_ROOT)),
-                "failure_log": str(fail_path.relative_to(PROJECT_ROOT)),
-            }
+            _archive_year(year, range_from, range_to, symbols, args, out_root / file_prefix)
         )
 
     manifest_path = out_root / "manifest.json"
     manifest_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    return 0
+
+
+def _archive_year(
+    year: int,
+    range_from: date,
+    range_to: date,
+    symbols: list[str],
+    args: argparse.Namespace,
+    out_prefix: Path,
+) -> dict[str, Any]:
+    """Fetch every symbol for one year window, write its parquet and failure log, summarise."""
+    year_parts: list[pd.DataFrame] = []
+    failures: list[dict[str, Any]] = []
+    for idx, symbol in enumerate(symbols, start=1):
+        frame = _fetch_symbol_window(symbol, year, range_from, range_to, args, failures)
+        if frame is not None:
+            year_parts.append(frame)
+        if idx % 100 == 0:
+            print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
+
+    combined = _combine_year(year_parts)
+    out_path = out_prefix.with_name(f"{out_prefix.name}_{year}.parquet")
+    combined.to_parquet(out_path, index=False)
+    fail_path = out_prefix.with_name(f"{out_prefix.name}_{year}_failures.json")
+    fail_path.write_text(json.dumps(failures, indent=2), encoding="utf-8")
+    return {
+        "year": year,
+        "range_from": range_from.isoformat(),
+        "range_to": range_to.isoformat(),
+        "rows": int(len(combined)),
+        "symbols": int(combined["symbol"].nunique()) if not combined.empty else 0,
+        "failed_symbols": len({item["symbol"] for item in failures}),
+        "output_parquet": str(out_path.relative_to(PROJECT_ROOT)),
+        "failure_log": str(fail_path.relative_to(PROJECT_ROOT)),
+    }
+
+
+def _fetch_symbol_window(
+    symbol: str,
+    year: int,
+    range_from: date,
+    range_to: date,
+    args: argparse.Namespace,
+    failures: list[dict[str, Any]],
+) -> pd.DataFrame | None:
+    """A symbol's candles for the window, chunk by chunk; None if any chunk fails or none came."""
+    fyers_symbol = symbol_master.to_fyers(symbol)
+    all_chunks: list[pd.DataFrame] = []
+    for chunk_from, chunk_to in iter_subranges(range_from, range_to):
+        response = fetch_history(
+            fyers_symbol=fyers_symbol,
+            timeframe=args.timeframe,
+            range_from=chunk_from,
+            range_to=chunk_to,
+            throttle_s=args.throttle,
+        )
+        if not isinstance(response, dict) or response.get("s") != "ok":
+            failures.append(
+                {
+                    "symbol": symbol,
+                    "fyers_symbol": fyers_symbol,
+                    "year": year,
+                    "chunk_from": chunk_from.isoformat(),
+                    "chunk_to": chunk_to.isoformat(),
+                    "response": response,
+                }
+            )
+            return None
+        frame = candles_to_frame(symbol, fyers_symbol, response.get("candles", []))
+        if not frame.empty:
+            all_chunks.append(frame)
+        time.sleep(args.throttle)
+    return pd.concat(all_chunks, ignore_index=True) if all_chunks else None
+
+
+def _combine_year(year_parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate the year's symbol frames, dropping bad and duplicate timestamps."""
+    if not year_parts:
+        return pd.DataFrame(columns=ARCHIVE_COLUMNS)
+    combined = pd.concat(year_parts, ignore_index=True)
+    if combined.empty:
+        return combined
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+    return (
+        combined.dropna(subset=["symbol", "timestamp"])
+        .drop_duplicates(subset=["symbol", "timestamp"], keep="last")
+        .sort_values(["timestamp", "symbol"])
+        .reset_index(drop=True)
+    )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

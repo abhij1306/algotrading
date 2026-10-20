@@ -182,7 +182,7 @@ def get_single_quote(symbol: str) -> dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error fetching quote for {symbol}: {e}")
+        logger.exception(f"Error fetching quote for {symbol}: {e}")
         return {"symbol": symbol, "price": 0, "changePercent": 0}
 
 
@@ -238,113 +238,120 @@ def search_symbols(
     return results_list[:20]  # Limit to 20 total results
 
 
+# Optionable underlyings (indices + top stocks) and their display names
+OPTIONABLE_UNDERLYINGS = {
+    "NIFTY": NIFTY_50_NAME,
+    "NIFTY50": NIFTY_50_NAME,
+    "BANKNIFTY": "NIFTY Bank",
+    "FINNIFTY": "NIFTY Financial Services",
+    "MIDCPNIFTY": "NIFTY Midcap Select",
+    "RELIANCE": "Reliance Industries",
+    "TCS": "Tata Consultancy Services",
+    "INFY": "Infosys",
+    "HDFCBANK": "HDFC Bank",
+    "ICICIBANK": "ICICI Bank",
+    "SBIN": "State Bank of India",
+    "TATAMOTORS": "Tata Motors",
+    "TATASTEEL": "Tata Steel",
+    "AXISBANK": "Axis Bank",
+    "KOTAKBANK": "Kotak Mahindra Bank",
+    "ITC": "ITC Limited",
+    "LT": "Larsen & Toubro",
+    "HINDUNILVR": "Hindustan Unilever",
+}
+# Stop adding strikes of one underlying once it has this many option rows
+MAX_OPTION_SEARCH_ROWS = 12
+
+
 def _search_option_symbols(query: str, existing_results: list) -> list:
     """
     Search for option symbols based on the query.
     Returns option strikes for matching underlyings.
     """
-    option_results = []
+    option_results: list[dict[str, Any]] = []
+    matching_underlyings = _matching_underlyings(query, existing_results)
+    if not matching_underlyings:
+        return option_results
 
-    # List of optionable underlyings (indices + top stocks)
-    optionable_underlyings = {
-        "NIFTY": NIFTY_50_NAME,
-        "NIFTY50": NIFTY_50_NAME,
-        "BANKNIFTY": "NIFTY Bank",
-        "FINNIFTY": "NIFTY Financial Services",
-        "MIDCPNIFTY": "NIFTY Midcap Select",
-        "RELIANCE": "Reliance Industries",
-        "TCS": "Tata Consultancy Services",
-        "INFY": "Infosys",
-        "HDFCBANK": "HDFC Bank",
-        "ICICIBANK": "ICICI Bank",
-        "SBIN": "State Bank of India",
-        "TATAMOTORS": "Tata Motors",
-        "TATASTEEL": "Tata Steel",
-        "AXISBANK": "Axis Bank",
-        "KOTAKBANK": "Kotak Mahindra Bank",
-        "ITC": "ITC Limited",
-        "LT": "Larsen & Toubro",
-        "HINDUNILVR": "Hindustan Unilever",
-    }
+    try:
+        from ..services.option_chain_service import option_chain_service
 
-    # Check if query matches any underlying
-    matching_underlyings = []
-    for underlying, name in optionable_underlyings.items():
-        if query in underlying or query in name.upper():
-            matching_underlyings.append(underlying)
+        for underlying in matching_underlyings[:3]:  # Limit to 3 underlyings
+            try:
+                chain = option_chain_service.get_option_chain(
+                    underlying=underlying,
+                    strike_count=6,  # Get ATM ± 3 strikes
+                )
+                if chain and chain.strikes:
+                    _append_chain_options(underlying, chain, option_results)
+            except Exception:
+                # Skip this underlying if its option chain fetch fails
+                logger.debug("Option chain search failed for %s", underlying, exc_info=True)
 
-    # Also check if any existing result is an index that has options
+    except Exception:
+        # If option chain service fails, return what we have
+        logger.debug("Option chain service unavailable for search", exc_info=True)
+
+    return option_results
+
+
+def _matching_underlyings(query: str, existing_results: list) -> list[str]:
+    """Underlyings whose code or name contains the query, then optionable result symbols."""
+    matching = [
+        underlying
+        for underlying, name in OPTIONABLE_UNDERLYINGS.items()
+        if query in underlying or query in name.upper()
+    ]
+    # Also check if any existing result is an index or equity that has options
     for result in existing_results:
         if result.get("type") in ["INDEX", "EQUITY"]:
             symbol = result.get("symbol", "")
-            if symbol in optionable_underlyings and symbol not in matching_underlyings:
-                matching_underlyings.append(symbol)
+            if symbol in OPTIONABLE_UNDERLYINGS and symbol not in matching:
+                matching.append(symbol)
+    return matching
 
-    # Fetch option chain for matching underlyings
-    if matching_underlyings:
-        try:
-            from ..services.option_chain_service import option_chain_service
 
-            for underlying in matching_underlyings[:3]:  # Limit to 3 underlyings
-                try:
-                    chain = option_chain_service.get_option_chain(
-                        underlying=underlying,
-                        strike_count=6,  # Get ATM ± 3 strikes
-                    )
+def _append_chain_options(
+    underlying: str, chain: object, option_results: list[dict[str, Any]]
+) -> None:
+    """Add call/put rows strike by strike until this underlying has MAX_OPTION_SEARCH_ROWS.
 
-                    if chain and chain.strikes:
-                        # Add option symbols for strikes around ATM
-                        for strike in chain.strikes:
-                            # Call option
-                            if strike.call:
-                                option_results.append(
-                                    {
-                                        "symbol": strike.call.symbol,
-                                        "name": f"{underlying} {strike.strike_price} CE (Call)",
-                                        "sector": "OPTIONS",
-                                        "type": "CE",
-                                        "underlying": underlying,
-                                        "strike": strike.strike_price,
-                                        "expiry": chain.expiry.isoformat()
-                                        if chain.expiry
-                                        else None,
-                                        "ltp": strike.call.ltp,
-                                        "instrument_type": "CE",
-                                    }
-                                )
+    The limit is per underlying, so a long first chain cannot crowd out the others.
+    """
+    expiry = chain.expiry.isoformat() if chain.expiry else None
+    start = len(option_results)
+    for strike in chain.strikes:
+        if strike.call:
+            option_results.append(
+                _option_row(underlying, strike.strike_price, strike.call, "CE", "Call", expiry)
+            )
+        if strike.put:
+            option_results.append(
+                _option_row(underlying, strike.strike_price, strike.put, "PE", "Put", expiry)
+            )
+        if len(option_results) - start >= MAX_OPTION_SEARCH_ROWS:
+            break
 
-                            # Put option
-                            if strike.put:
-                                option_results.append(
-                                    {
-                                        "symbol": strike.put.symbol,
-                                        "name": f"{underlying} {strike.strike_price} PE (Put)",
-                                        "sector": "OPTIONS",
-                                        "type": "PE",
-                                        "underlying": underlying,
-                                        "strike": strike.strike_price,
-                                        "expiry": chain.expiry.isoformat()
-                                        if chain.expiry
-                                        else None,
-                                        "ltp": strike.put.ltp,
-                                        "instrument_type": "PE",
-                                    }
-                                )
 
-                            # Limit options per underlying
-                            if len(option_results) >= 12:
-                                break
-
-                except Exception:
-                    # Skip this underlying if its option chain fetch fails
-                    logger.debug("Option chain search failed for %s", underlying, exc_info=True)
-                    continue
-
-        except Exception:
-            # If option chain service fails, return what we have
-            logger.debug("Option chain service unavailable for search", exc_info=True)
-
-    return option_results
+def _option_row(
+    underlying: str,
+    strike_price: float,
+    leg: object,
+    option_type: str,
+    label: str,
+    expiry: str | None,
+) -> dict[str, Any]:
+    return {
+        "symbol": leg.symbol,
+        "name": f"{underlying} {strike_price} {option_type} ({label})",
+        "sector": "OPTIONS",
+        "type": option_type,
+        "underlying": underlying,
+        "strike": strike_price,
+        "expiry": expiry,
+        "ltp": leg.ltp,
+        "instrument_type": option_type,
+    }
 
 
 @router.get("/sectors", response_model=None)
@@ -369,62 +376,65 @@ def get_sectors(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
 @router.get("/watchlist", response_model=None)
 def get_watchlist(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
     """Get user watchlist"""
-    from ..database import Company, HistoricalPrice, Watchlist
+    from ..database import Watchlist
 
-    # Get symbols
     items = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
-    if not items:
-        return []
-
-    results = []
     # For each symbol, fetch latest price/data
-    for item in items:
-        # Try finding basic info
-        ltp = None
-        change = None
-        change_pct = None
-        name = item.symbol  # Default to symbol
-
-        # Determine strict symbol for query
-        sym = symbol_master.to_db(item.symbol)
-
-        # Try finding live price from historical (or fyers if we had it connected here)
-        # For now, get latest historical
-        company = db.query(Company).filter(Company.symbol == sym).first()
-        if company:
-            name = company.name or item.symbol  # Use company name if available
-            latest_price = (
-                db.query(HistoricalPrice)
-                .filter(HistoricalPrice.company_id == company.id)
-                .order_by(HistoricalPrice.date.desc())
-                .first()
-            )
-            if latest_price:
-                ltp = latest_price.close
-                # Calculate change (vs prev close approx)
-                prev = latest_price.open  # Approximate
-                if prev:
-                    change = ltp - prev
-                    change_pct = change / prev * 100
-
-        results.append(
-            {
-                "symbol": sym,
-                "name": name,
-                "price": ltp,
-                "ltp": ltp,
-                "change": round(change, 2) if isinstance(change, (int, float)) else None,
-                "changePercent": round(change_pct, 2)
-                if isinstance(change_pct, (int, float))
-                else None,
-                "instrument_type": item.instrument_type,
-            }
-        )
-
-    return results
+    return [_watchlist_row(db, item) for item in items]
 
 
-@router.post("/watchlist", response_model=None)
+def _watchlist_row(db: Session, item: object) -> dict[str, Any]:
+    """Watchlist entry with name and latest stored close vs. that day's open."""
+    from ..database import Company
+
+    # Determine strict symbol for query
+    sym = symbol_master.to_db(item.symbol)
+    name = item.symbol
+    ltp = change = change_pct = None
+
+    company = db.query(Company).filter(Company.symbol == sym).first()
+    if company:
+        name = company.name or item.symbol
+        ltp, change, change_pct = _latest_close_change(db, company.id)
+
+    return {
+        "symbol": sym,
+        "name": name,
+        "price": ltp,
+        "ltp": ltp,
+        "change": round(change, 2) if isinstance(change, (int, float)) else None,
+        "changePercent": round(change_pct, 2) if isinstance(change_pct, (int, float)) else None,
+        "instrument_type": item.instrument_type,
+    }
+
+
+def _latest_close_change(
+    db: Session, company_id: int
+) -> tuple[float | None, float | None, float | None]:
+    """(close, change, change %) of the latest historical bar; change is vs. its open."""
+    from ..database import HistoricalPrice
+
+    latest_price = (
+        db.query(HistoricalPrice)
+        .filter(HistoricalPrice.company_id == company_id)
+        .order_by(HistoricalPrice.date.desc())
+        .first()
+    )
+    if not latest_price:
+        return None, None, None
+    ltp = latest_price.close
+    prev = latest_price.open  # Approximate previous close
+    if not prev:
+        return ltp, None, None
+    change = ltp - prev
+    return ltp, change, change / prev * 100
+
+
+@router.post(
+    "/watchlist",
+    response_model=None,
+    responses={400: {"description": "Symbol required"}},
+)
 def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Add to watchlist"""
     from ..database import Watchlist
@@ -518,7 +528,7 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         return {"gainers": gainers, "losers": losers}
 
     except Exception as e:
-        logger.error(f"Error fetching top movers: {e}")
+        logger.exception(f"Error fetching top movers: {e}")
         return {"gainers": [], "losers": []}
 
 
@@ -585,7 +595,7 @@ def get_sector_performance() -> list[dict[str, Any]]:
         return results
 
     except Exception as e:
-        logger.error(f"Error fetching sector performance: {e}", exc_info=True)
+        logger.exception(f"Error fetching sector performance: {e}")
         return []
 
 
@@ -626,7 +636,7 @@ def get_commodities() -> list[dict[str, Any]]:
         return results
 
     except Exception as e:
-        logger.error(f"Error fetching commodities: {e}")
+        logger.exception(f"Error fetching commodities: {e}")
         return []
 
 
@@ -655,5 +665,5 @@ def get_currency(pair: str) -> dict[str, Any]:
         return {"pair": pair, "rate": round(current, 2), "changePercent": round(change_pct, 2)}
 
     except Exception as e:
-        logger.error(f"Error fetching currency {pair}: {e}")
+        logger.exception(f"Error fetching currency {pair}: {e}")
         return {"pair": pair, "rate": 0, "changePercent": 0}

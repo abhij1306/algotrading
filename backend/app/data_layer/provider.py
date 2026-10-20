@@ -25,6 +25,9 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Intraday timeframes accepted by get_history, mapped to IntradayCandle.timeframe minutes.
+INTRADAY_TIMEFRAME_MINUTES = {"1MIN": 1, "5MIN": 5, "15MIN": 15, "30MIN": 30, "1H": 60}
+
 
 class DataProvider:
     """
@@ -52,13 +55,14 @@ class DataProvider:
 
         Args:
             symbol: Stock symbol (e.g., 'RELIANCE', 'NIFTY50')
-            timeframe: '1D' (daily), '5MIN', '15MIN', '1H'
+            timeframe: '1D' (daily) or an intraday key of INTRADAY_TIMEFRAME_MINUTES
             start_date: Start date (defaults to `days` ago)
             end_date: End date (defaults to today)
             days: Lookback days if start_date not provided
 
         Returns:
-            DataFrame with columns: [Date, Open, High, Low, Close, Volume]
+            Daily: the repository's daily OHLCV frame.
+            Intraday: columns [timestamp, open, high, low, close, volume].
 
         Raises:
             DataNotFoundError: If symbol has no data
@@ -69,9 +73,10 @@ class DataProvider:
         if not company:
             raise InvalidSymbolError(symbol)
 
+        effective_days = days if (start_date is None and end_date is None) else None
+
         # Daily data: Use PostgreSQL
         if timeframe == "1D":
-            effective_days = days if (start_date is None and end_date is None) else None
             df = self.repo.get_historical_prices(
                 symbol,
                 days=effective_days,
@@ -83,12 +88,23 @@ class DataProvider:
 
             return df
 
-        # Intraday data: Use IntradayCandle table or Parquet
-        else:
-            # TODO(#10): Implement intraday fetch from IntradayCandle table
+        # Intraday data: IntradayCandle table (with the repository's CSV fallback)
+        minutes = INTRADAY_TIMEFRAME_MINUTES.get(timeframe.upper())
+        if minutes is None:
             raise NotImplementedError(
-                f"Timeframe '{timeframe}' not yet supported. Use '1D' for daily data."
+                f"Timeframe '{timeframe}' not supported. "
+                f"Use '1D' or one of: {', '.join(INTRADAY_TIMEFRAME_MINUTES)}."
             )
+        df = self.repo.get_intraday_candles(
+            company.symbol,
+            timeframe=minutes,
+            start_date=start_date,
+            end_date=end_date,
+            days=effective_days,
+        )
+        if df is None or df.empty:
+            raise DataNotFoundError(symbol, f"No {timeframe} intraday data available for {symbol}")
+        return df
 
     def get_fundamentals(self, symbol: str) -> dict:
         """

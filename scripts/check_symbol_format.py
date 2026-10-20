@@ -28,9 +28,11 @@ Exit codes:
     2 - Error during execution
 """
 
+import io
 import json
 import re
 import sys
+import tokenize
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -121,6 +123,59 @@ def find_column(content: str, match_start: int) -> int:
     return match_start - line_start + 1
 
 
+def _is_exempt(filepath: Path) -> bool:
+    """symbol_master.py, this checker, and test files (which may test the violations)."""
+    if filepath.name in {"symbol_master.py", "check_symbol_format.py"}:
+        return True
+    if filepath.name.startswith("test_") or "tests" in filepath.parts:
+        return True
+    # Test violation files hold intentional violations
+    return "test_violations" in filepath.parts
+
+
+def _is_non_code_line(context_stripped: str) -> bool:
+    """Comment, docstring or standalone string-literal lines (basic heuristic).
+
+    Only used when the file cannot be tokenized; see _non_code_spans.
+    """
+    if context_stripped.startswith(("#", '"""', "'''")):
+        return True
+    # A line that is just a string literal (e.g. an error message definition)
+    return (
+        context_stripped.startswith(('"', "'"))
+        and "=" not in context_stripped
+        and "return" not in context_stripped
+    )
+
+
+# Token types whose text is not code: comments and string literal text. In f-strings
+# (Python 3.12+) only the literal parts are FSTRING_MIDDLE; the {...} parts stay code.
+_NON_CODE_TOKENS = {tokenize.COMMENT, tokenize.STRING} | (
+    {tokenize.FSTRING_MIDDLE} if hasattr(tokenize, "FSTRING_MIDDLE") else set()
+)
+
+
+def _non_code_spans(content: str) -> list[tuple[int, int]] | None:
+    """(start, end) offsets of comments and string literals, or None when the source
+    cannot be tokenized."""
+    line_starts = [0]
+    for line in content.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(content).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    return [
+        (line_starts[tok.start[0] - 1] + tok.start[1], line_starts[tok.end[0] - 1] + tok.end[1])
+        for tok in tokens
+        if tok.type in _NON_CODE_TOKENS
+    ]
+
+
+def _in_spans(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
+    return any(span_start <= start and end <= span_end for span_start, span_end in spans)
+
+
 def check_file(filepath: Path) -> list[SymbolFormatViolation]:
     """Check a single Python file for symbol format violations.
 
@@ -130,21 +185,7 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
     Returns:
         List of violations found in the file
     """
-
-    # Skip symbol_master.py itself
-    if filepath.name == "symbol_master.py":
-        return []
-
-    # Skip this checker script itself
-    if filepath.name == "check_symbol_format.py":
-        return []
-
-    # Skip test files (they may test the violations)
-    if filepath.name.startswith("test_") or "tests" in filepath.parts:
-        return []
-
-    # Skip test violation files (intentional violations for testing)
-    if "test_violations" in filepath.parts:
+    if _is_exempt(filepath):
         return []
 
     try:
@@ -155,31 +196,23 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
 
     violations = []
     lines = content.split("\n")
+    spans = _non_code_spans(content)
 
     for violation_type in ViolationType:
         for match in re.finditer(violation_type.pattern, content):
             line_num = content[: match.start()].count("\n") + 1
-            column = find_column(content, match.start())
             context = lines[line_num - 1] if line_num <= len(lines) else ""
-
-            # Skip if this is in a comment or docstring (basic heuristic)
-            context_stripped = context.strip()
-            if context_stripped.startswith("#"):
-                continue
-            if context_stripped.startswith('"""') or context_stripped.startswith("'''"):
-                continue
-
-            # Skip if the line is just a string literal (error message definition)
-            if context_stripped.startswith('"') or context_stripped.startswith("'"):
-                # Check if it's a standalone string (not part of code)
-                if "=" not in context_stripped and "return" not in context_stripped:
+            if spans is None:
+                if _is_non_code_line(context.strip()):
                     continue
+            elif _in_spans(match.start(), match.end(), spans):
+                continue
 
             violations.append(
                 SymbolFormatViolation(
                     file=filepath,
                     line=line_num,
-                    column=column,
+                    column=find_column(content, match.start()),
                     code=violation_type.code,
                     message=violation_type.message,
                     context=context.strip(),

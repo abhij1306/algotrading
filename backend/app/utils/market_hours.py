@@ -28,7 +28,7 @@ def is_market_open() -> tuple[bool, str]:
     now = datetime.now(IST)
 
     # Check if weekend
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+    if now.weekday() >= 5:  # Saturday or Sunday
         return False, "Market closed (Weekend)"
 
     # Check market hours: 9:15 AM to 3:30 PM IST

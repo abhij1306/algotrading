@@ -13,6 +13,11 @@ from sqlalchemy import Enum as SQLEnum
 from ..base import Base
 
 
+def _utc_now() -> datetime:
+    """Column default: evaluated per row insert/update, not once at import."""
+    return datetime.now(UTC)
+
+
 class SymbolChangeType(str, Enum):
     """Types of symbol changes"""
 
@@ -67,8 +72,8 @@ class SymbolHistory(Base):
 
     # Metadata
     source = Column(String(50))  # e.g., 'nse_bse', 'manual'
-    created_at = Column(DateTime, default=datetime.now(UTC))
-    updated_at = Column(DateTime, default=datetime.now(UTC), onupdate=datetime.now(UTC))
+    created_at = Column(DateTime, default=_utc_now)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
 
     def __repr__(self) -> str:
         return f"<SymbolHistory {self.old_symbol} -> {self.new_symbol} ({self.change_type.value})>"

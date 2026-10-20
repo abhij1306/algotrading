@@ -41,3 +41,15 @@ def test_app_module_info_logs_reach_the_console_handler() -> None:
     assert " - app.routers.auth - INFO - [Fyers Auth] Access token saved to token.json" in (
         buffer.getvalue()
     )
+
+
+def test_safe_log_value_strips_line_breaks_and_control_characters() -> None:
+    from app.utils.logger import safe_log_value
+
+    assert safe_log_value("NIFTY\r\nINFO forged\x1b[31m") == "NIFTY??INFO forged?[31m"
+
+
+def test_safe_log_value_truncates_long_input() -> None:
+    from app.utils.logger import safe_log_value
+
+    assert safe_log_value("A" * 500) == "A" * 200

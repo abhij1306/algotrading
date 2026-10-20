@@ -7,7 +7,6 @@ import logging
 import os
 from pathlib import Path
 
-# from dotenv import load_dotenv # Removed to fix PyInstaller build
 from .utils.env_loader import load_dotenv
 
 load_dotenv()

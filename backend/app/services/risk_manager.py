@@ -384,7 +384,7 @@ class RiskManager:
                 details={"available": available, "required": estimated_margin},
             )
         except Exception as e:
-            logger.error(f"Error checking margin: {e}")
+            logger.exception(f"Error checking margin: {e}")
             # DENY trade if margin check fails (fail-closed for security)
             return RiskCheckResult(
                 status=RiskStatus.FAIL,

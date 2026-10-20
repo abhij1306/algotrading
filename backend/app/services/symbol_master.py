@@ -101,7 +101,7 @@ class SymbolMaster:
         r"^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$", re.IGNORECASE
     )
     DB_PATTERN = re.compile(r"^[A-Z0-9&\.\-]{1,20}$")
-    ISIN_PATTERN = re.compile(r"^[A-Z]{2}[0-9]{10}[A-Z0-9]{2}$")
+    ISIN_PATTERN = re.compile(r"^[A-Z]{2}\d{10}[A-Z0-9]{2}$", re.ASCII)
 
     # Exchange prefixes
     EXCHANGES = ["NSE", "BSE", "MCX", "NFO", "BFO", "CDS"]
@@ -526,7 +526,7 @@ class SymbolMaster:
             loader = _get_index_universe_loader()
             return loader.get_index_symbols(index_id)
         except Exception as e:
-            logger.error(f"Failed to get index symbols for {index_id}: {e}")
+            logger.exception(f"Failed to get index symbols for {index_id}: {e}")
             return []
 
     def is_index_constituent(self, symbol: str, index_id: str) -> bool:

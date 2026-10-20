@@ -9,6 +9,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ..utils.logger import log_exception_throttled
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -16,6 +18,10 @@ try:
 except ImportError:
     data_ws = None
     logger.warning("[FyersWS] fyers-apiv3 not installed. WebSocket features unavailable.")
+
+
+class FyersWebSocketError(RuntimeError):
+    """The Fyers data socket cannot be used: SDK missing, no credentials, or not connected."""
 
 
 class FyersWebSocketService:
@@ -40,7 +46,7 @@ class FyersWebSocketService:
     def connect(self) -> None:
         """Initialize WebSocket connection using access token"""
         if not data_ws:
-            raise Exception("fyers-apiv3 not installed")
+            raise FyersWebSocketError("fyers-apiv3 not installed")
 
         # Load access token from unified client
         from .fyers_client import get_fyers_client
@@ -48,13 +54,13 @@ class FyersWebSocketService:
         fyers_client = get_fyers_client()
 
         if fyers_client is None:
-            raise Exception("Fyers credentials not found. Please login first.")
+            raise FyersWebSocketError("Fyers credentials not found. Please login first.")
 
         client_id = fyers_client.client_id
         access_token = fyers_client.access_token
 
         if not client_id or not access_token:
-            raise Exception("Fyers credentials not found. Please login first.")
+            raise FyersWebSocketError("Fyers credentials not found. Please login first.")
 
         # Close any previous socket so reconnects do not leak the old one.
         if self.ws:
@@ -89,7 +95,7 @@ class FyersWebSocketService:
         Subscribe to symbols for live data
         """
         if not self.ws:
-            raise Exception("WebSocket not connected. Call connect() first.")
+            raise FyersWebSocketError("WebSocket not connected. Call connect() first.")
 
         unique_symbols = sorted({s for s in symbols if s})
         if not unique_symbols:
@@ -122,16 +128,15 @@ class FyersWebSocketService:
         Handle incoming WebSocket message (called from WebSocket thread)
         Directly invokes handler to minimize latency.
         """
+        if not self.on_tick_handler:
+            return
         try:
             # Main Tick Handler (LiveMarketService)
-            if self.on_tick_handler:
-                try:
-                    self.on_tick_handler(message)
-                except Exception as e:
-                    logger.error("[FyersWS] Main handler error: %s", e)
-
+            self.on_tick_handler(message)
         except Exception as e:
-            logger.error("[FyersWS] Error processing message: %s", e)
+            log_exception_throttled(
+                logger, "fyers_ws.tick_handler", "[FyersWS] Main handler error: %s", e
+            )
 
     def _on_error(self, error: object) -> None:
         """Handle WebSocket error"""
@@ -156,7 +161,7 @@ class FyersWebSocketService:
             try:
                 self.on_open_handler()
             except Exception as e:
-                logger.error("[FyersWS] Open handler error: %s", e)
+                logger.exception("[FyersWS] Open handler error: %s", e)
 
     def disconnect(self) -> None:
         """Close WebSocket connection"""

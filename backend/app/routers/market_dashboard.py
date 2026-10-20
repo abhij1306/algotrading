@@ -1,6 +1,7 @@
+import logging
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -14,6 +15,7 @@ from ..services.live_market_service import live_market
 from ..services.market_data_service import MarketDataService
 from ..services.yfinance_service import yfinance_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/market", tags=["Market Dashboard"])
 DB_DEPENDENCY = Depends(get_db)
 
@@ -50,8 +52,12 @@ def get_market_overview() -> dict[str, Any]:
             "condition": condition,
             "timestamp": datetime.now(UTC).isoformat(),
         }
-    except Exception as e:
-        payload = {"error": str(e), "timestamp": datetime.now(UTC).isoformat()}
+    except Exception:
+        logger.exception("Market overview failed")
+        payload = {
+            "error": "Market overview unavailable",
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
 
     with _overview_cache_lock:
         _overview_cache_ts = now
@@ -96,42 +102,53 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
 
     if is_market_open:
         # Try to get live data from cache
-        for index in indices:
-            tick = live_market.get_latest_tick(index)
-            if tick:
-                data["indices"][index] = {
-                    "price": tick.get("ltp") or tick.get("price"),
-                    "change_pct": tick.get("chp") or tick.get("change_pct"),
-                    "source": "live",
-                }
+        data["indices"].update(_live_index_quotes(indices))
 
-    # Fallback for indices not found in live cache or if market is closed
+    # Fallback for indices without a fresh live tick or if market is closed
     missing_indices = [idx for idx in indices if idx not in data["indices"]]
-
     if missing_indices:
-        # Try yfinance
-        quotes = yfinance_service.get_quotes(missing_indices)
-        for index, quote in quotes.items():
-            if quote:
-                data["indices"][index] = quote
-            else:
-                # Fallback to database
-                latest_price = (
-                    db.query(HistoricalPrice)
-                    .join(Company)
-                    .filter(Company.symbol == index)
-                    .order_by(HistoricalPrice.date.desc())
-                    .first()
-                )
-                if latest_price:
-                    data["indices"][index] = {
-                        "price": float(latest_price.close),
-                        "change_pct": 0,
-                        "source": "database",
-                        "date": latest_price.date.isoformat(),
-                    }
+        # Try yfinance, then the database, per index: a short or empty yfinance reply
+        # still falls back to the stored close.
+        quotes = yfinance_service.get_quotes(missing_indices) or {}
+        for index in missing_indices:
+            fallback = quotes.get(index) or _database_index_quote(db, index)
+            if fallback:
+                data["indices"][index] = fallback
 
     return data
+
+
+def _live_index_quotes(indices: list[str]) -> dict[str, dict[str, Any]]:
+    """Price and change of each index with a fresh live tick (see get_fresh_tick)."""
+    quotes = {}
+    for index in indices:
+        tick = live_market.get_fresh_tick(index)
+        if tick:
+            quotes[index] = {
+                "price": tick.get("ltp") or tick.get("price"),
+                "change_pct": tick.get("chp") or tick.get("change_pct"),
+                "source": "live",
+            }
+    return quotes
+
+
+def _database_index_quote(db: Session, index: str) -> dict[str, Any] | None:
+    """Latest stored close of an index, or None when there is none."""
+    latest_price = (
+        db.query(HistoricalPrice)
+        .join(Company)
+        .filter(Company.symbol == index)
+        .order_by(HistoricalPrice.date.desc())
+        .first()
+    )
+    if not latest_price:
+        return None
+    return {
+        "price": float(latest_price.close),
+        "change_pct": 0,
+        "source": "database",
+        "date": latest_price.date.isoformat(),
+    }
 
 
 @router.get("/top-gainers", response_model=None)
@@ -148,9 +165,31 @@ def get_top_gainers(
         if cached and (now - cached[0]) < 15:
             return cached[1]
 
-    current_date = datetime.now().date()
+    symbols = _index_constituents(db, index, datetime.now().date())
+    if not symbols:
+        return {"data": [], "is_live": False, "message": "No constituents found for index"}
 
-    # Query index constituents
+    is_market_open = live_market.is_market_open()
+    ticks = live_market.get_fresh_ticks(symbols) if is_market_open else {}
+    gainers = _live_gainers(ticks)
+
+    # Constituents without a fresh live tick (market closed, not subscribed, stale) use yfinance
+    missing = [symbol for symbol in symbols if symbol not in ticks]
+    if missing:
+        gainers.extend(_yfinance_gainers(missing))
+
+    # Sort and limit
+    gainers.sort(key=lambda x: x["change_pct"], reverse=True)
+
+    result = {"data": gainers[:limit], "is_live": is_market_open, "count": len(gainers)}
+
+    with _top_gainers_cache_lock:
+        _top_gainers_cache[cache_key] = (now, result)
+    return result
+
+
+def _index_constituents(db: Session, index: str, current_date: date) -> list[str]:
+    """Symbols in the index on the given date."""
     symbols_query = (
         db.query(IndexConstituentHistory.symbol)
         .join(
@@ -167,49 +206,37 @@ def get_top_gainers(
         )
         .all()
     )
-    symbols = [s[0] for s in symbols_query]
+    return [s[0] for s in symbols_query]
 
-    if not symbols:
-        return {"data": [], "is_live": False, "message": "No constituents found for index"}
 
-    is_market_open = live_market.is_market_open()
+def _live_gainers(ticks: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Symbols whose live tick has a positive change."""
     gainers = []
+    for symbol, tick in ticks.items():
+        change_pct = tick.get("chp") or tick.get("change_pct") or 0
+        if change_pct > 0:
+            gainers.append(
+                {
+                    "symbol": symbol,
+                    "price": tick.get("ltp") or tick.get("price"),
+                    "change_pct": change_pct,
+                    "source": "live",
+                }
+            )
+    return gainers
 
-    if is_market_open:
-        # Use live cache
-        live_ticks = live_market.get_latest_ticks(symbols)
-        for symbol, tick in live_ticks.items():
-            change_pct = tick.get("chp") or tick.get("change_pct", 0)
-            if change_pct > 0:
-                gainers.append(
-                    {
-                        "symbol": symbol,
-                        "price": tick.get("ltp") or tick.get("price"),
-                        "change_pct": change_pct,
-                        "source": "live",
-                    }
-                )
 
-    # If no live gainers (e.g. market just opened or closed), use yfinance
-    if not gainers:
-        # Limit to 50 symbols to avoid yfinance rate limits
-        quotes = yfinance_service.get_quotes(symbols[:50])
-        for symbol, quote in quotes.items():
-            if quote and quote.get("change_pct", 0) > 0:
-                gainers.append(
-                    {
-                        "symbol": symbol,
-                        "price": quote["price"],
-                        "change_pct": quote["change_pct"],
-                        "source": "yfinance",
-                    }
-                )
-
-    # Sort and limit
-    gainers.sort(key=lambda x: x["change_pct"], reverse=True)
-
-    result = {"data": gainers[:limit], "is_live": is_market_open, "count": len(gainers)}
-
-    with _top_gainers_cache_lock:
-        _top_gainers_cache[cache_key] = (now, result)
-    return result
+def _yfinance_gainers(symbols: list[str]) -> list[dict[str, Any]]:
+    """Symbols with a positive yfinance change (first 50, to avoid rate limits)."""
+    gainers = []
+    for symbol, quote in yfinance_service.get_quotes(symbols[:50]).items():
+        if quote and quote.get("change_pct", 0) > 0:
+            gainers.append(
+                {
+                    "symbol": symbol,
+                    "price": quote["price"],
+                    "change_pct": quote["change_pct"],
+                    "source": "yfinance",
+                }
+            )
+    return gainers

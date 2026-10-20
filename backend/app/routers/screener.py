@@ -329,7 +329,7 @@ def get_indices(response: Response) -> dict[str, Any]:
             "total_loaded": len(indices),
         }
     except Exception as exc:
-        logger.error("Failed to load screener indices: %s", exc, exc_info=True)
+        logger.exception("Failed to load screener indices: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load screener universes") from exc
 
 

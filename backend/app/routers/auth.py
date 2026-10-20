@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+AUTH_URL_RESPONSES = {
+    500: {"description": "Fyers credentials missing or auth URL generation failed"}
+}
+TOKEN_RESPONSES = {
+    400: {"description": "Fyers rejected the auth code"},
+    500: {"description": "Fyers credentials missing or token exchange failed"},
+}
+
 
 # Get base directory for saving access tokens
 def get_base_dir() -> str:
@@ -76,7 +84,7 @@ def get_fyers_status() -> dict[str, Any]:
 
             return {"connected": False, "user_id": None}
     except Exception as e:
-        logger.error("[Fyers] Error checking status: %s", e)
+        logger.exception("[Fyers] Error checking status: %s", e)
         return {"connected": False, "user_id": None, "error": str(e)}
 
 
@@ -108,11 +116,11 @@ def disconnect_fyers() -> dict[str, Any]:
 
         return {"status": "success", "message": "Disconnected from Fyers"}
     except Exception as e:
-        logger.error("[Fyers] Error disconnecting: %s", e)
+        logger.exception("[Fyers] Error disconnecting: %s", e)
         raise handle_api_error(e, "Failed to disconnect from Fyers") from e
 
 
-@router.get("/fyers/url", response_model=None)
+@router.get("/fyers/url", response_model=None, responses=AUTH_URL_RESPONSES)
 def get_fyers_auth_url() -> dict[str, Any]:
     """
     Generate Fyers Login URL using credentials from environment variables.
@@ -162,11 +170,11 @@ def get_fyers_auth_url() -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("[Fyers Auth] Error generating auth URL: %s", e)
+        logger.exception("[Fyers Auth] Error generating auth URL: %s", e)
         raise handle_api_error(e, "Failed to generate authentication URL") from e
 
 
-@router.post("/fyers/token", response_model=None)
+@router.post("/fyers/token", response_model=None, responses=TOKEN_RESPONSES)
 def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
     """
     Exchange auth code for access token and save to file.
@@ -254,5 +262,5 @@ def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("[Fyers Auth] Error during token exchange: %s", e)
+        logger.exception("[Fyers Auth] Error during token exchange: %s", e)
         raise handle_api_error(e, "Token exchange failed") from e
