@@ -136,7 +136,7 @@ export function shownOptionSymbol(
   chain: string,
   board: Pick<OptionsBoard, "strikes"> | null,
 ): string {
-  if (!pick || pick.chain !== chain || !board) return "";
+  if (pick?.chain !== chain || !board) return "";
   const listed = board.strikes.some(
     (row) => row.ce?.symbol === pick.symbol || row.pe?.symbol === pick.symbol,
   );
