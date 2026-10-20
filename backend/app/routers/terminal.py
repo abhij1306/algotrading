@@ -11,7 +11,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from ..data_repository import DataRepository
-from ..database import SessionLocal, get_db
+from ..database import get_db
 from ..models import Company, HistoricalPrice, LiveOrder
 from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.fyers_client import get_fyers_client
@@ -417,13 +417,12 @@ def _quote_ltp(fyers_symbol: str) -> float:
 @router.get("/chart", responses={500: {"description": "Internal server error"}})
 def get_chart_data(
     symbol: Annotated[str, Query(..., min_length=1)],
+    db: Annotated[Session, Depends(get_db)],
     timeframe: Annotated[str, Query(min_length=1)] = "D",
     limit: Annotated[int, Query(ge=20, le=1000)] = 200,
 ) -> dict[str, Any]:
     """Return OHLCV + EMA20/EMA50 for terminal chart."""
-    db = None
     try:
-        db = SessionLocal()
         repo = DataRepository(db)
 
         db_symbol = symbol_master.to_db(symbol)
@@ -445,9 +444,6 @@ def get_chart_data(
     except Exception as exc:
         logger.exception("Terminal chart fetch failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load chart data") from exc
-    finally:
-        if db:
-            db.close()
 
 
 @router.get("/options/board", responses={500: {"description": "Internal server error"}})
@@ -699,16 +695,15 @@ def place_options_order(
         500: {"description": "Internal server error"},
     },
 )
-def place_paper_order(order: PaperOrderRequest) -> dict[str, Any]:
+def place_paper_order(
+    order: PaperOrderRequest, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, Any]:
     """
     Place a paper order without touching broker execution path.
     Used by Terminal paper mode to guarantee strict isolation from live broker APIs.
     Deprecated: migrate to unified `/api/trading/order` with mode=`PAPER`.
     """
-    db = None
     try:
-        db = SessionLocal()
-
         if order.quantity <= 0:
             raise HTTPException(status_code=400, detail="Quantity must be positive")
 
@@ -748,10 +743,6 @@ def place_paper_order(order: PaperOrderRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        if db:
-            db.rollback()
+        db.rollback()
         logger.exception("Paper order placement failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to place paper order") from exc
-    finally:
-        if db:
-            db.close()

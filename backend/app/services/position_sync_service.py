@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.orm import Session
 
 from ..brokers.base import BrokerUnavailableError
-from ..database import SessionLocal
+from ..database import db_session_scope
 from ..models.live_position import LIVE_ACCOUNT_USER_ID, LivePosition
 from ..utils.cache import cache_with_ttl, clear_cache
 from ..utils.db_errors import is_db_unavailable
@@ -171,8 +171,22 @@ class PositionSyncService:
                 "message": "Broker unavailable; stored positions were not changed",
             }
 
-        db = SessionLocal()
         try:
+            return self._store_broker_positions(broker_positions)
+        except Exception as e:
+            if is_db_unavailable(e):
+                # A down database answers 503 DATABASE_UNAVAILABLE, not a broker outage.
+                raise
+            logger.exception("Error syncing positions")
+            return {"status": "error", "message": "Position sync failed"}
+
+    def _store_broker_positions(self, broker_positions: list[dict]) -> dict:
+        """Write one broker snapshot into live_positions and commit it.
+
+        The explicit commit stays ahead of the cache clear, so a reader never sees a
+        cleared cache before the rows are stored. Any error rolls the scope back.
+        """
+        with db_session_scope() as db:
             # Get current positions from DB
             db_positions = db.query(LivePosition).all()
             db_position_map = {p.id: p for p in db_positions}
@@ -215,17 +229,6 @@ class PositionSyncService:
             logger.debug(f"Position sync complete: {result}")
             return result
 
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                db.rollback()
-            if is_db_unavailable(e):
-                # A down database answers 503 DATABASE_UNAVAILABLE, not a broker outage.
-                raise
-            logger.exception("Error syncing positions")
-            return {"status": "error", "message": "Position sync failed"}
-        finally:
-            db.close()
-
     @cache_with_ttl(ttl_seconds=5)
     def get_positions(self, user_id: str = "default_user") -> list[dict]:
         """
@@ -238,8 +241,7 @@ class PositionSyncService:
         Returns:
             List of position dictionaries
         """
-        db = SessionLocal()
-        try:
+        with db_session_scope() as db:
             positions = (
                 db.query(LivePosition)
                 .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
@@ -265,8 +267,6 @@ class PositionSyncService:
                 }
                 for p in positions
             ]
-        finally:
-            db.close()
 
     def get_position_summary(self, user_id: str = "default_user") -> dict:
         """

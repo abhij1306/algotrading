@@ -6,7 +6,8 @@ Implements circuit breakers, position limits, and margin checks.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
-from ..database import SessionLocal
+from ..database import db_session_scope
 from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
 from ..utils.market_hours import DEFAULT_POLICY, SESSION_CLOSE, SESSION_OPEN, MarketHoursPolicy
@@ -26,6 +27,19 @@ if TYPE_CHECKING:
     from ..brokers.plugins.fyers import FyersBroker
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _given_or_owned_session(db: Session | None) -> Iterator[Session]:
+    """The caller's session as is, or a db_session_scope() owned by this check.
+
+    A given session is never committed, rolled back or closed here: its owner does that.
+    """
+    if db is not None:
+        yield db
+        return
+    with db_session_scope() as owned:
+        yield owned
 
 
 class RiskStatus(Enum):
@@ -418,15 +432,13 @@ class RiskManager:
 
     def _check_daily_loss_limit(self, db: Session | None, user_id: str) -> RiskCheckResult:
         """Check if this user's daily loss limit has been reached"""
-        owns_session = db is None
-        db = db or SessionLocal()
-        try:
+        with _given_or_owned_session(db) as session:
             today = date.today()
 
             # Calculate realized P&L from today's trades
             # This is a simplified calculation - in production you'd use actual tradebook
             result = (
-                db.query(func.sum(LivePosition.realized_pl))
+                session.query(func.sum(LivePosition.realized_pl))
                 .filter(
                     LivePosition.user_id == user_id,
                     func.date(LivePosition.last_synced_at) == today,
@@ -438,7 +450,7 @@ class RiskManager:
 
             # Also check unrealized P&L
             result = (
-                db.query(func.sum(LivePosition.unrealized_pl))
+                session.query(func.sum(LivePosition.unrealized_pl))
                 .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
                 .scalar()
             )
@@ -472,9 +484,6 @@ class RiskManager:
                 code="DAILY_LOSS_OK",
                 details={"current_pnl": total_pnl},
             )
-        finally:
-            if owns_session and db:
-                db.close()
 
     def _check_position_size(self, order_params: dict, _db: Session | None) -> RiskCheckResult:
         """Check if order size exceeds limits"""
@@ -501,11 +510,9 @@ class RiskManager:
 
     def _check_total_exposure(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check if total exposure exceeds limits"""
-        owns_session = db is None
-        db = db or SessionLocal()
-        try:
+        with _given_or_owned_session(db) as session:
             # Get current positions value
-            positions = db.query(LivePosition).filter(LivePosition.net_qty != 0).all()
+            positions = session.query(LivePosition).filter(LivePosition.net_qty != 0).all()
             missing_ltp_positions = [p for p in positions if p.ltp is None or p.ltp == 0]
             if missing_ltp_positions:
                 symbols = [
@@ -555,9 +562,6 @@ class RiskManager:
             return RiskCheckResult(
                 status=RiskStatus.PASS, message="Exposure within limits", code="EXPOSURE_OK"
             )
-        finally:
-            if owns_session and db:
-                db.close()
 
     def _check_available_margin(self, order_params: dict) -> RiskCheckResult:
         """Check if sufficient margin is available"""
@@ -616,10 +620,8 @@ class RiskManager:
         Counted across the broker account, not per user: every LIVE order lands on the one
         Fyers account, and the routes still tag orders with different user ids.
         """
-        owns_session = db is None
-        db = db or SessionLocal()
-        try:
-            order_count = self._live_orders_today(db)
+        with _given_or_owned_session(db) as session:
+            order_count = self._live_orders_today(session)
 
             if order_count >= self.config.max_orders_per_day:
                 return RiskCheckResult(
@@ -634,9 +636,6 @@ class RiskManager:
                 message="Order frequency within limits",
                 code="ORDER_FREQUENCY_OK",
             )
-        finally:
-            if owns_session and db:
-                db.close()
 
     def _check_naked_short_option(self, order_params: dict, db: Session | None) -> RiskCheckResult:
         """Check for naked short option limits"""
@@ -653,12 +652,10 @@ class RiskManager:
         quantity = order_params.get("quantity", 0)
         symbol = order_params.get("symbol", "")
 
-        owns_session = db is None
-        db = db or SessionLocal()
-        try:
+        with _given_or_owned_session(db) as session:
             # Get current short position for this option
             position = (
-                db.query(LivePosition)
+                session.query(LivePosition)
                 .filter(LivePosition.symbol == symbol, LivePosition.net_qty < 0)
                 .first()
             )
@@ -685,9 +682,6 @@ class RiskManager:
             return RiskCheckResult(
                 status=RiskStatus.PASS, message="Naked short within limits", code="NAKED_SHORT_OK"
             )
-        finally:
-            if owns_session and db:
-                db.close()
 
     @staticmethod
     def _live_orders_today(db: Session) -> int:
@@ -697,8 +691,7 @@ class RiskManager:
 
     def get_exposure_summary(self, user_id: str) -> dict:
         """Get current exposure summary"""
-        db = SessionLocal()
-        try:
+        with db_session_scope() as db:
             positions = (
                 db.query(LivePosition)
                 .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
@@ -740,8 +733,6 @@ class RiskManager:
                 "position_count": len(positions),
                 "positions_limit": self.config.max_positions_count,
             }
-        finally:
-            db.close()
 
     def check_large_order(self, order_params: dict) -> RiskCheckResult:
         """
