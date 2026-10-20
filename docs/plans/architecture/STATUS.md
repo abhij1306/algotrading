@@ -134,7 +134,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 9: dashboard
 - [x] 1. Move the dashboard to quote-store selectors and Query, removing its 8 `useEffect`s (M). (#46)
-- [x] 2. Split the page (M). (PR_NUM) The page composes `components/dashboard/*` sections over `useDashboardData`; formatting goes through `lib/format.ts`/`lib/time.ts`; the connection badge reads `useConnectionStatus`, so the dashboard no longer uses the `useWebSocket` shim; the post-market Commodities card gets Crude Oil from `/api/market/commodities`.
+- [x] 2. Split the page (M). (#57) The page composes `components/dashboard/*` sections over `useDashboardData`; formatting goes through `lib/format.ts`/`lib/time.ts`; the connection badge reads `useConnectionStatus`, so the dashboard no longer uses the `useWebSocket` shim; the post-market Commodities card gets Crude Oil from `/api/market/commodities`.
 
 ### Lane 10: screener UI
 - [ ] 1. A live overlay through `useQuote`, removing 8 `useEffect`s (M).
