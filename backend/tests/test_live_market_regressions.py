@@ -199,3 +199,45 @@ def test_provider_connect_closes_previous_socket(monkeypatch):
 
     assert len(created) == 2
     assert created[0].closed and not created[1].closed
+
+
+def test_http_subscribed_symbols_are_replayed_and_not_released(monkeypatch):
+    async def scenario():
+        mgr = ConnectionManager()
+        monkeypatch.setattr(lms, "manager", mgr)
+        live = lms.LiveMarketService()
+        live.loop = asyncio.get_running_loop()
+        live.ws_service = FakeProviderService()
+        mgr.on_symbols_released = live.unsubscribe
+
+        await live.subscribe_api(["SBIN"])
+        client = FakeClientWebSocket()
+        assert await mgr.connect(client)
+        await mgr.subscribe(client, ["SBIN", "TCS"])
+        await mgr.disconnect(client)  # releases TCS only; SBIN belongs to the HTTP route
+        unsubscribed = list(live.ws_service.ws.unsubscribed)
+
+        live.ws_service = FakeProviderService()  # provider reconnect
+        live.on_ws_connected()
+        await asyncio.sleep(0.05)
+        return unsubscribed, live.ws_service.ws.subscribed
+
+    unsubscribed, replayed = asyncio.run(scenario())
+    assert unsubscribed == [_fyers("TCS")]
+    assert replayed == [_fyers("SBIN")]
+
+
+def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(monkeypatch):
+    async def scenario():
+        mgr = ConnectionManager()
+        monkeypatch.setattr(lms, "manager", mgr)
+        live = lms.LiveMarketService()
+        live.ws_service = FakeProviderService()
+
+        client = FakeClientWebSocket()
+        assert await mgr.connect(client)
+        await mgr.subscribe(client, ["SBIN"])  # re-subscribed before the stale release lands
+        await live.unsubscribe(["SBIN", "TCS"])
+        return live.ws_service.ws.unsubscribed
+
+    assert asyncio.run(scenario()) == [_fyers("TCS")]

@@ -48,6 +48,8 @@ class LiveMarketService:
         self.pending_subscriptions = set()
         # Set by an explicit POST /disconnect; cleared only by an explicit connect.
         self._explicitly_disconnected = False
+        # Symbols subscribed via the HTTP API (no ConnectionManager client owns them).
+        self.api_subscriptions: set[str] = set()
         self._last_connect_block_reason: str | None = None
         self._last_subscribe_market_closed_log_ts = 0.0
 
@@ -59,7 +61,11 @@ class LiveMarketService:
         logger.info("[OK] WebSocket connection established")
 
         # Replay everything clients currently want (survives reconnects) plus anything queued.
-        wanted = manager.get_all_subscribed_symbols() | self.pending_subscriptions
+        wanted = (
+            manager.get_all_subscribed_symbols()
+            | self.api_subscriptions
+            | self.pending_subscriptions
+        )
         self.pending_subscriptions.clear()
         if wanted:
             symbols = sorted(wanted)
@@ -418,6 +424,11 @@ class LiveMarketService:
                 f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
             )
 
+    async def subscribe_api(self, symbols: list[str]) -> None:
+        """Subscribe on behalf of the HTTP API; these symbols are never released by client drops."""
+        self.api_subscriptions.update(symbol_master.to_db(s) for s in symbols if s)
+        await self.subscribe(symbols)
+
     async def unsubscribe(self, symbols: list[str]) -> None:
         """Unsubscribe non-blocking"""
         symbols_set: set[str] = set()
@@ -428,6 +439,8 @@ class LiveMarketService:
                 symbols_set.add(symbol_master.to_db(symbol))
             except Exception as exc:
                 logger.warning("Skipping invalid symbol for unsubscribe %s: %s", symbol, exc)
+        # A release can arrive after another client re-subscribed; keep wanted symbols.
+        symbols_set -= manager.get_all_subscribed_symbols() | self.api_subscriptions
         if symbols_set:
             self.pending_subscriptions.difference_update(symbols_set)
 

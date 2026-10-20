@@ -54,7 +54,7 @@ async def subscribe_symbols(request: SubscribeRequest):
 
         # Normalize to DB symbols at the API boundary; LiveMarketService handles provider conversion.
         db_symbols = [symbol_master.to_db(s) for s in request.symbols]
-        await live_market.subscribe(db_symbols)
+        await live_market.subscribe_api(db_symbols)
         return {"status": "subscribed", "symbols": db_symbols}
     except Exception as e:
         raise handle_api_error(e, "Failed to subscribe to symbols")
