@@ -1,8 +1,13 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router";
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
 import { cn, formatPercentage } from "@/lib/utils";
+import { debounce } from "@/lib/debounce";
 import { focusOnMount } from "@/lib/focus";
+import { formatShortcut, isModifierShortcut } from "@/lib/platform";
+import { useSymbolSearch, type SearchResultItem } from "@/lib/queries/terminal";
+import { useKnownQuotes } from "@/lib/realtime/hooks";
+import type { Quote } from "@/lib/realtime/quote-store";
 
 interface Command {
   id: string;
@@ -14,53 +19,69 @@ interface Command {
   category: string;
 }
 
-interface SymbolResult {
-  symbol: string;
-  name: string;
-  exchange: string;
-  price?: number;
-  /** Day change in percent (e.g. 1.2 means +1.2%), not an absolute price difference. */
-  changePercent: number;
-}
-
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-const MOCK_SYMBOLS: SymbolResult[] = [
-  {
-    symbol: "RELIANCE",
-    name: "Reliance Industries",
-    exchange: "NSE",
-    price: 2450.5,
-    changePercent: 1.2,
-  },
-  {
-    symbol: "TCS",
-    name: "Tata Consultancy Services",
-    exchange: "NSE",
-    price: 3890.25,
-    changePercent: -0.5,
-  },
-  { symbol: "INFY", name: "Infosys Ltd", exchange: "NSE", price: 1650.75, changePercent: 0.8 },
-  { symbol: "HDFCBANK", name: "HDFC Bank", exchange: "NSE", price: 1420, changePercent: 0.3 },
-  {
-    symbol: "SBIN",
-    name: "State Bank of India",
-    exchange: "NSE",
-    price: 675.5,
-    changePercent: 1.5,
-  },
-  { symbol: "NIFTY50", name: "NIFTY 50 Index", exchange: "NSE", price: 22450, changePercent: 0.6 },
-];
+const MAX_SYMBOL_RESULTS = 5;
+const MIN_SEARCH_LENGTH = 2;
+const SEARCH_DEBOUNCE_MS = 250;
+const NO_SYMBOLS: readonly SearchResultItem[] = [];
 
-function filterSymbols(query: string): SymbolResult[] {
-  if (query.length < 1) return [];
-  const lowerQuery = query.toLowerCase();
-  return MOCK_SYMBOLS.filter(
-    (s) => s.symbol.toLowerCase().includes(lowerQuery) || s.name.toLowerCase().includes(lowerQuery),
-  ).slice(0, 5);
+function terminalPath(symbol: string): string {
+  return `/terminal?symbol=${encodeURIComponent(symbol)}`;
+}
+
+/** Debounced symbol search against the backend; results show from two typed characters. */
+function usePaletteSymbolSearch() {
+  const [text, setText] = useState("");
+  const [term, setTerm] = useState("");
+  const debouncedSetTerm = useMemo(
+    () =>
+      debounce(
+        (value: unknown) => setTerm(typeof value === "string" ? value : ""),
+        SEARCH_DEBOUNCE_MS,
+      ),
+    [],
+  );
+  // Ref callback on the search input: focus it on mount and drop a pending search on unmount.
+  const inputRef = useCallback(
+    (element: HTMLInputElement | null) => {
+      focusOnMount(element);
+      return () => debouncedSetTerm.cancel();
+    },
+    [debouncedSetTerm],
+  );
+  const active = text.trim().length >= MIN_SEARCH_LENGTH;
+  const search = useSymbolSearch(term);
+  const symbols = active ? (search.data ?? NO_SYMBOLS).slice(0, MAX_SYMBOL_RESULTS) : NO_SYMBOLS;
+  return {
+    text,
+    symbols,
+    searching: active && search.isFetching,
+    inputRef,
+    onTextChange: (value: string) => {
+      setText(value);
+      debouncedSetTerm(value.trim());
+    },
+  };
+}
+
+/** Live price and day change, shown only when the quote store already has them. */
+function LiveQuote({ quote }: Readonly<{ quote: Quote | undefined }>) {
+  if (quote?.ltp === undefined) return null;
+  const { ltp, changePct } = quote;
+  return (
+    <div className="text-right">
+      <div className="font-medium tabular-nums">₹{ltp.toLocaleString()}</div>
+      {changePct === undefined ? null : (
+        <div className={cn("text-xs tabular-nums", changePct >= 0 ? "text-profit" : "text-loss")}>
+          {formatPercentage(changePct)}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Mounts the dialog only while open, so its search state starts fresh on every open. */
@@ -71,17 +92,17 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
 
 function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "onClose">>) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const symbols = useMemo(() => filterSymbols(query), [query]);
+  const { text: query, symbols, searching, inputRef, onTextChange } = usePaletteSymbolSearch();
+  const quotes = useKnownQuotes();
 
-  const getCommands = useCallback((): Command[] => {
-    const commands: Command[] = [
+  const commands = useMemo((): Command[] => {
+    const all: Command[] = [
       {
         id: "nav-dashboard",
         title: "Dashboard",
         subtitle: "View your portfolio and market overview",
-        shortcut: "⌘1",
+        shortcut: formatShortcut("1"),
         icon: <Home className="w-4 h-4" />,
         action: () => {
           void navigate("/dashboard");
@@ -93,7 +114,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         id: "nav-terminal",
         title: "Market Terminal",
         subtitle: "Advanced charts and trading",
-        shortcut: "⌘2",
+        shortcut: formatShortcut("2"),
         icon: <LineChart className="w-4 h-4" />,
         action: () => {
           void navigate("/terminal");
@@ -105,7 +126,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         id: "nav-screener",
         title: "Stock Screener",
         subtitle: "Find stocks matching your criteria",
-        shortcut: "⌘3",
+        shortcut: formatShortcut("3"),
         icon: <BarChart3 className="w-4 h-4" />,
         action: () => {
           void navigate("/screener");
@@ -117,7 +138,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         id: "nav-backtest",
         title: "Backtest",
         subtitle: "Test your strategies",
-        shortcut: "⌘4",
+        shortcut: formatShortcut("4"),
         icon: <Activity className="w-4 h-4" />,
         action: () => {
           void navigate("/backtest");
@@ -129,7 +150,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         id: "nav-strategies",
         title: "Strategies",
         subtitle: "Run the VCP scanner and manage strategy signals",
-        shortcut: "⌘5",
+        shortcut: formatShortcut("5"),
         icon: <TrendingUp className="w-4 h-4" />,
         action: () => {
           void navigate("/strategies");
@@ -152,7 +173,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         id: "settings",
         title: "Settings",
         subtitle: "Manage your preferences",
-        shortcut: "⌘,",
+        shortcut: formatShortcut(","),
         icon: <Settings className="w-4 h-4" />,
         action: () => {
           onClose();
@@ -161,10 +182,10 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
       },
     ];
 
-    if (!query) return commands;
+    if (!query) return all;
 
     const lowerQuery = query.toLowerCase();
-    return commands.filter(
+    return all.filter(
       (cmd) =>
         cmd.title.toLowerCase().includes(lowerQuery) ||
         cmd.subtitle?.toLowerCase().includes(lowerQuery) ||
@@ -172,42 +193,39 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
     );
   }, [query, navigate, onClose]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const commands = getCommands();
-      const totalItems = commands.length + symbols.length;
+  const totalItems = symbols.length + commands.length;
+  const activeIndex = totalItems === 0 ? -1 : Math.min(selectedIndex, totalItems - 1);
 
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          setSelectedIndex((prev) => (prev + 1) % totalItems);
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          setSelectedIndex((prev) => (prev - 1 + totalItems) % totalItems);
-          break;
-        case "Enter":
-          e.preventDefault();
-          if (selectedIndex < symbols.length) {
-            const symbol = symbols[selectedIndex];
-            void navigate(`/terminal?symbol=${symbol.symbol}`);
-            onClose();
-          } else {
-            const cmd = commands[selectedIndex - symbols.length];
-            if (cmd) cmd.action();
-          }
-          break;
-        case "Escape":
-          onClose();
-          break;
+  const selectSymbol = (symbol: string) => {
+    void navigate(terminalPath(symbol));
+    onClose();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        if (totalItems > 0) setSelectedIndex((activeIndex + 1) % totalItems);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        if (totalItems > 0) setSelectedIndex((activeIndex - 1 + totalItems) % totalItems);
+        break;
+      case "Enter": {
+        event.preventDefault();
+        const symbol = activeIndex >= 0 ? symbols.at(activeIndex) : undefined;
+        if (symbol) selectSymbol(symbol.symbol);
+        else if (activeIndex >= 0) commands.at(activeIndex - symbols.length)?.action();
+        break;
       }
-    };
+      case "Escape":
+        onClose();
+        break;
+      default:
+        break;
+    }
+  };
 
-    globalThis.addEventListener("keydown", handleKeyDown);
-    return () => globalThis.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIndex, symbols, getCommands, navigate, onClose]);
-
-  const commands = getCommands();
   const hasResults = commands.length > 0 || symbols.length > 0;
 
   return (
@@ -231,10 +249,11 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
             type="text"
             value={query}
             onChange={(e) => {
-              setQuery(e.target.value);
+              onTextChange(e.target.value);
               setSelectedIndex(0);
             }}
-            ref={focusOnMount}
+            onKeyDown={handleKeyDown}
+            ref={inputRef}
             placeholder="Search for apps, symbols, or commands..."
             className="flex-1 bg-transparent border-none outline-none text-lg py-4 text-foreground"
           />
@@ -252,14 +271,11 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
                   </div>
                   {symbols.map((symbol, index) => (
                     <button
-                      key={symbol.symbol}
-                      onClick={() => {
-                        void navigate(`/terminal?symbol=${symbol.symbol}`);
-                        onClose();
-                      }}
+                      key={`${symbol.symbol}-${symbol.type ?? ""}`}
+                      onClick={() => selectSymbol(symbol.symbol)}
                       className={cn(
                         "w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all",
-                        selectedIndex === index && "bg-background-tertiary",
+                        activeIndex === index && "bg-background-tertiary",
                       )}
                     >
                       <div className="w-8 h-8 flex items-center justify-center rounded-sm bg-background-tertiary">
@@ -269,19 +285,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
                         <div className="font-medium">{symbol.symbol}</div>
                         <div className="text-xs text-foreground-secondary">{symbol.name}</div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-medium tabular-nums">
-                          ₹{symbol.price?.toLocaleString()}
-                        </div>
-                        <div
-                          className={cn(
-                            "text-xs tabular-nums",
-                            symbol.changePercent >= 0 ? "text-profit" : "text-loss",
-                          )}
-                        >
-                          {formatPercentage(symbol.changePercent)}
-                        </div>
-                      </div>
+                      <LiveQuote quote={quotes[symbol.symbol]} />
                     </button>
                   ))}
                 </div>
@@ -305,7 +309,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
                           onClick={command.action}
                           className={cn(
                             "w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all",
-                            selectedIndex === actualIndex && "bg-background-tertiary",
+                            activeIndex === actualIndex && "bg-background-tertiary",
                           )}
                         >
                           <div className="w-8 h-8 flex items-center justify-center rounded-sm bg-background-tertiary text-foreground-secondary">
@@ -331,7 +335,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
             </>
           ) : (
             <div className="px-4 py-8 text-center text-foreground-tertiary">
-              No results found for &quot;{query}&quot;
+              {searching ? "Searching..." : <>No results found for &quot;{query}&quot;</>}
             </div>
           )}
         </div>
@@ -343,7 +347,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
             <span>↵ Select</span>
           </div>
           <div className="flex items-center gap-4">
-            <span>⌘K Open</span>
+            <span>{formatShortcut("K")} Open</span>
             <span>ESC Close</span>
           </div>
         </div>
@@ -352,20 +356,43 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
   );
 }
 
-export function useCommandPalette() {
-  const [isOpen, setIsOpen] = useState(false);
+/** Open state shared by the shell; the platform's ⌘K / Ctrl+K toggles it while anything listens. */
+function createCommandPaletteStore() {
+  let isOpen = false;
+  const listeners = new Set<() => void>();
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setIsOpen((prev) => !prev);
-      }
+  function setOpen(next: boolean) {
+    if (next === isOpen) return;
+    isOpen = next;
+    for (const listener of listeners) listener();
+  }
+
+  function onKeyDown(event: globalThis.KeyboardEvent) {
+    if (!isModifierShortcut(event, "k")) return;
+    event.preventDefault();
+    setOpen(!isOpen);
+  }
+
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    if (listeners.size === 1) globalThis.addEventListener("keydown", onKeyDown);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) globalThis.removeEventListener("keydown", onKeyDown);
     };
+  }
 
-    globalThis.addEventListener("keydown", handleKeyDown);
-    return () => globalThis.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  return {
+    subscribe,
+    getIsOpen: () => isOpen,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  };
+}
 
-  return { isOpen, open: () => setIsOpen(true), close: () => setIsOpen(false) };
+const commandPaletteStore = createCommandPaletteStore();
+
+export function useCommandPalette() {
+  const isOpen = useSyncExternalStore(commandPaletteStore.subscribe, commandPaletteStore.getIsOpen);
+  return { isOpen, open: commandPaletteStore.open, close: commandPaletteStore.close };
 }
