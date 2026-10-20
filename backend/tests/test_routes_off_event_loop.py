@@ -11,7 +11,7 @@ from collections.abc import Callable, Generator
 from datetime import date, datetime
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -119,8 +119,8 @@ def slow_services(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def _ping_answer_time_during(url: str) -> tuple[float, float]:
     """Seconds from sending `url` until a ping answered, and until `url` answered."""
-    transport = httpx.ASGITransport(app=_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    transport = httpx2.ASGITransport(app=_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         started = time.perf_counter()
         slow = asyncio.create_task(client.get(url))
         await asyncio.sleep(0.05)  # let the slow request reach its blocking call
