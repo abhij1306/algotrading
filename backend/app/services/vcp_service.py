@@ -10,7 +10,6 @@ from datetime import UTC, date, datetime
 from statistics import mean
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -30,6 +29,8 @@ from ..models import (
 from ..utils.runtime_metrics import runtime_metrics
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
+from .vcp import pattern
+from .vcp.pattern import STOP_OFFSET_PCT
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,8 @@ DEFAULT_UNIVERSE = "NIFTY500"
 RISK_PCT_BULL = 0.01
 RISK_PCT_BEAR = 0.005
 MAX_POSITION_CAP = 0.20
-STOP_OFFSET_PCT = 0.001
 GAP_UP_MAX_PCT = 0.02
 TRAIL_SLIPPAGE_PCT = 0.001
-BREAKOUT_VOLUME_MULTIPLIER = 1.5
-A_GRADE_BREAKOUT_VOLUME_MULTIPLIER = BREAKOUT_VOLUME_MULTIPLIER * (4.0 / 3.0)
 # Log message for a signal or trade dropped because its stop leaves no tradable risk.
 INVALID_STOP_DISTANCE = "Invalid stop distance"
 
@@ -229,178 +227,8 @@ class VCPService:
             risk_pct=RISK_PCT_BULL if bull else RISK_PCT_BEAR,
         )
 
-    @staticmethod
-    def _percentile_rating(series: pd.Series) -> pd.Series:
-        ranked = series.rank(method="average", pct=True)
-        return ((ranked * 99).round().clip(lower=0, upper=99)).astype(int)
-
     def _compute_rs_map(self, symbol_frames: dict[str, pd.DataFrame]) -> dict[str, int]:
-        records: dict[str, float] = {}
-        for symbol, frame in symbol_frames.items():
-            closes = frame["close_ref"].reset_index(drop=True)
-            if len(closes) < 253:
-                continue
-            records[symbol] = (
-                (0.40 * float(closes.iloc[-1] / closes.iloc[-64] - 1.0))
-                + (0.20 * float(closes.iloc[-1] / closes.iloc[-127] - 1.0))
-                + (0.20 * float(closes.iloc[-1] / closes.iloc[-190] - 1.0))
-                + (0.20 * float(closes.iloc[-1] / closes.iloc[-253] - 1.0))
-            )
-        if not records:
-            return {}
-        rating = self._percentile_rating(pd.Series(records))
-        return {symbol: int(value) for symbol, value in rating.items()}
-
-    @staticmethod
-    def _stage2_metrics(frame: pd.DataFrame) -> tuple[int, dict[str, float]]:
-        closes = frame["close_ref"].reset_index(drop=True)
-        ma_50 = closes.rolling(50).mean()
-        ma_150 = closes.rolling(150).mean()
-        ma_200 = closes.rolling(200).mean()
-        high_52 = closes.rolling(252).max()
-        latest_index = len(closes) - 1
-        conditions = [
-            closes.iloc[-1] > ma_150.iloc[-1] and closes.iloc[-1] > ma_200.iloc[-1],
-            ma_150.iloc[-1] > ma_200.iloc[-1],
-            bool(latest_index >= 20 and ma_200.iloc[-1] > ma_200.iloc[-21]),
-            closes.iloc[-1] >= (0.75 * high_52.iloc[-1]),
-            ma_50.iloc[-1] > ma_150.iloc[-1] > ma_200.iloc[-1],
-        ]
-        return sum(bool(item) for item in conditions), {
-            "ma_50": float(ma_50.iloc[-1]) if not pd.isna(ma_50.iloc[-1]) else 0.0,
-            "ma_150": float(ma_150.iloc[-1]) if not pd.isna(ma_150.iloc[-1]) else 0.0,
-            "ma_200": float(ma_200.iloc[-1]) if not pd.isna(ma_200.iloc[-1]) else 0.0,
-            "high_52": float(high_52.iloc[-1]) if not pd.isna(high_52.iloc[-1]) else 0.0,
-        }
-
-    @staticmethod
-    def _pivot_points(base_df: pd.DataFrame, window: int = 3) -> tuple[list[int], list[int]]:
-        highs = base_df["high"].tolist()
-        lows = base_df["low"].tolist()
-        pivot_highs: list[int] = []
-        pivot_lows: list[int] = []
-        for idx in range(window, len(base_df) - window):
-            hi = highs[idx]
-            lo = lows[idx]
-            if all(hi > value for value in highs[idx - window : idx]) and all(
-                hi > value for value in highs[idx + 1 : idx + window + 1]
-            ):
-                pivot_highs.append(idx)
-            if all(lo < value for value in lows[idx - window : idx]) and all(
-                lo < value for value in lows[idx + 1 : idx + window + 1]
-            ):
-                pivot_lows.append(idx)
-        return pivot_highs, pivot_lows
-
-    @staticmethod
-    def _has_no_overhead_resistance(frame: pd.DataFrame, pivot_high: float) -> bool:
-        if pivot_high <= 0:
-            return False
-        prior = frame.tail(252).copy()
-        upper = pivot_high * 1.03
-        candidates = prior[(prior["close_ref"] > pivot_high) & (prior["close_ref"] <= upper)]
-        if candidates.empty:
-            return True
-        # Use a sliding observed-level check with a 2% band around each candidate level.
-        closes = prior["close_ref"].tolist()
-        levels = sorted({round(value, 2) for value in candidates["close_ref"].tolist()})
-        for level in levels:
-            streak = 0
-            for close in closes:
-                if abs(close - level) / level <= 0.02:
-                    streak += 1
-                    if streak >= 5:
-                        return False
-                else:
-                    streak = 0
-        return True
-
-    @staticmethod
-    def _base_window(frame: pd.DataFrame) -> tuple[pd.DataFrame, float] | None:
-        """(base from the 60-day high onward, base depth %), or None if not a valid base."""
-        base_window = frame.tail(60).reset_index(drop=True)
-        base_high_idx = int(base_window["close_ref"].idxmax())
-        base_df = base_window.iloc[base_high_idx:].reset_index(drop=True)
-        if len(base_df) < 15:
-            return None
-
-        base_high = float(base_df["close_ref"].iloc[0])
-        base_low = float(base_df["close_ref"].min())
-        base_depth = ((base_high - base_low) / base_high) * 100 if base_high > 0 else 100.0
-        if base_depth > 30.0:
-            return None
-        return base_df, base_depth
-
-    def _find_contractions(self, base_df: pd.DataFrame) -> list[dict[str, Any]]:
-        """Successive pivot-high to pivot-low pullbacks in the base (at most four)."""
-        pivot_highs, pivot_lows = self._pivot_points(base_df, window=3)
-        current_high_idx = 0
-        current_high_price = float(base_df["close_ref"].iloc[0])
-        contractions: list[dict[str, Any]] = []
-        while True:
-            low_candidates = [idx for idx in pivot_lows if idx > current_high_idx]
-            if not low_candidates:
-                break
-            low_idx = low_candidates[0]
-            low_price = float(base_df["low"].iloc[low_idx])
-            depth = (
-                ((current_high_price - low_price) / current_high_price) * 100
-                if current_high_price > 0
-                else 100.0
-            )
-            contractions.append(
-                {
-                    "high_idx": current_high_idx,
-                    "high_price": current_high_price,
-                    "low_idx": low_idx,
-                    "low_price": low_price,
-                    "depth_pct": depth,
-                }
-            )
-            next_highs = [idx for idx in pivot_highs if idx > low_idx]
-            if not next_highs or len(contractions) >= 4:
-                break
-            current_high_idx = next_highs[0]
-            current_high_price = float(base_df["high"].iloc[current_high_idx])
-        return contractions
-
-    @staticmethod
-    def _contractions_tighten(depths: list[float]) -> bool:
-        """2-4 contractions, first <= 25%, second <= 15%, last <= 10%, each shallower."""
-        if not (2 <= len(depths) <= 4):
-            return False
-        if depths[0] > 25.0 or depths[-1] > 10.0:
-            return False
-        if len(depths) > 1 and depths[1] > 15.0:
-            return False
-        return not any(depths[idx] >= depths[idx - 1] for idx in range(1, len(depths)))
-
-    @staticmethod
-    def _volume_dry_up(
-        frame: pd.DataFrame, base_df: pd.DataFrame, final_contraction: dict[str, Any]
-    ) -> tuple[float, float, float] | None:
-        """(50-day average volume, final-contraction volume as % of it, base volume slope).
-
-        None unless volume dried up to at most 40% and trends down across the base.
-        """
-        final_df = base_df.iloc[
-            final_contraction["high_idx"] : final_contraction["low_idx"] + 1
-        ].copy()
-        if final_df.empty:
-            return None
-
-        avg_volume_50 = float(frame["volume"].tail(50).mean())
-        final_avg_volume = float(final_df["volume"].mean())
-        volume_dry_up_pct = (
-            ((final_avg_volume / avg_volume_50) * 100.0) if avg_volume_50 > 0 else 1000.0
-        )
-        if volume_dry_up_pct > 40.0:
-            return None
-
-        slope = np.polyfit(np.arange(len(base_df)), base_df["volume"].to_numpy(dtype=float), 1)[0]
-        if slope >= 0:
-            return None
-        return avg_volume_50, volume_dry_up_pct, slope
+        return pattern.compute_rs_map(symbol_frames)
 
     @staticmethod
     def _signal_shares(
@@ -427,42 +255,6 @@ class VCPService:
         )
         return None
 
-    @staticmethod
-    def _breakout_state(
-        latest: pd.Series, pivot_high: float, avg_volume_50: float
-    ) -> tuple[bool, float, float]:
-        """(is breakout, breakout volume multiple, close position in the day's range)."""
-        breakout_volume_mult = float(latest["volume"] / avg_volume_50) if avg_volume_50 > 0 else 0.0
-        day_range = float(latest["high"] - latest["low"])
-        close_position = (
-            ((float(latest["close"]) - float(latest["low"])) / day_range) if day_range > 0 else 0.0
-        )
-        is_breakout = bool(
-            float(latest["close"]) > pivot_high
-            and breakout_volume_mult >= BREAKOUT_VOLUME_MULTIPLIER
-            and close_position >= 0.75
-        )
-        return is_breakout, breakout_volume_mult, close_position
-
-    @staticmethod
-    def _grade(
-        rs_rating: int,
-        final_depth: float,
-        volume_dry_up_pct: float,
-        is_breakout: bool,
-        breakout_volume_mult: float,
-    ) -> str:
-        if (
-            rs_rating >= 90
-            and final_depth <= 5.0
-            and volume_dry_up_pct <= 40.0
-            and ((not is_breakout) or breakout_volume_mult >= A_GRADE_BREAKOUT_VOLUME_MULTIPLIER)
-        ):
-            return "A"
-        if rs_rating >= 80 and final_depth <= 10.0 and volume_dry_up_pct <= 60.0:
-            return "B"
-        return "C"
-
     def _analyze_pattern(
         self,
         frame: pd.DataFrame,
@@ -471,84 +263,54 @@ class VCPService:
         regime: RegimeSnapshot,
         capital: float,
     ) -> dict[str, Any] | None:
-        if len(frame) < 260:
+        setup = pattern.analyze_pattern(frame, rs_rating)
+        if setup is None:
             return None
 
-        stage2_count, stage2_values = self._stage2_metrics(frame)
-        if stage2_count < 5:
-            return None
-
-        base = self._base_window(frame)
-        if base is None:
-            return None
-        base_df, base_depth = base
-
-        contractions = self._find_contractions(base_df)
-        depths = [round(item["depth_pct"], 2) for item in contractions]
-        if not self._contractions_tighten(depths):
-            return None
-
-        final_contraction = contractions[-1]
-        volume_profile = self._volume_dry_up(frame, base_df, final_contraction)
-        if volume_profile is None:
-            return None
-        avg_volume_50, volume_dry_up_pct, slope = volume_profile
-
-        latest = frame.iloc[-1]
-        pivot_high = float(final_contraction["high_price"])
-        final_contraction_low = float(final_contraction["low_price"])
-        stop_level = round(final_contraction_low * (1.0 - STOP_OFFSET_PCT), 2)
-        is_breakout, breakout_volume_mult, close_position = self._breakout_state(
-            latest, pivot_high, avg_volume_50
-        )
-
-        if rs_rating < 80 or not self._has_no_overhead_resistance(frame, pivot_high):
-            return None
-
+        symbol = str(frame["symbol"].iloc[-1])
+        pivot_high = setup.pivot_high
+        stop_level = setup.stop_level
         risk_distance = pivot_high - stop_level
         if risk_distance <= 0:
             logger.warning(
                 INVALID_STOP_DISTANCE,
                 extra={
-                    "symbol": str(frame["symbol"].iloc[-1]),
+                    "symbol": symbol,
                     "pivot_high": round(pivot_high, 2),
-                    "final_contraction_low": round(final_contraction_low, 2),
+                    "final_contraction_low": round(setup.final_contraction_low, 2),
                     "stop_level": round(stop_level, 2),
                     "stop_offset_pct": STOP_OFFSET_PCT,
                 },
             )
             return None
         stop_pct = (risk_distance / pivot_high) * 100 if pivot_high > 0 else 0.0
-        grade = self._grade(
-            rs_rating, depths[-1], volume_dry_up_pct, is_breakout, breakout_volume_mult
-        )
 
-        shares = self._signal_shares(
-            str(frame["symbol"].iloc[-1]), capital, regime.risk_pct, pivot_high, stop_level
-        )
+        shares = self._signal_shares(symbol, capital, regime.risk_pct, pivot_high, stop_level)
         if shares is None:
             return None
+        depths = setup.contraction_depths
+        breakout = setup.breakout
         position_value = shares * pivot_high
         two_r_target = pivot_high + (2.0 * risk_distance)
         return {
-            "symbol": str(frame["symbol"].iloc[-1]),
-            "company_name": company_meta.get("name") or str(frame["symbol"].iloc[-1]),
+            "symbol": symbol,
+            "company_name": company_meta.get("name") or symbol,
             "sector": company_meta.get("sector") or "Unknown",
-            "grade": grade,
+            "grade": setup.grade,
             "rs_rating": int(rs_rating),
-            "stage2_conditions_met": int(stage2_count),
-            "contraction_count": len(contractions),
+            "stage2_conditions_met": int(setup.stage2.conditions_met),
+            "contraction_count": len(setup.contractions),
             "contraction_depths": depths,
             "final_contraction_depth": float(depths[-1]),
-            "volume_dry_up_pct": round(volume_dry_up_pct, 2),
+            "volume_dry_up_pct": round(setup.volume.dry_up_pct, 2),
             "pivot_high": round(pivot_high, 2),
             "stop_level": round(stop_level, 2),
             "stop_pct": round(stop_pct, 2),
-            "days_in_base": int(len(base_df)),
-            "is_breakout": is_breakout,
-            "breakout_price": round(float(latest["close"]), 2) if is_breakout else None,
-            "breakout_volume_mult": round(breakout_volume_mult, 2),
-            "close_position_in_range": round(close_position, 4),
+            "days_in_base": int(setup.days_in_base),
+            "is_breakout": breakout.is_breakout,
+            "breakout_price": round(setup.latest_close, 2) if breakout.is_breakout else None,
+            "breakout_volume_mult": round(breakout.volume_mult, 2),
+            "close_position_in_range": round(breakout.close_position, 4),
             "overhead_clear": True,
             "regime": regime.regime,
             "signal_status": "SIGNAL",
@@ -558,10 +320,10 @@ class VCPService:
             "capital_risk": round(shares * max(0.0, pivot_high - stop_level), 2),
             "two_r_target": round(two_r_target, 2),
             "metadata_json": {
-                "stage2": stage2_values,
-                "volume_slope": round(float(slope), 4),
-                "base_depth_pct": round(base_depth, 2),
-                "final_contraction_low": round(final_contraction_low, 2),
+                "stage2": setup.stage2.averages(),
+                "volume_slope": round(setup.volume.slope, 4),
+                "base_depth_pct": round(setup.base_depth_pct, 2),
+                "final_contraction_low": round(setup.final_contraction_low, 2),
                 "stop_offset_pct": STOP_OFFSET_PCT,
                 "risk_pct": regime.risk_pct,
             },
