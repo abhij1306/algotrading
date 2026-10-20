@@ -32,7 +32,7 @@ def main() -> int:
         )
         return 1
 
-    print("[1/2] Installing core backend dependencies...")
+    print("[1/2] Installing backend and test dependencies...")
     core = subprocess.run(
         [
             str(python),
@@ -40,7 +40,7 @@ def main() -> int:
             "pip",
             "install",
             "-r",
-            str(ROOT / "backend" / "requirements.txt"),
+            str(ROOT / "backend" / "requirements-dev.txt"),
         ]
     )
     if core.returncode != 0:
