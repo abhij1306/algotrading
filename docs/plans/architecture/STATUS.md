@@ -111,7 +111,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 6: VCP and backtest
 - [x] 1. VCP pattern functions into `services/vcp/pattern.py` (M).
-- [ ] 2. VCP positions and status behind a quote port (M).
+- [x] 2. VCP positions and status behind a quote port (M).
 - [ ] 3. VCP scan, regime and config (M).
 - [ ] 4. A VCP backtest module with a shared `trailing_stop` (M).
 - [ ] 5. `UniverseService.members_as_of`, returning members with their provenance (M).

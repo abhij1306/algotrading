@@ -9,6 +9,7 @@ import {
 } from "@/components/ui";
 import { formatInr, formatNumber, formatSignedPercent } from "@/lib/format";
 import type { PositionRow } from "@/lib/queries/strategies";
+import { priceStatusLabel } from "./strategy-view";
 
 interface PositionTableProps {
   rows: ReadonlyArray<PositionRow>;
@@ -47,7 +48,12 @@ export function PositionTable({ rows, onClose, busy }: Readonly<PositionTablePro
               </div>
             </TableCell>
             <TableCell>{formatNumber(row.r_multiple)}</TableCell>
-            <TableCell>{row.status}</TableCell>
+            <TableCell>
+              <div>{row.status}</div>
+              <div className="text-xs text-foreground-secondary">
+                {priceStatusLabel(row.price_status)}
+              </div>
+            </TableCell>
             <TableCell>
               <Button size="sm" variant="secondary" disabled={busy} onClick={() => onClose(row.id)}>
                 Close Now
