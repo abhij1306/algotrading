@@ -148,6 +148,8 @@ class SnapshotStore:
         self._lock = threading.Lock()
         self._path_locks: dict[Path, threading.Lock] = {}
         self._cache: dict[Path, _Loaded] = {}
+        # Bumped by invalidate(); a parse that started before a bump is not cached.
+        self._epoch = 0
 
     # --- snapshot parquet --------------------------------------------------------------
 
@@ -178,6 +180,7 @@ class SnapshotStore:
     def invalidate(self, kind: SnapshotKind | None = None) -> None:
         """Drop the cached parse of one snapshot file, or of all of them."""
         with self._lock:
+            self._epoch += 1
             if kind is None:
                 self._cache.clear()
             else:
@@ -199,11 +202,13 @@ class SnapshotStore:
             version = _file_version(kind, path)
             with self._lock:
                 cached = self._cache.get(path)
+                epoch = self._epoch
             if cached is not None and cached.version == version:
                 return cached
             loaded = _parse(kind, path, version)
             with self._lock:
-                self._cache[path] = loaded
+                if self._epoch == epoch:
+                    self._cache[path] = loaded
             return loaded
 
     # --- metadata ----------------------------------------------------------------------

@@ -250,6 +250,27 @@ def test_invalidate_forces_a_reparse(store: SnapshotStore, read_calls: list[Path
     ]
 
 
+def test_an_invalidate_during_a_parse_is_not_undone(
+    store: SnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+    real_read_table = store_module.pq.read_table
+
+    def read_then_invalidate(path: Path, *args: object, **kwargs: object) -> object:
+        calls.append(Path(path))
+        table = real_read_table(path, *args, **kwargs)
+        if len(calls) == 1:
+            store.invalidate(STOCK)
+        return table
+
+    monkeypatch.setattr(store_module.pq, "read_table", read_then_invalidate)
+
+    store.load(STOCK)
+    store.load(STOCK)
+
+    assert calls == [store.path(STOCK), store.path(STOCK)]
+
+
 def test_concurrent_readers_share_one_parse(store: SnapshotStore, read_calls: list[Path]) -> None:
     workers = 16
     barrier = threading.Barrier(workers)
