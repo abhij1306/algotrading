@@ -18,7 +18,8 @@ export const MAX_CHART_POINTS = 200;
 
 /**
  * The portfolio curve joined to the benchmark by date (null where the benchmark has no point),
- * keeping every n-th row so at most about `maxPoints` remain.
+ * keeping every n-th row so at most about `maxPoints` remain. The last row is always the
+ * curve's final point.
  */
 export function buildEquityRows(
   equity: ReadonlyArray<CurvePoint>,
@@ -28,8 +29,10 @@ export function buildEquityRows(
   const benchmarkByDate = new Map(benchmark.map((point) => [point.date, point.equity]));
   const step = Math.max(1, Math.floor(equity.length / maxPoints));
   const rows: EquityRow[] = [];
-  for (let i = 0; i < equity.length; i += step) {
-    const point = equity[i];
+  const last = equity.length - 1;
+  for (let i = 0; i <= last; i += step) {
+    // The final point always stays, so the chart ends on the run's closing equity.
+    const point = equity[i + step > last ? last : i];
     rows.push({
       date: point.date,
       equity: point.equity,

@@ -102,6 +102,17 @@ describe("backtest result page", { timeout: 15_000 }, () => {
     expect(screen.getByText("-2.77%")).toBeInTheDocument();
   });
 
+  it("says when the trade log shows only the first 200 trades", async () => {
+    const trade = COMPLETED_JOB.result.trade_log[0];
+    const trades = Array.from({ length: 250 }, (_, i) => ({ ...trade, symbol: `S${i}` }));
+    stubJob({ ...COMPLETED_JOB, result: { ...COMPLETED_JOB.result, trade_log: trades } });
+    renderResult();
+
+    expect(await screen.findByText("200 of 250 trades")).toBeInTheDocument();
+    expect(screen.getByText("S199")).toBeInTheDocument();
+    expect(screen.queryByText("S200")).not.toBeInTheDocument();
+  });
+
   it("shows the failure reason of a failed run", async () => {
     stubJob({
       job_id: "run-1",

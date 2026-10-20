@@ -15,7 +15,7 @@ import type { BacktestJob } from "@/lib/queries/backtest";
 
 type Trade = NonNullable<BacktestJob["result"]>["trade_log"][number];
 
-/** The most trades the log renders. */
+/** The most trades the log renders; the badge says when more were cut. */
 const MAX_TRADES_SHOWN = 200;
 
 interface TradeLogPanelProps {
@@ -34,7 +34,11 @@ export function TradeLogPanel({ trades, winRate }: Readonly<TradeLogPanelProps>)
         <CardHeader className="px-4 py-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-foreground">Trade Log v2</CardTitle>
-            <Badge variant="outline">{trades.length} trades</Badge>
+            <Badge variant="outline">
+              {trades.length > MAX_TRADES_SHOWN
+                ? `${MAX_TRADES_SHOWN} of ${trades.length} trades`
+                : `${trades.length} trades`}
+            </Badge>
           </div>
           <p className="text-xs text-foreground-muted">
             {formatPercent(winRate, 1)} win rate · by date

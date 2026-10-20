@@ -22,6 +22,14 @@ describe("buildEquityRows", () => {
     expect(buildEquityRows(equity, [], 3).map((row) => row.date)).toEqual(["d0", "d3", "d6", "d9"]);
   });
 
+  it("ends on the curve's final point when thinning skips it", () => {
+    const equity = Array.from({ length: 400 }, (_, i) => ({ date: `d${i}`, equity: i }));
+    const rows = buildEquityRows(equity, []);
+    expect(rows).toHaveLength(200);
+    expect(rows.at(-1)).toEqual({ date: "d399", equity: 399, benchmark: null });
+    expect(rows.slice(0, 3).map((row) => row.date)).toEqual(["d0", "d2", "d4"]);
+  });
+
   it("keeps every point at or under the limit", () => {
     const equity = Array.from({ length: 4 }, (_, i) => ({ date: `d${i}`, equity: i }));
     expect(buildEquityRows(equity, [], 4)).toHaveLength(4);
