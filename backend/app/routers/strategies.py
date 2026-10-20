@@ -119,7 +119,11 @@ def update_strategy_stop(position_id: int, request: StopUpdateRequest) -> dict[s
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/regime", response_model=None)
+@router.get(
+    "/regime",
+    response_model=None,
+    responses={503: {"description": "NIFTY50 index history missing (DATA_UNAVAILABLE)"}},
+)
 def get_strategy_regime() -> dict[str, Any]:
     return vcp_service._serialize_regime(vcp_service.get_regime())
 

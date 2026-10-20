@@ -99,4 +99,4 @@ def get_upload_status() -> dict[str, Any]:
         return {"files": files, "count": len(files)}
     except Exception as e:
         logger.exception(f"Error listing files: {e}")
-        return {"files": [], "count": 0, "error": str(e)}
+        return {"files": [], "count": 0, "error": "Could not list uploaded files"}

@@ -85,7 +85,7 @@ def get_fyers_status() -> dict[str, Any]:
             return {"connected": False, "user_id": None}
     except Exception as e:
         logger.exception("[Fyers] Error checking status: %s", e)
-        return {"connected": False, "user_id": None, "error": str(e)}
+        return {"connected": False, "user_id": None, "error": "Could not read Fyers login status"}
 
 
 @router.post("/fyers/disconnect", response_model=None)

@@ -21,6 +21,7 @@ from ..services.order_execution_service import (
 )
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
+from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -554,7 +555,13 @@ def get_options_orderflow(
         raise HTTPException(status_code=500, detail="Failed to load options orderflow") from exc
 
 
-@router.post("/options/preview-order", responses={400: {"description": "Invalid request"}})
+@router.post(
+    "/options/preview-order",
+    responses={
+        400: {"description": "Invalid request"},
+        500: {"description": "Preview failed"},
+    },
+)
 def preview_options_order(
     req: TerminalOptionsPreviewRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -610,9 +617,15 @@ def preview_options_order(
             "estimated_charges": estimated_charges,
             "risk": risk,
         }
-    except Exception as exc:
-        logger.exception("Terminal options preview failed: %s", exc)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        # Input validation (symbol/expiry/strike parsing) raises ValueError with our text.
+        logger.info("Terminal options preview rejected: %s", safe_log_value(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Terminal options preview failed")
+        raise HTTPException(status_code=500, detail="Failed to preview options order") from exc
 
 
 @router.post(

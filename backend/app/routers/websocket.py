@@ -83,8 +83,9 @@ async def get_websocket_status(request: Request) -> dict[str, Any]:
 
         status = await live_market.get_status()
         return {**status, "startup": startup_status(request.app.state).value}
-    except Exception as e:
-        return {"connected": False, "error": str(e)}
+    except Exception:
+        logger.exception("WebSocket status check failed")
+        return {"connected": False, "error": "WebSocket status unavailable"}
 
 
 @router.websocket("/stream")
