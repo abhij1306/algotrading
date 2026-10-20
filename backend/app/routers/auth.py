@@ -1,21 +1,28 @@
-import json
-import logging
-import os
-import sys
-import time
-from datetime import UTC, datetime, timedelta
-from typing import Any
+"""Fyers login endpoints: thin HTTP mapping over ``FyersAuthService``.
 
-from fastapi import APIRouter, HTTPException
-from fyers_apiv3 import fyersModel
+Every error carries a fixed message; exception text, the token and the secret never reach the
+client.
+"""
+
+import logging
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.paths import PROJECT_ROOT
+from app.services.fyers.auth_flow import (
+    FyersAuthService,
+    MissingCredentialsError,
+    TokenRejectedError,
+    get_fyers_auth,
+)
 from app.utils.errors import handle_api_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+AuthService = Annotated[FyersAuthService, Depends(get_fyers_auth)]
 
 AUTH_URL_RESPONSES = {
     500: {"description": "Fyers credentials missing or auth URL generation failed"}
@@ -25,242 +32,59 @@ TOKEN_RESPONSES = {
     500: {"description": "Fyers credentials missing or token exchange failed"},
 }
 
-
-# Get base directory for saving access tokens
-def get_base_dir() -> str:
-    """Get the base directory of the project."""
-    if getattr(sys, "frozen", False):
-        # Running as executable
-        exe_dir = os.path.dirname(sys.executable)
-        if os.path.exists(os.path.join(exe_dir, "fyers")):
-            return exe_dir
-        if os.path.exists(os.path.join(os.path.dirname(exe_dir), "fyers")):
-            return os.path.dirname(exe_dir)
-        return os.getcwd()
-    else:
-        return str(PROJECT_ROOT)
-
-
-BASE_DIR = get_base_dir()
-CONFIG_DIR = os.path.join(BASE_DIR, "fyers", "config")
-ACCESS_TOKEN_FILE = os.path.join(CONFIG_DIR, "access_token.json")
+STATUS_ERROR = "Could not read Fyers login status"
+MISSING_CREDENTIALS_ERROR = (
+    "Fyers credentials not found in environment variables. Please check .env file."
+)
 
 
 class AuthCodeRequest(BaseModel):
     auth_code: str
 
 
-# Simple cache for status (avoid repeated file checks)
-_status_cache: dict[str, Any] = {"connected": False, "user_id": None, "cached_at": 0}
-
-
 @router.get("/fyers/status", response_model=None)
-def get_fyers_status() -> dict[str, Any]:
-    """
-    Check if Fyers is currently connected by verifying access token file exists.
-    Cached for 30s to avoid repeated file I/O.
-    """
-
-    # Return cached result if less than 30s old
-    if time.time() - _status_cache["cached_at"] < 30:
-        return {"connected": _status_cache["connected"], "user_id": _status_cache["user_id"]}
-
+def get_fyers_status(service: AuthService) -> dict[str, Any]:
+    """Whether a Fyers access token is saved. Cached for 30s to avoid repeated file I/O."""
     try:
-        if os.path.exists(ACCESS_TOKEN_FILE):
-            with open(ACCESS_TOKEN_FILE) as f:
-                data = json.load(f)
-
-            _status_cache["connected"] = True
-            _status_cache["user_id"] = data.get("fy_id", "")
-            _status_cache["cached_at"] = time.time()
-
-            return {"connected": True, "user_id": data.get("fy_id", "")}
-        else:
-            _status_cache["connected"] = False
-            _status_cache["user_id"] = None
-            _status_cache["cached_at"] = time.time()
-
-            return {"connected": False, "user_id": None}
-    except Exception as e:
-        logger.exception("[Fyers] Error checking status: %s", e)
-        return {"connected": False, "user_id": None, "error": "Could not read Fyers login status"}
+        status = service.status()
+    except Exception:
+        logger.exception("[Fyers] Error checking status")
+        return {"connected": False, "user_id": None, "error": STATUS_ERROR}
+    return {"connected": status.connected, "user_id": status.user_id}
 
 
 @router.post("/fyers/disconnect", response_model=None)
-def disconnect_fyers() -> dict[str, Any]:
-    """
-    Disconnect Fyers by removing the access token file and disconnecting WebSocket.
-    """
+def disconnect_fyers(service: AuthService) -> dict[str, Any]:
+    """Disconnect Fyers: stop the WebSocket and remove the access token file."""
     try:
-        # Disconnect WebSocket first
-        try:
-            from ..services.live_market_service import live_market
-
-            if live_market.ws_service:
-                live_market.ws_service.disconnect()
-                logger.info("[Fyers] WebSocket disconnected")
-        except Exception as ws_e:
-            logger.warning("[Fyers] WebSocket disconnect warning: %s", ws_e)
-
-        # Remove token file
-        if os.path.exists(ACCESS_TOKEN_FILE):
-            os.remove(ACCESS_TOKEN_FILE)
-            logger.info("[Fyers] Access token removed")
-
-        # Clear cache
-        _status_cache["connected"] = False
-        _status_cache["user_id"] = None
-        _status_cache["cached_at"] = 0
-
-        return {"status": "success", "message": "Disconnected from Fyers"}
+        service.disconnect()
     except Exception as e:
-        logger.exception("[Fyers] Error disconnecting: %s", e)
         raise handle_api_error(e, "Failed to disconnect from Fyers") from e
+    return {"status": "success", "message": "Disconnected from Fyers"}
 
 
 @router.get("/fyers/url", response_model=None, responses=AUTH_URL_RESPONSES)
-def get_fyers_auth_url() -> dict[str, Any]:
-    """
-    Generate Fyers Login URL using credentials from environment variables.
-    Credentials should be set in .env file: CLIENT_ID, SECRET_KEY, REDIRECT_URI
-    """
+def get_fyers_auth_url(service: AuthService) -> dict[str, Any]:
+    """Generate the Fyers login URL from CLIENT_ID, SECRET_KEY and REDIRECT_URI in .env."""
     try:
-        # Read credentials from environment variables (loaded from .env by main.py)
-        client_id = os.getenv("CLIENT_ID")
-        secret_key = os.getenv("SECRET_KEY")
-        redirect_uri = os.getenv("REDIRECT_URI")
-
-        # Validate that all required credentials are present
-        if not client_id:
-            raise HTTPException(
-                status_code=500,
-                detail="CLIENT_ID not found in environment variables. Please add it to .env file.",
-            )
-        if not secret_key:
-            raise HTTPException(
-                status_code=500,
-                detail="SECRET_KEY not found in environment variables. Please add it to .env file.",
-            )
-        if not redirect_uri:
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "REDIRECT_URI not found in environment variables. Please add it to .env file."
-                ),
-            )
-
-        logger.info("[Fyers Auth] Generating auth URL...")
-
-        # Create Fyers session
-        session = fyersModel.SessionModel(
-            client_id=client_id,
-            secret_key=secret_key,
-            redirect_uri=redirect_uri,
-            response_type="code",
-            state="fyers_api_state",
-            grant_type="authorization_code",
-        )
-
-        auth_url = session.generate_authcode()
-        logger.info("[Fyers Auth] Generated auth URL successfully")
-        return {"url": auth_url}
-
-    except HTTPException:
-        raise
+        url = service.login_url()
+    except MissingCredentialsError as e:
+        raise HTTPException(status_code=500, detail=e.message) from e
     except Exception as e:
-        logger.exception("[Fyers Auth] Error generating auth URL: %s", e)
         raise handle_api_error(e, "Failed to generate authentication URL") from e
+    logger.info("[Fyers Auth] Generated auth URL successfully")
+    return {"url": url}
 
 
 @router.post("/fyers/token", response_model=None, responses=TOKEN_RESPONSES)
-def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
-    """
-    Exchange auth code for access token and save to file.
-    Uses credentials from environment variables (.env file).
-    """
+def generate_token(request: AuthCodeRequest, service: AuthService) -> dict[str, Any]:
+    """Exchange an auth code for an access token and save it."""
     try:
-        # Read credentials from environment variables
-        client_id = os.getenv("CLIENT_ID")
-        secret_key = os.getenv("SECRET_KEY")
-        redirect_uri = os.getenv("REDIRECT_URI")
-
-        # Validate credentials
-        if not all([client_id, secret_key, redirect_uri]):
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Fyers credentials not found in environment variables. Please check .env file."
-                ),
-            )
-
-        logger.info("[Fyers Auth] Exchanging auth code for access token...")
-
-        # Create Fyers session
-        session = fyersModel.SessionModel(
-            client_id=client_id,
-            secret_key=secret_key,
-            redirect_uri=redirect_uri,
-            response_type="code",
-            grant_type="authorization_code",
-        )
-
-        # Exchange auth code for token
-        session.set_token(request.auth_code)
-        response = session.generate_token()
-
-        logger.info("[Fyers Auth] Token generation response: %s", response.get("s", "unknown"))
-
-        # Check if token generation was successful
-        if response.get("s") == "ok" and "access_token" in response:
-            # Add client_id to the response for later use
-            response["client_id"] = client_id
-
-            # Calculate expiry: midnight IST (00:00) next day
-            # IST = UTC+5:30
-            ist_offset = timedelta(hours=5, minutes=30)
-            utc_now = datetime.now(UTC)
-            ist_now = utc_now + ist_offset
-
-            # Midnight tonight IST = tomorrow 00:00 IST
-            midnight_ist = (ist_now + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-
-            # Convert back to UTC for storage
-            expires_at_utc = midnight_ist - ist_offset
-            response["expires_at"] = expires_at_utc.isoformat()
-
-            # Also store IST midnight for display
-            response["expires_at_ist"] = midnight_ist.isoformat() + "+05:30"
-
-            # Ensure config directory exists
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-
-            # Save token to file
-            with open(ACCESS_TOKEN_FILE, "w") as f:
-                json.dump(response, f, indent=4)
-
-            logger.info("[Fyers Auth] Access token saved to %s", ACCESS_TOKEN_FILE)
-            # Drop the cached status so the next status check reads the new token file.
-            _status_cache["cached_at"] = 0
-            logger.info("[Fyers Auth] Token expires at: %s", expires_at_utc.isoformat())
-            try:
-                # Ensure in-memory singleton does not keep stale token after re-login.
-                from ..services.fyers_client import reset_fyers_client
-
-                reset_fyers_client()
-            except Exception as refresh_err:
-                logger.warning(
-                    "[Fyers Auth] Could not reset in-memory Fyers client: %s", refresh_err
-                )
-            return {"status": "success", "message": "Token generated and saved successfully"}
-        else:
-            error_msg = response.get("message", "Token generation failed")
-            logger.warning("[Fyers Auth] Token generation failed: %s", error_msg)
-            raise HTTPException(status_code=400, detail=error_msg)
-
-    except HTTPException:
-        raise
+        service.exchange(request.auth_code)
+    except MissingCredentialsError as e:
+        raise HTTPException(status_code=500, detail=MISSING_CREDENTIALS_ERROR) from e
+    except TokenRejectedError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
     except Exception as e:
-        logger.exception("[Fyers Auth] Error during token exchange: %s", e)
         raise handle_api_error(e, "Token exchange failed") from e
+    return {"status": "success", "message": "Token generated and saved successfully"}

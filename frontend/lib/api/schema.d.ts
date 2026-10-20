@@ -52,7 +52,7 @@ export interface paths {
     put?: never;
     /**
      * Disconnect Fyers
-     * @description Disconnect Fyers by removing the access token file and disconnecting WebSocket.
+     * @description Disconnect Fyers: stop the WebSocket and remove the access token file.
      */
     post: operations["disconnect_fyers_api_auth_fyers_disconnect_post"];
     delete?: never;
@@ -70,8 +70,7 @@ export interface paths {
     };
     /**
      * Get Fyers Status
-     * @description Check if Fyers is currently connected by verifying access token file exists.
-     *     Cached for 30s to avoid repeated file I/O.
+     * @description Whether a Fyers access token is saved. Cached for 30s to avoid repeated file I/O.
      */
     get: operations["get_fyers_status_api_auth_fyers_status_get"];
     put?: never;
@@ -93,8 +92,7 @@ export interface paths {
     put?: never;
     /**
      * Generate Token
-     * @description Exchange auth code for access token and save to file.
-     *     Uses credentials from environment variables (.env file).
+     * @description Exchange an auth code for an access token and save it.
      */
     post: operations["generate_token_api_auth_fyers_token_post"];
     delete?: never;
@@ -112,8 +110,7 @@ export interface paths {
     };
     /**
      * Get Fyers Auth Url
-     * @description Generate Fyers Login URL using credentials from environment variables.
-     *     Credentials should be set in .env file: CLIENT_ID, SECRET_KEY, REDIRECT_URI
+     * @description Generate the Fyers login URL from CLIENT_ID, SECRET_KEY and REDIRECT_URI in .env.
      */
     get: operations["get_fyers_auth_url_api_auth_fyers_url_get"];
     put?: never;

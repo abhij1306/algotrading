@@ -1,17 +1,23 @@
 """Fyers status after a token exchange: the 30s status cache must not hide a fresh login."""
 
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
-from app.routers import auth
-from app.services import fyers_client as fyers_client_module
+from app.main import app
+from app.services.fyers.auth_flow import FyersAuthService, FyersCredentials, get_fyers_auth
+from app.services.fyers.token_store import TokenStore
 
 
 class FakeSession:
     def __init__(self, **_kwargs: str) -> None:
         self.auth_code = ""
+
+    def generate_authcode(self) -> str:
+        return "https://login.example.test/"
 
     def set_token(self, auth_code: str) -> None:
         self.auth_code = auth_code
@@ -21,23 +27,25 @@ class FakeSession:
 
 
 @pytest.fixture
-def token_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    monkeypatch.setattr(auth, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(auth, "ACCESS_TOKEN_FILE", str(tmp_path / "access_token.json"))
-    monkeypatch.setattr(auth.fyersModel, "SessionModel", FakeSession)
-    monkeypatch.setattr(fyers_client_module, "reset_fyers_client", lambda: None)
-    monkeypatch.setenv("CLIENT_ID", "client")
-    monkeypatch.setenv("SECRET_KEY", "secret")
-    monkeypatch.setenv("REDIRECT_URI", "https://example.test/")
-    monkeypatch.setitem(auth._status_cache, "cached_at", 0)
-    return tmp_path
+def token_dir(tmp_path: Path) -> Generator[Path, None, None]:
+    service = FyersAuthService(
+        TokenStore(tmp_path / "access_token.json"),
+        session_factory=FakeSession,
+        credentials=lambda: FyersCredentials("client", "secret", "https://example.test/"),
+        on_token_change=lambda: None,
+        on_disconnect=lambda: None,
+    )
+    app.dependency_overrides[get_fyers_auth] = lambda: service
+    yield tmp_path
+    app.dependency_overrides.pop(get_fyers_auth, None)
 
 
 def test_status_reads_connected_right_after_token_exchange(token_dir: Path) -> None:
+    api = TestClient(app)
     # A status check before login caches "disconnected" for 30s.
-    assert auth.get_fyers_status() == {"connected": False, "user_id": None}
+    assert api.get("/api/auth/fyers/status").json() == {"connected": False, "user_id": None}
 
-    auth.generate_token(auth.AuthCodeRequest(auth_code="abc123"))
+    api.post("/api/auth/fyers/token", json={"auth_code": "abc123"})
 
     assert (token_dir / "access_token.json").exists()
-    assert auth.get_fyers_status() == {"connected": True, "user_id": "XA1234"}
+    assert api.get("/api/auth/fyers/status").json() == {"connected": True, "user_id": "XA1234"}

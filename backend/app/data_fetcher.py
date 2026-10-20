@@ -8,7 +8,7 @@ import time
 
 import pandas as pd
 
-from .config import config
+from .config import fyers_available
 from .services.fyers_client import get_fyers_client
 from .services.symbol_master import symbol_master
 
@@ -29,7 +29,7 @@ def fetch_fyers_quotes(symbols: list) -> dict:
     Returns:
         Dictionary of symbol -> quote data
     """
-    if not config.HAS_FYERS:
+    if not fyers_available():
         logger.debug("[fetch_fyers_quotes] Fyers not configured")
         return {}
 
@@ -112,7 +112,7 @@ def fetch_fyers_preopen(symbol: str) -> dict | None:
     Returns:
         Dictionary with pre-open data or None
     """
-    if not config.HAS_FYERS:
+    if not fyers_available():
         return None
 
     try:
@@ -179,7 +179,7 @@ def get_enhanced_quote(symbol: str, hist_data: pd.DataFrame) -> dict:
         result["low"] = float(latest["low"])
 
     # Try to get real-time quote from Fyers
-    if config.HAS_FYERS:
+    if fyers_available():
         try:
             fyers_quotes = fetch_fyers_quotes([symbol])
             if symbol in fyers_quotes:
