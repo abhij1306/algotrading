@@ -78,7 +78,7 @@ Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_
 - [x] LIVE modify and cancel stop returning `str(e)`.
 - [x] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S). `fake_broker` (`tests/fakes/broker.py`) and `freeze_market(True | False | instant)`; CI passes `--cov` explicitly.
 - [x] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user. (#67) A LIVE place that only warns needs `risk_override_reason` and returns `warnings`; `coerce_quantity` rejects fractions; the daily loss is keyed to `LIVE_ACCOUNT_USER_ID` until task 5. Also: `/api/trading/positions` answers 503 `BROKER_UNAVAILABLE` on a failed sync, and `/positions/book` marks live rows `stale`.
-- [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
+- [x] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S). (#76)
 - [ ] 4. An OrderIntent with enums (S).
 - [ ] 5. A `current_user_id` dependency (S). Remove the hard-coded default, terminal and dev users, and add a backfill.
   - `POST /api/trading/order` still answers 401 without `x-user-id` (header or `?x_user_id=`) outside DEV_MODE, so the terminal's `usePlaceOrder` sends `x_user_id=default_user` (one constant in `lib/queries/terminal.ts`). Drop it with this task.
