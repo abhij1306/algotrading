@@ -3,13 +3,12 @@ Unified Fyers Client - Robust and Singleton
 Handles authentication, token management, and data fetching.
 """
 
-import os
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any, Self
 
 from ..utils.logger import get_logger
-from .fyers.token_store import TokenStoreError, token_store
+from .fyers.token_store import TokenStoreError, fyers_client_disabled, token_store
 from .symbol_master import symbol_master
 
 # Lazy import fyers_apiv3 to speed up startup
@@ -78,7 +77,7 @@ class FyersClient:
         self._missing_credentials_logged = False
 
         # Skip initialization if DEV_MODE is set
-        if os.getenv("DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        if fyers_client_disabled():
             logger.info("[DEV_MODE] Skipping Fyers client initialization")
             self._initialized = True
             return

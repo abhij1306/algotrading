@@ -27,11 +27,20 @@ from pathlib import Path
 from typing import Any
 
 from app.paths import FYERS_TOKEN_PATH
+from app.utils.env_loader import env_flag
 from app.utils.market_hours import IST
 
 logger = logging.getLogger(__name__)
 
 _POSIX_FILE_MODE = 0o600
+
+
+def fyers_client_disabled() -> bool:
+    """DEV_MODE: FyersClient skips loading the token, so no Fyers call can be made.
+
+    The one check shared by FyersClient and config.fyers_available().
+    """
+    return env_flag("DEV_MODE")
 
 
 class TokenStoreError(Exception):

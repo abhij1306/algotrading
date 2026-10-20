@@ -371,10 +371,26 @@ def test_client_drops_the_old_token_when_the_file_turns_corrupt(
     assert (client.access_token, client.fyers) == (None, None)
 
 
+@pytest.mark.parametrize("flag", ["true", "1", " Yes ", "ON"])
+def test_fyers_is_unavailable_in_dev_mode_even_with_a_usable_token(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    # FyersClient skips loading the token under DEV_MODE, so quotes must not pick Fyers.
+    monkeypatch.setattr(config_module, "token_store", store)
+    store.save(REPLY, client_id="CLIENT-100")
+    monkeypatch.setenv("DEV_MODE", flag)
+
+    assert config_module.fyers_available() is False
+
+    monkeypatch.setenv("DEV_MODE", "false")
+    assert config_module.fyers_available() is True
+
+
 def test_fyers_available_reads_the_store_at_call_time(
     store: TokenStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config_module, "token_store", store)
+    monkeypatch.delenv("DEV_MODE", raising=False)
     monkeypatch.delenv("FYERS_CLIENT_ID", raising=False)
     monkeypatch.delenv("FYERS_ACCESS_TOKEN", raising=False)
     assert config_module.fyers_available() is False

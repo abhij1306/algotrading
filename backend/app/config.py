@@ -5,7 +5,7 @@ Configuration module for loading environment variables and settings
 import logging
 import os
 
-from .services.fyers.token_store import TokenStoreError, token_store
+from .services.fyers.token_store import TokenStoreError, fyers_client_disabled, token_store
 from .utils.env_loader import load_dotenv
 
 load_dotenv()
@@ -18,8 +18,11 @@ def fyers_available() -> bool:
 
     True only for an unexpired saved login token with a client id: the Fyers client reads its
     credentials from the same TokenStore, so this never reports a source the client can't use.
-    Never raises: an unreadable token file is "no".
+    False under DEV_MODE, where FyersClient skips loading the token. Never raises: an
+    unreadable token file is "no".
     """
+    if fyers_client_disabled():
+        return False
     try:
         token = token_store.load()
     except TokenStoreError:
