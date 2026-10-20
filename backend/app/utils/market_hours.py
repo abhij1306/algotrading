@@ -1,18 +1,101 @@
 """
-Market Hours Utility for Backend
-Checks if NSE market is open (9:15 AM - 3:30 PM IST, Mon-Fri)
+NSE market hours: the one owner of the session times, the weekend rule and DEV_MODE.
+
+The cash session is 09:15:00-15:30:00 IST, Monday to Friday, both ends inclusive: 15:30:00
+exactly still counts as open, any later instant is closed. `DEV_MODE=true` treats the market
+as always open. NSE trading holidays are not modelled yet: `MarketHoursPolicy.holidays` is
+empty by default, and a caller with a holiday calendar can pass one in.
 """
+
+from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime, time
+from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .clock import SYSTEM_CLOCK, Clock, require_aware
+
 IST = ZoneInfo("Asia/Kolkata")
+SESSION_OPEN = time(9, 15)
+SESSION_CLOSE = time(15, 30)
 
 
-def is_market_open() -> tuple[bool, str]:
+class MarketPhase(StrEnum):
+    DEV = "dev"
+    WEEKEND = "weekend"
+    HOLIDAY = "holiday"
+    PRE_MARKET = "pre_market"
+    OPEN = "open"
+    POST_MARKET = "post_market"
+
+    @property
+    def is_open(self) -> bool:
+        return self in (MarketPhase.OPEN, MarketPhase.DEV)
+
+
+def dev_mode_enabled() -> bool:
+    """True when the DEV_MODE env var is "true" (any case): market hours are bypassed."""
+    return os.getenv("DEV_MODE", "False").lower() == "true"
+
+
+@dataclass(frozen=True)
+class MarketHoursPolicy:
+    """When the NSE cash market is open.
+
+    `clock` supplies "now" (inject a `FixedClock` in tests). `holidays` holds IST dates on
+    which the exchange is closed; it defaults to empty because the repo has no holiday
+    calendar yet, so a weekday holiday currently reads as a normal session.
+    """
+
+    clock: Clock = SYSTEM_CLOCK
+    holidays: frozenset[date] = field(default_factory=frozenset)
+
+    def now_ist(self) -> datetime:
+        return self.clock.now().astimezone(IST)
+
+    def phase(self, at: datetime | None = None, *, dev_mode: bool | None = None) -> MarketPhase:
+        """The market phase at `at` (default: the clock's now).
+
+        `dev_mode=None` reads the DEV_MODE env var on every call; pass a bool to use a
+        setting the caller already read.
+        """
+        if dev_mode is None:
+            dev_mode = dev_mode_enabled()
+        if dev_mode:
+            return MarketPhase.DEV
+        now = self.now_ist() if at is None else require_aware(at).astimezone(IST)
+        if now.weekday() >= 5:  # Saturday or Sunday
+            return MarketPhase.WEEKEND
+        if now.date() in self.holidays:
+            return MarketPhase.HOLIDAY
+        current = now.time()
+        if current < SESSION_OPEN:
+            return MarketPhase.PRE_MARKET
+        if current > SESSION_CLOSE:
+            return MarketPhase.POST_MARKET
+        return MarketPhase.OPEN
+
+    def is_open(self, at: datetime | None = None, *, dev_mode: bool | None = None) -> bool:
+        return self.phase(at, dev_mode=dev_mode).is_open
+
+
+DEFAULT_POLICY = MarketHoursPolicy()
+
+_PHASE_MESSAGES: dict[MarketPhase, str] = {
+    MarketPhase.DEV: "Market open (DEV_MODE)",
+    MarketPhase.WEEKEND: "Market closed (Weekend)",
+    MarketPhase.HOLIDAY: "Market closed (Holiday)",
+    MarketPhase.PRE_MARKET: "Market closed (Pre-market)",
+    MarketPhase.POST_MARKET: "Market closed (Post-market)",
+    MarketPhase.OPEN: "Market open",
+}
+
+
+def is_market_open(policy: MarketHoursPolicy = DEFAULT_POLICY) -> tuple[bool, str]:
     """
     Check if NSE market is currently open.
     Supports DEV_MODE override.
@@ -20,47 +103,27 @@ def is_market_open() -> tuple[bool, str]:
     Returns:
         Tuple[bool, str]: (is_open, message)
     """
-    # Check for DEV_MODE override
-    dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
-    if dev_mode:
-        return True, "Market open (DEV_MODE)"
-
-    now = datetime.now(IST)
-
-    # Check if weekend
-    if now.weekday() >= 5:  # Saturday or Sunday
-        return False, "Market closed (Weekend)"
-
-    # Check market hours: 9:15 AM to 3:30 PM IST
-    market_open_time = time(9, 15)
-    market_close_time = time(15, 30)
-    current_time = now.time()
-
-    if current_time < market_open_time:
-        return False, "Market closed (Pre-market)"
-    elif current_time > market_close_time:
-        return False, "Market closed (Post-market)"
-    else:
-        return True, "Market open"
+    phase = policy.phase()
+    return phase.is_open, _PHASE_MESSAGES[phase]
 
 
-def get_market_status() -> dict:
+def get_market_status(policy: MarketHoursPolicy = DEFAULT_POLICY) -> dict:
     """
     Get detailed market status information.
 
     Returns:
         dict with is_open, message, current_time_ist
     """
-    is_open, message = is_market_open()
-    now = datetime.now(IST)
+    now = policy.now_ist()
+    phase = policy.phase(now)
 
     return {
-        "is_open": is_open,
-        "message": message,
+        "is_open": phase.is_open,
+        "message": _PHASE_MESSAGES[phase],
         "current_time_ist": now.strftime("%H:%M:%S IST"),
         "current_day": now.strftime("A"),
-        "market_open_time": "09:15 IST",
-        "market_close_time": "15:30 IST",
+        "market_open_time": f"{SESSION_OPEN:%H:%M} IST",
+        "market_close_time": f"{SESSION_CLOSE:%H:%M} IST",
     }
 
 

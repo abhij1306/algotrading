@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import os
 import threading
 import time
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
+from ..utils.clock import SYSTEM_CLOCK, Clock
 from ..utils.helpers import safe_float
 from ..utils.logger import log_exception_throttled
+from ..utils.market_hours import MarketHoursPolicy, MarketPhase, dev_mode_enabled
 from ..utils.runtime_metrics import runtime_metrics
 from ..utils.ws_manager import manager
+from .live.ticks import TickPayload, normalize_tick
 from .subscription_registry import API_OWNER, SubscriptionRegistry
 from .symbol_master import symbol_master
 
@@ -22,12 +23,15 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from .fyers_websocket import FyersWebSocketService
 
-TickPayload = dict[str, Any]
-
-# IST Timezone
-IST = ZoneInfo("Asia/Kolkata")
-MARKET_OPEN_TIME = datetime.time(9, 15)
-MARKET_CLOSE_TIME = datetime.time(15, 30)
+# _market_status shown by get_status() for each market phase.
+MARKET_STATUS_BY_PHASE: dict[MarketPhase, str] = {
+    MarketPhase.DEV: "OPEN (DEV)",
+    MarketPhase.WEEKEND: "CLOSED_WEEKEND",
+    MarketPhase.HOLIDAY: "CLOSED_HOLIDAY",
+    MarketPhase.PRE_MARKET: "CLOSED_OFF_HOURS",
+    MarketPhase.OPEN: "OPEN",
+    MarketPhase.POST_MARKET: "CLOSED_OFF_HOURS",
+}
 
 # Provider connect runner tuning.
 WS_MAX_RETRIES = 10
@@ -59,10 +63,10 @@ def tick_time(tick: TickPayload) -> float:
 class LiveMarketService:
     """
     Orchestrates live market data flow.
-    Enforces Market Hours (9:15 - 15:30 IST).
+    Enforces market hours (see app.utils.market_hours).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Clock = SYSTEM_CLOCK) -> None:
         self.ws_service: FyersWebSocketService | None = None
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
@@ -70,7 +74,9 @@ class LiveMarketService:
         self.loop = None
         self.broadcast_task = None
         self.monitor_task = None
-        self.dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+        # Read once at construction; tests flip it directly.
+        self.dev_mode = dev_mode_enabled()
+        self.market_hours = MarketHoursPolicy(clock=clock)
         # Connection state tracking
         self.ws_connected = False
         self._is_connecting = False
@@ -216,21 +222,10 @@ class LiveMarketService:
         logger.error(f"[ERROR] WebSocket connection failed: {error}")
 
     def is_market_open(self) -> bool:
-        """Check if current IST time is within market hours"""
-        if self.dev_mode:
-            self._market_status = "OPEN (DEV)"
-            return True
-
-        now = datetime.datetime.now(IST)
-        # Weekends check
-        if now.weekday() >= 5:  # Saturday or Sunday
-            self._market_status = "CLOSED_WEEKEND"
-            return False
-
-        current_time = now.time()
-        is_open = MARKET_OPEN_TIME <= current_time <= MARKET_CLOSE_TIME
-        self._market_status = "OPEN" if is_open else "CLOSED_OFF_HOURS"
-        return is_open
+        """Whether the market is open now (DEV_MODE counts as open); updates _market_status."""
+        phase = self.market_hours.phase(dev_mode=self.dev_mode)
+        self._market_status = MARKET_STATUS_BY_PHASE[phase]
+        return phase.is_open
 
     async def _update_buffer(self, tick: TickPayload) -> None:
         """Async method to update buffer on main loop"""
@@ -334,7 +329,7 @@ class LiveMarketService:
                 return
             # Convert symbol to DB_FORMAT before buffering
             db_symbol = symbol_master.to_db(fyers_symbol)
-            tick_db = self._normalize_tick(tick, db_symbol)
+            tick_db = normalize_tick(tick, db_symbol)
 
             # Update latest values cache
             self.latest_values[db_symbol] = tick_db
@@ -346,32 +341,6 @@ class LiveMarketService:
             log_exception_throttled(
                 logger, "live_market.tick", "Error processing incoming tick: %s", e
             )
-
-    @staticmethod
-    def _normalize_tick(tick: TickPayload, db_symbol: str) -> TickPayload:
-        """Copy of a Fyers tick keyed by DB symbol, with change_pct, change and volume."""
-        tick_db = tick.copy()
-        tick_db["symbol"] = db_symbol
-
-        # Fyers sends 'chp' (change percent); otherwise derive it from the previous close.
-        if "chp" in tick_db:
-            tick_db["change_pct"] = tick_db["chp"]
-        elif "ltp" in tick_db and "prev_close_price" in tick_db:
-            prev_close = tick_db["prev_close_price"]
-            if prev_close and prev_close > 0:
-                tick_db["change_pct"] = ((tick_db["ltp"] - prev_close) / prev_close) * 100
-
-        # Normalize absolute change for consumers expecting `change`
-        if "ch" in tick_db and "change" not in tick_db:
-            tick_db["change"] = tick_db["ch"]
-
-        # Ensure volume is passed through (Fyers sends 'volume' or 'v')
-        if "volume" not in tick_db:
-            if "v" in tick_db:
-                tick_db["volume"] = tick_db["v"]
-            elif "vol_traded_today" in tick_db:
-                tick_db["volume"] = tick_db["vol_traded_today"]
-        return tick_db
 
     @staticmethod
     def _validate_fyers_token() -> bool:
