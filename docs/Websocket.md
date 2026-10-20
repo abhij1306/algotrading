@@ -71,7 +71,7 @@ Malformed `ping`/`pong` and invalid control frames also use the same `error` env
 ## Market-Hours Behavior
 Implemented in `backend/app/services/live_market_service.py`:
 - IST trading window: 09:15 to 15:30, weekdays only
-- Off-hours: skip provider connect and cleanup dropped sessions
+- Off-hours: skip provider connect and cleanup dropped sessions; the monitor's off-hours cleanup also stops a connect runner that is still retrying, without blocking the next session's automatic connect
 - `DEV_MODE=true`: forces market-open behavior for development
 - Current startup defaults set `DEV_MODE=false`
 
@@ -80,7 +80,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 - `ws_manager.connect()` is handshake-safe and returns `False` if client disappears early
 - `ws_manager.broadcast()` removes dead sockets on `WebSocketDisconnect`/`RuntimeError`
 - Live service queues pending subscriptions when provider WS is not yet connected
-- Provider connect runs in a thread (`_run_provider_connect`): after `connect()` it waits up to 15s for the socket to report connected, counts a timeout as a failed attempt, and retries with exponential backoff (5s doubling to 60s, `max_retries=10`). An explicit disconnect wakes and stops the runner immediately
+- Provider connect runs in a thread (`_run_provider_connect`): after `connect()` it waits up to 15s for the socket to report connected, counts a timeout as a failed attempt, and retries with exponential backoff (5s doubling to 60s, `max_retries=10`). An explicit disconnect wakes and stops the runner immediately. `connect()` returns `already_connected` when a connect is in progress or the provider socket is already up
 - The SDK's own `reconnect=True` reconnects are covered too: `FyersWebSocketService.on_open_handler` (wired to the SDK `on_connect` callback) calls `LiveMarketService.on_provider_open()`, which waits for the socket and then calls `on_ws_connected()`. The runner skips its own replay when that hook already ran for the attempt
 - On every provider (re)connect, `LiveMarketService.on_ws_connected()` replays the aggregate symbol set of all connected clients, HTTP-API subscriptions and any queued symbols
 - `_monitor_loop` and `_flush_loop` catch and log unexpected errors per iteration (then pause 1s) instead of dying; `CancelledError` still propagates
@@ -123,6 +123,12 @@ Current metrics focus:
 - batch sizes and enqueued message counts
 - provider connect/reconnect attempts
 - flush/broadcast timings
+- `logging.suppressed_tracebacks.<site>`: hot-path errors (tick handling, Fyers message handler, connect retries) log a full traceback the first time and then at most once per 60s per site; the skipped tracebacks are counted here
+
+Live prices for paper fills and the market dashboard only use fresh ticks
+(`LiveMarketService.get_fresh_tick`): market open (or `DEV_MODE`) and exchange time within
+`PAPER_TICK_MAX_AGE_SEC` (default 60s). The tick cache keeps old ticks after a disconnect
+or market close, so a cached tick alone is not a live price.
 
 These metrics are intentionally lightweight for a single-user local app. They are meant
 to improve debugging and future development, not to introduce a full telemetry stack.
