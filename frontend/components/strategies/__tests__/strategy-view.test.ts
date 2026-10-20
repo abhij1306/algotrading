@@ -112,6 +112,8 @@ describe("parseCapital", () => {
     [" 2500.5 ", 2500.5],
     ["", null],
     ["abc", null],
+    ["0", null],
+    ["-5000", null],
   ])("reads %j as %s", (text, expected) => {
     expect(parseCapital(text)).toBe(expected);
   });

@@ -19,7 +19,7 @@ describe("buildEquityRows", () => {
 
   it("keeps every n-th point when the curve is longer than the limit", () => {
     const equity = Array.from({ length: 10 }, (_, i) => ({ date: `d${i}`, equity: i }));
-    expect(buildEquityRows(equity, [], 3).map((row) => row.date)).toEqual(["d0", "d3", "d6", "d9"]);
+    expect(buildEquityRows(equity, [], 3).map((row) => row.date)).toEqual(["d0", "d4", "d9"]);
   });
 
   it("ends on the curve's final point when thinning skips it", () => {
@@ -28,6 +28,11 @@ describe("buildEquityRows", () => {
     expect(rows).toHaveLength(200);
     expect(rows.at(-1)).toEqual({ date: "d399", equity: 399, benchmark: null });
     expect(rows.slice(0, 3).map((row) => row.date)).toEqual(["d0", "d2", "d4"]);
+  });
+
+  it("thins a curve just under twice the limit down to the limit", () => {
+    const equity = Array.from({ length: 399 }, (_, i) => ({ date: `d${i}`, equity: i }));
+    expect(buildEquityRows(equity, [], 200)).toHaveLength(200);
   });
 
   it("keeps every point at or under the limit", () => {

@@ -54,10 +54,10 @@ export function splitSignals(rows: ReadonlyArray<ScanRow>): {
   return { forming, breakouts };
 }
 
-/** The capital typed into the backtest form, or null when it is not a finite number. */
+/** The capital typed into the backtest form, or null unless it is a number above zero. */
 export function parseCapital(text: string): number | null {
   const parsed = Number.parseFloat(text.trim());
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 type MetricValue = NonNullable<StrategyBacktestResult["result"]>["metrics"][string] | undefined;
