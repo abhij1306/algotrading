@@ -164,13 +164,13 @@ def main() -> int:
     try:
         backend_proc = None
         if launch_backend:
-            print(f"Launching backend on http://{HOST}:{backend_port}")
+            print(f"Launching backend on {LOCAL_ORIGIN}:{backend_port}")
             backend_proc = subprocess.Popen(
                 [str(python), "backend/start_server.py"], cwd=root, env=backend_env
             )
             procs.append(backend_proc)
 
-        print(f"Launching frontend on http://{HOST}:{frontend_port}")
+        print(f"Launching frontend on {LOCAL_ORIGIN}:{frontend_port}")
         frontend_proc = subprocess.Popen(
             [pnpm, "dev"], cwd=root / "frontend", env=frontend_env
         )
@@ -182,7 +182,7 @@ def main() -> int:
 
         url = f"{LOCAL_ORIGIN}:{frontend_port}"
         print(
-            f"\nSmartTrader is running.\n  Backend:  http://{HOST}:{backend_port}\n  Frontend: {url}"
+            f"\nSmartTrader is running.\n  Backend:  {LOCAL_ORIGIN}:{backend_port}\n  Frontend: {url}"
         )
         print("Press Ctrl+C to stop.")
         if not args.no_browser:
