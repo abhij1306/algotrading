@@ -282,49 +282,6 @@ class UniverseServiceImpl:
             "wired to an authoritative source."
         )
 
-    def get_custom_universe(self, universe_id: int) -> UniverseResult:
-        """
-        Get a custom universe by its ID.
-
-        Args:
-            universe_id: The database ID of the custom universe
-
-        Returns:
-            UniverseResult with the custom universe constituents
-        """
-        from sqlalchemy.orm import Session
-
-        from ..database import SessionLocal
-        from ..models.universe import CustomUniverseMember
-
-        db: Session = SessionLocal()
-        try:
-            members = (
-                db.query(CustomUniverseMember)
-                .filter(CustomUniverseMember.universe_id == universe_id)
-                .all()
-            )
-
-            constituents = [
-                UniverseConstituent(
-                    symbol=m.symbol,
-                    company_name=m.symbol,  # Use symbol as name if not available
-                    industry="",
-                    index_code=None,
-                )
-                for m in members
-            ]
-
-            return UniverseResult(
-                index_code=f"custom_{universe_id}",
-                lookup_date=date.today(),
-                constituents=constituents,
-                source="custom_universe",
-                is_historical=False,
-            )
-        finally:
-            db.close()
-
 
 class UniverseService:
     """
@@ -370,10 +327,6 @@ class UniverseService:
     ) -> dict[str, list[dict[str, Any]]]:
         """Get changes to an index between two dates."""
         return self._impl.get_universe_changes(index_code, start_date, end_date)
-
-    def get_custom_universe(self, universe_id: int) -> UniverseResult:
-        """Get a custom universe by its ID."""
-        return self._impl.get_custom_universe(universe_id)
 
 
 # Singleton instance

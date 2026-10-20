@@ -105,7 +105,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [ ] 6. A CI grep that blocks any new `SessionLocal()` (S).
 
 ### Lane 5: universe and symbols
-- [ ] 3. Move the custom universe to `services/universe/custom.py` and delete `engines/` (M).
+- [x] 3. Move the custom universe to `services/universe/custom.py` and delete `engines/` (M).
 - [ ] 4. Put the loader and sync under the universe package, with a `repository.py` (S-M).
 
 ### Lane 6: VCP and backtest
