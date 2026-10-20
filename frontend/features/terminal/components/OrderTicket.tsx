@@ -11,7 +11,9 @@ function NumberField({
   placeholder,
   value,
   min,
+  step,
   disabled,
+  error,
   onChange,
 }: Readonly<{
   id: string;
@@ -19,9 +21,12 @@ function NumberField({
   placeholder: string;
   value: number;
   min?: number;
+  step?: number;
   disabled?: boolean;
+  error?: string | null;
   onChange: (raw: string) => void;
 }>) {
+  const errorId = `${id}-error`;
   return (
     <div>
       <label htmlFor={id} className="text-xs text-foreground-muted mb-1 block">
@@ -31,12 +36,20 @@ function NumberField({
         id={id}
         type="number"
         min={min}
+        step={step}
         value={value}
         disabled={disabled}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         className="h-8 text-sm"
       />
+      {error && (
+        <div id={errorId} className="mt-1 text-xs text-loss">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -69,7 +82,9 @@ function OrderFields({
           label="Lots"
           placeholder="Lots"
           min={1}
+          step={1}
           value={ticket.optionLots}
+          error={ticket.sizeError}
           onChange={(raw) => ticket.setOptionLots(atLeastOne(raw))}
         />
       ) : (
@@ -78,7 +93,9 @@ function OrderFields({
           label="Quantity"
           placeholder="Qty"
           min={1}
+          step={1}
           value={ticket.orderQty}
+          error={ticket.sizeError}
           onChange={(raw) => ticket.setOrderQty(atLeastOne(raw))}
         />
       )}
@@ -153,7 +170,7 @@ export function OrderTicket({
         <Button
           variant="profit"
           className="flex-1 h-8 text-sm"
-          disabled={ticket.isSubmitting}
+          disabled={ticket.isSubmitting || ticket.sizeError !== null}
           onClick={() => ticket.placeOrder("BUY")}
         >
           Buy
@@ -161,7 +178,7 @@ export function OrderTicket({
         <Button
           variant="loss"
           className="flex-1 h-8 text-sm"
-          disabled={ticket.isSubmitting}
+          disabled={ticket.isSubmitting || ticket.sizeError !== null}
           onClick={() => ticket.placeOrder("SELL")}
         >
           Sell

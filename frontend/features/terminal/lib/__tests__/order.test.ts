@@ -8,6 +8,7 @@ import {
   orderDraft,
   orderInputError,
   orderResultMessage,
+  quantityError,
   type TicketInput,
 } from "../order";
 import type { OrderType } from "../order-defaults";
@@ -95,8 +96,47 @@ describe("orderInputError", () => {
       ticket({ orderType: "SL-M", price: 0, trigger: 0 }),
       "Enter a trigger price greater than 0",
     ],
+    [
+      "a fractional quantity",
+      ticket({ quantity: 2.5 }),
+      "Quantity must be a whole number greater than 0",
+    ],
+    [
+      "a fractional number of lots",
+      ticket({ symbol: "BANKNIFTY26OCT50000CE", quantity: 45, lots: { count: 1.5, size: 30 } }),
+      "Lots must be a whole number (lot size 30)",
+    ],
   ])("%s", (_name, input, expected) => {
     expect(orderInputError(input)).toBe(expected);
+  });
+});
+
+describe("quantityError", () => {
+  it.each([
+    ["a whole quantity", 3, null, null],
+    ["a fractional quantity", 1.5, null, "Quantity must be a whole number greater than 0"],
+    ["a negative quantity", -2, null, "Quantity must be a whole number greater than 0"],
+    ["whole lots", 150, { count: 2, size: 75 }, null],
+    [
+      "fractional lots",
+      112.5,
+      { count: 1.5, size: 75 },
+      "Lots must be a whole number (lot size 75)",
+    ],
+    [
+      "fractional lots with a whole quantity",
+      45,
+      { count: 1.5, size: 30 },
+      "Lots must be a whole number (lot size 30)",
+    ],
+    [
+      "a quantity that is not the lots",
+      100,
+      { count: 1, size: 75 },
+      "Lots must be a whole number (lot size 75)",
+    ],
+  ] as const)("%s", (_name, quantity, lots, expected) => {
+    expect(quantityError(quantity, lots)).toBe(expected);
   });
 });
 

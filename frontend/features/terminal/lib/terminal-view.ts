@@ -1,5 +1,10 @@
 import { formatSignedPercent, roundToDecimals } from "@/lib/format";
-import type { PositionItem, SearchResultItem, WatchlistItem } from "@/lib/queries/terminal";
+import type {
+  OptionsBoard,
+  PositionItem,
+  SearchResultItem,
+  WatchlistItem,
+} from "@/lib/queries/terminal";
 import type { Quote } from "@/lib/realtime/quote-store";
 import { inferInstrumentType, optionLotSize } from "./order";
 
@@ -109,6 +114,63 @@ export function tradeSymbolFor(
 /** Every distinct, non-empty symbol on screen. */
 export function screenSymbols(groups: readonly (readonly string[])[]): string[] {
   return Array.from(new Set(groups.flat().filter(Boolean)));
+}
+
+/** An option picked on the chain, tagged with the chain (underlying and expiry) it was on. */
+export interface OptionPick {
+  chain: string;
+  symbol: string;
+}
+
+/** The chain the selectors name; an empty expiry is the backend's nearest one. */
+export function optionChainKey(underlying: string, expiry: string): string {
+  return `${underlying}|${expiry}`;
+}
+
+/**
+ * The picked option while it is a contract on the chain shown for the current selectors, else
+ * "". A pick from another underlying or expiry, or one no longer listed, is never traded.
+ */
+export function shownOptionSymbol(
+  pick: OptionPick | null,
+  chain: string,
+  board: Pick<OptionsBoard, "strikes"> | null,
+): string {
+  if (!pick || pick.chain !== chain || !board) return "";
+  const listed = board.strikes.some(
+    (row) => row.ce?.symbol === pick.symbol || row.pe?.symbol === pick.symbol,
+  );
+  return listed ? pick.symbol : "";
+}
+
+export interface SearchView {
+  /** Enough text is typed to search. */
+  active: boolean;
+  /** Results for exactly the typed text; empty while that search is pending. */
+  results: SearchResultItem[];
+  loading: boolean;
+}
+
+const NO_RESULTS: SearchResultItem[] = [];
+
+/**
+ * What the search box shows. Results answer `searchTerm`, the debounced text, so until it catches
+ * up with the typed text and its own answer (not a placeholder) is in, they are withheld and the
+ * search reads as pending: a result for an earlier query is never offered.
+ */
+export function searchView(input: {
+  text: string;
+  searchTerm: string;
+  data: SearchResultItem[] | undefined;
+  isPlaceholderData: boolean;
+  isFetching: boolean;
+}): SearchView {
+  const query = input.text.trim();
+  const active = query.length >= 2;
+  if (!active) return { active, results: NO_RESULTS, loading: false };
+  const current = input.searchTerm === query && !input.isPlaceholderData;
+  if (!current || input.isFetching) return { active, results: NO_RESULTS, loading: true };
+  return { active, results: input.data ?? NO_RESULTS, loading: false };
 }
 
 /** At least 1, as the quantity and lots inputs always were. */

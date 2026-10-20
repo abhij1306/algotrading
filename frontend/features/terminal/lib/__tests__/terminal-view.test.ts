@@ -7,7 +7,10 @@ import {
   getChangeText,
   getChangeTone,
   listWithSelected,
+  optionChainKey,
   screenSymbols,
+  searchView,
+  shownOptionSymbol,
   selectedSymbolFor,
   squareMessage,
   summarizePositions,
@@ -276,5 +279,78 @@ describe("squareMessage", () => {
     ],
   ])("%o unconfirmed=%s", (row, unconfirmed, expected) => {
     expect(squareMessage(row, { unconfirmed, message: "broker timeout" })).toBe(expected);
+  });
+});
+
+describe("shownOptionSymbol", () => {
+  const leg = (symbol: string) => ({ symbol, ltp: 1, oi: 1, volume: 1, change_pct: 0 });
+  const niftyBoard = {
+    strikes: [{ strike: 25000, ce: leg("NIFTY26OCT25000CE"), pe: leg("NIFTY26OCT25000PE") }],
+  };
+  const nifty = optionChainKey("NIFTY", "");
+
+  it.each([
+    [
+      "a CE on the shown chain",
+      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
+      nifty,
+      "NIFTY26OCT25000CE",
+    ],
+    [
+      "a PE on the shown chain",
+      { chain: nifty, symbol: "NIFTY26OCT25000PE" },
+      nifty,
+      "NIFTY26OCT25000PE",
+    ],
+    ["no pick", null, nifty, ""],
+    [
+      "a pick from before the underlying changed",
+      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
+      optionChainKey("BANKNIFTY", ""),
+      "",
+    ],
+    [
+      "a pick from before the expiry changed",
+      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
+      optionChainKey("NIFTY", "2026-11-03"),
+      "",
+    ],
+    ["a contract no longer on the board", { chain: nifty, symbol: "NIFTY26OCT24000CE" }, nifty, ""],
+  ])("%s", (_name, pick, chain, expected) => {
+    expect(shownOptionSymbol(pick, chain, niftyBoard)).toBe(expected);
+  });
+
+  it("trades nothing while no board is shown", () => {
+    expect(shownOptionSymbol({ chain: nifty, symbol: "NIFTY26OCT25000CE" }, nifty, null)).toBe("");
+  });
+});
+
+describe("searchView", () => {
+  const sbin = [{ symbol: "SBIN", name: "State Bank" }];
+  const settled = { isPlaceholderData: false, isFetching: false };
+
+  it.each([
+    [
+      "results for exactly the typed text",
+      { text: " SB ", searchTerm: "SB", data: sbin, ...settled },
+      { active: true, results: sbin, loading: false },
+    ],
+    [
+      "nothing while the debounce has not caught up",
+      { text: "INF", searchTerm: "SB", data: sbin, ...settled },
+      { active: true, results: [], loading: true },
+    ],
+    [
+      "nothing while the previous query's results stand in",
+      { text: "INF", searchTerm: "INF", data: sbin, isPlaceholderData: true, isFetching: true },
+      { active: true, results: [], loading: true },
+    ],
+    [
+      "nothing under two characters",
+      { text: "S", searchTerm: "SB", data: sbin, ...settled },
+      { active: false, results: [], loading: false },
+    ],
+  ])("%s", (_name, input, expected) => {
+    expect(searchView(input)).toEqual(expected);
   });
 });

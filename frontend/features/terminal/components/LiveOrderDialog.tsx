@@ -1,8 +1,16 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui";
 import { useRiskCheck } from "@/lib/queries/terminal";
 import { liveOrderRows, riskCheckBody, riskPanelText } from "../lib/live-order";
 import type { OrderDraft } from "../lib/order";
+
+let dialogOpenings = 0;
+
+/** A new id for each time the dialog opens. */
+function nextOpenId(): number {
+  dialogOpenings += 1;
+  return dialogOpenings;
+}
 
 /**
  * The backend's risk check for this order, run when the dialog opens; Confirm waits for it so
@@ -50,7 +58,9 @@ export function LiveOrderDialog({
     cancelRef.current?.focus();
   };
   const { side, symbol } = draft.body;
-  const check = useRiskCheck(riskCheckBody(draft));
+  // One id per opening: the risk check is never an earlier opening's cached answer.
+  const [openId] = useState(nextOpenId);
+  const check = useRiskCheck(riskCheckBody(draft), openId);
 
   return (
     <dialog

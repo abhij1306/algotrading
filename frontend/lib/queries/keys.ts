@@ -34,7 +34,8 @@ export const queryKeys = {
     optionsBoard: (params: { underlying: string; expiry: string }) =>
       ["terminal", "options-board", params] as const,
     positions: () => ["terminal", "positions"] as const,
-    riskCheck: (order: object) => ["terminal", "risk-check", order] as const,
+    riskCheck: (order: object, openId: number) =>
+      ["terminal", "risk-check", order, openId] as const,
   },
   auth: {
     all: ["auth"] as const,

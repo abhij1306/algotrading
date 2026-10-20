@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
@@ -8,12 +8,26 @@ import { createQueryClient } from "@/lib/queries/query-client";
 vi.stubEnv("VITE_API_URL", "http://api.test");
 const { TerminalScreen: TerminalPage } = await import("../TerminalScreen");
 
+// Every symbol list the screen asks the quote store to stream, in render order.
+const quoteSubscriptions = vi.hoisted((): string[][] => []);
+
 vi.mock("@/lib/realtime/hooks", () => ({
   useConnectionStatus: () => "disconnected",
-  useQuotes: () => ({}),
+  useQuotes: (symbols: readonly string[]) => {
+    quoteSubscriptions.push([...symbols]);
+    return {};
+  },
 }));
 
 const ORDER_PATH = "/api/trading/order";
+const SEARCH_PATH = "/api/market/search";
+const WATCHLIST_PATH = "/api/market/watchlist";
+
+// Symbol search answers, by query text.
+const SEARCH_RESULTS: Record<string, { symbol: string; name: string }[]> = {
+  SB: [{ symbol: "SBIN", name: "State Bank" }],
+  INF: [{ symbol: "INFY", name: "Infosys" }],
+};
 
 const BOARD = {
   underlying: "NIFTY",
@@ -26,6 +40,20 @@ const BOARD = {
       strike: 25000,
       ce: { symbol: "NIFTY26OCT25000CE", ltp: 120, oi: 1000, volume: 50, change_pct: 1 },
       pe: { symbol: "NIFTY26OCT25000PE", ltp: 110, oi: 2000, volume: 25, change_pct: -1 },
+    },
+  ],
+};
+
+const BANKNIFTY_BOARD = {
+  ...BOARD,
+  underlying: "BANKNIFTY",
+  spot_price: 56020,
+  atm_strike: 56000,
+  strikes: [
+    {
+      strike: 56000,
+      ce: { symbol: "BANKNIFTY26OCT56000CE", ltp: 300, oi: 500, volume: 40, change_pct: 2 },
+      pe: { symbol: "BANKNIFTY26OCT56000PE", ltp: 280, oi: 600, volume: 30, change_pct: -2 },
     },
   ],
 };
@@ -99,13 +127,19 @@ function respond(url: string): Response {
     if (squareResult.status === "SUCCESS") paperPositions = [];
     return Response.json(squareResult);
   }
-  if (url.includes("/api/market/watchlist")) {
+  if (url.includes(WATCHLIST_PATH)) {
     // `change` is the absolute move; `changePercent` is what the terminal shows.
     return Response.json([
       { symbol: "SBIN", name: "State Bank", price: 800, change: 9.6, changePercent: 1.21 },
     ]);
   }
-  if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
+  if (url.includes("/api/terminal/options/board")) {
+    const underlying = new URL(url).searchParams.get("underlying");
+    return Response.json(underlying === "BANKNIFTY" ? BANKNIFTY_BOARD : BOARD);
+  }
+  if (url.includes(SEARCH_PATH)) {
+    return Response.json(SEARCH_RESULTS[new URL(url).searchParams.get("query") ?? ""] ?? []);
+  }
   if (url.includes("/api/trading/positions/book")) {
     return Response.json({
       live_positions: livePositions,
@@ -376,6 +410,42 @@ describe("terminal LIVE confirmation", () => {
 
     expect(await riskPanelText()).toBe("All risk checks passed.");
     expect(confirm).toBeEnabled();
+  });
+
+  it("checks risk afresh each time it opens, never showing an earlier answer", async () => {
+    const first = await openLiveStopOrder();
+    expect(await riskPanelText()).toBe("All risk checks passed.");
+    fireEvent.click(within(first).getByRole("button", { name: "Cancel" }));
+
+    riskResult = {
+      can_trade: true,
+      status: "WARNING",
+      message: "Large order",
+      code: "LARGE_ORDER",
+      details: { warnings: ["Large order value"] },
+    };
+    let release = () => {};
+    riskHold = new Promise((resolve) => {
+      release = resolve;
+    });
+    fireEvent.click(ticketButton("Sell"));
+    const reopened = await screen.findByRole("dialog", { name: "Place LIVE SELL order for SBIN?" });
+
+    // The same order: the first opening's PASS must not stand in for this check.
+    const confirm = within(reopened).getByRole("button", { name: "Confirm LIVE SELL" });
+    expect(screen.getByRole("region", { name: "Risk check" }).textContent).toBe("Checking risk...");
+    expect(confirm).toBeDisabled();
+
+    release();
+
+    expect(await riskPanelText()).toBe(
+      "Risk warnings, overridden by your reason:Large order value",
+    );
+    expect(confirm).toBeEnabled();
+    const body =
+      '{"symbol":"SBIN","side":"SELL","quantity":4,"product":"INTRADAY","type":"SL","price":790,"instrument_type":"EQ"}';
+    expect(riskBodies()).toEqual([body, body]);
+    expect(orderBodies(calls)).toEqual([]);
   });
 
   it("says a failing order will be rejected", async () => {
@@ -808,5 +878,146 @@ describe("terminal data", () => {
     expect(screen.getByRole("button", { name: "Square" }).closest("tr")?.textContent).toBe(
       "SBINPAPERLONG10790.00800.00100.00100.00Square",
     );
+  });
+});
+
+describe("terminal stale selections", () => {
+  let calls: Captured[];
+
+  beforeEach(() => {
+    paperPositions = [];
+    orderNetworkFailures = 0;
+    orderTruncatedResponses = 0;
+    orderResult = { status: "accepted", order_id: "ord-1" };
+    calls = installFetch();
+    stubClientOrderIds();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Moves the faked clock and its intervals on, inside act so React renders the tick. */
+  function advanceClock(ms: number) {
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  }
+
+  function tradeSymbol(): string {
+    return screen.getByText("Trade Symbol:").textContent ?? "";
+  }
+
+  function watchlistAdds(): Captured[] {
+    return calls.filter((call) => call.url.includes(WATCHLIST_PATH) && call.method === "POST");
+  }
+
+  it("drops the picked option when the underlying changes, so the old contract cannot be sent", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
+    expect(tradeSymbol()).toBe("Trade Symbol: NIFTY26OCT25000CE");
+
+    fireEvent.change(screen.getByDisplayValue("NIFTY"), { target: { value: "BANKNIFTY" } });
+
+    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
+    await screen.findByRole("button", { name: "BANKNIFTY26OCT56000CE" });
+    expect(screen.queryByRole("button", { name: "NIFTY26OCT25000CE" })).not.toBeInTheDocument();
+    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
+
+    setValue(/order type/i, "MARKET");
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(orderBodies(calls).map((body) => JSON.parse(body).symbol)).toEqual(["SBIN"]);
+  });
+
+  it("drops the picked option when the expiry changes, even if the new chain lists it", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
+
+    fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
+
+    await screen.findByDisplayValue("2026-11-03");
+    await screen.findByRole("button", { name: "NIFTY26OCT25000CE" });
+    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
+  });
+
+  it("starts streaming quotes at the open and stops at the close with no symbol change", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    // Monday 19 Oct 2026, 09:14:59.5 IST: half a second before the open.
+    vi.setSystemTime(new Date("2026-10-19T03:44:59.500Z"));
+    renderPage();
+    await screen.findAllByText("State Bank");
+    expect(quoteSubscriptions.at(-1)).toEqual([]);
+
+    advanceClock(1000);
+    expect(quoteSubscriptions.at(-1)).toEqual(["SBIN"]);
+
+    // 15:29:59.5 IST; the clock reads whole seconds and 15:30:00 is still in session.
+    vi.setSystemTime(new Date("2026-10-19T09:59:59.500Z"));
+    advanceClock(1000);
+    expect(quoteSubscriptions.at(-1)).toEqual(["SBIN"]);
+    advanceClock(1000);
+    expect(quoteSubscriptions.at(-1)).toEqual([]);
+  });
+
+  it("never offers a search result for an earlier query", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    const box = screen.getByPlaceholderText("Search...");
+    const add = screen.getByRole("button", { name: "Add symbol to watchlist" });
+    fireEvent.change(box, { target: { value: "SB" } });
+    await screen.findByRole("button", { name: /^SBIN\s?State Bank$/ });
+
+    fireEvent.change(box, { target: { value: "INF" } });
+
+    // The SB results are not for "INF": they must not be clickable, nor picked by Enter or +.
+    expect(screen.queryByRole("button", { name: /^SBIN\s?State Bank$/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Searching...")).toBeInTheDocument();
+    expect(add).toBeDisabled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(watchlistAdds()).toEqual([]);
+
+    await screen.findByRole("button", { name: /^INFY\s?Infosys$/ });
+    expect(add).toBeEnabled();
+    expect(watchlistAdds()).toEqual([]);
+  });
+
+  it("blocks a fractional quantity with an inline error, then sends a whole one", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "800");
+    setValue(/^quantity$/i, "2.5");
+
+    expect(screen.getByText("Quantity must be a whole number greater than 0")).toBeInTheDocument();
+    expect(ticketButton("Buy")).toBeDisabled();
+    expect(ticketButton("Sell")).toBeDisabled();
+    fireEvent.click(ticketButton("Buy"));
+    expect(orderBodies(calls)).toEqual([]);
+
+    setValue(/^quantity$/i, "2");
+    expect(
+      screen.queryByText("Quantity must be a whole number greater than 0"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([2]);
+  });
+
+  it("blocks a fractional number of option lots", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
+    setValue(/order type/i, "MARKET");
+    setValue(/^lots$/i, "1.5");
+
+    expect(screen.getByText("Lots must be a whole number (lot size 75)")).toBeInTheDocument();
+    expect(ticketButton("Buy")).toBeDisabled();
+    fireEvent.click(ticketButton("Buy"));
+    expect(orderBodies(calls)).toEqual([]);
   });
 });
