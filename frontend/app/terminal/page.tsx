@@ -225,7 +225,11 @@ async function submitOrder(input: OrderInput): Promise<string> {
     // Not rejected: the order may be live, so the user must not place it again.
     return `${mode} ${side} unconfirmed: ${data.message || "check the broker orderbook"}`;
   }
-  const summary = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
+  const placed = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
+  // Risk checks that warned (an overridden LIVE warning): the user sees which ones.
+  const warnings: unknown[] = Array.isArray(data?.warnings) ? data.warnings : [];
+  const warningText = warnings.filter((w): w is string => typeof w === "string").join("; ");
+  const summary = warningText ? `${placed} - risk warnings: ${warningText}` : placed;
   return data?.duplicate ? `${summary} - already placed` : summary;
 }
 
@@ -348,12 +352,15 @@ function PositionsPanel({
   summary: positionsSummary,
   error: positionsError,
   positions,
+  liveStale,
   squaring,
   onSquare: squarePosition,
 }: Readonly<{
   summary: PositionsSummary;
   error: string | null;
   positions: PositionItem[];
+  /** The broker sync failed, so LIVE positions are unknown or the last synced values. */
+  liveStale: boolean;
   /** A square-off is in flight; a second click could send a duplicate exit. */
   squaring: boolean;
   onSquare: (row: PositionItem) => void;
@@ -372,6 +379,12 @@ function PositionsPanel({
         </span>
       </div>
       {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
+      {liveStale && (
+        <div className="mb-2 text-xs text-amber-400">
+          Broker unavailable: live positions could not be refreshed. Any shown are the last synced
+          values and cannot be squared until it reconnects.
+        </div>
+      )}
       <table className="w-full text-xs">
         <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
           <tr>
@@ -388,7 +401,10 @@ function PositionsPanel({
         </thead>
         <tbody>
           {positions.map((pos) => (
-            <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
+            <tr
+              key={`${pos.mode}-${pos.id}`}
+              className={`border-b border-border/60 ${pos.stale || positionsError ? "opacity-50" : ""}`}
+            >
               <td className="py-1 pr-2">{pos.symbol}</td>
               <td className="py-1 pr-2">{pos.mode || "LIVE"}</td>
               <td className="py-1 pr-2">{pos.net_qty >= 0 ? "LONG" : "SHORT"}</td>
@@ -412,7 +428,7 @@ function PositionsPanel({
                   size="sm"
                   variant="secondary"
                   className="h-6 px-2 text-xs"
-                  disabled={squaring}
+                  disabled={squaring || pos.stale}
                   onClick={() => squarePosition(pos)}
                 >
                   Square
@@ -1243,7 +1259,7 @@ export default function TerminalPage() {
   const chain = useOptionsChain(terminalView === "options");
   const positionsQuery = usePositionsBook(terminalView === "positions");
   const { squaring, squarePosition } = useSquareAction(setOrderMessage);
-  const basePositions = positionsQuery.data ?? NO_POSITIONS;
+  const basePositions = positionsQuery.data?.rows ?? NO_POSITIONS;
 
   // Live quotes come from the shared quote store; rows below are derived, not synced via effects.
   const quoteGroups = useMemo(
@@ -1312,6 +1328,7 @@ export default function TerminalPage() {
                 summary={summarizePositions(positions)}
                 error={positionsQuery.isError ? "Failed to load positions" : null}
                 positions={positions}
+                liveStale={positionsQuery.data?.liveStale ?? false}
                 squaring={squaring}
                 onSquare={squarePosition}
               />

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..data_repository import DataRepository
 from ..database import SessionLocal, get_db
 from ..models import Company, HistoricalPrice, LiveOrder
+from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.fyers_client import get_fyers_client
 from ..services.option_chain_service import option_chain_service
 from ..services.order_execution_service import (
@@ -608,6 +609,7 @@ def preview_options_order(
                     "instrument_type": req.option_type.upper() if req.option_type else "CE",
                 },
                 db,
+                user_id=LIVE_ACCOUNT_USER_ID,
             )
             risk = {
                 "status": risk_result.status.value,

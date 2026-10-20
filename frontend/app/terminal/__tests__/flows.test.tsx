@@ -61,6 +61,10 @@ function stubClientOrderIds() {
 }
 
 let paperPositions: Record<string, unknown>[] = [];
+let livePositions: Record<string, unknown>[] = [];
+let liveStale = false;
+const BROKER_UNAVAILABLE_NOTE =
+  "Broker unavailable: live positions could not be refreshed. Any shown are the last synced values and cannot be squared until it reconnects.";
 // Order POSTs that fail as a dropped connection before any response arrives.
 let orderNetworkFailures = 0;
 // Order POSTs answered 200 with a body cut off mid-JSON.
@@ -84,7 +88,11 @@ function respond(url: string): Response {
   }
   if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
   if (url.includes("/api/trading/positions/book")) {
-    return Response.json({ live_positions: [], paper_positions: paperPositions });
+    return Response.json({
+      live_positions: livePositions,
+      paper_positions: paperPositions,
+      live_stale: liveStale,
+    });
   }
   if (url.includes(ORDER_PATH)) return Response.json(orderResult);
   return Response.json([]);
@@ -269,6 +277,25 @@ describe("terminal order idempotency", () => {
     expect(orderBodies(calls)).toHaveLength(1);
   });
 
+  it("shows the risk warnings an accepted order carries", async () => {
+    orderResult = {
+      status: "SUBMITTED",
+      order_id: "B-1",
+      warnings: ["Approaching daily loss limit. Current P&L: ₹-4500.00"],
+    };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "801.5");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    expect(
+      await screen.findByText(
+        "PAPER BUY SUBMITTED (B-1) - risk warnings: Approaching daily loss limit. Current P&L: ₹-4500.00",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("retries a dropped submit with the same client_order_id, then a new click gets a new one", async () => {
     orderNetworkFailures = 1;
     renderPage();
@@ -308,6 +335,8 @@ describe("terminal data", () => {
 
   beforeEach(() => {
     paperPositions = [];
+    livePositions = [];
+    liveStale = false;
     squareResult = { status: "SUCCESS" };
     squareNetworkFailures = 0;
     calls = installFetch();
@@ -387,6 +416,34 @@ describe("terminal data", () => {
 
     const square = await screen.findByRole("button", { name: "Square" });
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
+  });
+
+  it("says the broker is unavailable even when no LIVE rows were ever synced", async () => {
+    liveStale = true;
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
+    expect(screen.getByText("No open positions")).toBeInTheDocument();
+  });
+
+  it("greys a stale LIVE position, blocks its square-off and says the broker is unavailable", async () => {
+    liveStale = true;
+    livePositions = [{ ...OPEN_POSITION, mode: "LIVE", stale: true }];
+    paperPositions = [{ ...OPEN_POSITION, id: 8, symbol: "INFY" }];
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
+    const [live, paper] = screen.getAllByRole("button", { name: "Square" });
+    expect(live.closest("tr")?.textContent).toBe("SBINLIVELONG10790.00800.00100.00100.00Square");
+    expect(live).toBeDisabled();
+    expect(live.closest("tr")).toHaveClass("opacity-50");
+    expect(paper.closest("tr")?.textContent).toBe("INFYPAPERLONG10790.00800.00100.00100.00Square");
+    expect(paper).toBeEnabled();
+    expect(paper.closest("tr")).not.toHaveClass("opacity-50");
   });
 
   it("lists open positions and drops a squared one", async () => {

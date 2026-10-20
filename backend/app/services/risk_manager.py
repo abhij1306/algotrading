@@ -6,17 +6,20 @@ Implements circuit breakers, position limits, and margin checks.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Query, Session
 
 from ..database import SessionLocal
 from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
+from ..utils.market_hours import DEFAULT_POLICY, SESSION_CLOSE, SESSION_OPEN, MarketHoursPolicy
 from .symbol_master import SymbolFormat, symbol_master
 
 if TYPE_CHECKING:
@@ -43,6 +46,83 @@ class RiskCheckResult:
     details: dict | None = None
 
 
+INVALID_QUANTITY_MESSAGE = "Quantity must be a positive integer"
+
+
+class InvalidQuantityError(ValueError):
+    """An order quantity that is not a positive whole number. The message is user-facing."""
+
+    def __init__(self) -> None:
+        super().__init__(INVALID_QUANTITY_MESSAGE)
+
+
+def coerce_quantity(value: object) -> int:
+    """An order quantity as a positive int.
+
+    Accepts an int, an integral float or Decimal (5.0) and a string of digits ("5").
+    Rejects booleans, fractions (2.5, "2.5"), anything else non-numeric, and values <= 0,
+    raising InvalidQuantityError. Never truncates: 2.9 is rejected, not read as 2.
+    """
+    if isinstance(value, bool):
+        raise InvalidQuantityError()
+    if isinstance(value, int):
+        quantity = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise InvalidQuantityError()
+        quantity = int(value)
+    elif isinstance(value, Decimal):
+        if not value.is_finite() or value != value.to_integral_value():
+            raise InvalidQuantityError()
+        quantity = int(value)
+    elif isinstance(value, str):
+        try:
+            quantity = int(value.strip())
+        except ValueError:
+            raise InvalidQuantityError() from None
+    else:
+        raise InvalidQuantityError()
+    if quantity <= 0:
+        raise InvalidQuantityError()
+    return quantity
+
+
+def _invalid_quantity_result() -> RiskCheckResult:
+    return RiskCheckResult(
+        status=RiskStatus.FAIL, message=INVALID_QUANTITY_MESSAGE, code="INVALID_QUANTITY"
+    )
+
+
+def _live_orders(query: Query) -> Query:
+    """Only LIVE orders. A row with no mode flag (legacy) counts as LIVE: fail safe."""
+    return query.filter(or_(LiveOrder.is_paper == 0, LiveOrder.is_paper.is_(None)))
+
+
+def _with_warnings(checks: list[Callable[[], RiskCheckResult]], passed: str) -> RiskCheckResult:
+    """Run checks in order. The first FAIL is returned as is. Otherwise the result is a
+    WARNING when any check warned (the first warning's message and code), else a PASS;
+    either way details["warnings"] lists every warning message."""
+    warnings: list[RiskCheckResult] = []
+    for check in checks:
+        result = check()
+        if result.status == RiskStatus.FAIL:
+            return result
+        if result.status == RiskStatus.WARNING:
+            warnings.append(result)
+    messages = [w.message for w in warnings]
+    if warnings:
+        first = warnings[0]
+        return RiskCheckResult(
+            status=RiskStatus.WARNING,
+            message=first.message,
+            code=first.code,
+            details={**(first.details or {}), "warnings": messages},
+        )
+    return RiskCheckResult(
+        status=RiskStatus.PASS, message=passed, code="RISK_PASS", details={"warnings": messages}
+    )
+
+
 @dataclass
 class RiskConfig:
     """Risk configuration"""
@@ -59,10 +139,6 @@ class RiskConfig:
     # Options specific
     max_naked_short_quantity: int = 500  # Max naked short option quantity
 
-    # Market hours (IST)
-    market_open_time: time = time(9, 15)
-    market_close_time: time = time(15, 30)
-
     # Order confirmation threshold
     large_order_notional: float = 10000  # Orders above this require confirmation
 
@@ -76,8 +152,14 @@ class RiskManager:
     Risk Manager for pre-trade and post-trade risk validation.
     """
 
-    def __init__(self, config: RiskConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: RiskConfig | None = None,
+        market_hours: MarketHoursPolicy = DEFAULT_POLICY,
+    ) -> None:
         self.config = config or RiskConfig()
+        # The one owner of NSE session times; tests inject a policy with a FixedClock.
+        self.market_hours = market_hours
         self._broker = None
 
     def _get_broker(self) -> "FyersBroker":
@@ -99,8 +181,8 @@ class RiskManager:
 
     def _get_estimated_price(self, symbol: str, fyers_symbol: str | None = None) -> float:
         """
-        Get estimated price for a symbol.
-        Tries to fetch from broker quote first, falls back to config default.
+        Get estimated price for a symbol from a live broker quote. There is no fallback
+        price: a caller that gets 0 must fail its check rather than assume a price.
 
         Args:
             symbol: Symbol to get price for, in DB ("SBIN") or Fyers format
@@ -119,67 +201,62 @@ class RiskManager:
             price = quote_last_price(self._get_broker().get_quote(quote_symbol))
             if price > 0:
                 return price
-        except Exception as e:
-            logger.warning(f"Could not fetch quote for {symbol}: {e}")
+        except Exception:
+            logger.warning("Could not fetch quote for %s", symbol, exc_info=True)
+        return 0
 
-        # Fallback to default from config or env
-        import os
+    def _order_price(self, order_params: dict) -> float:
+        """The price an order is valued at: its own price when it has one (a limit), else
+        the live quote. 0 when neither is available."""
+        price = float(order_params.get("price") or 0)
+        if price > 0:
+            return price
+        return self._get_estimated_price(
+            order_params.get("symbol", ""), order_params.get("fyers_symbol")
+        )
 
-        default_price = float(os.getenv("RISK_DEFAULT_PRICE", "0"))
-        if default_price > 0:
-            logger.info(f"Using configured default price {default_price} for {symbol}")
-        return default_price
+    @staticmethod
+    def _price_estimate_failed(order_params: dict) -> RiskCheckResult:
+        symbol = order_params.get("symbol", "")
+        return RiskCheckResult(
+            status=RiskStatus.FAIL,
+            message=f"Cannot estimate price for {symbol}. Please provide limit price.",
+            code="PRICE_ESTIMATE_FAILED",
+        )
 
-    def pre_trade_check(self, order_params: dict, db: Session | None = None) -> RiskCheckResult:
+    def pre_trade_check(
+        self, order_params: dict, db: Session | None = None, *, user_id: str
+    ) -> RiskCheckResult:
         """
-        Perform pre-trade risk checks.
+        Perform pre-trade risk checks for a new LIVE order.
 
         Args:
             order_params: Order details
             db: Database session
+            user_id: whose daily loss to check (the owner of the synced LIVE positions)
 
         Returns:
-            RiskCheckResult with status and message
+            The first FAIL. Otherwise a WARNING when any check warned, else a PASS. A
+            WARNING or PASS lists every warning message in details["warnings"].
         """
-        # Check market hours
-        market_check = self._check_market_hours()
-        if market_check.status == RiskStatus.FAIL:
-            return market_check
+        try:
+            quantity = coerce_quantity(order_params.get("quantity"))
+        except InvalidQuantityError:
+            return _invalid_quantity_result()
+        order = {**order_params, "quantity": quantity}
 
-        # Check daily loss limit (circuit breaker)
-        loss_check = self._check_daily_loss_limit(db)
-        if loss_check.status == RiskStatus.FAIL:
-            return loss_check
-
-        # Check position size
-        size_check = self._check_position_size(order_params, db)
-        if size_check.status == RiskStatus.FAIL:
-            return size_check
-
-        # Check total exposure
-        exposure_check = self._check_total_exposure(order_params, db)
-        if exposure_check.status == RiskStatus.FAIL:
-            return exposure_check
-
-        # Check available margin (for live orders)
-        margin_check = self._check_available_margin(order_params)
-        if margin_check.status == RiskStatus.FAIL:
-            return margin_check
-
-        # Check order frequency
-        frequency_check = self._check_order_frequency(db)
-        if frequency_check.status == RiskStatus.FAIL:
-            return frequency_check
-
-        # Check for naked short options
-        if order_params.get("instrument_type") in ["CE", "PE"]:
-            naked_check = self._check_naked_short_option(order_params, db)
-            if naked_check.status == RiskStatus.FAIL:
-                return naked_check
-
-        return RiskCheckResult(
-            status=RiskStatus.PASS, message="All risk checks passed", code="RISK_PASS"
-        )
+        checks = [
+            self._check_market_hours,
+            # Circuit breaker
+            lambda: self._check_daily_loss_limit(db, user_id),
+            lambda: self._check_position_size(order, db),
+            lambda: self._check_total_exposure(order, db),
+            lambda: self._check_available_margin(order),
+            lambda: self._check_order_frequency(db),
+        ]
+        if order.get("instrument_type") in ["CE", "PE"]:
+            checks.append(lambda: self._check_naked_short_option(order, db))
+        return _with_warnings(checks, "All risk checks passed")
 
     @staticmethod
     def _effective_price(order: dict, ltp: float) -> float:
@@ -189,7 +266,13 @@ class RiskManager:
         return ltp
 
     def pre_modify_check(
-        self, order_params: dict, current: dict, ltp: float, db: Session | None = None
+        self,
+        order_params: dict,
+        current: dict,
+        ltp: float,
+        db: Session | None = None,
+        *,
+        user_id: str,
     ) -> RiskCheckResult:
         """Checks for changing a working LIVE order.
 
@@ -199,21 +282,27 @@ class RiskManager:
             current: the order as it is now (quantity, type, price)
             ltp: last traded price from a fresh quote; 0 when none was available
             db: Database session
+            user_id: whose daily loss to check (the owner of the synced LIVE positions)
 
         Every modify must pass market hours, the per-order size limit and the price band.
         A modify that raises the order's notional (more quantity, a higher limit, or a
         switch to a dearer type) runs the exposure and margin checks on the notional
         increase; one that adds quantity also runs the daily-loss and naked-short checks.
-        Fails closed when either notional cannot be priced. A PASS carries any warnings
-        in details["warnings"].
+        Fails closed when either notional cannot be priced. Returns the first FAIL, else
+        a WARNING when any check warned, else a PASS; both list every warning message in
+        details["warnings"].
         """
+        try:
+            new_qty = coerce_quantity(order_params.get("quantity"))
+            old_qty = coerce_quantity(current.get("quantity"))
+        except InvalidQuantityError:
+            return _invalid_quantity_result()
+        order_params = {**order_params, "quantity": new_qty}
         checks = [
             self._check_market_hours,
             lambda: self._check_position_size(order_params, db),
             lambda: self._check_price_band(order_params, ltp),
         ]
-        new_qty = int(order_params.get("quantity") or 0)
-        old_qty = int(current.get("quantity") or 0)
         new_price = self._effective_price(order_params, ltp)
         old_price = self._effective_price(current, ltp)
         if new_price <= 0 or old_price <= 0:
@@ -236,23 +325,10 @@ class RiskManager:
         quantity_increase = new_qty - old_qty
         if quantity_increase > 0:
             added_qty = {**order_params, "quantity": quantity_increase}
-            checks.append(lambda: self._check_daily_loss_limit(db))
+            checks.append(lambda: self._check_daily_loss_limit(db, user_id))
             if order_params.get("instrument_type") in ["CE", "PE"]:
                 checks.append(lambda: self._check_naked_short_option(added_qty, db))
-
-        warnings: list[str] = []
-        for check in checks:
-            result = check()
-            if result.status == RiskStatus.FAIL:
-                return result
-            if result.status == RiskStatus.WARNING:
-                warnings.append(result.message)
-        return RiskCheckResult(
-            status=RiskStatus.PASS,
-            message="All modify risk checks passed",
-            code="RISK_PASS",
-            details={"warnings": warnings},
-        )
+        return _with_warnings(checks, "All modify risk checks passed")
 
     def _check_price_band(self, order_params: dict, ltp: float) -> RiskCheckResult:
         """A limit or trigger price must lie within max_price_deviation_pct of the LTP.
@@ -327,23 +403,21 @@ class RiskManager:
         )
 
     def _check_market_hours(self) -> RiskCheckResult:
-        """Check if market is open"""
-        from ..utils.market_hours import is_market_hours
-
-        if not is_market_hours():
+        """Check if market is open, by the shared MarketHoursPolicy."""
+        if not self.market_hours.is_open():
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
                 message=(
                     "Market is closed. Orders can only be placed during market hours "
-                    "(9:15 AM - 3:30 PM IST)."
+                    f"({SESSION_OPEN:%H:%M} - {SESSION_CLOSE:%H:%M} IST)."
                 ),
                 code="MARKET_CLOSED",
             )
 
         return RiskCheckResult(status=RiskStatus.PASS, message="Market is open", code="MARKET_OPEN")
 
-    def _check_daily_loss_limit(self, db: Session | None) -> RiskCheckResult:
-        """Check if daily loss limit has been reached"""
+    def _check_daily_loss_limit(self, db: Session | None, user_id: str) -> RiskCheckResult:
+        """Check if this user's daily loss limit has been reached"""
         owns_session = db is None
         db = db or SessionLocal()
         try:
@@ -353,7 +427,10 @@ class RiskManager:
             # This is a simplified calculation - in production you'd use actual tradebook
             result = (
                 db.query(func.sum(LivePosition.realized_pl))
-                .filter(func.date(LivePosition.last_synced_at) == today)
+                .filter(
+                    LivePosition.user_id == user_id,
+                    func.date(LivePosition.last_synced_at) == today,
+                )
                 .scalar()
             )
 
@@ -362,7 +439,7 @@ class RiskManager:
             # Also check unrealized P&L
             result = (
                 db.query(func.sum(LivePosition.unrealized_pl))
-                .filter(LivePosition.net_qty != 0)
+                .filter(LivePosition.user_id == user_id, LivePosition.net_qty != 0)
                 .scalar()
             )
 
@@ -401,7 +478,10 @@ class RiskManager:
 
     def _check_position_size(self, order_params: dict, _db: Session | None) -> RiskCheckResult:
         """Check if order size exceeds limits"""
-        quantity = order_params.get("quantity", 0)
+        try:
+            quantity = coerce_quantity(order_params.get("quantity"))
+        except InvalidQuantityError:
+            return _invalid_quantity_result()
         symbol = order_params.get("symbol", "")
 
         if quantity > self.config.max_position_size:
@@ -449,18 +529,9 @@ class RiskManager:
             current_exposure = sum(abs(p.net_qty) * p.ltp for p in positions)
             # Add new order value
             quantity = order_params.get("quantity", 0)
-            price = order_params.get("price", 0)
-
-            # For market orders, try to get actual quote or use configured default
-            if price == 0:
-                symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
-                if price == 0:
-                    return RiskCheckResult(
-                        status=RiskStatus.FAIL,
-                        message=f"Cannot estimate price for {symbol}. Please provide limit price.",
-                        code="PRICE_ESTIMATE_FAILED",
-                    )
+            price = self._order_price(order_params)
+            if price <= 0:
+                return self._price_estimate_failed(order_params)
 
             new_exposure = quantity * price
             total_exposure = current_exposure + new_exposure
@@ -496,12 +567,10 @@ class RiskManager:
 
             # Estimate margin required (simplified - would need actual margin calculator)
             quantity = order_params.get("quantity", 0)
-            price = order_params.get("price", 0)
-
-            # For market orders, try to get actual quote or use configured default
-            if price == 0:
-                symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
+            price = self._order_price(order_params)
+            if price <= 0:
+                # An unpriced order would need zero margin: fail closed instead.
+                return self._price_estimate_failed(order_params)
 
             # Rough estimate: 20% margin for intraday, 100% for CNC
             product = order_params.get("product", "INTRADAY")
@@ -542,14 +611,15 @@ class RiskManager:
             )
 
     def _check_order_frequency(self, db: Session | None) -> RiskCheckResult:
-        """Check if order frequency exceeds limits"""
+        """Check today's LIVE order count. PAPER orders never use up the LIVE limit.
+
+        Counted across the broker account, not per user: every LIVE order lands on the one
+        Fyers account, and the routes still tag orders with different user ids.
+        """
         owns_session = db is None
         db = db or SessionLocal()
         try:
-            today = date.today()
-            order_count = (
-                db.query(LiveOrder).filter(func.date(LiveOrder.created_at) == today).count()
-            )
+            order_count = self._live_orders_today(db)
 
             if order_count >= self.config.max_orders_per_day:
                 return RiskCheckResult(
@@ -619,7 +689,13 @@ class RiskManager:
             if owns_session and db:
                 db.close()
 
-    def get_exposure_summary(self, user_id: str = "default_user") -> dict:
+    @staticmethod
+    def _live_orders_today(db: Session) -> int:
+        today = date.today()
+        query = _live_orders(db.query(LiveOrder))
+        return query.filter(func.date(LiveOrder.created_at) == today).count()
+
+    def get_exposure_summary(self, user_id: str) -> dict:
         """Get current exposure summary"""
         db = SessionLocal()
         try:
@@ -637,15 +713,15 @@ class RiskManager:
             today = date.today()
             result = (
                 db.query(func.sum(LivePosition.realized_pl))
-                .filter(func.date(LivePosition.last_synced_at) == today)
+                .filter(
+                    LivePosition.user_id == user_id,
+                    func.date(LivePosition.last_synced_at) == today,
+                )
                 .scalar()
             )
             today_pnl = result or 0
 
-            # Get order count
-            order_count = (
-                db.query(LiveOrder).filter(func.date(LiveOrder.created_at) == today).count()
-            )
+            order_count = self._live_orders_today(db)
 
             return {
                 "long_exposure": round(long_exposure, 2),

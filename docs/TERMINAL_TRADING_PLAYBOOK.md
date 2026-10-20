@@ -56,6 +56,20 @@
 - `/api/options/atm`
 - `/api/options/greeks`
 
+### Positions and risk behaviour
+- `GET /api/trading/positions` (LIVE only) re-syncs from the broker first. If the sync
+  fails it answers 503 `BROKER_UNAVAILABLE`, never the stored rows as if they were current.
+- `GET /api/trading/positions/book` always serves paper positions. If the LIVE sync fails,
+  its live rows are the last synced ones with `stale: true`, plus `live_stale: true` and
+  `live_as_of`; the terminal greys them and disables their square-off.
+- A LIVE order whose risk checks only warn (for example 80% of the daily loss limit) needs
+  `risk_override_reason`; the accepted response then lists them in `warnings`. A LIVE
+  modify returns its warnings the same way.
+- Daily order limits count LIVE orders only. The daily loss is read for the broker
+  account's user. Quantities must be positive whole numbers (2.5 or "2.5" is rejected).
+- Risk never assumes a price. An order is valued at its own limit price, else the live
+  quote; with neither (a MARKET order and no quote) it fails `PRICE_ESTIMATE_FAILED`.
+
 ### Terminal options contracts
 - `GET /api/terminal/options/board`
   - Returns underlying, expiry, ATM, spot, compact strike rows, freshness metadata.

@@ -17,8 +17,9 @@ from ..brokers.plugins.fyers import (
     quote_last_price,
 )
 from ..models.live_order import LiveOrder
+from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.execution import paper_book
-from ..services.risk_manager import risk_manager
+from ..services.risk_manager import coerce_quantity, risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
@@ -269,40 +270,44 @@ class OrderExecutionService:
 
     @staticmethod
     def _validate_quantity(order_params: dict[str, Any]) -> int:
-        try:
-            quantity = int(order_params.get("quantity", 0))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Invalid quantity") from exc
-        if quantity <= 0:
-            raise ValueError("Quantity must be positive")
-        return quantity
+        """The quantity as a positive int; ValueError (user-facing) for 0, -1, 2.5 or "x"."""
+        return coerce_quantity(order_params.get("quantity"))
 
     def _run_live_risk_checks(
         self, order_params: dict[str, Any], db: Session
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """(error response, warnings) for a new LIVE order.
+
+        A FAIL rejects the order. A WARNING needs a risk_override_reason; with one the
+        order goes ahead and its warnings are returned so the response can show them.
+        """
         if not bool(order_params.get("is_live_confirmation_ack", False)):
             return {
                 "status": "ERROR",
                 "message": "LIVE order requires explicit confirmation acknowledgment",
                 "code": "LIVE_CONFIRMATION_REQUIRED",
-            }
+            }, []
 
-        risk_result = risk_manager.pre_trade_check(order_params, db)
+        # LIVE positions are synced under the broker account's user id, so the daily loss
+        # is that account's. Lane 3 task 5 replaces this with a current_user_id dependency.
+        risk_result = risk_manager.pre_trade_check(order_params, db, user_id=LIVE_ACCOUNT_USER_ID)
         if risk_result.status.value == "FAIL":
             return {
                 "status": "ERROR",
                 "message": f"Risk Check Failed: {risk_result.message}",
                 "code": risk_result.code,
-            }
+            }, []
+        warnings = [str(w) for w in (risk_result.details or {}).get("warnings", [])]
         if risk_result.status.value == "WARNING":
-            if not str(order_params.get("risk_override_reason", "")).strip():
+            if not str(order_params.get("risk_override_reason") or "").strip():
                 return {
                     "status": "ERROR",
                     "message": f"Risk warning requires override reason: {risk_result.message}",
                     "code": "RISK_WARNING_OVERRIDE_REQUIRED",
-                }
-            logger.warning(f"Risk Warning: {risk_result.message}")
-        return None
+                }, []
+            for warning in warnings:
+                logger.warning("Risk warning overridden on live order: %s", warning)
+        return None, warnings
 
     def _resolve_symbols(self, order_params: dict[str, Any]) -> tuple[str, str]:
         symbol = order_params.get("symbol")
@@ -453,10 +458,10 @@ class OrderExecutionService:
 
     def _pre_trade_error(
         self, order_params: dict[str, Any], effective_mode: str, fyers_symbol: str, db: Session
-    ) -> dict[str, Any] | None:
-        """Error response when a LIVE order fails its risk checks, else None. PAPER skips them."""
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """(error response, warnings) from a LIVE order's risk checks. PAPER skips them."""
         if effective_mode != "LIVE":
-            return None
+            return None, []
         # Risk price estimates quote the broker, which needs the Fyers symbol.
         risk_params = {**order_params, "fyers_symbol": fyers_symbol}
         return self._run_live_risk_checks(risk_params, db)
@@ -632,8 +637,12 @@ class OrderExecutionService:
                 return self._duplicate_response(existing)
 
             quantity = self._validate_quantity(order_params)
+            # Risk checks and the broker payload both read the coerced int.
+            order_params = {**order_params, "quantity": quantity}
             db_symbol, fyers_symbol = self._resolve_symbols(order_params)
-            risk_error = self._pre_trade_error(order_params, effective_mode, fyers_symbol, db)
+            risk_error, warnings = self._pre_trade_error(
+                order_params, effective_mode, fyers_symbol, db
+            )
             if risk_error:
                 return risk_error
 
@@ -641,9 +650,12 @@ class OrderExecutionService:
                 order_params, db_symbol, fyers_symbol, quantity, effective_mode, client_order_id
             )
             if effective_mode == "LIVE" and client_order_id is not None:
-                return self._place_live_order(
+                result = self._place_live_order(
                     order_params, fyers_symbol, new_order, client_order_id, db
                 )
+                if warnings and not result.get("duplicate"):
+                    result["warnings"] = warnings
+                return result
             return self._place_paper_order(order_params, db_symbol, new_order, client_order_id, db)
 
         except ValueError as e:
@@ -752,7 +764,9 @@ class OrderExecutionService:
             "type": str(order.order_type or "MARKET").upper(),
             "price": safe_float(order.price, 0.0),
         }
-        result = risk_manager.pre_modify_check(risk_params, current, ltp, db)
+        result = risk_manager.pre_modify_check(
+            risk_params, current, ltp, db, user_id=LIVE_ACCOUNT_USER_ID
+        )
         if result.status.value == "FAIL":
             return {
                 "status": "ERROR",
@@ -772,12 +786,9 @@ class OrderExecutionService:
         """
         if "quantity" in params:
             try:
-                quantity = int(params["quantity"])
-            except (TypeError, ValueError):
-                quantity = 0
-            if quantity <= 0:
-                return "Quantity must be a positive integer"
-            params["quantity"] = quantity
+                params["quantity"] = coerce_quantity(params["quantity"])
+            except ValueError as exc:
+                return str(exc)
 
         if "price" in params:
             try:

@@ -8,6 +8,7 @@ Runs periodically during market hours to keep positions in sync.
 import asyncio
 import contextlib
 import logging
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -15,8 +16,9 @@ from sqlalchemy.orm import Session
 
 from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
-from ..models.live_position import LivePosition
-from ..utils.cache import cache_with_ttl
+from ..models.live_position import LIVE_ACCOUNT_USER_ID, LivePosition
+from ..utils.cache import cache_with_ttl, clear_cache
+from ..utils.db_errors import is_db_unavailable
 from .symbol_master import symbol_master
 
 if TYPE_CHECKING:
@@ -37,6 +39,13 @@ class PositionSyncService:
         self._sync_interval = 5  # seconds
         self._broker = None
         self._last_sync: datetime | None = None
+        # One sync at a time: two overlapping syncs could both insert the same new row.
+        self._sync_lock = threading.Lock()
+
+    @property
+    def last_sync(self) -> datetime | None:
+        """When positions were last synced from the broker successfully; None if never."""
+        return self._last_sync
 
     def _get_broker(self) -> "FyersBroker":
         """Lazy load Fyers broker"""
@@ -101,7 +110,7 @@ class PositionSyncService:
         """Upsert one broker position. Returns True if an existing row was updated."""
         symbol = pos["symbol"]
         product_type = pos["product_type"]
-        position_id = f"default_user-{symbol}-{product_type}"
+        position_id = f"{LIVE_ACCOUNT_USER_ID}-{symbol}-{product_type}"
         side = self._position_side(pos["side"], symbol)
         qty = pos["quantity"]
         net_qty = qty if side == "LONG" else -qty
@@ -120,7 +129,7 @@ class PositionSyncService:
         db.add(
             LivePosition(
                 id=position_id,
-                user_id="default_user",
+                user_id=LIVE_ACCOUNT_USER_ID,
                 symbol=symbol_master.to_db(symbol),
                 fyers_symbol=symbol,
                 product_type=product_type,
@@ -140,6 +149,11 @@ class PositionSyncService:
         return False
 
     def sync_positions(self) -> dict:
+        """Sync positions from the broker, one sync at a time (see _sync_positions)."""
+        with self._sync_lock:
+            return self._sync_positions()
+
+    def _sync_positions(self) -> dict:
         """
         Sync positions from Fyers to local database.
 
@@ -186,6 +200,8 @@ class PositionSyncService:
 
             db.commit()
             self._last_sync = datetime.now()
+            # get_positions caches for 5s; a reader after this sync must see its rows.
+            clear_cache(f"{__name__}.get_positions:")
 
             result = {
                 "status": "success",
@@ -200,8 +216,12 @@ class PositionSyncService:
             return result
 
         except Exception as e:
-            db.rollback()
-            logger.exception(f"Error syncing positions: {e}")
+            with contextlib.suppress(Exception):
+                db.rollback()
+            if is_db_unavailable(e):
+                # A down database answers 503 DATABASE_UNAVAILABLE, not a broker outage.
+                raise
+            logger.exception("Error syncing positions")
             return {"status": "error", "message": "Position sync failed"}
         finally:
             db.close()

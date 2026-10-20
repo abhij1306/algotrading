@@ -54,8 +54,8 @@ Files: `ws_manager.py`, `routers/websocket.py`, `live_market_service.py`, `fyers
 
 - [x] 1. Live cleanup (S): remove `set_loop`/`loop`, `get_latest_ticks` and `ConnectionManager.subscriptions`; share one status-to-message map.
 - [x] 2. SubscriptionRegistry, a pure refcount (M). The router stops diffing subscriptions. Add registry and slow-client tests.
-- [ ] 3. MarketHoursPolicy, a Clock and a tick-normalizer module (S-M). Delete the copies of 9:15/15:30, including the dead `RiskConfig` fields.
-  - Partial (PR #56): `MarketHoursPolicy` (IST, 09:15:00-15:30:00 inclusive, weekends, DEV_MODE, an empty-by-default `holidays` set) and the `Clock` seam (`utils/clock.py`) own market hours in `utils/market_hours.py`; `live_market_service.py` takes an injected clock, and the tick normalizer lives in `services/live/ticks.py`. Left: the dead `RiskConfig.market_open_time`/`market_close_time` fields in `risk_manager.py` (held back while PR #54 changes that file), and a holiday calendar.
+- [x] 3. MarketHoursPolicy, a Clock and a tick-normalizer module (S-M). Delete the copies of 9:15/15:30, including the dead `RiskConfig` fields. (#56, #67)
+  - PR #56: `MarketHoursPolicy` (IST, 09:15:00-15:30:00 inclusive, weekends, DEV_MODE, an empty-by-default `holidays` set) and the `Clock` seam (`utils/clock.py`) own market hours in `utils/market_hours.py`; `live_market_service.py` takes an injected clock, and the tick normalizer lives in `services/live/ticks.py`. PR #67: the dead `RiskConfig.market_open_time`/`market_close_time` fields are deleted and `RiskManager` takes an injected `MarketHoursPolicy`. Follow-up: a holiday calendar (`holidays` is still empty).
 - [ ] 4. ProviderSession behind a DataSocket protocol, with fake-socket tests (L).
 - [ ] 5. Write the sync/async and local-only rules into AGENTS.md, and add an `Origin` check on `/stream` (S).
 
@@ -77,7 +77,7 @@ Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_
 - [x] Paper modify re-runs the fill simulation.
 - [x] LIVE modify and cancel stop returning `str(e)`.
 - [ ] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S).
-- [ ] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user.
+- [x] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user. (#67) A LIVE place that only warns needs `risk_override_reason` and returns `warnings`; `coerce_quantity` rejects fractions; the daily loss is keyed to `LIVE_ACCOUNT_USER_ID` until task 5. Also: `/api/trading/positions` answers 503 `BROKER_UNAVAILABLE` on a failed sync, and `/positions/book` marks live rows `stale`.
 - [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
 - [ ] 4. An OrderIntent with enums (S).
 - [ ] 5. A `current_user_id` dependency (S). Remove the hard-coded default, terminal and dev users, and add a backfill.

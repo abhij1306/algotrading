@@ -2,7 +2,8 @@
 Test fixtures and configuration for pytest
 """
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base, get_db
 from app.main import app
+from app.services.risk_manager import risk_manager
+from app.utils.clock import FixedClock
+from app.utils.market_hours import IST, MarketHoursPolicy
+
+# A Tuesday mid-session and a Saturday, both IST.
+MARKET_OPEN_INSTANT = datetime(2026, 10, 20, 10, 0, tzinfo=IST)
+MARKET_CLOSED_INSTANT = datetime(2026, 10, 24, 10, 0, tzinfo=IST)
 
 # Test database URL (use in-memory SQLite for tests)
 SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
@@ -27,6 +35,19 @@ def test_engine() -> Generator[Engine, None, None]:
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
+
+
+@pytest.fixture
+def freeze_market(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], None]:
+    """Freeze the risk manager's market hours: freeze_market(True) puts "now" mid-session,
+    freeze_market(False) on a Saturday. DEV_MODE is turned off so it cannot reopen it."""
+
+    def freeze(is_open: bool) -> None:
+        monkeypatch.setenv("DEV_MODE", "false")
+        instant = MARKET_OPEN_INSTANT if is_open else MARKET_CLOSED_INSTANT
+        monkeypatch.setattr(risk_manager, "market_hours", MarketHoursPolicy(FixedClock(instant)))
+
+    return freeze
 
 
 @pytest.fixture
