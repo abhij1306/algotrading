@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..services.vcp_service import DEFAULT_CAPITAL, DEFAULT_UNIVERSE, vcp_service
+from ..utils.dates import parse_optional_iso_date
 
 router = APIRouter(prefix="/api/strategies", tags=["Strategies"])
 
 INVALID_SCAN_RESPONSES = {400: {"description": "Invalid scan request"}}
 SIGNAL_NOT_FOUND_RESPONSES = {404: {"description": "Signal not found or invalid scan date"}}
+SIGNAL_DETAIL_RESPONSES = {400: {"description": "Invalid scan date"}, **SIGNAL_NOT_FOUND_RESPONSES}
 POSITION_NOT_FOUND_RESPONSES = {404: {"description": "Strategy position not found"}}
 INVALID_BACKTEST_RESPONSES = {400: {"description": "Invalid backtest request"}}
 BACKTEST_NOT_FOUND = "Backtest run not found"
@@ -39,10 +40,6 @@ class BacktestRequest(BaseModel):
     initial_capital: float = Field(DEFAULT_CAPITAL, gt=0)
 
 
-def _parse_date(value: str | None) -> date | None:
-    return datetime.strptime(value, "%Y-%m-%d").date() if value else None
-
-
 @router.get("/vcp/scan/latest", response_model=None)
 def get_latest_vcp_scan(universe: str = DEFAULT_UNIVERSE, show_all: bool = False) -> dict[str, Any]:
     return vcp_service.get_latest_scan(universe=universe, show_all=show_all)
@@ -50,18 +47,18 @@ def get_latest_vcp_scan(universe: str = DEFAULT_UNIVERSE, show_all: bool = False
 
 @router.post("/vcp/scan/run", response_model=None, responses=INVALID_SCAN_RESPONSES)
 def run_vcp_scan(request: ScanRunRequest) -> dict[str, Any]:
+    scan_date = parse_optional_iso_date(request.scan_date, field="scan_date")
     try:
-        return vcp_service.run_scan(
-            universe=request.universe, scan_date=_parse_date(request.scan_date)
-        )
+        return vcp_service.run_scan(universe=request.universe, scan_date=scan_date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/vcp/signal/{symbol}", response_model=None, responses=SIGNAL_NOT_FOUND_RESPONSES)
+@router.get("/vcp/signal/{symbol}", response_model=None, responses=SIGNAL_DETAIL_RESPONSES)
 def get_vcp_signal(symbol: str, scan_date: str | None = None) -> dict[str, Any]:
+    parsed_scan_date = parse_optional_iso_date(scan_date, field="scan_date")
     try:
-        return vcp_service.get_signal_detail(symbol=symbol, scan_date=_parse_date(scan_date))
+        return vcp_service.get_signal_detail(symbol=symbol, scan_date=parsed_scan_date)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

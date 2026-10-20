@@ -73,6 +73,21 @@ class ValidationError(SmartTraderError):
         )
 
 
+class InvalidDateError(SmartTraderError):
+    """Raised when a request date is not a YYYY-MM-DD calendar date.
+
+    The client gets a fixed 400 naming the field; the rejected value is not echoed back.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(
+            code="INVALID_DATE",
+            message=f"Invalid {field}: expected YYYY-MM-DD",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"field": field},
+        )
+
+
 class InsufficientDataError(SmartTraderError):
     """Raised when not enough data for operation"""
 

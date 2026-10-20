@@ -2,6 +2,8 @@ import logging
 import os
 from pathlib import Path
 
+from ..paths import PROJECT_ROOT
+
 
 def load_dotenv(path: str = ".env") -> None:
     """
@@ -27,9 +29,8 @@ def _find_env_file(path: str) -> Path | None:
     env_path = Path(path)
     if env_path.exists():
         return env_path
-    project_root = Path(__file__).resolve().parents[3]
     candidate_paths = [
-        project_root / path,
+        PROJECT_ROOT / path,
         Path.cwd() / path,
         Path.cwd().parent / path,
     ]

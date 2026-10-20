@@ -4,14 +4,13 @@ import sys
 import threading
 import time
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
+
+from ..paths import LOG_DIR
 
 # Logging configuration
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 _env_level = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_LEVEL = _env_level if _env_level in _VALID_LEVELS else "INFO"
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-LOG_DIR = PROJECT_ROOT / "logs"
 
 # Standard format for all logs
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

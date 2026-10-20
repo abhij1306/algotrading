@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from time import perf_counter
 
 import pandas as pd
@@ -11,21 +10,13 @@ from sqlalchemy import func
 
 from ..database import db_session_scope
 from ..models import Company, HistoricalPrice
+from ..paths import SOURCES_ROOT
 from ..utils.runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-EQUITY_SOURCE_PATH = (
-    PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices" / "stock_price_daily.parquet"
-)
-INDEX_SOURCE_PATH = (
-    PROJECT_ROOT
-    / "data_system"
-    / "01_sources"
-    / "fyers_index_prices"
-    / "universe_index_price_daily.parquet"
-)
+EQUITY_SOURCE_PATH = SOURCES_ROOT / "fyers_stock_prices" / "stock_price_daily.parquet"
+INDEX_SOURCE_PATH = SOURCES_ROOT / "fyers_index_prices" / "universe_index_price_daily.parquet"
 
 
 @dataclass(frozen=True)

@@ -5,8 +5,8 @@ Configuration module for loading environment variables and settings
 import json
 import logging
 import os
-from pathlib import Path
 
+from .paths import FYERS_TOKEN_PATH
 from .utils.env_loader import load_dotenv
 
 load_dotenv()
@@ -16,9 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Config:
     # Try to load Fyers credentials from fyers/config/access_token.json
-    FYERS_TOKEN_FILE = (
-        Path(__file__).parent.parent.parent / "fyers" / "config" / "access_token.json"
-    )
+    FYERS_TOKEN_FILE = FYERS_TOKEN_PATH
 
     FYERS_CLIENT_ID = ""
     FYERS_SECRET_KEY = ""

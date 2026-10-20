@@ -25,6 +25,7 @@ import pandas as pd
 
 from ..database import get_db_session
 from ..models.backtest import BacktestRun
+from ..utils.dates import parse_iso_date
 from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
 from . import backtest_metrics as bt_metrics
@@ -56,10 +57,6 @@ class BacktestJob:
 class Phase1BacktestService:
     def __init__(self) -> None:
         self._jobs: dict[str, BacktestJob] = {}
-
-    @staticmethod
-    def _parse_date(value: str) -> date:
-        return datetime.strptime(value, "%Y-%m-%d").date()
 
     @staticmethod
     def _normalize_weight_allocations(strategies: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -364,8 +361,8 @@ class Phase1BacktestService:
                     "execution": job.params.get("execution") or {},
                 },
                 capital_mode="NOTIONAL",
-                start_date=self._parse_date(str(job.params["start_date"])),
-                end_date=self._parse_date(str(job.params["end_date"])),
+                start_date=parse_iso_date(str(job.params["start_date"]), field="start_date"),
+                end_date=parse_iso_date(str(job.params["end_date"]), field="end_date"),
                 request_payload=job.params,
             )
             session.merge(run)
@@ -404,8 +401,8 @@ class Phase1BacktestService:
                 "Options backtest is not available until options historical dataset is onboarded"
             )
 
-        start = self._parse_date(str(payload["start_date"]))
-        end = self._parse_date(str(payload["end_date"]))
+        start = parse_iso_date(str(payload["start_date"]), field="start_date")
+        end = parse_iso_date(str(payload["end_date"]), field="end_date")
         if start > end:
             raise ValueError("start_date cannot be after end_date")
 

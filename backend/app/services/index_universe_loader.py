@@ -35,14 +35,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from ..paths import UNIVERSE_CONSTITUENTS_DIR
 from .symbol_master import symbol_master
 
 logger = logging.getLogger(__name__)
 
 
 # Use project-relative path - GitHub compatible
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-NSE_DATA_PATH = PROJECT_ROOT / "data_system" / "03_universe" / "constituents"
+NSE_DATA_PATH = UNIVERSE_CONSTITUENTS_DIR
 
 # Set data path - will log warning if not found
 DATA_PATH = NSE_DATA_PATH
