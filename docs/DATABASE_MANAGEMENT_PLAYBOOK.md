@@ -205,13 +205,11 @@ Providers are adapters, not feature implementations.
 - refresh index daily cache
 - refresh equity daily cache
 - refresh optional non-canonical intraday archive
-- consolidate optional provider archives before retention
 
 ### Approved FYERS entrypoints
 - `backend/scripts/refresh_fyers_equity_daily.py`
 - `backend/scripts/refresh_fyers_index_daily.py`
 - `backend/scripts/refresh_fyers_intraday_archive.py`
-- `backend/scripts/consolidate_fyers_intraday_archive.py`
 
 ### Disallowed long-term patterns
 - scripts named after a single feature

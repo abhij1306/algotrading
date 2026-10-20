@@ -20,7 +20,7 @@ This starts backend + frontend and opens the app URL.
 # backend (repo root)
 python -m venv venv
 venv\Scripts\activate
-scripts\setup\install_backend_deps.bat
+python scripts/install_backend_deps.py
 python backend/start_server.py
 
 # frontend
@@ -112,12 +112,12 @@ Run foreground to see exact error:
 Install missing dependencies:
 
 ```bash
-scripts\setup\install_backend_deps.bat
+python scripts/install_backend_deps.py
 ```
 
 Python 3.14 note:
 - Fyers package metadata pins an old `aiohttp` build path on Windows.
-- Use `scripts\setup\install_backend_deps.bat` (or `.ps1`) to install a stable set.
+- Use `python scripts/install_backend_deps.py` to install a stable set.
 
 ### WebSocket connects post-market
 - Verify `DEV_MODE` is not set to `true`.

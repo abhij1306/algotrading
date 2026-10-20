@@ -74,8 +74,6 @@ openalgo/
 
 # Log files
 *.log
-backend/fyersApi.log
-backend/fyersRequests.log
 
 # Python cache
 __pycache__/
@@ -295,3 +293,6 @@ archive/
 old/
 backup/
 deprecated/
+
+# Claude Code agent worktrees
+.claude/worktrees/

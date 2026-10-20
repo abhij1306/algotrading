@@ -1,6 +1,18 @@
+"""Start the SmartTrader dev environment: backend (uvicorn) + frontend (Vite+).
+
+Usage:
+    python start_dev.py [--no-browser]
+
+Both servers run as children of this process; Ctrl+C stops them. Ports: backend 8000
+(reused if already healthy), frontend 3000 (next free port if busy).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import shutil
-import platform
 import socket
 import subprocess
 import sys
@@ -11,204 +23,189 @@ import webbrowser
 from contextlib import closing
 from pathlib import Path
 
-# Preferred defaults
+HOST = "127.0.0.1"
+# Loopback-only dev servers; plain HTTP is intended.
+LOCAL_ORIGIN = f"http://{HOST}"  # NOSONAR
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 3000
 MAX_PORT_SCAN = 50
+IS_WINDOWS = sys.platform == "win32"
+
+
+class StartupError(RuntimeError):
+    """A startup precondition failed; the message is shown to the user as-is."""
 
 
 def is_port_in_use(port: int) -> bool:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-        return sock.connect_ex(("127.0.0.1", port)) == 0
+        return sock.connect_ex((HOST, port)) == 0
 
 
-def find_available_port(preferred: int, max_scan: int = MAX_PORT_SCAN) -> int:
-    for port in range(preferred, preferred + max_scan):
+def find_available_port(preferred: int) -> int:
+    for port in range(preferred, preferred + MAX_PORT_SCAN):
         if not is_port_in_use(port):
             return port
-    raise RuntimeError(f"No free port found in range {preferred}-{preferred + max_scan - 1}")
-
-
-def kill_processes_on_port(port: int) -> None:
-    system = platform.system()
-    try:
-        if system == "Windows":
-            result = subprocess.run(
-                f"netstat -ano | findstr :{port} | findstr LISTENING",
-                shell=True,
-                capture_output=True,
-                text=True,
-            )
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) < 5:
-                    continue
-                pid = parts[-1]
-                subprocess.run(
-                    f"taskkill /F /PID {pid}",
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                )
-        else:
-            result = subprocess.run(
-                f"lsof -ti :{port}",
-                shell=True,
-                capture_output=True,
-                text=True,
-            )
-            for pid in result.stdout.splitlines():
-                subprocess.run(
-                    f"kill -9 {pid}",
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                )
-    except Exception:
-        # Best effort cleanup only.
-        pass
+    raise StartupError(
+        f"No free port in range {preferred}-{preferred + MAX_PORT_SCAN - 1}."
+    )
 
 
 def is_backend_healthy(port: int) -> bool:
+    """True only if the listener on `port` is the SmartTrader API (not just any HTTP 200)."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=2) as response:
-            return response.status == 200
+        with urllib.request.urlopen(f"{LOCAL_ORIGIN}:{port}/", timeout=2) as response:
+            if response.status != 200:
+                return False
+            body = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ValueError):
         return False
+    return isinstance(body, dict) and "SmartTrader" in str(body.get("message", ""))
 
 
-def wait_for_service(
-    port: int,
-    name: str,
-    timeout: int = 60,
-    process: subprocess.Popen | None = None,
-) -> bool:
+def venv_python(root: Path) -> Path:
+    if IS_WINDOWS:
+        return root / "venv" / "Scripts" / "python.exe"
+    return root / "venv" / "bin" / "python"
+
+
+def stop_process_tree(proc: subprocess.Popen) -> None:
+    """Terminate a child and everything it spawned (pnpm -> node, uvicorn reloader)."""
+    if proc.poll() is not None:
+        return
+    if IS_WINDOWS:
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def wait_for_port(
+    port: int, name: str, proc: subprocess.Popen | None, timeout: int
+) -> None:
     print(f"Waiting for {name} on port {port}...")
-    start = time.time()
-    while time.time() - start < timeout:
-        if process is not None and process.poll() is not None:
-            print(f"{name} process exited while waiting (code={process.returncode})")
-            return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise StartupError(
+                f"{name} exited during startup (code {proc.returncode}). See its output above."
+            )
         if is_port_in_use(port):
-            print(f"{name} is running on port {port}")
-            return True
+            print(f"{name} is up on port {port}")
+            return
         time.sleep(1)
-    print(f"Timed out waiting for {name} on port {port}")
-    return False
+    raise StartupError(f"Timed out after {timeout}s waiting for {name} on port {port}.")
 
 
-def build_python_command(project_root: Path) -> list[str]:
-    venv_python = project_root / "venv" / "Scripts" / "python.exe"
-    if venv_python.exists():
-        return [str(venv_python)]
-    return [sys.executable]
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Start the SmartTrader backend and frontend dev servers."
+    )
+    parser.add_argument(
+        "--no-browser", action="store_true", help="do not open the app in a browser"
+    )
+    args = parser.parse_args()
 
-
-def main() -> None:
-    project_root = Path(__file__).resolve().parent
-    backend_dir = project_root / "backend"
-    frontend_dir = project_root / "frontend"
-
-    if not backend_dir.exists():
-        raise RuntimeError(f"Backend directory not found: {backend_dir}")
-    if not frontend_dir.exists():
-        raise RuntimeError(f"Frontend directory not found: {frontend_dir}")
-
-    print("Starting SmartTrader development environment...")
+    root = Path(__file__).resolve().parent
+    python = venv_python(root)
+    if not python.exists():
+        raise StartupError(
+            f"Virtualenv not found at {python}.\n"
+            "Create it with: python -m venv venv && python scripts/install_backend_deps.py"
+        )
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        raise StartupError(
+            "pnpm is not on PATH. Install it from https://pnpm.io/installation."
+        )
+    if not (root / "frontend" / "node_modules").exists():
+        raise StartupError(
+            "Frontend dependencies missing. Run: cd frontend && pnpm install"
+        )
 
     backend_port = DEFAULT_BACKEND_PORT
     frontend_port = find_available_port(DEFAULT_FRONTEND_PORT)
-    launch_backend = True
-
     if frontend_port != DEFAULT_FRONTEND_PORT:
-        print(f"[INFO] Port {DEFAULT_FRONTEND_PORT} is busy. Using frontend port {frontend_port}.")
+        print(
+            f"[INFO] Port {DEFAULT_FRONTEND_PORT} is busy; using frontend port {frontend_port}."
+        )
 
+    launch_backend = True
     if is_port_in_use(backend_port):
-        if is_backend_healthy(backend_port):
-            print(f"[INFO] Backend already running on port {backend_port}; reusing it.")
-            launch_backend = False
-        else:
-            print(f"[WARN] Port {backend_port} is occupied by another process. Attempting to free it...")
-            kill_processes_on_port(backend_port)
-            time.sleep(1)
-            if is_port_in_use(backend_port):
-                raise RuntimeError(
-                    f"Port {backend_port} is still in use. Stop the process and retry."
-                )
+        if not is_backend_healthy(backend_port):
+            raise StartupError(
+                f"Port {backend_port} is occupied by a process that is not the SmartTrader backend. "
+                f"Find it with: netstat -ano | findstr :{backend_port}"
+            )
+        print(f"[INFO] Backend already running on port {backend_port}; reusing it.")
+        launch_backend = False
 
-    python_cmd = build_python_command(project_root)
-    pnpm_cmd = shutil.which("pnpm")
-    if pnpm_cmd is None:
-        raise RuntimeError("pnpm is not on PATH. Install it from https://pnpm.io/installation.")
-    create_console_flag = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-
-    backend_env = os.environ.copy()
-    backend_env["PYTHONUNBUFFERED"] = "1"
-    backend_env["BACKEND_HOST"] = "127.0.0.1"
-    backend_env["BACKEND_PORT"] = str(backend_port)
+    backend_env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "BACKEND_HOST": HOST,
+        "BACKEND_PORT": str(backend_port),
+    }
     backend_env.setdefault("BACKEND_RELOAD", "false")
     # Keep market-hours behavior real by default; set DEV_MODE=true explicitly when needed.
     backend_env.setdefault("DEV_MODE", "false")
 
-    frontend_env = os.environ.copy()
-    frontend_env["PORT"] = str(frontend_port)
-    # The Vite dev server proxies /api (HTTP and WebSocket) to this backend.
-    frontend_env["BACKEND_URL"] = f"http://127.0.0.1:{backend_port}"
+    # The Vite dev server proxies /api (HTTP and WebSocket) to BACKEND_URL.
+    frontend_env = {
+        **os.environ,
+        "PORT": str(frontend_port),
+        "BACKEND_URL": f"{LOCAL_ORIGIN}:{backend_port}",
+    }
 
-    backend_proc = None
-    if launch_backend:
-        print(f"Launching backend on http://127.0.0.1:{backend_port}")
-        backend_proc = subprocess.Popen(
-            python_cmd + ["backend/start_server.py"],
-            cwd=project_root,
-            env=backend_env,
-            creationflags=create_console_flag,
-        )
-        if backend_proc.poll() is not None:
-            backend_script_path = Path("backend") / "start_server.py"
-            raise RuntimeError(
-                f"Backend process exited immediately with code {backend_proc.returncode}. "
-                f"Run '{python_cmd[0]} {backend_script_path}' to see traceback."
+    procs: list[subprocess.Popen] = []
+    try:
+        backend_proc = None
+        if launch_backend:
+            print(f"Launching backend on {LOCAL_ORIGIN}:{backend_port}")
+            backend_proc = subprocess.Popen(
+                [str(python), "backend/start_server.py"], cwd=root, env=backend_env
             )
+            procs.append(backend_proc)
 
-    print(f"Launching frontend on http://127.0.0.1:{frontend_port}")
-    subprocess.Popen(
-        [pnpm_cmd, "dev"],
-        cwd=frontend_dir,
-        env=frontend_env,
-        creationflags=create_console_flag,
-    )
-
-    backend_ok = (
-        True
-        if not launch_backend
-        else wait_for_service(backend_port, "Backend", timeout=90, process=backend_proc)
-    )
-    if launch_backend and backend_proc is not None and backend_proc.poll() is not None:
-        backend_script_path = Path("backend") / "start_server.py"
-        raise RuntimeError(
-            f"Backend process exited immediately with code {backend_proc.returncode}. "
-            f"Run '{python_cmd[0]} {backend_script_path}' to see traceback."
+        print(f"Launching frontend on {LOCAL_ORIGIN}:{frontend_port}")
+        frontend_proc = subprocess.Popen(
+            [pnpm, "dev", "--strictPort"], cwd=root / "frontend", env=frontend_env
         )
-    frontend_ok = wait_for_service(frontend_port, "Frontend", timeout=120)
+        procs.append(frontend_proc)
 
-    if backend_ok and frontend_ok:
-        dashboard_url = f"http://127.0.0.1:{frontend_port}"
-        print(f"Opening dashboard: {dashboard_url}")
-        webbrowser.open(dashboard_url)
+        if backend_proc is not None:
+            wait_for_port(backend_port, "Backend", backend_proc, timeout=90)
+        wait_for_port(frontend_port, "Frontend", frontend_proc, timeout=120)
 
-    print("\nSmartTrader startup completed.")
-    print(f"Backend:  http://127.0.0.1:{backend_port}")
-    print(f"Frontend: http://127.0.0.1:{frontend_port}")
-    print("Processes are running in separate windows.")
+        url = f"{LOCAL_ORIGIN}:{frontend_port}"
+        print(
+            f"\nSmartTrader is running.\n  Backend:  {LOCAL_ORIGIN}:{backend_port}\n  Frontend: {url}"
+        )
+        print("Press Ctrl+C to stop.")
+        if not args.no_browser:
+            webbrowser.open(url)
+
+        while all(p.poll() is None for p in procs):
+            time.sleep(1)
+        print("A server process exited; shutting down.")
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopping...")
+        return 0
+    finally:
+        for proc in reversed(procs):
+            stop_process_tree(proc)
 
 
 if __name__ == "__main__":
     try:
-        main()
-    except KeyboardInterrupt:
-        print("\nStartup interrupted by user.")
-    except Exception as error:
-        print(f"Startup failed: {error}")
-        if platform.system() == "Windows":
-            input("Press Enter to exit...")
+        sys.exit(main())
+    except StartupError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)

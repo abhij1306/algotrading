@@ -24,7 +24,7 @@ exclude = [
 
 # Note: For symbol format checking (SYM001-SYM003), use the custom checker:
 #   python scripts/check_symbol_format.py
-# See scripts/ruff_integration.md for integration details
+# Defaults to backend/app; pass a path to check elsewhere.
 
 [tool.ruff.lint]
 # Enable specific rule sets

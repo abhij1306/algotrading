@@ -270,7 +270,7 @@ def main() -> int:
     # Determine path to check
     if path is None:
         # Default to backend/app directory
-        path = Path(__file__).parent.parent / "app"
+        path = Path(__file__).resolve().parent.parent / "backend" / "app"
 
     if not path.exists():
         print(f"Error: Path does not exist: {path}", file=sys.stderr)
