@@ -163,36 +163,48 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     file_prefix = f"{scope_label.lower()}_{args.timeframe}min"
     for year, range_from, range_to in windows:
-        year_parts: list[pd.DataFrame] = []
-        failures: list[dict[str, Any]] = []
-        for idx, symbol in enumerate(symbols, start=1):
-            frame = _fetch_symbol_window(symbol, year, range_from, range_to, args, failures)
-            if frame is not None:
-                year_parts.append(frame)
-            if idx % 100 == 0:
-                print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
-
-        combined = _combine_year(year_parts)
-        out_path = out_root / f"{file_prefix}_{year}.parquet"
-        combined.to_parquet(out_path, index=False)
-        fail_path = out_root / f"{file_prefix}_{year}_failures.json"
-        fail_path.write_text(json.dumps(failures, indent=2), encoding="utf-8")
         summary["windows"].append(
-            {
-                "year": year,
-                "range_from": range_from.isoformat(),
-                "range_to": range_to.isoformat(),
-                "rows": int(len(combined)),
-                "symbols": int(combined["symbol"].nunique()) if not combined.empty else 0,
-                "failed_symbols": len({item["symbol"] for item in failures}),
-                "output_parquet": str(out_path.relative_to(PROJECT_ROOT)),
-                "failure_log": str(fail_path.relative_to(PROJECT_ROOT)),
-            }
+            _archive_year(year, range_from, range_to, symbols, args, out_root / file_prefix)
         )
 
     manifest_path = out_root / "manifest.json"
     manifest_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
+
+
+def _archive_year(
+    year: int,
+    range_from: date,
+    range_to: date,
+    symbols: list[str],
+    args: argparse.Namespace,
+    out_prefix: Path,
+) -> dict[str, Any]:
+    """Fetch every symbol for one year window, write its parquet and failure log, summarise."""
+    year_parts: list[pd.DataFrame] = []
+    failures: list[dict[str, Any]] = []
+    for idx, symbol in enumerate(symbols, start=1):
+        frame = _fetch_symbol_window(symbol, year, range_from, range_to, args, failures)
+        if frame is not None:
+            year_parts.append(frame)
+        if idx % 100 == 0:
+            print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
+
+    combined = _combine_year(year_parts)
+    out_path = out_prefix.with_name(f"{out_prefix.name}_{year}.parquet")
+    combined.to_parquet(out_path, index=False)
+    fail_path = out_prefix.with_name(f"{out_prefix.name}_{year}_failures.json")
+    fail_path.write_text(json.dumps(failures, indent=2), encoding="utf-8")
+    return {
+        "year": year,
+        "range_from": range_from.isoformat(),
+        "range_to": range_to.isoformat(),
+        "rows": int(len(combined)),
+        "symbols": int(combined["symbol"].nunique()) if not combined.empty else 0,
+        "failed_symbols": len({item["symbol"] for item in failures}),
+        "output_parquet": str(out_path.relative_to(PROJECT_ROOT)),
+        "failure_log": str(fail_path.relative_to(PROJECT_ROOT)),
+    }
 
 
 def _fetch_symbol_window(

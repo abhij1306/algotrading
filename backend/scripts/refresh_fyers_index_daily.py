@@ -132,11 +132,10 @@ def main() -> int:
     failures: list[dict[str, Any]] = []
     parts: list[pd.DataFrame] = [existing] if not existing.empty else []
     refresh_summary: dict[str, Any] = {}
+    end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else today
 
     for idx, universe_id in enumerate(universes, start=1):
         start_date = _universe_start_date(args.start_date, existing, universe_id)
-        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else today
-
         fyers_symbol = symbol_master.to_fyers(universe_id)
         refresh_summary[universe_id] = {
             "fyers_symbol": fyers_symbol,
