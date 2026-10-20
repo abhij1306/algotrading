@@ -24,9 +24,9 @@ import {
   useBacktestStrategies,
   useRunBacktest,
   type BacktestRunPayload,
-  type BacktestStatus,
   type StrategyMeta,
 } from "@/lib/queries/backtest";
+import { deriveFormDefaults, type SelectionMode } from "./form-defaults";
 
 type StrategyAllocation = {
   strategy_id: string;
@@ -46,29 +46,6 @@ function formatCompactCapital(value: number | null | undefined): string {
   return `₹${value.toLocaleString("en-IN")}`;
 }
 
-/** Prefill the form from the data-availability status: preferred universe plus its date range. */
-function deriveFormDefaults(status: BacktestStatus | undefined): {
-  universe: string;
-  startDate: string;
-  endDate: string;
-} {
-  if (!status) return { universe: "NIFTY50", startDate: "", endDate: "" };
-  const firstUniverse = Object.keys(status.universe_ranges)[0];
-  const universe = (status.universe_ranges.NIFTY50 ? "NIFTY50" : firstUniverse) || "NIFTY50";
-  const range = status.universe_ranges[universe];
-  if (range?.min_date && range.max_date) {
-    return { universe, startDate: range.min_date, endDate: range.max_date };
-  }
-  if (status.stock_range.min_date && status.stock_range.max_date) {
-    return {
-      universe,
-      startDate: status.stock_range.min_date,
-      endDate: status.stock_range.max_date,
-    };
-  }
-  return { universe, startDate: "", endDate: "" };
-}
-
 export default function BacktestPage() {
   const navigate = useNavigate();
   const statusQuery = useBacktestStatus();
@@ -81,20 +58,26 @@ export default function BacktestPage() {
   const runs = useMemo(() => (runsQuery.data ?? []).slice(0, RECENT_RUNS_LIMIT), [runsQuery.data]);
   const loading = statusQuery.isPending || strategiesQuery.isPending || runsQuery.isPending;
   const running = runBacktest.isPending;
-  const error = statusQuery.error?.message ?? runBacktest.error?.message ?? null;
+  const queryError =
+    statusQuery.error?.message ??
+    (strategiesQuery.error && `Failed to load strategies: ${strategiesQuery.error.message}`) ??
+    (runsQuery.error && `Failed to load recent runs: ${runsQuery.error.message}`) ??
+    null;
+  const error = queryError ?? runBacktest.error?.message ?? null;
 
   const [name, setName] = useState("");
   const [instrumentType, setInstrumentType] = useState<"equity" | "options">("equity");
-  const [selectionMode, setSelectionMode] = useState<"universe" | "symbols">("universe");
   const [symbols, setSymbols] = useState("RELIANCE,SBIN,TCS");
   const [initialCapital, setInitialCapital] = useState("1000000");
   // Fields the user has edited; anything null/absent falls back to the server-derived default.
+  const [selectionModeEdit, setSelectionMode] = useState<SelectionMode | null>(null);
   const [universeEdit, setUniverse] = useState<string | null>(null);
   const [startDateEdit, setStartDate] = useState<string | null>(null);
   const [endDateEdit, setEndDate] = useState<string | null>(null);
   const [allocationEdits, setAllocationEdits] = useState<Record<string, AllocationEdit>>({});
 
   const defaults = useMemo(() => deriveFormDefaults(status), [status]);
+  const selectionMode = selectionModeEdit ?? defaults.selectionMode;
   const universe = universeEdit ?? defaults.universe;
   const startDate = startDateEdit ?? defaults.startDate;
   const endDate = endDateEdit ?? defaults.endDate;
@@ -110,6 +93,11 @@ export default function BacktestPage() {
   );
 
   const selectedCount = useMemo(() => allocations.filter((a) => a.enabled).length, [allocations]);
+  let runDisabledReason: string | null = null;
+  if (strategiesQuery.isError) runDisabledReason = "Run disabled: strategies could not be loaded.";
+  else if (!loading && selectedCount === 0) {
+    runDisabledReason = "Run disabled: select at least one strategy.";
+  }
   const selectedWeightSum = useMemo(
     () => allocations.filter((a) => a.enabled).reduce((sum, a) => sum + (Number(a.weight) || 0), 0),
     [allocations],
@@ -240,7 +228,9 @@ export default function BacktestPage() {
                     <Select
                       label="Selection Mode"
                       value={selectionMode}
-                      onChange={(e) => setSelectionMode(e.target.value as "universe" | "symbols")}
+                      onChange={(e) =>
+                        setSelectionMode(e.target.value === "symbols" ? "symbols" : "universe")
+                      }
                     >
                       <option value="universe">Index Universe</option>
                       <option value="symbols">Specific Symbols</option>
@@ -303,6 +293,9 @@ export default function BacktestPage() {
                       >
                         {running ? "Running..." : "Run Backtest"}
                       </Button>
+                      {runDisabledReason && (
+                        <div className="text-xs text-foreground-muted">{runDisabledReason}</div>
+                      )}
                     </CardContent>
                   </Card>
                 </div>

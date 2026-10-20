@@ -27,6 +27,7 @@ import { getTradingViewUrl } from "@/lib/tradingview";
 type ScreenerResult = ScreenerRow;
 type IndexItem = ScreenerIndex;
 type LiveFields = Pick<ScreenerResult, "price" | "change" | "volume">;
+type LiveOverride = LiveFields & { receivedAt: number };
 
 interface TickData {
   symbol?: string;
@@ -385,12 +386,15 @@ export default function ScreenerPage() {
   const error = resultsQuery.error?.message ?? null;
   const totalResults = resultsQuery.data?.total ?? 0;
 
-  // Server rows with live tick values (websocket / polling fallback) layered on top.
-  const [liveBySymbol, setLiveBySymbol] = useState<Record<string, LiveFields>>({});
+  // Server rows with live tick values (websocket / polling fallback) layered on top. A live
+  // value only wins while it is newer than the server data it overrides.
+  const [liveBySymbol, setLiveBySymbol] = useState<Record<string, LiveOverride>>({});
   const results = useMemo<ScreenerResult[]>(
     () =>
       (resultsQuery.data?.rows ?? []).map((row) => {
-        const live = liveBySymbol[row.symbol];
+        const candidate = liveBySymbol[row.symbol];
+        const live =
+          candidate && candidate.receivedAt > resultsQuery.dataUpdatedAt ? candidate : undefined;
         return {
           ...row,
           price: roundToDecimals(live?.price ?? row.price, 2),
@@ -398,7 +402,7 @@ export default function ScreenerPage() {
           volume: live?.volume ?? row.volume,
         };
       }),
-    [resultsQuery.data, liveBySymbol],
+    [resultsQuery.data, resultsQuery.dataUpdatedAt, liveBySymbol],
   );
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
@@ -598,7 +602,8 @@ export default function ScreenerPage() {
       if (currentResults.length === 0) return;
 
       const flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }> = [];
-      const updates: Record<string, LiveFields> = {};
+      const updates: Record<string, LiveOverride> = {};
+      const receivedAt = Date.now();
 
       for (const row of currentResults) {
         const tick = pending[row.symbol];
@@ -609,6 +614,7 @@ export default function ScreenerPage() {
           price: updatedRow.price,
           change: updatedRow.change,
           volume: updatedRow.volume,
+          receivedAt,
         };
       }
 
