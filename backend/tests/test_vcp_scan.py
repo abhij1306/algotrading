@@ -22,6 +22,7 @@ from app.models import (
     SystemConfig,
     VCPScanResult,
 )
+from app.services.vcp import scan as scan_module
 from app.services.vcp.config import VCPParams
 from app.services.vcp.regime import RegimeSnapshot
 from app.services.vcp.scan import ScanService, rank_signals, serialize_scan_row
@@ -484,6 +485,52 @@ def test_scan_rows_are_sized_on_the_configured_capital(
         queued["planned_shares"],
     ]
     assert shares == [213, 213, 213, 213]
+
+
+def test_stored_rows_keep_the_capital_their_scan_used(
+    factory: sessionmaker, scope: ScopeFactory
+) -> None:
+    with factory() as db:
+        db.add(SystemConfig(key="DEFAULT_CAPITAL", value="100000"))
+        db.commit()
+    service = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+    scan = service.run_scan("NIFTY500", BASE_DAY)
+    with factory() as db:
+        db.query(SystemConfig).filter(SystemConfig.key == "DEFAULT_CAPITAL").one().value = "500000"
+        db.commit()
+
+    latest = service.get_latest_scan("NIFTY500")
+
+    shares = [scan["results"][0]["planned_shares"], latest["results"][0]["planned_shares"]]
+    assert shares == [213, 213]
+
+
+def test_a_scan_whose_run_marker_fails_stores_nothing(
+    factory: sessionmaker, scope: ScopeFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+    kept = first.run_scan("NIFTY500", BASE_DAY)
+    second = ScanService(
+        FakeHistory(VCPX),
+        FakeRegime(),
+        session_scope=scope,
+        clock=FixedClock(datetime(2025, 2, 22, 9, 30, tzinfo=UTC)),
+    )
+
+    def fail(*_args: object) -> None:
+        raise RuntimeError("marker write failed")
+
+    monkeypatch.setattr(scan_module, "record_scan_run", fail)
+    with pytest.raises(RuntimeError):
+        second.run_scan("NIFTY500", BASE_DAY)
+    monkeypatch.undo()
+    latest = first.get_latest_scan("NIFTY500")
+
+    with factory() as db:
+        stored_scans = [row[0] for row in db.query(VCPScanResult.scan_id).distinct().all()]
+    assert stored_scans == [kept["scan_id"]]
+    found = (latest["scan_id"], [row["id"] for row in latest["results"]])
+    assert found == (kept["scan_id"], [kept["results"][0]["id"]])
 
 
 def test_universe_name_is_stored_and_looked_up_stripped(

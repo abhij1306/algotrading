@@ -55,8 +55,10 @@ DETAIL_CHART_BARS = 160
 GRADE_RANK = {"A": 0, "B": 1, "C": 2}
 SIGNAL = "SIGNAL"
 PENDING_ENTRY = "PENDING_ENTRY"
+# Stored-row metadata key: the capital the scan sized the signal on.
+CAPITAL_FIELD = "capital"
 
-# Signal fields copied as-is onto a stored VCPScanResult row.
+# Signal fields copied as-is onto a stored VCPScanResult row (metadata_json gains the capital).
 _RECORD_FIELDS = (
     "symbol",
     "company_name",
@@ -78,7 +80,6 @@ _RECORD_FIELDS = (
     "close_position_in_range",
     "overhead_clear",
     "regime",
-    "metadata_json",
 )
 
 
@@ -246,16 +247,18 @@ def rank_signals(signals: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 def serialize_scan_row(
     row: VCPScanResult, params: VCPParams = DEFAULT_PARAMS, capital: float | None = None
 ) -> dict[str, Any]:
-    """A stored signal in the API shape, sized on `capital` (`params.default_capital` if None).
+    """A stored signal in the API shape, sized on the capital its scan used.
 
-    `ScanService` passes the capital configured in `system_config`, the same capital the
-    scan sized its signals on.
+    That capital is recorded in the row's metadata. Older rows without it are sized on
+    `capital`, or on `params.default_capital` when `capital` is None.
     """
     metadata_json = row.metadata_json or {}
     pivot_high = float(row.pivot_high)
     risk_distance = max(0.01, pivot_high - float(row.stop_level))
     risk_pct = float(metadata_json.get("risk_pct", params.risk_pct_bull))
-    if capital is None:
+    if CAPITAL_FIELD in metadata_json:
+        capital = float(metadata_json[CAPITAL_FIELD])
+    elif capital is None:
         capital = params.default_capital
     planned_shares = int(math.floor((capital * risk_pct) / risk_distance))
     planned_shares = max(
@@ -378,7 +381,11 @@ class ScanService:
         return ScanOutcome(regime=regime, symbols_scanned=len(frames), signals=signals)
 
     def _serialize(self, db: Session, rows: Iterable[VCPScanResult]) -> list[dict[str, Any]]:
-        """Stored rows in the API shape, sized on the capital configured in `system_config`."""
+        """Stored rows in the API shape, sized on their scan's capital.
+
+        Rows stored before the scan capital was recorded use the capital configured in
+        `system_config`.
+        """
         capital = configured_capital(db, self._params)
         return [serialize_scan_row(row, self._params, capital) for row in rows]
 
@@ -414,22 +421,23 @@ class ScanService:
                     universe=code,
                     signal_status=SIGNAL,
                     **{name: signal[name] for name in _RECORD_FIELDS},
+                    # The capital the signal was sized on, so a later capital change
+                    # does not re-size this scan.
+                    metadata_json={**signal["metadata_json"], CAPITAL_FIELD: capital},
                 )
                 for signal in outcome.signals
             ]
             db.add_all(persisted)
-            db.commit()
+            # Commits the rows and the run marker together: either both are stored or neither.
+            record_scan_run(db, code, ScanRun(scan_id, scan_date, scan_timestamp))
             for record in persisted:
                 db.refresh(record)
 
             set_config(db, LAST_SCAN_DATE_KEY, scan_date.isoformat())
             set_config(db, LAST_SCAN_UNIVERSE_KEY, code)
             set_config(db, LAST_SCAN_RESULT_COUNT_KEY, str(len(persisted)))
-            record_scan_run(db, code, ScanRun(scan_id, scan_date, scan_timestamp))
 
-            results = rank_signals(
-                serialize_scan_row(record, self._params, capital) for record in persisted
-            )
+            results = rank_signals(serialize_scan_row(record, self._params) for record in persisted)
             duration_ms = (time.perf_counter() - started) * 1000.0
             runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.scan_runs")
