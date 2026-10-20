@@ -60,9 +60,13 @@ export function roundToDecimals(value: MaybeNumber, decimals: number = 2): numbe
   if (Number.isInteger(magnitude)) return value === 0 ? 0 : value;
   const text = String(magnitude);
   // Below 1e-6 the text is in exponent notation with no decimal point to shift: scale directly.
-  const rounded = text.includes("e")
-    ? Math.round(magnitude * 10 ** decimals) / 10 ** decimals
-    : Number(`${Math.round(Number(`${text}e${decimals}`))}e-${decimals}`);
+  let rounded: number;
+  if (text.includes("e")) {
+    rounded = Math.round(magnitude * 10 ** decimals) / 10 ** decimals;
+  } else {
+    const scaled = Math.round(Number(`${text}e${decimals}`));
+    rounded = Number(`${scaled}e-${decimals}`);
+  }
   if (rounded === 0) return 0;
   return value < 0 ? -rounded : rounded;
 }
