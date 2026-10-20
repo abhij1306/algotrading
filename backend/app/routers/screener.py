@@ -1,10 +1,7 @@
 import logging
-import threading
-import time
-from collections import OrderedDict
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session, aliased
 
@@ -12,48 +9,18 @@ from ..constants.indices import DEFAULT_SCREENER_UNIVERSE
 from ..data_fetcher import fetch_fyers_quotes
 from ..database import SessionLocal
 from ..models import Company, HistoricalPrice
+from ..services.screener import TTLCache, get_screener_cache
 from ..services.universe import get_universe_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_SCREENER_CACHE_TTL_SECONDS = 5.0
-_SCREENER_CACHE_MAXSIZE = 256
-_screener_cache_lock = threading.Lock()
-_screener_cache: OrderedDict[tuple, tuple[float, dict[str, Any]]] = OrderedDict()
 RESULTS_ERROR_RESPONSES = {
     400: {"description": "Invalid screener input"},
     500: {"description": "Failed to load screener results"},
 }
 INDICES_ERROR_RESPONSES = {500: {"description": "Failed to load screener universes"}}
 LIVE_SORT_FIELDS = {"price", "change", "volume"}
-
-
-def _get_cached_screener_payload(cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
-    now = time.time()
-    with _screener_cache_lock:
-        expired_keys = [
-            key
-            for key, (cached_at, _) in _screener_cache.items()
-            if (now - cached_at) >= _SCREENER_CACHE_TTL_SECONDS
-        ]
-        for key in expired_keys:
-            _screener_cache.pop(key, None)
-
-        cached = _screener_cache.get(cache_key)
-        if cached is None:
-            return None
-
-        _screener_cache.move_to_end(cache_key)
-        return cached[1]
-
-
-def _store_screener_payload(cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
-    with _screener_cache_lock:
-        _screener_cache[cache_key] = (time.time(), payload)
-        _screener_cache.move_to_end(cache_key)
-        while len(_screener_cache) > _SCREENER_CACHE_MAXSIZE:
-            _screener_cache.popitem(last=False)
 
 
 def _normalize_screener_request(
@@ -335,6 +302,7 @@ def get_indices(response: Response) -> dict[str, Any]:
 
 @router.get("/results", responses=RESULTS_ERROR_RESPONSES)
 def get_screener_results(
+    cache: Annotated[TTLCache[dict[str, Any]], Depends(get_screener_cache)],
     universe: Annotated[str, Query(min_length=1)] = DEFAULT_SCREENER_UNIVERSE,
     query: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
@@ -368,7 +336,7 @@ def get_screener_results(
         )
 
         if not full:
-            cached = _get_cached_screener_payload(cache_key)
+            cached = cache.get(cache_key)
             if cached is not None:
                 return cached
 
@@ -391,7 +359,7 @@ def get_screener_results(
             full,
         )
         if not full:
-            _store_screener_payload(cache_key, payload)
+            cache.set(cache_key, payload)
         return payload
     finally:
         if db:

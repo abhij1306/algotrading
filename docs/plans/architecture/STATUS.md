@@ -121,7 +121,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 7: data and screener
 - [x] 1. `paths.py` and `utils/dates.parse_iso_date` (S) (#61).
-- [ ] 2. A SnapshotStore, with tests using temporary parquet files (M).
+- [x] 2. A SnapshotStore, with tests using temporary parquet files (M).
 - [ ] 3. Extract a ScreenerService (M).
 - [ ] 4. Cap the live sort at the top K (S).
 - [ ] 5. PriceHistory and QuoteSource ports (S).
