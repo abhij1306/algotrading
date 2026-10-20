@@ -4,8 +4,8 @@ The table tests touch no database or network; the last test stores a scan in in-
 SQLite to check point-in-time membership and the queue/cancel round trip.
 """
 
-from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Generator, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime
 
 import numpy as np
@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.base import Base
-from app.models import IndexConstituentHistory, IndexUniverseDefinition, VCPScanResult
+from app.models import (
+    IndexConstituentHistory,
+    IndexUniverseDefinition,
+    SystemConfig,
+    VCPScanResult,
+)
 from app.services.vcp.config import VCPParams
 from app.services.vcp.regime import RegimeSnapshot
 from app.services.vcp.scan import ScanService, rank_signals, serialize_scan_row
@@ -416,3 +421,154 @@ def test_queue_unknown_signal_fails(factory: sessionmaker) -> None:
         service.queue_signal(404)
 
     assert str(excinfo.value) == "Signal not found"
+
+
+# --- stored scan consistency: capital, universe name, empty scans, ranking ------------
+
+ScopeFactory = Callable[[], AbstractContextManager[Session]]
+
+
+@pytest.fixture
+def scope(factory: sessionmaker) -> ScopeFactory:
+    @contextmanager
+    def session_scope() -> Iterator[Session]:
+        with factory() as db:
+            yield db
+
+    return session_scope
+
+
+def _stored(scan_id: str, symbol: str, depth: float, rs: int, universe: str) -> VCPScanResult:
+    """A grade-A breakout row of one stored scan."""
+    return VCPScanResult(
+        scan_id=scan_id,
+        scan_date=BASE_DAY,
+        scan_timestamp=datetime(2025, 2, 21, 11, 0, tzinfo=UTC),
+        universe=universe,
+        symbol=symbol,
+        grade="A",
+        rs_rating=rs,
+        stage2_conditions_met=8,
+        contraction_count=3,
+        contraction_depths=[18.0, 8.0, depth],
+        final_contraction_depth=depth,
+        volume_dry_up_pct=40.0,
+        pivot_high=100.0,
+        stop_level=95.0,
+        stop_pct=5.0,
+        is_breakout=True,
+        overhead_clear=True,
+        regime="BULL",
+        signal_status="SIGNAL",
+        metadata_json={"risk_pct": 0.01},
+    )
+
+
+def test_scan_rows_are_sized_on_the_configured_capital(
+    factory: sessionmaker, scope: ScopeFactory
+) -> None:
+    with factory() as db:
+        db.add(SystemConfig(key="DEFAULT_CAPITAL", value="100000"))
+        db.commit()
+    service = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+
+    scan = service.run_scan("NIFTY500", BASE_DAY)
+    latest = service.get_latest_scan("NIFTY500")
+    detail = service.get_signal_detail("VCPX")
+    queued = service.queue_signal(scan["results"][0]["id"])
+
+    shares = [
+        scan["results"][0]["planned_shares"],
+        latest["results"][0]["planned_shares"],
+        detail["signal"]["planned_shares"],
+        queued["planned_shares"],
+    ]
+    assert shares == [213, 213, 213, 213]
+
+
+def test_universe_name_is_stored_and_looked_up_stripped(
+    factory: sessionmaker, scope: ScopeFactory
+) -> None:
+    service = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+
+    scan = service.run_scan("  nifty500 ", BASE_DAY)
+    latest = service.get_latest_scan("NIFTY500")
+
+    with factory() as db:
+        stored = [row[0] for row in db.query(VCPScanResult.universe).distinct().all()]
+    assert stored == ["NIFTY500"]
+    assert scan["universe"] == "NIFTY500"
+    found = (latest["scan_id"], latest["universe"], len(latest["results"]))
+    assert found == (scan["scan_id"], "NIFTY500", 1)
+
+
+@pytest.mark.parametrize("requested", ["NIFTY500", " nifty500 "])
+def test_rows_stored_with_an_unstripped_universe_are_still_found(
+    factory: sessionmaker, scope: ScopeFactory, requested: str
+) -> None:
+    with factory() as db:
+        db.add(_stored("old-scan", "VCPX", 3.0, 90, " NIFTY500 "))
+        db.commit()
+    service = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+
+    latest = service.get_latest_scan(requested)
+
+    found = (latest["scan_id"], latest["universe"], [row["symbol"] for row in latest["results"]])
+    assert found == ("old-scan", "NIFTY500", ["VCPX"])
+
+
+def test_latest_scan_after_an_empty_scan_returns_that_empty_scan(scope: ScopeFactory) -> None:
+    first = ScanService(
+        FakeHistory(VCPX),
+        FakeRegime(),
+        session_scope=scope,
+        clock=FixedClock(datetime(2025, 2, 21, 11, 0, tzinfo=UTC)),
+    )
+    # VCPX trending down: scanned, but no setup.
+    second = ScanService(
+        FakeHistory(LAGGARD.assign(symbol="VCPX")),
+        FakeRegime(),
+        session_scope=scope,
+        clock=FixedClock(datetime(2025, 2, 22, 9, 30, tzinfo=UTC)),
+    )
+
+    with_signal = first.run_scan("NIFTY500", BASE_DAY)
+    empty = second.run_scan("NIFTY500", BASE_DAY)
+    latest = second.get_latest_scan("NIFTY500")
+
+    assert [row["symbol"] for row in with_signal["results"]] == ["VCPX"]
+    assert empty["results"] == []
+    current = (
+        latest["scan_id"],
+        latest["scan_timestamp"],
+        latest["scan_date"],
+        latest["universe"],
+        latest["results"],
+        latest["regime"]["regime"],
+    )
+    assert current == (
+        empty["scan_id"],
+        "2025-02-22T09:30:00+00:00",
+        "2025-02-21",
+        "NIFTY500",
+        [],
+        "BULL",
+    )
+
+
+def test_latest_scan_ranks_like_run_scan(factory: sessionmaker, scope: ScopeFactory) -> None:
+    with factory() as db:
+        db.add_all(
+            [
+                _stored("scan-1", "WIDE", 6.0, 99, "NIFTY500"),
+                _stored("scan-1", "TIGHT", 3.0, 80, "NIFTY500"),
+                _stored("scan-1", "TIGHT_HI", 3.0, 95, "NIFTY500"),
+            ]
+        )
+        db.commit()
+    service = ScanService(FakeHistory(VCPX), FakeRegime(), session_scope=scope)
+
+    latest = service.get_latest_scan("NIFTY500")
+
+    order = [row["symbol"] for row in latest["results"]]
+    assert order == ["TIGHT_HI", "TIGHT", "WIDE"]

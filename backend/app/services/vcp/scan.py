@@ -16,11 +16,11 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Protocol
 
 import pandas as pd
-from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from ...database import db_session_scope
 from ...models import VCPScanResult
@@ -33,9 +33,11 @@ from .config import (
     LAST_SCAN_DATE_KEY,
     LAST_SCAN_RESULT_COUNT_KEY,
     LAST_SCAN_UNIVERSE_KEY,
+    ScanRun,
     VCPParams,
     configured_capital,
-    last_scan_date,
+    last_scan_run,
+    record_scan_run,
     set_config,
 )
 from .pattern import MIN_HISTORY_BARS, STOP_OFFSET_PCT
@@ -234,17 +236,27 @@ def _rank_key(signal: dict[str, Any]) -> tuple[int, int, float, int]:
 
 
 def rank_signals(signals: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Grade A first, then breakouts, then the tighter final contraction, then higher RS."""
+    """Grade A first, then breakouts, then the tighter final contraction, then higher RS.
+
+    The one scan ranking: `run_scan` and `get_latest_scan` both order their results with it.
+    """
     return sorted(signals, key=_rank_key)
 
 
-def serialize_scan_row(row: VCPScanResult, params: VCPParams = DEFAULT_PARAMS) -> dict[str, Any]:
-    """A stored signal in the API shape, sized on `params.default_capital`."""
+def serialize_scan_row(
+    row: VCPScanResult, params: VCPParams = DEFAULT_PARAMS, capital: float | None = None
+) -> dict[str, Any]:
+    """A stored signal in the API shape, sized on `capital` (`params.default_capital` if None).
+
+    `ScanService` passes the capital configured in `system_config`, the same capital the
+    scan sized its signals on.
+    """
     metadata_json = row.metadata_json or {}
     pivot_high = float(row.pivot_high)
     risk_distance = max(0.01, pivot_high - float(row.stop_level))
     risk_pct = float(metadata_json.get("risk_pct", params.risk_pct_bull))
-    capital = params.default_capital
+    if capital is None:
+        capital = params.default_capital
     planned_shares = int(math.floor((capital * risk_pct) / risk_distance))
     planned_shares = max(
         0,
@@ -365,25 +377,33 @@ class ScanService:
                 signals.append(signal)
         return ScanOutcome(regime=regime, symbols_scanned=len(frames), signals=signals)
 
+    def _serialize(self, db: Session, rows: Iterable[VCPScanResult]) -> list[dict[str, Any]]:
+        """Stored rows in the API shape, sized on the capital configured in `system_config`."""
+        capital = configured_capital(db, self._params)
+        return [serialize_scan_row(row, self._params, capital) for row in rows]
+
     def run_scan(
         self, universe_code: str = DEFAULT_UNIVERSE, scan_date: date | None = None
     ) -> dict[str, Any]:
-        """Scan the members of `universe_code` on `scan_date`, store and return the signals."""
+        """Scan the members of `universe_code` on `scan_date`, store and return the signals.
+
+        Every completed scan is recorded as the universe's latest scan run, also when it
+        finds no signals, so `get_latest_scan` never returns an older scan's signals.
+        """
         started = time.perf_counter()
         scan_date = self.as_of_date(scan_date)
         scan_id = str(uuid.uuid4())
         scan_timestamp = self._clock.now()
-        code = universe_code.upper()
+        code = universe.normalize_universe(universe_code)
         with self._session_scope() as db:
-            symbols, constituent_mode = universe.constituents_for_date(db, universe_code, scan_date)
+            symbols, constituent_mode = universe.constituents_for_date(db, code, scan_date)
             if not symbols:
-                raise ValueError(
-                    f"No constituents found for {universe_code} on {scan_date.isoformat()}"
-                )
+                raise ValueError(f"No constituents found for {code} on {scan_date.isoformat()}")
+            capital = configured_capital(db, self._params)
             outcome = self.scan_symbols(
                 symbols,
                 scan_date,
-                configured_capital(db, self._params),
+                capital,
                 lambda found: universe.company_meta(db, found),
             )
             persisted = [
@@ -405,8 +425,11 @@ class ScanService:
             set_config(db, LAST_SCAN_DATE_KEY, scan_date.isoformat())
             set_config(db, LAST_SCAN_UNIVERSE_KEY, code)
             set_config(db, LAST_SCAN_RESULT_COUNT_KEY, str(len(persisted)))
+            record_scan_run(db, code, ScanRun(scan_id, scan_date, scan_timestamp))
 
-            results = rank_signals(serialize_scan_row(record, self._params) for record in persisted)
+            results = rank_signals(
+                serialize_scan_row(record, self._params, capital) for record in persisted
+            )
             duration_ms = (time.perf_counter() - started) * 1000.0
             runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.scan_runs")
@@ -438,57 +461,50 @@ class ScanService:
             "regime": serialize_regime(self._regime.get_regime()),
         }
 
+    @staticmethod
+    def _newest_stored_run(db: Session, code: str) -> ScanRun | None:
+        """The scan of the newest stored row: the fallback for scans run before run markers."""
+        row = (
+            db.query(VCPScanResult)
+            .filter(universe.is_stored_universe(code))
+            .order_by(
+                VCPScanResult.scan_timestamp.desc(),
+                VCPScanResult.created_at.desc(),
+                VCPScanResult.id.desc(),
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return ScanRun(row.scan_id, row.scan_date, row.scan_timestamp)
+
     def get_latest_scan(
         self, universe_code: str = DEFAULT_UNIVERSE, show_all: bool = False
     ) -> dict[str, Any]:
-        """The newest stored scan for the universe; grades A and B only unless `show_all`."""
-        code = universe_code.upper()
+        """The newest completed scan for the universe; grades A and B only unless `show_all`.
+
+        A newest scan that found no signals returns an empty result with its own date.
+        """
+        code = universe.normalize_universe(universe_code)
         with self._session_scope() as db:
-            latest: datetime | date | None = (
-                db.query(func.max(VCPScanResult.scan_timestamp))
-                .filter(VCPScanResult.universe == code)
-                .scalar()
-            )
-            if latest is None:
-                latest = last_scan_date(db)
-            if latest is None:
-                return self._empty_scan(code)
-            latest_row = (
-                db.query(VCPScanResult)
-                .filter(VCPScanResult.universe == code)
-                .order_by(
-                    VCPScanResult.scan_timestamp.desc(),
-                    VCPScanResult.created_at.desc(),
-                    VCPScanResult.id.desc(),
-                )
-                .first()
-            )
-            if latest_row is None:
+            run = last_scan_run(db, code) or self._newest_stored_run(db, code)
+            if run is None:
                 return self._empty_scan(code)
             rows = (
                 db.query(VCPScanResult)
-                .filter(
-                    VCPScanResult.universe == code,
-                    VCPScanResult.scan_id == latest_row.scan_id,
-                )
-                .order_by(
-                    VCPScanResult.grade.asc(),
-                    VCPScanResult.is_breakout.desc(),
-                    VCPScanResult.rs_rating.desc(),
-                )
+                .filter(universe.is_stored_universe(code), VCPScanResult.scan_id == run.scan_id)
+                .order_by(VCPScanResult.id.asc())
                 .all()
             )
             if not show_all:
                 rows = [row for row in rows if row.grade in {"A", "B"}]
             return {
-                "scan_id": latest_row.scan_id,
-                "scan_timestamp": latest_row.scan_timestamp.isoformat()
-                if latest_row.scan_timestamp
-                else None,
-                "scan_date": latest_row.scan_date.isoformat(),
+                "scan_id": run.scan_id,
+                "scan_timestamp": run.scan_timestamp.isoformat() if run.scan_timestamp else None,
+                "scan_date": run.scan_date.isoformat(),
                 "universe": code,
-                "regime": serialize_regime(self._regime.get_regime(latest_row.scan_date)),
-                "results": [serialize_scan_row(row, self._params) for row in rows],
+                "regime": serialize_regime(self._regime.get_regime(run.scan_date)),
+                "results": rank_signals(self._serialize(db, rows)),
             }
 
     def get_signal_detail(self, symbol: str, scan_date: date | None = None) -> dict[str, Any]:
@@ -517,7 +533,7 @@ class ScanService:
                 end_date=row.scan_date,
             )
             return {
-                "signal": serialize_scan_row(row, self._params),
+                "signal": self._serialize(db, [row])[0],
                 "chart": chart_rows(history),
             }
 
@@ -535,4 +551,4 @@ class ScanService:
             row.signal_status = status
             db.commit()
             db.refresh(row)
-            return serialize_scan_row(row, self._params)
+            return self._serialize(db, [row])[0]

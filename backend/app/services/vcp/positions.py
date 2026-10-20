@@ -30,6 +30,7 @@ from .config import (
     set_config,
 )
 from .quotes import QuoteSource
+from .universe import is_stored_universe, normalize_universe
 
 OPEN_STATUSES = ("OPEN", "OPEN_PARTIAL")
 MIN_RISK_DISTANCE = Decimal("0.01")
@@ -198,10 +199,10 @@ class PositionService:
     ) -> dict[str, Any]:
         """Halt state, latest scan, queue and open-position counts; `regime` serializes today's."""
         with self._session_scope() as db:
-            universe_filter = (universe or DEFAULT_UNIVERSE).upper()
+            universe_filter = normalize_universe(universe or DEFAULT_UNIVERSE)
             latest_scan = (
                 db.query(func.max(VCPScanResult.scan_date))
-                .filter(VCPScanResult.universe == universe_filter)
+                .filter(is_stored_universe(universe_filter))
                 .scalar()
             )
             if latest_scan is None:
@@ -209,7 +210,7 @@ class PositionService:
             pending_entries = (
                 db.query(VCPScanResult)
                 .filter(
-                    VCPScanResult.universe == universe_filter,
+                    is_stored_universe(universe_filter),
                     VCPScanResult.signal_status == "PENDING_ENTRY",
                 )
                 .count()
