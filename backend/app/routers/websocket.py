@@ -28,6 +28,8 @@ router = APIRouter()
 
 # Close code for a handshake refused on policy grounds (RFC 6455 section 7.4.1).
 WS_POLICY_VIOLATION = 1008
+# The serialized opaque origin browsers send from sandboxed iframes and file:// pages.
+OPAQUE_ORIGIN = "null"
 
 
 class SubscribeRequest(BaseModel):
@@ -144,11 +146,12 @@ def _stream_origin_allowed(origin: str | None) -> bool:
     open the stream (cross-site WebSocket hijacking) unless its origin is one of the
     configured frontend origins. A missing Origin header is allowed: it comes from
     non-browser clients such as scripts and tests, which a malicious page can't impersonate.
-    The opaque origin "null" (sandboxed iframes, file:// pages) is never in the list.
+    The opaque origin "null" (sandboxed iframes, file:// pages) is refused even if
+    CORS_ORIGINS lists it, since any page can produce it.
     """
     if origin is None:
         return True
-    return origin in config.ALLOWED_ORIGINS
+    return origin != OPAQUE_ORIGIN and origin in config.ALLOWED_ORIGINS
 
 
 async def _handle_stream_text(

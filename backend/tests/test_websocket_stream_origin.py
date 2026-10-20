@@ -81,6 +81,19 @@ def test_disallowed_origin_is_refused_before_accept(
     assert any("disallowed Origin" in r.getMessage() for r in caplog.records)
 
 
+def test_null_origin_is_refused_even_when_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "ALLOWED_ORIGINS", ("null", "http://localhost:3000"))
+    with (
+        pytest.raises(WebSocketDisconnect) as refused,
+        client.websocket_connect(STREAM, headers={"origin": "null"}),
+    ):
+        pytest.fail("handshake should have been refused")
+
+    assert refused.value.code == 1008
+
+
 def test_parse_origins_drops_blanks_and_whitespace() -> None:
     assert parse_origins(" http://localhost:3000, ,http://127.0.0.1:3000,") == (
         "http://localhost:3000",
