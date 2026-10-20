@@ -2230,6 +2230,16 @@ export interface components {
       /** Reason */
       reason?: string | null;
     };
+    /**
+     * InstrumentType
+     * @enum {string}
+     */
+    InstrumentType: "EQ" | "FUT" | "CE" | "PE";
+    /**
+     * Mode
+     * @enum {string}
+     */
+    Mode: "PAPER" | "LIVE";
     /** ModeToggleRequest */
     ModeToggleRequest: {
       /** Mode */
@@ -2243,8 +2253,7 @@ export interface components {
       new_quantity?: number | null;
       /** New Trigger Price */
       new_trigger_price?: number | null;
-      /** New Type */
-      new_type?: string | null;
+      new_type?: components["schemas"]["OrderType"] | null;
       /** Order Id */
       order_id: string;
     };
@@ -2326,21 +2335,15 @@ export interface components {
       client_order_id?: string | null;
       /** Expiry Date */
       expiry_date?: string | null;
-      /**
-       * Instrument Type
-       * @default EQ
-       */
-      instrument_type: string | null;
+      /** @default EQ */
+      instrument_type: components["schemas"]["InstrumentType"] | null;
       /**
        * Is Live Confirmation Ack
        * @default false
        */
       is_live_confirmation_ack: boolean;
-      /**
-       * Mode
-       * @default PAPER
-       */
-      mode: string;
+      /** @default PAPER */
+      mode: components["schemas"]["Mode"];
       /** Option Type */
       option_type?: string | null;
       /**
@@ -2348,14 +2351,12 @@ export interface components {
        * @default 0
        */
       price: number | null;
-      /** Product */
-      product: string;
+      product: components["schemas"]["Product"];
       /** Quantity */
       quantity: number;
       /** Risk Override Reason */
       risk_override_reason?: string | null;
-      /** Side */
-      side: string;
+      side: components["schemas"]["Side"];
       /** Strike Price */
       strike_price?: number | null;
       /** Symbol */
@@ -2370,9 +2371,13 @@ export interface components {
        * @default 0
        */
       trigger_price: number | null;
-      /** Type */
-      type: string;
+      type: components["schemas"]["OrderType"];
     };
+    /**
+     * OrderType
+     * @enum {string}
+     */
+    OrderType: "MARKET" | "LIMIT" | "SL" | "SL-M";
     /** PaperOrderRequest */
     PaperOrderRequest: {
       /**
@@ -2438,34 +2443,30 @@ export interface components {
       /** Unrealized Pnl */
       unrealized_pnl: number;
     };
+    /**
+     * Product
+     * @description Fyers product types, plus MIS, which the broker plugin sends as INTRADAY.
+     * @enum {string}
+     */
+    Product: "INTRADAY" | "CNC" | "MARGIN" | "MIS" | "CO" | "BO" | "MTF";
     /** RiskCheckRequest */
     RiskCheckRequest: {
-      /**
-       * Instrument Type
-       * @default EQ
-       */
-      instrument_type: string;
+      /** @default EQ */
+      instrument_type: components["schemas"]["InstrumentType"];
       /**
        * Price
        * @default 0
        */
       price: number;
-      /**
-       * Product
-       * @default INTRADAY
-       */
-      product: string;
+      /** @default INTRADAY */
+      product: components["schemas"]["Product"];
       /** Quantity */
       quantity: number;
-      /** Side */
-      side: string;
+      side: components["schemas"]["Side"];
       /** Symbol */
       symbol: string;
-      /**
-       * Type
-       * @default MARKET
-       */
-      type: string;
+      /** @default MARKET */
+      type: components["schemas"]["OrderType"];
     };
     /** RiskCheckResponse */
     RiskCheckResponse: {
@@ -2493,17 +2494,19 @@ export interface components {
       universe: string;
     };
     /**
+     * Side
+     * @enum {string}
+     */
+    Side: "BUY" | "SELL";
+    /**
      * SquarePositionRequest
      * @description Square-off; a LIVE request needs a client_order_id (one per click, reused on retry).
      */
     SquarePositionRequest: {
       /** Client Order Id */
       client_order_id?: string | null;
-      /**
-       * Mode
-       * @default PAPER
-       */
-      mode: string;
+      /** @default PAPER */
+      mode: components["schemas"]["Mode"];
       /** Product Type */
       product_type?: string | null;
       /** Symbol */

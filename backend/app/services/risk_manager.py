@@ -6,13 +6,12 @@ Implements circuit breakers, position limits, and margin checks.
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
@@ -21,6 +20,16 @@ from ..database import db_session_scope
 from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
 from ..utils.market_hours import DEFAULT_POLICY, SESSION_CLOSE, SESSION_OPEN, MarketHoursPolicy
+from .execution.intent import (
+    INVALID_QUANTITY_MESSAGE,
+    LIMIT_PRICED_ORDER_TYPES,
+    STOP_ORDER_TYPES,
+    InvalidQuantityError,
+    Mode,
+    OrderIntent,
+    as_intent,
+    coerce_quantity,
+)
 from .symbol_master import SymbolFormat, symbol_master
 
 if TYPE_CHECKING:
@@ -60,45 +69,65 @@ class RiskCheckResult:
     details: dict | None = None
 
 
-INVALID_QUANTITY_MESSAGE = "Quantity must be a positive integer"
+# coerce_quantity and InvalidQuantityError live with OrderIntent; kept importable here.
+__all__ = [
+    "InvalidQuantityError",
+    "RiskCheckResult",
+    "RiskConfig",
+    "RiskManager",
+    "RiskOrder",
+    "RiskStatus",
+    "coerce_quantity",
+    "risk_manager",
+]
 
 
-class InvalidQuantityError(ValueError):
-    """An order quantity that is not a positive whole number. The message is user-facing."""
+@dataclass(frozen=True)
+class RiskOrder:
+    """The fields of an order the risk checks read, typed.
 
-    def __init__(self) -> None:
-        super().__init__(INVALID_QUANTITY_MESSAGE)
-
-
-def coerce_quantity(value: object) -> int:
-    """An order quantity as a positive int.
-
-    Accepts an int, an integral float or Decimal (5.0) and a string of digits ("5").
-    Rejects booleans, fractions (2.5, "2.5"), anything else non-numeric, and values <= 0,
-    raising InvalidQuantityError. Never truncates: 2.9 is rejected, not read as 2.
+    Built from an OrderIntent. A plain mapping is read leniently (a missing field takes
+    its default) for a caller that checks one rule on a partial order; only its quantity
+    is validated, raising InvalidQuantityError.
     """
-    if isinstance(value, bool):
-        raise InvalidQuantityError()
-    if isinstance(value, int):
-        quantity = value
-    elif isinstance(value, float):
-        if not value.is_integer():
-            raise InvalidQuantityError()
-        quantity = int(value)
-    elif isinstance(value, Decimal):
-        if not value.is_finite() or value != value.to_integral_value():
-            raise InvalidQuantityError()
-        quantity = int(value)
-    elif isinstance(value, str):
-        try:
-            quantity = int(value.strip())
-        except ValueError:
-            raise InvalidQuantityError() from None
-    else:
-        raise InvalidQuantityError()
-    if quantity <= 0:
-        raise InvalidQuantityError()
-    return quantity
+
+    symbol: str = ""
+    fyers_symbol: str | None = None
+    side: str = "BUY"
+    quantity: int = 0
+    order_type: str = "MARKET"
+    price: float = 0.0
+    trigger_price: float = 0.0
+    product: str = "INTRADAY"
+    instrument_type: str | None = None
+
+    @classmethod
+    def of(cls, order: "RiskOrder | OrderIntent | Mapping[str, Any]") -> Self:
+        if isinstance(order, cls):
+            return order
+        if isinstance(order, OrderIntent):
+            return cls(
+                symbol=order.symbol,
+                fyers_symbol=order.fyers_symbol,
+                side=order.side.value,
+                quantity=order.quantity,
+                order_type=order.order_type.value,
+                price=float(order.price or 0),
+                trigger_price=float(order.trigger_price or 0),
+                product=order.product.value,
+                instrument_type=order.instrument_type.value if order.instrument_type else None,
+            )
+        return cls(
+            symbol=str(order.get("symbol") or ""),
+            fyers_symbol=order.get("fyers_symbol"),
+            side=str(order.get("side") or "BUY").upper(),
+            quantity=coerce_quantity(order.get("quantity")),
+            order_type=str(order.get("type") or "MARKET").upper(),
+            price=float(order.get("price") or 0),
+            trigger_price=float(order.get("trigger_price") or 0),
+            product=str(order.get("product") or "INTRADAY").upper(),
+            instrument_type=order.get("instrument_type"),
+        )
 
 
 def _invalid_quantity_result() -> RiskCheckResult:
@@ -219,33 +248,34 @@ class RiskManager:
             logger.warning("Could not fetch quote for %s", symbol, exc_info=True)
         return 0
 
-    def _order_price(self, order_params: dict) -> float:
+    def _order_price(self, order: RiskOrder) -> float:
         """The price an order is valued at: its own price when it has one (a limit), else
         the live quote. 0 when neither is available."""
-        price = float(order_params.get("price") or 0)
-        if price > 0:
-            return price
-        return self._get_estimated_price(
-            order_params.get("symbol", ""), order_params.get("fyers_symbol")
-        )
+        if order.price > 0:
+            return order.price
+        return self._get_estimated_price(order.symbol, order.fyers_symbol)
 
     @staticmethod
-    def _price_estimate_failed(order_params: dict) -> RiskCheckResult:
-        symbol = order_params.get("symbol", "")
+    def _price_estimate_failed(order: RiskOrder) -> RiskCheckResult:
         return RiskCheckResult(
             status=RiskStatus.FAIL,
-            message=f"Cannot estimate price for {symbol}. Please provide limit price.",
+            message=f"Cannot estimate price for {order.symbol}. Please provide limit price.",
             code="PRICE_ESTIMATE_FAILED",
         )
 
     def pre_trade_check(
-        self, order_params: dict, db: Session | None = None, *, user_id: str
+        self,
+        order_params: OrderIntent | Mapping[str, Any],
+        db: Session | None = None,
+        *,
+        user_id: str,
     ) -> RiskCheckResult:
         """
         Perform pre-trade risk checks for a new LIVE order.
 
         Args:
-            order_params: Order details
+            order_params: the order; a mapping is built into an OrderIntent first, and an
+                invalid one fails (INVALID_QUANTITY, or INVALID_ORDER with the reason)
             db: Database session
             user_id: whose daily loss to check (the owner of the synced LIVE positions)
 
@@ -254,10 +284,11 @@ class RiskManager:
             WARNING or PASS lists every warning message in details["warnings"].
         """
         try:
-            quantity = coerce_quantity(order_params.get("quantity"))
+            order = RiskOrder.of(as_intent(order_params, Mode.LIVE))
         except InvalidQuantityError:
             return _invalid_quantity_result()
-        order = {**order_params, "quantity": quantity}
+        except ValueError as exc:
+            return RiskCheckResult(status=RiskStatus.FAIL, message=str(exc), code="INVALID_ORDER")
 
         checks = [
             self._check_market_hours,
@@ -268,21 +299,21 @@ class RiskManager:
             lambda: self._check_available_margin(order),
             lambda: self._check_order_frequency(db),
         ]
-        if order.get("instrument_type") in ["CE", "PE"]:
+        if order.instrument_type in ["CE", "PE"]:
             checks.append(lambda: self._check_naked_short_option(order, db))
         return _with_warnings(checks, "All risk checks passed")
 
     @staticmethod
-    def _effective_price(order: dict, ltp: float) -> float:
+    def _effective_price(order_type: object, price: object, ltp: float) -> float:
         """Price an order is valued at: its limit for LIMIT/SL, else the live price."""
-        if str(order.get("type") or "MARKET").upper() in {"LIMIT", "SL"}:
-            return float(order.get("price") or 0)
+        if str(order_type or "MARKET").upper() in LIMIT_PRICED_ORDER_TYPES:
+            return float(price or 0)
         return ltp
 
     def pre_modify_check(
         self,
-        order_params: dict,
-        current: dict,
+        order_params: "RiskOrder | OrderIntent | Mapping[str, Any]",
+        current: Mapping[str, Any],
         ltp: float,
         db: Session | None = None,
         *,
@@ -307,61 +338,57 @@ class RiskManager:
         details["warnings"].
         """
         try:
-            new_qty = coerce_quantity(order_params.get("quantity"))
+            order = RiskOrder.of(order_params)
             old_qty = coerce_quantity(current.get("quantity"))
         except InvalidQuantityError:
             return _invalid_quantity_result()
-        order_params = {**order_params, "quantity": new_qty}
+        new_qty = order.quantity
         checks = [
             self._check_market_hours,
-            lambda: self._check_position_size(order_params, db),
-            lambda: self._check_price_band(order_params, ltp),
+            lambda: self._check_position_size(order, db),
+            lambda: self._check_price_band(order, ltp),
         ]
-        new_price = self._effective_price(order_params, ltp)
-        old_price = self._effective_price(current, ltp)
+        new_price = self._effective_price(order.order_type, order.price, ltp)
+        old_price = self._effective_price(current.get("type"), current.get("price"), ltp)
         if new_price <= 0 or old_price <= 0:
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
-                message=(
-                    f"Cannot price the order for {order_params.get('symbol', '')}; modify rejected."
-                ),
+                message=f"Cannot price the order for {order.symbol}; modify rejected.",
                 code="PRICE_ESTIMATE_FAILED",
             )
         notional_increase = new_qty * new_price - old_qty * old_price
         if notional_increase > 0:
             # Valued as one unit at the notional increase: exposure and margin both
             # multiply quantity by price.
-            added_value = {**order_params, "quantity": 1, "price": notional_increase}
+            added_value = replace(order, quantity=1, price=notional_increase)
             checks += [
                 lambda: self._check_total_exposure(added_value, db),
                 lambda: self._check_available_margin(added_value),
             ]
         quantity_increase = new_qty - old_qty
         if quantity_increase > 0:
-            added_qty = {**order_params, "quantity": quantity_increase}
+            added_qty = replace(order, quantity=quantity_increase)
             checks.append(lambda: self._check_daily_loss_limit(db, user_id))
-            if order_params.get("instrument_type") in ["CE", "PE"]:
+            if order.instrument_type in ["CE", "PE"]:
                 checks.append(lambda: self._check_naked_short_option(added_qty, db))
         return _with_warnings(checks, "All modify risk checks passed")
 
-    def _check_price_band(self, order_params: dict, ltp: float) -> RiskCheckResult:
+    def _check_price_band(self, order: RiskOrder, ltp: float) -> RiskCheckResult:
         """A limit or trigger price must lie within max_price_deviation_pct of the LTP.
 
         Fails closed when there is no live price to compare against.
         """
-        symbol = order_params.get("symbol", "")
         if ltp <= 0:
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
-                message=f"No live price for {symbol}; cannot verify the order price.",
+                message=f"No live price for {order.symbol}; cannot verify the order price.",
                 code="PRICE_UNAVAILABLE",
             )
-        order_type = str(order_params.get("type") or "MARKET").upper()
         prices = []
-        if order_type in {"LIMIT", "SL"}:
-            prices.append(("limit", float(order_params.get("price") or 0)))
-        if order_type in {"SL", "SL-M"}:
-            prices.append(("trigger", float(order_params.get("trigger_price") or 0)))
+        if order.order_type in LIMIT_PRICED_ORDER_TYPES:
+            prices.append(("limit", order.price))
+        if order.order_type in STOP_ORDER_TYPES:
+            prices.append(("trigger", order.trigger_price))
         band = self.config.max_price_deviation_pct
         for label, price in prices:
             deviation_pct = abs(price - ltp) / ltp * 100
@@ -485,13 +512,16 @@ class RiskManager:
                 details={"current_pnl": total_pnl},
             )
 
-    def _check_position_size(self, order_params: dict, _db: Session | None) -> RiskCheckResult:
+    def _check_position_size(
+        self, order_params: "RiskOrder | Mapping[str, Any]", _db: Session | None
+    ) -> RiskCheckResult:
         """Check if order size exceeds limits"""
         try:
-            quantity = coerce_quantity(order_params.get("quantity"))
+            order = RiskOrder.of(order_params)
         except InvalidQuantityError:
             return _invalid_quantity_result()
-        symbol = order_params.get("symbol", "")
+        quantity = order.quantity
+        symbol = order.symbol
 
         if quantity > self.config.max_position_size:
             return RiskCheckResult(
@@ -508,8 +538,11 @@ class RiskManager:
             status=RiskStatus.PASS, message="Position size within limits", code="POSITION_SIZE_OK"
         )
 
-    def _check_total_exposure(self, order_params: dict, db: Session | None) -> RiskCheckResult:
+    def _check_total_exposure(
+        self, order_params: "RiskOrder | Mapping[str, Any]", db: Session | None
+    ) -> RiskCheckResult:
         """Check if total exposure exceeds limits"""
+        order = RiskOrder.of(order_params)
         with _given_or_owned_session(db) as session:
             # Get current positions value
             positions = session.query(LivePosition).filter(LivePosition.net_qty != 0).all()
@@ -535,12 +568,11 @@ class RiskManager:
 
             current_exposure = sum(abs(p.net_qty) * p.ltp for p in positions)
             # Add new order value
-            quantity = order_params.get("quantity", 0)
-            price = self._order_price(order_params)
+            price = self._order_price(order)
             if price <= 0:
-                return self._price_estimate_failed(order_params)
+                return self._price_estimate_failed(order)
 
-            new_exposure = quantity * price
+            new_exposure = order.quantity * price
             total_exposure = current_exposure + new_exposure
 
             if total_exposure > self.config.max_total_exposure:
@@ -563,24 +595,25 @@ class RiskManager:
                 status=RiskStatus.PASS, message="Exposure within limits", code="EXPOSURE_OK"
             )
 
-    def _check_available_margin(self, order_params: dict) -> RiskCheckResult:
+    def _check_available_margin(
+        self, order_params: "RiskOrder | Mapping[str, Any]"
+    ) -> RiskCheckResult:
         """Check if sufficient margin is available"""
         try:
+            order = RiskOrder.of(order_params)
             broker = self._get_broker()
             funds = broker.get_funds()
 
             # Estimate margin required (simplified - would need actual margin calculator)
-            quantity = order_params.get("quantity", 0)
-            price = self._order_price(order_params)
+            price = self._order_price(order)
             if price <= 0:
                 # An unpriced order would need zero margin: fail closed instead.
-                return self._price_estimate_failed(order_params)
+                return self._price_estimate_failed(order)
 
             # Rough estimate: 20% margin for intraday, 100% for CNC
-            product = order_params.get("product", "INTRADAY")
-            margin_pct = 0.2 if product == "INTRADAY" else 1.0
+            margin_pct = 0.2 if order.product == "INTRADAY" else 1.0
 
-            estimated_margin = quantity * price * margin_pct
+            estimated_margin = order.quantity * price * margin_pct
             # BrokerFunds is a TypedDict: read it by key, not attribute.
             available = float(funds["available"])
 
@@ -637,11 +670,13 @@ class RiskManager:
                 code="ORDER_FREQUENCY_OK",
             )
 
-    def _check_naked_short_option(self, order_params: dict, db: Session | None) -> RiskCheckResult:
+    def _check_naked_short_option(
+        self, order_params: "RiskOrder | Mapping[str, Any]", db: Session | None
+    ) -> RiskCheckResult:
         """Check for naked short option limits"""
-        side = order_params.get("side", "BUY")
+        order = RiskOrder.of(order_params)
 
-        if side == "BUY":
+        if order.side == "BUY":
             return RiskCheckResult(
                 status=RiskStatus.PASS,
                 message="Buy option order - no naked short risk",
@@ -649,8 +684,8 @@ class RiskManager:
             )
 
         # It's a sell order - check current short position
-        quantity = order_params.get("quantity", 0)
-        symbol = order_params.get("symbol", "")
+        quantity = order.quantity
+        symbol = order.symbol
 
         with _given_or_owned_session(db) as session:
             # Get current short position for this option

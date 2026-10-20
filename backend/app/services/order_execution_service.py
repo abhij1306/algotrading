@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from typing import Any, Self
@@ -10,7 +11,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..brokers.plugins.fyers import (
-    FYERS_ORDER_TYPES,
     SUBMIT_UNCONFIRMED,
     FyersBroker,
     fyers_order_tag,
@@ -19,7 +19,16 @@ from ..brokers.plugins.fyers import (
 from ..models.live_order import LiveOrder
 from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.execution import paper_book
-from ..services.risk_manager import coerce_quantity, risk_manager
+from ..services.execution.intent import (
+    Mode,
+    OrderIntent,
+    OrderType,
+    as_intent,
+    coerce_quantity,
+    order_price_error,
+    parse_choice,
+)
+from ..services.risk_manager import RiskOrder, risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
@@ -41,7 +50,6 @@ LIVE_CANCEL_REJECTED_MESSAGE = "Broker rejected the cancel"
 MAX_BROKER_REASON_LENGTH = 120
 ORDER_FAILED_MESSAGE = "Order placement failed"
 CLIENT_ORDER_ID_REQUIRED_MESSAGE = "LIVE order requires a client_order_id (UUID v4)"
-INVALID_CLIENT_ORDER_ID_MESSAGE = "client_order_id must be a UUID v4"
 DUPLICATE_ORDER_MESSAGE = "Duplicate client_order_id: returning the existing order"
 # A LIVE row is committed in this state before the broker is called.
 PENDING_SUBMIT = "PENDING_SUBMIT"
@@ -61,20 +69,6 @@ LIVE_UNMODIFIABLE_STATES = {
     "ERROR",
     *PAPER_TERMINAL_STATES,
 }
-STOP_ORDER_TYPES = {"SL", "SL-M"}
-LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
-
-
-def order_price_error(order_type: str, price: float, trigger_price: float) -> str | None:
-    """Message when an order's prices are invalid for its type, else None.
-
-    Same rules and wording as FyersBroker.place_order / modify_order.
-    """
-    if order_type in STOP_ORDER_TYPES and trigger_price <= 0:
-        return f"{order_type} order requires a positive trigger price."
-    if order_type in LIMIT_PRICED_ORDER_TYPES and price <= 0:
-        return f"{order_type} order requires a positive limit price."
-    return None
 
 
 def broker_reason(response: object) -> str | None:
@@ -95,22 +89,6 @@ def with_broker_reason(fixed_message: str, response: object) -> str:
     """The fixed client message, plus the broker's structured reason when it gave one."""
     reason = broker_reason(response)
     return f"{fixed_message}: {reason}" if reason else fixed_message
-
-
-def normalize_client_order_id(value: object) -> str | None:
-    """Canonical lowercase UUID v4 string for a client_order_id, or None when absent.
-
-    Raises ValueError when the value is present but not a UUID v4.
-    """
-    if value is None or value == "":
-        return None
-    try:
-        parsed = uuid.UUID(str(value))
-    except ValueError as exc:
-        raise ValueError(INVALID_CLIENT_ORDER_ID_MESSAGE) from exc
-    if parsed.version != 4:
-        raise ValueError(INVALID_CLIENT_ORDER_ID_MESSAGE)
-    return str(parsed)
 
 
 class ClientOrderIdField(BaseModel):
@@ -212,21 +190,47 @@ class OrderExecutionService:
             return tick_price
         return limit_price if limit_price > 0 else paper_book.ZERO
 
-    def _simulate_paper_fill(self, order_params: dict[str, Any], db_symbol: str) -> dict[str, Any]:
+    @staticmethod
+    def _paper_terms(
+        order: OrderIntent | Mapping[str, Any],
+    ) -> tuple[str, str, int, object, object, object, object]:
+        """(side, type, quantity, price, trigger, slippage bps, fee bps) of a PAPER order.
+
+        A mapping is the terms of a working order being modified (or a partial order in a
+        unit test), read as given.
+        """
+        if isinstance(order, OrderIntent):
+            return (
+                order.side.value,
+                order.order_type.value,
+                order.quantity,
+                order.price,
+                order.trigger_price,
+                order.paper_slippage_bps,
+                order.paper_fee_bps,
+            )
+        return (
+            str(order.get("side", "BUY")).upper(),
+            str(order.get("type", "MARKET")).upper(),
+            max(0, int(order.get("quantity", 0))),
+            order.get("price"),
+            order.get("trigger_price"),
+            order.get("paper_slippage_bps"),
+            order.get("paper_fee_bps"),
+        )
+
+    def _simulate_paper_fill(
+        self, order: OrderIntent | Mapping[str, Any], db_symbol: str
+    ) -> dict[str, Any]:
         """Simulate a PAPER fill. Money math is Decimal (paper_book); the returned prices
         and charges are quantized to paise and given as floats for the row and the API."""
-        side = str(order_params.get("side", "BUY")).upper()
-        order_type = str(order_params.get("type", "MARKET")).upper()
-        qty = max(0, int(order_params.get("quantity", 0)))
-        price = paper_book.to_decimal(order_params.get("price"))
-        trigger_price = paper_book.to_decimal(order_params.get("trigger_price"))
-        slippage_bps = paper_book.to_decimal(
-            order_params.get("paper_slippage_bps", DEFAULT_PAPER_SLIPPAGE_BPS),
-            DEFAULT_PAPER_SLIPPAGE_BPS,
+        side, order_type, qty, raw_price, raw_trigger, raw_slippage, raw_fee = self._paper_terms(
+            order
         )
-        fee_bps = paper_book.to_decimal(
-            order_params.get("paper_fee_bps", DEFAULT_PAPER_FEE_BPS), DEFAULT_PAPER_FEE_BPS
-        )
+        price = paper_book.to_decimal(raw_price)
+        trigger_price = paper_book.to_decimal(raw_trigger)
+        slippage_bps = paper_book.to_decimal(raw_slippage, DEFAULT_PAPER_SLIPPAGE_BPS)
+        fee_bps = paper_book.to_decimal(raw_fee, DEFAULT_PAPER_FEE_BPS)
 
         def outcome(
             status: str, fill: Decimal, filled_qty: int, charges: Decimal, message: str
@@ -242,7 +246,7 @@ class OrderExecutionService:
             }
 
         zero = paper_book.ZERO
-        price_error = order_price_error(order_type, float(price), float(trigger_price))
+        price_error = order_price_error(order_type, price, trigger_price)
         if price_error:
             return outcome("REJECTED", zero, 0, zero, price_error)
 
@@ -261,27 +265,15 @@ class OrderExecutionService:
         charges = paper_book.estimated_charges(fill, qty, fee_bps)
         return outcome("FILLED", fill, qty, charges, reason)
 
-    @staticmethod
-    def _resolve_mode(order_params: dict[str, Any], mode: str | None) -> str:
-        effective_mode = (mode or order_params.get("mode") or "PAPER").upper()
-        if effective_mode not in {"PAPER", "LIVE"}:
-            raise ValueError("Invalid mode. Use PAPER or LIVE")
-        return effective_mode
-
-    @staticmethod
-    def _validate_quantity(order_params: dict[str, Any]) -> int:
-        """The quantity as a positive int; ValueError (user-facing) for 0, -1, 2.5 or "x"."""
-        return coerce_quantity(order_params.get("quantity"))
-
     def _run_live_risk_checks(
-        self, order_params: dict[str, Any], db: Session
+        self, intent: OrderIntent, db: Session
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """(error response, warnings) for a new LIVE order.
 
         A FAIL rejects the order. A WARNING needs a risk_override_reason; with one the
         order goes ahead and its warnings are returned so the response can show them.
         """
-        if not bool(order_params.get("is_live_confirmation_ack", False)):
+        if not intent.is_live_confirmation_ack:
             return {
                 "status": "ERROR",
                 "message": "LIVE order requires explicit confirmation acknowledgment",
@@ -290,7 +282,7 @@ class OrderExecutionService:
 
         # LIVE positions are synced under the broker account's user id, so the daily loss
         # is that account's. Lane 3 task 5 replaces this with a current_user_id dependency.
-        risk_result = risk_manager.pre_trade_check(order_params, db, user_id=LIVE_ACCOUNT_USER_ID)
+        risk_result = risk_manager.pre_trade_check(intent, db, user_id=LIVE_ACCOUNT_USER_ID)
         if risk_result.status.value == "FAIL":
             return {
                 "status": "ERROR",
@@ -299,7 +291,7 @@ class OrderExecutionService:
             }, []
         warnings = [str(w) for w in (risk_result.details or {}).get("warnings", [])]
         if risk_result.status.value == "WARNING":
-            if not str(order_params.get("risk_override_reason") or "").strip():
+            if not (intent.risk_override_reason or "").strip():
                 return {
                     "status": "ERROR",
                     "message": f"Risk warning requires override reason: {risk_result.message}",
@@ -309,63 +301,59 @@ class OrderExecutionService:
                 logger.warning("Risk warning overridden on live order: %s", warning)
         return None, warnings
 
-    def _resolve_symbols(self, order_params: dict[str, Any]) -> tuple[str, str]:
-        symbol = order_params.get("symbol")
-        db_symbol = symbol_master.to_db(symbol)
-        fyers_symbol = order_params.get("fyers_symbol")
-        if fyers_symbol:
-            return db_symbol, fyers_symbol
+    @staticmethod
+    def _resolve_symbols(intent: OrderIntent) -> tuple[str, str]:
+        db_symbol = symbol_master.to_db(intent.symbol)
+        if intent.fyers_symbol:
+            return db_symbol, intent.fyers_symbol
         try:
             return db_symbol, symbol_master.to_fyers(db_symbol)
         except Exception:
-            return db_symbol, symbol or db_symbol
+            return db_symbol, intent.symbol or db_symbol
 
     @staticmethod
     def _create_order_record(
-        order_params: dict[str, Any],
-        db_symbol: str,
-        fyers_symbol: str,
-        quantity: int,
-        effective_mode: str,
-        client_order_id: str | None,
+        intent: OrderIntent, db_symbol: str, fyers_symbol: str, client_order_id: str | None
     ) -> LiveOrder:
         internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
         return LiveOrder(
             id=internal_id,
             internal_id=internal_id,
             client_order_id=client_order_id,
-            user_id=order_params.get("user_id", "default"),
+            user_id=intent.user_id,
             symbol=db_symbol,
             fyers_symbol=fyers_symbol,
-            side=order_params.get("side", "BUY"),
-            quantity=quantity,
-            order_type=order_params.get("type", "MARKET"),
-            product_type=order_params.get("product", "INTRADAY"),
-            price=safe_float(order_params.get("price"), 0.0),
-            trigger_price=safe_float(order_params.get("trigger_price"), 0.0),
+            side=intent.side.value,
+            quantity=intent.quantity,
+            order_type=intent.order_type.value,
+            product_type=intent.product.value,
+            price=float(intent.price or 0),
+            trigger_price=float(intent.trigger_price or 0),
             status="PENDING",
-            instrument_type=order_params.get("instrument_type", "EQ"),
-            strike_price=order_params.get("strike_price"),
-            order_tag=order_params.get("tag"),
-            source=order_params.get("source", "MANUAL"),
-            is_paper=1 if effective_mode == "PAPER" else 0,
+            instrument_type=intent.instrument_type.value if intent.instrument_type else None,
+            strike_price=intent.strike_price,
+            order_tag=intent.tag,
+            source=intent.source,
+            is_paper=1 if intent.mode is Mode.PAPER else 0,
         )
 
     def _submit_live_order(
         self,
-        order_params: dict[str, Any],
+        order: OrderIntent | Mapping[str, Any],
         fyers_symbol: str,
         new_order: LiveOrder,
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
+        intent = as_intent(order, Mode.LIVE)
+        # Prices leave Decimal here, at the broker payload.
         broker_order: dict[str, Any] = {
             "symbol": fyers_symbol,
-            "quantity": int(order_params.get("quantity", 0)),
-            "side": order_params.get("side", "BUY"),
-            "type": order_params.get("type", "MARKET"),
-            "product": order_params.get("product", "INTRADAY"),
-            "price": safe_float(order_params.get("price"), 0.0),
-            "trigger_price": safe_float(order_params.get("trigger_price"), 0.0),
+            "quantity": intent.quantity,
+            "side": intent.side.value,
+            "type": intent.order_type.value,
+            "product": intent.product.value,
+            "price": float(intent.price or 0),
+            "trigger_price": float(intent.trigger_price or 0),
         }
         if client_order_id:
             # Lets a broker order be matched to its row if our status update is lost.
@@ -457,25 +445,25 @@ class OrderExecutionService:
         }
 
     def _pre_trade_error(
-        self, order_params: dict[str, Any], effective_mode: str, fyers_symbol: str, db: Session
+        self, intent: OrderIntent, fyers_symbol: str, db: Session
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """(error response, warnings) from a LIVE order's risk checks. PAPER skips them."""
-        if effective_mode != "LIVE":
+        if intent.mode is not Mode.LIVE:
             return None, []
         # Risk price estimates quote the broker, which needs the Fyers symbol.
-        risk_params = {**order_params, "fyers_symbol": fyers_symbol}
-        return self._run_live_risk_checks(risk_params, db)
+        priced = intent.model_copy(update={"fyers_symbol": fyers_symbol})
+        return self._run_live_risk_checks(priced, db)
 
     def _submit_live_order_safely(
         self,
-        order_params: dict[str, Any],
+        intent: OrderIntent,
         fyers_symbol: str,
         new_order: LiveOrder,
         client_order_id: str | None,
     ) -> dict[str, Any]:
         """Submit a LIVE order; a broker exception leaves its outcome unconfirmed."""
         try:
-            return self._submit_live_order(order_params, fyers_symbol, new_order, client_order_id)
+            return self._submit_live_order(intent, fyers_symbol, new_order, client_order_id)
         except Exception:
             # Full error stays in the server log; the order may still have been placed,
             # so it is reconciled or marked SUBMIT_UNCONFIRMED, never REJECTED.
@@ -528,7 +516,7 @@ class OrderExecutionService:
 
     def _place_live_order(
         self,
-        order_params: dict[str, Any],
+        intent: OrderIntent,
         fyers_symbol: str,
         new_order: LiveOrder,
         client_order_id: str,
@@ -545,9 +533,7 @@ class OrderExecutionService:
         if existing is not None:
             return self._duplicate_response(existing)
 
-        response = self._submit_live_order_safely(
-            order_params, fyers_symbol, new_order, client_order_id
-        )
+        response = self._submit_live_order_safely(intent, fyers_symbol, new_order, client_order_id)
         broker_order_id = new_order.id if new_order.status == "SUBMITTED" else None
         try:
             db.commit()
@@ -564,34 +550,32 @@ class OrderExecutionService:
         return self._fresh_response(response, client_order_id)
 
     def place_prechecked_live_order(
-        self, order_params: dict[str, Any], fyers_symbol: str, client_order_id: str, db: Session
+        self,
+        order: OrderIntent | Mapping[str, Any],
+        fyers_symbol: str,
+        client_order_id: str,
+        db: Session,
     ) -> dict[str, Any]:
         """Persist and submit a LIVE order whose risk checks the caller already ran.
 
         For exits (live_exit_service), which use their own checks: the row is committed
-        as PENDING_SUBMIT before the broker call, exactly as in place_order.
+        as PENDING_SUBMIT before the broker call, exactly as in place_order. Raises
+        ValueError for an order that is not a valid LIVE intent.
         """
-        quantity = self._validate_quantity(order_params)
-        new_order = self._create_order_record(
-            order_params,
-            str(order_params["symbol"]),
-            fyers_symbol,
-            quantity,
-            "LIVE",
-            client_order_id,
-        )
-        return self._place_live_order(order_params, fyers_symbol, new_order, client_order_id, db)
+        intent = as_intent(order, Mode.LIVE)
+        new_order = self._create_order_record(intent, intent.symbol, fyers_symbol, client_order_id)
+        return self._place_live_order(intent, fyers_symbol, new_order, client_order_id, db)
 
     def _place_paper_order(
         self,
-        order_params: dict[str, Any],
+        intent: OrderIntent,
         db_symbol: str,
         new_order: LiveOrder,
         client_order_id: str | None,
         db: Session,
     ) -> dict[str, Any]:
         """Simulate the fill and save the row. Never reaches the broker."""
-        paper_fill = self._simulate_paper_fill(order_params, db_symbol)
+        paper_fill = self._simulate_paper_fill(intent, db_symbol)
         response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
         existing = self._insert_order(new_order, client_order_id, db)
         if existing is not None:
@@ -599,13 +583,17 @@ class OrderExecutionService:
         return self._fresh_response(response, client_order_id)
 
     def place_order(
-        self, order_params: dict[str, Any], db: Session, mode: str | None = None
+        self,
+        order: OrderIntent | Mapping[str, Any],
+        db: Session,
+        mode: str | None = None,
     ) -> dict[str, Any]:
         """
         Place an order.
 
         Args:
-            order_params: {
+            order: an OrderIntent, or the request mapping it is built from
+                (OrderIntent.from_params), e.g. {
                 "symbol": "SBIN",
                 "side": "BUY",
                 "quantity": 1,
@@ -617,15 +605,16 @@ class OrderExecutionService:
                 "client_order_id": "<uuid4>"  # required for LIVE, optional for PAPER
             }
             db: Database session
+            mode: PAPER or LIVE for a mapping; overrides its "mode" key
 
         Returns:
             Dict with order_id, status, message, client_order_id and duplicate. A repeated
             client_order_id returns the existing order with duplicate=True and places nothing.
         """
         try:
-            effective_mode = self._resolve_mode(order_params, mode)
-            client_order_id = normalize_client_order_id(order_params.get("client_order_id"))
-            if effective_mode == "LIVE" and client_order_id is None:
+            intent = as_intent(order, mode)
+            client_order_id = intent.client_order_id
+            if intent.mode is Mode.LIVE and client_order_id is None:
                 return {
                     "status": "ERROR",
                     "message": CLIENT_ORDER_ID_REQUIRED_MESSAGE,
@@ -636,31 +625,24 @@ class OrderExecutionService:
             if existing is not None:
                 return self._duplicate_response(existing)
 
-            quantity = self._validate_quantity(order_params)
-            # Risk checks and the broker payload both read the coerced int.
-            order_params = {**order_params, "quantity": quantity}
-            db_symbol, fyers_symbol = self._resolve_symbols(order_params)
-            risk_error, warnings = self._pre_trade_error(
-                order_params, effective_mode, fyers_symbol, db
-            )
+            db_symbol, fyers_symbol = self._resolve_symbols(intent)
+            risk_error, warnings = self._pre_trade_error(intent, fyers_symbol, db)
             if risk_error:
                 return risk_error
 
-            new_order = self._create_order_record(
-                order_params, db_symbol, fyers_symbol, quantity, effective_mode, client_order_id
-            )
-            if effective_mode == "LIVE" and client_order_id is not None:
+            new_order = self._create_order_record(intent, db_symbol, fyers_symbol, client_order_id)
+            if intent.mode is Mode.LIVE and client_order_id is not None:
                 result = self._place_live_order(
-                    order_params, fyers_symbol, new_order, client_order_id, db
+                    intent, fyers_symbol, new_order, client_order_id, db
                 )
                 if warnings and not result.get("duplicate"):
                     result["warnings"] = warnings
                 return result
-            return self._place_paper_order(order_params, db_symbol, new_order, client_order_id, db)
+            return self._place_paper_order(intent, db_symbol, new_order, client_order_id, db)
 
         except ValueError as e:
-            # Request validation (mode, quantity, symbol, client_order_id); the message is
-            # written for the user.
+            # Request validation (mode, side, type, product, quantity, symbol,
+            # client_order_id); the message is written for the user.
             db.rollback()
             return {"status": "ERROR", "message": str(e)}
         except Exception as e:
@@ -692,19 +674,18 @@ class OrderExecutionService:
         if order.status in LIVE_UNMODIFIABLE_STATES:
             return {"status": "ERROR", "message": f"Cannot modify order in {order.status} state"}
 
+        try:
+            order_type = self._modified_order_type(order, params)
+        except ValueError as exc:
+            return {"status": "ERROR", "message": str(exc)}
         # Send the full resulting order so an unchanged type and trigger are
         # preserved (an SL stays an SL) instead of collapsing to a LIMIT.
         broker_params = {
-            "order_type": str(params.get("order_type") or order.order_type or "MARKET").upper(),
+            "order_type": order_type.value,
             "quantity": int(params.get("quantity", order.quantity)),
             "price": safe_float(params.get("price", order.price), 0.0),
             "trigger_price": safe_float(params.get("trigger_price", order.trigger_price), 0.0),
         }
-        if broker_params["order_type"] not in FYERS_ORDER_TYPES:
-            return {
-                "status": "ERROR",
-                "message": "Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
-            }
         price_error = order_price_error(
             broker_params["order_type"], broker_params["price"], broker_params["trigger_price"]
         )
@@ -748,24 +729,26 @@ class OrderExecutionService:
         except Exception:
             logger.exception("Quote for live modify failed for %s", safe_log_value(quote_symbol))
             ltp = 0.0
-        risk_params = {
-            "symbol": order.symbol,
-            "fyers_symbol": order.fyers_symbol,
-            "side": order.side,
-            "quantity": broker_params["quantity"],
-            "type": broker_params["order_type"],
-            "price": broker_params["price"],
-            "trigger_price": broker_params["trigger_price"],
-            "product": order.product_type,
-            "instrument_type": order.instrument_type,
-        }
+        # The order as it will be after the change. A missing side or product stays
+        # missing, so the naked-short and full-margin checks still apply.
+        modified = RiskOrder(
+            symbol=order.symbol or "",
+            fyers_symbol=order.fyers_symbol,
+            side=str(order.side or ""),
+            quantity=broker_params["quantity"],
+            order_type=broker_params["order_type"],
+            price=broker_params["price"],
+            trigger_price=broker_params["trigger_price"],
+            product=str(order.product_type or ""),
+            instrument_type=order.instrument_type,
+        )
         current = {
             "quantity": int(order.quantity or 0),
             "type": str(order.order_type or "MARKET").upper(),
             "price": safe_float(order.price, 0.0),
         }
         result = risk_manager.pre_modify_check(
-            risk_params, current, ltp, db, user_id=LIVE_ACCOUNT_USER_ID
+            modified, current, ltp, db, user_id=LIVE_ACCOUNT_USER_ID
         )
         if result.status.value == "FAIL":
             return {
@@ -777,6 +760,12 @@ class OrderExecutionService:
         for warning in warnings:
             logger.warning("Risk warning on live modify of %s: %s", order.id, warning)
         return None, warnings
+
+    @staticmethod
+    def _modified_order_type(order: LiveOrder, params: Mapping[str, Any]) -> OrderType:
+        """The order type after a modify: the requested one, else the row's. ValueError
+        (user-facing) when it is not MARKET, LIMIT, SL or SL-M."""
+        return parse_choice(OrderType, params.get("order_type") or order.order_type or "MARKET")
 
     @staticmethod
     def _normalize_modify_params(params: dict[str, Any]) -> str | None:
@@ -817,12 +806,10 @@ class OrderExecutionService:
             return {"status": "ERROR", "message": f"Cannot modify order in {order.status} state"}
 
         # Validate the order as it will be after the change, like live modify does.
-        order_type = str(params.get("order_type") or order.order_type or "MARKET").upper()
-        if order_type not in FYERS_ORDER_TYPES:
-            return {
-                "status": "ERROR",
-                "message": "Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
-            }
+        try:
+            order_type = self._modified_order_type(order, params).value
+        except ValueError as exc:
+            return {"status": "ERROR", "message": str(exc)}
         quantity = int(params.get("quantity", order.quantity))
         price = safe_float(params.get("price", order.price), 0.0)
         trigger_price = safe_float(params.get("trigger_price", order.trigger_price), 0.0)
