@@ -348,12 +348,15 @@ function PositionsPanel({
   summary: positionsSummary,
   error: positionsError,
   positions,
+  liveStale,
   squaring,
   onSquare: squarePosition,
 }: Readonly<{
   summary: PositionsSummary;
   error: string | null;
   positions: PositionItem[];
+  /** The broker sync failed, so LIVE positions are unknown or the last synced values. */
+  liveStale: boolean;
   /** A square-off is in flight; a second click could send a duplicate exit. */
   squaring: boolean;
   onSquare: (row: PositionItem) => void;
@@ -372,10 +375,10 @@ function PositionsPanel({
         </span>
       </div>
       {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
-      {positions.some((p) => p.stale) && (
+      {liveStale && (
         <div className="mb-2 text-xs text-amber-400">
-          Broker unavailable: live positions show the last synced values and cannot be squared until
-          it reconnects.
+          Broker unavailable: live positions could not be refreshed. Any shown are the last synced
+          values and cannot be squared until it reconnects.
         </div>
       )}
       <table className="w-full text-xs">
@@ -1252,7 +1255,7 @@ export default function TerminalPage() {
   const chain = useOptionsChain(terminalView === "options");
   const positionsQuery = usePositionsBook(terminalView === "positions");
   const { squaring, squarePosition } = useSquareAction(setOrderMessage);
-  const basePositions = positionsQuery.data ?? NO_POSITIONS;
+  const basePositions = positionsQuery.data?.rows ?? NO_POSITIONS;
 
   // Live quotes come from the shared quote store; rows below are derived, not synced via effects.
   const quoteGroups = useMemo(
@@ -1321,6 +1324,7 @@ export default function TerminalPage() {
                 summary={summarizePositions(positions)}
                 error={positionsQuery.isError ? "Failed to load positions" : null}
                 positions={positions}
+                liveStale={positionsQuery.data?.liveStale ?? false}
                 squaring={squaring}
                 onSquare={squarePosition}
               />

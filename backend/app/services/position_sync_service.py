@@ -8,6 +8,7 @@ Runs periodically during market hours to keep positions in sync.
 import asyncio
 import contextlib
 import logging
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
 from ..models.live_position import LIVE_ACCOUNT_USER_ID, LivePosition
-from ..utils.cache import cache_with_ttl
+from ..utils.cache import cache_with_ttl, clear_cache
 from .symbol_master import symbol_master
 
 if TYPE_CHECKING:
@@ -37,6 +38,8 @@ class PositionSyncService:
         self._sync_interval = 5  # seconds
         self._broker = None
         self._last_sync: datetime | None = None
+        # One sync at a time: two overlapping syncs could both insert the same new row.
+        self._sync_lock = threading.Lock()
 
     @property
     def last_sync(self) -> datetime | None:
@@ -145,6 +148,11 @@ class PositionSyncService:
         return False
 
     def sync_positions(self) -> dict:
+        """Sync positions from the broker, one sync at a time (see _sync_positions)."""
+        with self._sync_lock:
+            return self._sync_positions()
+
+    def _sync_positions(self) -> dict:
         """
         Sync positions from Fyers to local database.
 
@@ -191,6 +199,8 @@ class PositionSyncService:
 
             db.commit()
             self._last_sync = datetime.now()
+            # get_positions caches for 5s; a reader after this sync must see its rows.
+            clear_cache(f"{__name__}.get_positions:")
 
             result = {
                 "status": "success",

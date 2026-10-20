@@ -62,6 +62,9 @@ function stubClientOrderIds() {
 
 let paperPositions: Record<string, unknown>[] = [];
 let livePositions: Record<string, unknown>[] = [];
+let liveStale = false;
+const BROKER_UNAVAILABLE_NOTE =
+  "Broker unavailable: live positions could not be refreshed. Any shown are the last synced values and cannot be squared until it reconnects.";
 // Order POSTs that fail as a dropped connection before any response arrives.
 let orderNetworkFailures = 0;
 // Order POSTs answered 200 with a body cut off mid-JSON.
@@ -85,7 +88,11 @@ function respond(url: string): Response {
   }
   if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
   if (url.includes("/api/trading/positions/book")) {
-    return Response.json({ live_positions: livePositions, paper_positions: paperPositions });
+    return Response.json({
+      live_positions: livePositions,
+      paper_positions: paperPositions,
+      live_stale: liveStale,
+    });
   }
   if (url.includes(ORDER_PATH)) return Response.json(orderResult);
   return Response.json([]);
@@ -310,6 +317,7 @@ describe("terminal data", () => {
   beforeEach(() => {
     paperPositions = [];
     livePositions = [];
+    liveStale = false;
     squareResult = { status: "SUCCESS" };
     squareNetworkFailures = 0;
     calls = installFetch();
@@ -391,18 +399,25 @@ describe("terminal data", () => {
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
   });
 
+  it("says the broker is unavailable even when no LIVE rows were ever synced", async () => {
+    liveStale = true;
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
+    expect(screen.getByText("No open positions")).toBeInTheDocument();
+  });
+
   it("greys a stale LIVE position, blocks its square-off and says the broker is unavailable", async () => {
+    liveStale = true;
     livePositions = [{ ...OPEN_POSITION, mode: "LIVE", stale: true }];
     paperPositions = [{ ...OPEN_POSITION, id: 8, symbol: "INFY" }];
     renderPage();
     await screen.findAllByText("State Bank");
     fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
-    expect(
-      await screen.findByText(
-        "Broker unavailable: live positions show the last synced values and cannot be squared until it reconnects.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
     const [live, paper] = screen.getAllByRole("button", { name: "Square" });
     expect(live.closest("tr")?.textContent).toBe("SBINLIVELONG10790.00800.00100.00100.00Square");
     expect(live).toBeDisabled();

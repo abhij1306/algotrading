@@ -61,6 +61,8 @@ const positionSchema = z.object({
 const positionsBookSchema = z.object({
   live_positions: z.array(positionSchema).catch([]),
   paper_positions: z.array(positionSchema).catch([]),
+  // The LIVE sync failed: live rows (if any) are the last synced ones.
+  live_stale: z.boolean().catch(false),
 });
 
 const squareResultSchema = z.object({
@@ -232,16 +234,26 @@ export function useOptionsBoard(params: { underlying: string; expiry: string; en
   });
 }
 
-/** Live then paper positions, polled every 7s while `enabled`. */
+export interface PositionsBook {
+  /** Live then paper positions. */
+  rows: PositionItem[];
+  /** The broker sync failed: LIVE positions are unknown or the last synced values. */
+  liveStale: boolean;
+}
+
+/** The positions book, polled every 7s while `enabled`. */
 export function usePositionsBook(enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.terminal.positions(),
-    queryFn: async () => {
+    queryFn: async (): Promise<PositionsBook> => {
       const book = parseResponse(
         positionsBookSchema,
         await unwrap(api.GET("/api/trading/positions/book")),
       );
-      return [...book.live_positions, ...book.paper_positions].map(toPositionRow);
+      return {
+        rows: [...book.live_positions, ...book.paper_positions].map(toPositionRow),
+        liveStale: book.live_stale,
+      };
     },
     enabled,
     refetchInterval: POSITIONS_POLL_MS,
@@ -325,8 +337,13 @@ export function useSquarePosition() {
     retryDelay: SQUARE_RETRY_DELAY_MS,
     onSuccess: (result, { row }) => {
       if (!result.unconfirmed) {
-        queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
-          prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+        queryClient.setQueryData<PositionsBook>(queryKeys.terminal.positions(), (prev) =>
+          prev
+            ? {
+                ...prev,
+                rows: prev.rows.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+              }
+            : prev,
         );
       }
       return queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() });

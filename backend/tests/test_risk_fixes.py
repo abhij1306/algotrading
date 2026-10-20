@@ -535,3 +535,16 @@ def test_positions_book_is_fresh_after_a_successful_sync(
     assert [(p["symbol"], p["net_qty"], p["stale"]) for p in body["live_positions"]] == [
         ("SBIN", 12, False)
     ]
+
+
+def test_a_successful_sync_is_never_hidden_by_the_positions_cache(
+    client: TestClient, synced: FakeBroker
+) -> None:
+    synced.positions = [broker_position(12)]
+    first = client.get("/api/trading/positions/book").json()
+    synced.positions = [broker_position(15)]
+
+    second = client.get("/api/trading/positions/book").json()
+
+    assert [p["net_qty"] for p in first["live_positions"]] == [12]
+    assert [p["net_qty"] for p in second["live_positions"]] == [15]
