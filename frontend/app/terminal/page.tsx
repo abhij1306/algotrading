@@ -225,7 +225,11 @@ async function submitOrder(input: OrderInput): Promise<string> {
     // Not rejected: the order may be live, so the user must not place it again.
     return `${mode} ${side} unconfirmed: ${data.message || "check the broker orderbook"}`;
   }
-  const summary = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
+  const placed = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
+  // Risk checks that warned (an overridden LIVE warning): the user sees which ones.
+  const warnings: unknown[] = Array.isArray(data?.warnings) ? data.warnings : [];
+  const warningText = warnings.filter((w): w is string => typeof w === "string").join("; ");
+  const summary = warningText ? `${placed} - risk warnings: ${warningText}` : placed;
   return data?.duplicate ? `${summary} - already placed` : summary;
 }
 

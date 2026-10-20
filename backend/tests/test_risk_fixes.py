@@ -5,11 +5,12 @@ from MarketHoursPolicy, and LIVE positions fail closed when the broker sync fail
 from collections.abc import Callable, Generator
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.brokers.base import BrokerUnavailableError
@@ -535,6 +536,35 @@ def test_positions_book_is_fresh_after_a_successful_sync(
     assert [(p["symbol"], p["net_qty"], p["stale"]) for p in body["live_positions"]] == [
         ("SBIN", 12, False)
     ]
+
+
+class DownSession:
+    """A session whose database has gone away."""
+
+    def query(self, *_args: object) -> NoReturn:
+        raise OperationalError("SELECT 1", {}, Exception(f"connection refused {SECRET}"))
+
+    def rollback(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("path", ["/api/trading/positions", "/api/trading/positions/book"])
+def test_a_down_database_during_sync_is_reported_as_a_database_outage(
+    client: TestClient, synced: FakeBroker, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    synced.positions = [broker_position(12)]
+    monkeypatch.setattr("app.services.position_sync_service.SessionLocal", DownSession)
+
+    response = client.get(path)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}
+    }
+    assert SECRET not in response.text
 
 
 def test_a_successful_sync_is_never_hidden_by_the_positions_cache(

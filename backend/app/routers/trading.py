@@ -29,6 +29,7 @@ from ..services.order_execution_service import (
 )
 from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
+from ..utils.db_errors import is_db_unavailable
 from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
@@ -437,7 +438,9 @@ def _sync_live_positions() -> bool:
     the stored rows are whatever the last successful sync left."""
     try:
         result = position_sync_service.sync_positions()
-    except Exception:
+    except Exception as exc:
+        if is_db_unavailable(exc):
+            raise  # 503 DATABASE_UNAVAILABLE from the app handler
         # A broker plugin should raise BrokerUnavailableError, but any failure means the
         # stored rows were not refreshed. The error text stays in the server log.
         logger.exception("Live position sync raised")

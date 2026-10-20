@@ -277,6 +277,25 @@ describe("terminal order idempotency", () => {
     expect(orderBodies(calls)).toHaveLength(1);
   });
 
+  it("shows the risk warnings an accepted order carries", async () => {
+    orderResult = {
+      status: "SUBMITTED",
+      order_id: "B-1",
+      warnings: ["Approaching daily loss limit. Current P&L: ₹-4500.00"],
+    };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "801.5");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    expect(
+      await screen.findByText(
+        "PAPER BUY SUBMITTED (B-1) - risk warnings: Approaching daily loss limit. Current P&L: ₹-4500.00",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("retries a dropped submit with the same client_order_id, then a new click gets a new one", async () => {
     orderNetworkFailures = 1;
     renderPage();

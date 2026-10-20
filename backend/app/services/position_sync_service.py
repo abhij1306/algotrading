@@ -18,6 +18,7 @@ from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
 from ..models.live_position import LIVE_ACCOUNT_USER_ID, LivePosition
 from ..utils.cache import cache_with_ttl, clear_cache
+from ..utils.db_errors import is_db_unavailable
 from .symbol_master import symbol_master
 
 if TYPE_CHECKING:
@@ -215,8 +216,12 @@ class PositionSyncService:
             return result
 
         except Exception as e:
-            db.rollback()
-            logger.exception(f"Error syncing positions: {e}")
+            with contextlib.suppress(Exception):
+                db.rollback()
+            if is_db_unavailable(e):
+                # A down database answers 503 DATABASE_UNAVAILABLE, not a broker outage.
+                raise
+            logger.exception("Error syncing positions")
             return {"status": "error", "message": "Position sync failed"}
         finally:
             db.close()
