@@ -112,12 +112,14 @@ Current `SymbolInfo` record shape:
 - `ticker: str`
 - `exchange: str`
 - `series: str`
-- `company_name: str`
-- `sector: str`
+- `company_name: str` (set for the known index symbols only)
+- `sector: str` (set for the known index symbols only)
 - `isin: str`
 - `lot_size: int`
 - `tick_size: float`
-- `indices: list[str]`
+
+`SymbolInfo` carries no index membership. Equity company name, industry and index membership come from
+`index_universe_loader` (`get_symbol_indices`, `get_constituent`, `is_symbol_in_index`).
 
 Example:
 ```python

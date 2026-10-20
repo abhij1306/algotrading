@@ -34,25 +34,10 @@ import threading
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .symbol_master import SymbolMaster
+from .symbol_master import symbol_master
 
 logger = logging.getLogger(__name__)
-
-# Lazy import to avoid circular dependencies
-_symbol_master: "SymbolMaster | None" = None
-
-
-def _get_symbol_master() -> "SymbolMaster":
-    """Lazy load the symbol master to avoid circular imports."""
-    global _symbol_master
-    if _symbol_master is None:
-        from .symbol_master import symbol_master
-
-        _symbol_master = symbol_master
-    return _symbol_master
 
 
 # Use project-relative path - GitHub compatible
@@ -202,9 +187,12 @@ class IndexUniverseLoader:
         with open(filepath, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                symbol = row.get("Symbol", "").strip().upper()
-                if not symbol:
+                raw_symbol = row.get("Symbol", "").strip()
+                if not raw_symbol:
                     continue
+                # NSE files can carry pre-migration tickers (e.g. LTIM). Store the
+                # canonical DB symbol so lookups, which normalize too, match it.
+                symbol = symbol_master.to_db(raw_symbol)
 
                 constituent = IndexConstituent(
                     symbol=symbol,
@@ -266,7 +254,7 @@ class IndexUniverseLoader:
             self.load_all()
 
         # Normalize symbol to DB format using symbol_master
-        clean_symbol = _get_symbol_master().to_db(symbol)
+        clean_symbol = symbol_master.to_db(symbol)
 
         return list(self._symbol_to_indices.get(clean_symbol, set()))
 
@@ -276,7 +264,7 @@ class IndexUniverseLoader:
             self.load_all()
 
         # Normalize symbol to DB format using symbol_master
-        clean_symbol = _get_symbol_master().to_db(symbol)
+        clean_symbol = symbol_master.to_db(symbol)
 
         return index_id in self._symbol_to_indices.get(clean_symbol, set())
 
@@ -290,7 +278,7 @@ class IndexUniverseLoader:
             return None
 
         # Normalize symbol to DB format using symbol_master
-        clean_symbol = _get_symbol_master().to_db(symbol)
+        clean_symbol = symbol_master.to_db(symbol)
 
         for constituent in universe.constituents:
             if constituent.symbol == clean_symbol:
