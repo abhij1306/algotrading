@@ -2,7 +2,7 @@
 
 Scan, regime, positions and config live in `app.services.vcp`; this class wires them to
 the production adapters and delegates. The backtest still lives here until it moves to
-`vcp/backtest.py` (docs/plans/architecture/screener-backtest.md, section 4).
+`vcp/backtest.py`.
 """
 
 from __future__ import annotations

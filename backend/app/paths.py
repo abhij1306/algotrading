@@ -17,7 +17,7 @@ FYERS_CONFIG_DIR = PROJECT_ROOT / "fyers" / "config"
 FYERS_TOKEN_PATH = FYERS_CONFIG_DIR / "access_token.json"
 INDEX_WEIGHTAGE_DIR = PROJECT_ROOT / "data" / "index_weightage"
 
-# Canonical data tree (see docs/ARCHITECTURE.md).
+# Canonical data tree.
 DATA_ROOT = PROJECT_ROOT / "data_system"
 SOURCES_ROOT = DATA_ROOT / "01_sources"
 UNIVERSE_CONSTITUENTS_DIR = DATA_ROOT / "03_universe" / "constituents"

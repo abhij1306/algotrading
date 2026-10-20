@@ -33,11 +33,8 @@ pnpm dev
 
 ## Canonical Documentation
 
-- `docs/ARCHITECTURE.md` (system + data architecture)
-- `docs/Websocket.md` (realtime behavior and endpoints)
-- `docs/DESIGN_SYSTEM.md` (single design-system source)
-- `docs/SYMBOL_MANAGEMENT.md` (symbol conversion and boundary rules)
-- `docs/DATABASE_MANAGEMENT_PLAYBOOK.md` (Phase-1 data operations)
+- `CLAUDE.md`: development guide and the rules the code enforces
+- `docs/specs/hat/README.md`: Hire a Trader (HAT) specs, the source of truth for the HAT module
 
 ---
 

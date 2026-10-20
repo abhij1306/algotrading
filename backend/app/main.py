@@ -197,7 +197,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     Application lifespan manager with structured startup sequence.
 
-    Startup sequence (docs/Websocket.md, "Startup Sequence"):
+    Startup sequence:
     1. Get event loop
     2. Validate symbol_master
     3. Validate database (deferred, not fatal, when the DB is down)
