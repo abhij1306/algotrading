@@ -133,6 +133,32 @@ class VCPService:
         )
         return [row[0] for row in fallback_rows], "live_fallback"
 
+    def _constituents_in_range(
+        self, db: Session, universe: str, start_date: date, end_date: date
+    ) -> list[str]:
+        """Every symbol that was a member at any point in [start_date, end_date]."""
+        symbols = set(self._constituents_for_date(db, universe, start_date)[0])
+        definition = (
+            db.query(IndexUniverseDefinition)
+            .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
+            .first()
+        )
+        if definition is not None:
+            rows = (
+                db.query(IndexConstituentHistory.symbol)
+                .filter(
+                    IndexConstituentHistory.universe_id == definition.id,
+                    IndexConstituentHistory.effective_from <= end_date,
+                    (
+                        IndexConstituentHistory.effective_to.is_(None)
+                        | (IndexConstituentHistory.effective_to >= start_date)
+                    ),
+                )
+                .all()
+            )
+            symbols.update(row[0] for row in rows)
+        return sorted(symbols)
+
     def _company_meta(self, db: Session, symbols: list[str]) -> dict[str, dict[str, str]]:
         if not symbols:
             return {}
@@ -997,9 +1023,11 @@ class VCPService:
         capital = float(payload.get("initial_capital") or DEFAULT_CAPITAL)
 
         with db_session_scope() as db:
-            end_constituents, mode = self._constituents_for_date(db, universe, end_date)
+            # Load everyone who was a member at any point in the range, not just the
+            # end-date members, so names dropped from the index stay tradable until they left.
+            range_symbols = self._constituents_in_range(db, universe, start_date, end_date)
             combined = self._load_symbol_history(
-                symbols=end_constituents,
+                symbols=range_symbols,
                 start_date=(pd.Timestamp(start_date) - pd.Timedelta(days=420)).date(),
                 end_date=end_date,
             )
@@ -1028,6 +1056,7 @@ class VCPService:
             benchmark_start = float(benchmark.iloc[0]["close"]) if not benchmark.empty else 1.0
 
             meta = self._company_meta(db, list(symbol_frames.keys()))
+            modes: set[str] = set()
             for trading_date in trading_dates[:-1]:
                 completed_pnl = sum(
                     float(trade["pnl_inr"])
@@ -1035,7 +1064,9 @@ class VCPService:
                     if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= trading_date
                 )
                 available_capital = capital + completed_pnl
-                constituents, _ = self._constituents_for_date(db, universe, trading_date)
+                constituents_list, date_mode = self._constituents_for_date(db, universe, trading_date)
+                constituents = set(constituents_list)
+                modes.add("indicative_pre_history" if date_mode.startswith("indicative_pre_") else date_mode)
                 day_frames = {
                     symbol: frame[frame["date"] <= trading_date].copy()
                     for symbol, frame in symbol_frames.items()
@@ -1088,6 +1119,8 @@ class VCPService:
                             }
                         )
 
+            # Membership is resolved per trading date; only fully point-in-time runs are bias-corrected.
+            mode = "bias_corrected" if modes == {"bias_corrected"} else ",".join(sorted(modes)) or "unavailable"
             if not equity_curve:
                 equity_curve = [{"date": trading_dates[0].isoformat(), "equity": capital}]
 
