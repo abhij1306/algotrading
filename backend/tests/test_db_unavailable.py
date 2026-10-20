@@ -200,6 +200,64 @@ def test_screener_preflight_with_db_down_returns_503(
     assert response.json() == DOWN_BODY
 
 
+@pytest.fixture
+def schemaless_client() -> Generator[TestClient, None, None]:
+    """The database answers, but has none of the app's tables (schema drift)."""
+    engine = create_engine("sqlite://")
+    empty_session = sessionmaker(bind=engine, autoflush=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = empty_session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+    engine.dispose()
+
+
+def test_health_with_schema_bug_is_degraded_not_an_outage(
+    schemaless_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
+
+    response = schemaless_client.get("/api/system/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "DEGRADED",
+        "postgresql": "ERROR",
+        "fyers": "DOWN",
+        "last_update": None,
+        "total_symbols": 0,
+        "recommendations": [
+            "PostgreSQL query failed (schema out of date?). Check the server log.",
+            "Fyers API unavailable. Screener will use cached data only.",
+        ],
+    }
+    assert "no such table" not in response.text
+
+
+def test_screener_preflight_with_schema_bug_is_not_ready_and_not_503(
+    schemaless_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
+
+    response = schemaless_client.get("/api/system/pre-flight/screener")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "message": "Database query failed. Check the server log.",
+        "fyers_connected": False,
+        "data_fresh": False,
+        "last_update": None,
+    }
+
+
 def test_startup_logs_one_line_without_password(
     down_engine: Engine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

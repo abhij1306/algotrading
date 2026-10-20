@@ -218,6 +218,8 @@ Operational endpoint:
   `{"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}`. This holds when a
   router wraps the error (`raise HTTPException(...) from exc`). Driver text never reaches the client.
 - `GET /api/system/health` answers 503 with its normal report (`status: DOWN`, `postgresql: DOWN`) plus that envelope.
+  If the database answers but the probe query fails (schema drift, SQL bug), it reports `postgresql: ERROR` and
+  `status: DEGRADED` with HTTP 200, not an outage.
 - "Database unavailable" means connection loss only (`app/utils/db_errors.py`): OperationalError, InterfaceError,
   or a connection-invalidated DBAPIError. SQL bugs (ProgrammingError, IntegrityError) stay 500.
 - Services must not turn a down database into empty lists or zeros. Order placement fails closed: the PENDING

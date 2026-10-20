@@ -192,7 +192,7 @@ class DataProvider:
 
         Returns:
             {
-                "postgresql": "OK" | "DOWN",
+                "postgresql": "OK" | "DOWN" | "ERROR",
                 "fyers": "OK" | "DOWN" | "TOKEN_EXPIRED",
                 "last_update": ISO timestamp,
                 "total_symbols": int
@@ -213,12 +213,15 @@ class DataProvider:
             status["total_symbols"] = count
         except Exception as e:
             self.db.rollback()
-            status["postgresql"] = "DOWN"
             if is_db_unavailable(e):
+                # Connection loss: the database is down (the health endpoint answers 503).
+                status["postgresql"] = "DOWN"
                 log_warning_throttled(
                     logger, "health.postgresql", "Health check: database unreachable"
                 )
             else:
+                # Reachable but the query failed (schema drift, SQL bug): not an outage.
+                status["postgresql"] = "ERROR"
                 logger.exception("Health check: database query failed")
 
         # Check Fyers
@@ -235,7 +238,7 @@ class DataProvider:
                 status["fyers"] = "DOWN"
                 logger.warning("Health check: Fyers unavailable (%s)", type(e).__name__)
 
-        if status["postgresql"] != "OK":
+        if status["postgresql"] == "DOWN":
             return status
 
         # Get latest data update timestamp

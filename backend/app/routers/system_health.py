@@ -29,15 +29,17 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any] | JSONRes
     Returns:
         {
             "status": "READY" | "DEGRADED" | "DOWN",
-            "postgresql": "OK" | "DOWN",
+            "postgresql": "OK" | "DOWN" | "ERROR",
             "fyers": "OK" | "TOKEN_EXPIRED" | "DOWN",
             "last_data_update": ISO timestamp,
             "total_symbols": int,
             "recommendations": [str]
         }
 
-    With the database down the reply is HTTP 503: the same report plus the standard
-    error envelope (code DATABASE_UNAVAILABLE).
+    postgresql DOWN means the database is unreachable: the reply is HTTP 503, the same
+    report plus the standard error envelope (code DATABASE_UNAVAILABLE). ERROR means it
+    answered but the probe query failed (schema drift, SQL bug): status DEGRADED, HTTP 200,
+    details in the server log.
     """
     provider = DataProvider(db)
     health = provider.health_check()
@@ -46,7 +48,8 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any] | JSONRes
     status = "READY"
     recommendations = []
 
-    db_down = health["postgresql"] != "OK"
+    db_down = health["postgresql"] == "DOWN"
+    db_error = health["postgresql"] == "ERROR"
 
     if health["fyers"] == "TOKEN_EXPIRED":
         status = "DEGRADED"
@@ -60,6 +63,11 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any] | JSONRes
         status = "DOWN"
         recommendations.insert(
             0, "PostgreSQL database is unavailable. Start it: net start postgresql-x64-18"
+        )
+    elif db_error:
+        status = "DEGRADED"
+        recommendations.insert(
+            0, "PostgreSQL query failed (schema out of date?). Check the server log."
         )
     elif health["last_update"] is None:
         recommendations.append(
@@ -90,8 +98,16 @@ def screener_pre_flight(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     provider = DataProvider(db)
     health = provider.health_check()
-    if health["postgresql"] != "OK":
+    if health["postgresql"] == "DOWN":
         raise DatabaseUnavailableError()
+    if health["postgresql"] == "ERROR":
+        return {
+            "ready": False,
+            "message": "Database query failed. Check the server log.",
+            "fyers_connected": health["fyers"] == "OK",
+            "data_fresh": False,
+            "last_update": None,
+        }
 
     fyers_ok = health["fyers"] == "OK"
     data_exists = health["total_symbols"] > 0
