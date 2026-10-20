@@ -1,0 +1,359 @@
+{
+ "symbols": {
+  "benchmark_curve": [
+   {
+    "date": "2025-01-01",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-02",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-03",
+    "equity": 101550.6202
+   },
+   {
+    "date": "2025-01-04",
+    "equity": 103063.7265
+   },
+   {
+    "date": "2025-01-05",
+    "equity": 104103.5962
+   },
+   {
+    "date": "2025-01-06",
+    "equity": 105104.5923
+   }
+  ],
+  "date_range": {
+   "end": "2025-01-06",
+   "start": "2025-01-01"
+  },
+  "drawdown_curve": [
+   {
+    "date": "2025-01-01",
+    "drawdown_pct": 0.0
+   },
+   {
+    "date": "2025-01-02",
+    "drawdown_pct": 0.0
+   },
+   {
+    "date": "2025-01-03",
+    "drawdown_pct": 0.0
+   },
+   {
+    "date": "2025-01-04",
+    "drawdown_pct": -0.5882
+   },
+   {
+    "date": "2025-01-05",
+    "drawdown_pct": -1.1563
+   },
+   {
+    "date": "2025-01-06",
+    "drawdown_pct": -2.2968
+   }
+  ],
+  "equity_curve": [
+   {
+    "date": "2025-01-01",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-02",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-03",
+    "equity": 101044.4178
+   },
+   {
+    "date": "2025-01-04",
+    "equity": 100450.0388
+   },
+   {
+    "date": "2025-01-05",
+    "equity": 99876.0386
+   },
+   {
+    "date": "2025-01-06",
+    "equity": 98723.6228
+   }
+  ],
+  "instrument_type": "equity",
+  "metrics": {
+   "final_equity": 98723.62,
+   "initial_capital": 100000.0,
+   "losing_trades": 4,
+   "max_drawdown_pct": -2.2968,
+   "sharpe_ratio": -4.8923,
+   "total_return_pct": -1.2764,
+   "total_trades": 5,
+   "win_rate_pct": 20.0,
+   "winning_trades": 1
+  },
+  "selection": {
+   "mode": "symbols",
+   "scope": "SYMBOLS:AAA,BBB"
+  },
+  "strategy_curves": [
+   {
+    "equity_curve": [
+     {
+      "date": "2025-01-01",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-02",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-03",
+      "equity": 99019.6078
+     },
+     {
+      "date": "2025-01-04",
+      "equity": 98048.8274
+     },
+     {
+      "date": "2025-01-05",
+      "equity": 97115.029
+     },
+     {
+      "date": "2025-01-06",
+      "equity": 95247.4323
+     }
+    ],
+    "name": "2-Day Momentum",
+    "strategy_id": "MOMENTUM_2D",
+    "weight": 0.6
+   },
+   {
+    "equity_curve": [
+     {
+      "date": "2025-01-01",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-02",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-03",
+      "equity": 104081.6327
+     },
+     {
+      "date": "2025-01-04",
+      "equity": 104081.6327
+     },
+     {
+      "date": "2025-01-05",
+      "equity": 104081.6327
+     },
+     {
+      "date": "2025-01-06",
+      "equity": 104081.6327
+     }
+    ],
+    "name": "3-Day Mean Reversion",
+    "strategy_id": "MEAN_REVERSION_3D",
+    "weight": 0.4
+   }
+  ],
+  "trade_log": [
+   {
+    "entry_date": "2025-01-02",
+    "entry_price": 102.0,
+    "exit_date": "2025-01-03",
+    "exit_price": 101.0,
+    "return_pct": -0.9804,
+    "symbol": "AAA"
+   },
+   {
+    "entry_date": "2025-01-02",
+    "entry_price": 49.0,
+    "exit_date": "2025-01-03",
+    "exit_price": 51.0,
+    "return_pct": 4.0816,
+    "symbol": "BBB"
+   },
+   {
+    "entry_date": "2025-01-03",
+    "entry_price": 51.0,
+    "exit_date": "2025-01-04",
+    "exit_price": 50.5,
+    "return_pct": -0.9804,
+    "symbol": "BBB"
+   },
+   {
+    "entry_date": "2025-01-04",
+    "entry_price": 105.0,
+    "exit_date": "2025-01-05",
+    "exit_price": 104.0,
+    "return_pct": -0.9524,
+    "symbol": "AAA"
+   },
+   {
+    "entry_date": "2025-01-05",
+    "entry_price": 52.0,
+    "exit_date": "2025-01-06",
+    "exit_price": 51.0,
+    "return_pct": -1.9231,
+    "symbol": "BBB"
+   }
+  ]
+ },
+ "universe": {
+  "benchmark_curve": [
+   {
+    "date": "2025-01-01",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-02",
+    "equity": 101000.0
+   },
+   {
+    "date": "2025-01-03",
+    "equity": 100500.0
+   },
+   {
+    "date": "2025-01-04",
+    "equity": 103000.0
+   },
+   {
+    "date": "2025-01-05",
+    "equity": 102500.0
+   },
+   {
+    "date": "2025-01-06",
+    "equity": 105000.0
+   }
+  ],
+  "date_range": {
+   "end": "2025-01-06",
+   "start": "2025-01-01"
+  },
+  "drawdown_curve": [
+   {
+    "date": "2025-01-01",
+    "drawdown_pct": 0.0
+   },
+   {
+    "date": "2025-01-02",
+    "drawdown_pct": 0.0
+   },
+   {
+    "date": "2025-01-03",
+    "drawdown_pct": -0.495
+   },
+   {
+    "date": "2025-01-04",
+    "drawdown_pct": -0.495
+   },
+   {
+    "date": "2025-01-05",
+    "drawdown_pct": -0.9781
+   },
+   {
+    "date": "2025-01-06",
+    "drawdown_pct": -0.9781
+   }
+  ],
+  "equity_curve": [
+   {
+    "date": "2025-01-01",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-02",
+    "equity": 100000.0
+   },
+   {
+    "date": "2025-01-03",
+    "equity": 99504.9505
+   },
+   {
+    "date": "2025-01-04",
+    "equity": 99504.9505
+   },
+   {
+    "date": "2025-01-05",
+    "equity": 99021.9168
+   },
+   {
+    "date": "2025-01-06",
+    "equity": 99021.9168
+   }
+  ],
+  "instrument_type": "equity",
+  "metrics": {
+   "final_equity": 99021.92,
+   "initial_capital": 100000.0,
+   "losing_trades": 2,
+   "max_drawdown_pct": -0.9781,
+   "sharpe_ratio": -11.2242,
+   "total_return_pct": -0.9781,
+   "total_trades": 2,
+   "win_rate_pct": 0.0,
+   "winning_trades": 0
+  },
+  "selection": {
+   "mode": "universe",
+   "scope": "NIFTY50:INDEX_DATASET"
+  },
+  "strategy_curves": [
+   {
+    "equity_curve": [
+     {
+      "date": "2025-01-01",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-02",
+      "equity": 100000.0
+     },
+     {
+      "date": "2025-01-03",
+      "equity": 99504.9505
+     },
+     {
+      "date": "2025-01-04",
+      "equity": 99504.9505
+     },
+     {
+      "date": "2025-01-05",
+      "equity": 99021.9168
+     },
+     {
+      "date": "2025-01-06",
+      "equity": 99021.9168
+     }
+    ],
+    "name": "2-Day Momentum",
+    "strategy_id": "MOMENTUM_2D",
+    "weight": 1.0
+   }
+  ],
+  "trade_log": [
+   {
+    "entry_date": "2025-01-02",
+    "entry_price": 1010.0,
+    "exit_date": "2025-01-03",
+    "exit_price": 1005.0,
+    "return_pct": -0.495,
+    "symbol": "NIFTY50"
+   },
+   {
+    "entry_date": "2025-01-04",
+    "entry_price": 1030.0,
+    "exit_date": "2025-01-05",
+    "exit_price": 1025.0,
+    "return_pct": -0.4854,
+    "symbol": "NIFTY50"
+   }
+  ]
+ }
+}
