@@ -179,7 +179,7 @@ async def get_option_chain(
         raise
     except Exception as e:
         logger.exception("Error fetching option chain for %s", safe_log_value(symbol))
-        raise HTTPException(status_code=500, detail=f"Error fetching option chain: {e}") from e
+        raise HTTPException(status_code=500, detail="Error fetching option chain") from e
 
 
 @router.get(
@@ -213,7 +213,7 @@ async def get_expiries(
         raise
     except Exception as e:
         logger.exception("Error fetching expiries for %s", safe_log_value(symbol))
-        raise HTTPException(status_code=500, detail=f"Error fetching expiries: {e}") from e
+        raise HTTPException(status_code=500, detail="Error fetching expiries") from e
 
 
 @router.get(
@@ -259,7 +259,7 @@ async def get_atm_strike(
         raise
     except Exception as e:
         logger.exception("Error fetching ATM strike for %s", safe_log_value(symbol))
-        raise HTTPException(status_code=500, detail=f"Error fetching ATM strike: {e}") from e
+        raise HTTPException(status_code=500, detail="Error fetching ATM strike") from e
 
 
 @router.get(
@@ -320,7 +320,7 @@ async def get_greeks(
             strike,
             safe_log_value(option_type),
         )
-        raise HTTPException(status_code=500, detail=f"Error fetching Greeks: {e}") from e
+        raise HTTPException(status_code=500, detail="Error fetching Greeks") from e
 
 
 @router.post(

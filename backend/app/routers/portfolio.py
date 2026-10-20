@@ -4,6 +4,8 @@ Portfolio Router
 API endpoints for portfolio data, stats, and funds.
 """
 
+import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.live_position import LivePosition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio")
 DB_DEPENDENCY = Depends(get_db)
@@ -61,35 +65,41 @@ def get_portfolio_stats(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
             "totalReturnPercent": round(total_return_percent, 2),
         }
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch portfolio stats: {str(e)}"
-        ) from e
+        logger.exception("Failed to fetch portfolio stats")
+        raise HTTPException(status_code=500, detail="Failed to fetch portfolio stats") from e
 
 
-@router.get("/funds", response_model=None)
+FUNDS_UNAVAILABLE = "Broker funds unavailable"
+
+
+@router.get(
+    "/funds",
+    response_model=None,
+    responses={503: {"description": FUNDS_UNAVAILABLE}},
+)
 def get_portfolio_funds(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
-    Get available funds/buying power.
+    Get available funds/buying power from the broker.
+
+    Fails closed: 503 when the broker client is missing, the call fails or the reply is
+    not a usable funds payload, never a zero balance that looks real.
     """
+    from ..services.fyers_client import get_fyers_client
+
     try:
-        # Try to get from broker
-        from ..services.fyers_client import get_fyers_client
-
         fyers = get_fyers_client()
-
-        if fyers and fyers.fyers:
-            funds_data = fyers.fyers.funds()
-            if isinstance(funds_data, dict):
-                return _funds_summary(funds_data)
-
-        # Fallback: return zeros if broker not available
-        return dict(ZERO_FUNDS)
+        client = fyers.fyers if fyers else None
+        funds_data = client.funds() if client else None
     except Exception:
-        # Return zeros on error
-        return dict(ZERO_FUNDS)
+        logger.exception("Broker funds call failed")
+        funds_data = None
+
+    if not isinstance(funds_data, dict) or funds_data.get("s") == "error":
+        logger.warning("Broker funds unavailable (no client or unusable reply)")
+        raise HTTPException(status_code=503, detail=FUNDS_UNAVAILABLE)
+    return _funds_summary(funds_data)
 
 
-ZERO_FUNDS = {"available": 0, "used": 0, "total": 0, "buyingPower": 0}
 # Fyers fund_limit titles and the summary field each one sets.
 FUND_LIMIT_FIELDS = {
     "Total Balance": "total",
@@ -98,24 +108,40 @@ FUND_LIMIT_FIELDS = {
 }
 
 
+def _amount(value: object) -> float | None:
+    """A funds amount as float, or None when missing or not numeric."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) else None
+
+
 def _funds_summary(funds_data: dict[str, Any]) -> dict[str, float]:
-    """available/used/total/buyingPower from a Fyers funds reply."""
-    available = float(funds_data.get("available", 0) or 0)
-    used = float(funds_data.get("used", 0) or 0)
+    """available/used/total/buyingPower from a Fyers funds reply.
+
+    Each field is parsed on its own: one missing or malformed amount leaves only that
+    field at its fallback instead of failing the whole reply.
+    """
+    available = _amount(funds_data.get("available")) or 0.0
+    used = _amount(funds_data.get("used")) or 0.0
     summary = {
         "available": available,
         "used": used,
-        "total": float(funds_data.get("total", 0) or (available + used)),
+        "total": _amount(funds_data.get("total")) or (available + used),
     }
 
     # Handle complex fund_limit structure
     fund_limit = funds_data.get("fund_limit", [])
     if isinstance(fund_limit, list):
         for f in fund_limit:
-            title = f.get("title")
+            title = f.get("title") if isinstance(f, dict) else None
             field = FUND_LIMIT_FIELDS.get(title) if isinstance(title, str) else None
-            if field:
-                summary[field] = float(f.get("equityAmount", 0))
+            amount = _amount(f.get("equityAmount")) if field else None
+            if field and amount is not None:
+                summary[field] = amount
 
     return {
         "available": summary["available"],

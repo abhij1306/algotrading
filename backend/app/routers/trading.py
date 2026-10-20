@@ -8,7 +8,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -23,6 +23,9 @@ from ..services.risk_manager import RiskStatus, risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.logger import safe_log_value
 
+if TYPE_CHECKING:
+    from ..brokers.plugins.fyers import FyersBroker
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/trading", tags=["Trading"])
 
@@ -31,6 +34,7 @@ DBSession = Annotated[Session, Depends(get_db)]
 BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request"}}
 AUTH_RESPONSE = {401: {"description": "Authentication required"}}
 SERVER_ERROR_RESPONSE = {500: {"description": "Server error"}}
+LIVE_SQUARE_FALLBACK_FAILED = "LIVE_SQUARE_FALLBACK_FAILED"
 
 # ============== Pydantic Models ==============
 
@@ -306,25 +310,38 @@ def _square_live_positions(req: SquarePositionRequest) -> dict[str, Any]:
 
     result = broker.exit_position(req.symbol)
     if result.get("status") in {"ERROR", "REJECTED"} or result.get("s") == "error":
-        try:
-            fyers_symbol = symbol_master.to_fyers(req.symbol)
-            result = broker.exit_position(fyers_symbol)
-        except Exception as exc:
-            fyers_symbol = req.symbol
-            logger.exception(
-                "Live square fallback failed for symbol=%s fyers_symbol=%s",
-                safe_log_value(req.symbol),
-                safe_log_value(fyers_symbol),
-                exc_info=exc,
-            )
-            result = {
-                **result,
-                "status": "ERROR",
-                "message": result.get("message", "Live square-off failed"),
-                "fallback_error": str(exc),
-                "fyers_symbol": fyers_symbol,
-            }
+        result = _retry_square_with_fyers_symbol(broker, req.symbol, result)
     return _live_square_response(req.symbol, result)
+
+
+def _retry_square_with_fyers_symbol(
+    broker: "FyersBroker", symbol: str, first_result: dict[str, Any]
+) -> dict[str, Any]:
+    """Retry a rejected live square-off with the Fyers symbol.
+
+    A failure is logged server-side on one sanitized line and the
+    caller gets a fixed error code; the exception text is never returned (trading rule 10).
+    """
+    fyers_symbol = symbol
+    error = ""
+    try:
+        fyers_symbol = symbol_master.to_fyers(symbol)
+        return broker.exit_position(fyers_symbol)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    logger.error(
+        "Live square fallback failed for symbol=%s fyers_symbol=%s error=%s",
+        safe_log_value(symbol),
+        safe_log_value(fyers_symbol),
+        safe_log_value(error),
+    )
+    return {
+        **first_result,
+        "status": "ERROR",
+        "message": first_result.get("message", "Live square-off failed"),
+        "error_code": LIVE_SQUARE_FALLBACK_FAILED,
+        "fyers_symbol": fyers_symbol,
+    }
 
 
 def _create_square_order(pos: dict[str, Any], timestamp: datetime) -> LiveOrder | None:
@@ -508,7 +525,8 @@ def get_positions(
         positions = position_sync_service.get_positions(user_id)
         return positions
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}") from e
+        logger.exception("Error fetching positions")
+        raise HTTPException(status_code=500, detail="Error fetching positions") from e
 
 
 @router.get("/positions/book", responses=SERVER_ERROR_RESPONSE)
@@ -537,9 +555,10 @@ def get_positions_book(
             "net_pnl_total": round(live_net + paper_net, 2),
         }
     except Exception as e:
+        logger.exception("Error building positions book")
         raise HTTPException(
             status_code=500,
-            detail=f"Error building positions book: {str(e)}",
+            detail="Error building positions book",
         ) from e
 
 
@@ -552,9 +571,10 @@ def get_position_summary(
         summary = position_sync_service.get_position_summary(user_id)
         return summary
     except Exception as e:
+        logger.exception("Error fetching position summary")
         raise HTTPException(
             status_code=500,
-            detail=f"Error fetching position summary: {str(e)}",
+            detail="Error fetching position summary",
         ) from e
 
 
@@ -579,7 +599,8 @@ def square_position(req: SquarePositionRequest, db: DBSession) -> dict[str, Any]
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error squaring position: {str(e)}") from e
+        logger.exception("Square position failed for symbol=%s", safe_log_value(req.symbol))
+        raise HTTPException(status_code=500, detail="Error squaring position") from e
 
 
 @router.post(
@@ -617,7 +638,8 @@ def exit_position(req: ExitPositionRequest) -> dict[str, Any]:
                 "action": "EXIT_ALL",
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error exiting position: {str(e)}") from e
+        logger.exception("Error exiting position")
+        raise HTTPException(status_code=500, detail="Error exiting position") from e
 
 
 # ============== Funds Endpoints ==============
@@ -634,7 +656,8 @@ def get_funds() -> FundsResponse:
 
         return FundsResponse(available=funds.available, used=funds.used, total=funds.total)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching funds: {str(e)}") from e
+        logger.exception("Error fetching funds")
+        raise HTTPException(status_code=500, detail="Error fetching funds") from e
 
 
 # ============== Tradebook Endpoints ==============
@@ -650,7 +673,8 @@ def get_tradebook() -> list[dict[str, Any]]:
         trades = broker.get_tradebook()
         return trades
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching tradebook: {str(e)}") from e
+        logger.exception("Error fetching tradebook")
+        raise HTTPException(status_code=500, detail="Error fetching tradebook") from e
 
 
 # ============== Risk Management Endpoints ==============
@@ -674,7 +698,8 @@ def check_risk(req: RiskCheckRequest, db: DBSession) -> RiskCheckResponse:
             details=result.details,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Risk check error: {str(e)}") from e
+        logger.exception("Risk check error")
+        raise HTTPException(status_code=500, detail="Risk check error") from e
 
 
 @router.get(
@@ -687,7 +712,8 @@ def get_exposure_summary() -> ExposureSummaryResponse:
         summary = risk_manager.get_exposure_summary()
         return ExposureSummaryResponse(**summary)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching exposure: {str(e)}") from e
+        logger.exception("Error fetching exposure")
+        raise HTTPException(status_code=500, detail="Error fetching exposure") from e
 
 
 @router.post("/risk/large-order-check", responses=SERVER_ERROR_RESPONSE)
@@ -705,4 +731,5 @@ def check_large_order(order: OrderRequest) -> dict[str, Any]:
             "details": result.details,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Large order check error: {str(e)}") from e
+        logger.exception("Large order check error")
+        raise HTTPException(status_code=500, detail="Large order check error") from e
