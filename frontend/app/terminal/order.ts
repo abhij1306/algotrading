@@ -10,6 +10,22 @@ export function inferInstrumentType(symbol: string): InstrumentType {
   return "EQ";
 }
 
+const OPTION_LOT_SIZES: ReadonlyMap<string, number> = new Map([
+  ["NIFTY", 75],
+  ["BANKNIFTY", 30],
+  ["FINNIFTY", 25],
+]);
+
+/**
+ * The lot size of an option, read from the symbol's own underlying ("BANKNIFTY26OCT...CE" is 30),
+ * or null when the underlying is not one the terminal knows.
+ */
+export function optionLotSize(symbol: string): number | null {
+  const underlying = /^(?:[A-Z]+:)?([A-Z]+)\d/.exec(symbol)?.[1];
+  if (underlying === undefined) return null;
+  return OPTION_LOT_SIZES.get(underlying) ?? null;
+}
+
 /** The order tag names the flow: the instrument decides, not the terminal view. */
 function orderTag(symbol: string): "terminal-equity" | "terminal-options" {
   return inferInstrumentType(symbol) === "EQ" ? "terminal-equity" : "terminal-options";

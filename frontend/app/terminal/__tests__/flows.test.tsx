@@ -199,6 +199,30 @@ describe("terminal order payload", () => {
     ]);
   });
 
+  it("sizes a ?symbol= option in lots of its own underlying, not the board's", async () => {
+    renderPage("/terminal?symbol=BANKNIFTY26OCT50000CE");
+    await screen.findByText("State Bank");
+    setValue(/order type/i, "MARKET");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([30]);
+  });
+
+  it("refuses an option whose lot size it does not know", async () => {
+    renderPage("/terminal?symbol=MIDCPNIFTY26OCT12000CE");
+    await screen.findByText("State Bank");
+    setValue(/order type/i, "MARKET");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    expect(
+      await screen.findByText("Unknown lot size for MIDCPNIFTY26OCT12000CE"),
+    ).toBeInTheDocument();
+    expect(orderBodies(calls)).toEqual([]);
+  });
+
   it("blocks an SL order without a trigger, then sends it once the trigger is set", async () => {
     renderPage();
     await screen.findAllByText("State Bank");
@@ -337,6 +361,18 @@ describe("terminal LIVE confirmation", () => {
       ["Product", "INTRADAY"],
       ["Risk override reason", "None"],
     ]);
+  });
+
+  it("shows a price with more than two decimals exactly as it will be sent", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/^price$/i, "800.004");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Place LIVE BUY order for SBIN?" });
+    expect(dialogRows(dialog)[6]).toEqual(["Price", "800.004"]);
   });
 
   it("sends nothing when cancelled", async () => {

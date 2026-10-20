@@ -1,9 +1,14 @@
 import { useRef } from "react";
 import { Button } from "@/components/ui";
-import { formatNumber } from "@/lib/format";
+import { formatNumber, roundToDecimals } from "@/lib/format";
 import type { OrderDraft } from "./order";
 
 const NONE = "None";
+
+/** A price exactly as it will be sent: two decimals unless the value has more, never rounded. */
+function exactPrice(value: number): string {
+  return roundToDecimals(value, 2) === value ? formatNumber(value) : String(value);
+}
 
 /** Every field the LIVE order sends, labelled for a person, in the order the ticket shows them. */
 export function liveOrderRows(draft: OrderDraft): [label: string, value: string][] {
@@ -18,8 +23,8 @@ export function liveOrderRows(draft: OrderDraft): [label: string, value: string]
     ["Instrument", body.instrument_type ?? NONE],
     ["Quantity", quantity],
     ["Order type", body.type],
-    ["Price", body.type === "MARKET" ? "Market" : formatNumber(body.price)],
-    ["Trigger", body.trigger_price ? formatNumber(body.trigger_price) : NONE],
+    ["Price", body.type === "MARKET" ? "Market" : exactPrice(body.price)],
+    ["Trigger", body.trigger_price ? exactPrice(body.trigger_price) : NONE],
     ["Product", body.product],
     ["Risk override reason", body.risk_override_reason ?? NONE],
   ];

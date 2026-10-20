@@ -20,6 +20,7 @@ import {
 import {
   inferInstrumentType,
   isStopOrder,
+  optionLotSize,
   orderBody,
   orderDraft,
   orderInputError,
@@ -51,11 +52,6 @@ import { getTradingViewUrl } from "@/lib/tradingview";
 type TerminalView = "options" | "positions";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "D", "W", "M"];
-const OPTION_LOT_SIZES: Record<string, number> = {
-  NIFTY: 75,
-  BANKNIFTY: 30,
-  FINNIFTY: 25,
-};
 
 function getChangeTone(change: number | null | undefined): string {
   if (typeof change !== "number") {
@@ -831,7 +827,6 @@ function useOrderTicket(params: {
   tradingMode: TradingMode;
   terminalView: TerminalView;
   activeTradeSymbol: string;
-  optionsUnderlying: string;
   onMessage: (message: string | null) => void;
 }) {
   const { tradingMode, terminalView, activeTradeSymbol, onMessage } = params;
@@ -845,8 +840,12 @@ function useOrderTicket(params: {
   const submit = usePlaceOrder();
 
   const lotsMode = terminalView === "options" && inferInstrumentType(activeTradeSymbol) !== "EQ";
-  const optionLotSize = OPTION_LOT_SIZES[params.optionsUnderlying] ?? 1;
-  const quantity = lotsMode ? Math.max(1, optionLots) * optionLotSize : Math.max(1, orderQty);
+  // The lot size comes from the option's own underlying, not the board on screen, and an
+  // unknown one leaves no quantity: the order is refused rather than sized by a guess.
+  const lotSize = lotsMode ? optionLotSize(activeTradeSymbol) : null;
+  const lots = lotSize === null ? null : { count: Math.max(1, optionLots), size: lotSize };
+  let quantity: number | null = Math.max(1, orderQty);
+  if (lotsMode) quantity = lots ? lots.count * lots.size : null;
 
   const send = (draft: OrderDraft, liveConfirmed: boolean) => {
     // A new click is a new intent; retries of this mutation reuse this id.
@@ -858,12 +857,16 @@ function useOrderTicket(params: {
   };
 
   const placeOrder = (side: OrderSide) => {
+    if (quantity === null) {
+      onMessage(`Unknown lot size for ${activeTradeSymbol}`);
+      return;
+    }
     const input = {
       mode: tradingMode,
       symbol: activeTradeSymbol,
       side,
       quantity,
-      lots: lotsMode ? { count: Math.max(1, optionLots), size: optionLotSize } : null,
+      lots,
       orderType,
       price: orderPrice,
       trigger: orderTrigger,
@@ -908,7 +911,7 @@ function useOrderTicket(params: {
     riskOverrideReason,
     setRiskOverrideReason,
     lotsMode,
-    optionLotSize,
+    lotSize,
     quantity,
     isSubmitting: submit.isPending,
     placeOrder,
@@ -1049,24 +1052,16 @@ function OrderTicket({
   tradingMode,
   terminalView,
   activeTradeSymbol,
-  optionsUnderlying,
   message: orderMessage,
   onMessage,
 }: Readonly<{
   tradingMode: TradingMode;
   terminalView: TerminalView;
   activeTradeSymbol: string;
-  optionsUnderlying: string;
   message: string | null;
   onMessage: (message: string | null) => void;
 }>) {
-  const ticket = useOrderTicket({
-    tradingMode,
-    terminalView,
-    activeTradeSymbol,
-    optionsUnderlying,
-    onMessage,
-  });
+  const ticket = useOrderTicket({ tradingMode, terminalView, activeTradeSymbol, onMessage });
 
   return (
     <div className="w-56 flex-shrink-0 p-3 border-l border-border bg-surface">
@@ -1076,9 +1071,9 @@ function OrderTicket({
       </div>
       {ticket.lotsMode && (
         <div className="mb-2 text-xs text-foreground-muted">
-          Lot Size: <span className="tabular-nums text-foreground">{ticket.optionLotSize}</span> |
+          Lot Size: <span className="tabular-nums text-foreground">{ticket.lotSize ?? "--"}</span> |
           Lots: <span className="tabular-nums text-foreground">{ticket.optionLots}</span> | Qty:{" "}
-          <span className="tabular-nums text-foreground">{ticket.quantity}</span>
+          <span className="tabular-nums text-foreground">{ticket.quantity ?? "--"}</span>
         </div>
       )}
       <div className="flex items-center gap-2 mb-3">
@@ -1210,7 +1205,6 @@ export default function TerminalPage() {
           tradingMode={tradingMode}
           terminalView={terminalView}
           activeTradeSymbol={activeTradeSymbol}
-          optionsUnderlying={chain.underlying}
           message={orderMessage}
           onMessage={setOrderMessage}
         />
