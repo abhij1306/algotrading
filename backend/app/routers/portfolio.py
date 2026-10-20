@@ -119,6 +119,21 @@ def _amount(value: object) -> float | None:
     return amount if math.isfinite(amount) else None
 
 
+def _fund_limit_amounts(fund_limit: object) -> dict[str, float]:
+    """Summary fields set by Fyers fund_limit rows; rows with an unknown title or a
+    missing or malformed equityAmount are skipped."""
+    amounts: dict[str, float] = {}
+    rows = fund_limit if isinstance(fund_limit, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        field = FUND_LIMIT_FIELDS.get(str(row.get("title")))
+        amount = _amount(row.get("equityAmount"))
+        if field and amount is not None:
+            amounts[field] = amount
+    return amounts
+
+
 def _funds_summary(funds_data: dict[str, Any]) -> dict[str, float]:
     """available/used/total/buyingPower from a Fyers funds reply.
 
@@ -134,14 +149,7 @@ def _funds_summary(funds_data: dict[str, Any]) -> dict[str, float]:
     }
 
     # Handle complex fund_limit structure
-    fund_limit = funds_data.get("fund_limit", [])
-    if isinstance(fund_limit, list):
-        for f in fund_limit:
-            title = f.get("title") if isinstance(f, dict) else None
-            field = FUND_LIMIT_FIELDS.get(title) if isinstance(title, str) else None
-            amount = _amount(f.get("equityAmount")) if field else None
-            if field and amount is not None:
-                summary[field] = amount
+    summary.update(_fund_limit_amounts(funds_data.get("fund_limit", [])))
 
     return {
         "available": summary["available"],
