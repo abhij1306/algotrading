@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,57 +13,20 @@ from starlette.websockets import WebSocketState
 from app.services import fyers_client as fyers_client_module
 from app.services import fyers_websocket
 from app.services import live_market_service as lms
+from app.services.live.data_socket import SocketCallbacks
+from app.services.live.provider_session import RetryPolicy, SessionState
 from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
-from fakes.market import FreezeMarket
-
-
-class FakeSocket:
-    """Stands in for fyers FyersDataSocket."""
-
-    def __init__(self) -> None:
-        self.subscribed: list[str] = []
-        self.unsubscribed: list[str] = []
-        self.closed = False
-
-    def is_connected(self) -> bool:
-        return not self.closed
-
-    def connect(self) -> None:
-        pass
-
-    def subscribe(self, symbols: list[str], data_type: object = None) -> None:
-        self.subscribed.extend(symbols)
-
-    def unsubscribe(self, symbols: list[str]) -> None:
-        self.unsubscribed.extend(symbols)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeProviderService:
-    """Stands in for FyersWebSocketService."""
-
-    def __init__(self) -> None:
-        self.ws = FakeSocket()
-        self.disconnected = False
-        self.on_tick_handler = None
-
-    def connect(self) -> None:
-        pass
-
-    def subscribe(self, symbols: list[str]) -> None:
-        self.ws.subscribe(symbols)
-
-    def unsubscribe(self, symbols: list[str]) -> None:
-        self.ws.unsubscribe(symbols)
-
-    def disconnect(self) -> None:
-        self.disconnected = True
-        self.ws.close()
+from fakes.data_socket import (
+    FakeSocketFactory,
+    connected_live,
+    make_live,
+    run_inline,
+    wait_until_backing_off,
+)
+from fakes.market import MARKET_OPEN_INSTANT, FreezeMarket
 
 
 class FakeClientWebSocket:
@@ -94,19 +59,17 @@ def test_provider_reconnect_replays_client_subscriptions(monkeypatch: pytest.Mon
     async def scenario() -> list[str]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
-        live = lms.LiveMarketService()
+        live, factory = connected_live()
         live.loop = asyncio.get_running_loop()
-        live.dev_mode = True
 
         client = FakeClientWebSocket()
         assert await mgr.connect(client)
         await mgr.subscribe(client, ["SBIN", "TCS"])
 
         # Provider dropped and came back as a brand new socket.
-        live.ws_service = FakeProviderService()
-        live.on_ws_connected()
-        await asyncio.sleep(0.05)
-        return live.ws_service.ws.subscribed
+        factory.last.drop()
+        assert live.session.start() is True
+        return factory.last.subscribed
 
     assert sorted(asyncio.run(scenario())) == sorted([_fyers("SBIN"), _fyers("TCS")])
 
@@ -117,8 +80,7 @@ def test_slow_client_drop_releases_only_unshared_provider_symbols(
     async def scenario() -> tuple[FakeClientWebSocket, ConnectionManager, list[str]]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
-        live = lms.LiveMarketService()
-        live.ws_service = FakeProviderService()
+        live, factory = connected_live()
         mgr.on_symbols_released = live.unsubscribe
 
         slow = FakeClientWebSocket(stall=True)
@@ -132,7 +94,7 @@ def test_slow_client_drop_releases_only_unshared_provider_symbols(
             await mgr.broadcast({"type": "ticker_batch", "data": [{"symbol": "TCS", "ltp": 1}]})
             await asyncio.sleep(0)
         await asyncio.sleep(0.05)
-        return slow, mgr, live.ws_service.ws.unsubscribed
+        return slow, mgr, factory.last.unsubscribed
 
     slow, mgr, unsubscribed = asyncio.run(scenario())
     assert unsubscribed == [_fyers("TCS")]  # SBIN is still needed by the healthy client
@@ -143,25 +105,29 @@ def test_slow_client_drop_releases_only_unshared_provider_symbols(
 def test_explicit_disconnect_is_not_undone_by_automatic_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    live = lms.LiveMarketService()
+    live, factory = connected_live()
     live.dev_mode = True
-    provider = FakeProviderService()
-    live.ws_service = provider
-    live.ws_connected = True
+    socket = factory.last
     monkeypatch.setattr(lms, "live_market", live)
 
     from app.routers.websocket import disconnect_websocket
 
     assert disconnect_websocket() == {"status": "disconnected"}
-    assert provider.disconnected
-    assert live.ws_connected is False
+    assert socket.closed is True
+    assert live.session.state is SessionState.CLOSED
+
+    # A late SDK auto-reconnect of the closed socket does not bring it back.
+    socket.sdk_reconnect()
+    assert live.session.is_connected() is False
 
     # The monitor loop and subscribe() call connect() without `explicit`.
     assert live.connect(prevalidated_token=True) == "disconnected"
+    assert len(factory.sockets) == 1
 
     # An explicit connect lifts the disconnect.
-    monkeypatch.setattr(fyers_websocket, "get_websocket_service", lambda: provider)
     assert live.connect(prevalidated_token=True, explicit=True) == "started"
+    assert live.session.is_connected() is True
+    assert len(factory.sockets) == 2
 
 
 def test_broker_and_option_chain_use_current_client_after_relogin(
@@ -190,28 +156,58 @@ def test_reset_fyers_client_drops_class_singleton(monkeypatch: pytest.MonkeyPatc
     assert fyers_client_module.FyersClient._instance is None
 
 
-def test_provider_connect_closes_previous_socket(monkeypatch: pytest.MonkeyPatch) -> None:
-    created: list[FakeSocket] = []
+def test_fyers_socket_factory_wires_the_token_and_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[dict[str, Any]] = []
 
-    def make_socket(**_kwargs: object) -> FakeSocket:
-        sock = FakeSocket()
-        created.append(sock)
-        return sock
+    def make_socket(**kwargs: object) -> object:
+        built.append(kwargs)
+        return SimpleNamespace()
 
     monkeypatch.setattr(fyers_websocket, "data_ws", SimpleNamespace(FyersDataSocket=make_socket))
-    monkeypatch.setattr(
-        fyers_client_module,
-        "get_fyers_client",
-        lambda: SimpleNamespace(client_id="C", access_token="T"),
+    callbacks = SocketCallbacks(
+        on_message=lambda _m: None,
+        on_connect=lambda: None,
+        on_close=lambda _m: None,
+        on_error=lambda _e: None,
     )
 
-    service = fyers_websocket.FyersWebSocketService()
-    service.connect()
-    service.connect()
+    fyers_websocket.fyers_socket_factory("C:T", callbacks)
 
-    assert len(created) == 2
-    assert created[0].closed
-    assert not created[1].closed
+    assert len(built) == 1
+    kwargs = built[0]
+    assert kwargs["access_token"] == "C:T"
+    assert kwargs["reconnect"] is True
+    assert kwargs["on_connect"] is callbacks.on_connect
+    assert kwargs["on_message"] is callbacks.on_message
+    assert kwargs["on_close"] is callbacks.on_close
+    assert kwargs["on_error"] is callbacks.on_error
+
+
+def test_fyers_socket_factory_needs_the_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fyers_websocket, "data_ws", None)
+    callbacks = SocketCallbacks(lambda _m: None, lambda: None, lambda _m: None, lambda _e: None)
+
+    with pytest.raises(fyers_websocket.FyersWebSocketError):
+        fyers_websocket.fyers_socket_factory("C:T", callbacks)
+
+
+@pytest.mark.parametrize(
+    ("client", "expected"),
+    [
+        (SimpleNamespace(client_id="C", access_token="T"), "C:T"),
+        (SimpleNamespace(client_id="C", access_token=None), None),
+        (SimpleNamespace(client_id=None, access_token="T"), None),
+        (None, None),
+    ],
+)
+def test_fyers_token_reads_the_current_client(
+    monkeypatch: pytest.MonkeyPatch, client: object, expected: str | None
+) -> None:
+    monkeypatch.setattr(fyers_client_module, "get_fyers_client", lambda: client)
+
+    assert fyers_websocket.fyers_token() == expected
 
 
 def test_http_subscribed_symbols_are_replayed_and_not_released(
@@ -220,9 +216,8 @@ def test_http_subscribed_symbols_are_replayed_and_not_released(
     async def scenario() -> tuple[list[str], list[str]]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
-        live = lms.LiveMarketService()
+        live, factory = connected_live()
         live.loop = asyncio.get_running_loop()
-        live.ws_service = FakeProviderService()
         mgr.on_symbols_released = live.unsubscribe
 
         await live.subscribe_api(["SBIN"])
@@ -230,12 +225,11 @@ def test_http_subscribed_symbols_are_replayed_and_not_released(
         assert await mgr.connect(client)
         await mgr.subscribe(client, ["SBIN", "TCS"])
         await mgr.disconnect(client)  # releases TCS only; SBIN belongs to the HTTP route
-        unsubscribed = list(live.ws_service.ws.unsubscribed)
+        unsubscribed = list(factory.last.unsubscribed)
 
-        live.ws_service = FakeProviderService()  # provider reconnect
-        live.on_ws_connected()
-        await asyncio.sleep(0.05)
-        return unsubscribed, live.ws_service.ws.subscribed
+        factory.last.drop()  # provider reconnect on a new socket
+        assert live.session.start() is True
+        return unsubscribed, factory.last.subscribed
 
     unsubscribed, replayed = asyncio.run(scenario())
     assert unsubscribed == [_fyers("TCS")]
@@ -248,154 +242,32 @@ def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(
     async def scenario() -> list[str]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
-        live = lms.LiveMarketService()
-        live.ws_service = FakeProviderService()
+        live, factory = connected_live()
 
         client = FakeClientWebSocket()
         assert await mgr.connect(client)
         await mgr.subscribe(client, ["SBIN"])  # re-subscribed before the stale release lands
         await live.unsubscribe(["SBIN", "TCS"])
-        return live.ws_service.ws.unsubscribed
+        return factory.last.unsubscribed
 
     assert asyncio.run(scenario()) == [_fyers("TCS")]
 
 
-class SlowConnectProvider(FakeProviderService):
-    """connect() returns without raising.
-
-    The socket only reports connected if `connect_after` is set.
-    """
-
-    def __init__(
-        self,
-        connect_after: float | None,
-        live: lms.LiveMarketService | None = None,
-        open_in_connect: bool = False,
-    ) -> None:
-        super().__init__()
-        self.connect_calls = 0
-        self.connect_after = connect_after
-        self.live = live
-        self.open_in_connect = open_in_connect
-        self.ws.closed = True  # is_connected() is `not closed`
-
-    def connect(self) -> None:
-        self.connect_calls += 1
-        if self.connect_after is not None:
-            self.ws.closed = False
-        if self.open_in_connect:
-            self.live.on_provider_open()  # the SDK calls on_connect from inside connect()
-
-
-def _fast_runner(monkeypatch: pytest.MonkeyPatch, retries: int = 3) -> None:
-    monkeypatch.setattr(lms, "WS_MAX_RETRIES", retries)
-    monkeypatch.setattr(lms, "WS_CONNECT_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(lms, "WS_CONNECT_POLL_S", 0.01)
-    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 0.01)
-    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 0.02)
-
-
-def test_runner_retries_and_fails_when_connect_returns_without_connecting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _fast_runner(monkeypatch, retries=3)
-    live = lms.LiveMarketService()
-    live._is_connecting = True
-    live.ws_service = SlowConnectProvider(connect_after=None)
-
-    live._run_provider_connect()
-
-    assert live.ws_service.connect_calls == 3
-    assert live.ws_connected is False
-    assert live._is_connecting is False
-
-
-def test_runner_connects_once_and_replays_without_double_subscribe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _fast_runner(monkeypatch)
-    monkeypatch.setattr(lms, "manager", ConnectionManager())
-
-    async def scenario() -> lms.LiveMarketService:
-        live = lms.LiveMarketService()
-        live.loop = asyncio.get_running_loop()
-        live.dev_mode = True
-        live.registry.add(API_OWNER, ["SBIN"])
-        # connect() fires the SDK on-open hook (first connect); the runner must not replay again.
-        live.ws_service = SlowConnectProvider(connect_after=0, live=live, open_in_connect=True)
-        await asyncio.to_thread(live._run_provider_connect)
-        await asyncio.sleep(0.05)
-        return live
-
-    live = asyncio.run(scenario())
-    assert live.ws_connected is True
-    assert live.ws_service.connect_calls == 1
-    assert live.ws_service.ws.subscribed == [_fyers("SBIN")]
-
-
-def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _fast_runner(monkeypatch)
-    monkeypatch.setattr(lms, "manager", ConnectionManager())
-
-    async def scenario() -> lms.LiveMarketService:
-        live = lms.LiveMarketService()
-        live.loop = asyncio.get_running_loop()
-        live.dev_mode = True
-        live.registry.add(API_OWNER, ["TCS"])
-        live.ws_service = SlowConnectProvider(connect_after=0)
-        await asyncio.to_thread(live._run_provider_connect)
-        await asyncio.sleep(0.05)
-        return live
-
-    live = asyncio.run(scenario())
-    assert live.ws_service.ws.subscribed == [_fyers("TCS")]
-
-
-def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    import threading
-    import time
-
-    _fast_runner(monkeypatch, retries=10)
-    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 30.0)
-    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 30.0)
-    live = lms.LiveMarketService()
-    live.ws_service = SlowConnectProvider(connect_after=None)
-
-    thread = threading.Thread(target=live._run_provider_connect, daemon=True)
-    thread.start()
-    time.sleep(0.2)  # first attempt timed out, runner is now backing off for 30s
-    live.disconnect()
-    thread.join(timeout=2)
-
-    assert not thread.is_alive()
-    assert live.ws_service.connect_calls == 1
-
-
-def test_sdk_reconnect_open_callback_replays_subscriptions(
+def test_sdk_auto_reconnect_replays_subscriptions_on_the_same_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(lms, "manager", ConnectionManager())
+    live, factory = make_live()
+    live.registry.add(API_OWNER, ["SBIN"])
+    assert live.session.start() is True
 
-    async def scenario() -> list[str]:
-        live = lms.LiveMarketService()
-        live.loop = asyncio.get_running_loop()
-        live.dev_mode = True
-        live.registry.add(API_OWNER, ["SBIN"])
-        service = fyers_websocket.FyersWebSocketService()
-        service.ws = FakeSocket()
-        service.on_open_handler = live.on_provider_open
-        live.ws_service = service
+    # The SDK's own reconnect=True path re-invokes on_connect on the same socket.
+    factory.last.drop()
+    factory.last.sdk_reconnect()
 
-        # The SDK's own reconnect=True path re-invokes the on_connect callback with no runner.
-        await asyncio.to_thread(service._on_open)
-        await asyncio.sleep(0.05)
-        await asyncio.to_thread(service._on_open)
-        await asyncio.sleep(0.05)
-        return service.ws.subscribed
-
-    assert asyncio.run(scenario()) == [_fyers("SBIN")] * 2
+    assert len(factory.sockets) == 1
+    assert factory.last.subscribed == [_fyers("SBIN")] * 2
+    assert live.session.is_connected() is True
 
 
 def test_flush_loop_survives_a_broadcast_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -482,59 +354,42 @@ def test_connect_async_validates_token_off_the_event_loop(monkeypatch: pytest.Mo
     assert seen["thread"] != loop_thread
 
 
-def test_off_hours_cleanup_stops_a_retrying_runner(
-    monkeypatch: pytest.MonkeyPatch, freeze_market: FreezeMarket
-) -> None:
+def test_off_hours_cleanup_stops_a_retrying_runner(freeze_market: FreezeMarket) -> None:
     """PR #34 review: market-close cleanup must stop a runner that is backing off,
     or it reconnects off-hours."""
-    import threading
-    import time
-
-    _fast_runner(monkeypatch, retries=10)
-    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 30.0)
-    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 30.0)
-    live = lms.LiveMarketService()
-    live.ws_service = SlowConnectProvider(connect_after=None)
-    live._is_connecting = True
+    runner: list[Any] = []
+    live, factory = make_live(FakeSocketFactory(comes_up=False), spawn=runner.append)
+    live.session.retry = RetryPolicy(
+        max_attempts=10, connect_timeout_s=0.02, poll_s=0.005, backoff_base_s=30.0
+    )
+    assert live.session.start() is True
+    thread = threading.Thread(target=runner[0], daemon=True)
+    thread.start()
+    wait_until_backing_off(factory)
     freeze_market(False, live)
 
-    thread = threading.Thread(
-        target=live._run_provider_connect, args=(live._runner_stop,), daemon=True
-    )
-    thread.start()
-    time.sleep(0.2)  # first attempt timed out, runner is now backing off for 30s
     asyncio.run(live._check_connection_health())
     thread.join(timeout=2)
 
     assert not thread.is_alive()
-    assert live.ws_service.connect_calls == 1
-    assert live._is_connecting is False
+    assert len(factory.sockets) == 1
+    assert live.session.state is SessionState.IDLE
     assert live._explicitly_disconnected is False  # next session may still auto-connect
 
 
-def test_new_runner_is_not_stopped_by_the_previous_off_hours_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
+def test_next_session_connects_after_the_previous_off_hours_cleanup(
+    freeze_market: FreezeMarket,
 ) -> None:
-    import threading
+    live, factory = connected_live()
+    clock = freeze_market(False, live)
+    asyncio.run(live._check_connection_health())  # market closed: socket closed
+    assert factory.last.closed is True
 
-    started: list[threading.Event] = []
+    clock.set(MARKET_OPEN_INSTANT)  # the next session
 
-    class RecordingThread:
-        def __init__(self, target: object, args: tuple[Any, ...], daemon: bool) -> None:
-            started.append(args[0])
-
-        def start(self) -> None:
-            return None
-
-    monkeypatch.setattr(lms.threading, "Thread", RecordingThread)
-    live = lms.LiveMarketService()
-    live.ws_service = SlowConnectProvider(connect_after=None)
-    live._runner_stop.set()  # an earlier off-hours cleanup
-
-    assert live._start_provider_connection() == "started"
-    assert len(started) == 1
-    assert started[0] is live._runner_stop
-    assert not started[0].is_set()
+    assert live.connect(prevalidated_token=True) == "started"
+    assert live.session.is_connected() is True
+    assert len(factory.sockets) == 2
 
 
 def _tick_at(ts: float) -> dict[str, Any]:
@@ -552,7 +407,6 @@ def test_get_fresh_tick_requires_open_market_and_recent_tick(
     age: float,
     fresh: bool,
 ) -> None:
-    import time
 
     monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
     live = lms.LiveMarketService()
@@ -569,21 +423,22 @@ def test_get_fresh_tick_requires_open_market_and_recent_tick(
 def test_hot_path_tracebacks_are_rate_limited_and_counted(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    from app.services.live import provider_session
     from app.utils import logger as logger_module
     from app.utils.runtime_metrics import runtime_metrics
 
     monkeypatch.setattr(logger_module, "_last_traceback_at", {})
-    metric = "logging.suppressed_tracebacks.fyers_ws.tick_handler"
+    metric = "logging.suppressed_tracebacks.provider_session.on_message"
     before = runtime_metrics.snapshot()["counters"].get(metric, 0)
+    live, factory = connected_live()
 
     def broken_handler(_message: dict[str, Any]) -> None:
         raise ValueError("bad tick")
 
-    ws = fyers_websocket.FyersWebSocketService.__new__(fyers_websocket.FyersWebSocketService)
-    ws.on_tick_handler = broken_handler
-    with caplog.at_level(logging.DEBUG, logger=fyers_websocket.logger.name):
+    monkeypatch.setattr(live.session, "_on_message", broken_handler)
+    with caplog.at_level(logging.DEBUG, logger=provider_session.logger.name):
         for _ in range(3):
-            ws._on_message({"symbol": "NSE:SBIN-EQ"})
+            factory.last.emit({"symbol": "NSE:SBIN-EQ"})
 
     with_traceback = [r for r in caplog.records if r.exc_info]
     assert len(with_traceback) == 1
@@ -592,8 +447,8 @@ def test_hot_path_tracebacks_are_rate_limited_and_counted(
     # After the interval the next failure logs a full traceback again.
     monkeypatch.setattr(logger_module, "TRACEBACK_INTERVAL_S", 0.0)
     caplog.clear()
-    with caplog.at_level(logging.DEBUG, logger=fyers_websocket.logger.name):
-        ws._on_message({"symbol": "NSE:SBIN-EQ"})
+    with caplog.at_level(logging.DEBUG, logger=provider_session.logger.name):
+        factory.last.emit({"symbol": "NSE:SBIN-EQ"})
     assert [r for r in caplog.records if r.exc_info]
 
 
@@ -640,3 +495,28 @@ def test_connect_route_reports_a_generic_message_for_an_unknown_status(
         "status": "something_new",
         "message": "WebSocket initialization completed",
     }
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("idle", False),
+        ("connecting", True),  # a connect in flight builds a socket with the current token
+        ("connected", True),
+        ("dropped", True),  # the dropped socket is still held (the SDK may reconnect it)
+        ("closed", False),
+        ("failed", False),
+    ],
+)
+def test_has_provider_socket_follows_the_session(state: str, expected: bool) -> None:
+    factory = FakeSocketFactory(comes_up=state != "failed")
+    spawn = (lambda _target: None) if state == "connecting" else run_inline
+    live, factory = make_live(factory, spawn=spawn)
+    if state != "idle":
+        assert live.session.start() is True
+    if state == "dropped":
+        factory.last.drop()
+    elif state == "closed":
+        live.disconnect()
+
+    assert live.has_provider_socket() is expected

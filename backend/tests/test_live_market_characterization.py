@@ -7,43 +7,29 @@ from typing import Any
 
 import pytest
 
-from app.services import fyers_websocket
 from app.services import live_market_service as lms
+from app.services.live.provider_session import SessionState
 from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
+from fakes.data_socket import FakeSocketFactory, make_live
 from fakes.market import FreezeMarket
 
 
-class FakeSocket:
-    def __init__(self, connected: bool = True) -> None:
-        self.connected = connected
-        self.subscribed: list[str] = []
-        self.unsubscribed: list[str] = []
-
-    def is_connected(self) -> bool:
-        return self.connected
-
-
-class FakeProvider:
-    def __init__(self, connected: bool = True) -> None:
-        self.ws = FakeSocket(connected)
-        self.disconnect_calls = 0
-        self.on_tick_handler = None
-        self.on_open_handler = None
-
-    def connect(self) -> None:
-        pass
-
-    def subscribe(self, symbols: list[str]) -> None:
-        self.ws.subscribed.extend(symbols)
-
-    def unsubscribe(self, symbols: list[str]) -> None:
-        self.ws.unsubscribed.extend(symbols)
-
-    def disconnect(self) -> None:
-        self.disconnect_calls += 1
+def setup_session(live: lms.LiveMarketService, factory: FakeSocketFactory, how: str) -> None:
+    """Put the live service's provider session into the state named by `how`."""
+    if how == "idle":
+        return
+    if how == "connecting":
+        live.session._spawn = lambda _target: None  # a runner that never finishes
+        assert live.session.start() is True
+        return
+    assert live.session.start() is True
+    if how == "dropped":
+        factory.last.drop()
+    elif how == "silently_dropped":
+        factory.last.connected = False  # the socket died without a callback
 
 
 @pytest.fixture
@@ -97,39 +83,35 @@ def run_one_monitor_iteration(
 
 
 @pytest.mark.parametrize(
-    ("market_open", "provider_connected", "ws_connected", "connecting", "expected"),
+    ("market_open", "session", "expected"),
     [
-        # (connect_async calls, ws_connected after, _is_connecting after, provider disconnects)
-        (True, False, True, False, (1, False, False, 0)),
-        (True, False, False, False, (1, False, False, 0)),
-        (True, False, False, True, (0, False, True, 0)),
-        (True, True, False, False, (0, True, False, 0)),
-        (True, True, True, False, (0, True, False, 0)),
-        (False, True, True, False, (0, False, False, 1)),
-        (False, False, False, True, (0, False, False, 1)),
-        (False, False, False, False, (0, False, False, 0)),
+        # (connect_async calls, session state after, provider socket closed)
+        (True, "connected", (0, SessionState.CONNECTED, False)),
+        (True, "silently_dropped", (1, SessionState.CONNECTED, False)),
+        (True, "dropped", (1, SessionState.DROPPED, False)),
+        (True, "connecting", (0, SessionState.CONNECTING, None)),
+        (True, "idle", (1, SessionState.IDLE, None)),
+        (False, "connected", (0, SessionState.IDLE, True)),
+        (False, "dropped", (0, SessionState.IDLE, True)),
+        (False, "connecting", (0, SessionState.IDLE, None)),
+        (False, "idle", (0, SessionState.IDLE, None)),
     ],
 )
 def test_monitor_iteration_outcome(
     monkeypatch: pytest.MonkeyPatch,
     freeze_market: FreezeMarket,
     market_open: bool,
-    provider_connected: bool,
-    ws_connected: bool,
-    connecting: bool,
-    expected: tuple[int, bool, bool, int],
+    session: str,
+    expected: tuple[int, SessionState, bool | None],
 ) -> None:
-    live = lms.LiveMarketService()
-    provider = FakeProvider(connected=provider_connected)
-    live.ws_service = provider
-    live.ws_connected = ws_connected
-    live._is_connecting = connecting
+    live, factory = make_live()
+    setup_session(live, factory, session)
     freeze_market(market_open, live)
 
     connects = run_one_monitor_iteration(monkeypatch, live)
 
-    observed = (len(connects), live.ws_connected, live._is_connecting, provider.disconnect_calls)
-    assert observed == expected
+    closed = factory.last.closed if factory.sockets else None
+    assert (len(connects), live.session.state, closed) == expected
 
 
 # --- Tick normalisation --------------------------------------------------------
@@ -212,11 +194,13 @@ def test_tick_without_symbol_or_loop_is_ignored(scheduled: list[Any]) -> None:
 # --- connect() outcomes --------------------------------------------------------
 
 
-def test_connect_reports_already_connected() -> None:
-    live = lms.LiveMarketService()
-    live._is_connecting = True
+@pytest.mark.parametrize("session", ["connecting", "connected"])
+def test_connect_reports_already_connected(session: str) -> None:
+    live, factory = make_live()
+    setup_session(live, factory, session)
 
     assert live.connect(prevalidated_token=True) == "already_connected"
+    assert len(factory.sockets) == (1 if session == "connected" else 0)
 
 
 def test_connect_reports_invalid_token() -> None:
@@ -236,36 +220,35 @@ def test_connect_reports_market_closed(
     assert live._last_connect_block_reason == "market_closed"
 
 
-def test_connect_adopts_an_already_connected_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    live = lms.LiveMarketService()
+def test_connect_starts_the_provider_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lms, "manager", ConnectionManager())
+    live, factory = make_live()
     live.dev_mode = True
-    provider = FakeProvider(connected=True)
-    monkeypatch.setattr(fyers_websocket, "get_websocket_service", lambda: provider)
+    live.registry.add(API_OWNER, ["SBIN"])
 
-    assert live.connect(prevalidated_token=True) == "already_connected"
-    assert live.ws_connected is True
-    assert live._is_connecting is False
-    assert provider.on_tick_handler == live.handle_tick_incoming
-    assert provider.on_open_handler == live.on_provider_open
+    assert live.connect(prevalidated_token=True) == "started"
+    assert live.session.is_connected() is True
+    assert factory.last.subscribed == [_fyers("SBIN")]  # replayed on connect
 
 
-def test_connect_reports_error_when_provider_setup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    live = lms.LiveMarketService()
+def test_connect_reports_error_when_the_runner_cannot_start() -> None:
+    live, _factory = make_live()
     live.dev_mode = True
 
-    def broken() -> FakeProvider:
-        raise RuntimeError("sdk missing")
+    def broken(_target: object) -> None:
+        raise RuntimeError("can't start new thread")
 
-    monkeypatch.setattr(fyers_websocket, "get_websocket_service", broken)
+    live.session._spawn = broken
 
     assert live.connect(prevalidated_token=True) == "error"
-    assert live._is_connecting is False
+    assert live.session.state is SessionState.FAILED
+    assert live.session.busy is False
 
 
 def test_connect_starts_monitor_and_flush_tasks_on_its_loop() -> None:
     async def scenario() -> tuple[bool, bool]:
-        live = lms.LiveMarketService()
-        live._is_connecting = True
+        live, factory = make_live()
+        setup_session(live, factory, "connecting")
         live.connect(prevalidated_token=True)
         tasks = (live.monitor_task, live.broadcast_task)
         started = all(t is not None and not t.done() for t in tasks)
@@ -281,9 +264,13 @@ def test_connect_starts_monitor_and_flush_tasks_on_its_loop() -> None:
 # --- subscribe / unsubscribe ---------------------------------------------------
 
 
-def _live_with_fresh_registry(monkeypatch: pytest.MonkeyPatch) -> lms.LiveMarketService:
+def _live_with_fresh_registry(
+    monkeypatch: pytest.MonkeyPatch, session: str = "idle"
+) -> tuple[lms.LiveMarketService, FakeSocketFactory]:
     monkeypatch.setattr(lms, "manager", ConnectionManager())
-    return lms.LiveMarketService()
+    live, factory = make_live()
+    setup_session(live, factory, session)
+    return live, factory
 
 
 def _pending_count(live: lms.LiveMarketService) -> int:
@@ -293,12 +280,13 @@ def _pending_count(live: lms.LiveMarketService) -> int:
 def test_subscribe_when_market_closed_queues_symbols(
     monkeypatch: pytest.MonkeyPatch, freeze_market: FreezeMarket
 ) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
+    live, factory = _live_with_fresh_registry(monkeypatch)
     freeze_market(False, live)
 
     asyncio.run(live.subscribe_api(["NSE:SBIN-EQ", "TCS", ""]))
 
-    assert live.ws_service is None
+    assert live.session.state is SessionState.IDLE
+    assert factory.sockets == []
     assert live.registry.all_symbols() == {"SBIN", "TCS"}  # replayed on provider connect
     assert _pending_count(live) == 2
 
@@ -307,7 +295,7 @@ def test_subscribe_when_open_without_provider_connects_then_queues(
     monkeypatch: pytest.MonkeyPatch,
     freeze_market: FreezeMarket,
 ) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
+    live, _factory = _live_with_fresh_registry(monkeypatch)
     calls: list[str] = []
 
     async def fake_connect_async(**_kwargs: object) -> str:
@@ -327,49 +315,46 @@ def test_subscribe_when_open_without_provider_connects_then_queues(
 def test_subscribe_sends_fyers_symbols_to_connected_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
-    live.ws_service = FakeProvider(connected=True)
+    live, factory = _live_with_fresh_registry(monkeypatch, "connected")
 
     asyncio.run(live.subscribe_api(["SBIN", "NSE:TCS-EQ"]))
 
-    assert sorted(live.ws_service.ws.subscribed) == sorted([_fyers("SBIN"), _fyers("TCS")])
+    assert sorted(factory.last.subscribed) == sorted([_fyers("SBIN"), _fyers("TCS")])
     assert _pending_count(live) == 0
 
 
 def test_subscribe_with_disconnected_provider_queues_symbols(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
-    live.ws_service = FakeProvider(connected=False)
+    live, factory = _live_with_fresh_registry(monkeypatch, "dropped")
 
     asyncio.run(live.subscribe_api(["SBIN"]))
 
-    assert live.ws_service.ws.subscribed == []
+    assert factory.last.subscribed == []
+    assert factory.last.connect_calls == 1  # no reconnect from subscribe
     assert live.registry.all_symbols() == {"SBIN"}
     assert _pending_count(live) == 1
 
 
 def test_unsubscribe_releases_only_unwanted_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
-    live.ws_service = FakeProvider(connected=True)
+    live, factory = _live_with_fresh_registry(monkeypatch, "connected")
     live.registry.add(API_OWNER, ["TCS"])
 
     asyncio.run(live.unsubscribe(["SBIN", "TCS", ""]))
 
-    assert live.ws_service.ws.unsubscribed == [_fyers("SBIN")]
+    assert factory.last.unsubscribed == [_fyers("SBIN")]
     assert live.registry.all_symbols() == {"TCS"}
 
 
 def test_unsubscribe_with_disconnected_provider_only_updates_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    live = _live_with_fresh_registry(monkeypatch)
-    live.ws_service = FakeProvider(connected=False)
+    live, factory = _live_with_fresh_registry(monkeypatch, "dropped")
     live.registry.add(API_OWNER, ["SBIN"])
     assert live.registry.remove(API_OWNER, ["SBIN"]) == {"SBIN"}
 
     asyncio.run(live.unsubscribe(["SBIN"]))
 
-    assert live.ws_service.ws.unsubscribed == []
+    assert factory.last.unsubscribed == []
     assert live.registry.all_symbols() == set()
     assert _pending_count(live) == 0

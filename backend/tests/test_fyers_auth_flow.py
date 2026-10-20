@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services import live_market_service as lms
 from app.services.fyers import auth_flow
 from app.services.fyers.auth_flow import (
     FyersAuthService,
@@ -24,6 +25,9 @@ from app.services.fyers.auth_flow import (
     get_fyers_auth,
 )
 from app.services.fyers.token_store import TokenStore
+from app.services.live.provider_session import SessionState
+
+from fakes.data_socket import connected_live, make_live
 
 SECRET_TOKEN = "tok-very-secret-123"
 OK_REPLY = {"s": "ok", "access_token": SECRET_TOKEN, "fy_id": "XA1234"}
@@ -235,32 +239,20 @@ def test_disconnect_stops_the_feed_removes_the_token_and_drops_the_client(
 def test_logout_is_an_explicit_live_feed_disconnect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.services.live_market_service import live_market
-
-    class FakeSocket:
-        closed = False
-
-        def disconnect(self) -> None:
-            self.closed = True
-
-    socket = FakeSocket()
-    monkeypatch.setattr(live_market, "ws_service", socket)
-    monkeypatch.setattr(live_market, "ws_connected", True)
-    monkeypatch.setattr(live_market, "_is_connecting", False)
-    monkeypatch.setattr(live_market, "_explicitly_disconnected", False)
-    monkeypatch.setattr(live_market, "_runner_stop", type(live_market._runner_stop)())
-    monkeypatch.setattr(live_market, "_disconnect_event", type(live_market._disconnect_event)())
+    live_market, factory = connected_live()
+    live_market.dev_mode = True
+    monkeypatch.setattr(lms, "live_market", live_market)
     service = FyersAuthService(
         TokenStore(tmp_path / "access_token.json"), on_token_change=Recorder()
     )
 
     service.disconnect()
 
-    assert socket.closed is True
-    assert live_market.ws_connected is False
-    # The runner is stopped and stays down until an explicit connect, even after a new login.
+    assert factory.last.closed is True
+    assert live_market.session.state is SessionState.CLOSED
+    # The feed stays down until an explicit connect, even after a new login.
     assert live_market._explicitly_disconnected is True
-    assert live_market._runner_stop.is_set()
+    assert live_market.connect(prevalidated_token=True) == "disconnected"
 
 
 def test_login_after_logout_reconnects_the_live_feed_once(tmp_path: Path) -> None:
@@ -299,10 +291,16 @@ def test_a_failed_live_feed_reconnect_does_not_fail_the_login(
     assert service.store.load() is not None
 
 
+@pytest.mark.parametrize(
+    ("socket_open", "expected_disconnects"),
+    [(True, [1]), (False, [])],  # only a socket built with the old token is closed first
+)
 def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, socket_open: bool, expected_disconnects: list[int]
 ) -> None:
-    from app.services.live_market_service import live_market
+    live_market, _factory = connected_live() if socket_open else make_live()
+    assert live_market.has_provider_socket() is socket_open
+    monkeypatch.setattr(lms, "live_market", live_market)
 
     loop = asyncio.new_event_loop()
     worker = threading.Thread(target=loop.run_forever, daemon=True)
@@ -324,7 +322,6 @@ def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
         disconnects.append(1)
 
     monkeypatch.setattr(live_market, "loop", loop)
-    monkeypatch.setattr(live_market, "ws_service", object())  # a socket built with the old token
     monkeypatch.setattr(live_market, "disconnect", fake_disconnect)
     monkeypatch.setattr(live_market, "connect_async", fake_connect_async)
     try:
@@ -335,7 +332,7 @@ def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
         worker.join(timeout=5)
         loop.close()
 
-    assert disconnects == [1]
+    assert disconnects == expected_disconnects
     assert calls == [(loop, True, loop)]
 
 

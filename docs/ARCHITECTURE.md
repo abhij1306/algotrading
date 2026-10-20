@@ -54,7 +54,8 @@
 - `index_universe_loader.py`: loads canonical index constituent CSVs from `data_system/03_universe/constituents`
 - `services/universe`: canonical runtime universe lookup; reads DB-backed universe tables first and falls back to `index_universe_loader` when DB is not seeded yet
 - `symbol_history` / lifecycle services: date-effective rename, merger, demerger, delisting, successor-predecessor mapping
-- `live_market_service.py`: market-hours gating, provider connect/reconnect, tick normalization, broadcast dispatch
+- `live_market_service.py`: market-hours gating, explicit disconnect, tick buffering and broadcast dispatch
+- `services/live/provider_session.py`: the provider socket lifecycle (connect runner, state, replay on every reconnect, current token per connect) behind the `DataSocket` protocol in `services/live/data_socket.py`
 - `ws_manager.py`: websocket client multiplexing, subscription fanout, bounded per-client queues,
   and connection cleanup/backpressure handling
 - `order_execution_service.py`: unified PAPER/LIVE execution routing

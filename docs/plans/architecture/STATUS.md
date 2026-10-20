@@ -56,7 +56,8 @@ Files: `ws_manager.py`, `routers/websocket.py`, `live_market_service.py`, `fyers
 - [x] 2. SubscriptionRegistry, a pure refcount (M). The router stops diffing subscriptions. Add registry and slow-client tests.
 - [x] 3. MarketHoursPolicy, a Clock and a tick-normalizer module (S-M). Delete the copies of 9:15/15:30, including the dead `RiskConfig` fields. (#56, #67)
   - PR #56: `MarketHoursPolicy` (IST, 09:15:00-15:30:00 inclusive, weekends, DEV_MODE, an empty-by-default `holidays` set) and the `Clock` seam (`utils/clock.py`) own market hours in `utils/market_hours.py`; `live_market_service.py` takes an injected clock, and the tick normalizer lives in `services/live/ticks.py`. PR #67: the dead `RiskConfig.market_open_time`/`market_close_time` fields are deleted and `RiskManager` takes an injected `MarketHoursPolicy`. Follow-up: a holiday calendar (`holidays` is still empty).
-- [ ] 4. ProviderSession behind a DataSocket protocol, with fake-socket tests (L).
+- [x] 4. ProviderSession behind a DataSocket protocol, with fake-socket tests (L). (#73)
+  - `services/live/provider_session.py` owns the socket: the connect runner, `SessionState`, replay on every (re)connect including SDK auto-reconnects, and a fresh token per connect. `services/live/data_socket.py` is the `DataSocket` protocol the Fyers SDK socket satisfies; `fyers_websocket.py` is down to the socket factory and the token source, and `FyersWebSocketService` is gone. Tests run on `tests/fakes/data_socket.py`. The `ws_service` attribute is gone: `services/fyers/auth_flow.py` asks `LiveMarketService.has_provider_socket()` (a socket held or a connect in flight) before closing the old-token socket after a login.
 - [ ] 5. Write the sync/async and local-only rules into AGENTS.md, and add an `Origin` check on `/stream` (S).
 
 ### Lane 2: Fyers gateway and market routers

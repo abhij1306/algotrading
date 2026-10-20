@@ -10,9 +10,11 @@ from fastapi import FastAPI
 from app import database
 from app import main as app_main
 from app.services import fyers_client, live_market_service
-from app.services.live_market_service import LiveMarketService
+from app.services.live.provider_session import SessionState
 from app.utils import ws_manager
 from app.utils.ws_manager import ConnectionManager
+
+from fakes.data_socket import connected_live
 
 
 class FakeLiveMarket:
@@ -120,20 +122,9 @@ async def test_a_failing_hook_does_not_skip_the_others(
     assert "Shutdown complete (1 step(s) failed)" in [r.getMessage() for r in caplog.records]
 
 
-class FakeProviderSocket:
-    def __init__(self) -> None:
-        self.disconnects = 0
-
-    def disconnect(self) -> None:
-        self.disconnects += 1
-
-
 @pytest.mark.asyncio
 async def test_live_market_shutdown_stops_its_loops_and_closes_the_provider() -> None:
-    service = LiveMarketService()
-    provider = FakeProviderSocket()
-    service.ws_service = provider  # type: ignore[assignment]
-    service.ws_connected = True
+    service, factory = connected_live()
     service.loop = asyncio.get_running_loop()
     service._ensure_background_tasks()
     monitor, flush = service.monitor_task, service.broadcast_task
@@ -143,8 +134,8 @@ async def test_live_market_shutdown_stops_its_loops_and_closes_the_provider() ->
     assert monitor is not None and monitor.cancelled()
     assert flush is not None and flush.cancelled()
     assert (service.monitor_task, service.broadcast_task, service.loop) == (None, None, None)
-    assert provider.disconnects == 1
-    assert service.ws_connected is False
+    assert factory.last.closed is True
+    assert service.session.state is SessionState.IDLE
     # Not an explicit disconnect: a later startup may connect again.
     assert service._explicitly_disconnected is False
 
