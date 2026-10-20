@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,78 @@ def test_sync_index_universes_populates_db_and_company_categories(
         assert sbin.sector_index == "NIFTYBANK"
         assert reliance is not None
         assert reliance.broad_market == "NIFTY500"
+    finally:
+        session.close()
+
+
+class _ChangingLoader(_StubLoader):
+    """NIFTYBANK swaps SBIN for HDFCBANK on the second sync; NIFTY500 renames a company."""
+
+    def __init__(self) -> None:
+        self.second = False
+
+    def get_index_universe(self, index_code: str) -> _StubUniverse:
+        if not self.second:
+            return super().get_index_universe(index_code)
+        if index_code == "NIFTY500":
+            constituents = [
+                _StubConstituent("SBIN", "SBI Renamed", "Banks", "INE062A01020"),
+                _StubConstituent("RELIANCE", "Reliance Industries", "Energy", "INE002A01018"),
+            ]
+        else:
+            constituents = [_StubConstituent("HDFCBANK", "HDFC Bank", "Banks", "INE040A01034")]
+        return _StubUniverse([item.symbol for item in constituents], constituents)
+
+
+def test_resync_updates_closes_and_rewrites_snapshots(
+    db_session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loader = _ChangingLoader()
+    monkeypatch.setattr(universe_sync_module, "index_universe_loader", loader)
+    session: Session = db_session_factory()
+    try:
+        session.add(Company(symbol="HDFCBANK", name="HDFC Bank", is_active=True))
+        session.commit()
+        sync_index_universes_from_loader(session, as_of_date=date(2026, 1, 5))
+        loader.second = True
+
+        second = sync_index_universes_from_loader(session, as_of_date=date(2026, 2, 2))
+        third = sync_index_universes_from_loader(
+            session, as_of_date=date(2026, 2, 2), update_company_categories=False
+        )
+
+        assert (
+            second.definitions_created,
+            second.constituents_added,
+            second.constituents_closed,
+            second.snapshots_written,
+            second.companies_updated,
+        ) == (0, 1, 1, 2, 1)
+        assert (third.constituents_added, third.constituents_closed) == (0, 0)
+        assert third.companies_updated == 0
+        rows = {
+            (row.symbol, row.universe_id): row for row in session.query(IndexConstituentHistory)
+        }
+        definitions = {d.index_code: d for d in session.query(IndexUniverseDefinition)}
+        bank_id = definitions["NIFTYBANK"].id
+        broad_id = definitions["NIFTY500"].id
+        assert rows[("SBIN", bank_id)].effective_to == date(2026, 2, 1)
+        assert rows[("HDFCBANK", bank_id)].effective_from == date(2026, 2, 2)
+        sbin = rows[("SBIN", broad_id)]
+        assert (sbin.company_name, sbin.import_date, sbin.effective_to) == (
+            "SBI Renamed",
+            date(2026, 2, 2),
+            None,
+        )
+        assert sbin.source_file == "ind_nifty500list.csv"
+        assert definitions["NIFTYBANK"].last_download_date == date(2026, 2, 2)
+        snapshots = session.query(UniverseSnapshot).filter(UniverseSnapshot.universe_id == bank_id)
+        assert sorted((s.snapshot_date, s.symbols) for s in snapshots) == [
+            (date(2026, 1, 5), '["SBIN"]'),
+            (date(2026, 2, 2), '["HDFCBANK"]'),
+        ]
+        hdfc = session.query(Company).filter(Company.symbol == "HDFCBANK").first()
+        assert (hdfc.broad_market, hdfc.sector_index) == (None, "NIFTYBANK")
     finally:
         session.close()
 
