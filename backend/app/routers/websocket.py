@@ -9,9 +9,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Request, WebSocket
 from pydantic import BaseModel
 
+from ..services.deferred_startup import startup_status
 from ..services.symbol_master import symbol_master
 from ..utils.errors import handle_api_error
 from ..utils.ws_manager import manager
@@ -82,12 +83,17 @@ def disconnect_websocket() -> dict[str, Any]:
 
 
 @router.get("/status", response_model=None)
-async def get_websocket_status() -> dict[str, Any]:
-    """Check WebSocket connection status"""
+async def get_websocket_status(request: Request) -> dict[str, Any]:
+    """Check WebSocket connection status.
+
+    `startup` is DEFERRED while the database work skipped at startup (DB down) is still
+    being retried, FAILED if that work hit a non-connection error, else COMPLETE.
+    """
     try:
         from ..services.live_market_service import live_market
 
-        return await live_market.get_status()
+        status = await live_market.get_status()
+        return {**status, "startup": startup_status(request.app.state).value}
     except Exception as e:
         return {"connected": False, "error": str(e)}
 

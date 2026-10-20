@@ -184,6 +184,7 @@ def test_health_with_db_down_reports_down_without_driver_text(
             "PostgreSQL database is unavailable. Start it: net start postgresql-x64-18",
             "Fyers API unavailable. Screener will use cached data only.",
         ],
+        "startup": "COMPLETE",
         **DOWN_BODY,
     }
     assert SECRET not in response.text
@@ -237,6 +238,7 @@ def test_health_with_schema_bug_is_degraded_not_an_outage(
             "PostgreSQL query failed (schema out of date?). Check the server log.",
             "Fyers API unavailable. Screener will use cached data only.",
         ],
+        "startup": "COMPLETE",
     }
     assert "no such table" not in response.text
 

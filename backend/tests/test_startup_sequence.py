@@ -174,30 +174,38 @@ class TestStartupSequenceIntegrity:
         assert not sequence.is_complete()
 
     @pytest.mark.asyncio
-    async def test_required_db_down_failure_logs_without_traceback(
+    async def test_required_db_down_step_is_deferred_and_later_steps_run(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A down database was already explained by the step: no traceback is logged."""
+        """A down database defers its step, logs no error or traceback, and skips nothing."""
         sequence = StartupSequence()
+        ran: list[str] = []
 
         async def db_down_step() -> Never:
             raise DatabaseUnavailableError()
 
-        with caplog.at_level(logging.INFO), pytest.raises(DatabaseUnavailableError):
-            await sequence.execute_step(StartupStep.VALIDATE_DATABASE, db_down_step)
+        async def live_market_step() -> None:
+            ran.append("connect_live_market")
+            await asyncio.sleep(0)
 
-        errors = [
-            (r.getMessage(), r.exc_info) for r in caplog.records if r.levelno >= logging.ERROR
-        ]
-        assert errors == [
-            ("[Startup] Failed: validate_database - Database unavailable", None),
-            (
-                "[Startup] Required step validate_database failed. "
-                "Subsequent steps will be skipped.",
-                None,
-            ),
-        ]
-        assert sequence.failed_step == StartupStep.VALIDATE_DATABASE
+        with caplog.at_level(logging.INFO):
+            deferred = await sequence.execute_step(StartupStep.VALIDATE_DATABASE, db_down_step)
+            connected = await sequence.execute_step(
+                StartupStep.CONNECT_LIVE_MARKET, live_market_step, required=False
+            )
+
+        assert (deferred, connected) == (False, True)
+        assert ran == ["connect_live_market"]
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert [r.exc_info for r in caplog.records if r.levelno == logging.WARNING] == [None]
+        assert sequence.get_status() == {
+            "completed_steps": ["connect_live_market"],
+            "failed_step": None,
+            "optional_failed_steps": [],
+            "deferred_steps": ["validate_database"],
+            "is_complete": True,
+            "total_completed": 1,
+        }
 
     @pytest.mark.asyncio
     async def test_required_unexpected_failure_logs_traceback(
