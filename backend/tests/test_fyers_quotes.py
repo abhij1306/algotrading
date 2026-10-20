@@ -198,10 +198,13 @@ def test_quotes_converts_symbols_and_keys_by_db_symbol() -> None:
 def test_quotes_keys_a_renamed_symbol_by_the_symbol_asked_for() -> None:
     sdk = FakeFyersSdk({"NSE:LTM-EQ": quote_row("NSE:LTM-EQ", lp=5000)})
 
-    quotes = gateway(sdk).quotes(["LTIM"])
+    quotes = gateway(sdk).quotes(["LTIM", "LTM"])
 
     assert sdk.requests == [["NSE:LTM-EQ"]]
-    assert quotes == {"LTIM": _missing("LTIM", ltp=Decimal(5000))}
+    assert quotes == {
+        "LTIM": _missing("LTIM", ltp=Decimal(5000)),
+        "LTM": _missing("LTM", ltp=Decimal(5000)),
+    }
 
 
 def test_quotes_skips_a_symbol_it_cannot_convert() -> None:

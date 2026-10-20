@@ -34,23 +34,27 @@ logger = get_logger("services.fyers_client")
 QUOTES_BATCH_SIZE = 50
 
 
-def _to_fyers_symbols(symbols: Iterable[str]) -> dict[str, str]:
-    """{Fyers symbol: requested symbol}, in request order; unconvertible symbols are dropped."""
-    converted: dict[str, str] = {}
+def _to_fyers_symbols(symbols: Iterable[str]) -> dict[str, list[str]]:
+    """{Fyers symbol: the requested symbols that map to it}, in request order.
+
+    Two requests can share a Fyers symbol (``LTIM`` and ``LTM`` both give ``NSE:LTM-EQ``);
+    unconvertible symbols are dropped.
+    """
+    converted: dict[str, list[str]] = {}
     for symbol in dict.fromkeys(symbols):
         if not symbol:
             continue
         try:
-            converted.setdefault(symbol_master.to_fyers(symbol), symbol)
+            converted.setdefault(symbol_master.to_fyers(symbol), []).append(symbol)
         except ValueError:
             logger.warning("Skipping quote for unconvertible symbol %r", symbol)
     return converted
 
 
-def _keyed_by_request(quote: Quote, asked_by_db: dict[str, str]) -> Quote:
-    """``quote`` under the symbol it was asked for, when that differs from its DB symbol."""
-    asked = asked_by_db.get(quote.symbol, quote.symbol)
-    return quote if asked == quote.symbol else replace(quote, symbol=asked)
+def _keyed_by_request(quote: Quote, asked_by_db: dict[str, list[str]]) -> list[Quote]:
+    """``quote`` once under each symbol it was asked for (its DB symbol when unmatched)."""
+    asked = asked_by_db.get(quote.symbol, [quote.symbol])
+    return [quote if symbol == quote.symbol else replace(quote, symbol=symbol) for symbol in asked]
 
 
 class FyersClient:
@@ -298,7 +302,7 @@ class FyersClient:
 
         Symbols are converted with SymbolMaster (one it cannot convert is skipped) and sent in
         batches of QUOTES_BATCH_SIZE (the Fyers per-call limit). A reply for a renamed symbol
-        (asked as ``LTIM``, answered as ``LTM``) is keyed by the symbol asked for. A batch
+        (asked as ``LTIM``, answered as ``LTM``) is keyed by each symbol asked for. A batch
         whose request fails is skipped; this never raises.
         """
         model = self.fyers
@@ -319,8 +323,8 @@ class FyersClient:
                 logger.exception("Fyers quotes request failed for %d symbols", len(batch))
                 continue
             for quote in parse_quotes(response).values():
-                keyed = _keyed_by_request(quote, asked_by_db)
-                quotes[keyed.symbol] = keyed
+                for keyed in _keyed_by_request(quote, asked_by_db):
+                    quotes[keyed.symbol] = keyed
         return quotes
 
     def get_historical_data(

@@ -105,18 +105,20 @@ def test_top_movers(monkeypatch: pytest.MonkeyPatch) -> None:
             "a": _row("NSE:AAA-EQ", 110.0, 100.0),
             "b": _row("NSE:BBB-EQ", 95.0, 100.0),
             "c": _row("NSE:CCC-EQ", 0, 100.0),
-            "d": quote_row("NSE:DDD-EQ", lp=50.456),
+            "d": quote_row("NSE:DDD-EQ", lp=50.456),  # no previous close: not a mover
+            "e": _row("NSE:EEE-EQ", 50.456, 50.0),
         },
     )
+    symbols.append("EEE")
 
     assert market.get_top_movers(limit=2) == {
         "gainers": [
             {"symbol": "AAA", "name": "AAA", "price": 110.0, "changePercent": 10.0},
-            {"symbol": "DDD", "name": "DDD", "price": 50.46, "changePercent": 0.0},
+            {"symbol": "EEE", "name": "EEE", "price": 50.46, "changePercent": 0.91},
         ],
         "losers": [
             {"symbol": "BBB", "name": "BBB", "price": 95.0, "changePercent": -5.0},
-            {"symbol": "DDD", "name": "DDD", "price": 50.46, "changePercent": 0.0},
+            {"symbol": "EEE", "name": "EEE", "price": 50.46, "changePercent": 0.91},
         ],
     }
 

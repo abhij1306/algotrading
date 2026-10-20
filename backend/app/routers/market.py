@@ -478,10 +478,11 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         if not symbols:
             return {"gainers": [], "losers": []}
 
-        # Fetch quotes (the gateway batches them to the Fyers per-call limit) and sort them
-        # by the unrounded change, so returns that round alike still rank correctly
-        priced = [quote for quote in _fyers_quotes(symbols).values() if quote.ltp is not None]
-        priced.sort(key=lambda quote: quote.change_pct or 0, reverse=True)
+        # Fetch quotes (the gateway batches them to the Fyers per-call limit); a symbol without a
+        # known change (no price or no previous close) is not a mover. Sort by the unrounded
+        # change, so returns that round alike still rank correctly
+        priced = [q for q in _fyers_quotes(symbols).values() if q.change_pct is not None]
+        priced.sort(key=lambda quote: quote.change_pct, reverse=True)
         movers = [
             {
                 "symbol": quote.symbol,
