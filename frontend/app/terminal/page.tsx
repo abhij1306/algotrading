@@ -23,7 +23,7 @@ import { isMarketOpen } from "@/lib/market-hours";
 import { debounce } from "@/lib/debounce";
 import { queryKeys } from "@/lib/queries/keys";
 import { shouldRetry } from "@/lib/queries/query-client";
-import { apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
+import { ApiError, apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
 import {
   useAddToWatchlist,
   useOptionsBoard,
@@ -205,6 +205,14 @@ async function submitOrder(input: OrderInput): Promise<string> {
     }),
   );
   const data = await response.json().catch(() => null);
+  if (response.ok && data === null) {
+    // The order may have been placed: retry (same client_order_id) to read its state.
+    throw new ApiError({
+      code: "NETWORK_ERROR",
+      message: "Order response was cut off",
+      status: response.status,
+    });
+  }
   if (!response.ok) {
     throw apiErrorFromResponse({
       status: response.status,

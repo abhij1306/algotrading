@@ -27,6 +27,20 @@ FYERS_ORDER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9]{1,20}$")
 ORDER_TAG_PREFIX = "ST"
 
 
+def _order_tag_fields(order_tag: object) -> tuple[dict[str, str], OrderResponse | None]:
+    """The orderTag payload field for an optional tag, or a rejection Fyers would issue."""
+    if order_tag is None:
+        return {}, None
+    if not FYERS_ORDER_TAG_PATTERN.fullmatch(str(order_tag)):
+        return {}, OrderResponse(
+            order_id="",
+            status="REJECTED",
+            message="Invalid order tag. Expected 1-20 letters or digits.",
+            details={"order_tag": order_tag},
+        )
+    return {"orderTag": str(order_tag)}, None
+
+
 def fyers_order_tag(client_order_id: str) -> str:
     """Fyers orderTag for a client_order_id, so a broker order can be matched to its row.
 
@@ -173,14 +187,9 @@ class FyersBroker(IBroker):
                 details={"type": order_type, "price": order.get("price")},
             )
 
-        order_tag = order.get("order_tag")
-        if order_tag is not None and not FYERS_ORDER_TAG_PATTERN.fullmatch(str(order_tag)):
-            return OrderResponse(
-                order_id="",
-                status="REJECTED",
-                message="Invalid order tag. Expected 1-20 letters or digits.",
-                details={"order_tag": order_tag},
-            )
+        tag_fields, tag_rejection = _order_tag_fields(order.get("order_tag"))
+        if tag_rejection is not None:
+            return tag_rejection
 
         data = {
             "symbol": order["symbol"],
@@ -193,9 +202,8 @@ class FyersBroker(IBroker):
             "validity": "DAY",
             "disclosedQty": 0,
             "offlineOrder": False,
+            **tag_fields,
         }
-        if order_tag is not None:
-            data["orderTag"] = str(order_tag)
 
         try:
             response = self._call_with_guard(

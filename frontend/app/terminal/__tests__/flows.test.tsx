@@ -63,6 +63,8 @@ function stubClientOrderIds() {
 let paperPositions: Record<string, unknown>[] = [];
 // Order POSTs that fail as a dropped connection before any response arrives.
 let orderNetworkFailures = 0;
+// Order POSTs answered 200 with a body cut off mid-JSON.
+let orderTruncatedResponses = 0;
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
 
 function respond(url: string): Response {
@@ -99,6 +101,10 @@ function installFetch(): Captured[] {
       if (source.url.includes(ORDER_PATH) && orderNetworkFailures > 0) {
         orderNetworkFailures -= 1;
         throw new TypeError("Failed to fetch");
+      }
+      if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
+        orderTruncatedResponses -= 1;
+        return new Response('{"status":"acc', { status: 200 });
       }
       return respond(source.url);
     }),
@@ -137,6 +143,7 @@ describe("terminal order payload", () => {
   beforeEach(() => {
     paperPositions = [];
     orderNetworkFailures = 0;
+    orderTruncatedResponses = 0;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -223,6 +230,7 @@ describe("terminal order idempotency", () => {
   beforeEach(() => {
     paperPositions = [];
     orderNetworkFailures = 0;
+    orderTruncatedResponses = 0;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -251,6 +259,18 @@ describe("terminal order idempotency", () => {
       CLIENT_ORDER_IDS[0],
       CLIENT_ORDER_IDS[1],
     ]);
+  });
+
+  it("retries a cut-off 200 response with the same client_order_id instead of reporting success", async () => {
+    orderTruncatedResponses = 1;
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "801.5");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(clientOrderIds(calls)).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0]]);
   });
 });
 

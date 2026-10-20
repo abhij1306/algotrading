@@ -303,16 +303,24 @@ def ensure_live_order_schema(*, bind: Engine | None = None) -> None:
         return
 
     existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
+    # IF NOT EXISTS keeps a second process starting at the same time from failing on
+    # Postgres; SQLite has no IF NOT EXISTS for columns (and no concurrent starts).
+    if_not_exists = "IF NOT EXISTS " if db_engine.dialect.name == "postgresql" else ""
     with db_engine.begin() as connection:
         if "client_order_id" not in existing_columns:
             column_sql = str(
                 CreateColumn(table.c.client_order_id).compile(dialect=db_engine.dialect)
             ).strip()
-            connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
+            connection.execute(
+                text(f"ALTER TABLE {table.name} ADD COLUMN {if_not_exists}{column_sql}")
+            )
             logger.warning("Backfilled missing column on %s: client_order_id", table.name)
-        for index in table.indexes:
-            if index.name == CLIENT_ORDER_ID_INDEX:
-                index.create(bind=connection, checkfirst=True)
+        connection.execute(
+            text(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {CLIENT_ORDER_ID_INDEX} "
+                f"ON {table.name} (client_order_id)"
+            )
+        )
 
 
 # Avoid import-time schema creation; startup owns database validation/initialization.

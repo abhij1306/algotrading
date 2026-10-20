@@ -514,8 +514,9 @@ def test_db_lost_after_broker_rejects_raises_without_unsaved_order_log(
 
     monkeypatch.setattr(orders, "commit", commit_then_lose_connection)
 
+    params = live_params()
     with pytest.raises(OperationalError):
-        service.place_order(live_params(), orders, mode="LIVE")
+        service.place_order(params, orders, mode="LIVE")
 
     assert not [r for r in caplog.records if "not saved" in r.getMessage()]
 

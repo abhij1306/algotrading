@@ -209,8 +209,9 @@ def test_db_down_on_the_pending_commit_raises_and_never_calls_the_broker(
 
     monkeypatch.setattr(orders, "commit", lost_commit)
 
+    params = order_params()
     with pytest.raises(OperationalError):
-        service.place_order(order_params(), orders, mode="LIVE")
+        service.place_order(params, orders, mode="LIVE")
 
     assert broker.calls == []
     monkeypatch.undo()
@@ -252,8 +253,9 @@ def test_db_lost_after_broker_accepts_keeps_pending_row_so_a_retry_does_not_reor
 
     monkeypatch.setattr(orders, "commit", commit_then_lose_connection)
 
+    params = order_params()
     with pytest.raises(OperationalError):
-        service.place_order(order_params(), orders, mode="LIVE")
+        service.place_order(params, orders, mode="LIVE")
     monkeypatch.undo()
 
     assert (
