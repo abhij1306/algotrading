@@ -66,6 +66,26 @@ def test_get_symbol_indices_and_constituent_from_fyers_symbol(
     assert constituent.isin == "INE101A01026"
 
 
+@pytest.mark.parametrize("symbol", ["LTM", "LTIM", "NSE:LTM-EQ", "NSE:LTIM-EQ"])
+def test_legacy_csv_ticker_is_stored_under_its_canonical_symbol(
+    tmp_path: Path, symbol: str
+) -> None:
+    (tmp_path / "ind_niftyitlist.csv").write_text(
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "LTIMindtree Ltd.,Information Technology,LTIM,EQ,INE214T01019\n"
+        "Infosys Ltd.,Information Technology,INFY,EQ,INE009A01021\n",
+        encoding="utf-8",
+    )
+    loader = IndexUniverseLoader(data_path=tmp_path)
+
+    assert loader.get_index_symbols("NIFTYIT") == ["LTM", "INFY"]
+    assert loader.is_symbol_in_index(symbol, "NIFTYIT") is True
+    assert loader.get_symbol_indices(symbol) == ["NIFTYIT"]
+    constituent = loader.get_constituent(symbol, "NIFTYIT")
+    assert constituent is not None
+    assert (constituent.symbol, constituent.company_name) == ("LTM", "LTIMindtree Ltd.")
+
+
 def test_symbol_master_no_longer_exposes_index_membership() -> None:
     for removed in ("get_index_symbols", "is_index_constituent", "to_fyers_list"):
         assert not hasattr(symbol_master, removed), removed

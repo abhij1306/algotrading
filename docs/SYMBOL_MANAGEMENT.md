@@ -59,7 +59,9 @@ Index constituents and membership live only in `index_universe_loader`
 - `index_universe_loader.get_symbol_indices(symbol)`
 - `index_universe_loader.get_constituent(symbol, index_id)` for company name, industry and ISIN
 
-Membership lookups accept symbols in any format; they normalize through `symbol_master.to_db`.
+Membership lookups accept symbols in any format; they normalize through `symbol_master.to_db`. The loader also
+normalizes the `Symbol` column of every constituent CSV through `symbol_master.to_db` on load, so pre-migration
+tickers in NSE files (for example `LTIM`) are stored under their canonical symbol (`LTM`).
 
 Current display behavior:
 - `DISPLAY_FORMAT` is not separately overridden in the current implementation.

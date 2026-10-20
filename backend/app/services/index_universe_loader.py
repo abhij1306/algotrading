@@ -187,9 +187,12 @@ class IndexUniverseLoader:
         with open(filepath, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                symbol = row.get("Symbol", "").strip().upper()
-                if not symbol:
+                raw_symbol = row.get("Symbol", "").strip()
+                if not raw_symbol:
                     continue
+                # NSE files can carry pre-migration tickers (e.g. LTIM). Store the
+                # canonical DB symbol so lookups, which normalize too, match it.
+                symbol = symbol_master.to_db(raw_symbol)
 
                 constituent = IndexConstituent(
                     symbol=symbol,
