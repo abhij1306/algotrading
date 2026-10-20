@@ -55,7 +55,7 @@ Files: `ws_manager.py`, `routers/websocket.py`, `live_market_service.py`, `fyers
 - [x] 1. Live cleanup (S): remove `set_loop`/`loop`, `get_latest_ticks` and `ConnectionManager.subscriptions`; share one status-to-message map.
 - [x] 2. SubscriptionRegistry, a pure refcount (M). The router stops diffing subscriptions. Add registry and slow-client tests.
 - [ ] 3. MarketHoursPolicy, a Clock and a tick-normalizer module (S-M). Delete the copies of 9:15/15:30, including the dead `RiskConfig` fields.
-  - Partial (PR #TBD): `MarketHoursPolicy` (IST, 09:15:00-15:30:00 inclusive, weekends, DEV_MODE, an empty-by-default `holidays` set) and the `Clock` seam (`utils/clock.py`) own market hours in `utils/market_hours.py`; `live_market_service.py` takes an injected clock, and the tick normalizer lives in `services/live/ticks.py`. Left: the dead `RiskConfig.market_open_time`/`market_close_time` fields in `risk_manager.py` (held back while PR #54 changes that file), and a holiday calendar.
+  - Partial (PR #56): `MarketHoursPolicy` (IST, 09:15:00-15:30:00 inclusive, weekends, DEV_MODE, an empty-by-default `holidays` set) and the `Clock` seam (`utils/clock.py`) own market hours in `utils/market_hours.py`; `live_market_service.py` takes an injected clock, and the tick normalizer lives in `services/live/ticks.py`. Left: the dead `RiskConfig.market_open_time`/`market_close_time` fields in `risk_manager.py` (held back while PR #54 changes that file), and a holiday calendar.
 - [ ] 4. ProviderSession behind a DataSocket protocol, with fake-socket tests (L).
 - [ ] 5. Write the sync/async and local-only rules into AGENTS.md, and add an `Origin` check on `/stream` (S).
 
