@@ -96,7 +96,7 @@ class DataProvider:
                 f"Use '1D' or one of: {', '.join(INTRADAY_TIMEFRAME_MINUTES)}."
             )
         df = self.repo.get_intraday_candles(
-            symbol,
+            company.symbol,
             timeframe=minutes,
             start_date=start_date,
             end_date=end_date,

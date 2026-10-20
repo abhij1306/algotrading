@@ -63,6 +63,21 @@ def test_five_minute_history_returns_the_stored_candles(intraday_company: Sessio
     ]
 
 
+def test_intraday_lookup_uses_the_stored_symbol_and_any_timeframe_case(
+    intraday_company: Session,
+) -> None:
+    provider = DataProvider(intraday_company)
+
+    df = provider.get_history(
+        "intratest",
+        timeframe="5min",
+        start_date=datetime(2025, 6, 2, 9, 0),
+        end_date=datetime(2025, 6, 2, 15, 30),
+    )
+
+    assert df["close"].tolist() == [101.5, 102.0]
+
+
 def test_intraday_timeframe_without_candles_raises_not_found(intraday_company: Session) -> None:
     provider = DataProvider(intraday_company)
     start, end = datetime(2025, 6, 2, 9, 0), datetime(2025, 6, 2, 15, 30)
