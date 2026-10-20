@@ -130,7 +130,7 @@ def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -
     )
 
 
-def main() -> int:
+def main() -> None:
     args = parse_args()
     explicit_symbols = _parse_csv_list(args.symbols)
     symbols = resolve_symbols(args.universe, explicit_symbols)
@@ -159,7 +159,7 @@ def main() -> int:
                 }
             )
         print(json.dumps(summary, indent=2))
-        return 0
+        return
 
     out_root.mkdir(parents=True, exist_ok=True)
     for year, range_from, range_to in windows:
@@ -243,8 +243,7 @@ def main() -> int:
     manifest_path = out_root / "manifest.json"
     manifest_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

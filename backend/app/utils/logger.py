@@ -19,6 +19,19 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # namespace; it gets the same handlers and level as the base logger.
 APP_LOGGER_NAMESPACE = "app"
 
+# Longest user-supplied value written to a log line; longer input is truncated.
+_MAX_LOG_VALUE_LENGTH = 200
+
+
+def safe_log_value(value: object) -> str:
+    """Make a user-supplied value safe to write to a log line.
+
+    Request input must not be able to forge log records, so CR and LF (and any other
+    control characters) are replaced and the value is truncated.
+    """
+    text = str(value).replace("\r", "?").replace("\n", "?")
+    return "".join(ch if ch.isprintable() else "?" for ch in text)[:_MAX_LOG_VALUE_LENGTH]
+
 
 def setup_logging(name: str = "smarttrader") -> logging.Logger:
     """

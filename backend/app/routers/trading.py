@@ -21,6 +21,7 @@ from ..services.order_execution_service import order_execution_service
 from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
 from ..services.symbol_master import symbol_master
+from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/trading", tags=["Trading"])
@@ -312,8 +313,8 @@ def _square_live_positions(req: SquarePositionRequest) -> dict[str, Any]:
             fyers_symbol = req.symbol
             logger.exception(
                 "Live square fallback failed for symbol=%s fyers_symbol=%s",
-                req.symbol,
-                fyers_symbol,
+                safe_log_value(req.symbol),
+                safe_log_value(fyers_symbol),
                 exc_info=exc,
             )
             result = {

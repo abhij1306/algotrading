@@ -184,7 +184,7 @@ def write_outputs(df: pd.DataFrame) -> None:
     df.sort_values(["date", "symbol"]).to_csv(OUT_CSV, index=False)
 
 
-def main() -> int:
+def main() -> None:
     args = parse_args()
     universes = _parse_csv_list(args.universes)
     explicit_symbols = _parse_csv_list(args.symbols)
@@ -234,7 +234,7 @@ def main() -> int:
     if args.dry_run or start_date > end_date:
         summary["status"] = "dry_run" if args.dry_run else "noop"
         print(json.dumps(summary, indent=2))
-        return 0
+        return
 
     failures: dict[str, Any] = {}
     parts: list[pd.DataFrame] = [existing] if not existing.empty else []
@@ -286,8 +286,7 @@ def main() -> int:
     MANIFEST_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     FAILED_PATH.write_text(json.dumps(failures, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
