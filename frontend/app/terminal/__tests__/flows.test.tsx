@@ -45,7 +45,24 @@ const OPEN_POSITION = {
   mode: "PAPER",
 };
 
+// Fixed ids so the payload assertions stay literal; every submit intent takes the next one.
+const CLIENT_ORDER_IDS = [
+  "11111111-1111-4111-8111-111111111111",
+  "22222222-2222-4222-8222-222222222222",
+] as const;
+
+function stubClientOrderIds() {
+  const ids = [...CLIENT_ORDER_IDS];
+  return vi.spyOn(crypto, "randomUUID").mockImplementation(() => {
+    const next = ids.shift();
+    if (!next) throw new Error("more submit intents than stubbed ids");
+    return next;
+  });
+}
+
 let paperPositions: Record<string, unknown>[] = [];
+// Order POSTs that fail as a dropped connection before any response arrives.
+let orderNetworkFailures = 0;
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
 
 function respond(url: string): Response {
@@ -79,6 +96,10 @@ function installFetch(): Captured[] {
           : new Request(new URL(String(input), "http://api.test"), init);
       const body = source.method === "GET" ? "" : await source.clone().text();
       calls.push({ url: source.url, method: source.method, body });
+      if (source.url.includes(ORDER_PATH) && orderNetworkFailures > 0) {
+        orderNetworkFailures -= 1;
+        throw new TypeError("Failed to fetch");
+      }
       return respond(source.url);
     }),
   );
@@ -115,11 +136,14 @@ describe("terminal order payload", () => {
 
   beforeEach(() => {
     paperPositions = [];
+    orderNetworkFailures = 0;
     calls = installFetch();
+    stubClientOrderIds();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("sends a PAPER equity LIMIT order for the first watchlist symbol", async () => {
@@ -132,7 +156,7 @@ describe("terminal order payload", () => {
 
     await screen.findByText("PAPER BUY accepted (ord-1)");
     expect(orderBodies(calls)).toEqual([
-      '{"mode":"PAPER","symbol":"SBIN","side":"BUY","quantity":3,"product":"INTRADAY","type":"LIMIT","price":801.5,"trigger_price":0,"tag":"terminal-options","instrument_type":"EQ","is_live_confirmation_ack":false,"risk_override_reason":null}',
+      '{"mode":"PAPER","symbol":"SBIN","side":"BUY","quantity":3,"product":"INTRADAY","type":"LIMIT","price":801.5,"trigger_price":0,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
   });
 
@@ -146,7 +170,7 @@ describe("terminal order payload", () => {
 
     await screen.findByText("PAPER SELL accepted (ord-1)");
     expect(orderBodies(calls)).toEqual([
-      '{"mode":"PAPER","symbol":"NIFTY26OCT25000CE","side":"SELL","quantity":150,"product":"INTRADAY","type":"MARKET","price":0,"trigger_price":0,"tag":"terminal-options","instrument_type":"CE","is_live_confirmation_ack":false,"risk_override_reason":null}',
+      '{"mode":"PAPER","symbol":"NIFTY26OCT25000CE","side":"SELL","quantity":150,"product":"INTRADAY","type":"MARKET","price":0,"trigger_price":0,"tag":"terminal-options","instrument_type":"CE","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
   });
 
@@ -166,7 +190,7 @@ describe("terminal order payload", () => {
 
     await screen.findByText("PAPER SELL accepted (ord-1)");
     expect(orderBodies(calls)).toEqual([
-      '{"mode":"PAPER","symbol":"SBIN","side":"SELL","quantity":1,"product":"INTRADAY","type":"SL","price":790,"trigger_price":792,"tag":"terminal-live","instrument_type":"EQ","is_live_confirmation_ack":false,"risk_override_reason":null}',
+      '{"mode":"PAPER","symbol":"SBIN","side":"SELL","quantity":1,"product":"INTRADAY","type":"SL","price":790,"trigger_price":792,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
   });
 
@@ -184,7 +208,48 @@ describe("terminal order payload", () => {
     await screen.findByText("LIVE BUY accepted (ord-1)");
     expect(confirm.mock.calls).toEqual([["Confirm LIVE BUY 1 SBIN?"]]);
     expect(orderBodies(calls)).toEqual([
-      '{"mode":"LIVE","symbol":"SBIN","side":"BUY","quantity":1,"product":"INTRADAY","type":"LIMIT","price":800,"trigger_price":0,"tag":"terminal-options","instrument_type":"EQ","is_live_confirmation_ack":true,"risk_override_reason":"hedge"}',
+      '{"mode":"LIVE","symbol":"SBIN","side":"BUY","quantity":1,"product":"INTRADAY","type":"LIMIT","price":800,"trigger_price":0,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":true,"risk_override_reason":"hedge","client_order_id":"11111111-1111-4111-8111-111111111111"}',
+    ]);
+  });
+});
+
+function clientOrderIds(calls: Captured[]): string[] {
+  return orderBodies(calls).map((body) => JSON.parse(body).client_order_id);
+}
+
+describe("terminal order idempotency", () => {
+  let calls: Captured[];
+
+  beforeEach(() => {
+    paperPositions = [];
+    orderNetworkFailures = 0;
+    calls = installFetch();
+    stubClientOrderIds();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("retries a dropped submit with the same client_order_id, then a new click gets a new one", async () => {
+    orderNetworkFailures = 1;
+    renderPage();
+    await screen.findAllByText("State Bank");
+    setValue(/^price$/i, "801.5");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(clientOrderIds(calls)).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0]]);
+
+    fireEvent.click(ticketButton("Buy"));
+
+    await vi.waitFor(() => expect(orderBodies(calls)).toHaveLength(3));
+    expect(clientOrderIds(calls)).toEqual([
+      CLIENT_ORDER_IDS[0],
+      CLIENT_ORDER_IDS[0],
+      CLIENT_ORDER_IDS[1],
     ]);
   });
 });

@@ -1,13 +1,20 @@
-from sqlalchemy import Column, Date, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Column, Date, DateTime, Float, Index, Integer, String, Text, func
 
 from ..base import Base
+
+CLIENT_ORDER_ID_INDEX = "uq_live_orders_client_order_id"
 
 
 class LiveOrder(Base):
     __tablename__ = "live_orders"
+    # Named so ensure_live_order_schema can add the same index to existing databases.
+    __table_args__ = (Index(CLIENT_ORDER_ID_INDEX, "client_order_id", unique=True),)
 
     id = Column(String(50), primary_key=True)  # Broker order ID
     internal_id = Column(String(50), unique=True, index=True)  # Our UUID
+    # Idempotency key from the client (UUID v4, lowercase). A retry with the same key
+    # returns this row instead of placing a second order. NULL for legacy rows.
+    client_order_id = Column(String(36), nullable=True)
     user_id = Column(String(50), default="default_user")
 
     # Symbol Details
@@ -26,7 +33,7 @@ class LiveOrder(Base):
     # Status
     status = Column(
         String(20), default="PENDING", index=True
-    )  # PENDING -> SUBMITTED -> FILLED / REJECTED / CANCELLED
+    )  # PENDING_SUBMIT (LIVE, saved before the broker call) -> SUBMITTED -> FILLED / ...
     filled_qty = Column(Integer, default=0)
     average_price = Column(Float, default=0.0)
     reject_reason = Column(Text, nullable=True)

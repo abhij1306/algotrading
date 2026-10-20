@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,19 @@ logger = logging.getLogger(__name__)
 FYERS_ORDER_TYPES = {"LIMIT": 1, "MARKET": 2, "SL-M": 3, "SL": 4}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
+# Fyers accepts only an alphanumeric orderTag of limited length; 20 characters stays
+# inside the documented limit with room to spare.
+FYERS_ORDER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9]{1,20}$")
+ORDER_TAG_PREFIX = "ST"
+
+
+def fyers_order_tag(client_order_id: str) -> str:
+    """Fyers orderTag for a client_order_id, so a broker order can be matched to its row.
+
+    "ST" plus the first 18 hex digits of the UUID, uppercased: 20 alphanumeric characters.
+    """
+    hex_digits = client_order_id.replace("-", "")[:18].upper()
+    return f"{ORDER_TAG_PREFIX}{hex_digits}"
 
 
 def quote_last_price(quote: dict[str, Any] | None) -> float:
@@ -159,6 +173,15 @@ class FyersBroker(IBroker):
                 details={"type": order_type, "price": order.get("price")},
             )
 
+        order_tag = order.get("order_tag")
+        if order_tag is not None and not FYERS_ORDER_TAG_PATTERN.fullmatch(str(order_tag)):
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message="Invalid order tag. Expected 1-20 letters or digits.",
+                details={"order_tag": order_tag},
+            )
+
         data = {
             "symbol": order["symbol"],
             "qty": order["quantity"],
@@ -171,6 +194,8 @@ class FyersBroker(IBroker):
             "disclosedQty": 0,
             "offlineOrder": False,
         }
+        if order_tag is not None:
+            data["orderTag"] = str(order_tag)
 
         try:
             response = self._call_with_guard(

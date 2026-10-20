@@ -2,7 +2,7 @@
 behaviour before those functions are refactored for readability."""
 
 from collections.abc import Generator
-from typing import Any, NoReturn
+from typing import Any
 
 import pytest
 from sqlalchemy import Engine
@@ -372,8 +372,13 @@ class StubPlaceBroker:
         return self.reply
 
 
+CLIENT_ORDER_ID = "3f2b8c1e-9d4a-4b6e-8f10-2a7c5e9d1b34"
+ORDER_TAG = "ST3F2B8C1E9D4A4B6E8F"
+
+
 def live_params(**overrides: object) -> dict[str, Any]:
     return {
+        "client_order_id": CLIENT_ORDER_ID,
         "symbol": "SBIN",
         "fyers_symbol": "NSE:SBIN-EQ",
         "side": "BUY",
@@ -450,7 +455,7 @@ def test_live_order_records_broker_outcome(
 
     result = service.place_order(live_params(), orders, mode="LIVE")
 
-    assert result == reply
+    assert result == {**reply, "client_order_id": CLIENT_ORDER_ID, "duplicate": False}
     assert broker.calls == [
         {
             "symbol": "NSE:SBIN-EQ",
@@ -460,9 +465,11 @@ def test_live_order_records_broker_outcome(
             "product": "INTRADAY",
             "price": 810.0,
             "trigger_price": 0.0,
+            "order_tag": ORDER_TAG,
         }
     ]
     row = orders.query(LiveOrder).one()
+    assert row.client_order_id == CLIENT_ORDER_ID
     expected_id, status, reject_reason, broker_message = stored
     assert (row.status, row.reject_reason, row.broker_message, row.is_paper) == (
         status,
@@ -489,23 +496,28 @@ def test_unexpected_place_failure_returns_fixed_message_and_stores_nothing(
     assert orders.query(LiveOrder).count() == 0
 
 
-def test_db_lost_after_broker_rejects_raises_without_unrecorded_order_log(
+def test_db_lost_after_broker_rejects_raises_without_unsaved_order_log(
     orders: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     service = oes.OrderExecutionService()
     service._broker = StubPlaceBroker({"status": "REJECTED", "message": "Insufficient margin"})
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    real_commit = orders.commit
+    commits: list[str] = []
 
-    def lost_commit() -> NoReturn:
-        raise OperationalError("COMMIT", {}, Exception("connection refused"))
+    def commit_then_lose_connection() -> None:
+        # The PENDING_SUBMIT row saves; the update after the broker reply does not.
+        commits.append("commit")
+        if len(commits) > 1:
+            raise OperationalError("COMMIT", {}, Exception("connection refused"))
+        real_commit()
 
-    monkeypatch.setattr(orders, "commit", lost_commit)
-    params = live_params()
+    monkeypatch.setattr(orders, "commit", commit_then_lose_connection)
 
     with pytest.raises(OperationalError):
-        service.place_order(params, orders, mode="LIVE")
+        service.place_order(live_params(), orders, mode="LIVE")
 
-    assert not [r for r in caplog.records if "not recorded" in r.getMessage()]
+    assert not [r for r in caplog.records if "not saved" in r.getMessage()]
 
 
 # --- Cancel order ------------------------------------------------------------

@@ -26,6 +26,7 @@ from .models import (
     FinancialStatement,
     HistoricalPrice,
     IntradayCandle,
+    LiveOrder,
     QuarterlyResult,
     SnapshotIndexStock,
     SnapshotIndexUniverse,
@@ -34,6 +35,7 @@ from .models import (
     VCPScanResult,
     Watchlist,
 )
+from .models.live_order import CLIENT_ORDER_ID_INDEX
 from .utils.env_loader import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,7 @@ def init_db() -> None:
     ensure_backtest_schema(bind=engine)
     ensure_universe_schema(bind=engine)
     ensure_strategy_schema(bind=engine)
+    ensure_live_order_schema(bind=engine)
     target = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
     logger.info("Database initialized: %s", target)
 
@@ -284,6 +287,32 @@ def _strategy_backfills(table_name: str, added: list[str], existing_columns: set
     if table_name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
         return [_COPY_LEGACY_PNL_SQL]
     return []
+
+
+def ensure_live_order_schema(*, bind: Engine | None = None) -> None:
+    """Add live_orders.client_order_id and its unique index to existing databases.
+
+    Idempotent: the column is added only when missing, and the index is created with
+    checkfirst, so running it on every startup is safe. Existing rows keep NULL, which
+    the unique index allows any number of times (Postgres and SQLite).
+    """
+    db_engine = bind or engine
+    table = LiveOrder.__table__
+    inspector = inspect(db_engine)
+    if table.name not in set(inspector.get_table_names()):
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
+    with db_engine.begin() as connection:
+        if "client_order_id" not in existing_columns:
+            column_sql = str(
+                CreateColumn(table.c.client_order_id).compile(dialect=db_engine.dialect)
+            ).strip()
+            connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
+            logger.warning("Backfilled missing column on %s: client_order_id", table.name)
+        for index in table.indexes:
+            if index.name == CLIENT_ORDER_ID_INDEX:
+                index.create(bind=connection, checkfirst=True)
 
 
 # Avoid import-time schema creation; startup owns database validation/initialization.
