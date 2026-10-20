@@ -2309,6 +2309,8 @@ export interface components {
     };
     /** OrderRequest */
     OrderRequest: {
+      /** Client Order Id */
+      client_order_id?: string | null;
       /** Expiry Date */
       expiry_date?: string | null;
       /**
@@ -2554,6 +2556,8 @@ export interface components {
     };
     /** TerminalOptionsOrderRequest */
     TerminalOptionsOrderRequest: {
+      /** Client Order Id */
+      client_order_id?: string | null;
       /** Expiry */
       expiry?: string | null;
       /**
