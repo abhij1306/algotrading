@@ -47,9 +47,7 @@ def main() -> int:
         return core.returncode
 
     print(f"[2/2] Installing {FYERS_SPEC} without its pinned dependencies...")
-    fyers = subprocess.run(
-        [str(python), "-m", "pip", "install", FYERS_SPEC, "--no-deps"]
-    )
+    fyers = subprocess.run([str(python), "-m", "pip", "install", FYERS_SPEC, "--no-deps"])
     if fyers.returncode != 0:
         return fyers.returncode
 

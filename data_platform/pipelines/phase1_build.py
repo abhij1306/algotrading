@@ -23,8 +23,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from pypdf import PdfReader
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -125,7 +125,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _json_dump(path: Path, payload: Any) -> None:
+def _json_dump(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
@@ -267,22 +267,90 @@ class Phase1Builder:
             "version": "phase1-v1",
             "generated_at": datetime.now(UTC).isoformat(),
             "datasets": {
-                "equity_ohlcv": ["trade_date", "symbol", "open", "high", "low", "close", "volume", "turnover", "source"],
-                "nifty50_membership_daily": ["date", "symbol", "in_universe", "source_file", "source_priority"],
-                "nifty50_weights_monthly": ["month", "symbol", "weight", "source_file", "source_priority", "parse_confidence"],
+                "equity_ohlcv": [
+                    "trade_date",
+                    "symbol",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "turnover",
+                    "source",
+                ],
+                "nifty50_membership_daily": [
+                    "date",
+                    "symbol",
+                    "in_universe",
+                    "source_file",
+                    "source_priority",
+                ],
+                "nifty50_weights_monthly": [
+                    "month",
+                    "symbol",
+                    "weight",
+                    "source_file",
+                    "source_priority",
+                    "parse_confidence",
+                ],
                 "snapshot_stock_daily": [
-                    "date", "symbol", "open", "high", "low", "close", "volume", "turnover",
-                    "adj_open", "adj_high", "adj_low", "adj_close", "adj_volume", "corporate_action_flag",
+                    "date",
+                    "symbol",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "turnover",
+                    "adj_open",
+                    "adj_high",
+                    "adj_low",
+                    "adj_close",
+                    "adj_volume",
+                    "corporate_action_flag",
                 ],
                 "snapshot_nifty50_daily": [
-                    "date", "universe_id", "symbol", "in_universe", "weight", "open", "high",
-                    "low", "close", "adj_close", "volume", "corporate_action_flag",
+                    "date",
+                    "universe_id",
+                    "symbol",
+                    "in_universe",
+                    "weight",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "adj_close",
+                    "volume",
+                    "corporate_action_flag",
                 ],
-                "banknifty_weights_monthly": ["month", "symbol", "weight", "source_file", "source_priority", "parse_confidence"],
-                "banknifty_membership_daily": ["date", "symbol", "in_universe", "source_file", "source_priority"],
+                "banknifty_weights_monthly": [
+                    "month",
+                    "symbol",
+                    "weight",
+                    "source_file",
+                    "source_priority",
+                    "parse_confidence",
+                ],
+                "banknifty_membership_daily": [
+                    "date",
+                    "symbol",
+                    "in_universe",
+                    "source_file",
+                    "source_priority",
+                ],
                 "snapshot_banknifty_daily": [
-                    "date", "universe_id", "symbol", "in_universe", "weight", "open", "high",
-                    "low", "close", "adj_close", "volume", "corporate_action_flag",
+                    "date",
+                    "universe_id",
+                    "symbol",
+                    "in_universe",
+                    "weight",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "adj_close",
+                    "volume",
+                    "corporate_action_flag",
                 ],
             },
         }
@@ -308,10 +376,17 @@ class Phase1Builder:
         index_weights_source = Path(
             os.getenv("PHASE1_INDEX_WEIGHTS_SRC", str(DEFAULT_INDEX_WEIGHTS_SOURCE))
         )
-        if index_weights_source.exists() and index_weights_source.resolve() != self.paths.source_index_weights.resolve():
+        if (
+            index_weights_source.exists()
+            and index_weights_source.resolve() != self.paths.source_index_weights.resolve()
+        ):
             for src in sorted(index_weights_source.rglob("NIFTY_50_*.pdf")):
                 month = _month_from_filename(src.name)
-                if month is None or month < _month_start(self.start_date) or month > _month_start(self.asof):
+                if (
+                    month is None
+                    or month < _month_start(self.start_date)
+                    or month > _month_start(self.asof)
+                ):
                     continue
                 rel = src.relative_to(index_weights_source)
                 dst = self.paths.source_index_weights / rel
@@ -336,7 +411,9 @@ class Phase1Builder:
                         "relative_path": rel,
                         "size_bytes": f.stat().st_size,
                         "sha256": _sha256(f),
-                        "modified_at_utc": datetime.fromtimestamp(f.stat().st_mtime, UTC).isoformat(),
+                        "modified_at_utc": datetime.fromtimestamp(
+                            f.stat().st_mtime, UTC
+                        ).isoformat(),
                     }
                 )
 
@@ -356,23 +433,39 @@ class Phase1Builder:
             {
                 "generated_at_utc": datetime.now(UTC).isoformat(),
                 "items": [
-                    {"path": "data_platform/pipelines/phase1_build.py", "status": "active", "reason": "canonical Phase-1 orchestrator"},
                     {
-                        "path": "archive/data-legacy/2026-02-19/data_platform/pipelines/consolidate.py",
+                        "path": "data_platform/pipelines/phase1_build.py",
+                        "status": "active",
+                        "reason": "canonical Phase-1 orchestrator",
+                    },
+                    {
+                        "path": (
+                            "archive/data-legacy/2026-02-19/data_platform/pipelines/consolidate.py"
+                        ),
                         "status": "archived",
                         "reason": "references deprecated non-canonical raw source folders",
                     },
                     {
-                        "path": "archive/data-legacy/2026-02-19/data_platform/processors/master_store_builder.py",
+                        "path": (
+                            "archive/data-legacy/2026-02-19/data_platform/processors/"
+                            "master_store_builder.py"
+                        ),
                         "status": "archived",
                         "reason": "legacy merge flow for deprecated source topology",
                     },
                     {
-                        "path": "archive/data-legacy/2026-02-19/data_platform/pipelines/load_index_membership.py",
+                        "path": (
+                            "archive/data-legacy/2026-02-19/data_platform/pipelines/"
+                            "load_index_membership.py"
+                        ),
                         "status": "archived",
                         "reason": "fallback logic with placeholder intervals",
                     },
-                    {"path": "scripts/README.md", "status": "legacy", "reason": "documents deprecated yahoo pipeline scripts"},
+                    {
+                        "path": "scripts/README.md",
+                        "status": "legacy",
+                        "reason": "documents deprecated yahoo pipeline scripts",
+                    },
                 ],
             },
         )
@@ -386,11 +479,21 @@ class Phase1Builder:
         equity_rows: list[pd.DataFrame] = []
 
         eq_symbols = set()
-        eq_list_path = self.paths.project_root / "data_system" / "05_metadata" / "reference" / "equity_list.csv"
+        eq_list_path = (
+            self.paths.project_root
+            / "data_system"
+            / "05_metadata"
+            / "reference"
+            / "equity_list.csv"
+        )
         if eq_list_path.exists():
             eq_list = pd.read_csv(eq_list_path)
             if "SYMBOL" in eq_list.columns and "SERIES" in eq_list.columns:
-                eq_symbols.update(eq_list[eq_list["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"].astype(str).str.upper())
+                eq_symbols.update(
+                    eq_list[eq_list["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"]
+                    .astype(str)
+                    .str.upper()
+                )
 
         # Add symbols from ingested bhavcopy for in-range dates.
         for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
@@ -403,9 +506,17 @@ class Phase1Builder:
             if "SYMBOL" not in bhav.columns or "SERIES" not in bhav.columns:
                 continue
             if "DATE1" in bhav.columns:
-                bhav["trade_date"] = pd.to_datetime(bhav["DATE1"], errors="coerce", dayfirst=True).dt.date
-                bhav = bhav[(bhav["trade_date"] >= self.start_date) & (bhav["trade_date"] <= self.asof)]
-            eq_symbols.update(bhav[bhav["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"].astype(str).str.upper())
+                bhav["trade_date"] = pd.to_datetime(
+                    bhav["DATE1"], errors="coerce", dayfirst=True
+                ).dt.date
+                bhav = bhav[
+                    (bhav["trade_date"] >= self.start_date) & (bhav["trade_date"] <= self.asof)
+                ]
+            eq_symbols.update(
+                bhav[bhav["SERIES"].astype(str).str.upper() == "EQ"]["SYMBOL"]
+                .astype(str)
+                .str.upper()
+            )
 
         # Include bhavcopy snapshots for freshest phase-1 dates.
         for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
@@ -415,7 +526,15 @@ class Phase1Builder:
                 logger.warning("Skipping unreadable bhavcopy file %s: %s", bhav_file, exc)
                 continue
             bhav.columns = [c.strip().upper() for c in bhav.columns]
-            required = {"SYMBOL", "SERIES", "OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE", "CLOSE_PRICE", "TTL_TRD_QNTY"}
+            required = {
+                "SYMBOL",
+                "SERIES",
+                "OPEN_PRICE",
+                "HIGH_PRICE",
+                "LOW_PRICE",
+                "CLOSE_PRICE",
+                "TTL_TRD_QNTY",
+            }
             if not required.issubset(set(bhav.columns)):
                 continue
             if "DATE1" in bhav.columns:
@@ -435,7 +554,8 @@ class Phase1Builder:
                     "low": pd.to_numeric(bhav["LOW_PRICE"], errors="coerce"),
                     "close": pd.to_numeric(bhav["CLOSE_PRICE"], errors="coerce"),
                     "volume": pd.to_numeric(bhav["TTL_TRD_QNTY"], errors="coerce"),
-                    "turnover": pd.to_numeric(bhav.get("TURNOVER_LACS", np.nan), errors="coerce") * 100000,
+                    "turnover": pd.to_numeric(bhav.get("TURNOVER_LACS", np.nan), errors="coerce")
+                    * 100000,
                     "source": "bhavcopy",
                     "series": bhav["SERIES"].astype(str).str.upper().str.strip(),
                 }
@@ -458,8 +578,12 @@ class Phase1Builder:
 
         equity_df = equity_df.sort_values(["trade_date", "symbol"])
         equity_df = equity_df.drop_duplicates(subset=["trade_date", "symbol"], keep="last")
-        equity_df = equity_df.dropna(subset=["trade_date", "symbol", "open", "high", "low", "close"])
-        equity_df["volume"] = pd.to_numeric(equity_df["volume"], errors="coerce").fillna(0).astype("int64")
+        equity_df = equity_df.dropna(
+            subset=["trade_date", "symbol", "open", "high", "low", "close"]
+        )
+        equity_df["volume"] = (
+            pd.to_numeric(equity_df["volume"], errors="coerce").fillna(0).astype("int64")
+        )
         equity_df = equity_df[
             ["trade_date", "symbol", "open", "high", "low", "close", "volume", "turnover", "source"]
         ].sort_values(["trade_date", "symbol"])
@@ -489,14 +613,15 @@ class Phase1Builder:
                 try:
                     bhav = pd.read_csv(bhav_file)
                 except Exception:
+                    logger.debug("Skipping unreadable bhavcopy %s", bhav_file, exc_info=True)
                     continue
 
             bhav.columns = [c.strip().upper() for c in bhav.columns]
             if "DATE1" in bhav.columns:
-                dates = pd.to_datetime(bhav["DATE1"], errors="coerce", dayfirst=True).dt.date.dropna()
-                trade_dates.update(
-                    d for d in dates.tolist() if self.start_date <= d <= self.asof
-                )
+                dates = pd.to_datetime(
+                    bhav["DATE1"], errors="coerce", dayfirst=True
+                ).dt.date.dropna()
+                trade_dates.update(d for d in dates.tolist() if self.start_date <= d <= self.asof)
                 continue
 
             m = re.search(r"(\d{2})(\d{2})(\d{4})", bhav_file.name)
@@ -516,7 +641,11 @@ class Phase1Builder:
             text = page.extract_text() or ""
             for line in text.splitlines():
                 line = line.strip()
-                if not line or line.startswith("Symbol ") or line.startswith("Constituents of NIFTY 50"):
+                if (
+                    not line
+                    or line.startswith("Symbol ")
+                    or line.startswith("Constituents of NIFTY 50")
+                ):
                     continue
                 m = NIFTY50_LINE_RE.match(line)
                 if not m:
@@ -537,7 +666,9 @@ class Phase1Builder:
     def _load_nifty50_from_monthly_raw(self, month: date) -> tuple[pd.DataFrame, str]:
         return self._load_universe_from_monthly_raw("nifty50", month)
 
-    def _load_universe_from_monthly_raw(self, universe_slug: str, month: date) -> tuple[pd.DataFrame, str]:
+    def _load_universe_from_monthly_raw(
+        self, universe_slug: str, month: date
+    ) -> tuple[pd.DataFrame, str]:
         roots = [
             self.paths.project_root / "data_system" / "03_universe" / "monthly_universe_raw",
         ]
@@ -551,6 +682,7 @@ class Phase1Builder:
                 try:
                     df = pd.read_csv(csv_path)
                 except Exception:
+                    logger.debug("Skipping unreadable weights file %s", csv_path, exc_info=True)
                     continue
                 if "symbol" not in df.columns or "weight" not in df.columns:
                     continue
@@ -603,7 +735,6 @@ class Phase1Builder:
         anomalies: list[dict[str, Any]] = []
         last_available_month_df = pd.DataFrame(columns=["symbol", "weight"])
         last_available_source_file = ""
-        last_available_source_priority = "none"
         last_available_parse_conf = 0.0
         last_available_month_key: str | None = None
 
@@ -653,7 +784,11 @@ class Phase1Builder:
                     )
                 else:
                     anomalies.append(
-                        {"month": mkey, "type": "missing_month", "message": "No source available for month"}
+                        {
+                            "month": mkey,
+                            "type": "missing_month",
+                            "message": "No source available for month",
+                        }
                     )
                     continue
 
@@ -689,10 +824,20 @@ class Phase1Builder:
             month_payload["source_priority"] = source_priority
             month_payload["parse_confidence"] = parse_conf
 
-            monthly_rows.append(month_payload[["month", "symbol", "weight", "source_file", "source_priority", "parse_confidence"]])
+            monthly_rows.append(
+                month_payload[
+                    [
+                        "month",
+                        "symbol",
+                        "weight",
+                        "source_file",
+                        "source_priority",
+                        "parse_confidence",
+                    ]
+                ]
+            )
             last_available_month_df = month_df[["symbol", "weight"]].copy()
             last_available_source_file = source_file
-            last_available_source_priority = source_priority
             last_available_parse_conf = parse_conf
             last_available_month_key = mkey
 
@@ -710,7 +855,9 @@ class Phase1Builder:
             month_start = pd.Timestamp(m).date().replace(day=1)
             next_m = _next_month(month_start)
             day_end = min(next_m - timedelta(days=1), self.asof)
-            symbols = monthly_df[monthly_df["month"] == m][["symbol", "source_file", "source_priority"]]
+            symbols = monthly_df[monthly_df["month"] == m][
+                ["symbol", "source_file", "source_priority"]
+            ]
             if symbols.empty:
                 continue
             dates = [d for d in available_trade_dates if month_start <= d <= day_end]
@@ -719,7 +866,9 @@ class Phase1Builder:
             expanded = symbols.loc[symbols.index.repeat(len(dates))].reset_index(drop=True)
             expanded["date"] = dates * len(symbols)
             expanded["in_universe"] = True
-            daily_rows.append(expanded[["date", "symbol", "in_universe", "source_file", "source_priority"]])
+            daily_rows.append(
+                expanded[["date", "symbol", "in_universe", "source_file", "source_priority"]]
+            )
 
         daily_df = pd.concat(daily_rows, ignore_index=True).sort_values(["date", "symbol"])
         daily_out = self.paths.curated_root / f"{slug}_membership_daily.parquet"
@@ -812,10 +961,12 @@ class Phase1Builder:
             for row in grp.sort_values("ex_date", ascending=False).itertuples():
                 factor_product *= float(row.factor)
                 mask_date = sym_df["trade_date"] < row.ex_date
-                sym_df.loc[mask_date, ["open", "high", "low", "close"]] = (
-                    sym_df.loc[mask_date, ["open", "high", "low", "close"]] / float(row.factor)
+                sym_df.loc[mask_date, ["open", "high", "low", "close"]] = sym_df.loc[
+                    mask_date, ["open", "high", "low", "close"]
+                ] / float(row.factor)
+                sym_df.loc[mask_date, "volume"] = sym_df.loc[mask_date, "volume"] * float(
+                    row.factor
                 )
-                sym_df.loc[mask_date, "volume"] = sym_df.loc[mask_date, "volume"] * float(row.factor)
             adjusted.loc[mask_symbol, ["open", "high", "low", "close", "volume"]] = sym_df[
                 ["open", "high", "low", "close", "volume"]
             ]
@@ -880,7 +1031,9 @@ class Phase1Builder:
                 "adj_high": merged["high_adj"],
                 "adj_low": merged["low_adj"],
                 "adj_close": merged["close_adj"],
-                "adj_volume": pd.to_numeric(merged["volume_adj"], errors="coerce").fillna(0).astype("int64"),
+                "adj_volume": pd.to_numeric(merged["volume_adj"], errors="coerce")
+                .fillna(0)
+                .astype("int64"),
                 "corporate_action_flag": merged["corporate_action_flag"],
             }
         ).sort_values(["date", "symbol"])
@@ -995,7 +1148,10 @@ class Phase1Builder:
         missing = [str(f) for f in required_files if not f.exists()]
         if missing:
             issues.extend([f"missing_artifact:{m}" for m in missing])
-            _json_dump(self.paths.validation_report, {"status": "failed", "issues": issues, "metrics": metrics})
+            _json_dump(
+                self.paths.validation_report,
+                {"status": "failed", "issues": issues, "metrics": metrics},
+            )
             self._log(step, "failed", {"issues": issues})
             self.issues.extend(issues)
             return False
@@ -1015,13 +1171,19 @@ class Phase1Builder:
             spec = self._get_universe_spec(universe_id)
             slug = spec["slug"]
             monthly = pd.read_parquet(self.paths.curated_root / f"{slug}_weights_monthly.parquet")
-            month_stats = monthly.groupby("month").agg(cnt=("symbol", "count"), weight_sum=("weight", "sum")).reset_index()
+            month_stats = (
+                monthly.groupby("month")
+                .agg(cnt=("symbol", "count"), weight_sum=("weight", "sum"))
+                .reset_index()
+            )
             expected_count = spec.get("expected_count")
             if expected_count is not None:
                 bad_count = month_stats[month_stats["cnt"] != expected_count]
                 if not bad_count.empty:
                     warnings.append(f"{slug}_bad_count_months:{len(bad_count)}")
-            bad_weight = month_stats[(month_stats["weight_sum"] < 98.5) | (month_stats["weight_sum"] > 101.5)]
+            bad_weight = month_stats[
+                (month_stats["weight_sum"] < 98.5) | (month_stats["weight_sum"] > 101.5)
+            ]
             if not bad_weight.empty:
                 warnings.append(f"{slug}_bad_weight_sum_months:{len(bad_weight)}")
             metrics[f"{slug}_months"] = int(month_stats.shape[0])
@@ -1035,15 +1197,23 @@ class Phase1Builder:
         for universe_id in self.universes:
             spec = self._get_universe_spec(universe_id)
             slug = spec["slug"]
-            universe_snap = pd.read_parquet(self.paths.curated_root / f"snapshot_{slug}_daily.parquet")
+            universe_snap = pd.read_parquet(
+                self.paths.curated_root / f"snapshot_{slug}_daily.parquet"
+            )
             snap_cols = set(universe_snap.columns)
             missing_cols = sorted(universe_snapshot_required_cols - snap_cols)
             if missing_cols:
                 issues.append(f"snapshot_{slug}_missing_columns:{','.join(missing_cols)}")
 
-            membership = pd.read_parquet(self.paths.curated_root / f"{slug}_membership_daily.parquet")
-            membership["date"] = pd.to_datetime(membership["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-            universe_snap["date"] = pd.to_datetime(universe_snap["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            membership = pd.read_parquet(
+                self.paths.curated_root / f"{slug}_membership_daily.parquet"
+            )
+            membership["date"] = pd.to_datetime(membership["date"], errors="coerce").dt.strftime(
+                "%Y-%m-%d"
+            )
+            universe_snap["date"] = pd.to_datetime(
+                universe_snap["date"], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
 
             uni_dups = int(universe_snap.duplicated(subset=["date", "symbol"]).sum())
             metrics[f"snapshot_{slug}_duplicates"] = uni_dups
@@ -1051,10 +1221,14 @@ class Phase1Builder:
                 issues.append(f"snapshot_{slug}_duplicate_keys:{uni_dups}")
 
             membership_keys = set(
-                zip(membership["date"].astype(str), membership["symbol"].astype(str))
+                zip(membership["date"].astype(str), membership["symbol"].astype(str), strict=True)
             )
             snapshot_keys = set(
-                zip(universe_snap["date"].astype(str), universe_snap["symbol"].astype(str))
+                zip(
+                    universe_snap["date"].astype(str),
+                    universe_snap["symbol"].astype(str),
+                    strict=True,
+                )
             )
             missing_keys = membership_keys - snapshot_keys
             metrics[f"snapshot_{slug}_missing_membership_keys"] = len(missing_keys)
@@ -1064,11 +1238,15 @@ class Phase1Builder:
             snap_dates = pd.to_datetime(universe_snap["date"], errors="coerce").dt.date
             if snap_dates.notna().any():
                 if snap_dates.min() < self.start_date:
-                    issues.append(f"snapshot_{slug}_min_date_before_start:{snap_dates.min().isoformat()}")
+                    issues.append(
+                        f"snapshot_{slug}_min_date_before_start:{snap_dates.min().isoformat()}"
+                    )
                 if snap_dates.max() > self.asof:
-                    issues.append(f"snapshot_{slug}_max_date_after_asof:{snap_dates.max().isoformat()}")
+                    issues.append(
+                        f"snapshot_{slug}_max_date_after_asof:{snap_dates.max().isoformat()}"
+                    )
 
-            in_uni_mask = universe_snap["in_universe"] == True
+            in_uni_mask = universe_snap["in_universe"].eq(True)
             missing_weight = int(universe_snap.loc[in_uni_mask, "weight"].isna().sum())
             missing_close = int(universe_snap.loc[in_uni_mask, "close"].isna().sum())
             metrics[f"snapshot_{slug}_missing_weight_rows"] = missing_weight
@@ -1106,9 +1284,12 @@ class Phase1Builder:
             spec = self._get_universe_spec(universe_id)
             slug = spec["slug"]
             universe_artifacts = {
-                f"{slug}_weights_monthly": self.paths.curated_root / f"{slug}_weights_monthly.parquet",
-                f"{slug}_membership_daily": self.paths.curated_root / f"{slug}_membership_daily.parquet",
-                f"snapshot_{slug}_daily": self.paths.curated_root / f"snapshot_{slug}_daily.parquet",
+                f"{slug}_weights_monthly": self.paths.curated_root
+                / f"{slug}_weights_monthly.parquet",
+                f"{slug}_membership_daily": self.paths.curated_root
+                / f"{slug}_membership_daily.parquet",
+                f"snapshot_{slug}_daily": self.paths.curated_root
+                / f"snapshot_{slug}_daily.parquet",
             }
             for key, path in universe_artifacts.items():
                 if path.exists():
@@ -1139,7 +1320,9 @@ class Phase1Builder:
                 }
             )
         _json_dump(self.paths.checksums, checksums)
-        manifest_hash = _sha256(self.paths.source_manifest) if self.paths.source_manifest.exists() else None
+        manifest_hash = (
+            _sha256(self.paths.source_manifest) if self.paths.source_manifest.exists() else None
+        )
 
         db = SessionLocal()
         try:
@@ -1168,7 +1351,9 @@ class Phase1Builder:
                 db.add(row)
             db.commit()
 
-            stock_df = pd.read_parquet(artifact_paths["snapshot_stock_daily"], columns=["date", "symbol"]).drop_duplicates()
+            stock_df = pd.read_parquet(
+                artifact_paths["snapshot_stock_daily"], columns=["date", "symbol"]
+            ).drop_duplicates()
             stock_df["date"] = pd.to_datetime(stock_df["date"], errors="coerce").dt.date
             db.query(SnapshotIndexStock).filter(
                 SnapshotIndexStock.snapshot_date >= self.start_date,
@@ -1196,7 +1381,9 @@ class Phase1Builder:
                 snapshot_path = artifact_paths.get(snapshot_key)
                 if snapshot_path is None:
                     continue
-                uni_df = pd.read_parquet(snapshot_path, columns=["date", "universe_id"]).drop_duplicates()
+                uni_df = pd.read_parquet(
+                    snapshot_path, columns=["date", "universe_id"]
+                ).drop_duplicates()
                 uni_df["date"] = pd.to_datetime(uni_df["date"], errors="coerce").dt.date
                 db.query(SnapshotIndexUniverse).filter(
                     SnapshotIndexUniverse.snapshot_date >= self.start_date,
@@ -1215,7 +1402,9 @@ class Phase1Builder:
                     for row in uni_df.itertuples(index=False)
                 ]
                 for i in range(0, len(universe_records), chunk_size):
-                    db.bulk_insert_mappings(SnapshotIndexUniverse, universe_records[i : i + chunk_size])
+                    db.bulk_insert_mappings(
+                        SnapshotIndexUniverse, universe_records[i : i + chunk_size]
+                    )
                     db.commit()
 
             db.query(DatasetRun).filter(DatasetRun.run_id == self.run_id).update(
@@ -1232,7 +1421,9 @@ class Phase1Builder:
                 {
                     DatasetRun.status: "failed",
                     DatasetRun.completed_at: datetime.now(UTC),
-                    DatasetRun.details_json: json.dumps({"error": str(exc), "summary": self.summary}),
+                    DatasetRun.details_json: json.dumps(
+                        {"error": str(exc), "summary": self.summary}
+                    ),
                 },
                 synchronize_session=False,
             )
@@ -1242,7 +1433,10 @@ class Phase1Builder:
         finally:
             db.close()
 
-        self.summary["publish"] = {"artifacts_published": len(checksums["artifacts"]), "checksums_file": str(self.paths.checksums)}
+        self.summary["publish"] = {
+            "artifacts_published": len(checksums["artifacts"]),
+            "checksums_file": str(self.paths.checksums),
+        }
         self._log(step, "completed", self.summary["publish"])
 
 
@@ -1292,14 +1486,21 @@ def parse_args() -> argparse.Namespace:
         help="Optional step to run. If omitted, runs full pipeline.",
     )
     parser.add_argument("--asof", default=date.today().isoformat(), help="As-of date (YYYY-MM-DD)")
-    parser.add_argument("--start-date", default=PHASE_START_DATE.isoformat(), help="Start date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--start-date", default=PHASE_START_DATE.isoformat(), help="Start date (YYYY-MM-DD)"
+    )
     parser.add_argument("--mode", default="full", choices=["full", "incremental"], help="Run mode")
     parser.add_argument(
         "--universes",
         default=",".join(DEFAULT_UNIVERSES),
-        help="Comma-separated universe ids for full run and snapshot generation (e.g., NIFTY50,BANKNIFTY)",
+        help=(
+            "Comma-separated universe ids for full run and snapshot generation "
+            "(e.g., NIFTY50,BANKNIFTY)"
+        ),
     )
-    parser.add_argument("--universe", default=None, help="Single universe id for build-universe step")
+    parser.add_argument(
+        "--universe", default=None, help="Single universe id for build-universe step"
+    )
     return parser.parse_args()
 
 

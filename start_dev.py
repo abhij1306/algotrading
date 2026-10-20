@@ -45,15 +45,15 @@ def find_available_port(preferred: int) -> int:
     for port in range(preferred, preferred + MAX_PORT_SCAN):
         if not is_port_in_use(port):
             return port
-    raise StartupError(
-        f"No free port in range {preferred}-{preferred + MAX_PORT_SCAN - 1}."
-    )
+    raise StartupError(f"No free port in range {preferred}-{preferred + MAX_PORT_SCAN - 1}.")
 
 
 def is_backend_healthy(port: int) -> bool:
     """True only if the listener on `port` is the SmartTrader API (not just any HTTP 200)."""
     try:
-        with urllib.request.urlopen(f"{LOCAL_ORIGIN}:{port}/", timeout=2) as response:
+        url = f"{LOCAL_ORIGIN}:{port}/"
+        # LOCAL_ORIGIN is a fixed http://127.0.0.1 origin, never user input.
+        with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
             if response.status != 200:
                 return False
             body = json.loads(response.read().decode("utf-8"))
@@ -86,9 +86,7 @@ def stop_process_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def wait_for_port(
-    port: int, name: str, proc: subprocess.Popen | None, timeout: int
-) -> None:
+def wait_for_port(port: int, name: str, proc: subprocess.Popen | None, timeout: int) -> None:
     print(f"Waiting for {name} on port {port}...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -121,26 +119,21 @@ def main() -> int:
         )
     pnpm = shutil.which("pnpm")
     if pnpm is None:
-        raise StartupError(
-            "pnpm is not on PATH. Install it from https://pnpm.io/installation."
-        )
+        raise StartupError("pnpm is not on PATH. Install it from https://pnpm.io/installation.")
     if not (root / "frontend" / "node_modules").exists():
-        raise StartupError(
-            "Frontend dependencies missing. Run: cd frontend && pnpm install"
-        )
+        raise StartupError("Frontend dependencies missing. Run: cd frontend && pnpm install")
 
     backend_port = DEFAULT_BACKEND_PORT
     frontend_port = find_available_port(DEFAULT_FRONTEND_PORT)
     if frontend_port != DEFAULT_FRONTEND_PORT:
-        print(
-            f"[INFO] Port {DEFAULT_FRONTEND_PORT} is busy; using frontend port {frontend_port}."
-        )
+        print(f"[INFO] Port {DEFAULT_FRONTEND_PORT} is busy; using frontend port {frontend_port}.")
 
     launch_backend = True
     if is_port_in_use(backend_port):
         if not is_backend_healthy(backend_port):
             raise StartupError(
-                f"Port {backend_port} is occupied by a process that is not the SmartTrader backend. "
+                f"Port {backend_port} is occupied by a process that is not "
+                "the SmartTrader backend. "
                 f"Find it with: netstat -ano | findstr :{backend_port}"
             )
         print(f"[INFO] Backend already running on port {backend_port}; reusing it.")
@@ -185,7 +178,9 @@ def main() -> int:
 
         url = f"{LOCAL_ORIGIN}:{frontend_port}"
         print(
-            f"\nSmartTrader is running.\n  Backend:  {LOCAL_ORIGIN}:{backend_port}\n  Frontend: {url}"
+            "\nSmartTrader is running.\n"
+            f"  Backend:  {LOCAL_ORIGIN}:{backend_port}\n"
+            f"  Frontend: {url}"
         )
         print("Press Ctrl+C to stop.")
         if not args.no_browser:

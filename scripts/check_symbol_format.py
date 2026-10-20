@@ -39,17 +39,28 @@ from pathlib import Path
 # Violation patterns with suggested fixes and error codes
 class ViolationType(Enum):
     """Symbol format violation types with unique codes."""
-    NSE_REPLACE = ("SYM001", r"\.replace\(['\"]NSE:['\"],\s*['\"]['\"]\)",
-                   "Use symbol_master.to_db() instead of .replace('NSE:', '')")
-    EQ_REPLACE = ("SYM002", r"\.replace\(['\"]-EQ['\"],\s*['\"]['\"]\)",
-                  "Use symbol_master.to_db() instead of .replace('-EQ', '')")
-    COLON_SPLIT = ("SYM003", r"\.split\(['\"]:['\"]\)",
-                   "Use symbol_master methods for parsing instead of .split(':')")
 
-    def __init__(self, code: str, pattern: str, message: str):
+    NSE_REPLACE = (
+        "SYM001",
+        r"\.replace\(['\"]NSE:['\"],\s*['\"]['\"]\)",
+        "Use symbol_master.to_db() instead of .replace('NSE:', '')",
+    )
+    EQ_REPLACE = (
+        "SYM002",
+        r"\.replace\(['\"]-EQ['\"],\s*['\"]['\"]\)",
+        "Use symbol_master.to_db() instead of .replace('-EQ', '')",
+    )
+    COLON_SPLIT = (
+        "SYM003",
+        r"\.split\(['\"]:['\"]\)",
+        "Use symbol_master methods for parsing instead of .split(':')",
+    )
+
+    def __init__(self, code: str, pattern: str, message: str) -> None:
         self.code = code
         self.pattern = pattern
         self.message = message
+
 
 @dataclass
 class SymbolFormatViolation:
@@ -91,12 +102,13 @@ class SymbolFormatViolation:
             "code": self.code,
             "message": self.message,
             "context": self.context,
-            "type": self.violation_type.name
+            "type": self.violation_type.name,
         }
 
 
 class OutputFormat(Enum):
     """Supported output formats."""
+
     TEXT = "text"
     RUFF = "ruff"
     JSON = "json"
@@ -105,7 +117,7 @@ class OutputFormat(Enum):
 
 def find_column(content: str, match_start: int) -> int:
     """Find the column number (1-indexed) for a match position."""
-    line_start = content.rfind('\n', 0, match_start) + 1
+    line_start = content.rfind("\n", 0, match_start) + 1
     return match_start - line_start + 1
 
 
@@ -136,23 +148,23 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
         return []
 
     try:
-        content = filepath.read_text(encoding='utf-8')
+        content = filepath.read_text(encoding="utf-8")
     except Exception as e:
         print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
         return []
 
     violations = []
-    lines = content.split('\n')
+    lines = content.split("\n")
 
     for violation_type in ViolationType:
         for match in re.finditer(violation_type.pattern, content):
-            line_num = content[:match.start()].count('\n') + 1
+            line_num = content[: match.start()].count("\n") + 1
             column = find_column(content, match.start())
             context = lines[line_num - 1] if line_num <= len(lines) else ""
 
             # Skip if this is in a comment or docstring (basic heuristic)
             context_stripped = context.strip()
-            if context_stripped.startswith('#'):
+            if context_stripped.startswith("#"):
                 continue
             if context_stripped.startswith('"""') or context_stripped.startswith("'''"):
                 continue
@@ -160,7 +172,7 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
             # Skip if the line is just a string literal (error message definition)
             if context_stripped.startswith('"') or context_stripped.startswith("'"):
                 # Check if it's a standalone string (not part of code)
-                if '=' not in context_stripped and 'return' not in context_stripped:
+                if "=" not in context_stripped and "return" not in context_stripped:
                     continue
 
             violations.append(
@@ -171,7 +183,7 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
                     code=violation_type.code,
                     message=violation_type.message,
                     context=context.strip(),
-                    violation_type=violation_type
+                    violation_type=violation_type,
                 )
             )
 
@@ -195,8 +207,7 @@ def check_directory(directory: Path) -> list[SymbolFormatViolation]:
     return violations
 
 
-def format_output(violations: list[SymbolFormatViolation],
-                  output_format: OutputFormat) -> str:
+def format_output(violations: list[SymbolFormatViolation], output_format: OutputFormat) -> str:
     """Format violations according to the specified output format.
 
     Args:
@@ -224,10 +235,9 @@ def format_output(violations: list[SymbolFormatViolation],
         return "\n".join(v.to_github() for v in violations)
 
     elif output_format == OutputFormat.JSON:
-        return json.dumps({
-            "violations": [v.to_dict() for v in violations],
-            "count": len(violations)
-        }, indent=2)
+        return json.dumps(
+            {"violations": [v.to_dict() for v in violations], "count": len(violations)}, indent=2
+        )
 
     return ""
 
@@ -247,9 +257,11 @@ def parse_args() -> tuple[Path | None, OutputFormat]:
             try:
                 output_format = OutputFormat(format_str)
             except ValueError:
-                print(f"Error: Invalid format '{format_str}'. "
-                      f"Valid formats: {', '.join(f.value for f in OutputFormat)}",
-                      file=sys.stderr)
+                print(
+                    f"Error: Invalid format '{format_str}'. "
+                    f"Valid formats: {', '.join(f.value for f in OutputFormat)}",
+                    file=sys.stderr,
+                )
                 sys.exit(2)
         elif not arg.startswith("--"):
             path = Path(arg)
@@ -293,7 +305,7 @@ def main() -> int:
         print(output)
     except UnicodeEncodeError:
         # Fallback to ASCII-safe output on Windows
-        print(output.encode('ascii', 'replace').decode('ascii'))
+        print(output.encode("ascii", "replace").decode("ascii"))
 
     # Return appropriate exit code
     return 1 if violations else 0
