@@ -4,35 +4,30 @@ Sanitizes error messages to prevent information leakage
 """
 
 import logging
-import os
-from collections.abc import Mapping
 
 from fastapi import HTTPException, status
 
-logger = logging.getLogger(__name__)
+from .logger import safe_log_value
 
-# Environment check
-IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
+logger = logging.getLogger(__name__)
 
 
 def sanitize_error_message(error: Exception, user_message: str = "An error occurred") -> str:
     """
-    Sanitize error message for client response.
-    In production, returns generic message. In development, returns detailed error.
+    Client-facing text for an unexpected error: always the fixed user message.
+
+    The exception text (driver, broker or file-system detail) is never sent to the client,
+    in any environment; callers log it server-side.
 
     Args:
-        error: The exception that occurred
-        user_message: Generic message to show to user
+        error: The exception that occurred (unused; kept for call-site clarity)
+        user_message: Fixed message to show to the user
 
     Returns:
-        Sanitized error message
+        The user message
     """
-    if IS_PRODUCTION:
-        # Production: Return generic message only
-        return user_message
-    else:
-        # Development: Include error details for debugging
-        return f"{user_message}: {str(error)}"
+    del error
+    return user_message
 
 
 def handle_api_error(
@@ -62,39 +57,12 @@ def handle_api_error(
     """
     # Log the full error with stack trace
     log_func = getattr(logger, log_level, logger.error)
-    log_func(f"{user_message}: {str(error)}", exc_info=True)
+    log_func("%s: %s", user_message, safe_log_value(error), exc_info=True)
 
     # Return sanitized error to client
     detail = sanitize_error_message(error, user_message)
 
     return HTTPException(status_code=status_code, detail=detail)
-
-
-def handle_validation_error(error: Exception, field: str | None = None) -> HTTPException:
-    """
-    Handle validation errors.
-
-    Args:
-        error: The validation exception
-        field: Optional field name that failed validation
-
-    Returns:
-        HTTPException with 400 status
-    """
-    if field:
-        message = f"Invalid value for {field}"
-    else:
-        message = "Validation failed"
-
-    # Validation errors can include more details even in production
-    if IS_PRODUCTION:
-        detail = message
-    else:
-        detail = f"{message}: {str(error)}"
-
-    logger.warning(f"Validation error: {detail}")
-
-    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
 def handle_not_found_error(resource: str, identifier: str | None = None) -> HTTPException:
@@ -150,33 +118,3 @@ def handle_forbidden_error(message: str = "Access denied") -> HTTPException:
     logger.warning(f"Forbidden access attempt: {message}")
 
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
-
-
-class SafeHTTPException(HTTPException):
-    """
-    HTTPException that automatically sanitizes error messages in production.
-    """
-
-    def __init__(
-        self,
-        status_code: int,
-        detail: str,
-        user_message: str | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> None:
-        """
-        Args:
-            status_code: HTTP status code
-            detail: Detailed error message (logged but not sent in production)
-            user_message: Generic message for users (used in production)
-        """
-        # Log the detailed error
-        logger.error(f"HTTP {status_code}: {detail}")
-
-        # Use sanitized message for response
-        if IS_PRODUCTION and user_message:
-            response_detail = user_message
-        else:
-            response_detail = detail
-
-        super().__init__(status_code=status_code, detail=response_detail, headers=headers)

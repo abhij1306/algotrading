@@ -20,7 +20,7 @@ from ..services.universe import (
     UniverseMode,
     get_universe_service,
 )
-from ..utils.errors import handle_api_error, handle_validation_error
+from ..utils.errors import handle_api_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -321,7 +321,8 @@ def create_custom_universe(req: CreateCustomUniverseRequest, db: DB_DEPENDENCY) 
         }
 
     except ValueError as e:
-        raise handle_validation_error(e) from e
+        # UniverseManager raises ValueError only with messages we wrote (duplicate code).
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(f"Error creating custom universe: {e}")
         raise handle_api_error(e, "Failed to create custom universe") from e

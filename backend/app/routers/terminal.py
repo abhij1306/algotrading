@@ -21,6 +21,7 @@ from ..services.order_execution_service import (
 )
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
+from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,10 @@ def _load_index_yfinance_candles(symbol: str, timeframe: str, limit: int) -> pd.
         return pd.DataFrame()
 
 
+class InvalidOptionRequestError(ValueError):
+    """Bad option request input; its message is ours and safe to return to the client."""
+
+
 def _build_option_symbols(
     symbol: str | None,
     underlying: str | None,
@@ -353,13 +358,21 @@ def _build_option_symbols(
     option_type: str | None,
 ) -> tuple[str, str]:
     if symbol:
-        db_symbol = symbol_master.to_db(symbol)
+        try:
+            db_symbol = symbol_master.to_db(symbol)
+        except ValueError as exc:
+            raise InvalidOptionRequestError("Invalid option symbol") from exc
         return db_symbol, symbol_master.to_fyers(db_symbol)
 
     if not (underlying and expiry and strike and option_type):
-        raise ValueError("Provide symbol, or (underlying + expiry + strike + option_type)")
+        raise InvalidOptionRequestError(
+            "Provide symbol, or (underlying + expiry + strike + option_type)"
+        )
 
-    expiry_date = date.fromisoformat(expiry)
+    try:
+        expiry_date = date.fromisoformat(expiry)
+    except ValueError as exc:
+        raise InvalidOptionRequestError("Invalid expiry date; use YYYY-MM-DD") from exc
     # Prefer symbol resolution from live chain to avoid format mismatches.
     chain = option_chain_service.get_option_chain(
         underlying=underlying.upper(),
@@ -554,7 +567,13 @@ def get_options_orderflow(
         raise HTTPException(status_code=500, detail="Failed to load options orderflow") from exc
 
 
-@router.post("/options/preview-order", responses={400: {"description": "Invalid request"}})
+@router.post(
+    "/options/preview-order",
+    responses={
+        400: {"description": "Invalid request"},
+        500: {"description": "Preview failed"},
+    },
+)
 def preview_options_order(
     req: TerminalOptionsPreviewRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -610,9 +629,15 @@ def preview_options_order(
             "estimated_charges": estimated_charges,
             "risk": risk,
         }
-    except Exception as exc:
-        logger.exception("Terminal options preview failed: %s", exc)
+    except HTTPException:
+        raise
+    except InvalidOptionRequestError as exc:
+        # Only our own input checks reach the client; any other ValueError is a 500.
+        logger.info("Terminal options preview rejected: %s", safe_log_value(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Terminal options preview failed")
+        raise HTTPException(status_code=500, detail="Failed to preview options order") from exc
 
 
 @router.post(

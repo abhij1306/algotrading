@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from fyers_apiv3.fyersModel import FyersModel
 
 CLIENT_NOT_INITIALIZED = "Client not initialized"
+# Client-facing text when the broker call itself raises; the exception is only logged.
+BROKER_ORDER_FAILED = "Broker order request failed"
 logger = logging.getLogger(__name__)
 
 # Fyers order "type": 1 = LIMIT, 2 = MARKET, 3 = SL-M (stop market), 4 = SL (stop limit)
@@ -228,8 +230,11 @@ class FyersBroker(IBroker):
                     details=response,
                 )
 
-        except Exception as e:
-            return OrderResponse(order_id="", status="ERROR", message=str(e), details=None)
+        except Exception:
+            logger.exception("Fyers place_order failed")
+            return OrderResponse(
+                order_id="", status="ERROR", message=BROKER_ORDER_FAILED, details=None
+            )
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not self.client:

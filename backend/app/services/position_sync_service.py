@@ -202,7 +202,7 @@ class PositionSyncService:
         except Exception as e:
             db.rollback()
             logger.exception(f"Error syncing positions: {e}")
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": "Position sync failed"}
         finally:
             db.close()
 

@@ -262,5 +262,15 @@ Operational endpoint:
 - Logging: the handler writes one throttled warning per minute. A log filter strips the traceback from any
   `logger.exception` record whose exception is a down DB, and lets through one such line per call site per minute.
 
+## Error Text and Unavailable Dependencies
+- Clients never receive exception text (driver, broker, file system). Routers log the exception and answer a
+  fixed message; `handle_api_error`/`sanitize_error_message` return only the fixed message in every environment.
+  Validation messages we write ourselves (a `ValueError` raised by our own input checks) may still be returned.
+- Broker-backed reads fail closed: `GET /api/smart-trader/positions` and `/pnl` answer HTTP 503
+  `{"error": {"code": "BROKER_UNAVAILABLE", "message": "Broker unavailable"}}` instead of an empty list or a
+  zero P&L. The message is `"Broker not connected"` when there is no client or the login token is invalid.
+- Missing local datasets answer HTTP 503 `DATA_UNAVAILABLE`; for example `GET /api/strategies/regime` (and every
+  route that needs the regime) when the NIFTY50 index history is missing.
+
 ## Drift Policy
 If code and docs diverge, code is authoritative; docs must be updated in the same PR/commit.

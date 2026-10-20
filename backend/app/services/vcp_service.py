@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..data_fetcher import fetch_fyers_quotes
 from ..database import db_session_scope, get_db_session
+from ..exceptions import DataUnavailableError
 from ..models import (
     BacktestRun,
     Company,
@@ -32,6 +33,7 @@ from .history_service import daily_history_service
 
 logger = logging.getLogger(__name__)
 
+REGIME_DATA_UNAVAILABLE = "Market regime unavailable: NIFTY50 index history is missing"
 DEFAULT_CAPITAL = 1_000_000.0
 DEFAULT_UNIVERSE = "NIFTY500"
 RISK_PCT_BULL = 0.01
@@ -203,9 +205,15 @@ class VCPService:
     def get_regime(self, as_of: date | None = None) -> RegimeSnapshot:
         scoped = daily_history_service.load_index_history("NIFTY50")
         if scoped.empty:
-            raise ValueError("NIFTY50 index dataset unavailable")
+            logger.warning("Regime unavailable: NIFTY50 index history is missing")
+            raise DataUnavailableError(REGIME_DATA_UNAVAILABLE)
         scan_date = as_of or scoped["date"].max()
         scoped = scoped[scoped["date"] <= scan_date].sort_values("date").tail(260).copy()
+        if scoped.empty:
+            logger.warning(
+                "Regime unavailable: no NIFTY50 index history on or before %s", scan_date
+            )
+            raise DataUnavailableError(REGIME_DATA_UNAVAILABLE)
         scoped["ma_200"] = scoped["close"].rolling(200).mean()
         latest = scoped.iloc[-1]
         ma_200 = (

@@ -4,10 +4,17 @@ Unified Trading API
 Central API for unified trading operations.
 """
 
+import logging
+from decimal import Decimal
 from typing import Any, Never
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from ..exceptions import BrokerUnavailableApiError
+from ..utils.logger import safe_log_value
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/smart-trader", tags=["Smart Trader API"])
 
@@ -39,7 +46,7 @@ async def health_check() -> dict[str, Any]:
 
 
 @router.get("/status", response_model=None)
-async def get_status() -> dict[str, Any]:
+def get_status() -> dict[str, Any]:
     """Get current trading mode and status"""
     from ..services.fyers_client import get_fyers_client
 
@@ -53,46 +60,53 @@ async def get_status() -> dict[str, Any]:
     }
 
 
-@router.get("/positions", response_model=None)
-async def get_positions() -> dict[str, Any]:
+BROKER_UNAVAILABLE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    503: {"description": "Broker not connected or the broker call failed (BROKER_UNAVAILABLE)"}
+}
+
+
+def _broker_net_positions() -> list[dict[str, Any]]:
+    """Open positions straight from the broker.
+
+    Fails closed: raises BrokerUnavailableApiError when the client is missing, not logged in,
+    the call fails or the reply is not usable, never an empty list that reads as "flat".
+    """
+    from ..services.fyers_client import get_fyers_client
+
+    fyers = get_fyers_client()
+    if not fyers or not fyers.validate_token():
+        raise BrokerUnavailableApiError("Broker not connected")
+
+    try:
+        response = fyers.fyers.positions()
+    except Exception as exc:
+        logger.warning("Broker positions call failed (%s)", type(exc).__name__, exc_info=True)
+        raise BrokerUnavailableApiError() from exc
+
+    if not isinstance(response, dict) or response.get("s") != "ok":
+        reply_message = response.get("message") if isinstance(response, dict) else None
+        logger.warning("Broker positions reply unusable: %s", safe_log_value(reply_message))
+        raise BrokerUnavailableApiError()
+
+    positions = response.get("netPositions", [])
+    if not isinstance(positions, list):
+        logger.warning("Broker positions reply has no netPositions list")
+        raise BrokerUnavailableApiError()
+    return positions
+
+
+@router.get("/positions", response_model=None, responses=BROKER_UNAVAILABLE_RESPONSES)
+def get_positions() -> dict[str, Any]:
     """Get current open positions from broker"""
-    from ..services.fyers_client import get_fyers_client
-
-    fyers = get_fyers_client()
-
-    if not fyers or not fyers.validate_token():
-        return {"positions": []}
-
-    try:
-        # Get positions from Fyers SDK directly or via a service
-        # For now, let's try to get them if the SDK is available
-        response = fyers.fyers.positions()
-        if response.get("s") == "ok":
-            return {"positions": response.get("netPositions", [])}
-        return {"positions": []}
-    except Exception as e:
-        return {"positions": [], "error": str(e)}
+    return {"positions": _broker_net_positions()}
 
 
-@router.get("/pnl", response_model=None)
-async def get_total_pnl() -> dict[str, Any]:
+@router.get("/pnl", response_model=None, responses=BROKER_UNAVAILABLE_RESPONSES)
+def get_total_pnl() -> dict[str, Any]:
     """Get total realized and unrealized PnL"""
-    from ..services.fyers_client import get_fyers_client
-
-    fyers = get_fyers_client()
-
-    if not fyers or not fyers.validate_token():
-        return {"total_pnl": 0.0}
-
-    try:
-        response = fyers.fyers.positions()
-        if response.get("s") == "ok":
-            positions = response.get("netPositions", [])
-            total_pnl = sum(p.get("pl", 0.0) for p in positions)
-            return {"total_pnl": total_pnl}
-        return {"total_pnl": 0.0}
-    except Exception:
-        return {"total_pnl": 0.0}
+    positions = _broker_net_positions()
+    total_pnl = sum((Decimal(str(p.get("pl") or 0)) for p in positions), Decimal("0"))
+    return {"total_pnl": float(total_pnl)}
 
 
 @router.post(

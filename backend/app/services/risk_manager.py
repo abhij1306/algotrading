@@ -388,7 +388,7 @@ class RiskManager:
             # DENY trade if margin check fails (fail-closed for security)
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
-                message=f"Could not verify margin: {str(e)}. Trade denied for safety.",
+                message="Could not verify margin. Trade denied for safety.",
                 code="MARGIN_CHECK_ERROR",
             )
 

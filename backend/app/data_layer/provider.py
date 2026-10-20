@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..data_repository import DataRepository
 from ..database import Company, FinancialStatement, HistoricalPrice
 from ..utils.db_errors import is_db_unavailable
-from ..utils.logger import log_warning_throttled
+from ..utils.logger import log_warning_throttled, safe_log_value
 from .exceptions import (
     DataNotFoundError,
     DataSourceUnavailableError,
@@ -165,10 +165,13 @@ class DataProvider:
 
             return quotes[symbol]
 
+        except DataNotFoundError:
+            raise
         except Exception as e:
             if "token" in str(e).lower():
                 raise MissingTokenError() from e
-            raise DataSourceUnavailableError("Fyers", str(e)) from e
+            logger.warning("Fyers quote failed: %s", safe_log_value(e))
+            raise DataSourceUnavailableError("Fyers") from e
 
     def get_multiple_quotes(self, symbols: list[str]) -> dict[str, dict]:
         """
@@ -184,7 +187,8 @@ class DataProvider:
         except Exception as e:
             if "token" in str(e).lower():
                 raise MissingTokenError() from e
-            raise DataSourceUnavailableError("Fyers", str(e)) from e
+            logger.warning("Fyers batch quotes failed: %s", safe_log_value(e))
+            raise DataSourceUnavailableError("Fyers") from e
 
     def health_check(self) -> dict:
         """
