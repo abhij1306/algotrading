@@ -31,7 +31,8 @@ jobs:
       - name: Install dependencies
         # Hash-pinned wheels only (scripts/lock_ci_requirements.py). The lock holds
         # fyers-apiv3 without its stale aiohttp==3.9.3 pin, which does not build on 3.14.
-        run: python -m pip install --only-binary :all: --require-hashes --no-deps -r requirements-ci.lock
+        run: |
+          python -m pip install --only-binary :all: --require-hashes --no-deps -r requirements-ci.lock
 
       # Run from the repo root: backend/ uses backend/pyproject.toml, and the root
       # ruff.toml applies the same rules to start_dev.py, scripts/ and data_platform/.
