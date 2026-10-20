@@ -274,6 +274,10 @@ Operational endpoint:
   zero P&L. The message is `"Broker not connected"` when there is no client or the login token is invalid.
 - Missing local datasets answer HTTP 503 `DATA_UNAVAILABLE`; for example `GET /api/strategies/regime` (and every
   route that needs the regime) when the NIFTY50 index history is missing.
+- A missing live quote is never priced as zero or as the entry price. `GET /api/strategies/positions` returns
+  `ltp`, `unrealized_pnl`, `unrealized_pnl_pct` and `r_multiple` as null with `price_status: "PRICE_UNAVAILABLE"`
+  (otherwise `OPEN`, `STOP_HIT` or `TARGET_HIT` against the stop and 2R price). Positions read prices through the
+  `QuoteSource` port in `services/vcp/quotes.py`.
 
 ## Drift Policy
 If code and docs diverge, code is authoritative; docs must be updated in the same PR/commit.

@@ -14,7 +14,6 @@ import pandas as pd
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..data_fetcher import fetch_fyers_quotes
 from ..database import db_session_scope
 from ..exceptions import DataUnavailableError
 from ..models import (
@@ -22,21 +21,21 @@ from ..models import (
     Company,
     IndexConstituentHistory,
     IndexUniverseDefinition,
-    StrategyPosition,
-    SystemConfig,
     VCPScanResult,
 )
 from ..utils.runtime_metrics import runtime_metrics
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
-from .vcp import pattern
+from .vcp import config, pattern
+from .vcp.config import DEFAULT_UNIVERSE
 from .vcp.pattern import STOP_OFFSET_PCT
+from .vcp.positions import PositionService
+from .vcp.quotes import FyersQuoteSource
 
 logger = logging.getLogger(__name__)
 
 REGIME_DATA_UNAVAILABLE = "Market regime unavailable: NIFTY50 index history is missing"
 DEFAULT_CAPITAL = 1_000_000.0
-DEFAULT_UNIVERSE = "NIFTY500"
 RISK_PCT_BULL = 0.01
 RISK_PCT_BEAR = 0.005
 MAX_POSITION_CAP = 0.20
@@ -73,6 +72,9 @@ class _VCPBacktestState:
 
 
 class VCPService:
+    def __init__(self, positions: PositionService | None = None) -> None:
+        self._positions = positions or PositionService(FyersQuoteSource())
+
     def _load_symbol_history(
         self,
         symbols: list[str],
@@ -87,18 +89,11 @@ class VCPService:
 
     @staticmethod
     def _get_config(db: Session, key: str, default: str) -> str:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        return row.value if row else default
+        return config.get_config(db, key, default)
 
     @staticmethod
     def _set_config(db: Session, key: str, value: str) -> None:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row is None:
-            row = SystemConfig(key=key, value=value)
-            db.add(row)
-        else:
-            row.value = value
-        db.commit()
+        config.set_config(db, key, value)
 
     def _constituents_for_date(
         self, db: Session, universe: str, as_of: date
@@ -635,153 +630,26 @@ class VCPService:
             return self._serialize_scan_row(row)
 
     def list_positions(self) -> dict[str, Any]:
-        with db_session_scope() as db:
-            rows = (
-                db.query(StrategyPosition)
-                .filter(StrategyPosition.status.in_(["OPEN", "OPEN_PARTIAL"]))
-                .order_by(StrategyPosition.entry_date.desc(), StrategyPosition.symbol.asc())
-                .all()
-            )
-            quotes = fetch_fyers_quotes([row.symbol for row in rows]) if rows else {}
-            payload = []
-            for row in rows:
-                quote = quotes.get(row.symbol, {})
-                ltp = float(quote.get("ltp") or row.entry_price)
-                unrealized = (ltp - row.entry_price) * row.shares_remaining
-                risk_distance = max(0.01, row.entry_price - row.stop_price)
-                payload.append(
-                    {
-                        "id": row.id,
-                        "symbol": row.symbol,
-                        "entry_date": row.entry_date.isoformat(),
-                        "entry_price": round(float(row.entry_price), 2),
-                        "shares": row.shares_remaining,
-                        "stop_price": round(float(row.stop_price), 2),
-                        "ltp": round(ltp, 2),
-                        "unrealized_pnl": round(unrealized, 2),
-                        "unrealized_pnl_pct": round(((ltp / row.entry_price) - 1.0) * 100.0, 2),
-                        "r_multiple": round(
-                            unrealized / (risk_distance * max(1, row.shares_remaining)), 2
-                        ),
-                        "two_r_status": "HIT" if row.two_r_hit else "NOT_HIT",
-                        "status": row.status,
-                    }
-                )
-            return {"positions": payload}
+        return self._positions.list_positions()
 
     def close_position(self, position_id: int) -> dict[str, Any]:
-        with db_session_scope() as db:
-            row = db.query(StrategyPosition).filter(StrategyPosition.id == position_id).first()
-            if row is None:
-                raise ValueError("Position not found")
-            quotes = fetch_fyers_quotes([row.symbol])
-            quote = quotes.get(row.symbol, {}) if isinstance(quotes, dict) else {}
-            quote_source = "ltp"
-            if quote.get("ltp") is None:
-                logger.warning(
-                    "Manual close missing LTP for %s; falling back to entry price. quote=%s",
-                    row.symbol,
-                    quote,
-                )
-                exit_price = float(row.entry_price)
-                quote_source = "entry_fallback"
-                row.notes = (
-                    f"{(row.notes + ' | ') if row.notes else ''}"
-                    f"manual_close_quote_fallback symbol={row.symbol} quote={quote}"
-                )
-            else:
-                exit_price = float(quote["ltp"])
-            row.exit_date = date.today()
-            row.exit_price = exit_price
-            row.exit_reason = "MANUALLY_CLOSED"
-            row.status = "MANUALLY_CLOSED"
-            row.pnl_inr = round((exit_price - row.entry_price) * row.shares_remaining, 2)
-            row.pnl_pct = round(((exit_price / row.entry_price) - 1.0) * 100.0, 2)
-            row.shares_remaining = 0
-            db.commit()
-            return {
-                "status": "ok",
-                "position_id": position_id,
-                "exit_price": round(exit_price, 2),
-                "quote_source": quote_source,
-                "ltp_missing": quote_source != "ltp",
-            }
+        return self._positions.close_position(position_id)
 
     def update_stop(self, position_id: int, stop_price: float) -> dict[str, Any]:
-        with db_session_scope() as db:
-            row = db.query(StrategyPosition).filter(StrategyPosition.id == position_id).first()
-            if row is None:
-                raise ValueError("Position not found")
-            row.stop_price = float(stop_price)
-            db.commit()
-            db.refresh(row)
-            return {
-                "status": "ok",
-                "position_id": position_id,
-                "stop_price": round(row.stop_price, 2),
-            }
+        return self._positions.update_stop(position_id, stop_price)
 
     def halt(self, reason: str | None = None) -> dict[str, Any]:
-        with db_session_scope() as db:
-            self._set_config(db, "TRADING_HALTED", "true")
-            self._set_config(db, "HALT_REASON", reason or "")
-            self._set_config(db, "HALTED_AT", datetime.now(UTC).isoformat())
-            return self.get_status()
+        self._positions.halt(reason)
+        return self.get_status()
 
     def resume(self) -> dict[str, Any]:
-        with db_session_scope() as db:
-            self._set_config(db, "TRADING_HALTED", "false")
-            self._set_config(db, "HALT_REASON", "")
-            return self.get_status()
+        self._positions.resume()
+        return self.get_status()
 
     def get_status(self, universe: str | None = None) -> dict[str, Any]:
-        with db_session_scope() as db:
-            universe_filter = (universe or DEFAULT_UNIVERSE).upper()
-            latest_scan = (
-                db.query(func.max(VCPScanResult.scan_date))
-                .filter(VCPScanResult.universe == universe_filter)
-                .scalar()
-            )
-            if latest_scan is None:
-                config_latest_scan = self._get_config(db, "LAST_VCP_SCAN_DATE", "")
-                latest_scan = (
-                    datetime.strptime(config_latest_scan, "%Y-%m-%d").date()
-                    if config_latest_scan
-                    else None
-                )
-            pending_entries = (
-                db.query(VCPScanResult)
-                .filter(
-                    VCPScanResult.universe == universe_filter,
-                    VCPScanResult.signal_status == "PENDING_ENTRY",
-                )
-                .count()
-            )
-            open_positions = (
-                db.query(StrategyPosition)
-                .filter(StrategyPosition.status.in_(["OPEN", "OPEN_PARTIAL"]))
-                .count()
-            )
-            halted = self._get_config(db, "TRADING_HALTED", "false").lower() == "true"
-            return {
-                "universe": universe_filter,
-                "halted": halted,
-                "halt_reason": self._get_config(db, "HALT_REASON", ""),
-                "halted_at": self._get_config(db, "HALTED_AT", ""),
-                "latest_scan_date": latest_scan.isoformat() if latest_scan else None,
-                "pending_entries": pending_entries,
-                "open_positions": open_positions,
-                "scheduler": {
-                    "status": "manual_phase1",
-                    "next_actions": [
-                        "scan_run_on_demand",
-                        "queued_entries_manual",
-                        "reconciliation_placeholder",
-                    ],
-                },
-                "regime": self._serialize_regime(self.get_regime()),
-                "metrics": runtime_metrics.snapshot(prefix="strategy.vcp.", strip_prefix=True),
-            }
+        return self._positions.get_status(
+            universe, regime=lambda: self._serialize_regime(self.get_regime())
+        )
 
     def _daily_symbol_map(
         self, stock_df: pd.DataFrame, symbols: list[str], start_date: date, end_date: date
