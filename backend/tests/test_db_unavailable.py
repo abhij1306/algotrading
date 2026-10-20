@@ -262,9 +262,10 @@ def test_startup_logs_one_line_without_password(
     down_engine: Engine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(database, "engine", down_engine)
+    validate_database = app_main._step_validate_database()
 
     with caplog.at_level(logging.INFO), pytest.raises(DatabaseUnavailableError):
-        asyncio.run(app_main._step_validate_database())
+        asyncio.run(validate_database)
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert [r.getMessage() for r in errors] == [

@@ -9,10 +9,12 @@ order and that failures are properly handled.
 """
 
 import asyncio
+import logging
 from typing import Never
 
 import pytest
 
+from app.exceptions import DatabaseUnavailableError
 from app.services.startup_validator import StartupSequence, StartupStep
 
 
@@ -170,6 +172,53 @@ class TestStartupSequenceIntegrity:
         # Verify failure was tracked
         assert sequence.failed_step == StartupStep.VALIDATE_DATABASE
         assert not sequence.is_complete()
+
+    @pytest.mark.asyncio
+    async def test_required_db_down_failure_logs_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A down database was already explained by the step: no traceback is logged."""
+        sequence = StartupSequence()
+
+        async def db_down_step() -> Never:
+            raise DatabaseUnavailableError()
+
+        with caplog.at_level(logging.INFO), pytest.raises(DatabaseUnavailableError):
+            await sequence.execute_step(StartupStep.VALIDATE_DATABASE, db_down_step)
+
+        errors = [
+            (r.getMessage(), r.exc_info) for r in caplog.records if r.levelno >= logging.ERROR
+        ]
+        assert errors == [
+            ("[Startup] Failed: validate_database - Database unavailable", None),
+            (
+                "[Startup] Required step validate_database failed. "
+                "Subsequent steps will be skipped.",
+                None,
+            ),
+        ]
+        assert sequence.failed_step == StartupStep.VALIDATE_DATABASE
+
+    @pytest.mark.asyncio
+    async def test_required_unexpected_failure_logs_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sequence = StartupSequence()
+
+        async def failing_step() -> Never:
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.INFO), pytest.raises(RuntimeError):
+            await sequence.execute_step(StartupStep.VALIDATE_DATABASE, failing_step)
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert [r.getMessage() for r in errors] == [
+            "[Startup] Failed: validate_database - boom",
+            "[Startup] Required step validate_database failed. Subsequent steps will be skipped.",
+        ]
+        assert errors[0].exc_info is not None
+        assert errors[0].exc_info[1] is not None
+        assert str(errors[0].exc_info[1]) == "boom"
 
     @pytest.mark.asyncio
     async def test_get_status_returns_correct_state(self) -> None:
