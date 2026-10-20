@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app import data_repository as repo_module
 from app import indicators
 from app.data_repository import DataRepository
-from app.database import DataUpdateLog, HistoricalPrice, IntradayCandle
+from app.database import Company, DataUpdateLog, HistoricalPrice, IntradayCandle
 
 COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -116,6 +116,39 @@ def test_save_historical_prices_survives_feature_errors(
     repo = DataRepository(db_session)
 
     assert repo.save_historical_prices("CHARBOOM", _daily("2026-03-01", [10.0] * 21)) == 21
+
+
+def test_failed_indicator_update_is_rolled_back_before_the_update_log(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #34 review: a half-written indicator update must not be committed by the
+    update-log commit that follows it."""
+
+    def half_written(self: DataRepository, _symbol: str, _company_id: int) -> None:
+        self.db.add(Company(symbol="CHARHALFWRITTEN", name="must not persist"))
+        raise RuntimeError("indicator failure after staging changes")
+
+    monkeypatch.setattr(DataRepository, "_store_latest_features", half_written)
+    repo = DataRepository(db_session)
+
+    assert repo.save_historical_prices("CHARROLLBACK", _daily("2026-03-01", [10.0] * 3)) == 3
+    company = repo.get_company("CHARROLLBACK")
+    logs = db_session.query(DataUpdateLog).filter(DataUpdateLog.company_id == company.id).all()
+    assert [log.records_updated for log in logs] == [3]
+    assert repo.get_company("CHARHALFWRITTEN") is None
+
+
+def test_intraday_csv_fallback_without_company_row(
+    db_session: Session, fallback_csv: list[str]
+) -> None:
+    """PR #34 review: an index with CSV candles but no Company row still gets them."""
+    repo = DataRepository(db_session)
+    assert repo.get_company("BANK NIFTY ROWLESS") is None
+
+    df = repo.get_intraday_candles("BANK NIFTY ROWLESS", timeframe=5)
+
+    assert fallback_csv[0].endswith("BANKNIFTY_5min_complete.csv")
+    assert df["close"].tolist() == [1.0, 2.0, 3.0]
 
 
 def test_save_historical_prices_rolls_back_and_raises_on_bad_rows(db_session: Session) -> None:

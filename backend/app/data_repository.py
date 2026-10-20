@@ -153,8 +153,10 @@ class DataRepository:
                 try:
                     self._store_latest_features(symbol, company.id)
                 except Exception as e:
+                    # Prices are already committed; drop the half-written indicator update
+                    # so the session stays usable for the update log below.
+                    self.db.rollback()
                     logger.warning("Failed to calculate indicators for %s: %s", symbol, e)
-                    # Don't fail the whole operation if indicator calculation fails
 
             # Log update
             try:
@@ -420,7 +422,8 @@ class DataRepository:
         """
         company = self.get_company(symbol)
         if not company:
-            return pd.DataFrame()
+            # Indices such as NIFTY/BANKNIFTY may have CSV candles but no Company row.
+            return _intraday_csv_fallback(symbol, timeframe, start_date, end_date, days)
 
         query = self.db.query(IntradayCandle).filter(
             and_(IntradayCandle.company_id == company.id, IntradayCandle.timeframe == timeframe)
