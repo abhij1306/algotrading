@@ -87,6 +87,17 @@ def position_view(row: StrategyPosition, ltp: Decimal | None) -> dict[str, Any]:
     return view
 
 
+def _total_pnl(row: StrategyPosition, entry: Decimal, exit_price: Decimal) -> Decimal:
+    """P&L on all shares: the remainder at `exit_price`, any already sold at the 2R hit price."""
+    remaining = int(row.shares_remaining)
+    sold = int(row.shares) - remaining
+    pnl = (exit_price - entry) * remaining
+    if sold > 0:
+        sold_at = row.two_r_hit_price if row.two_r_hit_price is not None else row.two_r_price
+        pnl += (_dec(sold_at) - entry) * sold
+    return pnl
+
+
 class PositionService:
     def __init__(
         self,
@@ -110,11 +121,17 @@ class PositionService:
             return {"positions": [position_view(row, prices.get(row.symbol)) for row in rows]}
 
     def close_position(self, position_id: int) -> dict[str, Any]:
-        """Close at the last price; with no price, close at entry and record the fallback."""
+        """Close at the last price; with no price, close at entry and record the fallback.
+
+        `pnl_inr` covers every share: shares already sold at 2R plus the remainder at exit.
+        A position that is no longer open is refused, so a repeat close cannot overwrite P&L.
+        """
         with self._session_scope() as db:
             row = db.query(StrategyPosition).filter(StrategyPosition.id == position_id).first()
             if row is None:
                 raise ValueError("Position not found")
+            if row.status not in OPEN_STATUSES:
+                raise ValueError("Position is not open")
             entry = _dec(row.entry_price)
             ltp = self._quotes.get_last_prices([row.symbol]).get(row.symbol)
             if ltp is None:
@@ -131,8 +148,9 @@ class PositionService:
             row.exit_price = float(exit_price)
             row.exit_reason = "MANUALLY_CLOSED"
             row.status = "MANUALLY_CLOSED"
-            row.pnl_inr = _paise((exit_price - entry) * row.shares_remaining)
-            row.pnl_pct = _paise((exit_price / entry - 1) * 100)
+            pnl = _total_pnl(row, entry, exit_price)
+            row.pnl_inr = _paise(pnl)
+            row.pnl_pct = _paise(pnl / (entry * max(1, int(row.shares))) * 100)
             row.shares_remaining = 0
             db.commit()
             return {

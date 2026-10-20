@@ -185,6 +185,36 @@ def test_close_without_a_price_falls_back_to_entry_and_says_so(factory: sessionm
         assert row.notes == "manual_close_quote_fallback symbol=SBIN ltp=unavailable"
 
 
+def test_close_after_a_2r_partial_counts_the_shares_already_sold(factory: sessionmaker) -> None:
+    position_id = add_position(
+        factory,
+        "SBIN",
+        status="OPEN_PARTIAL",
+        shares_remaining=4,
+        two_r_hit=True,
+        two_r_hit_price=110.5,
+    )
+
+    service(factory, {"SBIN": "102"}).close_position(position_id)
+
+    with factory() as db:
+        row = db.get(StrategyPosition, position_id)
+        # 6 sold at 110.5 (+63) and 4 closed at 102 (+8), on a 1000 cost basis.
+        assert (row.pnl_inr, row.pnl_pct, row.shares_remaining) == (71.0, 7.1, 0)
+
+
+def test_closing_twice_is_refused_and_keeps_the_first_result(factory: sessionmaker) -> None:
+    position_id = add_position(factory, "SBIN")
+    service(factory, {"SBIN": "103.25"}).close_position(position_id)
+
+    with pytest.raises(ValueError, match="Position is not open"):
+        service(factory, {"SBIN": "90"}).close_position(position_id)
+
+    with factory() as db:
+        row = db.get(StrategyPosition, position_id)
+        assert (row.exit_price, row.pnl_inr) == (103.25, 32.5)
+
+
 def test_close_unknown_position_raises(factory: sessionmaker) -> None:
     with pytest.raises(ValueError, match="Position not found"):
         service(factory, {}).close_position(999)
