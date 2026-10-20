@@ -39,6 +39,7 @@ SUPPORTED_STRATEGIES = {
     "MEAN_REVERSION_3D": "3-Day Mean Reversion",
 }
 PARAM_SCHEMA_VERSION = 1
+BACKTEST_JOB_FAILED = "Backtest failed"
 STRATEGY_VERSION = "phase1-v1"
 
 
@@ -588,8 +589,11 @@ class Phase1BacktestService:
             job.result = result
         except Exception as exc:
             job.status = "failed"
-            job.error = str(exc)
-            if not db_run_created:
+            # Stored and returned to clients: fixed text only, the exception is logged.
+            job.error = BACKTEST_JOB_FAILED
+            if db_run_created:
+                logger.exception("Backtest job %s failed", job_id, exc_info=exc)
+            else:
                 self._jobs.pop(job_id, None)
                 logger.exception("Failed to create backtest job %s", job_id, exc_info=exc)
                 raise

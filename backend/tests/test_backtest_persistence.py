@@ -123,6 +123,44 @@ def test_list_runs_and_get_job_read_from_database(
     assert job["result"]["selection"]["scope"] == "NIFTY50:INDEX_DATASET"
 
 
+LEAK_MARKER = "leak-marker-bt password=hunter2"
+
+
+def test_failed_job_stores_and_returns_fixed_error_not_exception_text(
+    db_session_factory: Callable[[], Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = Phase1BacktestService()
+
+    def explode(_payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError(LEAK_MARKER)
+
+    monkeypatch.setattr(service, "run", explode)
+    payload = {
+        "instrument_type": "equity",
+        "start_date": "2025-01-01",
+        "end_date": "2025-01-05",
+        "selection": {"mode": "universe", "universe": "NIFTY50"},
+        "strategies": [
+            {"strategy_id": "MOMENTUM_2D", "weight": 1.0, "enabled": True, "params": {}}
+        ],
+    }
+
+    created = service.create_job(payload)
+
+    assert created["status"] == "failed"
+    session = db_session_factory()
+    try:
+        run = session.query(BacktestRun).filter(BacktestRun.run_id == created["job_id"]).one()
+        assert run.error_message == "Backtest failed"
+    finally:
+        session.close()
+    job = Phase1BacktestService().get_job(created["job_id"])
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error"] == "Backtest failed"
+    assert LEAK_MARKER not in repr(job)
+
+
 def test_ensure_backtest_schema_upgrades_legacy_backtest_runs_table(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy_backtest.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
