@@ -88,6 +88,21 @@ def test_saved_file_is_owner_only_on_posix(store: TokenStore) -> None:
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(os.name != "posix", reason="fchmod runs on POSIX only")
+def test_failed_chmod_leaves_no_partial_file(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_fchmod(_fd: int, _mode: int) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(token_store_module.os, "fchmod", failing_fchmod)
+
+    with pytest.raises(TokenStoreError):
+        store.save(REPLY, client_id="CLIENT-100")
+
+    assert list(store.path.parent.iterdir()) == []
+
+
 def test_save_without_access_token_is_refused(store: TokenStore) -> None:
     with pytest.raises(ValueError):
         store.save({"s": "ok"}, client_id="CLIENT-100")

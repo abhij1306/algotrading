@@ -168,10 +168,11 @@ class TokenStore:
         )
         tmp_path = Path(tmp_name)
         try:
-            # mkstemp already creates the file 0600 on POSIX; chmod makes that explicit.
-            if os.name == "posix":
-                os.fchmod(fd, _POSIX_FILE_MODE)
+            # fdopen first, so the handle owns (and closes) the descriptor on any failure below.
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                # mkstemp already creates the file 0600 on POSIX; chmod makes that explicit.
+                if os.name == "posix":
+                    os.fchmod(handle.fileno(), _POSIX_FILE_MODE)
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())

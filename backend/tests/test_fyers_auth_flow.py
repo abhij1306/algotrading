@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable, Generator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -141,16 +142,28 @@ def test_status_is_cached_for_30_seconds(tmp_path: Path) -> None:
     assert service.status() == FyersStatus(connected=True, user_id="XA1234")
 
 
-def test_rejected_code_saves_nothing_and_keeps_the_client(tmp_path: Path) -> None:
+def test_an_expired_token_reads_as_disconnected(tmp_path: Path) -> None:
+    service, _ = make_service(tmp_path)
+    service.store.save(OK_REPLY, client_id="CLIENT-100", now=datetime(2020, 1, 1, tzinfo=UTC))
+
+    assert service.status() == FyersStatus(connected=False, user_id=None)
+
+
+def test_rejected_code_saves_nothing_and_keeps_the_client(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     refresh = Recorder()
     service, _ = make_service(
-        tmp_path, {"s": "error", "message": "invalid auth code"}, on_token_change=refresh
+        tmp_path,
+        {"s": "error", "code": -413, "message": "leak-marker echoed abc"},
+        on_token_change=refresh,
     )
 
-    with pytest.raises(TokenRejectedError) as excinfo:
+    with caplog.at_level(logging.DEBUG), pytest.raises(TokenRejectedError) as excinfo:
         service.exchange("bad-code")
 
-    assert excinfo.value.message == "invalid auth code"
+    assert excinfo.value.message == "Fyers rejected the auth code. Please log in again."
+    assert "leak-marker" not in caplog.text
     assert service.store.load() is None
     assert refresh.calls == 0
 
@@ -161,7 +174,7 @@ def test_reply_without_a_token_is_rejected_with_a_fixed_message(tmp_path: Path) 
     with pytest.raises(TokenRejectedError) as excinfo:
         service.exchange("code")
 
-    assert excinfo.value.message == "Token generation failed"
+    assert excinfo.value.message == "Fyers rejected the auth code. Please log in again."
 
 
 def test_a_failed_client_refresh_does_not_fail_the_login(tmp_path: Path) -> None:
@@ -275,13 +288,15 @@ def test_token_route_success(tmp_path: Path, use_service: Installer) -> None:
 
 
 def test_token_route_maps_a_rejection_to_400(tmp_path: Path, use_service: Installer) -> None:
-    service, _ = make_service(tmp_path, {"s": "error", "message": "invalid auth code"})
+    service, _ = make_service(
+        tmp_path, {"s": "error", "code": -413, "message": "leak-marker echoed abc"}
+    )
     api = use_service(service)
 
     response = api.post("/api/auth/fyers/token", json={"auth_code": "bad"})
 
     assert response.status_code == 400
-    assert response.json() == {"detail": "invalid auth code"}
+    assert response.json() == {"detail": "Fyers rejected the auth code. Please log in again."}
 
 
 def test_token_route_reports_missing_credentials(tmp_path: Path, use_service: Installer) -> None:

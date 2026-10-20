@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 STATUS_CACHE_SECONDS = 30.0
 _SESSION_STATE = "fyers_api_state"
+AUTH_CODE_REJECTED = "Fyers rejected the auth code. Please log in again."
 
 
 class FyersAuthError(Exception):
@@ -152,11 +153,9 @@ class FyersAuthService:
         logger.info("[Fyers Auth] Token exchange reply status: %s", reply.get("s", "unknown"))
 
         if reply.get("s") != "ok" or not reply.get("access_token"):
-            message = reply.get("message")
-            logger.warning("[Fyers Auth] Fyers rejected the auth code: %s", message)
-            raise TokenRejectedError(
-                message if isinstance(message, str) and message else "Token generation failed"
-            )
+            # Only the reply's status code is logged; its message may echo request data.
+            logger.warning("[Fyers Auth] Fyers rejected the auth code (code %s)", reply.get("code"))
+            raise TokenRejectedError(AUTH_CODE_REJECTED)
 
         saved = self.store.save(reply, client_id=creds.client_id)
         logger.info("[Fyers Auth] Access token saved; expires at %s", saved.expires_at)
@@ -165,7 +164,7 @@ class FyersAuthService:
         return FyersStatus(connected=True, user_id=saved.user_id)
 
     def status(self) -> FyersStatus:
-        """Whether a token file is present, cached for STATUS_CACHE_SECONDS.
+        """Whether an unexpired token is saved, cached for STATUS_CACHE_SECONDS.
 
         Raises TokenStoreError when the file exists but cannot be read (not cached).
         """
@@ -173,9 +172,10 @@ class FyersAuthService:
         if self._cached_status is not None and now - self._cached_at < STATUS_CACHE_SECONDS:
             return self._cached_status
         token = self.store.load()
-        status = FyersStatus(
-            connected=token is not None, user_id=(token.user_id or "") if token else None
-        )
+        if token is None or token.is_expired():
+            status = FyersStatus(connected=False, user_id=None)
+        else:
+            status = FyersStatus(connected=True, user_id=token.user_id or "")
         self._cached_status = status
         self._cached_at = now
         return status
