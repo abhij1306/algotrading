@@ -1,7 +1,7 @@
 """Characterization tests that pin current paper-fill, place, modify, cancel and position-sync
 behaviour before those functions are refactored for readability."""
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 
 import pytest
@@ -14,7 +14,6 @@ from app.models.live_position import LivePosition
 from app.services import order_execution_service as oes
 from app.services.position_sync_service import PositionSyncService
 from app.services.risk_manager import risk_manager
-from app.utils import market_hours
 
 # --- Paper fill simulation ---------------------------------------------------
 # Reference price 100.0, quantity 10, default 5 bps slippage and 3.5 bps fees.
@@ -326,8 +325,9 @@ def test_live_modify_failure_leaves_order_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     reply: dict[str, Any] | Exception,
     expected: str,
+    freeze_market: Callable[[bool], None],
 ) -> None:
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
+    freeze_market(True)
     order = add_order(orders, is_paper=0)
     service = oes.OrderExecutionService()
     broker = StubModifyBroker(reply)
@@ -427,8 +427,13 @@ def live_params(**overrides: object) -> dict[str, Any]:
     ("mode", "quantity", "message"),
     [
         ("DEMO", 2, "Invalid mode. Use PAPER or LIVE"),
-        ("LIVE", "two", "Invalid quantity"),
-        ("PAPER", 0, "Quantity must be positive"),
+        ("LIVE", "two", "Quantity must be a positive integer"),
+        ("LIVE", 2.5, "Quantity must be a positive integer"),
+        ("LIVE", "2.5", "Quantity must be a positive integer"),
+        ("LIVE", True, "Quantity must be a positive integer"),
+        ("LIVE", -3, "Quantity must be a positive integer"),
+        ("PAPER", 0, "Quantity must be a positive integer"),
+        ("PAPER", 1.5, "Quantity must be a positive integer"),
     ],
 )
 def test_place_order_rejects_bad_request_without_broker_or_row(
@@ -483,7 +488,7 @@ def test_live_order_records_broker_outcome(
     service = oes.OrderExecutionService()
     broker = StubPlaceBroker(reply)
     service._broker = broker
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
     result = service.place_order(live_params(), orders, mode="LIVE")
 
@@ -539,7 +544,7 @@ def test_db_lost_after_broker_rejects_raises_without_unsaved_order_log(
 ) -> None:
     service = oes.OrderExecutionService()
     service._broker = StubPlaceBroker({"status": "REJECTED", "message": "Insufficient margin"})
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
     real_commit = orders.commit
     commits: list[str] = []
 

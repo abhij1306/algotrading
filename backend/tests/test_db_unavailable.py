@@ -4,7 +4,7 @@ text and logs one line instead of a traceback per request."""
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any, NoReturn
 
 import psycopg2
@@ -24,7 +24,6 @@ from app.routers import trading
 from app.services import fyers_client
 from app.services.history_service import daily_history_service
 from app.services.order_execution_service import OrderExecutionService
-from app.utils import market_hours
 from app.utils.db_errors import is_db_unavailable
 from app.utils.logger import DatabaseUnavailableLogFilter
 
@@ -81,7 +80,8 @@ class RecordingBroker:
 
 
 def test_backtest_status_with_db_down_returns_503_envelope(
-    down_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    down_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def raise_down() -> NoReturn:
         raise _connection_refused()
@@ -96,7 +96,8 @@ def test_backtest_status_with_db_down_returns_503_envelope(
 
 
 def test_genuine_sql_error_stays_a_500(
-    down_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    down_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def raise_bug() -> NoReturn:
         raise ProgrammingError("SELECT nope", {}, Exception(f"column nope {SECRET}"))
@@ -133,11 +134,13 @@ def test_paper_order_with_db_down_returns_503_and_leaks_nothing(
 
 
 def test_live_order_with_db_down_fails_closed_before_the_broker(
-    down_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    down_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    freeze_market: Callable[[bool], None],
 ) -> None:
     broker = RecordingBroker()
     monkeypatch.setattr(trading.order_execution_service, "_broker", broker)
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
+    freeze_market(True)
 
     response = down_client.post(
         "/api/trading/order",
@@ -169,7 +172,8 @@ def test_trading_orders_with_db_down_returns_503_not_an_empty_list(
 
 
 def test_health_with_db_down_reports_down_without_driver_text(
-    down_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    down_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
 
@@ -193,7 +197,8 @@ def test_health_with_db_down_reports_down_without_driver_text(
 
 
 def test_screener_preflight_with_db_down_returns_503(
-    down_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    down_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
 
@@ -354,7 +359,7 @@ def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
     service = OrderExecutionService()
     broker = RaisingBroker()
     service._broker = broker
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
     result = service.place_order(
         {
@@ -393,7 +398,7 @@ def test_db_lost_after_broker_accepts_raises_and_logs_the_unsaved_status(
     service = OrderExecutionService()
     broker = RecordingBroker()
     service._broker = broker
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
     real_commit = db_session.commit
     commits: list[int] = []
 

@@ -1582,7 +1582,10 @@ export interface paths {
     };
     /**
      * Get Positions
-     * @description Get current open positions (synced from broker in LIVE mode)
+     * @description Current open LIVE positions, freshly synced from the broker.
+     *
+     *     Fails closed: when the sync fails this answers 503 BROKER_UNAVAILABLE rather than the
+     *     stored rows, which could be stale and would read as the current book.
      */
     get: operations["get_positions_api_trading_positions_get"];
     put?: never;
@@ -1603,6 +1606,11 @@ export interface paths {
     /**
      * Get Positions Book
      * @description Unified positions view for Terminal: live + paper + net P&L.
+     *
+     *     Paper positions are local, so they are always current. When the LIVE sync fails the
+     *     live rows are the last synced ones, each marked `stale: true`, with `live_stale: true`
+     *     and `live_as_of` (the last successful sync, or null). A LIVE exit never trusts these
+     *     rows: it re-reads the broker and fails closed itself.
      */
     get: operations["get_positions_book_api_trading_positions_book_get"];
     put?: never;
@@ -5429,6 +5437,13 @@ export interface operations {
       };
       /** @description Server error */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Positions could not be refreshed from the broker (BROKER_UNAVAILABLE) */
+      503: {
         headers: {
           [name: string]: unknown;
         };

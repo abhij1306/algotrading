@@ -3,7 +3,7 @@ stop-loss order mapping, position sync during a broker outage, the margin
 check, paper fills, live modify and exit-position."""
 
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 
 import pytest
@@ -19,7 +19,6 @@ from app.services.live_market_service import live_market
 from app.services.order_execution_service import OrderExecutionService
 from app.services.position_sync_service import PositionSyncService
 from app.services.risk_manager import RiskConfig, RiskManager, RiskStatus
-from app.utils import market_hours
 
 # A quote as FyersBroker.get_quote() returns it: one entry of the Fyers "d" list.
 SBIN_QUOTE = {"n": "NSE:SBIN-EQ", "s": "ok", "v": {"lp": 812.5, "bid": 812.4, "ask": 812.6}}
@@ -866,9 +865,10 @@ def test_live_modify_preserves_order_type_and_trigger(
     params: dict[str, Any],
     payload: dict[str, Any],
     stored: tuple[str, int, float, float],
+    freeze_market: Callable[[bool], None],
 ) -> None:
     # Market open and enough margin, so the modify risk checks pass.
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
+    freeze_market(True)
     risk_client = FakeFyersClient(funds_response=funds_response(40000.0))
     monkeypatch.setattr(risk_module.risk_manager, "_broker", make_broker(risk_client))
     order = add_live_order(order_db, "FY-1", "SL", 806.0)

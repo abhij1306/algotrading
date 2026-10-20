@@ -54,6 +54,8 @@ const positionSchema = z.object({
   net_pnl: z.number().nullish().catch(undefined),
   product_type: z.string().catch(""),
   mode: z.enum(["PAPER", "LIVE"]).optional().catch(undefined),
+  // A LIVE row from a failed broker sync: the last synced values, not the current book.
+  stale: z.boolean().catch(false),
 });
 
 const positionsBookSchema = z.object({

@@ -2,7 +2,7 @@
 exposure, exits that can only reduce a position, exit idempotency, and no broker or
 exception text in client responses (trading rules 3, 5, 7 and 10)."""
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime
 from typing import Any, NoReturn
 
@@ -19,7 +19,6 @@ from app.routers import trading
 from app.services import live_exit_service as les
 from app.services import order_execution_service as oes
 from app.services.risk_manager import RiskManager, RiskStatus, risk_manager
-from app.utils import market_hours
 
 SECRET = "token=abc123 internal broker detail"
 CLIENT_ORDER_ID = "5b0e4c2a-7d1f-4e3b-9a6c-2f8d1e0b7c45"
@@ -131,8 +130,8 @@ def orders(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def market_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: True)
+def market_open(freeze_market: Callable[[bool], None]) -> None:
+    freeze_market(True)
 
 
 @pytest.fixture
@@ -220,8 +219,9 @@ def test_live_modify_blocked_by_each_risk_check_never_reaches_broker(
     setup: str,
     params: dict[str, Any],
     code: str,
+    freeze_market: Callable[[bool], None],
 ) -> None:
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: setup != "closed")
+    freeze_market(setup != "closed")
     if setup == "no_quote":
         broker.ltp = 0.0
     if setup == "quote_raises":
@@ -492,7 +492,7 @@ def test_ambiguous_live_submit_is_unconfirmed_never_rejected(
 ) -> None:
     broker.place_reply = reply  # type: ignore[assignment]
     broker.tagged_order = lookup  # type: ignore[assignment]
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
     result = service.place_order(live_market_params(), orders, mode="LIVE")
 
@@ -528,7 +528,7 @@ def test_ambiguous_live_submit_found_in_the_orderbook_records_broker_id_and_stat
 ) -> None:
     broker.place_reply = RuntimeError(SECRET)
     broker.tagged_order = {"order_id": "B-77", "status": found_status}
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
     result = service.place_order(live_market_params(), orders, mode="LIVE")
 
@@ -555,7 +555,7 @@ def test_live_place_rejection_drops_the_raw_broker_reply(
         "message": "RMS: margin shortfall",
         "details": {"s": "error", "raw": SECRET},
     }
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
     params = {
         "symbol": "SBIN",
         "side": "BUY",
@@ -740,8 +740,9 @@ def test_exit_with_market_closed_never_reaches_broker(
     exits: les.LiveExitService,
     broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: Callable[[bool], None],
 ) -> None:
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: False)
+    freeze_market(False)
 
     result = run_exit(exits, orders)
 
@@ -869,9 +870,10 @@ def test_exit_retry_is_deduplicated_even_after_the_market_closes(
     exits: les.LiveExitService,
     broker: FakeBroker,
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: Callable[[bool], None],
 ) -> None:
     run_exit(exits, orders)
-    monkeypatch.setattr(market_hours, "is_market_hours", lambda: False)
+    freeze_market(False)
 
     retry = run_exit(exits, orders)
 

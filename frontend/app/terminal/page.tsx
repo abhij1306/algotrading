@@ -372,6 +372,12 @@ function PositionsPanel({
         </span>
       </div>
       {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
+      {positions.some((p) => p.stale) && (
+        <div className="mb-2 text-xs text-amber-400">
+          Broker unavailable: live positions show the last synced values and cannot be squared until
+          it reconnects.
+        </div>
+      )}
       <table className="w-full text-xs">
         <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
           <tr>
@@ -388,7 +394,10 @@ function PositionsPanel({
         </thead>
         <tbody>
           {positions.map((pos) => (
-            <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
+            <tr
+              key={`${pos.mode}-${pos.id}`}
+              className={`border-b border-border/60 ${pos.stale || positionsError ? "opacity-50" : ""}`}
+            >
               <td className="py-1 pr-2">{pos.symbol}</td>
               <td className="py-1 pr-2">{pos.mode || "LIVE"}</td>
               <td className="py-1 pr-2">{pos.net_qty >= 0 ? "LONG" : "SHORT"}</td>
@@ -412,7 +421,7 @@ function PositionsPanel({
                   size="sm"
                   variant="secondary"
                   className="h-6 px-2 text-xs"
-                  disabled={squaring}
+                  disabled={squaring || pos.stale}
                   onClick={() => squarePosition(pos)}
                 >
                   Square

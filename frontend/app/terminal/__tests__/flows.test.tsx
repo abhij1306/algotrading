@@ -61,6 +61,7 @@ function stubClientOrderIds() {
 }
 
 let paperPositions: Record<string, unknown>[] = [];
+let livePositions: Record<string, unknown>[] = [];
 // Order POSTs that fail as a dropped connection before any response arrives.
 let orderNetworkFailures = 0;
 // Order POSTs answered 200 with a body cut off mid-JSON.
@@ -84,7 +85,7 @@ function respond(url: string): Response {
   }
   if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
   if (url.includes("/api/trading/positions/book")) {
-    return Response.json({ live_positions: [], paper_positions: paperPositions });
+    return Response.json({ live_positions: livePositions, paper_positions: paperPositions });
   }
   if (url.includes(ORDER_PATH)) return Response.json(orderResult);
   return Response.json([]);
@@ -308,6 +309,7 @@ describe("terminal data", () => {
 
   beforeEach(() => {
     paperPositions = [];
+    livePositions = [];
     squareResult = { status: "SUCCESS" };
     squareNetworkFailures = 0;
     calls = installFetch();
@@ -387,6 +389,27 @@ describe("terminal data", () => {
 
     const square = await screen.findByRole("button", { name: "Square" });
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
+  });
+
+  it("greys a stale LIVE position, blocks its square-off and says the broker is unavailable", async () => {
+    livePositions = [{ ...OPEN_POSITION, mode: "LIVE", stale: true }];
+    paperPositions = [{ ...OPEN_POSITION, id: 8, symbol: "INFY" }];
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    expect(
+      await screen.findByText(
+        "Broker unavailable: live positions show the last synced values and cannot be squared until it reconnects.",
+      ),
+    ).toBeInTheDocument();
+    const [live, paper] = screen.getAllByRole("button", { name: "Square" });
+    expect(live.closest("tr")?.textContent).toBe("SBINLIVELONG10790.00800.00100.00100.00Square");
+    expect(live).toBeDisabled();
+    expect(live.closest("tr")).toHaveClass("opacity-50");
+    expect(paper.closest("tr")?.textContent).toBe("INFYPAPERLONG10790.00800.00100.00100.00Square");
+    expect(paper).toBeEnabled();
+    expect(paper.closest("tr")).not.toHaveClass("opacity-50");
   });
 
   it("lists open positions and drops a squared one", async () => {

@@ -17,7 +17,9 @@ from pydantic import UUID4, BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..exceptions import BrokerUnavailableApiError
 from ..models.live_order import LiveOrder
+from ..models.live_position import LIVE_ACCOUNT_USER_ID
 from ..services.execution import paper_book
 from ..services.live_exit_service import live_exit_service
 from ..services.live_market_service import live_market
@@ -37,6 +39,10 @@ DBSession = Annotated[Session, Depends(get_db)]
 BAD_REQUEST_RESPONSE = {400: {"description": "Invalid request"}}
 AUTH_RESPONSE = {401: {"description": "Authentication required"}}
 SERVER_ERROR_RESPONSE = {500: {"description": "Server error"}}
+BROKER_UNAVAILABLE_RESPONSE = {
+    503: {"description": "Positions could not be refreshed from the broker (BROKER_UNAVAILABLE)"}
+}
+LIVE_POSITIONS_UNAVAILABLE_MESSAGE = "Live positions could not be refreshed from the broker"
 
 # ============== Pydantic Models ==============
 
@@ -426,18 +432,38 @@ def get_orders(db: DBSession, limit: int = 50) -> list[LiveOrder]:
 # ============== Position Endpoints ==============
 
 
-@router.get("/positions", responses=SERVER_ERROR_RESPONSE)
+def _sync_live_positions() -> bool:
+    """Refresh LIVE positions from the broker. False when the sync failed, in which case
+    the stored rows are whatever the last successful sync left."""
+    try:
+        result = position_sync_service.sync_positions()
+    except Exception:
+        # A broker plugin should raise BrokerUnavailableError, but any failure means the
+        # stored rows were not refreshed. The error text stays in the server log.
+        logger.exception("Live position sync raised")
+        return False
+    if result.get("status") == "success":
+        return True
+    logger.warning(
+        "Live position sync failed: %s", safe_log_value(result.get("code") or "SYNC_FAILED")
+    )
+    return False
+
+
+@router.get("/positions", responses={**SERVER_ERROR_RESPONSE, **BROKER_UNAVAILABLE_RESPONSE})
 def get_positions(
     db: DBSession,
-    user_id: Annotated[str, Query(description="User ID")] = "default_user",
+    user_id: Annotated[str, Query(description="User ID")] = LIVE_ACCOUNT_USER_ID,
 ) -> list[PositionResponse]:
-    """Get current open positions (synced from broker in LIVE mode)"""
-    try:
-        # Sync positions first to ensure fresh data
-        position_sync_service.sync_positions()
+    """Current open LIVE positions, freshly synced from the broker.
 
-        positions = position_sync_service.get_positions(user_id)
-        return positions
+    Fails closed: when the sync fails this answers 503 BROKER_UNAVAILABLE rather than the
+    stored rows, which could be stale and would read as the current book.
+    """
+    if not _sync_live_positions():
+        raise BrokerUnavailableApiError(LIVE_POSITIONS_UNAVAILABLE_MESSAGE)
+    try:
+        return position_sync_service.get_positions(user_id)
     except Exception as e:
         logger.exception("Error fetching positions")
         raise HTTPException(status_code=500, detail="Error fetching positions") from e
@@ -447,23 +473,33 @@ def get_positions(
 def get_positions_book(
     db: DBSession,
 ) -> dict[str, Any]:
-    """Unified positions view for Terminal: live + paper + net P&L."""
+    """Unified positions view for Terminal: live + paper + net P&L.
+
+    Paper positions are local, so they are always current. When the LIVE sync fails the
+    live rows are the last synced ones, each marked `stale: true`, with `live_stale: true`
+    and `live_as_of` (the last successful sync, or null). A LIVE exit never trusts these
+    rows: it re-reads the broker and fails closed itself.
+    """
     try:
-        position_sync_service.sync_positions()
+        live_fresh = _sync_live_positions()
         live_positions = position_sync_service.get_positions(SINGLE_USER_ID)
         for pos in live_positions:
             unrealized = _to_float(pos.get("unrealized_pnl"), 0.0)
             pos["realized_pnl"] = 0.0
             pos["net_pnl"] = round(unrealized, 2)
             pos["mode"] = "LIVE"
+            pos["stale"] = not live_fresh
 
         paper_positions = _build_paper_positions(db, SINGLE_USER_ID)
         live_net = round(sum(_to_float(p.get("net_pnl"), 0.0) for p in live_positions), 2)
         paper_net = round(sum(_to_float(p.get("net_pnl"), 0.0) for p in paper_positions), 2)
 
+        last_sync = position_sync_service.last_sync
         return {
             "live_positions": live_positions,
             "paper_positions": paper_positions,
+            "live_stale": not live_fresh,
+            "live_as_of": last_sync.isoformat() if last_sync else None,
             "net_pnl_live": live_net,
             "net_pnl_paper": paper_net,
             "net_pnl_total": round(live_net + paper_net, 2),
@@ -592,10 +628,11 @@ def check_risk(req: RiskCheckRequest, db: DBSession) -> RiskCheckResponse:
     """
     try:
         order_params = req.model_dump()
-        result = risk_manager.pre_trade_check(order_params, db)
+        result = risk_manager.pre_trade_check(order_params, db, user_id=LIVE_ACCOUNT_USER_ID)
 
+        # A WARNING can still trade, with a risk_override_reason on the order.
         return RiskCheckResponse(
-            can_trade=result.status == RiskStatus.PASS,
+            can_trade=result.status != RiskStatus.FAIL,
             status=result.status.value,
             message=result.message,
             code=result.code,
@@ -613,7 +650,7 @@ def check_risk(req: RiskCheckRequest, db: DBSession) -> RiskCheckResponse:
 def get_exposure_summary() -> ExposureSummaryResponse:
     """Get current exposure and risk summary"""
     try:
-        summary = risk_manager.get_exposure_summary()
+        summary = risk_manager.get_exposure_summary(LIVE_ACCOUNT_USER_ID)
         return ExposureSummaryResponse(**summary)
     except Exception as e:
         logger.exception("Error fetching exposure")

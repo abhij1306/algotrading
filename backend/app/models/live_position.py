@@ -2,6 +2,11 @@ from sqlalchemy import Column, Date, DateTime, Float, Integer, String, func
 
 from ..base import Base
 
+# Positions synced from the broker are stored under this user id: there is one Fyers
+# account. Risk checks read the daily loss for it. Lane 3 task 5 replaces it with the
+# current_user_id dependency.
+LIVE_ACCOUNT_USER_ID = "default_user"
+
 
 class LivePosition(Base):
     """
@@ -12,7 +17,7 @@ class LivePosition(Base):
     __tablename__ = "live_positions"
 
     id = Column(String(100), primary_key=True)  # Composite ID: UID-SYMBOL-PRODUCT
-    user_id = Column(String(50), default="default_user")
+    user_id = Column(String(50), default=LIVE_ACCOUNT_USER_ID)
 
     symbol = Column(String(50), nullable=False, index=True)
     fyers_symbol = Column(String(80))

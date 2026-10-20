@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
-from ..models.live_position import LivePosition
+from ..models.live_position import LIVE_ACCOUNT_USER_ID, LivePosition
 from ..utils.cache import cache_with_ttl
 from .symbol_master import symbol_master
 
@@ -37,6 +37,11 @@ class PositionSyncService:
         self._sync_interval = 5  # seconds
         self._broker = None
         self._last_sync: datetime | None = None
+
+    @property
+    def last_sync(self) -> datetime | None:
+        """When positions were last synced from the broker successfully; None if never."""
+        return self._last_sync
 
     def _get_broker(self) -> "FyersBroker":
         """Lazy load Fyers broker"""
@@ -101,7 +106,7 @@ class PositionSyncService:
         """Upsert one broker position. Returns True if an existing row was updated."""
         symbol = pos["symbol"]
         product_type = pos["product_type"]
-        position_id = f"default_user-{symbol}-{product_type}"
+        position_id = f"{LIVE_ACCOUNT_USER_ID}-{symbol}-{product_type}"
         side = self._position_side(pos["side"], symbol)
         qty = pos["quantity"]
         net_qty = qty if side == "LONG" else -qty
@@ -120,7 +125,7 @@ class PositionSyncService:
         db.add(
             LivePosition(
                 id=position_id,
-                user_id="default_user",
+                user_id=LIVE_ACCOUNT_USER_ID,
                 symbol=symbol_master.to_db(symbol),
                 fyers_symbol=symbol,
                 product_type=product_type,

@@ -54,7 +54,7 @@ def broker() -> RecordingBroker:
 def service(broker: RecordingBroker, monkeypatch: pytest.MonkeyPatch) -> oes.OrderExecutionService:
     svc = oes.OrderExecutionService()
     svc._broker = broker
-    monkeypatch.setattr(svc, "_run_live_risk_checks", lambda params, db: None)
+    monkeypatch.setattr(svc, "_run_live_risk_checks", lambda params, db: (None, []))
     # No market-data tick: a PAPER LIMIT order fills against its own limit price.
     monkeypatch.setattr(oes, "latest_tick_price", lambda db_symbol: 0.0)
     return svc
@@ -120,8 +120,10 @@ def test_live_retry_is_deduplicated_even_when_the_risk_check_would_now_fail(
 ) -> None:
     service.place_order(order_params(), orders, mode="LIVE")
 
-    def daily_limit_reached(params: dict[str, Any], db: Session) -> dict[str, Any]:
-        return {"status": "ERROR", "message": "Risk Check Failed: limit", "code": "X"}
+    def daily_limit_reached(
+        params: dict[str, Any], db: Session
+    ) -> tuple[dict[str, Any], list[str]]:
+        return {"status": "ERROR", "message": "Risk Check Failed: limit", "code": "X"}, []
 
     monkeypatch.setattr(service, "_run_live_risk_checks", daily_limit_reached)
 
