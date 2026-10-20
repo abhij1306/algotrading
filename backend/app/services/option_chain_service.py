@@ -307,25 +307,25 @@ class OptionChainService:
     def _extract_expiries(self, raw_data: dict) -> list[date]:
         expiries: list[date] = []
 
+        def add(exp: date | None) -> None:
+            if exp and exp not in expiries:
+                expiries.append(exp)
+
         # New schema: data.expiryData = [{date:"24-02-2026", expiry:"1771927200"}, ...]
         expiry_data = raw_data.get("expiryData", [])
         if isinstance(expiry_data, list):
             for item in expiry_data:
-                if not isinstance(item, dict):
-                    continue
-                exp = self._parse_expiry_value(item.get("date")) or self._parse_expiry_value(
-                    item.get("expiry")
-                )
-                if exp and exp not in expiries:
-                    expiries.append(exp)
+                if isinstance(item, dict):
+                    add(
+                        self._parse_expiry_value(item.get("date"))
+                        or self._parse_expiry_value(item.get("expiry"))
+                    )
 
         # Legacy schema fallback
         for strike_data in raw_data.values():
             if isinstance(strike_data, dict):
-                for exp_date_str in strike_data.keys():
-                    exp = self._parse_expiry_value(exp_date_str)
-                    if exp and exp not in expiries:
-                        expiries.append(exp)
+                for exp_date_str in strike_data:
+                    add(self._parse_expiry_value(exp_date_str))
 
         expiries.sort()
         return expiries
@@ -359,40 +359,62 @@ class OptionChainService:
         # New schema parser: data.optionsChain is a flat list with CE/PE rows
         options_chain = raw_data.get("optionsChain", [])
         if isinstance(options_chain, list) and options_chain:
-            strikes_map: dict[float, OptionStrike] = {}
-            for row in options_chain:
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    strike = float(row.get("strike_price"))
-                except (TypeError, ValueError):
-                    continue
+            return self._parse_flat_chain(
+                options_chain, selected_expiry, spot_price, include_greeks
+            )
+        return self._parse_legacy_chain(raw_data, selected_expiry, spot_price, include_greeks)
 
-                option_type = str(row.get("option_type", "")).upper()
-                if option_type not in {"CE", "PE"}:
-                    continue
+    @staticmethod
+    def _flat_row_key(row: object) -> tuple[float, str] | None:
+        """(strike, CE/PE) of a flat optionsChain row, or None for rows to skip."""
+        if not isinstance(row, dict):
+            return None
+        try:
+            strike = float(row.get("strike_price"))
+        except (TypeError, ValueError):
+            return None
+        option_type = str(row.get("option_type", "")).upper()
+        if option_type not in {"CE", "PE"}:
+            return None
+        return strike, option_type
 
-                slot = strikes_map.get(strike)
-                if slot is None:
-                    slot = OptionStrike(strike_price=strike)
-                    strikes_map[strike] = slot
+    def _parse_flat_chain(
+        self,
+        options_chain: list,
+        selected_expiry: date,
+        spot_price: float,
+        include_greeks: bool,
+    ) -> list[OptionStrike]:
+        strikes_map: dict[float, OptionStrike] = {}
+        for row in options_chain:
+            key = self._flat_row_key(row)
+            if key is None:
+                continue
+            strike, option_type = key
+            slot = strikes_map.setdefault(strike, OptionStrike(strike_price=strike))
+            leg = self._create_option_leg(
+                row,
+                strike=strike,
+                expiry=selected_expiry,
+                option_type=option_type,
+                spot_price=spot_price,
+                include_greeks=include_greeks,
+            )
+            if option_type == "CE":
+                slot.call = leg
+            else:
+                slot.put = leg
+        return list(strikes_map.values())
 
-                leg = self._create_option_leg(
-                    row,
-                    strike=strike,
-                    expiry=selected_expiry,
-                    option_type=option_type,
-                    spot_price=spot_price,
-                    include_greeks=include_greeks,
-                )
-                if option_type == "CE":
-                    slot.call = leg
-                else:
-                    slot.put = leg
-
-            return list(strikes_map.values())
-
-        # Legacy schema parser fallback
+    def _parse_legacy_chain(
+        self,
+        raw_data: dict,
+        selected_expiry: date,
+        spot_price: float,
+        include_greeks: bool,
+    ) -> list[OptionStrike]:
+        """Legacy schema: {strike: {"YYYY-MM-DD": {"CE": {...}, "PE": {...}}}}."""
+        expiry_key = selected_expiry.strftime("%Y-%m-%d")
         strikes: list[OptionStrike] = []
         for strike_price_str, expiries_data in raw_data.items():
             try:
@@ -400,42 +422,28 @@ class OptionChainService:
             except (TypeError, ValueError):
                 continue
 
-            expiry_key = selected_expiry.strftime("%Y-%m-%d")
             expiry_data = (
                 expiries_data.get(expiry_key, {}) if isinstance(expiries_data, dict) else {}
             )
             if not expiry_data:
                 continue
 
-            ce_data = expiry_data.get("CE", {})
-            pe_data = expiry_data.get("PE", {})
-            ce_leg = (
-                self._create_option_leg(
-                    ce_data,
+            legs = {
+                option_type: self._create_option_leg(
+                    leg_data,
                     strike_price,
                     selected_expiry,
-                    "CE",
+                    option_type,
                     spot_price,
                     include_greeks=include_greeks,
                 )
-                if ce_data
-                else None
-            )
-            pe_leg = (
-                self._create_option_leg(
-                    pe_data,
-                    strike_price,
-                    selected_expiry,
-                    "PE",
-                    spot_price,
-                    include_greeks=include_greeks,
+                for option_type in ("CE", "PE")
+                if (leg_data := expiry_data.get(option_type, {}))
+            }
+            if legs:
+                strikes.append(
+                    OptionStrike(strike_price=strike_price, call=legs.get("CE"), put=legs.get("PE"))
                 )
-                if pe_data
-                else None
-            )
-
-            if ce_leg or pe_leg:
-                strikes.append(OptionStrike(strike_price=strike_price, call=ce_leg, put=pe_leg))
         return strikes
 
     def _create_option_leg(

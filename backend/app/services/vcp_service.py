@@ -4,7 +4,8 @@ import logging
 import math
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from statistics import mean
 from typing import Any
@@ -41,6 +42,8 @@ GAP_UP_MAX_PCT = 0.02
 TRAIL_SLIPPAGE_PCT = 0.001
 BREAKOUT_VOLUME_MULTIPLIER = 1.5
 A_GRADE_BREAKOUT_VOLUME_MULTIPLIER = BREAKOUT_VOLUME_MULTIPLIER * (4.0 / 3.0)
+# Log message for a signal or trade dropped because its stop leaves no tradable risk.
+INVALID_STOP_DISTANCE = "Invalid stop distance"
 
 
 @dataclass
@@ -50,6 +53,23 @@ class RegimeSnapshot:
     close: float
     ma_200: float
     risk_pct: float
+
+
+@dataclass
+class _VCPBacktestState:
+    """Inputs and running results of one VCPService.run_backtest call."""
+
+    capital: float
+    symbol_frames: dict[str, pd.DataFrame]
+    trading_dates: list[date]
+    meta: dict[str, dict[str, str]]
+    benchmark: pd.DataFrame
+    benchmark_start: float
+    members_on: Callable[[date], tuple[list[str], str]]
+    trades: list[dict[str, Any]] = field(default_factory=list)
+    equity_curve: list[dict[str, Any]] = field(default_factory=list)
+    benchmark_curve: list[dict[str, Any]] = field(default_factory=list)
+    modes: set[str] = field(default_factory=set)
 
 
 class VCPService:
@@ -287,21 +307,9 @@ class VCPService:
                     streak = 0
         return True
 
-    def _analyze_pattern(
-        self,
-        frame: pd.DataFrame,
-        rs_rating: int,
-        company_meta: dict[str, str],
-        regime: RegimeSnapshot,
-        capital: float,
-    ) -> dict[str, Any] | None:
-        if len(frame) < 260:
-            return None
-
-        stage2_count, stage2_values = self._stage2_metrics(frame)
-        if stage2_count < 5:
-            return None
-
+    @staticmethod
+    def _base_window(frame: pd.DataFrame) -> tuple[pd.DataFrame, float] | None:
+        """(base from the 60-day high onward, base depth %), or None if not a valid base."""
         base_window = frame.tail(60).reset_index(drop=True)
         base_high_idx = int(base_window["close_ref"].idxmax())
         base_df = base_window.iloc[base_high_idx:].reset_index(drop=True)
@@ -313,7 +321,10 @@ class VCPService:
         base_depth = ((base_high - base_low) / base_high) * 100 if base_high > 0 else 100.0
         if base_depth > 30.0:
             return None
+        return base_df, base_depth
 
+    def _find_contractions(self, base_df: pd.DataFrame) -> list[dict[str, Any]]:
+        """Successive pivot-high to pivot-low pullbacks in the base (at most four)."""
         pivot_highs, pivot_lows = self._pivot_points(base_df, window=3)
         current_high_idx = 0
         current_high_price = float(base_df["close_ref"].iloc[0])
@@ -343,18 +354,27 @@ class VCPService:
                 break
             current_high_idx = next_highs[0]
             current_high_price = float(base_df["high"].iloc[current_high_idx])
+        return contractions
 
-        depths = [round(item["depth_pct"], 2) for item in contractions]
+    @staticmethod
+    def _contractions_tighten(depths: list[float]) -> bool:
+        """2-4 contractions, first <= 25%, second <= 15%, last <= 10%, each shallower."""
         if not (2 <= len(depths) <= 4):
-            return None
+            return False
         if depths[0] > 25.0 or depths[-1] > 10.0:
-            return None
+            return False
         if len(depths) > 1 and depths[1] > 15.0:
-            return None
-        if any(depths[idx] >= depths[idx - 1] for idx in range(1, len(depths))):
-            return None
+            return False
+        return not any(depths[idx] >= depths[idx - 1] for idx in range(1, len(depths)))
 
-        final_contraction = contractions[-1]
+    @staticmethod
+    def _volume_dry_up(
+        frame: pd.DataFrame, base_df: pd.DataFrame, final_contraction: dict[str, Any]
+    ) -> tuple[float, float, float] | None:
+        """(50-day average volume, final-contraction volume as % of it, base volume slope).
+
+        None unless volume dried up to at most 40% and trends down across the base.
+        """
         final_df = base_df.iloc[
             final_contraction["high_idx"] : final_contraction["low_idx"] + 1
         ].copy()
@@ -372,11 +392,38 @@ class VCPService:
         slope = np.polyfit(np.arange(len(base_df)), base_df["volume"].to_numpy(dtype=float), 1)[0]
         if slope >= 0:
             return None
+        return avg_volume_50, volume_dry_up_pct, slope
 
-        latest = frame.iloc[-1]
-        pivot_high = float(final_contraction["high_price"])
-        final_contraction_low = float(final_contraction["low_price"])
-        stop_level = round(final_contraction_low * (1.0 - STOP_OFFSET_PCT), 2)
+    @staticmethod
+    def _signal_shares(
+        symbol: str, capital: float, risk_pct: float, pivot_high: float, stop_level: float
+    ) -> int | None:
+        """Shares risking `risk_pct` of capital, capped at MAX_POSITION_CAP; None if zero."""
+        risk_distance = pivot_high - stop_level
+        shares = int(math.floor((capital * risk_pct) / risk_distance))
+        if shares > 0:
+            shares = min(shares, int(math.floor((capital * MAX_POSITION_CAP) / pivot_high)))
+        if shares > 0:
+            return shares
+        logger.warning(
+            INVALID_STOP_DISTANCE,
+            extra={
+                "symbol": symbol,
+                "capital": round(capital, 2),
+                "risk_pct": risk_pct,
+                "pivot_high": round(pivot_high, 2),
+                "stop_level": round(stop_level, 2),
+                "risk_distance": round(risk_distance, 4),
+                "shares": shares,
+            },
+        )
+        return None
+
+    @staticmethod
+    def _breakout_state(
+        latest: pd.Series, pivot_high: float, avg_volume_50: float
+    ) -> tuple[bool, float, float]:
+        """(is breakout, breakout volume multiple, close position in the day's range)."""
         breakout_volume_mult = float(latest["volume"] / avg_volume_50) if avg_volume_50 > 0 else 0.0
         day_range = float(latest["high"] - latest["low"])
         close_position = (
@@ -387,6 +434,65 @@ class VCPService:
             and breakout_volume_mult >= BREAKOUT_VOLUME_MULTIPLIER
             and close_position >= 0.75
         )
+        return is_breakout, breakout_volume_mult, close_position
+
+    @staticmethod
+    def _grade(
+        rs_rating: int,
+        final_depth: float,
+        volume_dry_up_pct: float,
+        is_breakout: bool,
+        breakout_volume_mult: float,
+    ) -> str:
+        if (
+            rs_rating >= 90
+            and final_depth <= 5.0
+            and volume_dry_up_pct <= 40.0
+            and ((not is_breakout) or breakout_volume_mult >= A_GRADE_BREAKOUT_VOLUME_MULTIPLIER)
+        ):
+            return "A"
+        if rs_rating >= 80 and final_depth <= 10.0 and volume_dry_up_pct <= 60.0:
+            return "B"
+        return "C"
+
+    def _analyze_pattern(
+        self,
+        frame: pd.DataFrame,
+        rs_rating: int,
+        company_meta: dict[str, str],
+        regime: RegimeSnapshot,
+        capital: float,
+    ) -> dict[str, Any] | None:
+        if len(frame) < 260:
+            return None
+
+        stage2_count, stage2_values = self._stage2_metrics(frame)
+        if stage2_count < 5:
+            return None
+
+        base = self._base_window(frame)
+        if base is None:
+            return None
+        base_df, base_depth = base
+
+        contractions = self._find_contractions(base_df)
+        depths = [round(item["depth_pct"], 2) for item in contractions]
+        if not self._contractions_tighten(depths):
+            return None
+
+        final_contraction = contractions[-1]
+        volume_profile = self._volume_dry_up(frame, base_df, final_contraction)
+        if volume_profile is None:
+            return None
+        avg_volume_50, volume_dry_up_pct, slope = volume_profile
+
+        latest = frame.iloc[-1]
+        pivot_high = float(final_contraction["high_price"])
+        final_contraction_low = float(final_contraction["low_price"])
+        stop_level = round(final_contraction_low * (1.0 - STOP_OFFSET_PCT), 2)
+        is_breakout, breakout_volume_mult, close_position = self._breakout_state(
+            latest, pivot_high, avg_volume_50
+        )
 
         if rs_rating < 80 or not self._has_no_overhead_resistance(frame, pivot_high):
             return None
@@ -394,7 +500,7 @@ class VCPService:
         risk_distance = pivot_high - stop_level
         if risk_distance <= 0:
             logger.warning(
-                "Invalid stop distance",
+                INVALID_STOP_DISTANCE,
                 extra={
                     "symbol": str(frame["symbol"].iloc[-1]),
                     "pivot_high": round(pivot_high, 2),
@@ -405,33 +511,14 @@ class VCPService:
             )
             return None
         stop_pct = (risk_distance / pivot_high) * 100 if pivot_high > 0 else 0.0
-        grade = "C"
-        if (
-            rs_rating >= 90
-            and depths[-1] <= 5.0
-            and volume_dry_up_pct <= 40.0
-            and ((not is_breakout) or breakout_volume_mult >= A_GRADE_BREAKOUT_VOLUME_MULTIPLIER)
-        ):
-            grade = "A"
-        elif rs_rating >= 80 and depths[-1] <= 10.0 and volume_dry_up_pct <= 60.0:
-            grade = "B"
+        grade = self._grade(
+            rs_rating, depths[-1], volume_dry_up_pct, is_breakout, breakout_volume_mult
+        )
 
-        shares = int(math.floor((capital * regime.risk_pct) / risk_distance))
-        if shares > 0:
-            shares = min(shares, int(math.floor((capital * MAX_POSITION_CAP) / pivot_high)))
-        if shares <= 0:
-            logger.warning(
-                "Invalid stop distance",
-                extra={
-                    "symbol": str(frame["symbol"].iloc[-1]),
-                    "capital": round(capital, 2),
-                    "risk_pct": regime.risk_pct,
-                    "pivot_high": round(pivot_high, 2),
-                    "stop_level": round(stop_level, 2),
-                    "risk_distance": round(risk_distance, 4),
-                    "shares": shares,
-                },
-            )
+        shares = self._signal_shares(
+            str(frame["symbol"].iloc[-1]), capital, regime.risk_pct, pivot_high, stop_level
+        )
+        if shares is None:
             return None
         position_value = shares * pivot_high
         two_r_target = pivot_high + (2.0 * risk_distance)
@@ -977,6 +1064,55 @@ class VCPService:
                 return item
         return None
 
+    @staticmethod
+    def _simulate_trade_exit(
+        future: pd.DataFrame,
+        entry_open: float,
+        stop_price: float,
+        risk_distance: float,
+        shares: int,
+    ) -> tuple[float, float, date, str]:
+        """Walk the bars from entry: stop, half off at 2R (stop to breakeven), 21-EMA trail.
+
+        Returns (realized P&L, exit price, exit date, exit reason); a position still open
+        on the last bar is closed at that bar's close.
+        """
+        two_r_price = entry_open + (2.0 * risk_distance)
+        future["ema_21"] = future["close_ref"].ewm(span=21, adjust=False).mean()
+
+        sold_half = False
+        shares_remaining = shares
+        realized = 0.0
+        exit_reason = "TRAIL_STOP_EXIT"
+        exit_price = float(future.iloc[-1]["close"])
+        exit_date = future.iloc[-1]["date"]
+        for idx, row in future.iterrows():
+            low = float(row["low"])
+
+            if low <= stop_price:
+                exit_price = stop_price * (1.0 - TRAIL_SLIPPAGE_PCT)
+                exit_date = row["date"]
+                exit_reason = "BREAKEVEN_EXIT" if sold_half else "STOPPED_OUT"
+                break
+
+            if not sold_half and float(row["high"]) >= two_r_price:
+                half = math.ceil(shares / 2)
+                realized += half * ((two_r_price * (1.0 - TRAIL_SLIPPAGE_PCT)) - entry_open)
+                shares_remaining -= half
+                sold_half = True
+                stop_price = entry_open
+                continue
+
+            if sold_half and float(row["close"]) < float(row["ema_21"]):
+                next_idx = min(idx + 1, len(future) - 1)
+                exit_price = float(future.iloc[next_idx]["open"]) * (1.0 - TRAIL_SLIPPAGE_PCT)
+                exit_date = future.iloc[next_idx]["date"]
+                exit_reason = "TRAIL_STOP_EXIT"
+                break
+
+        realized += shares_remaining * (exit_price - entry_open)
+        return realized, exit_price, exit_date, exit_reason
+
     def _build_backtest_trade(
         self,
         signal: dict[str, Any],
@@ -1001,7 +1137,7 @@ class VCPService:
         risk_distance = entry_open - stop_price
         if risk_distance <= 0:
             logger.warning(
-                "Invalid stop distance",
+                INVALID_STOP_DISTANCE,
                 extra={
                     "symbol": signal["symbol"],
                     "entry_price": round(entry_open, 2),
@@ -1016,7 +1152,7 @@ class VCPService:
         shares = max(0, min(shares, int(math.floor((capital * MAX_POSITION_CAP) / entry_open))))
         if shares <= 0:
             logger.warning(
-                "Invalid stop distance",
+                INVALID_STOP_DISTANCE,
                 extra={
                     "symbol": signal["symbol"],
                     "entry_price": round(entry_open, 2),
@@ -1029,47 +1165,10 @@ class VCPService:
             )
             return None
 
-        two_r_price = entry_open + (2.0 * risk_distance)
         future = symbol_frame[symbol_frame["date"] >= entry_date].copy().reset_index(drop=True)
-        future["ema_21"] = future["close_ref"].ewm(span=21, adjust=False).mean()
-
-        sold_half = False
-        shares_remaining = shares
-        realized = 0.0
-        exit_reason = "TRAIL_STOP_EXIT"
-        exit_price = float(future.iloc[-1]["close"])
-        exit_date = future.iloc[-1]["date"]
-        for idx, row in future.iterrows():
-            high = float(row["high"])
-            low = float(row["low"])
-
-            if low <= stop_price:
-                exit_price = stop_price * (1.0 - TRAIL_SLIPPAGE_PCT)
-                exit_date = row["date"]
-                exit_reason = "BREAKEVEN_EXIT" if sold_half else "STOPPED_OUT"
-                realized += shares_remaining * (exit_price - entry_open)
-                shares_remaining = 0
-                break
-
-            if not sold_half and high >= two_r_price and low > stop_price:
-                half = math.ceil(shares / 2)
-                realized += half * ((two_r_price * (1.0 - TRAIL_SLIPPAGE_PCT)) - entry_open)
-                shares_remaining -= half
-                sold_half = True
-                stop_price = entry_open
-                continue
-
-            if sold_half and float(row["close"]) < float(row["ema_21"]):
-                next_idx = min(idx + 1, len(future) - 1)
-                exit_price = float(future.iloc[next_idx]["open"]) * (1.0 - TRAIL_SLIPPAGE_PCT)
-                exit_date = future.iloc[next_idx]["date"]
-                exit_reason = "TRAIL_STOP_EXIT"
-                realized += shares_remaining * (exit_price - entry_open)
-                shares_remaining = 0
-                break
-
-        if shares_remaining > 0:
-            realized += shares_remaining * (exit_price - entry_open)
+        realized, exit_price, exit_date, exit_reason = self._simulate_trade_exit(
+            future, entry_open, stop_price, risk_distance, shares
+        )
 
         pnl_pct = (realized / (entry_open * shares)) * 100.0 if shares > 0 else 0.0
         r_multiple = realized / (risk_distance * shares) if shares > 0 else 0.0
@@ -1092,6 +1191,177 @@ class VCPService:
             "signal_date": signal_date.isoformat(),
         }
 
+    def _load_backtest_frames(
+        self, db: Session, universe: str, start_date: date, end_date: date
+    ) -> tuple[dict[str, pd.DataFrame], list[date]]:
+        """(per-symbol history frames, trading dates in range) for a backtest."""
+        # Load everyone who was a member at any point in the range, not just the
+        # end-date members, so names dropped from the index stay tradable until they left.
+        range_symbols = self._constituents_in_range(db, universe, start_date, end_date)
+        combined = self._load_symbol_history(
+            symbols=range_symbols,
+            start_date=(pd.Timestamp(start_date) - pd.Timedelta(days=420)).date(),
+            end_date=end_date,
+        )
+        symbol_frames = {
+            symbol: frame.sort_values("date").reset_index(drop=True)
+            for symbol, frame in combined.groupby("symbol")
+        }
+        trading_dates = sorted(
+            {
+                row_date
+                for frame in symbol_frames.values()
+                for row_date in frame[(frame["date"] >= start_date) & (frame["date"] <= end_date)][
+                    "date"
+                ]
+                .unique()
+                .tolist()
+            }
+        )
+        if not trading_dates:
+            raise ValueError("No trading dates available in the selected range")
+        return symbol_frames, trading_dates
+
+    @staticmethod
+    def _realized_pnl_through(trades: list[dict[str, Any]], as_of: date) -> float:
+        return sum(
+            float(trade["pnl_inr"])
+            for trade in trades
+            if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= as_of
+        )
+
+    @staticmethod
+    def _record_curve_point(run: _VCPBacktestState, as_of: date, realized_pnl: float) -> None:
+        """Append the equity point and, when the index traded that day, the benchmark point."""
+        run.equity_curve.append(
+            {"date": as_of.isoformat(), "equity": round(run.capital + realized_pnl, 2)}
+        )
+        if run.benchmark.empty:
+            return
+        bench_row = run.benchmark[run.benchmark["date"] == as_of]
+        if bench_row.empty:
+            return
+        run.benchmark_curve.append(
+            {
+                "date": as_of.isoformat(),
+                "equity": round(
+                    run.capital * (float(bench_row.iloc[0]["close"]) / run.benchmark_start), 2
+                ),
+            }
+        )
+
+    def _breakout_candidates(
+        self,
+        run: _VCPBacktestState,
+        trading_date: date,
+        constituents: set[str],
+        regime: RegimeSnapshot,
+        available_capital: float,
+    ) -> list[dict[str, Any]]:
+        """Breakout signals on `trading_date` among members not already in a trade."""
+        day_frames = {
+            symbol: frame[frame["date"] <= trading_date].copy()
+            for symbol, frame in run.symbol_frames.items()
+            if symbol in constituents and not frame[frame["date"] <= trading_date].empty
+        }
+        rs_map = self._compute_rs_map(day_frames)
+        active_symbols = {
+            trade["symbol"]
+            for trade in run.trades
+            if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() >= trading_date
+        }
+        candidates: list[dict[str, Any]] = []
+        for symbol, frame in day_frames.items():
+            if len(frame) < 260 or frame["date"].max() != trading_date or symbol in active_symbols:
+                continue
+            analysis = self._analyze_pattern(
+                frame=frame,
+                rs_rating=rs_map.get(symbol, 0),
+                company_meta=run.meta.get(symbol, {"name": symbol, "sector": "Unknown"}),
+                regime=regime,
+                capital=available_capital,
+            )
+            if analysis and analysis["is_breakout"]:
+                candidates.append(analysis)
+        return candidates
+
+    def _backtest_day(self, run: _VCPBacktestState, trading_date: date) -> None:
+        """Scan one session, enter up to five next-session trades, record the curves."""
+        completed_pnl = self._realized_pnl_through(run.trades, trading_date)
+        available_capital = run.capital + completed_pnl
+        constituents_list, date_mode = run.members_on(trading_date)
+        run.modes.add(
+            "indicative_pre_history" if date_mode.startswith("indicative_pre_") else date_mode
+        )
+        regime = self.get_regime(trading_date)
+        candidates = self._breakout_candidates(
+            run, trading_date, set(constituents_list), regime, available_capital
+        )
+
+        next_date = self._next_trading_date(run.trading_dates, trading_date)
+        if next_date is None:
+            return
+        # Trades enter on next_date, so the symbol must still be a member then.
+        entry_members = set(run.members_on(next_date)[0])
+        candidates = [signal for signal in candidates if signal["symbol"] in entry_members]
+        for signal in sorted(candidates, key=lambda item: (item["grade"], -item["rs_rating"]))[:5]:
+            trade = self._build_backtest_trade(
+                signal=signal,
+                symbol_frame=run.symbol_frames[signal["symbol"]],
+                signal_date=trading_date,
+                entry_date=next_date,
+                capital=available_capital,
+                risk_pct=regime.risk_pct,
+            )
+            if trade is None or trade.get("status") == "SKIPPED_GAP_UP":
+                continue
+            run.trades.append(trade)
+        self._record_curve_point(run, trading_date, completed_pnl)
+
+    @staticmethod
+    def _backtest_metrics(
+        run: _VCPBacktestState, eq_series: pd.Series, drawdown: pd.Series, mode: str
+    ) -> dict[str, Any]:
+        capital = run.capital
+        trades = run.trades
+        returns = eq_series.pct_change().fillna(0.0)
+        ann_return = bt_metrics.annualized_return(
+            float(eq_series.iloc[-1]), capital, len(eq_series)
+        )
+        sharpe = bt_metrics.sharpe_excess_cagr(ann_return, returns, risk_free=0.065)
+        pnl_stats = bt_metrics.trade_stats([trade["pnl_inr"] for trade in trades])
+        benchmark_return = (
+            ((run.benchmark_curve[-1]["equity"] / capital) - 1.0) * 100.0
+            if run.benchmark_curve
+            else 0.0
+        )
+        return {
+            "initial_capital": round(capital, 2),
+            "final_equity": round(float(eq_series.iloc[-1]), 2),
+            "total_return_pct": round(
+                bt_metrics.total_return(float(eq_series.iloc[-1]), capital) * 100.0, 2
+            ),
+            "cagr_pct": round(ann_return * 100.0, 2),
+            "max_drawdown_pct": round(abs(bt_metrics.max_drawdown(drawdown)) * 100.0, 2),
+            "sharpe_ratio": round(float(sharpe), 4),
+            "win_rate_pct": round(pnl_stats.win_rate * 100.0, 2),
+            "avg_win_inr": round(pnl_stats.avg_win, 2),
+            "avg_loss_inr": round(pnl_stats.avg_loss, 2),
+            "profit_factor": round(pnl_stats.profit_factor, 2),
+            "total_trades": len(trades),
+            "avg_hold_days": round(mean([trade["hold_days"] for trade in trades]), 2)
+            if trades
+            else 0.0,
+            "avg_r_multiple": round(mean([trade["r_multiple"] for trade in trades]), 2)
+            if trades
+            else 0.0,
+            "benchmark_return_pct": round(benchmark_return, 2),
+            "alpha_pct": round((ann_return * 100.0) - benchmark_return, 2),
+            "survivorship_bias_label": "BIAS-CORRECTED"
+            if mode == "bias_corrected"
+            else f"WARNING: {mode}",
+        }
+
     def run_backtest(self, payload: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         universe = str(payload.get("universe") or DEFAULT_UNIVERSE).upper()
@@ -1100,44 +1370,14 @@ class VCPService:
         capital = float(payload.get("initial_capital") or DEFAULT_CAPITAL)
 
         with db_session_scope() as db:
-            # Load everyone who was a member at any point in the range, not just the
-            # end-date members, so names dropped from the index stay tradable until they left.
-            range_symbols = self._constituents_in_range(db, universe, start_date, end_date)
-            combined = self._load_symbol_history(
-                symbols=range_symbols,
-                start_date=(pd.Timestamp(start_date) - pd.Timedelta(days=420)).date(),
-                end_date=end_date,
+            symbol_frames, trading_dates = self._load_backtest_frames(
+                db, universe, start_date, end_date
             )
-            symbol_frames = {
-                symbol: frame.sort_values("date").reset_index(drop=True)
-                for symbol, frame in combined.groupby("symbol")
-            }
-            trading_dates = sorted(
-                {
-                    row_date
-                    for frame in symbol_frames.values()
-                    for row_date in frame[
-                        (frame["date"] >= start_date) & (frame["date"] <= end_date)
-                    ]["date"]
-                    .unique()
-                    .tolist()
-                }
-            )
-            if not trading_dates:
-                raise ValueError("No trading dates available in the selected range")
-
-            trades: list[dict[str, Any]] = []
-            equity_curve: list[dict[str, Any]] = []
-            benchmark_curve: list[dict[str, Any]] = []
             benchmark = daily_history_service.load_index_history(
                 "NIFTY50",
                 start_date=start_date,
                 end_date=end_date,
             ).sort_values("date")
-            benchmark_start = float(benchmark.iloc[0]["close"]) if not benchmark.empty else 1.0
-
-            meta = self._company_meta(db, list(symbol_frames.keys()))
-            modes: set[str] = set()
             membership_cache: dict[date, tuple[list[str], str]] = {}
 
             def members_on(as_of: date) -> tuple[list[str], str]:
@@ -1145,116 +1385,35 @@ class VCPService:
                     membership_cache[as_of] = self._constituents_for_date(db, universe, as_of)
                 return membership_cache[as_of]
 
+            run = _VCPBacktestState(
+                capital=capital,
+                symbol_frames=symbol_frames,
+                trading_dates=trading_dates,
+                meta=self._company_meta(db, list(symbol_frames.keys())),
+                benchmark=benchmark,
+                benchmark_start=float(benchmark.iloc[0]["close"]) if not benchmark.empty else 1.0,
+                members_on=members_on,
+            )
             for trading_date in trading_dates[:-1]:
-                completed_pnl = sum(
-                    float(trade["pnl_inr"])
-                    for trade in trades
-                    if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= trading_date
-                )
-                available_capital = capital + completed_pnl
-                constituents_list, date_mode = members_on(trading_date)
-                constituents = set(constituents_list)
-                modes.add(
-                    "indicative_pre_history"
-                    if date_mode.startswith("indicative_pre_")
-                    else date_mode
-                )
-                day_frames = {
-                    symbol: frame[frame["date"] <= trading_date].copy()
-                    for symbol, frame in symbol_frames.items()
-                    if symbol in constituents and not frame[frame["date"] <= trading_date].empty
-                }
-                rs_map = self._compute_rs_map(day_frames)
-                regime = self.get_regime(trading_date)
-                active_symbols = {
-                    trade["symbol"]
-                    for trade in trades
-                    if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() >= trading_date
-                }
-                candidates: list[dict[str, Any]] = []
-                for symbol, frame in day_frames.items():
-                    if (
-                        len(frame) < 260
-                        or frame["date"].max() != trading_date
-                        or symbol in active_symbols
-                    ):
-                        continue
-                    analysis = self._analyze_pattern(
-                        frame=frame,
-                        rs_rating=rs_map.get(symbol, 0),
-                        company_meta=meta.get(symbol, {"name": symbol, "sector": "Unknown"}),
-                        regime=regime,
-                        capital=available_capital,
-                    )
-                    if analysis and analysis["is_breakout"]:
-                        candidates.append(analysis)
-
-                next_date = self._next_trading_date(trading_dates, trading_date)
-                if next_date is None:
-                    continue
-                # Trades enter on next_date, so the symbol must still be a member then.
-                entry_members = set(members_on(next_date)[0])
-                candidates = [signal for signal in candidates if signal["symbol"] in entry_members]
-                for signal in sorted(
-                    candidates, key=lambda item: (item["grade"], -item["rs_rating"])
-                )[:5]:
-                    trade = self._build_backtest_trade(
-                        signal=signal,
-                        symbol_frame=symbol_frames[signal["symbol"]],
-                        signal_date=trading_date,
-                        entry_date=next_date,
-                        capital=available_capital,
-                        risk_pct=regime.risk_pct,
-                    )
-                    if trade is None or trade.get("status") == "SKIPPED_GAP_UP":
-                        continue
-                    trades.append(trade)
-                equity_curve.append(
-                    {"date": trading_date.isoformat(), "equity": round(capital + completed_pnl, 2)}
-                )
-                if not benchmark.empty:
-                    bench_row = benchmark[benchmark["date"] == trading_date]
-                    if not bench_row.empty:
-                        benchmark_curve.append(
-                            {
-                                "date": trading_date.isoformat(),
-                                "equity": round(
-                                    capital * (float(bench_row.iloc[0]["close"]) / benchmark_start),
-                                    2,
-                                ),
-                            }
-                        )
+                self._backtest_day(run, trading_date)
 
             # The loop stops before the last date (no next session to enter on), so record the
             # final equity point here; otherwise exits realised on the last day are dropped.
             final_date = trading_dates[-1]
-            final_pnl = sum(
-                float(trade["pnl_inr"])
-                for trade in trades
-                if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= final_date
+            self._record_curve_point(
+                run, final_date, self._realized_pnl_through(run.trades, final_date)
             )
-            equity_curve.append(
-                {"date": final_date.isoformat(), "equity": round(capital + final_pnl, 2)}
-            )
-            if not benchmark.empty:
-                bench_row = benchmark[benchmark["date"] == final_date]
-                if not bench_row.empty:
-                    benchmark_curve.append(
-                        {
-                            "date": final_date.isoformat(),
-                            "equity": round(
-                                capital * (float(bench_row.iloc[0]["close"]) / benchmark_start), 2
-                            ),
-                        }
-                    )
 
             # Membership is resolved per trading date;
             # only fully point-in-time runs are bias-corrected.
+            modes = run.modes
             mode = (
                 "bias_corrected"
                 if modes == {"bias_corrected"}
                 else ",".join(sorted(modes)) or "unavailable"
             )
+            trades = run.trades
+            equity_curve = run.equity_curve
             if not equity_curve:
                 equity_curve = [{"date": trading_dates[0].isoformat(), "equity": capital}]
 
@@ -1263,48 +1422,12 @@ class VCPService:
                 index=[row["date"] for row in equity_curve],
                 dtype=float,
             )
-            returns = eq_series.pct_change().fillna(0.0)
             drawdown = bt_metrics.drawdown_series(eq_series)
-            ann_return = bt_metrics.annualized_return(
-                float(eq_series.iloc[-1]), capital, len(eq_series)
-            )
-            sharpe = bt_metrics.sharpe_excess_cagr(ann_return, returns, risk_free=0.065)
-            pnl_stats = bt_metrics.trade_stats([trade["pnl_inr"] for trade in trades])
-            benchmark_return = (
-                ((benchmark_curve[-1]["equity"] / capital) - 1.0) * 100.0
-                if benchmark_curve
-                else 0.0
-            )
-            metrics = {
-                "initial_capital": round(capital, 2),
-                "final_equity": round(float(eq_series.iloc[-1]), 2),
-                "total_return_pct": round(
-                    bt_metrics.total_return(float(eq_series.iloc[-1]), capital) * 100.0, 2
-                ),
-                "cagr_pct": round(ann_return * 100.0, 2),
-                "max_drawdown_pct": round(abs(bt_metrics.max_drawdown(drawdown)) * 100.0, 2),
-                "sharpe_ratio": round(float(sharpe), 4),
-                "win_rate_pct": round(pnl_stats.win_rate * 100.0, 2),
-                "avg_win_inr": round(pnl_stats.avg_win, 2),
-                "avg_loss_inr": round(pnl_stats.avg_loss, 2),
-                "profit_factor": round(pnl_stats.profit_factor, 2),
-                "total_trades": len(trades),
-                "avg_hold_days": round(mean([trade["hold_days"] for trade in trades]), 2)
-                if trades
-                else 0.0,
-                "avg_r_multiple": round(mean([trade["r_multiple"] for trade in trades]), 2)
-                if trades
-                else 0.0,
-                "benchmark_return_pct": round(benchmark_return, 2),
-                "alpha_pct": round((ann_return * 100.0) - benchmark_return, 2),
-                "survivorship_bias_label": "BIAS-CORRECTED"
-                if mode == "bias_corrected"
-                else f"WARNING: {mode}",
-            }
+            metrics = self._backtest_metrics(run, eq_series, drawdown, mode)
             result_payload = {
                 "metrics": metrics,
                 "equity_curve": equity_curve,
-                "benchmark_curve": benchmark_curve,
+                "benchmark_curve": run.benchmark_curve,
                 "drawdown_curve": [
                     {"date": idx, "drawdown_pct": round(value * 100.0, 4)}
                     for idx, value in drawdown.items()

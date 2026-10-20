@@ -389,7 +389,8 @@ class Phase1BacktestService:
         finally:
             session.close()
 
-    def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _validated_run_inputs(self, payload: dict[str, Any]) -> tuple[str, date, date, float]:
+        """(instrument_type, start, end, initial_capital) of a run request, or ValueError."""
         instrument_type = str(payload.get("instrument_type", "equity")).lower()
         if instrument_type not in SUPPORTED_INSTRUMENTS:
             raise ValueError(f"Unsupported instrument_type='{instrument_type}'")
@@ -406,22 +407,29 @@ class Phase1BacktestService:
         initial_capital = float(payload.get("initial_capital", 1_000_000.0))
         if initial_capital <= 0:
             raise ValueError("initial_capital must be > 0")
+        return instrument_type, start, end, initial_capital
 
-        selection = payload.get("selection") or {}
+    def _load_selection(
+        self, selection: dict[str, Any], start: date, end: date
+    ) -> tuple[str, str | None, pd.DataFrame, str]:
+        """(mode, universe or None, price rows, scope label) for the run's selection."""
         mode = str(selection.get("mode", "universe")).lower()
         if mode == "universe":
             universe = str(selection.get("universe", "NIFTY50")).upper()
             df = self._load_universe_index_dataset(universe, start, end)
-            scope_label = f"{universe}:INDEX_DATASET"
-        elif mode == "symbols":
+            return mode, universe, df, f"{universe}:INDEX_DATASET"
+        if mode == "symbols":
             symbols = selection.get("symbols") or []
             if not isinstance(symbols, list):
                 raise ValueError("selection.symbols must be a list")
             df = self._load_symbol_snapshot([str(s) for s in symbols])
             scope_label = f"SYMBOLS:{','.join(sorted({str(s).upper() for s in symbols if s}))}"
-        else:
-            raise ValueError("selection.mode must be 'universe' or 'symbols'")
+            return mode, None, df, scope_label
+        raise ValueError("selection.mode must be 'universe' or 'symbols'")
 
+    @staticmethod
+    def _prices_in_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+        """Date x symbol price matrix for [start, end]; ValueError outside the data."""
         min_date = df["date"].min()
         max_date = df["date"].max()
         if start < min_date or end > max_date:
@@ -433,6 +441,14 @@ class Phase1BacktestService:
 
         prices = df.pivot(index="date", columns="symbol", values="price").sort_index()
         prices.index = pd.to_datetime(prices.index)
+        return prices
+
+    def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        instrument_type, start, end, initial_capital = self._validated_run_inputs(payload)
+        mode, universe, df, scope_label = self._load_selection(
+            payload.get("selection") or {}, start, end
+        )
+        prices = self._prices_in_range(df, start, end)
         returns = prices.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
         strategies = payload.get("strategies") or []
@@ -440,56 +456,16 @@ class Phase1BacktestService:
             raise ValueError("At least one strategy must be provided")
         strategy_allocations = self._normalize_weight_allocations(strategies)
 
-        strategy_curves: list[dict[str, Any]] = []
-        strategy_returns: list[pd.Series] = []
-        combined_trades: list[dict[str, Any]] = []
-
-        for strategy_cfg in strategy_allocations:
-            sid = strategy_cfg["strategy_id"]
-            weight = float(strategy_cfg["weight"])
-            params = strategy_cfg["params"]
-
-            signal = self._build_signal(prices, sid, params)
-
-            # Validate signal generation
-            signal_count = int(signal.sum().sum())
-            logger.info(f"Strategy {sid}: generated {signal_count} total signals")
-            if signal_count == 0:
-                logger.warning(f"Strategy {sid}: NO SIGNALS GENERATED - check parameters")
-
-            strat_ret = self._signal_to_returns(signal, returns)
-            strat_equity = initial_capital * (1.0 + strat_ret).cumprod()
-            strategy_returns.append(strat_ret * weight)
-
-            strategy_curves.append(
-                {
-                    "strategy_id": sid,
-                    "name": SUPPORTED_STRATEGIES[sid],
-                    "weight": round(weight, 6),
-                    "equity_curve": [
-                        {"date": d.date().isoformat(), "equity": round(float(v), 4)}
-                        for d, v in strat_equity.items()
-                    ],
-                }
-            )
-            combined_trades.extend(self._build_trade_log(signal, prices))
-
+        strategy_curves, strategy_returns, combined_trades = self._run_strategies(
+            strategy_allocations, prices, returns, initial_capital
+        )
         portfolio_ret = pd.concat(strategy_returns, axis=1).sum(axis=1)
 
         # Calculate benchmark using buy-and-hold index prices for universe mode
         if mode == "universe":
-            # Load index price data for benchmark calculation
-            index_df = self._load_universe_index_dataset(universe, start, end)
-            index_prices = index_df.set_index("date")["price"]
-            index_prices.index = pd.to_datetime(index_prices.index)
-
-            # Align index prices with portfolio returns dates using forward fill
-            aligned_index = index_prices.reindex(portfolio_ret.index, method="ffill")
-
-            # Buy-and-hold: (current_price / initial_price) - 1
-            initial_index_price = aligned_index.iloc[0]
-            benchmark_ret = (aligned_index / initial_index_price) - 1.0
-            benchmark_equity = initial_capital * (1.0 + benchmark_ret)
+            benchmark_equity = self._index_benchmark_equity(
+                universe, start, end, portfolio_ret.index, initial_capital
+            )
         else:
             # Fallback to equal-weight for symbol mode
             benchmark_ret = returns.mean(axis=1).fillna(0.0)
@@ -523,6 +499,70 @@ class Phase1BacktestService:
             "strategy_curves": strategy_curves,
             "trade_log": combined_trades,
         }
+
+    def _index_benchmark_equity(
+        self,
+        universe: str,
+        start: date,
+        end: date,
+        dates: pd.Index,
+        initial_capital: float,
+    ) -> pd.Series:
+        """Buy-and-hold equity of the universe index, aligned to the portfolio dates."""
+        index_df = self._load_universe_index_dataset(universe, start, end)
+        index_prices = index_df.set_index("date")["price"]
+        index_prices.index = pd.to_datetime(index_prices.index)
+
+        # Align index prices with portfolio returns dates using forward fill
+        aligned_index = index_prices.reindex(dates, method="ffill")
+
+        # Buy-and-hold: (current_price / initial_price) - 1
+        initial_index_price = aligned_index.iloc[0]
+        benchmark_ret = (aligned_index / initial_index_price) - 1.0
+        return initial_capital * (1.0 + benchmark_ret)
+
+    def _run_strategies(
+        self,
+        strategy_allocations: list[dict[str, Any]],
+        prices: pd.DataFrame,
+        returns: pd.DataFrame,
+        initial_capital: float,
+    ) -> tuple[list[dict[str, Any]], list[pd.Series], list[dict[str, Any]]]:
+        """(per-strategy equity curves, weighted strategy returns, trade log)."""
+        strategy_curves: list[dict[str, Any]] = []
+        strategy_returns: list[pd.Series] = []
+        combined_trades: list[dict[str, Any]] = []
+
+        for strategy_cfg in strategy_allocations:
+            sid = strategy_cfg["strategy_id"]
+            weight = float(strategy_cfg["weight"])
+            params = strategy_cfg["params"]
+
+            signal = self._build_signal(prices, sid, params)
+
+            # Validate signal generation
+            signal_count = int(signal.sum().sum())
+            logger.info(f"Strategy {sid}: generated {signal_count} total signals")
+            if signal_count == 0:
+                logger.warning(f"Strategy {sid}: NO SIGNALS GENERATED - check parameters")
+
+            strat_ret = self._signal_to_returns(signal, returns)
+            strat_equity = initial_capital * (1.0 + strat_ret).cumprod()
+            strategy_returns.append(strat_ret * weight)
+
+            strategy_curves.append(
+                {
+                    "strategy_id": sid,
+                    "name": SUPPORTED_STRATEGIES[sid],
+                    "weight": round(weight, 6),
+                    "equity_curve": [
+                        {"date": d.date().isoformat(), "equity": round(float(v), 4)}
+                        for d, v in strat_equity.items()
+                    ],
+                }
+            )
+            combined_trades.extend(self._build_trade_log(signal, prices))
+        return strategy_curves, strategy_returns, combined_trades
 
     def create_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_id = f"BT-{uuid.uuid4().hex[:10].upper()}"

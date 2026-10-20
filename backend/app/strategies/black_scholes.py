@@ -314,43 +314,42 @@ def price_synthetic_option(
     # Calculate ATM strike if not provided
     if strike is None:
         strike = calculate_atm_strike(underlying_price)
-
-    # Calculate dynamic volatility if not provided
     if volatility is None:
-        if historical_data is not None and len(historical_data) > 20:
-            volatility = calculate_historical_volatility(historical_data, window=20)
-        else:
-            volatility = DEFAULT_VOLATILITY
+        volatility = _volatility_from_history(historical_data)
+    t = _years_to_expiry(current_time, days_to_expiry)
+    is_call = option_type.upper() in ["CE", "CALL"]
 
-    # Calculate time to expiry
-    if current_time is not None:
-        t = calculate_time_to_expiry(current_time)
-    elif days_to_expiry is not None:
-        t = days_to_expiry / 365.0
-    else:
-        t = DEFAULT_DTE / 365.0
-
-    # Calculate option price
-    if option_type.upper() in ["CE", "CALL"]:
+    if is_call:
         price = black_scholes_call(underlying_price, strike, t, risk_free_rate, volatility)
-
-        # Apply dividend adjustment (reduces call price)
-        if apply_dividend_adjustment:
-            price = price * (1 - NIFTY_DIVIDEND_YIELD * t)
-
+        # Dividend adjustment reduces the call price
+        dividend_factor = 1 - NIFTY_DIVIDEND_YIELD * t
     else:  # PE or PUT
         price = black_scholes_put(underlying_price, strike, t, risk_free_rate, volatility)
-
-        # Apply dividend adjustment (increases put price)
-        if apply_dividend_adjustment:
-            price = price * (1 + NIFTY_DIVIDEND_YIELD * t)
+        # Dividend adjustment increases the put price
+        dividend_factor = 1 + NIFTY_DIVIDEND_YIELD * t
+    if apply_dividend_adjustment:
+        price = price * dividend_factor
 
     # Validate result - ensure no NaN or Inf values
     if not np.isfinite(price) or price <= 0:
-        # Fallback to simple intrinsic value if calculation failed
-        if option_type.upper() in ["CE", "CALL"]:
-            price = max(underlying_price - strike, 1.0)  # Min 1 rupee
-        else:
-            price = max(strike - underlying_price, 1.0)  # Min 1 rupee
+        # Fallback to simple intrinsic value (min 1 rupee) if calculation failed
+        intrinsic = underlying_price - strike if is_call else strike - underlying_price
+        price = max(intrinsic, 1.0)
 
     return float(price)
+
+
+def _volatility_from_history(historical_data: pd.DataFrame | None) -> float:
+    """20-day historical volatility when there is enough history, else the default."""
+    if historical_data is not None and len(historical_data) > 20:
+        return calculate_historical_volatility(historical_data, window=20)
+    return DEFAULT_VOLATILITY
+
+
+def _years_to_expiry(current_time: datetime | None, days_to_expiry: int | None) -> float:
+    """Time to expiry in years: from the clock, else from days, else the default DTE."""
+    if current_time is not None:
+        return calculate_time_to_expiry(current_time)
+    if days_to_expiry is not None:
+        return days_to_expiry / 365.0
+    return DEFAULT_DTE / 365.0
