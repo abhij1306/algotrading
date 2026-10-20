@@ -160,8 +160,8 @@ Lifecycle rules must be queryable by date and must remain outside feature code.
 `SymbolLifecycleService.was_listed_on(symbol, date)` replays the symbol's `symbol_history`
 records in `effective_from` order; the last one effective on or before the date decides.
 `LISTING` (or a rename/symbol change into the symbol) lists it; `DE_LISTING`, a merger or
-acquisition of it, or a rename/symbol change away from it ends the listing; splits, FPOs and
-rights issues change nothing. A symbol with no records is assumed listed, and a relisting is a
+acquisition of it, or a rename/symbol change away from it ends the listing; splits, FPOs,
+rights issues and a merger/acquisition *into* an existing symbol change nothing. A symbol with no records is assumed listed, and a relisting is a
 later `LISTING` record.
 
 ## Canonical Data Lanes

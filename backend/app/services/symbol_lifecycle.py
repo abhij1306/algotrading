@@ -34,15 +34,18 @@ def _listing_effect(record: SymbolHistory, symbol: str) -> bool | None:
     ``record`` is one of the symbol's own records (old_symbol or new_symbol is ``symbol``).
     """
     change = record.change_type
+    renames = {SymbolChangeType.NAME_CHANGE, SymbolChangeType.SYMBOL_CHANGE}
     if change == SymbolChangeType.LISTING:
         return True
     if record.old_symbol != symbol:
-        return True if record.new_symbol == symbol else None  # renamed/merged into it
+        # Renamed into it: the symbol starts trading. A merger/acquisition into it leaves
+        # the (already listed) surviving or acquiring symbol unchanged.
+        return True if change in renames and record.new_symbol == symbol else None
     if change == SymbolChangeType.DE_LISTING:
         return False
     if change in {SymbolChangeType.MERGER, SymbolChangeType.ACQUISITION}:
         return None if record.new_symbol == symbol else False  # absorbed into another
-    if change in {SymbolChangeType.NAME_CHANGE, SymbolChangeType.SYMBOL_CHANGE}:
+    if change in renames:
         return False if record.new_symbol not in (None, symbol) else None
     return None
 
@@ -178,7 +181,7 @@ class SymbolLifecycleService:
 
         The symbol's records are replayed in effective_from order (ties by id); the last
         one effective on or before ``check_date`` decides:
-        - LISTING of the symbol, or any change whose new_symbol is the symbol -> listed;
+        - LISTING of the symbol, or a name/symbol change into it -> listed;
         - DE_LISTING of the symbol, a merger/acquisition of it, or a name/symbol change
           from it to a different symbol -> not listed;
         - splits, FPOs, rights issues and same-symbol renames leave the status unchanged.

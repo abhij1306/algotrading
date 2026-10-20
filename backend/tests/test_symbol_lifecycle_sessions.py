@@ -135,3 +135,19 @@ def test_was_listed_on_follows_a_symbol_change(session_factory: sessionmaker[Ses
             service.was_listed_on("NEWCO", before, session),
             service.was_listed_on("NEWCO", after, session),
         ] == [True, False, False, True]
+
+
+def test_was_listed_on_a_merger_ends_the_target_but_not_the_acquirer(
+    session_factory: sessionmaker[Session],
+) -> None:
+    service = SymbolLifecycleService()
+    with session_factory() as session:
+        _record(session, "TARGET", "BUYER", SymbolChangeType.MERGER, date(2025, 3, 1))
+
+        before, after = date(2025, 2, 1), date(2025, 4, 1)
+        assert [
+            service.was_listed_on("TARGET", before, session),
+            service.was_listed_on("TARGET", after, session),
+            service.was_listed_on("BUYER", before, session),
+            service.was_listed_on("BUYER", after, session),
+        ] == [True, False, True, True]
