@@ -195,6 +195,24 @@ def test_quotes_converts_symbols_and_keys_by_db_symbol() -> None:
     assert quotes == {"SBIN": SBIN, "NIFTY50": _missing("NIFTY50", ltp=Decimal("25000.5"))}
 
 
+def test_quotes_keys_a_renamed_symbol_by_the_symbol_asked_for() -> None:
+    sdk = FakeFyersSdk({"NSE:LTM-EQ": quote_row("NSE:LTM-EQ", lp=5000)})
+
+    quotes = gateway(sdk).quotes(["LTIM"])
+
+    assert sdk.requests == [["NSE:LTM-EQ"]]
+    assert quotes == {"LTIM": _missing("LTIM", ltp=Decimal(5000))}
+
+
+def test_quotes_skips_a_symbol_it_cannot_convert() -> None:
+    sdk = FakeFyersSdk({"NSE:TCS-EQ": quote_row("NSE:TCS-EQ", lp=4000)})
+
+    quotes = gateway(sdk).quotes(["bad sym", "TCS"])
+
+    assert sdk.requests == [["NSE:TCS-EQ"]]
+    assert quotes == {"TCS": _missing("TCS", ltp=Decimal(4000))}
+
+
 def test_quotes_batches_fifty_symbols_per_request() -> None:
     symbols = [f"S{i}" for i in range(120)]
     sdk = FakeFyersSdk({f"NSE:S{i}-EQ": quote_row(f"NSE:S{i}-EQ", lp=i + 1) for i in range(120)})

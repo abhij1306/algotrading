@@ -281,7 +281,8 @@ Operational endpoint:
 - Fyers REST quotes have one parser: `parse_quotes` in `services/fyers/quotes.py` turns a reply into frozen
   `Quote`s keyed by DB symbol (Decimal prices, None when missing; Fyers' zero default counts as missing; error
   entries and bad rows are skipped, never raised). Callers use the gateway, `FyersClient.quotes(db_symbols)`,
-  which converts symbols with SymbolMaster and batches 50 per request.
+  which converts symbols with SymbolMaster (skipping any it cannot convert), batches 50 per request and keys
+  each quote by the symbol asked for (a renamed `LTIM` answered as `LTM` stays `LTIM`).
 
 ## Drift Policy
 If code and docs diverge, code is authoritative; docs must be updated in the same PR/commit.

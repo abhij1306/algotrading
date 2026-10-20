@@ -478,20 +478,19 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         if not symbols:
             return {"gainers": [], "losers": []}
 
-        # Fetch quotes (the gateway batches them to the Fyers per-call limit)
+        # Fetch quotes (the gateway batches them to the Fyers per-call limit) and sort them
+        # by the unrounded change, so returns that round alike still rank correctly
+        priced = [quote for quote in _fyers_quotes(symbols).values() if quote.ltp is not None]
+        priced.sort(key=lambda quote: quote.change_pct or 0, reverse=True)
         movers = [
             {
-                "symbol": symbol,
-                "name": symbol,
+                "symbol": quote.symbol,
+                "name": quote.symbol,
                 "price": round(float(quote.ltp), 2),
                 "changePercent": _percent(quote),
             }
-            for symbol, quote in _fyers_quotes(symbols).items()
-            if quote.ltp is not None
+            for quote in priced
         ]
-
-        # Sort by change percent
-        movers.sort(key=lambda x: x["changePercent"], reverse=True)
 
         # Get top gainers and losers
         gainers = movers[:limit]

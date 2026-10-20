@@ -4,6 +4,7 @@ Handles authentication, token management, and data fetching.
 """
 
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any, Self
@@ -31,6 +32,25 @@ logger = get_logger("services.fyers_client")
 
 # Most symbols the Fyers quotes endpoint accepts in one call.
 QUOTES_BATCH_SIZE = 50
+
+
+def _to_fyers_symbols(symbols: Iterable[str]) -> dict[str, str]:
+    """{Fyers symbol: requested symbol}, in request order; unconvertible symbols are dropped."""
+    converted: dict[str, str] = {}
+    for symbol in dict.fromkeys(symbols):
+        if not symbol:
+            continue
+        try:
+            converted.setdefault(symbol_master.to_fyers(symbol), symbol)
+        except ValueError:
+            logger.warning("Skipping quote for unconvertible symbol %r", symbol)
+    return converted
+
+
+def _keyed_by_request(quote: Quote, asked_by_db: dict[str, str]) -> Quote:
+    """``quote`` under the symbol it was asked for, when that differs from its DB symbol."""
+    asked = asked_by_db.get(quote.symbol, quote.symbol)
+    return quote if asked == quote.symbol else replace(quote, symbol=asked)
 
 
 class FyersClient:
@@ -274,17 +294,22 @@ class FyersClient:
         return now_utc > self.token_expires_at
 
     def quotes(self, symbols: Iterable[str]) -> dict[str, Quote]:
-        """Quotes for DB symbols, keyed by DB symbol; symbols Fyers has no quote for are absent.
+        """Quotes keyed by the requested DB symbol; symbols Fyers has no quote for are absent.
 
-        Symbols are converted with SymbolMaster and sent in batches of QUOTES_BATCH_SIZE (the
-        Fyers per-call limit). A batch whose request fails is skipped; this never raises.
+        Symbols are converted with SymbolMaster (one it cannot convert is skipped) and sent in
+        batches of QUOTES_BATCH_SIZE (the Fyers per-call limit). A reply for a renamed symbol
+        (asked as ``LTIM``, answered as ``LTM``) is keyed by the symbol asked for. A batch
+        whose request fails is skipped; this never raises.
         """
-        wanted = list(dict.fromkeys(symbol for symbol in symbols if symbol))
         model = self.fyers
-        if not wanted or model is None:
+        if model is None:
+            return {}
+        requested = _to_fyers_symbols(symbols)
+        if not requested:
             return {}
 
-        fyers_symbols = symbol_master.batch_to_fyers(wanted)
+        fyers_symbols = list(requested)
+        asked_by_db = {symbol_master.to_db(f): asked for f, asked in requested.items()}
         quotes: dict[str, Quote] = {}
         for start in range(0, len(fyers_symbols), QUOTES_BATCH_SIZE):
             batch = fyers_symbols[start : start + QUOTES_BATCH_SIZE]
@@ -293,7 +318,9 @@ class FyersClient:
             except Exception:
                 logger.exception("Fyers quotes request failed for %d symbols", len(batch))
                 continue
-            quotes.update(parse_quotes(response))
+            for quote in parse_quotes(response).values():
+                keyed = _keyed_by_request(quote, asked_by_db)
+                quotes[keyed.symbol] = keyed
         return quotes
 
     def get_historical_data(

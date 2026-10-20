@@ -121,6 +121,31 @@ def test_top_movers(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
+def test_top_movers_rank_by_the_unrounded_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    symbols = ["LOW", "HIGH"]
+    monkeypatch.setattr(
+        universe_module,
+        "get_universe_service",
+        lambda: type("U", (), {"get_symbols": staticmethod(lambda _index: symbols)})(),
+    )
+    _use_sdk(
+        monkeypatch,
+        {
+            "low": _row("NSE:LOW-EQ", 100.001, 100.0),  # +0.001%
+            "high": _row("NSE:HIGH-EQ", 100.004, 100.0),  # +0.004%, also rounds to 0.0
+        },
+    )
+
+    result = market.get_top_movers(limit=1)
+
+    assert result["gainers"] == [
+        {"symbol": "HIGH", "name": "HIGH", "price": 100.0, "changePercent": 0.0}
+    ]
+    assert result["losers"] == [
+        {"symbol": "LOW", "name": "LOW", "price": 100.0, "changePercent": 0.0}
+    ]
+
+
 def test_sector_performance(monkeypatch: pytest.MonkeyPatch) -> None:
     _use_sdk(
         monkeypatch,
