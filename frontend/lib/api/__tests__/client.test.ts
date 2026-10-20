@@ -71,6 +71,40 @@ describe("unwrap", () => {
     });
   });
 
+  it("words the database-down envelope for people", async () => {
+    const api = clientReturning(() =>
+      Response.json(
+        { error: { code: "DATABASE_UNAVAILABLE", message: "Database unavailable" } },
+        { status: 503 },
+      ),
+    );
+    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+      code: "DATABASE_UNAVAILABLE",
+      message: "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
+      status: 503,
+    });
+  });
+
+  it("words the broker-down envelope even without a server message", async () => {
+    const api = clientReturning(() =>
+      Response.json({ error: { code: "BROKER_UNAVAILABLE" } }, { status: 503 }),
+    );
+    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+      code: "BROKER_UNAVAILABLE",
+      message: "Broker unavailable: Fyers could not be reached. Retry once it is back.",
+      status: 503,
+    });
+  });
+
+  it("reads a bare 503 as the service being unavailable", async () => {
+    const api = clientReturning(() => new Response("", { status: 503 }));
+    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+      code: "HTTP_ERROR",
+      message: "Service unavailable: the backend is not ready. Retry shortly.",
+      status: 503,
+    });
+  });
+
   it("turns a network failure into NETWORK_ERROR", async () => {
     const api = clientReturning(() => {
       throw new TypeError("Failed to fetch");

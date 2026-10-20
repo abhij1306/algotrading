@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { TrendingUp, TrendingDown, Activity } from "lucide-react";
 import { formatPercentage } from "@/lib/utils";
-import { MarketInsights, StockMover, SectorData } from "./InsightsPanel";
+import type { MarketInsights, StockMover, SectorData } from "@/lib/queries/dashboard";
 
 interface MarketHoursInsightsProps {
   data: MarketInsights;

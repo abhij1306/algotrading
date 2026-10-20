@@ -21,6 +21,7 @@ export const queryKeys = {
   },
   strategies: {
     all: ["strategies"] as const,
+    workspaceRoot: () => ["strategies", "workspace"] as const,
     workspace: (params: { universe: string; showAll: boolean }) =>
       ["strategies", "workspace", params] as const,
     signal: (symbol: string) => ["strategies", "signal", symbol] as const,
@@ -32,6 +33,10 @@ export const queryKeys = {
     optionsBoard: (params: { underlying: string; expiry: string }) =>
       ["terminal", "options-board", params] as const,
     positions: () => ["terminal", "positions"] as const,
+  },
+  auth: {
+    all: ["auth"] as const,
+    fyersStatus: () => ["auth", "fyers", "status"] as const,
   },
   dashboard: {
     all: ["dashboard"] as const,

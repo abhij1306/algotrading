@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { Globe, TrendingUp, TrendingDown, DollarSign } from "lucide-react";
 import { formatPercentage } from "@/lib/utils";
-import { PostMarketData, IndexData, CommodityData } from "./InsightsPanel";
+import type { PostMarketData, IndexData, CommodityData } from "@/lib/queries/dashboard";
 
 interface PostMarketInsightsProps {
   data: PostMarketData;

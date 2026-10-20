@@ -1,156 +1,104 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, Key, CheckCircle, AlertCircle, X, Wifi, WifiOff } from "lucide-react";
-import { apiClient } from "@/lib/api-client";
-import { getErrorMessage } from "@/lib/type-guards";
+import {
+  useFyersDisconnect,
+  useFyersLoginUrl,
+  useFyersStatus,
+  useFyersToken,
+} from "@/lib/queries/auth";
 import { focusOnMount } from "@/lib/focus";
 
-type FyersStatus = { connected: boolean; userId: string; offline: boolean };
+type ElectronBridge = { openExternal: (url: string) => void };
 
-const fyersStatusKey = ["auth", "fyers", "status"] as const;
-/** Re-check the Fyers status at most this often (and on window focus), so an offline badge clears. */
-const FYERS_STATUS_STALE_MS = 30_000;
-
-async function fetchFyersStatus(): Promise<FyersStatus> {
-  try {
-    const result = await apiClient.get<{ connected: boolean; user_id?: string }>(
-      "/api/auth/fyers/status",
-    );
-    if (result.error) throw new Error(result.error.message || "Backend error");
-    const data = result.data;
-    return data?.connected
-      ? { connected: true, userId: data.user_id || "", offline: false }
-      : { connected: false, userId: "", offline: false };
-  } catch {
-    // Silently handle offline/network errors
-    return { connected: false, userId: "", offline: true };
-  }
+/** The desktop shell's bridge, when the app runs inside Electron. */
+function isElectronBridge(value: unknown): value is ElectronBridge {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "openExternal" in value &&
+    typeof value.openExternal === "function"
+  );
 }
 
 export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?: boolean }>) {
-  const queryClient = useQueryClient();
-  const statusQuery = useQuery({
-    queryKey: fyersStatusKey,
-    queryFn: fetchFyersStatus,
-    retry: false,
-    staleTime: FYERS_STATUS_STALE_MS,
-    refetchOnWindowFocus: true,
-  });
+  const statusQuery = useFyersStatus();
+  const loginUrl = useFyersLoginUrl();
+  const token = useFyersToken();
+  const disconnect = useFyersDisconnect();
   const connected = statusQuery.data?.connected ?? false;
   const userId = statusQuery.data?.userId ?? "";
   const systemOffline = statusQuery.data?.offline ?? false;
   // Spinner on first load and on a manual retry from the offline badge, not on background refetches.
   const checking = statusQuery.isPending || (statusQuery.isFetching && systemOffline);
-  const [loading, setLoading] = useState(false);
+  const loading = loginUrl.isPending || token.isPending || disconnect.isPending;
   const [showModal, setShowModal] = useState(false);
   const [authCode, setAuthCode] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
 
-  const setFyersStatus = (next: FyersStatus) => {
-    queryClient.setQueryData<FyersStatus>(fyersStatusKey, next);
+  const fail = (text: string) => {
+    setStatus("error");
+    setMessage(text);
   };
 
   const checkConnection = () => {
     void statusQuery.refetch();
   };
 
-  const handleDisconnect = async () => {
+  const handleDisconnect = () => {
     if (!confirm("Disconnect from Fyers? You will need to re-authenticate.")) return;
-
-    setLoading(true);
-    try {
-      const result = await apiClient.post("/api/auth/fyers/disconnect");
-      if (result.data) {
-        setFyersStatus({ connected: false, userId: "", offline: false });
+    disconnect.mutate(undefined, {
+      onSuccess: () => {
         setMessage("Disconnected successfully");
         setStatus("success");
         setTimeout(() => setStatus("idle"), 2000);
-      }
-    } catch (error) {
-      console.error("[Fyers] Disconnect error:", error);
-      setStatus("error");
-      setMessage("Failed to disconnect");
-    } finally {
-      setLoading(false);
-    }
+      },
+      onError: (error) => fail(`Failed to disconnect: ${error.message}`),
+    });
   };
 
-  const handleLoginStart = async () => {
-    setLoading(true);
+  const openLoginPage = (url: string) => {
+    const electron: unknown = Reflect.get(globalThis, "electron");
+    if (isElectronBridge(electron)) {
+      electron.openExternal(url);
+      setShowModal(true);
+      return;
+    }
+    if (typeof globalThis.window?.open !== "function") {
+      fail("Login URL generated but no browser window is available to open it.");
+      return;
+    }
+    const popup = globalThis.window.open(url, "_blank", "width=800,height=600");
+    if (popup === null) {
+      fail("Popup blocked; please allow popups to continue login.");
+      return;
+    }
+    setShowModal(true);
+  };
+
+  const handleLoginStart = () => {
     setStatus("idle");
     setMessage("");
-
-    try {
-      const result = await apiClient.get<{ url: string; detail?: string; error?: string }>(
-        "/api/auth/fyers/url",
-      );
-      const data = result.data;
-
-      if (data?.url) {
-        // Use Electron's shell.openExternal if available
-        const electron = (
-          globalThis as unknown as { electron?: { openExternal?: (_url: string) => void } }
-        ).electron;
-        if (electron?.openExternal) {
-          electron.openExternal(data.url);
-          setShowModal(true);
-        } else {
-          if (typeof globalThis.window?.open !== "function") {
-            setStatus("error");
-            setMessage("Login URL generated but no browser window is available to open it.");
-            return;
-          }
-          const popup = globalThis.window.open(data.url, "_blank", "width=800,height=600");
-          if (popup === null) {
-            setStatus("error");
-            setMessage("Popup blocked; please allow popups to continue login.");
-            return;
-          }
-          setShowModal(true);
-        }
-      } else {
-        setStatus("error");
-        setMessage(
-          result.error?.message || data?.detail || data?.error || "Failed to get Login URL",
-        );
-      }
-    } catch (e: unknown) {
-      console.error("[Fyers] Network error:", e);
-      setStatus("error");
-      setMessage(`Network Error: ${getErrorMessage(e)}`);
-    } finally {
-      setLoading(false);
-    }
+    loginUrl.mutate(undefined, {
+      onSuccess: openLoginPage,
+      onError: (error) => fail(error.message),
+    });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!authCode) return;
-    setLoading(true);
     setStatus("idle");
-
-    try {
-      const result = await apiClient.post("/api/auth/fyers/token", { auth_code: authCode });
-      if (result.data) {
+    token.mutate(authCode, {
+      onSuccess: () => {
         setStatus("success");
         setMessage("Connected successfully!");
-        // Re-read the real status (including the user id) from the backend.
-        void queryClient.invalidateQueries({ queryKey: fyersStatusKey });
         setTimeout(() => {
           setShowModal(false);
           setAuthCode("");
         }, 2000);
-      } else {
-        setStatus("error");
-        setMessage(result.error?.message || "Authentication failed");
-      }
-    } catch (e: unknown) {
-      console.error("[Fyers] Token network error:", e);
-      setStatus("error");
-      setMessage(`Failed to exchange token: ${getErrorMessage(e)}`);
-    } finally {
-      setLoading(false);
-    }
+      },
+      onError: (error) => fail(error.message || "Authentication failed"),
+    });
   };
 
   if (checking) {

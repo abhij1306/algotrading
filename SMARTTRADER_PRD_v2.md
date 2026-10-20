@@ -76,7 +76,7 @@ This is non-negotiable and applies to every module, every widget, every page:
 | Styling | Tailwind CSS + custom design system |
 | State | React hooks — no global state library |
 | WebSocket | Custom `useWebSocket` hook |
-| Data Fetching | REST via typed `api-client.ts` |
+| Data Fetching | REST via the typed `lib/api/client.ts` + TanStack Query hooks in `lib/queries/` |
 
 ### Key File Map
 ```

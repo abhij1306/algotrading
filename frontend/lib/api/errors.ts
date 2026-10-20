@@ -7,6 +7,8 @@ export type ApiErrorCode =
   | "HTTP_ERROR"
   | "VALIDATION_ERROR"
   | "RESPONSE_SHAPE_ERROR"
+  | "DATABASE_UNAVAILABLE"
+  | "BROKER_UNAVAILABLE"
   | (string & Record<never, never>);
 
 export class ApiError extends Error {
@@ -35,6 +37,20 @@ function firstValidationMessage(detail: unknown[]): string | null {
 }
 
 /**
+ * Fixed, user-facing wording for the backend's "dependency is down" codes. These win over
+ * the server's message so every screen reads the same when Postgres or the broker is down.
+ */
+const UNAVAILABLE_MESSAGES: ReadonlyMap<string, string> = new Map([
+  [
+    "DATABASE_UNAVAILABLE",
+    "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
+  ],
+  ["BROKER_UNAVAILABLE", "Broker unavailable: Fyers could not be reached. Retry once it is back."],
+]);
+
+const SERVICE_UNAVAILABLE_MESSAGE = "Service unavailable: the backend is not ready. Retry shortly.";
+
+/**
  * Normalise an error response body. Handles the backend envelope
  * `{ error: { code, message } }` and FastAPI's `{ detail: string | [{ msg }] }`.
  */
@@ -49,6 +65,17 @@ export function apiErrorFromResponse(input: {
 
   if (isRecord(body)) {
     const envelope = body.error;
+    const envelopeCode =
+      isRecord(envelope) && typeof envelope.code === "string" ? envelope.code : null;
+    const friendly = envelopeCode === null ? undefined : UNAVAILABLE_MESSAGES.get(envelopeCode);
+    if (envelopeCode !== null && friendly !== undefined) {
+      return new ApiError({
+        code: envelopeCode,
+        message: friendly,
+        status,
+        details: isRecord(envelope) ? envelope.details : undefined,
+      });
+    }
     if (isRecord(envelope) && typeof envelope.message === "string") {
       return new ApiError({
         code: typeof envelope.code === "string" ? envelope.code : "HTTP_ERROR",
@@ -73,7 +100,8 @@ export function apiErrorFromResponse(input: {
   if (typeof body === "string" && body.trim() !== "") {
     return new ApiError({ code: "HTTP_ERROR", message: body, status });
   }
-  return new ApiError({ code: "HTTP_ERROR", message: fallback, status });
+  const message = status === 503 ? SERVICE_UNAVAILABLE_MESSAGE : fallback;
+  return new ApiError({ code: "HTTP_ERROR", message, status });
 }
 
 export function apiErrorFromThrown(thrown: unknown): ApiError {

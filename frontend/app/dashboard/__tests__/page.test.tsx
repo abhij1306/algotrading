@@ -3,7 +3,10 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
-import DashboardPage from "../page";
+
+// The client reads VITE_API_URL at import time; Node cannot build a Request from a relative URL.
+vi.stubEnv("VITE_API_URL", "http://api.test");
+const { default: DashboardPage } = await import("../page");
 
 const RESPONSES: Record<string, unknown> = {
   "/api/market/status": { is_open: false, message: "Market closed" },
@@ -22,11 +25,30 @@ const RESPONSES: Record<string, unknown> = {
   "/api/market/overview": {
     indices: [{ symbol: "^NSEI", name: "NIFTY 50", price: 22450, change: 112.25, change_pct: 0.5 }],
   },
+  "/api/market/currency/USDINR": { rate: 83.25, changePercent: 0.1 },
 };
 
-function respond(input: RequestInfo | URL): Promise<Response> {
-  const url = new URL(input instanceof Request ? input.url : String(input), "http://api.test");
-  return Promise.resolve(Response.json(RESPONSES[url.pathname] ?? {}));
+function databaseDown(): Response {
+  return Response.json(
+    { error: { code: "DATABASE_UNAVAILABLE", message: "Database unavailable" } },
+    { status: 503 },
+  );
+}
+
+function stubBackend(overrides: Record<string, () => Response> = {}) {
+  const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const override = overrides[url.pathname];
+    return Promise.resolve(override ? override() : Response.json(RESPONSES[url.pathname] ?? {}));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function requestedPaths(fetchMock: ReturnType<typeof stubBackend>): string[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(input instanceof Request ? input.url : String(input)).pathname)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function renderDashboard() {
@@ -41,13 +63,13 @@ function renderDashboard() {
   );
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("dashboard change columns", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn(respond));
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
+    stubBackend();
   });
 
   it("shows the watchlist percent and never the absolute change as a percent", async () => {
@@ -78,5 +100,35 @@ describe("dashboard change columns", () => {
     expect(await screen.findByText("+1.50%")).toBeInTheDocument();
     expect(screen.getByText("-2.00%")).toBeInTheDocument();
     expect(screen.queryByText("++1.50%")).not.toBeInTheDocument();
+  });
+});
+
+describe("dashboard data loading", () => {
+  it("loads the closed-market endpoints and shows the post-market USDINR rate", async () => {
+    const fetchMock = stubBackend();
+    renderDashboard();
+
+    expect(await screen.findByText("₹83.25")).toBeInTheDocument();
+    expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
+    expect(new Set(requestedPaths(fetchMock))).toEqual(
+      new Set([
+        "/api/market/currency/USDINR",
+        "/api/market/overview",
+        "/api/market/status",
+        "/api/market/watchlist",
+        "/api/portfolio/stats",
+      ]),
+    );
+  });
+
+  it("explains a database outage in the watchlist instead of an empty list", async () => {
+    stubBackend({ "/api/market/watchlist": databaseDown });
+    renderDashboard();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
+    );
+    expect(screen.queryByText("No stocks in watchlist")).not.toBeInTheDocument();
+    expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
   });
 });
