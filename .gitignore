@@ -138,7 +138,6 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
-!**/backend_build.spec
 
 # Unit test / coverage
 .pytest_cache/
