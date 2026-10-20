@@ -12,34 +12,19 @@ WHY THIS EXISTS:
 Prevents symbol format hell by centralizing all conversions.
 No more ad-hoc conversions scattered across the codebase.
 
-INDEX UNIVERSE INTEGRATION:
-Uses IndexUniverseLoader for accurate index constituent mappings.
+SCOPE:
+This module only converts and validates symbol formats. It has no knowledge of
+index membership: use ``index_universe_loader`` (which depends on this module,
+never the other way round) for constituents, membership and company metadata.
 """
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .index_universe_loader import IndexUniverseLoader
 
 logger = logging.getLogger(__name__)
-
-# Lazy import to avoid circular dependencies
-_index_universe_loader: "IndexUniverseLoader | None" = None
-
-
-def _get_index_universe_loader() -> "IndexUniverseLoader":
-    """Lazy load the index universe loader to avoid circular imports."""
-    global _index_universe_loader
-    if _index_universe_loader is None:
-        from .index_universe_loader import index_universe_loader
-
-        _index_universe_loader = index_universe_loader
-    return _index_universe_loader
 
 
 class SymbolFormat(Enum):
@@ -63,7 +48,6 @@ class SymbolInfo:
     isin: str = ""  # ISIN identifier
     lot_size: int = 1  # Standard lot size for orders
     tick_size: float = 0.05  # Minimum price movement
-    indices: list[str] = field(default_factory=list)  # List of indices this symbol belongs to
 
     @property
     def db_format(self) -> str:
@@ -76,8 +60,6 @@ class SymbolInfo:
         # Special handling for indices in Fyers format
         if self.series == "INDEX":
             # Check if there's a special Fyers mapping for this index
-            from .symbol_master import SymbolMaster
-
             fyers_ticker = SymbolMaster.FYERS_INDEX_MAPPING.get(self.ticker, self.ticker)
             return f"{self.exchange}:{fyers_ticker}-INDEX"
         return f"{self.exchange}:{self.ticker}-{self.series}"
@@ -181,7 +163,7 @@ class SymbolMaster:
 
     def _load_symbol_master(self) -> None:
         """
-        Load symbol master from database and index universe.
+        Pre-populate the cache with the known index symbols.
         This runs once at startup.
         """
         # Pre-populate cache with known index symbols
@@ -426,13 +408,16 @@ class SymbolMaster:
 
     def get_info(self, symbol: str) -> SymbolInfo:
         """
-        Get complete symbol information.
+        Get format and trading metadata (exchange, series, lot and tick size).
+
+        Index membership, company name and industry for equities live in
+        ``index_universe_loader`` (``get_symbol_indices`` / ``get_constituent``).
 
         Args:
             symbol: Any format
 
         Returns:
-            SymbolInfo with all details
+            SymbolInfo for the symbol
         """
         ticker = self.to_db(symbol)
 
@@ -445,41 +430,14 @@ class SymbolMaster:
         if ticker in self.INDEX_SYMBOLS:
             series = "INDEX"
 
-        # Get index membership and company info from IndexUniverseLoader
-        company_name = ""
-        sector = ""
-        indices = []
-        lot_size = 1
-        tick_size = 0.05
-
         # Check metadata overrides
         metadata = self.SYMBOL_METADATA.get(ticker, {})
         lot_size = metadata.get("lot_size", 1)
         tick_size = metadata.get("tick_size", 0.05)
 
-        try:
-            loader = _get_index_universe_loader()
-            if loader:
-                # Get indices this symbol belongs to
-                indices = loader.get_symbol_indices(ticker)
-
-                # Try to get company info
-                for index_id in indices:
-                    constituent = loader.get_constituent(ticker, index_id)
-                    if constituent:
-                        company_name = constituent.company_name
-                        sector = constituent.industry
-                        # Series usually EQ for constituents
-                        break
-        except Exception as e:
-            logger.debug(f"Could not load index info for {ticker}: {e}")
-
         info = SymbolInfo(
             ticker=ticker,
             series=series,
-            company_name=company_name,
-            sector=sector,
-            indices=indices,
             lot_size=lot_size,
             tick_size=tick_size,
         )
@@ -504,50 +462,9 @@ class SymbolMaster:
         """Convert multiple symbols to Fyers format"""
         return [self.to_fyers(s) for s in symbols]
 
-    def to_fyers_list(self, symbols: list[str]) -> list[str]:
-        """Alias for batch_to_fyers (compatibility)"""
-        return self.batch_to_fyers(symbols)
-
     def batch_to_db(self, symbols: list[str]) -> list[str]:
         """Convert multiple symbols to DB format"""
         return [self.to_db(s) for s in symbols]
-
-    def get_index_symbols(self, index_id: str) -> list[str]:
-        """
-        Get all symbols in an index.
-
-        Args:
-            index_id: Index identifier (e.g., "NIFTY50", "NIFTYBANK")
-
-        Returns:
-            List of symbols in DB format
-        """
-        try:
-            loader = _get_index_universe_loader()
-            return loader.get_index_symbols(index_id)
-        except Exception as e:
-            logger.exception(f"Failed to get index symbols for {index_id}: {e}")
-            return []
-
-    def is_index_constituent(self, symbol: str, index_id: str) -> bool:
-        """
-        Check if a symbol is a constituents of a specific index.
-
-        Args:
-            symbol: Symbol in any format
-            index_id: Index identifier (e.g., "NIFTY50")
-
-        Returns:
-            True if symbol is in the index
-        """
-        try:
-            # FIXED: Normalize symbol to DB format before checking
-            normalized_symbol = self.to_db(symbol)
-            loader = _get_index_universe_loader()
-            return loader.is_symbol_in_index(normalized_symbol, index_id)
-        except Exception as e:
-            logger.debug(f"Failed to check index membership: {e}")
-            return False
 
     def _is_fyers_format(self, symbol: str) -> bool:
         """Check if symbol is in Fyers format (NSE:SBIN-EQ)"""
