@@ -1271,8 +1271,13 @@ export interface paths {
      *             "fyers": "OK" | "TOKEN_EXPIRED" | "DOWN",
      *             "last_data_update": ISO timestamp,
      *             "total_symbols": int,
-     *             "recommendations": [str]
+     *             "recommendations": [str],
+     *             "startup": "COMPLETE" | "DEFERRED" | "FAILED"
      *         }
+     *
+     *     startup is DEFERRED while the database work skipped at startup (the server started with
+     *     the DB down) is still being retried in the background; status is then at best DEGRADED.
+     *     FAILED means that work hit a non-connection error after the DB came back.
      *
      *     postgresql DOWN means the database is unreachable: the reply is HTTP 503, the same
      *     report plus the standard error envelope (code DATABASE_UNAVAILABLE). ERROR means it
@@ -1966,7 +1971,10 @@ export interface paths {
     };
     /**
      * Get Websocket Status
-     * @description Check WebSocket connection status
+     * @description Check WebSocket connection status.
+     *
+     *     `startup` is DEFERRED while the database work skipped at startup (DB down) is still
+     *     being retried, FAILED if that work hit a non-connection error, else COMPLETE.
      */
     get: operations["get_websocket_status_api_websocket_status_get"];
     put?: never;
