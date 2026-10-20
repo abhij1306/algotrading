@@ -94,6 +94,12 @@ describe("liveQuoteChangePercent", () => {
     expect(liveQuoteChangePercent({ ltp: 812.5, change: 5.5, change_pct: 0.68 })).toBe(0.68);
     expect(liveQuoteChangePercent({ ltp: 812.5, change: 5.5 })).toBeUndefined();
   });
+
+  it("ignores the placeholder zero of a database fallback quote", () => {
+    const fallback = { ltp: 812.5, change: 0, change_pct: 0, source: "database" };
+    expect(liveQuoteChangePercent(fallback)).toBeUndefined();
+    expect(liveQuoteChangePercent({ ...fallback, source: "fyers" })).toBe(0);
+  });
 });
 
 describe("shouldRetry", () => {
