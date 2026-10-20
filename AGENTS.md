@@ -112,11 +112,12 @@ Runtime behavior:
 - Subscriptions are aggregate-delta managed across clients
 - Use `GET /api/websocket/status` as the first operational check for provider connection,
   client counts, queue pressure, and local runtime metrics.
-- `WS /api/websocket/stream` checks the `Origin` header against `config.ALLOWED_ORIGINS`
-  (`CORS_ORIGINS`, the same list CORS uses) and refuses others, including `null`, with close
-  code 1008 before `accept()`. A missing `Origin` is allowed: browsers always send one, so
-  only non-browser clients (scripts, tests) omit it. If the frontend runs on a port outside
-  the default 3000/3001, add it to `CORS_ORIGINS`.
+- `WS /api/websocket/stream` checks the `Origin` header before `accept()`. It allows
+  `config.ALLOWED_ORIGINS` (`CORS_ORIGINS`, the same list CORS uses) plus any
+  `http://localhost`, `http://127.0.0.1` or `http://[::1]` origin on any port, so a frontend
+  moved off 3000 still streams. Anything else, including `null` and look-alikes such as
+  `localhost.evil.com`, is refused with close code 1008. A missing `Origin` is allowed:
+  browsers always send one, so only non-browser clients (scripts, tests) omit it.
 
 ## Sync, Async and Local-Only Rules
 

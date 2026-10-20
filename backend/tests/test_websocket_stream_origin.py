@@ -48,6 +48,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         pytest.param({"origin": "http://localhost:3000"}, id="localhost"),
         pytest.param({"origin": "http://127.0.0.1:3000"}, id="loopback"),
         pytest.param({}, id="no-origin"),
+        pytest.param({"origin": "http://localhost:3002"}, id="loopback-fallback-port"),
+        pytest.param({"origin": "http://127.0.0.1:5173"}, id="loopback-other-port"),
+        pytest.param({"origin": "http://[::1]:3000"}, id="ipv6-loopback"),
     ],
 )
 def test_allowed_handshake_is_accepted(client: TestClient, headers: dict[str, str]) -> None:
@@ -61,8 +64,12 @@ def test_allowed_handshake_is_accepted(client: TestClient, headers: dict[str, st
     "origin",
     [
         pytest.param("https://evil.example", id="other-site"),
-        pytest.param("http://localhost:3999", id="other-port"),
-        pytest.param("https://localhost:3000", id="other-scheme"),
+        pytest.param("https://evil.com", id="other-site-https"),
+        pytest.param("https://localhost:3000", id="loopback-https"),
+        pytest.param("http://localhost.evil.com", id="localhost-prefix"),
+        pytest.param("http://127.0.0.1.evil.com", id="ip-prefix"),
+        pytest.param("http://localhost@evil.com", id="userinfo"),
+        pytest.param("http://localhost:99999", id="bad-port"),
         pytest.param("null", id="null"),
     ],
 )

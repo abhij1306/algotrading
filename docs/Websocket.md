@@ -100,7 +100,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 - Current startup defaults set `DEV_MODE=false`
 
 ## Connection and Stability Rules
-- The stream checks `Origin` before `accept()`: only `config.ALLOWED_ORIGINS` (`CORS_ORIGINS`, shared with CORS) gets in; any other origin, including `null`, is refused with close code 1008 and a throttled warning log. A missing `Origin` (scripts, tests) is allowed
+- The stream checks `Origin` before `accept()`: `config.ALLOWED_ORIGINS` (`CORS_ORIGINS`, shared with CORS) and any `http://localhost`, `http://127.0.0.1` or `http://[::1]` origin on any port (exact hostname, parsed with `urllib.parse`) get in; any other origin, including `null` and look-alikes such as `localhost.evil.com`, is refused with close code 1008 and a throttled warning log. A missing `Origin` (scripts, tests) is allowed
 - Router uses `_safe_send()` to avoid disconnect exceptions leaking
 - `ws_manager.connect()` is handshake-safe and returns `False` if client disappears early
 - `ws_manager.broadcast()` removes dead sockets on `WebSocketDisconnect`/`RuntimeError`

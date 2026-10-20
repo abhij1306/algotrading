@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, WebSocket
 from pydantic import BaseModel
@@ -30,6 +31,8 @@ router = APIRouter()
 WS_POLICY_VIOLATION = 1008
 # The serialized opaque origin browsers send from sandboxed iframes and file:// pages.
 OPAQUE_ORIGIN = "null"
+# Exact hostnames of a page served from this machine (urlsplit drops the IPv6 brackets).
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class SubscribeRequest(BaseModel):
@@ -146,12 +149,37 @@ def _stream_origin_allowed(origin: str | None) -> bool:
     open the stream (cross-site WebSocket hijacking) unless its origin is one of the
     configured frontend origins. A missing Origin header is allowed: it comes from
     non-browser clients such as scripts and tests, which a malicious page can't impersonate.
+    Any http loopback origin is allowed on any port as well, so a frontend that start_dev
+    moved off 3000 still streams; a loopback page is already local.
     The opaque origin "null" (sandboxed iframes, file:// pages) is refused even if
     CORS_ORIGINS lists it, since any page can produce it.
     """
     if origin is None:
         return True
-    return origin != OPAQUE_ORIGIN and origin in config.ALLOWED_ORIGINS
+    if origin == OPAQUE_ORIGIN:
+        return False
+    return origin in config.ALLOWED_ORIGINS or _is_loopback_origin(origin)
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    """Whether origin is exactly http://<loopback host>[:port], with no userinfo or path.
+
+    The hostname must match exactly, so localhost.evil.com, 127.0.0.1.evil.com and
+    http://localhost@evil.com (whose host is evil.com) are not loopback.
+    """
+    try:
+        parts = urlsplit(origin)
+        port = parts.port  # ValueError for a malformed or out-of-range port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "http"
+        and port != 0
+        and parts.hostname in LOOPBACK_HOSTS
+        and parts.username is None
+        and parts.password is None
+        and not (parts.path or parts.query or parts.fragment)
+    )
 
 
 async def _handle_stream_text(
