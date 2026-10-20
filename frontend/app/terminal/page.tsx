@@ -363,7 +363,7 @@ function OptionsBoardPanel({
   onUnderlyingChange: setOptionsUnderlying,
   onExpiryChange: setOptionsExpiry,
   onSelectOption: setSelectedOptionSymbol,
-}: {
+}: Readonly<{
   board: OptionsBoardResponse;
   orderflow: OptionsOrderflowResponse | null;
   underlying: string;
@@ -371,7 +371,7 @@ function OptionsBoardPanel({
   onUnderlyingChange: (value: string) => void;
   onExpiryChange: (value: string) => void;
   onSelectOption: (symbol: string) => void;
-}) {
+}>) {
   return (
     <div className="h-full w-full overflow-auto p-2">
       <div className="mb-2 flex items-center gap-2">
@@ -455,7 +455,7 @@ function OptionsBoardPanel({
   );
 }
 
-function PnlValue({ value }: { value: number }) {
+function PnlValue({ value }: Readonly<{ value: number }>) {
   return <span className={`${pnlTone(value)} tabular-nums`}>{value.toFixed(2)}</span>;
 }
 
@@ -464,12 +464,12 @@ function PositionsPanel({
   error: positionsError,
   positions,
   onSquare: squarePosition,
-}: {
+}: Readonly<{
   summary: PositionsSummary;
   error: string | null;
   positions: PositionItem[];
   onSquare: (row: PositionItem) => Promise<void>;
-}) {
+}>) {
   return (
     <div className="h-full w-full overflow-auto p-2">
       <div className="mb-2 flex items-center gap-4 text-xs">
