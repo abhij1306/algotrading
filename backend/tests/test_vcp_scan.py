@@ -203,10 +203,9 @@ def test_scan_on_the_base_day_never_reads_the_breakout_bar() -> None:
     with_future = service_with_future.scan_symbols(["VCPX"], BASE_DAY, 1_000_000.0, meta)
     without_future = service_without_future.scan_symbols(["VCPX"], BASE_DAY, 1_000_000.0, meta)
 
+    seen = [(s["company_name"], s["sector"], s["pivot_high"]) for s in with_future.signals]
     assert with_future.signals == without_future.signals
-    assert [(s["company_name"], s["sector"], s["pivot_high"]) for s in with_future.signals] == [
-        ("VCPX", "Unknown", 93.46)
-    ]
+    assert seen == [("VCPX", "Unknown", 93.46)]
 
 
 @pytest.mark.parametrize(
