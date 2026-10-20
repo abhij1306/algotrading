@@ -50,6 +50,45 @@ const UNAVAILABLE_MESSAGES: ReadonlyMap<string, string> = new Map([
 
 const SERVICE_UNAVAILABLE_MESSAGE = "Service unavailable: the backend is not ready. Retry shortly.";
 
+/** The backend envelope `{ error: { code, message } }`, or null when it is not one. */
+function fromEnvelope(envelope: unknown, status: number): ApiError | null {
+  if (!isRecord(envelope)) return null;
+  const code = typeof envelope.code === "string" ? envelope.code : null;
+  const friendly = code === null ? undefined : UNAVAILABLE_MESSAGES.get(code);
+  if (code !== null && friendly !== undefined) {
+    return new ApiError({ code, message: friendly, status, details: envelope.details });
+  }
+  if (typeof envelope.message !== "string") return null;
+  return new ApiError({
+    code: code ?? "HTTP_ERROR",
+    message: envelope.message,
+    status,
+    details: envelope.details,
+  });
+}
+
+/** FastAPI's `{ detail: string | [{ msg }] }`, or null when the body is not one. */
+function fromDetail(input: {
+  body: Record<string, unknown>;
+  status: number;
+  fallback: string;
+}): ApiError | null {
+  const { body, status, fallback } = input;
+  const detail = body.detail;
+  if (typeof detail === "string") {
+    return new ApiError({ code: "HTTP_ERROR", message: detail, status, details: body });
+  }
+  if (Array.isArray(detail)) {
+    return new ApiError({
+      code: "VALIDATION_ERROR",
+      message: firstValidationMessage(detail) ?? fallback,
+      status,
+      details: detail,
+    });
+  }
+  return null;
+}
+
 /**
  * Normalise an error response body. Handles the backend envelope
  * `{ error: { code, message } }` and FastAPI's `{ detail: string | [{ msg }] }`.
@@ -64,38 +103,8 @@ export function apiErrorFromResponse(input: {
   const fallback = `HTTP ${status}${statusSuffix}`;
 
   if (isRecord(body)) {
-    const envelope = body.error;
-    const envelopeCode =
-      isRecord(envelope) && typeof envelope.code === "string" ? envelope.code : null;
-    const friendly = envelopeCode === null ? undefined : UNAVAILABLE_MESSAGES.get(envelopeCode);
-    if (envelopeCode !== null && friendly !== undefined) {
-      return new ApiError({
-        code: envelopeCode,
-        message: friendly,
-        status,
-        details: isRecord(envelope) ? envelope.details : undefined,
-      });
-    }
-    if (isRecord(envelope) && typeof envelope.message === "string") {
-      return new ApiError({
-        code: typeof envelope.code === "string" ? envelope.code : "HTTP_ERROR",
-        message: envelope.message,
-        status,
-        details: envelope.details,
-      });
-    }
-    const detail = body.detail;
-    if (typeof detail === "string") {
-      return new ApiError({ code: "HTTP_ERROR", message: detail, status, details: body });
-    }
-    if (Array.isArray(detail)) {
-      return new ApiError({
-        code: "VALIDATION_ERROR",
-        message: firstValidationMessage(detail) ?? fallback,
-        status,
-        details: detail,
-      });
-    }
+    const parsed = fromEnvelope(body.error, status) ?? fromDetail({ body, status, fallback });
+    if (parsed) return parsed;
   }
   if (typeof body === "string" && body.trim() !== "") {
     return new ApiError({ code: "HTTP_ERROR", message: body, status });
