@@ -13,14 +13,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..engines.universe_manager import UniverseManager
 from ..exceptions import InvalidDateError
-from ..models.universe import CustomUniverse
 from ..services.universe import (
     UniverseConstituent,
     UniverseMode,
     get_universe_service,
 )
+from ..services.universe import custom as custom_universes
 from ..utils.dates import parse_iso_date, parse_optional_iso_date
 from ..utils.errors import handle_api_error
 
@@ -288,14 +287,9 @@ def create_custom_universe(req: CreateCustomUniverseRequest, db: DB_DEPENDENCY) 
     Create a custom universe with specified symbols.
     """
     try:
-        manager = UniverseManager()
-
-        # Create custom universe
-        custom_universe = manager.create_custom_universe(
+        custom_universe = custom_universes.create_custom_universe(
             db=db, universe_code=req.universe_code, universe_name=req.name, symbols=req.symbols
         )
-
-        # Commit the transaction
         db.commit()
 
         return {
@@ -306,8 +300,7 @@ def create_custom_universe(req: CreateCustomUniverseRequest, db: DB_DEPENDENCY) 
             "symbol_count": len(req.symbols),
         }
 
-    except ValueError as e:
-        # UniverseManager raises ValueError only with messages we wrote (duplicate code).
+    except custom_universes.DuplicateCustomUniverseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(f"Error creating custom universe: {e}")
@@ -320,27 +313,17 @@ def get_custom_universe(universe_code: str, db: DB_DEPENDENCY) -> dict[str, Any]
     Get a custom universe by code.
     """
     try:
-        # First, look up the universe_id from universe_code
-        custom_universe = (
-            db.query(CustomUniverse).filter(CustomUniverse.universe_code == universe_code).first()
-        )
-
-        if not custom_universe:
+        symbols = custom_universes.get_custom_universe_symbols(db, universe_code)
+        if symbols is None:
             raise HTTPException(
                 status_code=404, detail=f"Custom universe '{universe_code}' not found"
             )
 
-        service = get_universe_service()
-
-        # Get custom universe members using universe_id
-        universe_id: int = custom_universe.id  # type: ignore
-        result = service.get_custom_universe(universe_id=universe_id)
-
         return {
             "universe_code": universe_code,
-            "count": len(result.constituents),
-            "constituents": [c.symbol for c in result.constituents],
-            "source": result.source,
+            "count": len(symbols),
+            "constituents": symbols,
+            "source": "custom_universe",
         }
 
     except HTTPException:
