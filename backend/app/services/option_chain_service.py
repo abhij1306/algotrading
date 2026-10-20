@@ -306,29 +306,32 @@ class OptionChainService:
 
     def _extract_expiries(self, raw_data: dict) -> list[date]:
         expiries: list[date] = []
-
-        def add(exp: date | None) -> None:
+        for exp in self._candidate_expiries(raw_data):
             if exp and exp not in expiries:
                 expiries.append(exp)
+        expiries.sort()
+        return expiries
 
+    def _candidate_expiries(self, raw_data: dict) -> list[date | None]:
+        """Parsed expiry values in schema order: expiryData first, then legacy keys."""
+        candidates: list[date | None] = []
         # New schema: data.expiryData = [{date:"24-02-2026", expiry:"1771927200"}, ...]
         expiry_data = raw_data.get("expiryData", [])
         if isinstance(expiry_data, list):
-            for item in expiry_data:
-                if isinstance(item, dict):
-                    add(
-                        self._parse_expiry_value(item.get("date"))
-                        or self._parse_expiry_value(item.get("expiry"))
-                    )
-
-        # Legacy schema fallback
-        for strike_data in raw_data.values():
-            if isinstance(strike_data, dict):
-                for exp_date_str in strike_data:
-                    add(self._parse_expiry_value(exp_date_str))
-
-        expiries.sort()
-        return expiries
+            candidates.extend(
+                self._parse_expiry_value(item.get("date"))
+                or self._parse_expiry_value(item.get("expiry"))
+                for item in expiry_data
+                if isinstance(item, dict)
+            )
+        # Legacy schema fallback: {strike: {expiry: {...}}}
+        candidates.extend(
+            self._parse_expiry_value(exp_date_str)
+            for strike_data in raw_data.values()
+            if isinstance(strike_data, dict)
+            for exp_date_str in strike_data
+        )
+        return candidates
 
     def _parse_expiry_value(self, value: object) -> date | None:
         if value is None:
