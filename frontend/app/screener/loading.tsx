@@ -1,7 +1,7 @@
 import { Card, PageContainer } from "@/components/ui";
 
 export default function Loading() {
-  const filterSkeletonKeys = ['filter-a', 'filter-b', 'filter-c', 'filter-d', 'filter-e'];
+  const filterSkeletonKeys = ["filter-a", "filter-b", "filter-c", "filter-d", "filter-e"];
   const rowSkeletonKeys = Array.from({ length: 10 }, (_, idx) => `row-${idx + 1}`);
 
   return (
@@ -25,7 +25,10 @@ export default function Loading() {
 
             {/* Data Rows */}
             {rowSkeletonKeys.map((key) => (
-              <div key={key} className="h-12 bg-transparent border-b border-white/5 animate-pulse" />
+              <div
+                key={key}
+                className="h-12 bg-transparent border-b border-white/5 animate-pulse"
+              />
             ))}
           </div>
         </Card>

@@ -70,7 +70,6 @@ if __name__ == "__main__":
                 "nse_data/*",
                 "archive/*",
                 "frontend/*",
-                ".next/*",
                 "venv/*",
             ],
         )

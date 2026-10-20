@@ -25,7 +25,7 @@ pre-commit install
 REM Install frontend dependencies
 echo Installing frontend dependencies...
 cd frontend
-call npm install
+call pnpm install
 cd ..
 
 REM Install backend dependencies
@@ -41,7 +41,7 @@ echo.
 
 echo Frontend checks:
 cd frontend
-call npm run lint
+call pnpm check
 cd ..
 
 echo.

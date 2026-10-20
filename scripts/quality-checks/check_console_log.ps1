@@ -8,7 +8,7 @@ $violations = @()
 $files = Get-ChildItem -Path "frontend" -Include "*.ts","*.tsx" -Recurse -File |
     Where-Object {
         $_.FullName -notmatch "node_modules" -and
-        $_.FullName -notmatch "\.next" -and
+        $_.FullName -notmatch "\out\\" -and
         $_.FullName -notmatch "out" -and
         $_.FullName -notmatch "\.test\." -and
         $_.FullName -notmatch "\.stories\."

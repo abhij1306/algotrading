@@ -34,7 +34,7 @@ export {
   TableCaption,
   DenseTableRow,
   DenseTableCell,
-} from "./Table";
+} from "./table";
 export { Price, PriceChange } from "./price";
 export {
   Skeleton,
@@ -42,13 +42,13 @@ export {
   SkeletonTable,
   SkeletonMetric,
   SkeletonGlassCard,
-} from "./Skeleton";
+} from "./skeleton";
 
 // Navigation
-export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs";
+export { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs";
 
 // Overlay
-export { Tooltip } from "./Tooltip";
+export { Tooltip } from "./tooltip";
 
 // Form Controls
 export { ScrollArea, ScrollBar } from "./ScrollArea";

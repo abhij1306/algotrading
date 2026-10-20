@@ -2,9 +2,9 @@
  * Market Store - Global state management for market data
  * Using Zustand for lightweight, performant state management
  */
-import { create } from 'zustand';
-import { devtools } from 'zustand/middleware';
-import { LiveQuote } from '@/lib/types/api';
+import { create } from "zustand";
+import { devtools } from "zustand/middleware";
+import { LiveQuote } from "@/lib/types/api";
 
 interface MarketState {
   // Selected symbol
@@ -32,7 +32,7 @@ interface MarketState {
     query: string;
     preset: string | null;
   };
-  setScreenerFilters: (filters: Partial<MarketState['screenerFilters']>) => void;
+  setScreenerFilters: (filters: Partial<MarketState["screenerFilters"]>) => void;
 }
 
 export const useMarketStore = create<MarketState>()(
@@ -73,8 +73,8 @@ export const useMarketStore = create<MarketState>()(
 
       // Screener filters
       screenerFilters: {
-        universe: 'nifty50',
-        query: '',
+        universe: "nifty50",
+        query: "",
         preset: null,
       },
       setScreenerFilters: (filters) =>
@@ -82,6 +82,6 @@ export const useMarketStore = create<MarketState>()(
           screenerFilters: { ...state.screenerFilters, ...filters },
         })),
     }),
-    { name: 'MarketStore' }
-  )
+    { name: "MarketStore" },
+  ),
 );

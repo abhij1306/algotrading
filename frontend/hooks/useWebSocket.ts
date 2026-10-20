@@ -1,7 +1,5 @@
-'use client';
-
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { isObject, isTickerData } from '@/lib/type-guards';
+import { useState, useEffect, useCallback, useRef } from "react";
+import { isObject, isTickerData } from "@/lib/type-guards";
 
 interface WebSocketMessage {
   type?: string;
@@ -23,8 +21,8 @@ const MAX_RETRIES = 10;
 const HEARTBEAT_INTERVAL_MS = 30000;
 const MAX_HIDDEN_QUEUE_SIZE = 1000;
 const PONG_EVENT = '{"type":"pong"}';
-const PING_EVENT = 'ping';
-const PONG_PAYLOAD = JSON.stringify({ type: 'pong' });
+const PING_EVENT = "ping";
+const PONG_PAYLOAD = JSON.stringify({ type: "pong" });
 
 interface WebSocketOptions {
   skipStateUpdates?: boolean;
@@ -33,7 +31,7 @@ interface WebSocketOptions {
 
 function emitToCallbacks(
   callbacks: Set<(msg: WebSocketMessage) => void>,
-  message: WebSocketMessage
+  message: WebSocketMessage,
 ): void {
   callbacks.forEach((cb) => {
     try {
@@ -47,23 +45,23 @@ function emitToCallbacks(
 function dispatchIncomingMessage(
   message: WebSocketMessage,
   normalizeTicker: (value: unknown) => Record<string, unknown> | null,
-  emit: (msg: WebSocketMessage) => void
+  emit: (msg: WebSocketMessage) => void,
 ): void {
-  if (message.type === 'ticker_batch' && Array.isArray(message.data)) {
+  if (message.type === "ticker_batch" && Array.isArray(message.data)) {
     for (const tick of message.data) {
       const normalized = normalizeTicker(tick);
       if (normalized) {
-        emit({ type: 'ticker', data: normalized });
+        emit({ type: "ticker", data: normalized });
         continue;
       }
       if (isTickerData(tick)) {
-        emit({ type: 'ticker', data: tick });
+        emit({ type: "ticker", data: tick });
       }
     }
     return;
   }
 
-  if (message.type === 'ticker' && message.data) {
+  if (message.type === "ticker" && message.data) {
     const normalized = normalizeTicker(message.data);
     emit(normalized ? { ...message, data: normalized } : message);
     return;
@@ -92,23 +90,25 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
   optionsRef.current = options;
 
   const getWsUrl = useCallback(() => {
-    if (process.env.NEXT_PUBLIC_WS_URL) {
-      return process.env.NEXT_PUBLIC_WS_URL;
+    if (import.meta.env.VITE_WS_URL) {
+      return import.meta.env.VITE_WS_URL;
     }
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    const apiUrl = import.meta.env.VITE_API_URL;
     if (apiUrl && /^https?:\/\//.test(apiUrl)) {
       const u = new URL(apiUrl);
-      u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
       return `${u.origin}/api/websocket/stream`;
     }
 
-    return 'ws://127.0.0.1:8000/api/websocket/stream';
+    // Same origin: the Vite dev/preview proxy forwards the socket to the backend.
+    const { protocol, host } = globalThis.location;
+    return `${protocol === "https:" ? "wss:" : "ws:"}//${host}/api/websocket/stream`;
   }, []);
 
   const normalizeTicker = useCallback((value: unknown): Record<string, unknown> | null => {
     if (!isObject(value)) return null;
-    const symbol = typeof value.symbol === 'string' ? value.symbol : null;
+    const symbol = typeof value.symbol === "string" ? value.symbol : null;
     if (!symbol) return null;
 
     const ltpRaw = value.ltp ?? value.lp;
@@ -118,9 +118,9 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
     return {
       ...value,
       symbol,
-      ltp: typeof ltpRaw === 'number' ? ltpRaw : undefined,
-      change_pct: typeof changePctRaw === 'number' ? changePctRaw : undefined,
-      volume: typeof volumeRaw === 'number' ? volumeRaw : undefined,
+      ltp: typeof ltpRaw === "number" ? ltpRaw : undefined,
+      change_pct: typeof changePctRaw === "number" ? changePctRaw : undefined,
+      volume: typeof volumeRaw === "number" ? volumeRaw : undefined,
     };
   }, []);
 
@@ -163,11 +163,11 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
         flushQueuedMessages();
       }
     };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     function closeSocket() {
       if (socketRef.current) {
-        socketRef.current.close(1000, 'WebSocket disabled/unmounted');
+        socketRef.current.close(1000, "WebSocket disabled/unmounted");
         socketRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
@@ -245,7 +245,7 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
             }
             dispatchIncomingMessage(message, normalizeTicker, emitMessage);
           } catch (err) {
-            console.warn('[WebSocket] Message parse error:', err);
+            console.warn("[WebSocket] Message parse error:", err);
           }
         };
 
@@ -266,23 +266,24 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
         };
 
         socket.onerror = (event) => {
-          console.warn('[WebSocket] Connection error:', {
+          console.warn("[WebSocket] Connection error:", {
             type: event.type,
             timeStamp: event.timeStamp,
             url: socket.url,
             readyState: socket.readyState,
           });
         };
-
       } catch (err) {
-        console.warn('[WebSocket] Connection creation failed:', err);
+        console.warn("[WebSocket] Connection creation failed:", err);
         isConnectingRef.current = false;
         const isEnabled = optionsRef.current.enabled ?? true;
         retryCountRef.current += 1;
         if (!cancelledRef.current && isEnabled && retryCountRef.current < MAX_RETRIES) {
           reconnectTimeoutRef.current = setTimeout(connectImpl, RECONNECT_INTERVAL);
         } else if (!cancelledRef.current && isEnabled) {
-          console.error('[WebSocket] Max reconnect attempts reached after connection creation failure');
+          console.error(
+            "[WebSocket] Max reconnect attempts reached after connection creation failure",
+          );
         }
       }
     }
@@ -296,16 +297,23 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketHookRetur
       messagesQueueRef.current = [];
 
       closeSocket();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [getWsUrl, normalizeTicker, emitMessage, startHeartbeat, flushQueuedMessages, options.enabled]);
+  }, [
+    getWsUrl,
+    normalizeTicker,
+    emitMessage,
+    startHeartbeat,
+    flushQueuedMessages,
+    options.enabled,
+  ]);
 
   const sendMessage = useCallback((message: unknown) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
-      const payload = typeof message === 'string' ? message : JSON.stringify(message);
+      const payload = typeof message === "string" ? message : JSON.stringify(message);
       socketRef.current.send(payload);
     } else {
-      console.warn('[WebSocket] Cannot send: Not connected');
+      console.warn("[WebSocket] Cannot send: Not connected");
     }
   }, []);
 

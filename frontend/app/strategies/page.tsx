@@ -1,7 +1,5 @@
-'use client';
-
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import dynamic from 'next/dynamic';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "@/lib/dynamic";
 import {
   Badge,
   Button,
@@ -22,8 +20,8 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
-} from '@/components/ui';
-import { screenerAPI, strategiesAPI } from '@/lib/api-client';
+} from "@/components/ui";
+import { screenerAPI, strategiesAPI } from "@/lib/api-client";
 
 type RegimePayload = {
   regime: string;
@@ -126,52 +124,108 @@ type BacktestResult = {
   };
 };
 
-const DynamicSignalChart = dynamic(
-  () =>
-    import('recharts').then((mod) => {
-      const { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } = mod;
-      return function SignalChart({ data }: Readonly<{ data: SignalDetail['chart'] }>) {
-        if (data.length === 0) {
-          return <div className="flex h-full items-center justify-center text-sm text-foreground-secondary">Select a signal to load chart data.</div>;
-        }
+const DynamicSignalChart = dynamic(() =>
+  import("recharts").then((mod) => {
+    const {
+      Bar,
+      CartesianGrid,
+      ComposedChart,
+      Legend,
+      Line,
+      ResponsiveContainer,
+      Tooltip,
+      XAxis,
+      YAxis,
+    } = mod;
+    return function SignalChart({ data }: Readonly<{ data: SignalDetail["chart"] }>) {
+      if (data.length === 0) {
         return (
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={data} margin={{ top: 12, right: 24, left: 0, bottom: 12 }}>
-              <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" />
-              <XAxis dataKey="date" hide />
-              <YAxis yAxisId="price" tick={{ fontSize: 11, fill: 'var(--color-foreground-secondary)' }} />
-              <YAxis yAxisId="volume" orientation="right" tick={{ fontSize: 11, fill: 'var(--color-foreground-muted)' }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'var(--color-elevated)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-md)',
-                  fontSize: '12px',
-                }}
-              />
-              <Legend />
-              <Bar yAxisId="volume" dataKey="volume" fill="rgba(89, 141, 250, 0.18)" name="Volume" />
-              <Line yAxisId="price" type="monotone" dataKey="close" stroke="#f97316" dot={false} strokeWidth={2.2} name="Close" />
-              <Line yAxisId="price" type="monotone" dataKey="ema_21" stroke="#fafafa" dot={false} strokeDasharray="4 4" name="EMA 21" />
-              <Line yAxisId="price" type="monotone" dataKey="ma_50" stroke="#3b82f6" dot={false} name="MA 50" />
-              <Line yAxisId="price" type="monotone" dataKey="ma_150" stroke="#f59e0b" dot={false} name="MA 150" />
-              <Line yAxisId="price" type="monotone" dataKey="ma_200" stroke="#ef4444" dot={false} name="MA 200" />
-            </ComposedChart>
-          </ResponsiveContainer>
+          <div className="flex h-full items-center justify-center text-sm text-foreground-secondary">
+            Select a signal to load chart data.
+          </div>
         );
-      };
-    }),
-  { ssr: false }
+      }
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ top: 12, right: 24, left: 0, bottom: 12 }}>
+            <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" />
+            <XAxis dataKey="date" hide />
+            <YAxis
+              yAxisId="price"
+              tick={{ fontSize: 11, fill: "var(--color-foreground-secondary)" }}
+            />
+            <YAxis
+              yAxisId="volume"
+              orientation="right"
+              tick={{ fontSize: 11, fill: "var(--color-foreground-muted)" }}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "var(--color-elevated)",
+                border: "1px solid var(--color-border)",
+                borderRadius: "var(--radius-md)",
+                fontSize: "12px",
+              }}
+            />
+            <Legend />
+            <Bar yAxisId="volume" dataKey="volume" fill="rgba(89, 141, 250, 0.18)" name="Volume" />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="close"
+              stroke="#f97316"
+              dot={false}
+              strokeWidth={2.2}
+              name="Close"
+            />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="ema_21"
+              stroke="#fafafa"
+              dot={false}
+              strokeDasharray="4 4"
+              name="EMA 21"
+            />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="ma_50"
+              stroke="#3b82f6"
+              dot={false}
+              name="MA 50"
+            />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="ma_150"
+              stroke="#f59e0b"
+              dot={false}
+              name="MA 150"
+            />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="ma_200"
+              stroke="#ef4444"
+              dot={false}
+              name="MA 200"
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    };
+  }),
 );
 
 function formatCurrency(value: number | null | undefined): string {
-  if (typeof value !== 'number' || Number.isNaN(value)) return '--';
-  return `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+  if (typeof value !== "number" || Number.isNaN(value)) return "--";
+  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
 
 function formatPct(value: number | null | undefined): string {
-  if (typeof value !== 'number' || Number.isNaN(value)) return '--';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+  if (typeof value !== "number" || Number.isNaN(value)) return "--";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
 export default function StrategiesPage() {
@@ -185,53 +239,63 @@ export default function StrategiesPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [availableUniverses, setAvailableUniverses] = useState<UniverseOption[]>([]);
-  const [selectedUniverse, setSelectedUniverse] = useState('NIFTY500');
-  const [backtestStart, setBacktestStart] = useState('2025-01-01');
-  const [backtestEnd, setBacktestEnd] = useState('2026-03-13');
-  const [backtestCapital, setBacktestCapital] = useState('1000000');
+  const [selectedUniverse, setSelectedUniverse] = useState("NIFTY500");
+  const [backtestStart, setBacktestStart] = useState("2025-01-01");
+  const [backtestEnd, setBacktestEnd] = useState("2026-03-13");
+  const [backtestCapital, setBacktestCapital] = useState("1000000");
   const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
 
-  const loadWorkspace = useCallback(async (includeSignal = true) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [statusRes, scanRes, positionsRes, historyRes] = await Promise.all([
-        strategiesAPI.getStatus(selectedUniverse),
-        strategiesAPI.getLatestScan(selectedUniverse, showAll),
-        strategiesAPI.getPositions(),
-        strategiesAPI.getBacktestHistory(selectedUniverse),
-      ]);
+  const loadWorkspace = useCallback(
+    async (includeSignal = true) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [statusRes, scanRes, positionsRes, historyRes] = await Promise.all([
+          strategiesAPI.getStatus(selectedUniverse),
+          strategiesAPI.getLatestScan(selectedUniverse, showAll),
+          strategiesAPI.getPositions(),
+          strategiesAPI.getBacktestHistory(selectedUniverse),
+        ]);
 
-      const firstError = statusRes.error ?? scanRes.error ?? positionsRes.error ?? historyRes.error;
-      if (firstError) {
-        setError(firstError.message);
-        setLoading(false);
-        return;
-      }
-
-      setStatus((statusRes.data ?? null) as StrategyStatus | null);
-      setResults((((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? []) as ScanRow[]);
-      setPositions((((positionsRes.data ?? {}) as { positions?: PositionRow[] }).positions ?? []) as PositionRow[]);
-      setBacktestRuns((((historyRes.data ?? {}) as { runs?: BacktestRun[] }).runs ?? []) as BacktestRun[]);
-
-      const nextSymbol =
-        includeSignal
-          ? selectedSymbol ?? ((((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? [])[0]?.symbol ?? null)
-          : selectedSymbol;
-      if (nextSymbol) {
-        const detailRes = await strategiesAPI.getSignal(nextSymbol);
-        if (!detailRes.error && detailRes.data) {
-          setSelectedSymbol(nextSymbol);
-          setSignalDetail(detailRes.data as SignalDetail);
+        const firstError =
+          statusRes.error ?? scanRes.error ?? positionsRes.error ?? historyRes.error;
+        if (firstError) {
+          setError(firstError.message);
+          setLoading(false);
+          return;
         }
+
+        setStatus((statusRes.data ?? null) as StrategyStatus | null);
+        setResults((((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? []) as ScanRow[]);
+        setPositions(
+          (((positionsRes.data ?? {}) as { positions?: PositionRow[] }).positions ??
+            []) as PositionRow[],
+        );
+        setBacktestRuns(
+          (((historyRes.data ?? {}) as { runs?: BacktestRun[] }).runs ?? []) as BacktestRun[],
+        );
+
+        const nextSymbol = includeSignal
+          ? (selectedSymbol ??
+            (((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? [])[0]?.symbol ??
+            null)
+          : selectedSymbol;
+        if (nextSymbol) {
+          const detailRes = await strategiesAPI.getSignal(nextSymbol);
+          if (!detailRes.error && detailRes.data) {
+            setSelectedSymbol(nextSymbol);
+            setSignalDetail(detailRes.data as SignalDetail);
+          }
+        }
+        setLoading(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load workspace");
+        setLoading(false);
       }
-      setLoading(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load workspace');
-      setLoading(false);
-    }
-  }, [selectedSymbol, selectedUniverse, showAll]);
+    },
+    [selectedSymbol, selectedUniverse, showAll],
+  );
 
   useEffect(() => {
     void loadWorkspace();
@@ -243,7 +307,8 @@ export default function StrategiesPage() {
       if (response.error) {
         return;
       }
-      const rows = (((response.data ?? {}) as { indices?: UniverseOption[] }).indices ?? []) as UniverseOption[];
+      const rows = (((response.data ?? {}) as { indices?: UniverseOption[] }).indices ??
+        []) as UniverseOption[];
       setAvailableUniverses(rows);
       if (rows.length > 0 && !rows.some((row) => row.id === selectedUniverse)) {
         setSelectedUniverse(rows[0].id);
@@ -279,7 +344,9 @@ export default function StrategiesPage() {
 
   const onToggleHalt = async () => {
     setBusy(true);
-    const response = status?.halted ? await strategiesAPI.resume() : await strategiesAPI.halt('Manual halt from Strategies page');
+    const response = status?.halted
+      ? await strategiesAPI.resume()
+      : await strategiesAPI.halt("Manual halt from Strategies page");
     setBusy(false);
     if (response.error) {
       setError(response.error.message);
@@ -291,7 +358,7 @@ export default function StrategiesPage() {
   const onQueueToggle = async (row: ScanRow) => {
     setBusy(true);
     const response =
-      row.signal_status === 'PENDING_ENTRY'
+      row.signal_status === "PENDING_ENTRY"
         ? await strategiesAPI.cancelSignal(row.id)
         : await strategiesAPI.queueSignal(row.id);
     setBusy(false);
@@ -316,7 +383,7 @@ export default function StrategiesPage() {
   const onRunBacktest = async () => {
     const parsedCapital = Number.parseFloat(backtestCapital.trim());
     if (!Number.isFinite(parsedCapital) || Number.isNaN(parsedCapital)) {
-      setError('Enter a valid numeric capital amount before running the backtest.');
+      setError("Enter a valid numeric capital amount before running the backtest.");
       return;
     }
     setBusy(true);
@@ -344,24 +411,30 @@ export default function StrategiesPage() {
           <div>
             <h1 className="text-xl font-semibold text-foreground">Strategies</h1>
             <p className="text-sm text-foreground-secondary">
-              VCP scanner, queue management, open positions, and backtest workflow for the selected universe.
+              VCP scanner, queue management, open positions, and backtest workflow for the selected
+              universe.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={status?.regime?.regime === 'BULL' ? 'profit' : 'warning'}>
-              {status?.regime?.regime ?? '--'} · Risk {status?.regime?.risk_pct ?? '--'}%
+            <Badge variant={status?.regime?.regime === "BULL" ? "profit" : "warning"}>
+              {status?.regime?.regime ?? "--"} · Risk {status?.regime?.risk_pct ?? "--"}%
             </Badge>
-            <Badge variant={status?.halted ? 'loss' : 'neutral'}>
-              {status?.halted ? 'HALTED' : 'ACTIVE'}
+            <Badge variant={status?.halted ? "loss" : "neutral"}>
+              {status?.halted ? "HALTED" : "ACTIVE"}
             </Badge>
             <Button variant="secondary" size="sm" onClick={() => setShowAll((value) => !value)}>
-              {showAll ? 'Hide C Grade' : 'Show All'}
+              {showAll ? "Hide C Grade" : "Show All"}
             </Button>
             <Button variant="secondary" size="sm" onClick={onRunScan} disabled={busy}>
-              {busy ? 'Running...' : 'Run Scan Now'}
+              {busy ? "Running..." : "Run Scan Now"}
             </Button>
-            <Button variant={status?.halted ? 'secondary' : 'destructive'} size="sm" onClick={onToggleHalt} disabled={busy}>
-              {status?.halted ? 'Resume' : 'Halt'}
+            <Button
+              variant={status?.halted ? "secondary" : "destructive"}
+              size="sm"
+              onClick={onToggleHalt}
+              disabled={busy}
+            >
+              {status?.halted ? "Resume" : "Halt"}
             </Button>
           </div>
         </div>
@@ -373,7 +446,15 @@ export default function StrategiesPage() {
             <div className="grid grid-cols-5 gap-3 border-b border-border px-4 py-3">
               <Card>
                 <CardContent className="p-3">
-                  <Select label="Universe" value={selectedUniverse} onChange={(e) => { setSelectedUniverse(e.target.value); setSelectedSymbol(null); setSignalDetail(null); }}>
+                  <Select
+                    label="Universe"
+                    value={selectedUniverse}
+                    onChange={(e) => {
+                      setSelectedUniverse(e.target.value);
+                      setSelectedSymbol(null);
+                      setSignalDetail(null);
+                    }}
+                  >
                     {availableUniverses.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.name || item.id}
@@ -382,10 +463,32 @@ export default function StrategiesPage() {
                   </Select>
                 </CardContent>
               </Card>
-              <Card><CardContent className="p-3"><div className="text-xs uppercase text-foreground-muted">Last Scan</div><div className="mt-1 text-sm font-semibold">{status?.latest_scan_date ?? 'Never'}</div></CardContent></Card>
-              <Card><CardContent className="p-3"><div className="text-xs uppercase text-foreground-muted">Pending Entry</div><div className="mt-1 text-sm font-semibold">{status?.pending_entries ?? 0}</div></CardContent></Card>
-              <Card><CardContent className="p-3"><div className="text-xs uppercase text-foreground-muted">Open Positions</div><div className="mt-1 text-sm font-semibold">{status?.open_positions ?? 0}</div></CardContent></Card>
-              <Card><CardContent className="p-3"><div className="text-xs uppercase text-foreground-muted">Signal Count</div><div className="mt-1 text-sm font-semibold">{results.length}</div></CardContent></Card>
+              <Card>
+                <CardContent className="p-3">
+                  <div className="text-xs uppercase text-foreground-muted">Last Scan</div>
+                  <div className="mt-1 text-sm font-semibold">
+                    {status?.latest_scan_date ?? "Never"}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-3">
+                  <div className="text-xs uppercase text-foreground-muted">Pending Entry</div>
+                  <div className="mt-1 text-sm font-semibold">{status?.pending_entries ?? 0}</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-3">
+                  <div className="text-xs uppercase text-foreground-muted">Open Positions</div>
+                  <div className="mt-1 text-sm font-semibold">{status?.open_positions ?? 0}</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-3">
+                  <div className="text-xs uppercase text-foreground-muted">Signal Count</div>
+                  <div className="mt-1 text-sm font-semibold">{results.length}</div>
+                </CardContent>
+              </Card>
             </div>
 
             <Tabs defaultValue="forming" className="flex h-[calc(100%-88px)] flex-col">
@@ -397,12 +500,26 @@ export default function StrategiesPage() {
               </TabsList>
 
               <TabsContent value="forming" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                {loading ? <div className="py-4 text-sm text-foreground-secondary">Loading scanner results...</div> : null}
-                <SignalTable rows={formingRows} onSelect={onSelectSymbol} onQueueToggle={onQueueToggle} selectedSymbol={selectedSymbol} />
+                {loading ? (
+                  <div className="py-4 text-sm text-foreground-secondary">
+                    Loading scanner results...
+                  </div>
+                ) : null}
+                <SignalTable
+                  rows={formingRows}
+                  onSelect={onSelectSymbol}
+                  onQueueToggle={onQueueToggle}
+                  selectedSymbol={selectedSymbol}
+                />
               </TabsContent>
 
               <TabsContent value="breakouts" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                <SignalTable rows={breakoutRows} onSelect={onSelectSymbol} onQueueToggle={onQueueToggle} selectedSymbol={selectedSymbol} />
+                <SignalTable
+                  rows={breakoutRows}
+                  onSelect={onSelectSymbol}
+                  onQueueToggle={onQueueToggle}
+                  selectedSymbol={selectedSymbol}
+                />
               </TabsContent>
 
               <TabsContent value="positions" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
@@ -411,30 +528,64 @@ export default function StrategiesPage() {
 
               <TabsContent value="backtest" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
                 <Card className="mb-4">
-                  <CardHeader><CardTitle className="text-sm">Run VCP Backtest · {selectedUniverse}</CardTitle></CardHeader>
+                  <CardHeader>
+                    <CardTitle className="text-sm">Run VCP Backtest · {selectedUniverse}</CardTitle>
+                  </CardHeader>
                   <CardContent className="grid grid-cols-4 gap-3">
-                    <Input label="Start Date" type="date" value={backtestStart} onChange={(e) => setBacktestStart(e.target.value)} />
-                    <Input label="End Date" type="date" value={backtestEnd} onChange={(e) => setBacktestEnd(e.target.value)} />
-                    <Input label="Capital (₹)" type="number" value={backtestCapital} onChange={(e) => setBacktestCapital(e.target.value)} />
+                    <Input
+                      label="Start Date"
+                      type="date"
+                      value={backtestStart}
+                      onChange={(e) => setBacktestStart(e.target.value)}
+                    />
+                    <Input
+                      label="End Date"
+                      type="date"
+                      value={backtestEnd}
+                      onChange={(e) => setBacktestEnd(e.target.value)}
+                    />
+                    <Input
+                      label="Capital (₹)"
+                      type="number"
+                      value={backtestCapital}
+                      onChange={(e) => setBacktestCapital(e.target.value)}
+                    />
                     <div className="flex items-end">
-                      <Button className="w-full" onClick={onRunBacktest} disabled={busy}>{busy ? 'Running...' : 'Run Backtest'}</Button>
+                      <Button className="w-full" onClick={onRunBacktest} disabled={busy}>
+                        {busy ? "Running..." : "Run Backtest"}
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
 
                 {backtestResult?.result?.metrics ? (
                   <Card className="mb-4">
-                    <CardHeader><CardTitle className="text-sm">Latest Backtest Result</CardTitle></CardHeader>
+                    <CardHeader>
+                      <CardTitle className="text-sm">Latest Backtest Result</CardTitle>
+                    </CardHeader>
                     <CardContent className="grid grid-cols-3 gap-3 text-sm">
-                      <Metric label="Return" value={formatPct(Number(backtestResult.result.metrics.total_return_pct ?? 0))} />
-                      <Metric label="Sharpe" value={String(backtestResult.result.metrics.sharpe_ratio ?? '--')} />
-                      <Metric label="Trades" value={String(backtestResult.result.metrics.total_trades ?? '--')} />
+                      <Metric
+                        label="Return"
+                        value={formatPct(
+                          Number(backtestResult.result.metrics.total_return_pct ?? 0),
+                        )}
+                      />
+                      <Metric
+                        label="Sharpe"
+                        value={String(backtestResult.result.metrics.sharpe_ratio ?? "--")}
+                      />
+                      <Metric
+                        label="Trades"
+                        value={String(backtestResult.result.metrics.total_trades ?? "--")}
+                      />
                     </CardContent>
                   </Card>
                 ) : null}
 
                 <Card>
-                  <CardHeader><CardTitle className="text-sm">History</CardTitle></CardHeader>
+                  <CardHeader>
+                    <CardTitle className="text-sm">History</CardTitle>
+                  </CardHeader>
                   <CardContent className="p-0">
                     <Table>
                       <TableHeader>
@@ -451,11 +602,13 @@ export default function StrategiesPage() {
                         {backtestRuns.map((run) => (
                           <TableRow key={run.run_id}>
                             <TableCell>{run.name || run.run_id}</TableCell>
-                            <TableCell>{run.universe || '--'}</TableCell>
-                            <TableCell>{run.start_date} → {run.end_date}</TableCell>
+                            <TableCell>{run.universe || "--"}</TableCell>
+                            <TableCell>
+                              {run.start_date} → {run.end_date}
+                            </TableCell>
                             <TableCell>{run.status}</TableCell>
                             <TableCell>{formatPct(run.metrics?.total_return_pct)}</TableCell>
-                            <TableCell>{run.metrics?.sharpe_ratio?.toFixed?.(2) ?? '--'}</TableCell>
+                            <TableCell>{run.metrics?.sharpe_ratio?.toFixed?.(2) ?? "--"}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -470,21 +623,49 @@ export default function StrategiesPage() {
             <Card variant="void" className="m-4 mb-0">
               <CardHeader>
                 <CardTitle className="text-sm">
-                  {selectedSignal ? `${selectedSignal.symbol} · ${selectedSignal.grade}-Grade` : 'Signal Detail'}
+                  {selectedSignal
+                    ? `${selectedSignal.symbol} · ${selectedSignal.grade}-Grade`
+                    : "Signal Detail"}
                 </CardTitle>
               </CardHeader>
               <CardContent className="grid grid-cols-2 gap-3 text-sm">
-                <Metric label="RS Rating" value={selectedSignal ? String(selectedSignal.rs_rating) : '--'} />
-                <Metric label="Contractions" value={selectedSignal ? selectedSignal.contraction_depths.map(d => `${d}%`).join(' → ') : '--'} />
-                <Metric label="Pivot High" value={selectedSignal ? formatCurrency(selectedSignal.pivot_high) : '--'} />
-                <Metric label="Stop Level" value={selectedSignal ? formatCurrency(selectedSignal.stop_level) : '--'} />
-                <Metric label="Position Value" value={selectedSignal ? formatCurrency(selectedSignal.planned_position_value) : '--'} />
-                <Metric label="2R Target" value={selectedSignal ? formatCurrency(selectedSignal.two_r_target) : '--'} />
+                <Metric
+                  label="RS Rating"
+                  value={selectedSignal ? String(selectedSignal.rs_rating) : "--"}
+                />
+                <Metric
+                  label="Contractions"
+                  value={
+                    selectedSignal
+                      ? selectedSignal.contraction_depths.map((d) => `${d}%`).join(" → ")
+                      : "--"
+                  }
+                />
+                <Metric
+                  label="Pivot High"
+                  value={selectedSignal ? formatCurrency(selectedSignal.pivot_high) : "--"}
+                />
+                <Metric
+                  label="Stop Level"
+                  value={selectedSignal ? formatCurrency(selectedSignal.stop_level) : "--"}
+                />
+                <Metric
+                  label="Position Value"
+                  value={
+                    selectedSignal ? formatCurrency(selectedSignal.planned_position_value) : "--"
+                  }
+                />
+                <Metric
+                  label="2R Target"
+                  value={selectedSignal ? formatCurrency(selectedSignal.two_r_target) : "--"}
+                />
               </CardContent>
             </Card>
 
             <Card variant="void" className="m-4 flex min-h-0 flex-1 flex-col">
-              <CardHeader><CardTitle className="text-sm">Chart</CardTitle></CardHeader>
+              <CardHeader>
+                <CardTitle className="text-sm">Chart</CardTitle>
+              </CardHeader>
               <CardContent className="min-h-0 flex-1">
                 <div className="h-full min-h-[360px]">
                   <DynamicSignalChart data={signalDetail?.chart ?? []} />
@@ -536,26 +717,44 @@ function SignalTable({
         {rows.map((row) => (
           <TableRow
             key={row.id}
-            className={selectedSymbol === row.symbol ? 'bg-background-tertiary' : ''}
+            className={selectedSymbol === row.symbol ? "bg-background-tertiary" : ""}
             onClick={() => onSelect(row.symbol)}
             tabIndex={0}
             role="button"
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(row.symbol); } }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(row.symbol);
+              }
+            }}
           >
-            <TableCell><Badge variant={row.grade === 'A' ? 'profit' : row.grade === 'B' ? 'warning' : 'neutral'}>{row.grade}</Badge></TableCell>
+            <TableCell>
+              <Badge
+                variant={row.grade === "A" ? "profit" : row.grade === "B" ? "warning" : "neutral"}
+              >
+                {row.grade}
+              </Badge>
+            </TableCell>
             <TableCell>
               <div className="font-medium">{row.symbol}</div>
               <div className="text-xs text-foreground-secondary">{row.company_name}</div>
             </TableCell>
             <TableCell>{row.rs_rating}</TableCell>
-            <TableCell>{row.contraction_depths.join(' → ')}%</TableCell>
+            <TableCell>{row.contraction_depths.join(" → ")}%</TableCell>
             <TableCell>{formatPct(-row.volume_dry_up_pct + 100)}</TableCell>
             <TableCell>{formatCurrency(row.pivot_high)}</TableCell>
             <TableCell>{formatPct(-row.stop_pct)}</TableCell>
             <TableCell>
               {row.is_breakout ? (
-                <Button size="sm" variant={row.signal_status === 'PENDING_ENTRY' ? 'secondary' : 'primary'} onClick={(e) => { e.stopPropagation(); onQueueToggle(row); }}>
-                  {row.signal_status === 'PENDING_ENTRY' ? 'Queued' : 'Queue'}
+                <Button
+                  size="sm"
+                  variant={row.signal_status === "PENDING_ENTRY" ? "secondary" : "primary"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQueueToggle(row);
+                  }}
+                >
+                  {row.signal_status === "PENDING_ENTRY" ? "Queued" : "Queue"}
                 </Button>
               ) : (
                 <Badge variant="neutral">Watch</Badge>
@@ -564,7 +763,11 @@ function SignalTable({
           </TableRow>
         ))}
         {rows.length === 0 ? (
-          <TableRow><TableCell colSpan={8} className="py-6 text-center text-sm text-foreground-secondary">No signals in this view.</TableCell></TableRow>
+          <TableRow>
+            <TableCell colSpan={8} className="py-6 text-center text-sm text-foreground-secondary">
+              No signals in this view.
+            </TableCell>
+          </TableRow>
         ) : null}
       </TableBody>
     </Table>
@@ -601,15 +804,25 @@ function PositionTable({
             <TableCell>{formatCurrency(row.ltp)}</TableCell>
             <TableCell>
               <div>{formatCurrency(row.unrealized_pnl)}</div>
-              <div className="text-xs text-foreground-secondary">{formatPct(row.unrealized_pnl_pct)}</div>
+              <div className="text-xs text-foreground-secondary">
+                {formatPct(row.unrealized_pnl_pct)}
+              </div>
             </TableCell>
-            <TableCell>{row.r_multiple?.toFixed(2) ?? '--'}</TableCell>
+            <TableCell>{row.r_multiple?.toFixed(2) ?? "--"}</TableCell>
             <TableCell>{row.status}</TableCell>
-            <TableCell><Button size="sm" variant="secondary" onClick={() => onClose(row.id)}>Close Now</Button></TableCell>
+            <TableCell>
+              <Button size="sm" variant="secondary" onClick={() => onClose(row.id)}>
+                Close Now
+              </Button>
+            </TableCell>
           </TableRow>
         ))}
         {rows.length === 0 ? (
-          <TableRow><TableCell colSpan={8} className="py-6 text-center text-sm text-foreground-secondary">No open positions.</TableCell></TableRow>
+          <TableRow>
+            <TableCell colSpan={8} className="py-6 text-center text-sm text-foreground-secondary">
+              No open positions.
+            </TableCell>
+          </TableRow>
         ) : null}
       </TableBody>
     </Table>

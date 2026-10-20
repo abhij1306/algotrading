@@ -1,5 +1,3 @@
-"use client";
-
 import { ReactNode, createContext, useCallback, useContext, useState } from "react";
 
 type ToastType = "success" | "error" | "warning" | "info";
@@ -39,7 +37,7 @@ export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
         }, duration);
       }
     },
-    [removeToast]
+    [removeToast],
   );
 
   return (
@@ -76,7 +74,10 @@ function ToastContainer({
   );
 }
 
-function ToastItem({ toast, onRemove }: Readonly<{ toast: Toast; onRemove: (_id: string) => void }>) {
+function ToastItem({
+  toast,
+  onRemove,
+}: Readonly<{ toast: Toast; onRemove: (_id: string) => void }>) {
   const icons = {
     success: "✅",
     error: "❌",
@@ -92,23 +93,23 @@ function ToastItem({ toast, onRemove }: Readonly<{ toast: Toast; onRemove: (_id:
   };
 
   return (
-      <div
-        className={`glass-strong rounded-lg p-4 border ${colors[toast.type]}
+    <div
+      className={`glass-strong rounded-lg p-4 border ${colors[toast.type]}
                   animate-slide-in flex items-start gap-3 min-w-[300px]`}
-      >
-        <span className="text-xl">{icons[toast.type]}</span>
-        <div className="flex-1">
-          <p className="text-sm text-foreground">{toast.message}</p>
-        </div>
-        <button
-          onClick={() => onRemove(toast.id)}
-          className="text-foreground-muted hover:text-foreground transition-colors"
-          aria-label="Dismiss notification"
-        >
-          ✕
-        </button>
+    >
+      <span className="text-xl">{icons[toast.type]}</span>
+      <div className="flex-1">
+        <p className="text-sm text-foreground">{toast.message}</p>
       </div>
-    );
+      <button
+        onClick={() => onRemove(toast.id)}
+        className="text-foreground-muted hover:text-foreground transition-colors"
+        aria-label="Dismiss notification"
+      >
+        ✕
+      </button>
+    </div>
+  );
 }
 
 // Convenience hooks

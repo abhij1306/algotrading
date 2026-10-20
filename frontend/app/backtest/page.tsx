@@ -1,7 +1,5 @@
-'use client';
-
-import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   Badge,
   Button,
@@ -19,8 +17,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui';
-import { apiClient } from '@/lib/api-client';
+} from "@/components/ui";
+import { apiClient } from "@/lib/api-client";
 
 type StrategyMeta = {
   id: string;
@@ -31,13 +29,21 @@ type StrategyMeta = {
 type BacktestStatus = {
   data_ready: boolean;
   instrument_capabilities: Record<string, { enabled: boolean; note: string }>;
-  universe_ranges: Record<string, { available: boolean; min_date: string | null; max_date: string | null; rows?: number }>;
-  stock_range: { available: boolean; min_date: string | null; max_date: string | null; rows?: number };
+  universe_ranges: Record<
+    string,
+    { available: boolean; min_date: string | null; max_date: string | null; rows?: number }
+  >;
+  stock_range: {
+    available: boolean;
+    min_date: string | null;
+    max_date: string | null;
+    rows?: number;
+  };
 };
 
 type BacktestRunItem = {
   job_id: string;
-  status: 'running' | 'completed' | 'failed';
+  status: "running" | "completed" | "failed";
   created_at: string;
   params: {
     instrument_type?: string;
@@ -57,25 +63,25 @@ type StrategyAllocation = {
 };
 
 function formatCompactCapital(value: number | null | undefined): string {
-  if (typeof value !== 'number' || Number.isNaN(value)) return '--';
+  if (typeof value !== "number" || Number.isNaN(value)) return "--";
   if (value >= 10000000) return `₹${(value / 10000000).toFixed(1)}Cr`;
   if (value >= 100000) return `₹${(value / 100000).toFixed(1)}L`;
-  return `₹${value.toLocaleString('en-IN')}`;
+  return `₹${value.toLocaleString("en-IN")}`;
 }
 
 export default function BacktestPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<BacktestStatus | null>(null);
   const [strategies, setStrategies] = useState<StrategyMeta[]>([]);
   const [runs, setRuns] = useState<BacktestRunItem[]>([]);
-  const [name, setName] = useState('');
-  const [instrumentType, setInstrumentType] = useState<'equity' | 'options'>('equity');
-  const [selectionMode, setSelectionMode] = useState<'universe' | 'symbols'>('universe');
-  const [universe, setUniverse] = useState('NIFTY50');
-  const [symbols, setSymbols] = useState('RELIANCE,SBIN,TCS');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [initialCapital, setInitialCapital] = useState('1000000');
+  const [name, setName] = useState("");
+  const [instrumentType, setInstrumentType] = useState<"equity" | "options">("equity");
+  const [selectionMode, setSelectionMode] = useState<"universe" | "symbols">("universe");
+  const [universe, setUniverse] = useState("NIFTY50");
+  const [symbols, setSymbols] = useState("RELIANCE,SBIN,TCS");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [initialCapital, setInitialCapital] = useState("1000000");
   const [allocations, setAllocations] = useState<StrategyAllocation[]>([]);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -87,9 +93,9 @@ export default function BacktestPage() {
       setError(null);
 
       const [statusRes, strategyRes, runsRes] = await Promise.all([
-        apiClient.get<BacktestStatus>('/api/backtest/status'),
-        apiClient.get<{ strategies: StrategyMeta[] }>('/api/backtest/strategies'),
-        apiClient.get<{ runs: BacktestRunItem[] }>('/api/backtest/runs'),
+        apiClient.get<BacktestStatus>("/api/backtest/status"),
+        apiClient.get<{ strategies: StrategyMeta[] }>("/api/backtest/strategies"),
+        apiClient.get<{ runs: BacktestRunItem[] }>("/api/backtest/runs"),
       ]);
 
       if (statusRes.error) {
@@ -106,13 +112,14 @@ export default function BacktestPage() {
       setAllocations(
         strategyRows.map((s) => ({
           strategy_id: s.id,
-          enabled: s.id === 'MOMENTUM_2D',
+          enabled: s.id === "MOMENTUM_2D",
           weight: String(s.default_weight ?? 1),
-        }))
+        })),
       );
 
       const firstUniverse = Object.keys(statusPayload?.universe_ranges ?? {})[0];
-      const prefillUniverse = (statusPayload?.universe_ranges?.NIFTY50 ? 'NIFTY50' : firstUniverse) || 'NIFTY50';
+      const prefillUniverse =
+        (statusPayload?.universe_ranges?.NIFTY50 ? "NIFTY50" : firstUniverse) || "NIFTY50";
       setUniverse(prefillUniverse);
 
       const range = statusPayload?.universe_ranges?.[prefillUniverse];
@@ -135,7 +142,7 @@ export default function BacktestPage() {
   const selectedCount = useMemo(() => allocations.filter((a) => a.enabled).length, [allocations]);
   const selectedWeightSum = useMemo(
     () => allocations.filter((a) => a.enabled).reduce((sum, a) => sum + (Number(a.weight) || 0), 0),
-    [allocations]
+    [allocations],
   );
 
   const onToggleStrategy = (id: string, enabled: boolean) => {
@@ -166,21 +173,27 @@ export default function BacktestPage() {
       end_date: endDate,
       initial_capital: Number(initialCapital),
       selection:
-        selectionMode === 'universe'
-          ? { mode: 'universe', universe }
-          : { mode: 'symbols', symbols: symbols.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean) },
+        selectionMode === "universe"
+          ? { mode: "universe", universe }
+          : {
+              mode: "symbols",
+              symbols: symbols
+                .split(",")
+                .map((s) => s.trim().toUpperCase())
+                .filter(Boolean),
+            },
       strategies: strategiesPayload,
-      execution: { rebalance: 'daily' },
+      execution: { rebalance: "daily" },
     };
 
-    const res = await apiClient.post<RunResponse>('/api/backtest/run', payload);
+    const res = await apiClient.post<RunResponse>("/api/backtest/run", payload);
     setRunning(false);
 
     if (res.error || !res.data) {
-      setError(res.error?.message || 'Failed to run backtest');
+      setError(res.error?.message || "Failed to run backtest");
       return;
     }
-    router.push(`/backtest/results/${res.data.job_id}`);
+    void navigate(`/backtest/results/${res.data.job_id}`);
   };
 
   return (
@@ -189,16 +202,21 @@ export default function BacktestPage() {
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface px-4">
           <h1 className="text-xl font-semibold text-foreground">Backtest</h1>
           <div className="flex items-center gap-2">
-            <Badge size="sm" variant={status?.data_ready ? 'profit' : 'warning'}>
-              {status?.data_ready ? 'Data Ready' : 'Data Not Ready'}
+            <Badge size="sm" variant={status?.data_ready ? "profit" : "warning"}>
+              {status?.data_ready ? "Data Ready" : "Data Not Ready"}
             </Badge>
-            <Badge size="sm" variant={status?.instrument_capabilities?.options?.enabled ? 'neutral' : 'warning'}>
-              {status?.instrument_capabilities?.options?.enabled ? 'Options On' : 'Options Blocked'}
+            <Badge
+              size="sm"
+              variant={status?.instrument_capabilities?.options?.enabled ? "neutral" : "warning"}
+            >
+              {status?.instrument_capabilities?.options?.enabled ? "Options On" : "Options Blocked"}
             </Badge>
           </div>
         </div>
 
-        {loading && <div className="p-4 text-sm text-foreground-secondary">Loading backtest workspace...</div>}
+        {loading && (
+          <div className="p-4 text-sm text-foreground-secondary">Loading backtest workspace...</div>
+        )}
         {error && <div className="bg-loss-bg p-4 text-sm text-loss">{error}</div>}
 
         {!loading && (
@@ -207,7 +225,9 @@ export default function BacktestPage() {
               <div className="flex-1 overflow-y-auto custom-scrollbar">
                 <Card variant="void" className="rounded-none border-0 border-b border-border">
                   <CardHeader className="px-4 py-3">
-                    <CardTitle className="text-sm uppercase tracking-wider text-foreground-muted">Run Configuration</CardTitle>
+                    <CardTitle className="text-sm uppercase tracking-wider text-foreground-muted">
+                      Run Configuration
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3 px-4 pb-4 pt-0">
                     <Input
@@ -221,7 +241,7 @@ export default function BacktestPage() {
                       <Select
                         label="Instrument"
                         value={instrumentType}
-                        onChange={(e) => setInstrumentType(e.target.value as 'equity' | 'options')}
+                        onChange={(e) => setInstrumentType(e.target.value as "equity" | "options")}
                       >
                         <option value="equity">Equity</option>
                         <option value="options">Options</option>
@@ -255,20 +275,22 @@ export default function BacktestPage() {
                     <Select
                       label="Selection Mode"
                       value={selectionMode}
-                      onChange={(e) => setSelectionMode(e.target.value as 'universe' | 'symbols')}
+                      onChange={(e) => setSelectionMode(e.target.value as "universe" | "symbols")}
                     >
                       <option value="universe">Index Universe</option>
                       <option value="symbols">Specific Symbols</option>
                     </Select>
 
-                    {selectionMode === 'universe' ? (
+                    {selectionMode === "universe" ? (
                       <Select
                         label="Universe"
                         value={universe}
                         onChange={(e) => setUniverse(e.target.value)}
                       >
                         {Object.keys(status?.universe_ranges ?? { NIFTY50: {} }).map((u) => (
-                          <option key={u} value={u}>{u}</option>
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
                         ))}
                       </Select>
                     ) : (
@@ -286,22 +308,35 @@ export default function BacktestPage() {
                     <CardContent className="space-y-2 p-4 text-xs">
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Universe</span>
-                        <span className="mono-num text-foreground">{selectionMode === 'universe' ? universe : 'Custom Symbols'}</span>
+                        <span className="mono-num text-foreground">
+                          {selectionMode === "universe" ? universe : "Custom Symbols"}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Range</span>
-                        <span className="mono-num text-foreground">{startDate || '--'} → {endDate || '--'}</span>
+                        <span className="mono-num text-foreground">
+                          {startDate || "--"} → {endDate || "--"}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Capital</span>
-                        <span className="mono-num text-foreground">{formatCompactCapital(Number(initialCapital) || 0)}</span>
+                        <span className="mono-num text-foreground">
+                          {formatCompactCapital(Number(initialCapital) || 0)}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Strategies</span>
-                        <span className="mono-num text-foreground">{selectedCount} active · Σw={selectedWeightSum.toFixed(2)}</span>
+                        <span className="mono-num text-foreground">
+                          {selectedCount} active · Σw={selectedWeightSum.toFixed(2)}
+                        </span>
                       </div>
-                      <Button variant="primary" className="mt-2 w-full" onClick={onRun} disabled={running || selectedCount === 0}>
-                        {running ? 'Running...' : 'Run Backtest'}
+                      <Button
+                        variant="primary"
+                        className="mt-2 w-full"
+                        onClick={onRun}
+                        disabled={running || selectedCount === 0}
+                      >
+                        {running ? "Running..." : "Run Backtest"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -310,40 +345,55 @@ export default function BacktestPage() {
             </div>
 
             <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-              <div className="shrink-0 overflow-y-auto border-b border-border bg-surface custom-scrollbar" style={{ maxHeight: '40vh' }}>
+              <div
+                className="shrink-0 overflow-y-auto border-b border-border bg-surface custom-scrollbar"
+                style={{ maxHeight: "40vh" }}
+              >
                 <Card variant="void" className="rounded-none border-0">
                   <CardHeader className="flex-row items-center justify-between px-5 py-3">
                     <div>
                       <CardTitle className="text-foreground">Strategies</CardTitle>
-                      <p className="text-xs text-foreground-muted">Select and weight strategies for this run</p>
+                      <p className="text-xs text-foreground-muted">
+                        Select and weight strategies for this run
+                      </p>
                     </div>
-                    <Badge variant="outline">{selectedCount} active · Σw={selectedWeightSum.toFixed(2)}</Badge>
+                    <Badge variant="outline">
+                      {selectedCount} active · Σw={selectedWeightSum.toFixed(2)}
+                    </Badge>
                   </CardHeader>
                   <CardContent className="grid gap-3 px-5 pb-4 pt-0 md:grid-cols-2 xl:grid-cols-3">
                     {strategies.map((s) => {
                       const allocation = allocations.find((a) => a.strategy_id === s.id);
                       return (
-                        <Card key={s.id} variant={allocation?.enabled ? 'glass' : 'outline'}>
+                        <Card key={s.id} variant={allocation?.enabled ? "glass" : "outline"}>
                           <CardContent className="space-y-2 p-4">
                             <div className="flex items-start justify-between gap-2">
                               <div>
-                                <div className="text-sm font-semibold text-foreground">{s.name}</div>
-                                <div className="text-xs text-foreground-muted">{s.id.replaceAll('_', ' ')}</div>
+                                <div className="text-sm font-semibold text-foreground">
+                                  {s.name}
+                                </div>
+                                <div className="text-xs text-foreground-muted">
+                                  {s.id.replaceAll("_", " ")}
+                                </div>
                               </div>
                               <Checkbox
                                 checked={!!allocation?.enabled}
-                                onChange={(e) => onToggleStrategy(s.id, (e.target as HTMLInputElement).checked)}
+                                onChange={(e) =>
+                                  onToggleStrategy(s.id, (e.target as HTMLInputElement).checked)
+                                }
                               />
                             </div>
                             <div className="flex items-center justify-between gap-2">
-                              <Badge variant="outline" size="xs">{s.id}</Badge>
+                              <Badge variant="outline" size="xs">
+                                {s.id}
+                              </Badge>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-foreground-muted">Weight</span>
                                 <Input
                                   type="number"
                                   min="0"
                                   step="0.1"
-                                  value={allocation?.weight ?? '0'}
+                                  value={allocation?.weight ?? "0"}
                                   onChange={(e) => onWeightChange(s.id, e.target.value)}
                                   className="w-20"
                                 />
@@ -360,7 +410,9 @@ export default function BacktestPage() {
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border">
                 <div className="shrink-0 border-b border-border bg-surface px-5 py-3">
                   <h3 className="text-lg font-semibold text-foreground">Recent Runs</h3>
-                  <p className="text-xs text-foreground-muted">Click a completed run to view results</p>
+                  <p className="text-xs text-foreground-muted">
+                    Click a completed run to view results
+                  </p>
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-auto custom-scrollbar">
@@ -382,19 +434,45 @@ export default function BacktestPage() {
                       <TableBody>
                         {runs.map((r) => (
                           <TableRow key={r.job_id}>
-                            <TableCell className="mono-num font-semibold text-foreground">{r.job_id}</TableCell>
+                            <TableCell className="mono-num font-semibold text-foreground">
+                              {r.job_id}
+                            </TableCell>
                             <TableCell>
-                              <Badge variant={r.status === 'completed' ? 'profit' : r.status === 'failed' ? 'loss' : 'warning'}>
+                              <Badge
+                                variant={
+                                  r.status === "completed"
+                                    ? "profit"
+                                    : r.status === "failed"
+                                      ? "loss"
+                                      : "warning"
+                                }
+                              >
                                 {r.status}
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-foreground">{(r.params.instrument_type || 'equity').replace(/^./, (c) => c.toUpperCase())}</TableCell>
-                            <TableCell className="mono-num text-foreground-secondary">{r.params.start_date} → {r.params.end_date}</TableCell>
-                            <TableCell className="text-foreground-secondary">{r.params.selection?.mode === 'symbols' ? 'Symbols' : (r.params.selection?.universe || 'NIFTY50')}</TableCell>
-                            <TableCell numeric className="text-foreground">{formatCompactCapital(r.params.initial_capital)}</TableCell>
+                            <TableCell className="text-foreground">
+                              {(r.params.instrument_type || "equity").replace(/^./, (c) =>
+                                c.toUpperCase(),
+                              )}
+                            </TableCell>
+                            <TableCell className="mono-num text-foreground-secondary">
+                              {r.params.start_date} → {r.params.end_date}
+                            </TableCell>
+                            <TableCell className="text-foreground-secondary">
+                              {r.params.selection?.mode === "symbols"
+                                ? "Symbols"
+                                : r.params.selection?.universe || "NIFTY50"}
+                            </TableCell>
+                            <TableCell numeric className="text-foreground">
+                              {formatCompactCapital(r.params.initial_capital)}
+                            </TableCell>
                             <TableCell className="text-right">
-                              <Button size="sm" variant={r.status === 'failed' ? 'secondary' : 'link'} onClick={() => router.push(`/backtest/results/${r.job_id}`)}>
-                                {r.status === 'failed' ? 'Retry' : 'View →'}
+                              <Button
+                                size="sm"
+                                variant={r.status === "failed" ? "secondary" : "link"}
+                                onClick={() => void navigate(`/backtest/results/${r.job_id}`)}
+                              >
+                                {r.status === "failed" ? "Retry" : "View →"}
                               </Button>
                             </TableCell>
                           </TableRow>

@@ -30,8 +30,7 @@ python backend/start_server.py
 
 ```bash
 cd frontend
-rm -rf .next
-npm run dev
+pnpm dev
 ```
 
 ## What Was Fixed

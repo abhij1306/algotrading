@@ -1,4 +1,5 @@
 import os
+import shutil
 import platform
 import socket
 import subprocess
@@ -136,7 +137,9 @@ def main() -> None:
                 )
 
     python_cmd = build_python_command(project_root)
-    npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+    pnpm_cmd = shutil.which("pnpm")
+    if pnpm_cmd is None:
+        raise RuntimeError("pnpm is not on PATH. Install it from https://pnpm.io/installation.")
     create_console_flag = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
     backend_env = os.environ.copy()
@@ -149,8 +152,8 @@ def main() -> None:
 
     frontend_env = os.environ.copy()
     frontend_env["PORT"] = str(frontend_port)
-    frontend_env["NEXT_PUBLIC_API_URL"] = f"http://127.0.0.1:{backend_port}"
-    frontend_env["NEXT_PUBLIC_WS_URL"] = f"ws://127.0.0.1:{backend_port}/api/websocket/stream"
+    # The Vite dev server proxies /api (HTTP and WebSocket) to this backend.
+    frontend_env["BACKEND_URL"] = f"http://127.0.0.1:{backend_port}"
 
     backend_proc = None
     if launch_backend:
@@ -170,7 +173,7 @@ def main() -> None:
 
     print(f"Launching frontend on http://127.0.0.1:{frontend_port}")
     subprocess.Popen(
-        [npm_cmd, "run", "dev"],
+        [pnpm_cmd, "dev"],
         cwd=frontend_dir,
         env=frontend_env,
         creationflags=create_console_flag,

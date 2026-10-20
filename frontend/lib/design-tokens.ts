@@ -17,36 +17,36 @@
  */
 export type ColorToken =
   // Background colors
-  | 'background'
-  | 'background-secondary'
-  | 'background-tertiary'
-  | 'surface'
-  | 'elevated'
+  | "background"
+  | "background-secondary"
+  | "background-tertiary"
+  | "surface"
+  | "elevated"
 
   // Foreground (text) colors
-  | 'foreground'
-  | 'foreground-secondary'
-  | 'foreground-tertiary'
-  | 'foreground-muted'
+  | "foreground"
+  | "foreground-secondary"
+  | "foreground-tertiary"
+  | "foreground-muted"
 
   // Border colors
-  | 'border'
-  | 'border-subtle'
-  | 'border-focus'
+  | "border"
+  | "border-subtle"
+  | "border-focus"
 
   // Primary brand colors
-  | 'primary'
-  | 'primary-hover'
-  | 'primary-light'
-  | 'primary-foreground'
+  | "primary"
+  | "primary-hover"
+  | "primary-light"
+  | "primary-foreground"
 
   // Semantic financial colors
-  | 'profit'
-  | 'profit-bg'
-  | 'loss'
-  | 'loss-bg'
-  | 'warning'
-  | 'warning-bg';
+  | "profit"
+  | "profit-bg"
+  | "loss"
+  | "loss-bg"
+  | "warning"
+  | "warning-bg";
 
 /**
  * Helper type to generate CSS variable references for color tokens.
@@ -97,7 +97,7 @@ export type SpacingVariable = `var(--spacing-${SpacingToken})`;
  * 'xl' = 12px - Extra large radius for prominent elements
  * 'full' = 9999px - Full radius for circular elements
  */
-export type RadiusToken = 'sm' | 'md' | 'lg' | 'xl' | 'full';
+export type RadiusToken = "sm" | "md" | "lg" | "xl" | "full";
 
 /**
  * Helper type to generate CSS variable references for radius tokens.
@@ -120,7 +120,7 @@ export type RadiusVariable = `var(--radius-${RadiusToken})`;
  * 'lg' - Large shadow for modals and popovers
  * 'xl' - Extra large shadow for prominent overlays
  */
-export type ShadowToken = 'sm' | 'md' | 'lg' | 'xl';
+export type ShadowToken = "sm" | "md" | "lg" | "xl";
 
 /**
  * Helper type to generate CSS variable references for shadow tokens.
@@ -140,7 +140,7 @@ export type ShadowVariable = `var(--shadow-${ShadowToken})`;
  * 'sans' - IBM Plex Sans for general UI text
  * 'mono' - DM Mono for financial data and code
  */
-export type FontFamily = 'sans' | 'mono';
+export type FontFamily = "sans" | "mono";
 
 /**
  * Helper type to generate CSS variable references for font family tokens.
@@ -161,7 +161,7 @@ export type FontFamilyVariable = `var(--font-${FontFamily})`;
  * 'xl'  = 20px - Extra large (headings)
  * '2xl' = 24px - 2x extra large (page titles)
  */
-export type FontSize = 'xxs' | 'xs' | 'sm' | 'base' | 'lg' | 'xl' | '2xl';
+export type FontSize = "xxs" | "xs" | "sm" | "base" | "lg" | "xl" | "2xl";
 
 /**
  * Helper type to generate CSS variable references for font size tokens.
@@ -179,7 +179,7 @@ export type FontSizeVariable = `var(--text-${FontSize})`;
  * 'semibold' = 600 - Emphasized text, buttons
  * 'bold' = 700 - Strong emphasis, headings
  */
-export type FontWeight = 'normal' | 'medium' | 'semibold' | 'bold';
+export type FontWeight = "normal" | "medium" | "semibold" | "bold";
 
 /**
  * Helper type to generate CSS variable references for font weight tokens.
@@ -196,7 +196,7 @@ export type FontWeightVariable = `var(--font-${FontWeight})`;
  * 'normal' = 1.5 - Normal spacing for body text
  * 'relaxed' = 1.75 - Relaxed spacing for long-form content
  */
-export type LineHeight = 'tight' | 'normal' | 'relaxed';
+export type LineHeight = "tight" | "normal" | "relaxed";
 
 /**
  * Helper type to generate CSS variable references for line height tokens.
@@ -359,11 +359,28 @@ export function lineHeightVar(token: LineHeight): LineHeightVariable {
  */
 export function isColorToken(value: string): value is ColorToken {
   const validTokens: ColorToken[] = [
-    'background', 'background-secondary', 'background-tertiary', 'surface', 'elevated',
-    'foreground', 'foreground-secondary', 'foreground-tertiary', 'foreground-muted',
-    'border', 'border-subtle', 'border-focus',
-    'primary', 'primary-hover', 'primary-light', 'primary-foreground',
-    'profit', 'profit-bg', 'loss', 'loss-bg', 'warning', 'warning-bg'
+    "background",
+    "background-secondary",
+    "background-tertiary",
+    "surface",
+    "elevated",
+    "foreground",
+    "foreground-secondary",
+    "foreground-tertiary",
+    "foreground-muted",
+    "border",
+    "border-subtle",
+    "border-focus",
+    "primary",
+    "primary-hover",
+    "primary-light",
+    "primary-foreground",
+    "profit",
+    "profit-bg",
+    "loss",
+    "loss-bg",
+    "warning",
+    "warning-bg",
   ];
   return validTokens.includes(value as ColorToken);
 }
@@ -384,7 +401,7 @@ export function isSpacingToken(value: number): value is SpacingToken {
  * @returns True if the value is a valid radius token
  */
 export function isRadiusToken(value: string): value is RadiusToken {
-  const validTokens: RadiusToken[] = ['sm', 'md', 'lg', 'xl', 'full'];
+  const validTokens: RadiusToken[] = ["sm", "md", "lg", "xl", "full"];
   return validTokens.includes(value as RadiusToken);
 }
 
@@ -394,7 +411,7 @@ export function isRadiusToken(value: string): value is RadiusToken {
  * @returns True if the value is a valid shadow token
  */
 export function isShadowToken(value: string): value is ShadowToken {
-  const validTokens: ShadowToken[] = ['sm', 'md', 'lg', 'xl'];
+  const validTokens: ShadowToken[] = ["sm", "md", "lg", "xl"];
   return validTokens.includes(value as ShadowToken);
 }
 
@@ -404,7 +421,7 @@ export function isShadowToken(value: string): value is ShadowToken {
  * @returns True if the value is a valid font family token
  */
 export function isFontFamily(value: string): value is FontFamily {
-  const validTokens: FontFamily[] = ['sans', 'mono'];
+  const validTokens: FontFamily[] = ["sans", "mono"];
   return validTokens.includes(value as FontFamily);
 }
 
@@ -414,7 +431,7 @@ export function isFontFamily(value: string): value is FontFamily {
  * @returns True if the value is a valid font size token
  */
 export function isFontSize(value: string): value is FontSize {
-  const validTokens: FontSize[] = ['xxs', 'xs', 'sm', 'base', 'lg', 'xl', '2xl'];
+  const validTokens: FontSize[] = ["xxs", "xs", "sm", "base", "lg", "xl", "2xl"];
   return validTokens.includes(value as FontSize);
 }
 
@@ -424,7 +441,7 @@ export function isFontSize(value: string): value is FontSize {
  * @returns True if the value is a valid font weight token
  */
 export function isFontWeight(value: string): value is FontWeight {
-  const validTokens: FontWeight[] = ['normal', 'medium', 'semibold', 'bold'];
+  const validTokens: FontWeight[] = ["normal", "medium", "semibold", "bold"];
   return validTokens.includes(value as FontWeight);
 }
 
@@ -434,6 +451,6 @@ export function isFontWeight(value: string): value is FontWeight {
  * @returns True if the value is a valid line height token
  */
 export function isLineHeight(value: string): value is LineHeight {
-  const validTokens: LineHeight[] = ['tight', 'normal', 'relaxed'];
+  const validTokens: LineHeight[] = ["tight", "normal", "relaxed"];
   return validTokens.includes(value as LineHeight);
 }

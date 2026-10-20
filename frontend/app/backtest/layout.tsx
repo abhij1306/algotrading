@@ -1,14 +1,10 @@
-import { ReactNode } from 'react';
+import { Outlet } from "react-router";
 
-export const metadata = {
-  title: 'Backtest | SmartTrader',
-  description: 'Backtest trading strategies on stocks, options, and index universes',
-};
-
-export default function BacktestLayout({ children }: Readonly<{ children: ReactNode }>) {
+export default function BacktestLayout() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {children}
+      <title>Backtest | SmartTrader</title>
+      <Outlet />
     </div>
   );
 }

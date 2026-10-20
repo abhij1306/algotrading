@@ -1,9 +1,7 @@
-'use client';
-
-import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
-import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router";
+import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Command {
   id: string;
@@ -29,83 +27,109 @@ interface CommandPaletteProps {
 }
 
 const MOCK_SYMBOLS: SymbolResult[] = [
-  { symbol: 'RELIANCE', name: 'Reliance Industries', exchange: 'NSE', price: 2450.5, change: 1.2 },
-  { symbol: 'TCS', name: 'Tata Consultancy Services', exchange: 'NSE', price: 3890.25, change: -0.5 },
-  { symbol: 'INFY', name: 'Infosys Ltd', exchange: 'NSE', price: 1650.75, change: 0.8 },
-  { symbol: 'HDFCBANK', name: 'HDFC Bank', exchange: 'NSE', price: 1420, change: 0.3 },
-  { symbol: 'SBIN', name: 'State Bank of India', exchange: 'NSE', price: 675.5, change: 1.5 },
-  { symbol: 'NIFTY50', name: 'NIFTY 50 Index', exchange: 'NSE', price: 22450, change: 0.6 },
+  { symbol: "RELIANCE", name: "Reliance Industries", exchange: "NSE", price: 2450.5, change: 1.2 },
+  {
+    symbol: "TCS",
+    name: "Tata Consultancy Services",
+    exchange: "NSE",
+    price: 3890.25,
+    change: -0.5,
+  },
+  { symbol: "INFY", name: "Infosys Ltd", exchange: "NSE", price: 1650.75, change: 0.8 },
+  { symbol: "HDFCBANK", name: "HDFC Bank", exchange: "NSE", price: 1420, change: 0.3 },
+  { symbol: "SBIN", name: "State Bank of India", exchange: "NSE", price: 675.5, change: 1.5 },
+  { symbol: "NIFTY50", name: "NIFTY 50 Index", exchange: "NSE", price: 22450, change: 0.6 },
 ];
 
 export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
-  const router = useRouter();
-  const [query, setQuery] = useState('');
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [symbols, setSymbols] = useState<SymbolResult[]>([]);
 
   const getCommands = useCallback((): Command[] => {
     const commands: Command[] = [
       {
-        id: 'nav-dashboard',
-        title: 'Dashboard',
-        subtitle: 'View your portfolio and market overview',
-        shortcut: '⌘1',
+        id: "nav-dashboard",
+        title: "Dashboard",
+        subtitle: "View your portfolio and market overview",
+        shortcut: "⌘1",
         icon: <Home className="w-4 h-4" />,
-        action: () => { router.push('/dashboard'); onClose(); },
-        category: 'Navigation',
+        action: () => {
+          void navigate("/dashboard");
+          onClose();
+        },
+        category: "Navigation",
       },
       {
-        id: 'nav-terminal',
-        title: 'Market Terminal',
-        subtitle: 'Advanced charts and trading',
-        shortcut: '⌘2',
+        id: "nav-terminal",
+        title: "Market Terminal",
+        subtitle: "Advanced charts and trading",
+        shortcut: "⌘2",
         icon: <LineChart className="w-4 h-4" />,
-        action: () => { router.push('/terminal'); onClose(); },
-        category: 'Navigation',
+        action: () => {
+          void navigate("/terminal");
+          onClose();
+        },
+        category: "Navigation",
       },
       {
-        id: 'nav-screener',
-        title: 'Stock Screener',
-        subtitle: 'Find stocks matching your criteria',
-        shortcut: '⌘3',
+        id: "nav-screener",
+        title: "Stock Screener",
+        subtitle: "Find stocks matching your criteria",
+        shortcut: "⌘3",
         icon: <BarChart3 className="w-4 h-4" />,
-        action: () => { router.push('/screener'); onClose(); },
-        category: 'Navigation',
+        action: () => {
+          void navigate("/screener");
+          onClose();
+        },
+        category: "Navigation",
       },
       {
-        id: 'nav-backtest',
-        title: 'Backtest',
-        subtitle: 'Test your strategies',
-        shortcut: '⌘4',
+        id: "nav-backtest",
+        title: "Backtest",
+        subtitle: "Test your strategies",
+        shortcut: "⌘4",
         icon: <Activity className="w-4 h-4" />,
-        action: () => { router.push('/backtest'); onClose(); },
-        category: 'Navigation',
+        action: () => {
+          void navigate("/backtest");
+          onClose();
+        },
+        category: "Navigation",
       },
       {
-        id: 'nav-strategies',
-        title: 'Strategies',
-        subtitle: 'Run the VCP scanner and manage strategy signals',
-        shortcut: '⌘5',
+        id: "nav-strategies",
+        title: "Strategies",
+        subtitle: "Run the VCP scanner and manage strategy signals",
+        shortcut: "⌘5",
         icon: <TrendingUp className="w-4 h-4" />,
-        action: () => { router.push('/strategies'); onClose(); },
-        category: 'Navigation',
+        action: () => {
+          void navigate("/strategies");
+          onClose();
+        },
+        category: "Navigation",
       },
       {
-        id: 'action-backtest',
-        title: 'Run Quick Backtest',
-        subtitle: 'Start a new backtest with default settings',
+        id: "action-backtest",
+        title: "Run Quick Backtest",
+        subtitle: "Start a new backtest with default settings",
         icon: <Activity className="w-4 h-4" />,
-        action: () => { router.push('/backtest/new'); onClose(); },
-        category: 'Actions',
+        action: () => {
+          void navigate("/backtest/new");
+          onClose();
+        },
+        category: "Actions",
       },
       {
-        id: 'settings',
-        title: 'Settings',
-        subtitle: 'Manage your preferences',
-        shortcut: '⌘,',
+        id: "settings",
+        title: "Settings",
+        subtitle: "Manage your preferences",
+        shortcut: "⌘,",
         icon: <Settings className="w-4 h-4" />,
-        action: () => { onClose(); },
-        category: 'Preferences',
+        action: () => {
+          onClose();
+        },
+        category: "Preferences",
       },
     ];
 
@@ -116,17 +140,16 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
       (cmd) =>
         cmd.title.toLowerCase().includes(lowerQuery) ||
         cmd.subtitle?.toLowerCase().includes(lowerQuery) ||
-        cmd.category.toLowerCase().includes(lowerQuery)
+        cmd.category.toLowerCase().includes(lowerQuery),
     );
-  }, [query, router, onClose]);
+  }, [query, navigate, onClose]);
 
   useEffect(() => {
     if (query.length >= 1) {
       const lowerQuery = query.toLowerCase();
       const filtered = MOCK_SYMBOLS.filter(
         (s) =>
-          s.symbol.toLowerCase().includes(lowerQuery) ||
-          s.name.toLowerCase().includes(lowerQuery)
+          s.symbol.toLowerCase().includes(lowerQuery) || s.name.toLowerCase().includes(lowerQuery),
       );
       setSymbols(filtered.slice(0, 5));
     } else {
@@ -146,41 +169,41 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
       const totalItems = commands.length + symbols.length;
 
       switch (e.key) {
-        case 'ArrowDown':
+        case "ArrowDown":
           e.preventDefault();
           setSelectedIndex((prev) => (prev + 1) % totalItems);
           break;
-        case 'ArrowUp':
+        case "ArrowUp":
           e.preventDefault();
           setSelectedIndex((prev) => (prev - 1 + totalItems) % totalItems);
           break;
-        case 'Enter':
+        case "Enter":
           e.preventDefault();
           if (selectedIndex < symbols.length) {
             const symbol = symbols[selectedIndex];
-            router.push(`/terminal?symbol=${symbol.symbol}`);
+            void navigate(`/terminal?symbol=${symbol.symbol}`);
             onClose();
           } else {
             const cmd = commands[selectedIndex - symbols.length];
             if (cmd) cmd.action();
           }
           break;
-        case 'Escape':
+        case "Escape":
           onClose();
           break;
       }
     };
 
-    globalThis.addEventListener('keydown', handleKeyDown);
-    return () => globalThis.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, selectedIndex, symbols, getCommands, router, onClose]);
+    globalThis.addEventListener("keydown", handleKeyDown);
+    return () => globalThis.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, selectedIndex, symbols, getCommands, navigate, onClose]);
 
   useEffect(() => {
     if (isOpen) {
-      setQuery('');
+      setQuery("");
       setSelectedIndex(0);
       setTimeout(() => {
-        const input = document.getElementById('command-palette-input');
+        const input = document.getElementById("command-palette-input");
         input?.focus();
       }, 0);
     }
@@ -231,12 +254,12 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                     <button
                       key={symbol.symbol}
                       onClick={() => {
-                        router.push(`/terminal?symbol=${symbol.symbol}`);
+                        void navigate(`/terminal?symbol=${symbol.symbol}`);
                         onClose();
                       }}
                       className={cn(
-                        'w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all',
-                        selectedIndex === index && 'bg-background-tertiary'
+                        "w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all",
+                        selectedIndex === index && "bg-background-tertiary",
                       )}
                     >
                       <div className="w-8 h-8 flex items-center justify-center rounded-sm bg-background-tertiary">
@@ -247,14 +270,17 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                         <div className="text-xs text-foreground-secondary">{symbol.name}</div>
                       </div>
                       <div className="text-right">
-                        <div className="font-medium tabular-nums">₹{symbol.price?.toLocaleString()}</div>
+                        <div className="font-medium tabular-nums">
+                          ₹{symbol.price?.toLocaleString()}
+                        </div>
                         <div
                           className={cn(
                             "text-xs tabular-nums",
-                            (symbol.change || 0) >= 0 ? "text-profit" : "text-loss"
+                            (symbol.change || 0) >= 0 ? "text-profit" : "text-loss",
                           )}
                         >
-                          {(symbol.change || 0) >= 0 ? '+' : ''}{symbol.change}%
+                          {(symbol.change || 0) >= 0 ? "+" : ""}
+                          {symbol.change}%
                         </div>
                       </div>
                     </button>
@@ -263,7 +289,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
               ) : null}
 
               {/* Commands by Category */}
-              {['Navigation', 'Actions', 'Preferences'].map((category) => {
+              {["Navigation", "Actions", "Preferences"].map((category) => {
                 const categoryCommands = commands.filter((c) => c.category === category);
                 if (categoryCommands.length === 0) return null;
 
@@ -280,7 +306,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                           onClick={command.action}
                           className={cn(
                             "w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all",
-                            selectedIndex === actualIndex && "bg-background-tertiary"
+                            selectedIndex === actualIndex && "bg-background-tertiary",
                           )}
                         >
                           <div className="w-8 h-8 flex items-center justify-center rounded-sm bg-background-tertiary text-foreground-secondary">
@@ -288,7 +314,9 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
                           </div>
                           <div className="flex-1 text-left">
                             <div className="font-medium">{command.title}</div>
-                            <div className="text-xs text-foreground-secondary">{command.subtitle}</div>
+                            <div className="text-xs text-foreground-secondary">
+                              {command.subtitle}
+                            </div>
                           </div>
                           {command.shortcut && (
                             <kbd className="px-2 py-1 text-xs rounded-sm bg-background-tertiary text-foreground-secondary">
@@ -330,14 +358,14 @@ export function useCommandPalette() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setIsOpen((prev) => !prev);
       }
     };
 
-    globalThis.addEventListener('keydown', handleKeyDown);
-    return () => globalThis.removeEventListener('keydown', handleKeyDown);
+    globalThis.addEventListener("keydown", handleKeyDown);
+    return () => globalThis.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   return { isOpen, open: () => setIsOpen(true), close: () => setIsOpen(false) };

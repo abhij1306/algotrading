@@ -25,8 +25,8 @@ python backend/start_server.py
 
 # frontend
 cd frontend
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ---
@@ -77,9 +77,9 @@ Canonical pipeline:
 ### Frontend
 ```bash
 cd frontend
-npm run lint
-npm run type-check
-npm run build
+pnpm check
+pnpm test
+pnpm build
 ```
 
 ### Backend

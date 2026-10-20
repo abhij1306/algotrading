@@ -24,7 +24,7 @@ export interface CardProps
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
   ({ className, variant, ...props }, ref) => (
     <div ref={ref} className={cn(cardVariants({ variant, className }))} {...props} />
-  )
+  ),
 );
 Card.displayName = "Card";
 
@@ -35,7 +35,7 @@ const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
       className={cn("flex flex-col space-y-1.5 p-4 border-b border-border/50", className)}
       {...props}
     />
-  )
+  ),
 );
 CardHeader.displayName = "CardHeader";
 
@@ -45,11 +45,11 @@ const CardTitle = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HT
       ref={ref}
       className={cn(
         "text-base font-semibold leading-none tracking-tight text-foreground",
-        className
+        className,
       )}
       {...props}
     />
-  )
+  ),
 );
 CardTitle.displayName = "CardTitle";
 
@@ -62,7 +62,7 @@ const CardDescription = React.forwardRef<
 CardDescription.displayName = "CardDescription";
 
 const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => <div ref={ref} className={cn("p-4", className)} {...props} />
+  ({ className, ...props }, ref) => <div ref={ref} className={cn("p-4", className)} {...props} />,
 );
 CardContent.displayName = "CardContent";
 
@@ -72,11 +72,11 @@ const CardFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
       ref={ref}
       className={cn(
         "flex items-center p-4 border-t border-border/50 bg-background-secondary/30",
-        className
+        className,
       )}
       {...props}
     />
-  )
+  ),
 );
 CardFooter.displayName = "CardFooter";
 
@@ -119,7 +119,7 @@ const MetricCard = React.forwardRef<HTMLDivElement, MetricCardProps>(
                   ? "text-profit bg-profit-bg"
                   : change < 0
                     ? "text-loss bg-loss-bg"
-                    : "text-foreground-muted bg-background-secondary"
+                    : "text-foreground-muted bg-background-secondary",
               )}
             >
               {change > 0 ? "+" : ""}
@@ -129,7 +129,7 @@ const MetricCard = React.forwardRef<HTMLDivElement, MetricCardProps>(
         </div>
       </Card>
     );
-  }
+  },
 );
 MetricCard.displayName = "MetricCard";
 

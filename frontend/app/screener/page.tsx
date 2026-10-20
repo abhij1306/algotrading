@@ -1,7 +1,5 @@
-'use client';
-
-import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from "react";
+import { useNavigate } from "react-router";
 import {
   Search,
   TrendingUp,
@@ -11,14 +9,14 @@ import {
   ArrowUp,
   ArrowDown,
   ExternalLink,
-} from 'lucide-react';
-import { useWebSocket } from '@/hooks/useWebSocket';
-import { screenerAPI, apiClient } from '@/lib/api-client';
-import { debounce } from '@/lib/debounce';
-import { isMarketOpen } from '@/lib/market-hours';
-import { Badge, Button } from '@/components/ui';
-import { formatPercentage, roundToDecimals } from '@/lib/utils';
-import { getTradingViewUrl } from '@/lib/tradingview';
+} from "lucide-react";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { screenerAPI, apiClient } from "@/lib/api-client";
+import { debounce } from "@/lib/debounce";
+import { isMarketOpen } from "@/lib/market-hours";
+import { Badge, Button } from "@/components/ui";
+import { formatPercentage, roundToDecimals } from "@/lib/utils";
+import { getTradingViewUrl } from "@/lib/tradingview";
 
 interface ScreenerResult {
   symbol: string;
@@ -50,10 +48,10 @@ interface TickData {
   vol_traded_today?: number;
 }
 
-type SortField = 'symbol' | 'price' | 'change' | 'volume' | 'marketCap' | 'rsi' | 'macd' | 'adx';
-type SortDirection = 'asc' | 'desc';
-type FlashDirection = 'up' | 'down';
-type FlashField = 'price' | 'change' | 'volume';
+type SortField = "symbol" | "price" | "change" | "volume" | "marketCap" | "rsi" | "macd" | "adx";
+type SortDirection = "asc" | "desc";
+type FlashDirection = "up" | "down";
+type FlashField = "price" | "change" | "volume";
 type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 
 const RPP_OPTIONS = [25, 50, 100];
@@ -65,18 +63,18 @@ const FLASH_DURATION_MS = 600;
 const MAX_FALLBACK_SYMBOLS = 100;
 
 function toNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function toSafeString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
+function toSafeString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
 }
 
 function formatVolume(value: number): string {
   if (value >= 10000000) return `${(value / 10000000).toFixed(1)}Cr`;
   if (value >= 100000) return `${(value / 100000).toFixed(1)}L`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
-  return Math.round(value).toLocaleString('en-IN');
+  return Math.round(value).toLocaleString("en-IN");
 }
 
 function formatMarketCap(value: number): string {
@@ -85,44 +83,31 @@ function formatMarketCap(value: number): string {
   return `${Math.round(value)} Cr`;
 }
 
-function compareBySort(a: ScreenerResult, b: ScreenerResult, field: SortField, direction: SortDirection): number {
-  let cmp = 0;
-  if (field === 'symbol') {
-    cmp = a.symbol.localeCompare(b.symbol);
-  } else {
-    cmp = toNumber(a[field]) - toNumber(b[field]);
-  }
-
-  if (cmp === 0) {
-    cmp = a.symbol.localeCompare(b.symbol);
-  }
-  return direction === 'asc' ? cmp : -cmp;
-}
-
 function getFlashClassName(flash?: FlashState): string | undefined {
   if (!flash) return undefined;
-  if (flash.direction === 'up') return flash.phase === 0 ? 'screener-flash-up-a' : 'screener-flash-up-b';
-  return flash.phase === 0 ? 'screener-flash-down-a' : 'screener-flash-down-b';
+  if (flash.direction === "up")
+    return flash.phase === 0 ? "screener-flash-up-a" : "screener-flash-up-b";
+  return flash.phase === 0 ? "screener-flash-down-a" : "screener-flash-down-b";
 }
 
 function getRsiClassName(rsi: number): string {
   if (rsi > 70) {
-    return 'text-loss';
+    return "text-loss";
   }
   if (rsi < 30) {
-    return 'text-profit';
+    return "text-profit";
   }
-  return '';
+  return "";
 }
 
 function getMacdClassName(macd: number): string {
   if (macd > 0) {
-    return 'text-profit';
+    return "text-profit";
   }
   if (macd < 0) {
-    return 'text-loss';
+    return "text-loss";
   }
-  return 'text-foreground-muted';
+  return "text-foreground-muted";
 }
 
 function normalizeTickerMessage(raw: TickData): TickData | null {
@@ -131,25 +116,25 @@ function normalizeTickerMessage(raw: TickData): TickData | null {
   }
 
   let ltp: number | undefined;
-  if (typeof raw.ltp === 'number') {
+  if (typeof raw.ltp === "number") {
     ltp = raw.ltp;
-  } else if (typeof raw.lp === 'number') {
+  } else if (typeof raw.lp === "number") {
     ltp = raw.lp;
   }
 
   let changePct: number | undefined;
-  if (typeof raw.change_pct === 'number') {
+  if (typeof raw.change_pct === "number") {
     changePct = raw.change_pct;
-  } else if (typeof raw.chp === 'number') {
+  } else if (typeof raw.chp === "number") {
     changePct = raw.chp;
   }
 
   let volume: number | undefined;
-  if (typeof raw.volume === 'number') {
+  if (typeof raw.volume === "number") {
     volume = raw.volume;
-  } else if (typeof raw.v === 'number') {
+  } else if (typeof raw.v === "number") {
     volume = raw.v;
-  } else if (typeof raw.vol_traded_today === 'number') {
+  } else if (typeof raw.vol_traded_today === "number") {
     volume = raw.vol_traded_today;
   }
 
@@ -162,10 +147,10 @@ function normalizeTickerMessage(raw: TickData): TickData | null {
 }
 
 function getFallbackChange(quote: Record<string, unknown>): number | undefined {
-  if (typeof quote.change_pct === 'number') {
+  if (typeof quote.change_pct === "number") {
     return quote.change_pct;
   }
-  if (typeof quote.change === 'number') {
+  if (typeof quote.change === "number") {
     return quote.change;
   }
   return undefined;
@@ -173,7 +158,7 @@ function getFallbackChange(quote: Record<string, unknown>): number | undefined {
 
 function getFlashStateByField(
   symbol: string,
-  flashByCell: Record<string, FlashState>
+  flashByCell: Record<string, FlashState>,
 ): Partial<Record<FlashField, FlashState>> {
   const priceKey = `${symbol}:price`;
   const changeKey = `${symbol}:change`;
@@ -190,10 +175,10 @@ function getFlashStateByField(
 function getResultCountContent(
   isIndicesLoading: boolean,
   isLoading: boolean,
-  totalResults: number
+  totalResults: number,
 ): ReactNode {
   if (isIndicesLoading) {
-    return 'Loading universes...';
+    return "Loading universes...";
   }
   if (isLoading) {
     return <Loader2 className="w-4 h-4 animate-spin inline" />;
@@ -203,18 +188,18 @@ function getResultCountContent(
 
 function getEmptyStateMessage(indices: IndexItem[], error: string | null): string {
   if (indices.length === 0) {
-    return 'No universes available';
+    return "No universes available";
   }
   if (error) {
-    return 'Failed to load screener data';
+    return "Failed to load screener data";
   }
-  return 'No results found';
+  return "No results found";
 }
 
 function updateRowFromTick(
   row: ScreenerResult,
   tick: TickData,
-  flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>
+  flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>,
 ): ScreenerResult | null {
   const price = roundToDecimals(tick.ltp ?? row.price, 2);
   const change = roundToDecimals(tick.change_pct ?? row.change, 2);
@@ -227,22 +212,22 @@ function updateRowFromTick(
   if (price !== row.price) {
     flashes.push({
       symbol: row.symbol,
-      field: 'price',
-      direction: price > row.price ? 'up' : 'down',
+      field: "price",
+      direction: price > row.price ? "up" : "down",
     });
   }
   if (change !== row.change) {
     flashes.push({
       symbol: row.symbol,
-      field: 'change',
-      direction: change > row.change ? 'up' : 'down',
+      field: "change",
+      direction: change > row.change ? "up" : "down",
     });
   }
   if (volume !== row.volume) {
     flashes.push({
       symbol: row.symbol,
-      field: 'volume',
-      direction: volume > row.volume ? 'up' : 'down',
+      field: "volume",
+      direction: volume > row.volume ? "up" : "down",
     });
   }
 
@@ -261,19 +246,23 @@ const SortIcon = memo(function SortIcon({
   if (sortField !== field) {
     return <ArrowUpDown className="w-3 h-3 opacity-30" />;
   }
-  return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
+  return sortDirection === "asc" ? (
+    <ArrowUp className="w-3 h-3" />
+  ) : (
+    <ArrowDown className="w-3 h-3" />
+  );
 });
 
 function sortIndicesForUi(indices: IndexItem[]): IndexItem[] {
   return [...indices].sort((a, b) => {
-    if (a.id === 'NIFTY50') return -1;
-    if (b.id === 'NIFTY50') return 1;
+    if (a.id === "NIFTY50") return -1;
+    if (b.id === "NIFTY50") return 1;
     return a.name.localeCompare(b.name);
   });
 }
 
 function resolveSelectedUniverse(current: string, indices: IndexItem[]): string {
-  if (indices.length === 0) return '';
+  if (indices.length === 0) return "";
   return indices.some((index) => index.id === current) ? current : indices[0].id;
 }
 
@@ -295,7 +284,10 @@ const StockRow = memo(function StockRow({
   const macdClassName = getMacdClassName(macd);
 
   return (
-    <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors border-b border-border">
+    <tr
+      onClick={onClick}
+      className="cursor-pointer hover:bg-surface transition-colors border-b border-border"
+    >
       <td className="py-2 pl-4">
         <div className="flex items-center gap-1">
           <div className="font-medium">{stock.symbol}</div>
@@ -318,38 +310,46 @@ const StockRow = memo(function StockRow({
         <span className="text-xs px-1.5 py-0.5 rounded bg-background-tertiary">{stock.sector}</span>
       </td>
       <td className="py-2 text-right tabular-nums">
-        <span className={getFlashClassName(flashStateByField.price)}>{toNumber(stock.price).toFixed(2)}</span>
+        <span className={getFlashClassName(flashStateByField.price)}>
+          {toNumber(stock.price).toFixed(2)}
+        </span>
       </td>
-      <td className={`py-2 text-right tabular-nums ${isUp ? 'text-profit' : 'text-loss'}`}>
+      <td className={`py-2 text-right tabular-nums ${isUp ? "text-profit" : "text-loss"}`}>
         <div className="flex items-center justify-end gap-1">
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          <span className={getFlashClassName(flashStateByField.change)}>{formatPercentage(toNumber(stock.change))}</span>
+          <span className={getFlashClassName(flashStateByField.change)}>
+            {formatPercentage(toNumber(stock.change))}
+          </span>
         </div>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
-        <span className={getFlashClassName(flashStateByField.volume)}>{formatVolume(toNumber(stock.volume))}</span>
+        <span className={getFlashClassName(flashStateByField.volume)}>
+          {formatVolume(toNumber(stock.volume))}
+        </span>
       </td>
-      <td className="py-2 text-right tabular-nums text-foreground-muted">{formatMarketCap(toNumber(stock.marketCap))}</td>
+      <td className="py-2 text-right tabular-nums text-foreground-muted">
+        {formatMarketCap(toNumber(stock.marketCap))}
+      </td>
       <td className={`py-2 text-right tabular-nums ${rsiClassName}`}>
-        {rsi > 0 ? rsi.toFixed(1) : '--'}
+        {rsi > 0 ? rsi.toFixed(1) : "--"}
       </td>
       <td className={`py-2 pr-4 text-right tabular-nums ${macdClassName}`}>
-        {macd !== 0 ? macd.toFixed(2) : '--'}
+        {macd !== 0 ? macd.toFixed(2) : "--"}
       </td>
     </tr>
   );
 });
 
 export default function ScreenerPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const { isConnected, sendMessage, registerCallback } = useWebSocket({ skipStateUpdates: true });
 
   const [indices, setIndices] = useState<IndexItem[]>([]);
-  const [selectedUniverse, setSelectedUniverse] = useState('NIFTY50');
+  const [selectedUniverse, setSelectedUniverse] = useState("NIFTY50");
   const [indicesError, setIndicesError] = useState<string | null>(null);
   const [isIndicesLoading, setIsIndicesLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
 
   const [results, setResults] = useState<ScreenerResult[]>([]);
   const [totalResults, setTotalResults] = useState(0);
@@ -358,11 +358,11 @@ export default function ScreenerPage() {
 
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
-  const [sortField, setSortField] = useState<SortField>('symbol');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [sortField, setSortField] = useState<SortField>("symbol");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
   const requestIdRef = useRef(0);
-  const subscribedSymbolsKeyRef = useRef('');
+  const subscribedSymbolsKeyRef = useRef("");
   const resultsRef = useRef<ScreenerResult[]>([]);
   const pendingTicksRef = useRef<Record<string, TickData>>({});
   const lastTickAtRef = useRef(0);
@@ -370,7 +370,7 @@ export default function ScreenerPage() {
   const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [flashByCell, setFlashByCell] = useState<Record<string, FlashState>>({});
   const openTradingView = (symbol: string) => {
-    window.open(getTradingViewUrl(symbol), '_blank', 'noopener,noreferrer');
+    window.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
   };
 
   const debouncedSetQuery = useMemo(
@@ -380,7 +380,7 @@ export default function ScreenerPage() {
         setDebouncedQuery(nextQuery);
         setCurrentPage(1);
       }, 300),
-    []
+    [],
   );
 
   useEffect(() => {
@@ -390,12 +390,14 @@ export default function ScreenerPage() {
       setIsIndicesLoading(true);
       setIndicesError(null);
       const response = await screenerAPI.getIndices();
-      const indicesPayload = (response.data ?? {}) as { indices?: Array<{ id: string; name: string; count: number }> };
+      const indicesPayload = (response.data ?? {}) as {
+        indices?: Array<{ id: string; name: string; count: number }>;
+      };
       if (cancelled) return;
 
       if (response.error || !indicesPayload.indices) {
         setIndices([]);
-        setIndicesError(response.error?.message || 'Failed to load universes');
+        setIndicesError(response.error?.message || "Failed to load universes");
         setIsIndicesLoading(false);
         return;
       }
@@ -443,13 +445,16 @@ export default function ScreenerPage() {
       if (debouncedQuery) params.query = debouncedQuery;
 
       const response = await screenerAPI.getStocks(params);
-      const screenerPayload = (response.data ?? {}) as { results?: ScreenerResult[]; total?: number };
+      const screenerPayload = (response.data ?? {}) as {
+        results?: ScreenerResult[];
+        total?: number;
+      };
       if (cancelled || requestId !== requestIdRef.current) return;
 
       if (response.error) {
         setResults([]);
         setTotalResults(0);
-        setError(response.error?.message || 'Failed to load screener results');
+        setError(response.error?.message || "Failed to load screener results");
         setIsLoading(false);
         return;
       }
@@ -462,9 +467,9 @@ export default function ScreenerPage() {
       setResults(normalizedResults);
       resultsRef.current = normalizedResults;
       setTotalResults(
-        typeof screenerPayload.total === 'number'
+        typeof screenerPayload.total === "number"
           ? screenerPayload.total
-          : normalizedResults.length
+          : normalizedResults.length,
       );
       setIsLoading(false);
     }
@@ -488,20 +493,22 @@ export default function ScreenerPage() {
   }, [currentPage, totalPages]);
 
   const subscribedSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) => a.localeCompare(b));
-    return symbols.join(',');
+    const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) =>
+      a.localeCompare(b),
+    );
+    return symbols.join(",");
   }, [results]);
 
   const fallbackSymbolsKey = useMemo(() => {
-    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort(
-      (a, b) => a.localeCompare(b)
+    const symbols = Array.from(new Set(currentPageRows.map((row) => row.symbol))).sort((a, b) =>
+      a.localeCompare(b),
     );
-    return symbols.join(',');
+    return symbols.join(",");
   }, [currentPageRows]);
 
   useEffect(() => {
     if (!isConnected) {
-      subscribedSymbolsKeyRef.current = '';
+      subscribedSymbolsKeyRef.current = "";
     }
   }, [isConnected]);
 
@@ -510,18 +517,18 @@ export default function ScreenerPage() {
     if (subscribedSymbolsKey === subscribedSymbolsKeyRef.current) return;
 
     if (subscribedSymbolsKeyRef.current) {
-      sendMessage({ action: 'unsubscribe', symbols: subscribedSymbolsKeyRef.current.split(',') });
+      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
     }
 
-    sendMessage({ action: 'subscribe', symbols: subscribedSymbolsKey.split(',') });
+    sendMessage({ action: "subscribe", symbols: subscribedSymbolsKey.split(",") });
     subscribedSymbolsKeyRef.current = subscribedSymbolsKey;
   }, [isConnected, subscribedSymbolsKey, sendMessage]);
 
   useEffect(() => {
     return () => {
       if (!subscribedSymbolsKeyRef.current) return;
-      sendMessage({ action: 'unsubscribe', symbols: subscribedSymbolsKeyRef.current.split(',') });
-      subscribedSymbolsKeyRef.current = '';
+      sendMessage({ action: "unsubscribe", symbols: subscribedSymbolsKeyRef.current.split(",") });
+      subscribedSymbolsKeyRef.current = "";
     };
   }, [sendMessage]);
 
@@ -532,50 +539,55 @@ export default function ScreenerPage() {
     };
   }, []);
 
-  const applyFlashes = useCallback((flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>) => {
-    if (flashes.length === 0) return;
-    const entries: Record<string, FlashDirection> = {};
-    for (const flash of flashes) {
-      const key = `${flash.symbol}:${flash.field}`;
-      entries[key] = flash.direction;
-    }
-
-    setFlashByCell((prev) => {
-      // OPTIMIZATION: Check if any values actually changed before creating new object
-      const hasChanges = Object.keys(entries).some((key) => prev[key]?.direction !== entries[key]);
-
-      if (!hasChanges) return prev; // Prevent unnecessary re-render
-
-      const next = { ...prev };
-      for (const [key, direction] of Object.entries(entries)) {
-        const current = prev[key];
-        next[key] = {
-          direction,
-          phase: current ? (current.phase === 0 ? 1 : 0) : 0,
-        };
+  const applyFlashes = useCallback(
+    (flashes: Array<{ symbol: string; field: FlashField; direction: FlashDirection }>) => {
+      if (flashes.length === 0) return;
+      const entries: Record<string, FlashDirection> = {};
+      for (const flash of flashes) {
+        const key = `${flash.symbol}:${flash.field}`;
+        entries[key] = flash.direction;
       }
-      return next;
-    });
 
-    for (const [key] of Object.entries(entries)) {
-      const existing = flashTimeoutsRef.current[key];
-      if (existing) clearTimeout(existing);
+      setFlashByCell((prev) => {
+        // OPTIMIZATION: Check if any values actually changed before creating new object
+        const hasChanges = Object.keys(entries).some(
+          (key) => prev[key]?.direction !== entries[key],
+        );
 
-      flashTimeoutsRef.current[key] = setTimeout(() => {
-        setFlashByCell((current) => {
-          if (!current[key]) return current;
-          const updated = { ...current };
-          delete updated[key];
-          return updated;
-        });
-        delete flashTimeoutsRef.current[key];
-      }, FLASH_DURATION_MS);
-    }
-  }, []);
+        if (!hasChanges) return prev; // Prevent unnecessary re-render
+
+        const next = { ...prev };
+        for (const [key, direction] of Object.entries(entries)) {
+          const current = prev[key];
+          next[key] = {
+            direction,
+            phase: current ? (current.phase === 0 ? 1 : 0) : 0,
+          };
+        }
+        return next;
+      });
+
+      for (const [key] of Object.entries(entries)) {
+        const existing = flashTimeoutsRef.current[key];
+        if (existing) clearTimeout(existing);
+
+        flashTimeoutsRef.current[key] = setTimeout(() => {
+          setFlashByCell((current) => {
+            if (!current[key]) return current;
+            const updated = { ...current };
+            delete updated[key];
+            return updated;
+          });
+          delete flashTimeoutsRef.current[key];
+        }, FLASH_DURATION_MS);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const unregister = registerCallback((message) => {
-      if (message?.type !== 'ticker' || !message.data) return;
+      if (message?.type !== "ticker" || !message.data) return;
       const raw = message.data as TickData;
       if (!raw.symbol) return;
 
@@ -612,13 +624,13 @@ export default function ScreenerPage() {
       }
 
       const now = Date.now();
-      const wsStale = !lastTickAtRef.current || (now - lastTickAtRef.current > WS_STALE_MS);
+      const wsStale = !lastTickAtRef.current || now - lastTickAtRef.current > WS_STALE_MS;
       if (!wsStale) {
         scheduleNext();
         return;
       }
 
-      const fallbackSymbols = fallbackSymbolsKey.split(',').filter(Boolean);
+      const fallbackSymbols = fallbackSymbolsKey.split(",").filter(Boolean);
       if (fallbackSymbols.length === 0 || fallbackSymbols.length > MAX_FALLBACK_SYMBOLS) {
         scheduleNext();
         return;
@@ -627,13 +639,13 @@ export default function ScreenerPage() {
       fallbackFetchInFlightRef.current = true;
       try {
         const response = await apiClient.get(
-          `/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(','))}`
+          `/api/market/quotes/live?symbols=${encodeURIComponent(fallbackSymbols.join(","))}`,
         );
         const quoteMap = (response.data ?? {}) as Record<string, Record<string, unknown>>;
         for (const [symbol, quote] of Object.entries(quoteMap)) {
-          const ltp = typeof quote.ltp === 'number' ? quote.ltp : undefined;
+          const ltp = typeof quote.ltp === "number" ? quote.ltp : undefined;
           const changePct = getFallbackChange(quote);
-          const volume = typeof quote.volume === 'number' ? quote.volume : undefined;
+          const volume = typeof quote.volume === "number" ? quote.volume : undefined;
 
           if (ltp === undefined && changePct === undefined && volume === undefined) continue;
           pendingTicksRef.current[symbol] = {
@@ -711,13 +723,13 @@ export default function ScreenerPage() {
     (field: SortField) => {
       setCurrentPage(1);
       if (sortField === field) {
-        setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+        setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
       } else {
         setSortField(field);
-        setSortDirection(field === 'symbol' ? 'asc' : 'desc');
+        setSortDirection(field === "symbol" ? "asc" : "desc");
       }
     },
-    [sortField]
+    [sortField],
   );
 
   const resultCountContent = getResultCountContent(isIndicesLoading, isLoading, totalResults);
@@ -782,51 +794,77 @@ export default function ScreenerPage() {
             ))}
           </select>
 
-          <span className="text-sm text-foreground-muted">
-            {resultCountContent}
-          </span>
+          <span className="text-sm text-foreground-muted">{resultCountContent}</span>
         </div>
       </header>
 
       <div className="flex-1 overflow-auto">
-        {indicesError && <div className="px-4 py-2 text-sm text-loss border-b border-border">{indicesError}</div>}
+        {indicesError && (
+          <div className="px-4 py-2 text-sm text-loss border-b border-border">{indicesError}</div>
+        )}
         {error && <div className="px-4 py-2 text-sm text-loss border-b border-border">{error}</div>}
 
         <table className="w-full">
           <thead className="sticky top-0 bg-surface border-b border-border text-xs">
             <tr>
-              <th className="py-2 pl-4 text-left font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('symbol')}>
+              <th
+                className="py-2 pl-4 text-left font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("symbol")}
+              >
                 <div className="flex items-center gap-1">
-                  Symbol <SortIcon field="symbol" sortField={sortField} sortDirection={sortDirection} />
+                  Symbol{" "}
+                  <SortIcon field="symbol" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
               <th className="py-2 text-left font-normal">Sector</th>
-              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('price')}>
+              <th
+                className="py-2 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("price")}
+              >
                 <div className="flex items-center justify-end gap-1">
-                  Price <SortIcon field="price" sortField={sortField} sortDirection={sortDirection} />
+                  Price{" "}
+                  <SortIcon field="price" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
-              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('change')}>
+              <th
+                className="py-2 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("change")}
+              >
                 <div className="flex items-center justify-end gap-1">
-                  Change <SortIcon field="change" sortField={sortField} sortDirection={sortDirection} />
+                  Change{" "}
+                  <SortIcon field="change" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
-              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('volume')}>
+              <th
+                className="py-2 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("volume")}
+              >
                 <div className="flex items-center justify-end gap-1">
-                  Volume <SortIcon field="volume" sortField={sortField} sortDirection={sortDirection} />
+                  Volume{" "}
+                  <SortIcon field="volume" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
-              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('marketCap')}>
+              <th
+                className="py-2 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("marketCap")}
+              >
                 <div className="flex items-center justify-end gap-1">
-                  Mkt Cap <SortIcon field="marketCap" sortField={sortField} sortDirection={sortDirection} />
+                  Mkt Cap{" "}
+                  <SortIcon field="marketCap" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
-              <th className="py-2 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('rsi')}>
+              <th
+                className="py-2 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("rsi")}
+              >
                 <div className="flex items-center justify-end gap-1">
                   RSI <SortIcon field="rsi" sortField={sortField} sortDirection={sortDirection} />
                 </div>
               </th>
-              <th className="py-2 pr-4 text-right font-normal cursor-pointer hover:text-foreground" onClick={() => handleSort('macd')}>
+              <th
+                className="py-2 pr-4 text-right font-normal cursor-pointer hover:text-foreground"
+                onClick={() => handleSort("macd")}
+              >
                 <div className="flex items-center justify-end gap-1">
                   MACD <SortIcon field="macd" sortField={sortField} sortDirection={sortDirection} />
                 </div>
@@ -843,7 +881,7 @@ export default function ScreenerPage() {
                   key={stock.symbol}
                   stock={stock}
                   flashStateByField={flashStateByField}
-                  onClick={() => router.push(`/terminal?symbol=${stock.symbol}`)}
+                  onClick={() => void navigate(`/terminal?symbol=${stock.symbol}`)}
                   onOpenTradingView={openTradingView}
                 />
               );
@@ -852,19 +890,23 @@ export default function ScreenerPage() {
         </table>
 
         {currentPageRows.length === 0 && !isLoading && (
-            <div className="p-8 text-center text-foreground-muted">
-              {emptyStateMessage}
-            </div>
-          )}
+          <div className="p-8 text-center text-foreground-muted">{emptyStateMessage}</div>
+        )}
       </div>
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-surface">
           <span className="text-sm text-foreground-muted">
-            Showing {(currentPage - 1) * itemsPerPage + 1}-{Math.min(currentPage * itemsPerPage, totalResults)} of {totalResults}
+            Showing {(currentPage - 1) * itemsPerPage + 1}-
+            {Math.min(currentPage * itemsPerPage, totalResults)} of {totalResults}
           </span>
           <div className="flex items-center gap-2">
-            <Button onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1} variant="secondary" size="sm">
+            <Button
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+              variant="secondary"
+              size="sm"
+            >
               Previous
             </Button>
             <span className="text-sm px-2">

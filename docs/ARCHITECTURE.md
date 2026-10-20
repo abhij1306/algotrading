@@ -4,7 +4,7 @@
 **Last updated:** 2026-03-15
 
 ## System Topology
-- Frontend: Next.js App Router (`frontend/app`)
+- Frontend: Vite+ SPA with React Router (`frontend/router.tsx`, pages in `frontend/app`)
 - Backend: FastAPI (`backend/app`)
 - Realtime: Fyers WS -> `LiveMarketService` -> `ws_manager` -> backend WS clients
   `ws_manager` is the connection/dispatcher layer that owns client sockets, subscription routing,

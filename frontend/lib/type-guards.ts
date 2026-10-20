@@ -9,19 +9,19 @@
 // ============================================================================
 
 export function isString(value: unknown): value is string {
-  return typeof value === 'string';
+  return typeof value === "string";
 }
 
 export function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && !isNaN(value);
+  return typeof value === "number" && !isNaN(value);
 }
 
 export function isBoolean(value: unknown): value is boolean {
-  return typeof value === 'boolean';
+  return typeof value === "boolean";
 }
 
 export function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function isArray(value: unknown): value is unknown[] {
@@ -43,10 +43,10 @@ export function getErrorMessage(error: unknown): string {
   if (isString(error)) {
     return error;
   }
-  if (isObject(error) && 'message' in error && isString(error.message)) {
+  if (isObject(error) && "message" in error && isString(error.message)) {
     return error.message;
   }
-  return 'An unknown error occurred';
+  return "An unknown error occurred";
 }
 
 // ============================================================================
@@ -60,11 +60,7 @@ export interface APIError {
 }
 
 export function isAPIError(value: unknown): value is APIError {
-  return (
-    isObject(value) &&
-    'message' in value &&
-    isString(value.message)
-  );
+  return isObject(value) && "message" in value && isString(value.message);
 }
 
 // ============================================================================
@@ -84,24 +80,24 @@ export interface TickerData {
 export function isTickerData(value: unknown): value is TickerData {
   return (
     isObject(value) &&
-    'symbol' in value &&
+    "symbol" in value &&
     isString(value.symbol) &&
-    'ltp' in value &&
+    "ltp" in value &&
     isNumber(value.ltp)
   );
 }
 
 export interface TickerBatchMessage {
-  type: 'ticker_batch';
+  type: "ticker_batch";
   data: TickerData[];
 }
 
 export function isTickerBatchMessage(value: unknown): value is TickerBatchMessage {
   return (
     isObject(value) &&
-    'type' in value &&
-    value.type === 'ticker_batch' &&
-    'data' in value &&
+    "type" in value &&
+    value.type === "ticker_batch" &&
+    "data" in value &&
     isArray(value.data) &&
     value.data.every(isTickerData)
   );
@@ -119,23 +115,20 @@ export function isDefined<T>(value: T | undefined | null): value is T {
   return value !== undefined && value !== null;
 }
 
-export function hasProperty<K extends string>(
-  obj: unknown,
-  key: K
-): obj is Record<K, unknown> {
+export function hasProperty<K extends string>(obj: unknown, key: K): obj is Record<K, unknown> {
   return isObject(obj) && key in obj;
 }
 
 export function hasStringProperty<K extends string>(
   obj: unknown,
-  key: K
+  key: K,
 ): obj is Record<K, string> {
   return hasProperty(obj, key) && isString(obj[key]);
 }
 
 export function hasNumberProperty<K extends string>(
   obj: unknown,
-  key: K
+  key: K,
 ): obj is Record<K, number> {
   return hasProperty(obj, key) && isNumber(obj[key]);
 }

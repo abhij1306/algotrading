@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/lib/utils";
 import React from "react";
 
@@ -19,11 +17,7 @@ export function GlassCard({
 }: Readonly<GlassCardProps>) {
   return (
     <div
-      className={cn(
-        "glass-card p-4",
-        hoverEffect && "hover:border-primary/50",
-        className
-      )}
+      className={cn("glass-card p-4", hoverEffect && "hover:border-primary/50", className)}
       {...props}
     >
       {children}

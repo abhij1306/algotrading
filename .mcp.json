@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "cmd",
+      "args": ["/c", "pnpm", "--dir", "frontend", "exec", "shadcn", "mcp"]
+    }
+  }
+}

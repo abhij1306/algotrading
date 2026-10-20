@@ -10,8 +10,8 @@ pip install pre-commit
 pre-commit install
 
 # Frontend
-cd frontend && npm run lint        # Check
-npm run lint:fix                   # Fix auto-fixable
+cd frontend && pnpm check          # Format, lint and type check
+pnpm check --fix                   # Fix auto-fixable
 
 # Backend
 cd backend && ruff check .         # Check
@@ -45,7 +45,7 @@ git commit --no-verify -m "message"
 ## Pre-commit Hooks
 
 Runs automatically on commit:
-- ESLint (frontend)
+- Vite+ check (frontend)
 - Ruff (backend)
 - Symbol format check
 - Trailing whitespace fix
@@ -60,6 +60,6 @@ Runs on PR/push to main:
 
 **Hook fails:** Run `pre-commit run --all-files` to see full output
 
-**TypeScript errors:** Run `cd frontend && npx tsc --noEmit`
+**TypeScript errors:** Run `cd frontend && pnpm type-check`
 
 **Ruff not found:** `pip install ruff`

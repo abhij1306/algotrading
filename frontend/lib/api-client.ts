@@ -3,11 +3,9 @@
  * Provides unified error handling, loading states, and retry logic
  */
 
-// Default to same-origin in the browser so Next.js rewrites can proxy `/api/*`
-// to the backend without CORS issues. On the server (SSR/build), fall back to a
-// loopback backend URL unless explicitly configured.
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || (globalThis.window === undefined ? "http://127.0.0.1:8000" : "");
+// Default to same-origin so the Vite dev proxy forwards `/api/*` to the backend
+// without CORS issues. Set VITE_API_URL to call a backend on another origin.
+const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 function joinUrl(baseURL: string, endpoint: string): string {
   // Allow relative baseURL (''), and avoid accidental double slashes.
@@ -124,7 +122,7 @@ class SmartTraderAPIClient {
   async requestWithRetry<T>(
     endpoint: string,
     options: RequestInit = {},
-    maxRetries: number = 3
+    maxRetries: number = 3,
   ): Promise<APIResponse<T>> {
     let lastError: APIError | undefined;
 
@@ -178,21 +176,28 @@ export const strategiesAPI = {
     apiClient.get(`/api/strategies/status?universe=${encodeURIComponent(universe)}`),
   getRegime: () => apiClient.get("/api/strategies/regime"),
   getLatestScan: (universe = "NIFTY500", showAll = false) =>
-    apiClient.get(`/api/strategies/vcp/scan/latest?universe=${encodeURIComponent(universe)}&show_all=${showAll}`),
-  runScan: (body?: Record<string, unknown>) => apiClient.post("/api/strategies/vcp/scan/run", body ?? {}),
-  getSignal: (symbol: string) => apiClient.get(`/api/strategies/vcp/signal/${encodeURIComponent(symbol)}`),
+    apiClient.get(
+      `/api/strategies/vcp/scan/latest?universe=${encodeURIComponent(universe)}&show_all=${showAll}`,
+    ),
+  runScan: (body?: Record<string, unknown>) =>
+    apiClient.post("/api/strategies/vcp/scan/run", body ?? {}),
+  getSignal: (symbol: string) =>
+    apiClient.get(`/api/strategies/vcp/signal/${encodeURIComponent(symbol)}`),
   queueSignal: (signalId: number) => apiClient.post(`/api/strategies/vcp/signal/${signalId}/queue`),
-  cancelSignal: (signalId: number) => apiClient.post(`/api/strategies/vcp/signal/${signalId}/cancel`),
+  cancelSignal: (signalId: number) =>
+    apiClient.post(`/api/strategies/vcp/signal/${signalId}/cancel`),
   getPositions: () => apiClient.get("/api/strategies/positions"),
-  closePosition: (positionId: number) => apiClient.post(`/api/strategies/positions/${positionId}/close`),
+  closePosition: (positionId: number) =>
+    apiClient.post(`/api/strategies/positions/${positionId}/close`),
   updateStop: (positionId: number, stop_price: number) =>
     apiClient.post(`/api/strategies/positions/${positionId}/stop`, { stop_price }),
   halt: (reason?: string) => apiClient.post("/api/strategies/halt", reason ? { reason } : {}),
   resume: () => apiClient.post("/api/strategies/resume"),
-  runBacktest: (body: Record<string, unknown>) => apiClient.post("/api/strategies/vcp/backtest/run", body),
+  runBacktest: (body: Record<string, unknown>) =>
+    apiClient.post("/api/strategies/vcp/backtest/run", body),
   getBacktestHistory: (universe?: string) =>
     apiClient.get(
-      `/api/strategies/vcp/backtest/history${universe ? `?universe=${encodeURIComponent(universe)}` : ""}`
+      `/api/strategies/vcp/backtest/history${universe ? `?universe=${encodeURIComponent(universe)}` : ""}`,
     ),
 };
 
