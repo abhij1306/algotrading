@@ -27,6 +27,10 @@ class BrokerFunds(TypedDict):
     total: float
 
 
+class BrokerUnavailableError(Exception):
+    """Raised when the broker client is missing or a broker read call fails."""
+
+
 class IBroker(ABC):
     """
     Interface for Broker Adapters (IBroker).
@@ -54,7 +58,11 @@ class IBroker(ABC):
 
     @abstractmethod
     def get_positions(self) -> list[Position]:
-        """Get standardized list of current open positions."""
+        """Get standardized list of current open positions.
+
+        Raises BrokerUnavailableError when positions cannot be read, so callers
+        never mistake an outage for "no positions".
+        """
         pass
 
     @abstractmethod
