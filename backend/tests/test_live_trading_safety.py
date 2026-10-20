@@ -115,10 +115,7 @@ def test_risk_exposure_check_prices_market_order_from_quote(db_session: Session)
     assert client.calls == [("quotes", {"symbols": "NSE:SBIN-EQ"})]
 
 
-def test_risk_price_estimate_fails_when_quote_has_no_price(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("RISK_DEFAULT_PRICE", raising=False)
+def test_risk_price_estimate_fails_when_quote_has_no_price() -> None:
     manager = RiskManager()
     manager._broker = make_broker(FakeFyersClient(quotes_response={"s": "error", "d": []}))
 

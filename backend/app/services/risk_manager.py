@@ -181,8 +181,8 @@ class RiskManager:
 
     def _get_estimated_price(self, symbol: str, fyers_symbol: str | None = None) -> float:
         """
-        Get estimated price for a symbol.
-        Tries to fetch from broker quote first, falls back to config default.
+        Get estimated price for a symbol from a live broker quote. There is no fallback
+        price: a caller that gets 0 must fail its check rather than assume a price.
 
         Args:
             symbol: Symbol to get price for, in DB ("SBIN") or Fyers format
@@ -201,16 +201,28 @@ class RiskManager:
             price = quote_last_price(self._get_broker().get_quote(quote_symbol))
             if price > 0:
                 return price
-        except Exception as e:
-            logger.warning(f"Could not fetch quote for {symbol}: {e}")
+        except Exception:
+            logger.warning("Could not fetch quote for %s", symbol, exc_info=True)
+        return 0
 
-        # Fallback to default from config or env
-        import os
+    def _order_price(self, order_params: dict) -> float:
+        """The price an order is valued at: its own price when it has one (a limit), else
+        the live quote. 0 when neither is available."""
+        price = float(order_params.get("price") or 0)
+        if price > 0:
+            return price
+        return self._get_estimated_price(
+            order_params.get("symbol", ""), order_params.get("fyers_symbol")
+        )
 
-        default_price = float(os.getenv("RISK_DEFAULT_PRICE", "0"))
-        if default_price > 0:
-            logger.info(f"Using configured default price {default_price} for {symbol}")
-        return default_price
+    @staticmethod
+    def _price_estimate_failed(order_params: dict) -> RiskCheckResult:
+        symbol = order_params.get("symbol", "")
+        return RiskCheckResult(
+            status=RiskStatus.FAIL,
+            message=f"Cannot estimate price for {symbol}. Please provide limit price.",
+            code="PRICE_ESTIMATE_FAILED",
+        )
 
     def pre_trade_check(
         self, order_params: dict, db: Session | None = None, *, user_id: str
@@ -517,18 +529,9 @@ class RiskManager:
             current_exposure = sum(abs(p.net_qty) * p.ltp for p in positions)
             # Add new order value
             quantity = order_params.get("quantity", 0)
-            price = order_params.get("price", 0)
-
-            # For market orders, try to get actual quote or use configured default
-            if price == 0:
-                symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
-                if price == 0:
-                    return RiskCheckResult(
-                        status=RiskStatus.FAIL,
-                        message=f"Cannot estimate price for {symbol}. Please provide limit price.",
-                        code="PRICE_ESTIMATE_FAILED",
-                    )
+            price = self._order_price(order_params)
+            if price <= 0:
+                return self._price_estimate_failed(order_params)
 
             new_exposure = quantity * price
             total_exposure = current_exposure + new_exposure
@@ -564,12 +567,10 @@ class RiskManager:
 
             # Estimate margin required (simplified - would need actual margin calculator)
             quantity = order_params.get("quantity", 0)
-            price = order_params.get("price", 0)
-
-            # For market orders, try to get actual quote or use configured default
-            if price == 0:
-                symbol = order_params.get("symbol", "")
-                price = self._get_estimated_price(symbol, order_params.get("fyers_symbol"))
+            price = self._order_price(order_params)
+            if price <= 0:
+                # An unpriced order would need zero margin: fail closed instead.
+                return self._price_estimate_failed(order_params)
 
             # Rough estimate: 20% margin for intraday, 100% for CNC
             product = order_params.get("product", "INTRADAY")

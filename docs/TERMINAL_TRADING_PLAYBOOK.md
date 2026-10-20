@@ -67,6 +67,8 @@
   modify returns its warnings the same way.
 - Daily order limits count LIVE orders only. The daily loss is read for the broker
   account's user. Quantities must be positive whole numbers (2.5 or "2.5" is rejected).
+- Risk never assumes a price. An order is valued at its own limit price, else the live
+  quote; with neither (a MARKET order and no quote) it fails `PRICE_ESTIMATE_FAILED`.
 
 ### Terminal options contracts
 - `GET /api/terminal/options/board`

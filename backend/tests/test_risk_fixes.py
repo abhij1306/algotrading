@@ -42,10 +42,14 @@ class FakeBroker:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.positions: list[dict[str, Any]] | Exception = []
+        # None: the quote has no price; an Exception: the quote call fails.
+        self.ltp: float | Exception | None = 800.0
 
     def get_quote(self, symbol: str) -> dict[str, Any]:
         self.calls.append(("get_quote", symbol))
-        return {"n": symbol, "v": {"lp": 800.0}}
+        if isinstance(self.ltp, Exception):
+            raise self.ltp
+        return {"n": symbol, "v": {"lp": self.ltp}} if self.ltp else {"n": symbol, "v": {}}
 
     def get_funds(self) -> dict[str, float]:
         self.calls.append(("get_funds", None))
@@ -268,6 +272,90 @@ def test_pre_trade_check_lists_every_warning(rows: Session, broker: FakeBroker) 
         LOSS_WARNING,
     )
     assert result.details == {"current_pnl": -4500.0, "limit": -5000.0, "warnings": [LOSS_WARNING]}
+
+
+# --- No assumed price: an order risk cannot price is blocked --------------------------
+
+
+@pytest.mark.parametrize(
+    ("order_type", "price", "quote", "status_code", "expected", "placed"),
+    [
+        # MARKET with no usable quote: blocked before the broker, whatever the env says.
+        (
+            "MARKET",
+            0.0,
+            None,
+            400,
+            {
+                "detail": "Risk Check Failed: Cannot estimate price for SBIN. "
+                "Please provide limit price."
+            },
+            0,
+        ),
+        (
+            "MARKET",
+            0.0,
+            RuntimeError(SECRET),
+            400,
+            {
+                "detail": "Risk Check Failed: Cannot estimate price for SBIN. "
+                "Please provide limit price."
+            },
+            0,
+        ),
+        # LIMIT with no quote: valued at its own limit price, so it goes through.
+        (
+            "LIMIT",
+            800.0,
+            None,
+            200,
+            {
+                "order_id": "B-1",
+                "status": "SUBMITTED",
+                "message": "Submitted",
+                "client_order_id": CLIENT_ORDER_ID,
+                "duplicate": False,
+            },
+            1,
+        ),
+    ],
+)
+def test_live_order_risk_never_assumes_a_price(
+    client: TestClient,
+    rows: Session,
+    broker: FakeBroker,
+    freeze_market: Callable[[bool], None],
+    monkeypatch: pytest.MonkeyPatch,
+    order_type: str,
+    price: float,
+    quote: Exception | None,
+    status_code: int,
+    expected: dict[str, Any],
+    placed: int,
+) -> None:
+    freeze_market(True)
+    # The removed fallback env var must have no effect.
+    monkeypatch.setenv("RISK_DEFAULT_PRICE", "900")
+    broker.ltp = quote
+
+    response = client.post(
+        "/api/trading/order",
+        headers={"x-user-id": "u1"},
+        json=live_order(type=order_type, price=price),
+    )
+
+    assert (response.status_code, response.json()) == (status_code, expected)
+    assert broker.count("place_order") == placed
+    assert SECRET not in response.text
+
+
+def test_margin_check_fails_closed_on_an_unpriced_order(broker: FakeBroker) -> None:
+    broker.ltp = None
+    manager = manager_for(broker)
+
+    result = manager._check_available_margin(risk_params(type="MARKET", price=0))
+
+    assert (result.status, result.code) == (RiskStatus.FAIL, "PRICE_ESTIMATE_FAILED")
 
 
 # --- PAPER orders never use up LIVE limits -----------------------------------------
