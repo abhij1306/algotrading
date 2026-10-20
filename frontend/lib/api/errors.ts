@@ -44,7 +44,8 @@ export function apiErrorFromResponse(input: {
   body: unknown;
 }): ApiError {
   const { status, statusText, body } = input;
-  const fallback = `HTTP ${status}${statusText ? `: ${statusText}` : ""}`;
+  const statusSuffix = statusText ? `: ${statusText}` : "";
+  const fallback = `HTTP ${status}${statusSuffix}`;
 
   if (isRecord(body)) {
     const envelope = body.error;

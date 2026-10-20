@@ -287,6 +287,23 @@ function formatPct(value: number | null | undefined): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+/** The chosen universe, or the first known one when the chosen one is not offered. */
+function resolveUniverse(available: UniverseOption[], choice: string): string {
+  if (available.length === 0 || available.some((row) => row.id === choice)) return choice;
+  return available[0].id;
+}
+
+function timedQueryError(error: Error | null, at: number): TimedError | null {
+  return error ? { message: error.message, at } : null;
+}
+
+type ActionOutcome = { ok: true; data: unknown } | { ok: false };
+
+function gradeVariant(grade: string): "profit" | "warning" | "neutral" {
+  if (grade === "A") return "profit";
+  return grade === "B" ? "warning" : "neutral";
+}
+
 export default function StrategiesPage() {
   const queryClient = useQueryClient();
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
@@ -302,10 +319,7 @@ export default function StrategiesPage() {
   const universesQuery = useScreenerIndices();
   const availableUniverses: UniverseOption[] = universesQuery.data ?? NO_UNIVERSES;
   // Fall back to the first known universe when the chosen one is not offered.
-  const selectedUniverse =
-    availableUniverses.length > 0 && !availableUniverses.some((row) => row.id === universeChoice)
-      ? availableUniverses[0].id
-      : universeChoice;
+  const selectedUniverse = resolveUniverse(availableUniverses, universeChoice);
 
   const workspaceKey = queryKeys.strategies.workspace({ universe: selectedUniverse, showAll });
   const workspaceQuery = useQuery({
@@ -332,12 +346,8 @@ export default function StrategiesPage() {
   // The auto-selected first row fails quietly; only an explicitly picked signal shows its error.
   const error = latestError([
     actionError,
-    workspaceQuery.error
-      ? { message: workspaceQuery.error.message, at: workspaceQuery.errorUpdatedAt }
-      : null,
-    selectedSymbol !== null && signalQuery.error
-      ? { message: signalQuery.error.message, at: signalQuery.errorUpdatedAt }
-      : null,
+    timedQueryError(workspaceQuery.error, workspaceQuery.errorUpdatedAt),
+    timedQueryError(selectedSymbol === null ? null : signalQuery.error, signalQuery.errorUpdatedAt),
   ]);
 
   const failAction = (message: string) => {
@@ -356,81 +366,74 @@ export default function StrategiesPage() {
     setActionError(null);
   };
 
-  const onRunScan = async () => {
+  /** Run one strategies request with the busy flag; a failure is shown in the banner. */
+  const runAction = async (
+    request: () => Promise<{ data?: unknown; error?: { message: string } }>,
+  ): Promise<ActionOutcome> => {
     setBusy(true);
-    setActionError(null);
-    const response = await strategiesAPI.runScan({ universe: selectedUniverse });
+    const response = await request();
     setBusy(false);
     if (response.error) {
       failAction(response.error.message);
-      return;
+      return { ok: false };
     }
-    await reloadWorkspace();
+    return { ok: true, data: response.data };
+  };
+
+  const onRunScan = async () => {
+    setActionError(null);
+    const outcome = await runAction(() => strategiesAPI.runScan({ universe: selectedUniverse }));
+    if (outcome.ok) await reloadWorkspace();
   };
 
   const onToggleHalt = async () => {
-    setBusy(true);
-    const response = status?.halted
-      ? await strategiesAPI.resume()
-      : await strategiesAPI.halt("Manual halt from Strategies page");
-    setBusy(false);
-    if (response.error) {
-      failAction(response.error.message);
-      return;
-    }
+    const outcome = await runAction(() =>
+      status?.halted
+        ? strategiesAPI.resume()
+        : strategiesAPI.halt("Manual halt from Strategies page"),
+    );
+    if (!outcome.ok) return;
     setActionError(null);
-    const nextStatus = (response.data ?? null) as StrategyStatus | null;
+    const nextStatus = (outcome.data ?? null) as StrategyStatus | null;
     queryClient.setQueryData<StrategiesWorkspace>(workspaceKey, (prev) =>
       prev ? { ...prev, status: nextStatus } : prev,
     );
   };
 
   const onQueueToggle = async (row: ScanRow) => {
-    setBusy(true);
-    const response =
+    const outcome = await runAction(() =>
       row.signal_status === "PENDING_ENTRY"
-        ? await strategiesAPI.cancelSignal(row.id)
-        : await strategiesAPI.queueSignal(row.id);
-    setBusy(false);
-    if (response.error) {
-      failAction(response.error.message);
-      return;
-    }
+        ? strategiesAPI.cancelSignal(row.id)
+        : strategiesAPI.queueSignal(row.id),
+    );
+    if (!outcome.ok) return;
     setActionError(null);
     await reloadWorkspace();
   };
 
   const onClosePosition = async (positionId: number) => {
-    setBusy(true);
-    const response = await strategiesAPI.closePosition(positionId);
-    setBusy(false);
-    if (response.error) {
-      failAction(response.error.message);
-      return;
-    }
+    const outcome = await runAction(() => strategiesAPI.closePosition(positionId));
+    if (!outcome.ok) return;
     setActionError(null);
     await reloadWorkspace();
   };
 
   const onRunBacktest = async () => {
     const parsedCapital = Number.parseFloat(backtestCapital.trim());
-    if (!Number.isFinite(parsedCapital) || Number.isNaN(parsedCapital)) {
+    if (!Number.isFinite(parsedCapital)) {
       failAction("Enter a valid numeric capital amount before running the backtest.");
       return;
     }
-    setBusy(true);
-    const response = await strategiesAPI.runBacktest({
-      universe: selectedUniverse,
-      start_date: backtestStart,
-      end_date: backtestEnd,
-      initial_capital: Number(parsedCapital),
-    });
-    setBusy(false);
-    if (response.error) {
-      failAction(response.error.message);
-      return;
-    }
-    setBacktestResult((response.data ?? null) as BacktestResult | null);
+    const outcome = await runAction(() =>
+      strategiesAPI.runBacktest({
+        universe: selectedUniverse,
+        start_date: backtestStart,
+        end_date: backtestEnd,
+        initial_capital: Number(parsedCapital),
+      }),
+    );
+    if (!outcome.ok) return;
+    setBacktestResult((outcome.data ?? null) as BacktestResult | null);
     setActionError(null);
     await reloadWorkspace();
   };
@@ -622,85 +625,13 @@ export default function StrategiesPage() {
                   </Card>
                 ) : null}
 
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">History</CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Run</TableHead>
-                          <TableHead>Universe</TableHead>
-                          <TableHead>Period</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Return</TableHead>
-                          <TableHead>Sharpe</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {backtestRuns.map((run) => (
-                          <TableRow key={run.run_id}>
-                            <TableCell>{run.name || run.run_id}</TableCell>
-                            <TableCell>{run.universe || "--"}</TableCell>
-                            <TableCell>
-                              {run.start_date} → {run.end_date}
-                            </TableCell>
-                            <TableCell>{run.status}</TableCell>
-                            <TableCell>{formatPct(run.metrics?.total_return_pct)}</TableCell>
-                            <TableCell>{run.metrics?.sharpe_ratio?.toFixed?.(2) ?? "--"}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
+                <BacktestHistoryCard runs={backtestRuns} />
               </TabsContent>
             </Tabs>
           </div>
 
           <div className="flex min-h-0 flex-col bg-background-secondary">
-            <Card variant="void" className="m-4 mb-0">
-              <CardHeader>
-                <CardTitle className="text-sm">
-                  {selectedSignal
-                    ? `${selectedSignal.symbol} · ${selectedSignal.grade}-Grade`
-                    : "Signal Detail"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-3 text-sm">
-                <Metric
-                  label="RS Rating"
-                  value={selectedSignal ? String(selectedSignal.rs_rating) : "--"}
-                />
-                <Metric
-                  label="Contractions"
-                  value={
-                    selectedSignal
-                      ? selectedSignal.contraction_depths.map((d) => `${d}%`).join(" → ")
-                      : "--"
-                  }
-                />
-                <Metric
-                  label="Pivot High"
-                  value={selectedSignal ? formatCurrency(selectedSignal.pivot_high) : "--"}
-                />
-                <Metric
-                  label="Stop Level"
-                  value={selectedSignal ? formatCurrency(selectedSignal.stop_level) : "--"}
-                />
-                <Metric
-                  label="Position Value"
-                  value={
-                    selectedSignal ? formatCurrency(selectedSignal.planned_position_value) : "--"
-                  }
-                />
-                <Metric
-                  label="2R Target"
-                  value={selectedSignal ? formatCurrency(selectedSignal.two_r_target) : "--"}
-                />
-              </CardContent>
-            </Card>
+            <SignalDetailCard signal={selectedSignal} />
 
             <Card variant="void" className="m-4 flex min-h-0 flex-1 flex-col">
               <CardHeader>
@@ -769,11 +700,7 @@ function SignalTable({
             }}
           >
             <TableCell>
-              <Badge
-                variant={row.grade === "A" ? "profit" : row.grade === "B" ? "warning" : "neutral"}
-              >
-                {row.grade}
-              </Badge>
+              <Badge variant={gradeVariant(row.grade)}>{row.grade}</Badge>
             </TableCell>
             <TableCell>
               <div className="font-medium">{row.symbol}</div>
@@ -866,5 +793,69 @@ function PositionTable({
         ) : null}
       </TableBody>
     </Table>
+  );
+}
+
+function SignalDetailCard({ signal }: Readonly<{ signal: ScanRow | null }>) {
+  return (
+    <Card variant="void" className="m-4 mb-0">
+      <CardHeader>
+        <CardTitle className="text-sm">
+          {signal ? `${signal.symbol} · ${signal.grade}-Grade` : "Signal Detail"}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-3 text-sm">
+        <Metric label="RS Rating" value={signal ? String(signal.rs_rating) : "--"} />
+        <Metric
+          label="Contractions"
+          value={signal ? signal.contraction_depths.map((d) => `${d}%`).join(" → ") : "--"}
+        />
+        <Metric label="Pivot High" value={signal ? formatCurrency(signal.pivot_high) : "--"} />
+        <Metric label="Stop Level" value={signal ? formatCurrency(signal.stop_level) : "--"} />
+        <Metric
+          label="Position Value"
+          value={signal ? formatCurrency(signal.planned_position_value) : "--"}
+        />
+        <Metric label="2R Target" value={signal ? formatCurrency(signal.two_r_target) : "--"} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function BacktestHistoryCard({ runs }: Readonly<{ runs: BacktestRun[] }>) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">History</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Run</TableHead>
+              <TableHead>Universe</TableHead>
+              <TableHead>Period</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Return</TableHead>
+              <TableHead>Sharpe</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {runs.map((run) => (
+              <TableRow key={run.run_id}>
+                <TableCell>{run.name || run.run_id}</TableCell>
+                <TableCell>{run.universe || "--"}</TableCell>
+                <TableCell>
+                  {run.start_date} → {run.end_date}
+                </TableCell>
+                <TableCell>{run.status}</TableCell>
+                <TableCell>{formatPct(run.metrics?.total_return_pct)}</TableCell>
+                <TableCell>{run.metrics?.sharpe_ratio?.toFixed?.(2) ?? "--"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }

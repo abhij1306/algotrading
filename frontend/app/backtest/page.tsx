@@ -26,6 +26,7 @@ import {
   type BacktestRunPayload,
   type StrategyMeta,
 } from "@/lib/queries/backtest";
+import { runStatusVariant } from "@/lib/status-variants";
 import { deriveFormDefaults, type SelectionMode } from "./form-defaults";
 
 type StrategyAllocation = {
@@ -70,10 +71,10 @@ export default function BacktestPage() {
   const [symbols, setSymbols] = useState("RELIANCE,SBIN,TCS");
   const [initialCapital, setInitialCapital] = useState("1000000");
   // Fields the user has edited; anything null/absent falls back to the server-derived default.
-  const [selectionModeEdit, setSelectionMode] = useState<SelectionMode | null>(null);
-  const [universeEdit, setUniverse] = useState<string | null>(null);
-  const [startDateEdit, setStartDate] = useState<string | null>(null);
-  const [endDateEdit, setEndDate] = useState<string | null>(null);
+  const [selectionModeEdit, setSelectionModeEdit] = useState<SelectionMode | null>(null);
+  const [universeEdit, setUniverseEdit] = useState<string | null>(null);
+  const [startDateEdit, setStartDateEdit] = useState<string | null>(null);
+  const [endDateEdit, setEndDateEdit] = useState<string | null>(null);
   const [allocationEdits, setAllocationEdits] = useState<Record<string, AllocationEdit>>({});
 
   const defaults = useMemo(() => deriveFormDefaults(status), [status]);
@@ -215,13 +216,13 @@ export default function BacktestPage() {
                         label="Start Date"
                         type="date"
                         value={startDate}
-                        onChange={(e) => setStartDate(e.target.value)}
+                        onChange={(e) => setStartDateEdit(e.target.value)}
                       />
                       <Input
                         label="End Date"
                         type="date"
                         value={endDate}
-                        onChange={(e) => setEndDate(e.target.value)}
+                        onChange={(e) => setEndDateEdit(e.target.value)}
                       />
                     </div>
 
@@ -229,7 +230,7 @@ export default function BacktestPage() {
                       label="Selection Mode"
                       value={selectionMode}
                       onChange={(e) =>
-                        setSelectionMode(e.target.value === "symbols" ? "symbols" : "universe")
+                        setSelectionModeEdit(e.target.value === "symbols" ? "symbols" : "universe")
                       }
                     >
                       <option value="universe">Index Universe</option>
@@ -240,7 +241,7 @@ export default function BacktestPage() {
                       <Select
                         label="Universe"
                         value={universe}
-                        onChange={(e) => setUniverse(e.target.value)}
+                        onChange={(e) => setUniverseEdit(e.target.value)}
                       >
                         {Object.keys(status?.universe_ranges ?? { NIFTY50: {} }).map((u) => (
                           <option key={u} value={u}>
@@ -396,17 +397,7 @@ export default function BacktestPage() {
                               {r.job_id}
                             </TableCell>
                             <TableCell>
-                              <Badge
-                                variant={
-                                  r.status === "completed"
-                                    ? "profit"
-                                    : r.status === "failed"
-                                      ? "loss"
-                                      : "warning"
-                                }
-                              >
-                                {r.status}
-                              </Badge>
+                              <Badge variant={runStatusVariant(r.status)}>{r.status}</Badge>
                             </TableCell>
                             <TableCell className="text-foreground">
                               {(r.params.instrument_type || "equity").replace(/^./, (c) =>

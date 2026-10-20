@@ -17,8 +17,14 @@ import {
   TableRow,
 } from "@/components/ui";
 import { useBacktestResult } from "@/lib/queries/backtest";
+import { runStatusVariant } from "@/lib/status-variants";
 
 type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
+
+function winRateTone(winRate: number): string {
+  if (winRate > 50) return "text-profit";
+  return winRate < 50 ? "text-loss" : "text-foreground";
+}
 
 function formatRupeeLakh(value: number): string {
   if (!Number.isFinite(value)) return "--";
@@ -299,26 +305,14 @@ export default function BacktestResultPage() {
                 <div className="text-xxs uppercase tracking-wider text-foreground-muted">
                   Win Rate
                 </div>
-                <div
-                  className={`mono-num text-2xl font-semibold ${winRate > 50 ? "text-profit" : winRate < 50 ? "text-loss" : "text-foreground"}`}
-                >
+                <div className={`mono-num text-2xl font-semibold ${winRateTone(winRate)}`}>
                   {metrics ? `${winRate.toFixed(1)}%` : "--"}
                 </div>
               </div>
             </div>
 
             <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-background-secondary px-4 text-xs text-foreground-secondary">
-              <Badge
-                variant={
-                  payload.status === "completed"
-                    ? "profit"
-                    : payload.status === "failed"
-                      ? "loss"
-                      : "warning"
-                }
-              >
-                {payload.status}
-              </Badge>
+              <Badge variant={runStatusVariant(payload.status)}>{payload.status}</Badge>
               <span className="h-3 w-px bg-border" />
               <span>
                 Instrument{" "}
@@ -353,11 +347,11 @@ export default function BacktestResultPage() {
                     <div className="flex items-center gap-4 text-sm">
                       <span className="flex items-center gap-2 text-primary">
                         <span className="h-0.5 w-5 bg-primary" />
-                        Portfolio
+                        <span>Portfolio</span>
                       </span>
                       <span className="flex items-center gap-2 text-foreground-muted">
                         <span className="h-0.5 w-5 bg-foreground-muted" />
-                        Benchmark
+                        <span>Benchmark</span>
                       </span>
                     </div>
                   </CardHeader>

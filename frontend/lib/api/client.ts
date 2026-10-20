@@ -24,8 +24,8 @@ export async function unwrap<D, E>(request: Promise<FetchResult<D, E>>): Promise
   let result: FetchResult<D, E>;
   try {
     result = await request;
-  } catch (thrown) {
-    throw apiErrorFromThrown(thrown);
+  } catch (error_) {
+    throw apiErrorFromThrown(error_);
   }
   if (result.error !== undefined || !result.response.ok) {
     throw apiErrorFromResponse({

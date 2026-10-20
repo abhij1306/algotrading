@@ -481,7 +481,7 @@ export default function ScreenerPage() {
           const current = prev[key];
           next[key] = {
             direction,
-            phase: current ? (current.phase === 0 ? 1 : 0) : 0,
+            phase: current?.phase === 0 ? 1 : 0,
           };
         }
         return next;
