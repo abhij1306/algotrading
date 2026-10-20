@@ -139,7 +139,7 @@ def _to_chain_response(chain: OptionChainData) -> OptionChainResponse:
         500: {"description": "Internal server error"},
     },
 )
-async def get_option_chain(
+def get_option_chain(
     symbol: Annotated[
         str,
         Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY, RELIANCE)"),
@@ -189,7 +189,7 @@ async def get_option_chain(
         500: {"description": "Internal server error"},
     },
 )
-async def get_expiries(
+def get_expiries(
     symbol: Annotated[
         str,
         Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
@@ -223,7 +223,7 @@ async def get_expiries(
         500: {"description": "Internal server error"},
     },
 )
-async def get_atm_strike(
+def get_atm_strike(
     symbol: Annotated[
         str,
         Query(..., description="Underlying symbol (e.g., NIFTY, BANKNIFTY)"),
@@ -269,7 +269,7 @@ async def get_atm_strike(
         500: {"description": "Internal server error"},
     },
 )
-async def get_greeks(
+def get_greeks(
     symbol: Annotated[str, Query(..., description="Underlying symbol (e.g., NIFTY)")],
     strike: Annotated[float, Query(..., description="Strike price")],
     option_type: Annotated[
