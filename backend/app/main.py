@@ -3,7 +3,6 @@ SmartTrader 3.0 API - FastAPI Application
 """
 
 import asyncio
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -28,6 +27,7 @@ load_dotenv()
 
 # Import routers - these may have heavy dependencies
 # E402 is suppressed below: routers read config at import, so load_dotenv() must run first.
+from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
 from .routers import (  # noqa: E402
     activity,
@@ -387,16 +387,10 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
 
-# CORS
-# Allow frontend origins from environment variable or default to localhost
-allowed_origins = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
-).split(",")
-
+# CORS. config.ALLOWED_ORIGINS (CORS_ORIGINS) is also the Origin allow-list of WS /stream.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=list(config.ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

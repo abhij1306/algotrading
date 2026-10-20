@@ -31,11 +31,24 @@ def fyers_available() -> bool:
     return token is not None and token.is_usable()
 
 
+# The frontend origins (the Vite dev server ports) allowed by CORS and by the Origin check on
+# WS /api/websocket/stream. Override with CORS_ORIGINS, a comma-separated list.
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001"
+)
+
+
+def parse_origins(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated origin list, dropping blanks and stray whitespace."""
+    return tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+
+
 class Config:
     # Server settings
     PORT = int(os.getenv("PORT", 8000))
     CACHE_TTL = int(os.getenv("CACHE_TTL", 3600))
     ENV = os.getenv("ENV", "development")
+    ALLOWED_ORIGINS = parse_origins(os.getenv("CORS_ORIGINS", DEFAULT_ALLOWED_ORIGINS))
 
     # Data paths - now using index_universe_loader service
     # NSE_FNO_UNIVERSE_PATH is deprecated - use index_universe_loader.get_index_symbols("NIFTY500")
