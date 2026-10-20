@@ -106,9 +106,10 @@ class LiveMarketService:
     def ws_service(self) -> LiveMarketService | None:
         """Legacy shim: this service while a provider socket or connect is live, else None.
 
-        routers/auth.py (logout) still calls `ws_service.disconnect()`, and the TokenStore PR
-        checks `ws_service is not None`. Returning the service makes that call the explicit
-        disconnect(), so a connect in flight or the monitor cannot reconnect after logout.
+        `services/fyers/auth_flow.py` checks `ws_service is not None` after a login to close
+        the socket built with the old token. Returning the service means a legacy
+        `ws_service.disconnect()` is the explicit disconnect(), so a connect in flight or the
+        monitor cannot reconnect after it.
         """
         busy = self.session.has_socket or self.session.state is SessionState.CONNECTING
         return self if busy else None
