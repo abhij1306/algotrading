@@ -19,7 +19,7 @@ from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
-from fakes.data_socket import FakeSocketFactory, connected_live, make_live
+from fakes.data_socket import FakeSocketFactory, connected_live, make_live, wait_until_backing_off
 from fakes.market import MARKET_OPEN_INSTANT, FreezeMarket
 
 
@@ -359,7 +359,7 @@ def test_off_hours_cleanup_stops_a_retrying_runner(freeze_market: FreezeMarket) 
     assert live.session.start() is True
     thread = threading.Thread(target=runner[0], daemon=True)
     thread.start()
-    time.sleep(0.2)  # first attempt timed out, runner is now backing off for 30s
+    wait_until_backing_off(factory)
     freeze_market(False, live)
 
     asyncio.run(live._check_connection_health())
@@ -401,7 +401,6 @@ def test_get_fresh_tick_requires_open_market_and_recent_tick(
     age: float,
     fresh: bool,
 ) -> None:
-    import time
 
     monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
     live = lms.LiveMarketService()

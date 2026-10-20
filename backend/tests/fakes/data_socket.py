@@ -6,6 +6,7 @@ the real SDK would fire. `FakeSocketFactory` records every socket and token it w
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +19,16 @@ from app.utils.clock import SYSTEM_CLOCK, Clock
 FAST_RETRY = RetryPolicy(
     max_attempts=3, connect_timeout_s=0.05, poll_s=0.005, backoff_base_s=0.01, backoff_max_s=0.02
 )
+
+
+def wait_until_backing_off(factory: FakeSocketFactory, timeout_s: float = 5.0) -> None:
+    """Block until the runner's first attempt failed and released its socket (it then backs
+    off). Fails the test if that does not happen in time."""
+    deadline = time.monotonic() + timeout_s
+    while not (factory.sockets and factory.sockets[0].closed):
+        if time.monotonic() >= deadline:
+            raise AssertionError("the connect runner never failed its first attempt")
+        time.sleep(0.005)
 
 
 def run_inline(target: Callable[[], None]) -> None:

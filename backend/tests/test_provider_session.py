@@ -2,14 +2,13 @@
 
 import logging
 import threading
-import time
 from typing import Any
 
 import pytest
 
 from app.services.live.provider_session import ProviderSession, RetryPolicy, SessionState
 
-from fakes.data_socket import FakeSocketFactory, make_session
+from fakes.data_socket import FakeSocketFactory, make_session, wait_until_backing_off
 
 
 def started(session: ProviderSession) -> None:
@@ -114,24 +113,24 @@ def test_after_close_or_stop_nothing_reconnects_or_replays(final: SessionState) 
 def test_close_stops_a_runner_that_is_backing_off() -> None:
     factory = FakeSocketFactory(comes_up=False)
     runner: list[Any] = []
-    session, _ = make_session(factory, spawn=runner.append)
+    session, _ = make_session(factory, spawn=runner.append, desired=lambda: ["NSE:SBIN-EQ"])
     session.retry = RetryPolicy(
         max_attempts=10, connect_timeout_s=0.02, poll_s=0.005, backoff_base_s=30.0
     )
     started(session)
     thread = threading.Thread(target=runner[0], daemon=True)
     thread.start()
-    deadline = time.monotonic() + 2
-    while not factory.sockets and time.monotonic() < deadline:
-        time.sleep(0.01)
-    time.sleep(0.1)  # the first attempt timed out; the runner now waits 30s
+    wait_until_backing_off(factory)
+    # A late SDK auto-reconnect of the failed socket does not count: it was let go of.
+    factory.last.sdk_reconnect()
+    assert session.state is SessionState.CONNECTING
+    assert factory.last.subscribed == []
 
     session.close()
     thread.join(timeout=2)
 
     assert not thread.is_alive()
     assert len(factory.sockets) == 1
-    assert factory.last.closed is True
     assert session.state is SessionState.CLOSED
 
 

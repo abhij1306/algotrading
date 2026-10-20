@@ -229,6 +229,10 @@ class ProviderSession:
                 )
                 if failures >= self.retry.max_attempts:
                     break
+                # Let go of the failed socket before backing off: otherwise an SDK
+                # auto-reconnect could bring it up meanwhile, only for the next attempt
+                # to close it again.
+                self._release_unless_stopped(stop)
                 stop.wait(self.retry.backoff_s(failures))
         with self._lock:
             if stop.is_set():
@@ -238,6 +242,13 @@ class ProviderSession:
         self._close_quietly(socket)
         self._count("failed")
         logger.error("[WS] Provider connection failed after %s attempts", failures)
+
+    def _release_unless_stopped(self, stop: threading.Event) -> None:
+        with self._lock:
+            if stop.is_set():
+                return  # the teardown that set `stop` released the socket already
+            socket = self._release_socket_locked()
+        self._close_quietly(socket)
 
     def _attempt(self, stop: threading.Event) -> None:
         """One connect attempt. Raises when the socket did not connect in time.

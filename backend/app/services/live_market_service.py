@@ -139,7 +139,8 @@ class LiveMarketService:
         for task in live_tasks:
             task.cancel()
         try:
-            self.session.stop()
+            # Closing joins the SDK threads: keep it off the event loop.
+            await asyncio.to_thread(self.session.stop)
         finally:
             self.loop = None
             await asyncio.gather(*live_tasks, return_exceptions=True)
@@ -202,7 +203,7 @@ class LiveMarketService:
             # Ensure we are disconnected off-hours, including a runner that is retrying.
             if state in (SessionState.CONNECTING, SessionState.CONNECTED, SessionState.DROPPED):
                 logger.info("[WS] Market closed. Cleaning up connection.")
-                self.session.stop()
+                await asyncio.to_thread(self.session.stop)  # closing joins the SDK threads
             return
 
         if self.session.is_connected() or state is SessionState.CONNECTING:
