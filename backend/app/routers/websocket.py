@@ -5,15 +5,19 @@ Allows frontend to connect/disconnect/subscribe to live data
 
 import asyncio
 import contextlib
+import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel
 
 from ..services.symbol_master import symbol_master
 from ..utils.errors import handle_api_error
 from ..utils.ws_manager import manager
+
+if TYPE_CHECKING:
+    from ..services.live_market_service import LiveMarketService
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +98,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     WebSocket endpoint for frontend clients (Terminal, Screener).
     Connect to: ws://localhost:8000/api/websocket/stream
     """
-    import json
 
     from ..services.live_market_service import live_market
 
@@ -107,72 +110,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         while True:
             try:
                 data = await websocket.receive_text()
-
-                if not data:
-                    continue
-
-                if data == "ping":
-                    await _safe_send(websocket, {"type": "pong"})
-                    continue
-
-                try:
-                    message = json.loads(data)
-                    action = message.get("action") or message.get("type")
-
-                    if action == "subscribe":
-                        symbols = message.get("symbols", [])
-                        if symbols:
-                            db_symbols = [symbol_master.to_db(s) for s in symbols]
-                            before_symbols = manager.get_all_subscribed_symbols()
-                            await manager.subscribe(websocket, db_symbols)
-                            after_symbols = manager.get_all_subscribed_symbols()
-                            newly_added = sorted(after_symbols - before_symbols)
-
-                            try:
-                                if newly_added:
-                                    await live_market.subscribe(newly_added)
-                            except Exception as sub_e:
-                                logger.warning(f"[WebSocket] LiveMarket sub failed: {sub_e}")
-
-                            await _safe_send(
-                                websocket,
-                                {
-                                    "type": "ack",
-                                    "action": "subscribe",
-                                    "count": len(db_symbols),
-                                    "provider_delta": len(newly_added),
-                                },
-                            )
-
-                    elif action == "unsubscribe":
-                        symbols = message.get("symbols", [])
-                        if symbols:
-                            db_symbols = [symbol_master.to_db(s) for s in symbols]
-                            before_symbols = manager.get_all_subscribed_symbols()
-                            await manager.unsubscribe(websocket, db_symbols)
-                            after_symbols = manager.get_all_subscribed_symbols()
-                            removed_symbols = sorted(before_symbols - after_symbols)
-                            if removed_symbols:
-                                await live_market.unsubscribe(removed_symbols)
-                            await _safe_send(
-                                websocket,
-                                {
-                                    "type": "ack",
-                                    "action": "unsubscribe",
-                                    "count": len(db_symbols),
-                                    "provider_delta": len(removed_symbols),
-                                },
-                            )
-
-                    elif action == "ping":
-                        await _safe_send(websocket, {"type": "pong"})
-
-                except json.JSONDecodeError:
-                    pass  # Ignore invalid JSON
-
-            except WebSocketDisconnect:
-                break
+                await _handle_stream_text(websocket, data, live_market)
             except Exception:
+                # WebSocketDisconnect or any other receive/handling failure ends the stream.
                 break
 
     except Exception:
@@ -181,6 +121,81 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     finally:
         # manager.disconnect releases symbols no other client needs via on_symbols_released.
         await manager.disconnect(websocket)
+
+
+async def _handle_stream_text(
+    websocket: WebSocket, data: str, live_market: "LiveMarketService"
+) -> None:
+    """Handle one text frame from a stream client: ping, subscribe or unsubscribe."""
+    if not data:
+        return
+    if data == "ping":
+        await _safe_send(websocket, {"type": "pong"})
+        return
+
+    try:
+        message = json.loads(data)
+    except json.JSONDecodeError:
+        return  # Ignore invalid JSON
+
+    action = message.get("action") or message.get("type")
+    if action == "subscribe":
+        await _stream_subscribe(websocket, message.get("symbols", []), live_market)
+    elif action == "unsubscribe":
+        await _stream_unsubscribe(websocket, message.get("symbols", []), live_market)
+    elif action == "ping":
+        await _safe_send(websocket, {"type": "pong"})
+
+
+async def _stream_subscribe(
+    websocket: WebSocket, symbols: list[str], live_market: "LiveMarketService"
+) -> None:
+    if not symbols:
+        return
+    db_symbols = [symbol_master.to_db(s) for s in symbols]
+    before_symbols = manager.get_all_subscribed_symbols()
+    await manager.subscribe(websocket, db_symbols)
+    after_symbols = manager.get_all_subscribed_symbols()
+    newly_added = sorted(after_symbols - before_symbols)
+
+    try:
+        if newly_added:
+            await live_market.subscribe(newly_added)
+    except Exception as sub_e:
+        logger.warning(f"[WebSocket] LiveMarket sub failed: {sub_e}")
+
+    await _safe_send(
+        websocket,
+        {
+            "type": "ack",
+            "action": "subscribe",
+            "count": len(db_symbols),
+            "provider_delta": len(newly_added),
+        },
+    )
+
+
+async def _stream_unsubscribe(
+    websocket: WebSocket, symbols: list[str], live_market: "LiveMarketService"
+) -> None:
+    if not symbols:
+        return
+    db_symbols = [symbol_master.to_db(s) for s in symbols]
+    before_symbols = manager.get_all_subscribed_symbols()
+    await manager.unsubscribe(websocket, db_symbols)
+    after_symbols = manager.get_all_subscribed_symbols()
+    removed_symbols = sorted(before_symbols - after_symbols)
+    if removed_symbols:
+        await live_market.unsubscribe(removed_symbols)
+    await _safe_send(
+        websocket,
+        {
+            "type": "ack",
+            "action": "unsubscribe",
+            "count": len(db_symbols),
+            "provider_delta": len(removed_symbols),
+        },
+    )
 
 
 async def _safe_send(websocket: WebSocket, data: dict) -> None:

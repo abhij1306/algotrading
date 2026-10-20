@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
 from .runtime_metrics import runtime_metrics
@@ -175,60 +175,81 @@ class ConnectionManager:
         if not active_connections:
             return
 
-        try:
-            is_batch = message.get("type") == "ticker_batch"
-
-            # For non-batch optimization: pre-serialize
-            json_msg = None
-            target_symbol = None
-
-            if not is_batch:
-                if message.get("type") == "ticker" and "data" in message:
-                    target_symbol = message["data"].get("symbol")
-                json_msg = json.dumps(message)
-
-        except Exception as e:
-            logger.exception(f"[WSManager] Failed to serialize message: {e}")
-            return
+        is_batch = message.get("type") == "ticker_batch"
+        target_symbol = None
+        json_msg = None
+        if not is_batch:
+            # For non-batch optimization: pre-serialize once for every client.
+            try:
+                target_symbol, json_msg = self._pre_serialize(message)
+            except Exception as e:
+                logger.exception(f"[WSManager] Failed to serialize message: {e}")
+                return
 
         for client in active_connections:
+            await self._deliver(client, message, target_symbol, json_msg)
+
+    async def _deliver(
+        self,
+        client: ClientConnection,
+        message: dict[str, Any],
+        target_symbol: str | None,
+        json_msg: str | None,
+    ) -> None:
+        """Queue the client's share of a broadcast; drop clients that are gone.
+
+        `json_msg` is None for a ticker_batch, which is filtered per client.
+        """
+        connection = client.websocket
+        try:
+            if connection.client_state != WebSocketState.CONNECTED:
+                await self.disconnect(connection)
+                return
+            if json_msg is None:
+                outbound = self._client_batch(message, client.subscriptions)
+            elif target_symbol and target_symbol not in client.subscriptions:
+                outbound = None
+            else:
+                outbound = {"__pre_serialized__": json_msg}
+            if outbound is not None:
+                await self._enqueue(client, outbound)
+        except Exception:
+            # Includes WebSocketDisconnect and RuntimeError from a closed socket.
+            await self.disconnect(connection)
+
+    @staticmethod
+    def _pre_serialize(message: dict[str, Any]) -> tuple[str | None, str]:
+        """(target symbol of a single 'ticker' message or None, JSON text of the message)."""
+        target_symbol = None
+        if message.get("type") == "ticker" and "data" in message:
+            target_symbol = message["data"].get("symbol")
+        return target_symbol, json.dumps(message)
+
+    @staticmethod
+    def _client_batch(message: dict[str, Any], client_subs: set[str]) -> dict[str, Any] | None:
+        """The part of a ticker_batch a client subscribes to, or None if nothing applies."""
+        batch_data = message.get("data", [])
+        client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
+        if not client_batch:
+            return None
+        runtime_metrics.increment("websocket.messages.batched_tickers", float(len(client_batch)))
+        runtime_metrics.set_gauge("websocket.batch.last_size", float(len(client_batch)))
+        return {"type": "ticker_batch", "data": client_batch}
+
+    async def _enqueue(self, client: ClientConnection, outbound: dict[str, Any]) -> None:
+        """Queue a message for a client; drop the client if its queue is full."""
+        try:
+            client.queue.put_nowait(outbound)
+            runtime_metrics.increment("websocket.messages.enqueued")
+        except asyncio.QueueFull:
+            runtime_metrics.increment("websocket.queue_overflow")
+            logger.warning("[WSManager] Dropping slow websocket client")
             connection = client.websocket
+            await self.disconnect(connection)
             try:
-                if connection.client_state != WebSocketState.CONNECTED:
-                    await self.disconnect(connection)
-                    continue
-
-                client_subs = client.subscriptions
-                if is_batch:
-                    batch_data = message.get("data", [])
-                    client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
-                    if not client_batch:
-                        continue
-                    runtime_metrics.increment(
-                        "websocket.messages.batched_tickers", float(len(client_batch))
-                    )
-                    runtime_metrics.set_gauge("websocket.batch.last_size", float(len(client_batch)))
-                    outbound = {"type": "ticker_batch", "data": client_batch}
-                else:
-                    if target_symbol and target_symbol not in client_subs:
-                        continue
-                    outbound = {"__pre_serialized__": json_msg}
-
-                try:
-                    client.queue.put_nowait(outbound)
-                    runtime_metrics.increment("websocket.messages.enqueued")
-                except asyncio.QueueFull:
-                    runtime_metrics.increment("websocket.queue_overflow")
-                    logger.warning("[WSManager] Dropping slow websocket client")
-                    await self.disconnect(connection)
-                    try:
-                        await connection.close(code=1013)
-                    except Exception as close_exc:
-                        logger.debug("[WSManager] Closing slow client failed: %s", close_exc)
-            except (WebSocketDisconnect, RuntimeError):
-                await self.disconnect(connection)
-            except Exception:
-                await self.disconnect(connection)
+                await connection.close(code=1013)
+            except Exception as close_exc:
+                logger.debug("[WSManager] Closing slow client failed: %s", close_exc)
 
     async def _sender_loop(self, client: ClientConnection) -> None:
         try:

@@ -188,35 +188,39 @@ class FyersClient:
             # Avoid noisy API validation calls when token is already known expired.
             if self.is_token_expired():
                 return False
-
-            def _profile_ok() -> bool:
-                response = self.fyers.get_profile()
-                if response.get("s") == "ok":
-                    return True
-                logger.warning("[WARN] Fyers token invalid: %s", response)
-                return False
-
-            try:
-                if _profile_ok():
-                    return True
-
-                # Retry once after reloading from disk to handle a fresh login
-                # while the backend is running.
-                if self._refresh_credentials_if_changed():
-                    self._connect(skip_validation=True)
-                    return _profile_ok()
-                return False
-            except Exception as e:
-                logger.exception(f"[ERROR] Token validation failed: {e}")
-                if self._refresh_credentials_if_changed():
-                    try:
-                        self._connect(skip_validation=True)
-                        return _profile_ok()
-                    except Exception as retry_error:
-                        logger.exception(f"[ERROR] Token validation retry failed: {retry_error}")
-                return False
+            return self._validate_with_profile()
         finally:
             self._validating_token = False
+
+    def _profile_ok(self) -> bool:
+        response = self.fyers.get_profile()
+        if response.get("s") == "ok":
+            return True
+        logger.warning("[WARN] Fyers token invalid: %s", response)
+        return False
+
+    def _validate_with_profile(self) -> bool:
+        """Profile call, retried once after reloading a token that changed on disk.
+
+        The retry handles a fresh login while the backend is running.
+        """
+        try:
+            if self._profile_ok():
+                return True
+            if self._refresh_credentials_if_changed():
+                self._connect(skip_validation=True)
+                return self._profile_ok()
+            return False
+        except Exception as e:
+            logger.exception(f"[ERROR] Token validation failed: {e}")
+            if not self._refresh_credentials_if_changed():
+                return False
+            try:
+                self._connect(skip_validation=True)
+                return self._profile_ok()
+            except Exception as retry_error:
+                logger.exception(f"[ERROR] Token validation retry failed: {retry_error}")
+                return False
 
     def is_token_expired(self) -> bool:
         """Check if token has expired based on expiry date"""
