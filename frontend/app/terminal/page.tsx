@@ -10,6 +10,12 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Button, Input } from "@/components/ui";
+import {
+  DEFAULT_ORDER_TYPE,
+  DEFAULT_TRADING_MODE,
+  type OrderType,
+  type TradingMode,
+} from "./order-defaults";
 import { formatPercentage, roundToDecimals } from "@/lib/utils";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { isMarketOpen } from "@/lib/market-hours";
@@ -47,8 +53,6 @@ interface SearchResultItem {
   instrument_type?: string;
 }
 
-type TradingMode = "PAPER" | "LIVE";
-type OrderType = "MARKET" | "LIMIT" | "SL" | "SL-M";
 type TerminalView = "options" | "positions" | "chart";
 
 interface OptionsLeg {
@@ -229,8 +233,8 @@ export default function TerminalPage() {
   const chartSourceRef = useRef("");
   const chartLoadingRef = useRef(false);
   const chartErrorRef = useRef<string | null>(null);
-  const [tradingMode, setTradingMode] = useState<TradingMode>("PAPER");
-  const [orderType, setOrderType] = useState<OrderType>("MARKET");
+  const [tradingMode, setTradingMode] = useState<TradingMode>(DEFAULT_TRADING_MODE);
+  const [orderType, setOrderType] = useState<OrderType>(DEFAULT_ORDER_TYPE);
   const [orderQty, setOrderQty] = useState<number>(1);
   const [optionLots, setOptionLots] = useState<number>(1);
   const [orderPrice, setOrderPrice] = useState<number>(0);
@@ -262,17 +266,6 @@ export default function TerminalPage() {
       setSelectedSymbol(urlSymbol);
     }
   }, []);
-
-  useEffect(() => {
-    const storedMode = globalThis.localStorage.getItem("terminal_trading_mode");
-    if (storedMode === "LIVE" || storedMode === "PAPER") {
-      setTradingMode(storedMode);
-    }
-  }, []);
-
-  useEffect(() => {
-    globalThis.localStorage.setItem("terminal_trading_mode", tradingMode);
-  }, [tradingMode]);
 
   useEffect(() => {
     const fetchWatchlist = async () => {
@@ -723,6 +716,10 @@ export default function TerminalPage() {
   const placeOrder = async (side: "BUY" | "SELL") => {
     if (!activeTradeSymbol || effectiveOrderQuantity <= 0) {
       setOrderMessage("Select symbol and enter valid quantity");
+      return;
+    }
+    if (orderType !== "MARKET" && orderType !== "SL-M" && !(orderPrice > 0)) {
+      setOrderMessage("Enter a price greater than 0");
       return;
     }
 
