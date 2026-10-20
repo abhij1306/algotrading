@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, Key, CheckCircle, AlertCircle, X, Wifi, WifiOff } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/type-guards";
+import { focusOnMount } from "@/lib/focus";
 
 type FyersStatus = { connected: boolean; userId: string; offline: boolean };
 
@@ -308,7 +309,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
                   onChange={(e) => setAuthCode(e.target.value)}
                   placeholder="Paste auth_code here (without auth_code= prefix)"
                   className="w-full bg-void/50 border border-border-subtle rounded-lg px-4 py-3 text-sm text-foreground font-mono focus:border-primary/50 outline-none"
-                  autoFocus
+                  ref={focusOnMount}
                 />
               </div>
 

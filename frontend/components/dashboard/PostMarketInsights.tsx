@@ -7,6 +7,11 @@ interface PostMarketInsightsProps {
   data: PostMarketData;
 }
 
+function toneClass(hasChange: boolean, isUp: boolean): string {
+  if (!hasChange) return "text-foreground-muted";
+  return isUp ? "text-profit" : "text-loss";
+}
+
 const IndexRow = memo(function IndexRow({ index }: { index: IndexData }) {
   const hasValue = typeof index.value === "number" && Number.isFinite(index.value);
   const hasChange = typeof index.changePercent === "number" && Number.isFinite(index.changePercent);
@@ -17,7 +22,7 @@ const IndexRow = memo(function IndexRow({ index }: { index: IndexData }) {
       <div className="text-right">
         <div className="text-sm tabular-nums">{hasValue ? (index.value ?? 0).toFixed(2) : "—"}</div>
         <div
-          className={`text-xs tabular-nums flex items-center justify-end gap-1 ${hasChange ? (isUp ? "text-profit" : "text-loss") : "text-foreground-muted"}`}
+          className={`text-xs tabular-nums flex items-center justify-end gap-1 ${toneClass(hasChange, isUp)}`}
         >
           {hasChange ? (
             <>
@@ -45,9 +50,7 @@ const CommodityCard = memo(function CommodityCard({ commodity }: { commodity: Co
         <div className="text-base font-semibold tabular-nums">
           {hasPrice ? `$${(commodity.price ?? 0).toFixed(2)}` : "—"}
         </div>
-        <div
-          className={`text-sm tabular-nums font-medium ${hasChange ? (isUp ? "text-profit" : "text-loss") : "text-foreground-muted"}`}
-        >
+        <div className={`text-sm tabular-nums font-medium ${toneClass(hasChange, isUp)}`}>
           {hasChange ? formatPercentage(commodity.changePercent) : "Unavailable"}
         </div>
       </div>
@@ -103,13 +106,10 @@ export const PostMarketInsights = memo(function PostMarketInsights({
                 {typeof data.currency.rate === "number" ? `₹${data.currency.rate.toFixed(2)}` : "—"}
               </div>
               <div
-                className={`text-sm tabular-nums font-medium ${
-                  typeof data.currency.changePercent === "number"
-                    ? data.currency.changePercent >= 0
-                      ? "text-profit"
-                      : "text-loss"
-                    : "text-foreground-muted"
-                }`}
+                className={`text-sm tabular-nums font-medium ${toneClass(
+                  typeof data.currency.changePercent === "number",
+                  (data.currency.changePercent ?? 0) >= 0,
+                )}`}
               >
                 {typeof data.currency.changePercent === "number"
                   ? formatPercentage(data.currency.changePercent)

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queries/keys";
 import { quoteStore } from "@/lib/realtime/quote-store";
@@ -283,13 +283,12 @@ export function InsightsPanel({ marketStatus }: Readonly<InsightsPanelProps>) {
     return <div className="p-4 text-center text-sm text-loss">{error}</div>;
   }
 
-  return (
-    <div className="transition-opacity duration-300">
-      {marketStatus.isOpen && marketInsights ? (
-        <MarketHoursInsights data={marketInsights} />
-      ) : postMarketData ? (
-        <PostMarketInsights data={postMarketData} />
-      ) : null}
-    </div>
-  );
+  let insights: ReactNode = null;
+  if (marketStatus.isOpen && marketInsights) {
+    insights = <MarketHoursInsights data={marketInsights} />;
+  } else if (postMarketData) {
+    insights = <PostMarketInsights data={postMarketData} />;
+  }
+
+  return <div className="transition-opacity duration-300">{insights}</div>;
 }

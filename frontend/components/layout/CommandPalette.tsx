@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { focusOnMount } from "@/lib/focus";
 
 interface Command {
   id: string;
@@ -220,7 +221,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            autoFocus
+            ref={focusOnMount}
             placeholder="Search for apps, symbols, or commands..."
             className="flex-1 bg-transparent border-none outline-none text-lg py-4 text-foreground"
           />

@@ -11,7 +11,7 @@ export function toTradingViewSymbol(symbol: string): string {
   const normalizeTicker = (value: string): string => {
     // Keep hyphenated tickers intact; only trim known suffixes and optional exchange-like prefixes.
     const withoutSuffix = value.replace(/-EQ$|-INDEX$/, "");
-    const prefixed = withoutSuffix.match(/^([A-Z0-9]{1,5})-(.+)$/);
+    const prefixed = /^([A-Z0-9]{1,5})-(.+)$/.exec(withoutSuffix);
     if (prefixed) {
       return prefixed[2];
     }

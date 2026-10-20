@@ -75,8 +75,7 @@ export function getISTTime(): string {
  * Check if it's a holiday (basic check - can be enhanced with holiday API)
  */
 export function isHoliday(): boolean {
-  // TODO(#1): Integrate with NSE holiday calendar API
-  // For now, just check weekends
+  // Weekends only: NSE exchange holidays are not modelled (no holiday calendar source exists).
   const now = new Date();
   const day = now.getDay();
   return day === 0 || day === 6;

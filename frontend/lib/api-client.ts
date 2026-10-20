@@ -27,7 +27,7 @@ export interface APIResponse<T> {
 }
 
 class SmartTraderAPIClient {
-  private baseURL: string;
+  private readonly baseURL: string;
 
   constructor(baseURL: string = API_BASE_URL) {
     this.baseURL = baseURL;
@@ -120,29 +120,35 @@ class SmartTraderAPIClient {
     options: RequestInit = {},
     maxRetries: number = 3,
   ): Promise<APIResponse<T>> {
-    let lastError: APIError | undefined;
+    return this.attempt<T>({ endpoint, options, attempt: 0, maxRetries });
+  }
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const result = await this.request<T>(endpoint, options);
+  /** One try, then (sequentially, by design) the next after an exponential backoff. */
+  private async attempt<T>(input: {
+    endpoint: string;
+    options: RequestInit;
+    attempt: number;
+    maxRetries: number;
+    lastError?: APIError;
+  }): Promise<APIResponse<T>> {
+    const { endpoint, options, attempt, maxRetries, lastError } = input;
+    if (attempt >= maxRetries) return { error: lastError };
 
-      if (result.data) {
-        return result; // Success
-      }
-
-      lastError = result.error;
-
-      // Don't retry on client errors (4xx)
-      if (lastError?.code === "VALIDATION_ERROR" || lastError?.code === "DATA_NOT_FOUND") {
-        break;
-      }
-
-      // Wait before retrying (exponential backoff)
-      if (attempt < maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, Math.pow(2, attempt) * 1000));
-      }
+    const result = await this.request<T>(endpoint, options);
+    if (result.data) {
+      return result; // Success
     }
 
-    return { error: lastError };
+    // Don't retry on client errors (4xx)
+    if (result.error?.code === "VALIDATION_ERROR" || result.error?.code === "DATA_NOT_FOUND") {
+      return { error: result.error };
+    }
+
+    // Wait before retrying (exponential backoff)
+    if (attempt < maxRetries - 1) {
+      await new Promise((resolve) => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+    }
+    return this.attempt<T>({ ...input, attempt: attempt + 1, lastError: result.error });
   }
 }
 
@@ -191,10 +197,10 @@ export const strategiesAPI = {
   resume: () => apiClient.post("/api/strategies/resume"),
   runBacktest: (body: Record<string, unknown>) =>
     apiClient.post("/api/strategies/vcp/backtest/run", body),
-  getBacktestHistory: (universe?: string) =>
-    apiClient.get(
-      `/api/strategies/vcp/backtest/history${universe ? `?universe=${encodeURIComponent(universe)}` : ""}`,
-    ),
+  getBacktestHistory: (universe?: string) => {
+    const query = universe ? `?universe=${encodeURIComponent(universe)}` : "";
+    return apiClient.get(`/api/strategies/vcp/backtest/history${query}`);
+  },
 };
 
 // Error handling utilities

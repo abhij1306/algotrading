@@ -160,6 +160,392 @@ function formatLtp(value: number | null | undefined): string {
   return typeof value === "number" ? value.toFixed(2) : "--";
 }
 
+type Quote = NonNullable<ReturnType<typeof useQuotes>[string]>;
+
+type PositionsSummary = { net_pnl_live: number; net_pnl_paper: number; net_pnl_total: number };
+
+const isPositive = (value: number): boolean => value > 0;
+
+function pnlTone(value: number): string {
+  return value >= 0 ? "text-profit" : "text-loss";
+}
+
+/** Error message from a failed response body (`{ detail }`), or the fallback. */
+async function failureMessage(response: Response, fallback: string): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+  return body?.detail || fallback;
+}
+
+async function fetchWatchlist(): Promise<WatchlistItem[]> {
+  const response = await fetch("/api/market/watchlist");
+  if (!response.ok) throw new Error("Failed to fetch watchlist");
+  const data = (await response.json()) as Array<Record<string, unknown>>;
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((row) => ({
+      symbol: toSafeString(row.symbol),
+      name: toSafeString(row.name, toSafeString(row.symbol)),
+      price: toSafeNumber(row.price),
+      change: toSafeNumber(row.change),
+      ltp: toSafeNumber(row.ltp) ?? toSafeNumber(row.price),
+    }))
+    .filter((row) => row.symbol.length > 0)
+    .map((row) => ({
+      ...row,
+      price: typeof row.price === "number" ? roundToDecimals(row.price, 2) : row.price,
+      ltp: typeof row.ltp === "number" ? roundToDecimals(row.ltp, 2) : row.ltp,
+      change: typeof row.change === "number" ? roundToDecimals(row.change, 2) : row.change,
+    }));
+}
+
+async function fetchOptionsBoard(
+  underlying: string,
+  expiry: string,
+): Promise<OptionsBoardResponse> {
+  const params = new URLSearchParams({ underlying, strike_count: "15" });
+  if (expiry) {
+    params.set("expiry", expiry);
+  }
+  const response = await fetch(`/api/terminal/options/board?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(await failureMessage(response, `Options board failed (${response.status})`));
+  }
+  return (await response.json()) as OptionsBoardResponse;
+}
+
+async function fetchPositionsBook(): Promise<PositionItem[]> {
+  const response = await fetch("/api/trading/positions/book");
+  if (!response.ok) {
+    throw new Error("Failed to load positions");
+  }
+  const data = (await response.json()) as PositionsBookResponse;
+  const liveRows = Array.isArray(data.live_positions) ? data.live_positions : [];
+  const paperRows = Array.isArray(data.paper_positions) ? data.paper_positions : [];
+  return [...liveRows, ...paperRows].map((row) => ({
+    ...row,
+    current_price: Number(row.current_price || 0),
+    entry_price: Number(row.entry_price || 0),
+    unrealized_pnl: Number(row.unrealized_pnl || 0),
+    realized_pnl: Number(row.realized_pnl || 0),
+    net_pnl: Number(row.net_pnl || row.unrealized_pnl || 0),
+  }));
+}
+
+function watchlistInstrumentType(item: SearchResultItem): string {
+  if (item.instrument_type) return item.instrument_type;
+  return item.type === "PE" || item.type === "CE" ? item.type : "EQ";
+}
+
+async function postWatchlistSymbol(symbol: string, instrumentType: string): Promise<void> {
+  const response = await fetch("/api/market/watchlist", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol, instrument_type: instrumentType }),
+  });
+  if (!response.ok) {
+    throw new Error(await failureMessage(response, "Failed to add symbol"));
+  }
+}
+
+function withQuote(item: WatchlistItem, quote: Quote | undefined): WatchlistItem {
+  if (!quote) return item;
+  const ltp = typeof quote.ltp === "number" ? roundToDecimals(quote.ltp, 2) : item.ltp;
+  return {
+    ...item,
+    ltp,
+    price: typeof quote.ltp === "number" ? ltp : item.price,
+    change: typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.change,
+  };
+}
+
+function withQuotePnl(pos: PositionItem, quote: Quote | undefined): PositionItem {
+  const ltp = quote?.ltp;
+  if (typeof ltp !== "number") return pos;
+  const currentPrice = roundToDecimals(ltp, 2);
+  const qty = Number(pos.net_qty || 0);
+  const unrealized = roundToDecimals((currentPrice - Number(pos.entry_price || 0)) * qty, 2);
+  const realized = Number(pos.realized_pnl || 0);
+  return {
+    ...pos,
+    current_price: currentPrice,
+    unrealized_pnl: unrealized,
+    net_pnl: roundToDecimals(realized + unrealized, 2),
+  };
+}
+
+function summarizePositions(positions: PositionItem[]): PositionsSummary {
+  const sumNet = (rows: PositionItem[]) =>
+    rows.reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
+  const live = sumNet(positions.filter((p) => p.mode !== "PAPER"));
+  const paper = sumNet(positions.filter((p) => p.mode === "PAPER"));
+  return {
+    net_pnl_live: roundToDecimals(live, 2),
+    net_pnl_paper: roundToDecimals(paper, 2),
+    net_pnl_total: roundToDecimals(live + paper, 2),
+  };
+}
+
+/** A user-facing message when the order inputs are unusable, else null. */
+function orderInputError(input: {
+  symbol: string;
+  quantity: number;
+  orderType: OrderType;
+  price: number;
+  trigger: number;
+}): string | null {
+  const { symbol, quantity, orderType, price, trigger } = input;
+  if (!symbol || quantity <= 0) return "Select symbol and enter valid quantity";
+  if (orderType !== "MARKET" && orderType !== "SL-M" && !isPositive(price)) {
+    return "Enter a price greater than 0";
+  }
+  if ((orderType === "SL" || orderType === "SL-M") && !isPositive(trigger)) {
+    return "Enter a trigger price greater than 0";
+  }
+  return null;
+}
+
+/** Submit an order; resolves to the confirmation message, throws on rejection. */
+async function submitOrder(input: {
+  mode: TradingMode;
+  symbol: string;
+  side: "BUY" | "SELL";
+  quantity: number;
+  orderType: OrderType;
+  price: number;
+  trigger: number;
+  tag: string;
+  liveConfirmed: boolean;
+  riskOverrideReason: string;
+}): Promise<string> {
+  const { mode, side, orderType } = input;
+  const response = await fetch("/api/trading/order?x_user_id=default_user", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode,
+      symbol: input.symbol,
+      side,
+      quantity: input.quantity,
+      product: "INTRADAY",
+      type: orderType,
+      price: orderType === "MARKET" ? 0 : input.price,
+      trigger_price: orderType === "SL" || orderType === "SL-M" ? input.trigger : 0,
+      tag: input.tag,
+      instrument_type: inferInstrumentType(input.symbol),
+      is_live_confirmation_ack: input.liveConfirmed,
+      risk_override_reason: input.riskOverrideReason.trim() || null,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.detail || "Failed to place live order");
+  }
+  return `${mode} ${side} ${data.status || "submitted"} (${data.order_id || data.id || "ok"})`;
+}
+
+async function squareOnServer(row: PositionItem): Promise<void> {
+  const response = await fetch("/api/trading/positions/square", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol: row.symbol, mode: row.mode || "PAPER" }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail || "Failed to square position");
+  }
+}
+
+function OptionsBoardPanel({
+  board: optionsBoard,
+  orderflow: optionsOrderflow,
+  underlying: optionsUnderlying,
+  expiry: optionsExpiry,
+  onUnderlyingChange: setOptionsUnderlying,
+  onExpiryChange: setOptionsExpiry,
+  onSelectOption: setSelectedOptionSymbol,
+}: Readonly<{
+  board: OptionsBoardResponse;
+  orderflow: OptionsOrderflowResponse | null;
+  underlying: string;
+  expiry: string;
+  onUnderlyingChange: (value: string) => void;
+  onExpiryChange: (value: string) => void;
+  onSelectOption: (symbol: string) => void;
+}>) {
+  return (
+    <div className="h-full w-full overflow-auto p-2">
+      <div className="mb-2 flex items-center gap-2">
+        <select
+          value={optionsUnderlying}
+          onChange={(event) => setOptionsUnderlying(event.target.value)}
+          className="h-8 rounded border border-border bg-background px-2 text-xs"
+        >
+          <option value="NIFTY">NIFTY</option>
+          <option value="BANKNIFTY">BANKNIFTY</option>
+          <option value="FINNIFTY">FINNIFTY</option>
+        </select>
+        <input
+          type="date"
+          value={optionsExpiry}
+          onChange={(event) => setOptionsExpiry(event.target.value)}
+          className="h-8 rounded border border-border bg-background px-2 text-xs"
+        />
+        {optionsOrderflow && (
+          <div className="text-xs text-foreground-muted">
+            PCR(OI): {optionsOrderflow.pcr_oi ?? "--"} | PCR(Vol):{" "}
+            {optionsOrderflow.pcr_volume ?? "--"}
+          </div>
+        )}
+      </div>
+      <table className="w-full text-xs">
+        <thead className="border-b border-border text-foreground-muted">
+          <tr>
+            <th className="py-1 text-left font-normal">CE</th>
+            <th className="py-1 text-right font-normal">CE LTP</th>
+            <th className="py-1 text-right font-normal">Strike</th>
+            <th className="py-1 text-right font-normal">PE LTP</th>
+            <th className="py-1 text-left font-normal">PE</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(optionsBoard.strikes ?? []).map((row) => (
+            <tr key={row.strike} className="border-b border-border/60">
+              <td className="py-1">
+                <button
+                  type="button"
+                  className="text-left hover:text-profit"
+                  onClick={() => {
+                    if (row.ce?.symbol) {
+                      setSelectedOptionSymbol(row.ce.symbol);
+                    }
+                  }}
+                >
+                  {row.ce?.symbol || "--"}
+                </button>
+              </td>
+              <td className="py-1 text-right tabular-nums">{formatLtp(row.ce?.ltp)}</td>
+              <td
+                className={`py-1 text-right tabular-nums ${
+                  row.strike === optionsBoard.atm_strike
+                    ? "text-foreground font-semibold"
+                    : "text-foreground-muted"
+                }`}
+              >
+                {row.strike.toFixed(2)}
+              </td>
+              <td className="py-1 text-right tabular-nums">{formatLtp(row.pe?.ltp)}</td>
+              <td className="py-1 text-left">
+                <button
+                  type="button"
+                  className="text-left hover:text-loss"
+                  onClick={() => {
+                    if (row.pe?.symbol) {
+                      setSelectedOptionSymbol(row.pe.symbol);
+                    }
+                  }}
+                >
+                  {row.pe?.symbol || "--"}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PnlValue({ value }: Readonly<{ value: number }>) {
+  return <span className={`${pnlTone(value)} tabular-nums`}>{value.toFixed(2)}</span>;
+}
+
+function PositionsPanel({
+  summary: positionsSummary,
+  error: positionsError,
+  positions,
+  onSquare: squarePosition,
+}: Readonly<{
+  summary: PositionsSummary;
+  error: string | null;
+  positions: PositionItem[];
+  onSquare: (row: PositionItem) => Promise<void>;
+}>) {
+  return (
+    <div className="h-full w-full overflow-auto p-2">
+      <div className="mb-2 flex items-center gap-4 text-xs">
+        <span className="text-foreground-muted">
+          Live Net P&L: <PnlValue value={positionsSummary.net_pnl_live} />
+        </span>
+        <span className="text-foreground-muted">
+          Paper Net P&L: <PnlValue value={positionsSummary.net_pnl_paper} />
+        </span>
+        <span className="text-foreground-muted">
+          Total: <PnlValue value={positionsSummary.net_pnl_total} />
+        </span>
+      </div>
+      {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
+      <table className="w-full text-xs">
+        <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
+          <tr>
+            <th className="py-1 text-left font-normal">Symbol</th>
+            <th className="py-1 text-left font-normal">Mode</th>
+            <th className="py-1 text-left font-normal">Side</th>
+            <th className="py-1 text-right font-normal">Qty</th>
+            <th className="py-1 text-right font-normal">Entry</th>
+            <th className="py-1 text-right font-normal">LTP</th>
+            <th className="py-1 text-right font-normal">Unrealized</th>
+            <th className="py-1 text-right font-normal">Net P&L</th>
+            <th className="py-1 text-right font-normal">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((pos) => (
+            <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
+              <td className="py-1 pr-2">{pos.symbol}</td>
+              <td className="py-1 pr-2">{pos.mode || "LIVE"}</td>
+              <td className="py-1 pr-2">{pos.net_qty >= 0 ? "LONG" : "SHORT"}</td>
+              <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
+              <td className="py-1 pr-2 text-right tabular-nums">
+                {Number(pos.entry_price || 0).toFixed(2)}
+              </td>
+              <td className="py-1 pr-2 text-right tabular-nums">
+                {Number(pos.current_price || 0).toFixed(2)}
+              </td>
+              <td
+                className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
+              >
+                {Number(pos.unrealized_pnl || 0).toFixed(2)}
+              </td>
+              <td
+                className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
+              >
+                {Number(pos.net_pnl || 0).toFixed(2)}
+              </td>
+              <td className="py-1 pr-2 text-right">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => void squarePosition(pos)}
+                >
+                  Square
+                </Button>
+              </td>
+            </tr>
+          ))}
+          {positions.length === 0 && (
+            <tr>
+              <td colSpan={9} className="py-8 text-center text-foreground-muted">
+                No open positions
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Memoized components for performance
 const WatchlistRow = memo(function WatchlistRow({
   stock,
@@ -265,32 +651,11 @@ export default function TerminalPage() {
   const optionsFetchInFlightRef = useRef(false);
 
   useEffect(() => {
-    const fetchWatchlist = async () => {
+    const loadWatchlist = async () => {
       try {
         setIsLoading(true);
         setError(null);
-        const response = await fetch("/api/market/watchlist");
-        if (!response.ok) throw new Error("Failed to fetch watchlist");
-        const data = (await response.json()) as Array<Record<string, unknown>>;
-        const normalized = Array.isArray(data)
-          ? data
-              .map((row) => ({
-                symbol: toSafeString(row.symbol),
-                name: toSafeString(row.name, toSafeString(row.symbol)),
-                price: toSafeNumber(row.price),
-                change: toSafeNumber(row.change),
-                ltp: toSafeNumber(row.ltp) ?? toSafeNumber(row.price),
-              }))
-              .filter((row) => row.symbol.length > 0)
-              .map((row) => ({
-                ...row,
-                price: typeof row.price === "number" ? roundToDecimals(row.price, 2) : row.price,
-                ltp: typeof row.ltp === "number" ? roundToDecimals(row.ltp, 2) : row.ltp,
-                change:
-                  typeof row.change === "number" ? roundToDecimals(row.change, 2) : row.change,
-              }))
-          : [];
-
+        const normalized = await fetchWatchlist();
         setBaseWatchlist(normalized);
         setSelectedSymbol((current) => current || normalized[0]?.symbol || "");
       } catch (err) {
@@ -299,7 +664,7 @@ export default function TerminalPage() {
         setIsLoading(false);
       }
     };
-    void fetchWatchlist();
+    void loadWatchlist();
   }, []);
 
   // The selected symbol is always listed, even when it is not in the saved watchlist.
@@ -321,7 +686,7 @@ export default function TerminalPage() {
 
     let cancelled = false;
 
-    const fetchOptionsBoard = async () => {
+    const loadOptionsBoard = async () => {
       if (optionsFetchInFlightRef.current) {
         return;
       }
@@ -329,20 +694,7 @@ export default function TerminalPage() {
       try {
         setOptionsLoading(true);
         setOptionsError(null);
-        const boardParams = new URLSearchParams({
-          underlying: optionsUnderlying,
-          strike_count: "15",
-        });
-        if (optionsExpiry) {
-          boardParams.set("expiry", optionsExpiry);
-        }
-        const boardRes = await fetch(`/api/terminal/options/board?${boardParams.toString()}`);
-
-        if (!boardRes.ok) {
-          const err = (await boardRes.json().catch(() => null)) as { detail?: string } | null;
-          throw new Error(err?.detail || `Options board failed (${boardRes.status})`);
-        }
-        const board = (await boardRes.json()) as OptionsBoardResponse;
+        const board = await fetchOptionsBoard(optionsUnderlying, optionsExpiry);
 
         if (cancelled) {
           return;
@@ -364,10 +716,10 @@ export default function TerminalPage() {
       }
     };
 
-    void fetchOptionsBoard();
+    void loadOptionsBoard();
     const pollMs = isMarketOpen().isOpen ? 3000 : 20000;
     const interval = setInterval(() => {
-      void fetchOptionsBoard();
+      void loadOptionsBoard();
     }, pollMs);
     return () => {
       cancelled = true;
@@ -413,19 +765,7 @@ export default function TerminalPage() {
   const quotes = useQuotes(subscribedSymbols);
 
   const watchlist = useMemo(
-    () =>
-      watchlistItems.map((item) => {
-        const quote = quotes[item.symbol];
-        if (!quote) return item;
-        const ltp = typeof quote.ltp === "number" ? roundToDecimals(quote.ltp, 2) : item.ltp;
-        return {
-          ...item,
-          ltp,
-          price: typeof quote.ltp === "number" ? ltp : item.price,
-          change:
-            typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.change,
-        };
-      }),
+    () => watchlistItems.map((item) => withQuote(item, quotes[item.symbol])),
     [watchlistItems, quotes],
   );
 
@@ -437,20 +777,7 @@ export default function TerminalPage() {
 
     try {
       setWatchlistActionError(null);
-      const response = await fetch("/api/market/watchlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol,
-          instrument_type:
-            item.instrument_type || (item.type === "PE" || item.type === "CE" ? item.type : "EQ"),
-        }),
-      });
-
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as { detail?: string } | null;
-        throw new Error(data?.detail || "Failed to add symbol");
-      }
+      await postWatchlistSymbol(symbol, watchlistInstrumentType(item));
 
       setBaseWatchlist((prev) => {
         if (prev.some((w) => w.symbol === symbol)) return prev;
@@ -481,23 +808,7 @@ export default function TerminalPage() {
     const pollPositions = async () => {
       try {
         setPositionsError(null);
-        const response = await fetch("/api/trading/positions/book");
-        if (!response.ok) {
-          throw new Error("Failed to load positions");
-        }
-        const data = (await response.json()) as PositionsBookResponse;
-        const liveRows = Array.isArray(data.live_positions) ? data.live_positions : [];
-        const paperRows = Array.isArray(data.paper_positions) ? data.paper_positions : [];
-        setBasePositions(
-          [...liveRows, ...paperRows].map((row) => ({
-            ...row,
-            current_price: Number(row.current_price || 0),
-            entry_price: Number(row.entry_price || 0),
-            unrealized_pnl: Number(row.unrealized_pnl || 0),
-            realized_pnl: Number(row.realized_pnl || 0),
-            net_pnl: Number(row.net_pnl || row.unrealized_pnl || 0),
-          })),
-        );
+        setBasePositions(await fetchPositionsBook());
       } catch (error) {
         setPositionsError(error instanceof Error ? error.message : "Failed to load positions");
       }
@@ -511,21 +822,7 @@ export default function TerminalPage() {
   }, [terminalView]);
 
   const positions = useMemo(
-    () =>
-      basePositions.map((pos) => {
-        const ltp = quotes[pos.symbol]?.ltp;
-        if (typeof ltp !== "number") return pos;
-        const currentPrice = roundToDecimals(ltp, 2);
-        const qty = Number(pos.net_qty || 0);
-        const unrealized = roundToDecimals((currentPrice - Number(pos.entry_price || 0)) * qty, 2);
-        const realized = Number(pos.realized_pnl || 0);
-        return {
-          ...pos,
-          current_price: currentPrice,
-          unrealized_pnl: unrealized,
-          net_pnl: roundToDecimals(realized + unrealized, 2),
-        };
-      }),
+    () => basePositions.map((pos) => withQuotePnl(pos, quotes[pos.symbol])),
     [basePositions, quotes],
   );
 
@@ -534,19 +831,7 @@ export default function TerminalPage() {
     [watchlist, selectedSymbol],
   );
 
-  const positionsSummary = useMemo(() => {
-    const net_pnl_live = positions
-      .filter((p) => p.mode !== "PAPER")
-      .reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
-    const net_pnl_paper = positions
-      .filter((p) => p.mode === "PAPER")
-      .reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
-    return {
-      net_pnl_live: roundToDecimals(net_pnl_live, 2),
-      net_pnl_paper: roundToDecimals(net_pnl_paper, 2),
-      net_pnl_total: roundToDecimals(net_pnl_live + net_pnl_paper, 2),
-    };
-  }, [positions]);
+  const positionsSummary = useMemo(() => summarizePositions(positions), [positions]);
 
   const activeTradeSymbol = useMemo(() => {
     if (terminalView === "options" && selectedOptionSymbol) {
@@ -576,16 +861,15 @@ export default function TerminalPage() {
   };
 
   const placeOrder = async (side: "BUY" | "SELL") => {
-    if (!activeTradeSymbol || effectiveOrderQuantity <= 0) {
-      setOrderMessage("Select symbol and enter valid quantity");
-      return;
-    }
-    if (orderType !== "MARKET" && orderType !== "SL-M" && !(orderPrice > 0)) {
-      setOrderMessage("Enter a price greater than 0");
-      return;
-    }
-    if ((orderType === "SL" || orderType === "SL-M") && !(orderTrigger > 0)) {
-      setOrderMessage("Enter a trigger price greater than 0");
+    const invalid = orderInputError({
+      symbol: activeTradeSymbol,
+      quantity: effectiveOrderQuantity,
+      orderType,
+      price: orderPrice,
+      trigger: orderTrigger,
+    });
+    if (invalid) {
+      setOrderMessage(invalid);
       return;
     }
 
@@ -603,31 +887,19 @@ export default function TerminalPage() {
         }
       }
 
-      const response = await fetch("/api/trading/order?x_user_id=default_user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      setOrderMessage(
+        await submitOrder({
           mode: tradingMode,
           symbol: activeTradeSymbol,
           side,
           quantity: effectiveOrderQuantity,
-          product: "INTRADAY",
-          type: orderType,
-          price: orderType === "MARKET" ? 0 : orderPrice,
-          trigger_price: orderType === "SL" || orderType === "SL-M" ? orderTrigger : 0,
+          orderType,
+          price: orderPrice,
+          trigger: orderTrigger,
           tag: terminalView === "options" ? "terminal-options" : "terminal-live",
-          instrument_type: inferInstrumentType(activeTradeSymbol),
-          is_live_confirmation_ack: isLiveConfirmationAck,
-          risk_override_reason: riskOverrideReason.trim() || null,
+          liveConfirmed: isLiveConfirmationAck,
+          riskOverrideReason,
         }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.detail || "Failed to place live order");
-      }
-      setOrderMessage(
-        `${tradingMode} ${side} ${data.status || "submitted"} (${data.order_id || data.id || "ok"})`,
       );
     } catch (err) {
       setOrderMessage(err instanceof Error ? err.message : "Order failed");
@@ -639,18 +911,7 @@ export default function TerminalPage() {
   const squarePosition = async (row: PositionItem) => {
     try {
       setOrderMessage(null);
-      const response = await fetch("/api/trading/positions/square", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: row.symbol,
-          mode: row.mode || "PAPER",
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Failed to square position");
-      }
+      await squareOnServer(row);
       setOrderMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`);
       setBasePositions((prev) =>
         prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
@@ -738,85 +999,15 @@ export default function TerminalPage() {
       );
     } else if (hasOptionsBoard && optionsBoard) {
       centerPanelContent = (
-        <div className="h-full w-full overflow-auto p-2">
-          <div className="mb-2 flex items-center gap-2">
-            <select
-              value={optionsUnderlying}
-              onChange={(event) => setOptionsUnderlying(event.target.value)}
-              className="h-8 rounded border border-border bg-background px-2 text-xs"
-            >
-              <option value="NIFTY">NIFTY</option>
-              <option value="BANKNIFTY">BANKNIFTY</option>
-              <option value="FINNIFTY">FINNIFTY</option>
-            </select>
-            <input
-              type="date"
-              value={optionsExpiry}
-              onChange={(event) => setOptionsExpiry(event.target.value)}
-              className="h-8 rounded border border-border bg-background px-2 text-xs"
-            />
-            {optionsOrderflow && (
-              <div className="text-xs text-foreground-muted">
-                PCR(OI): {optionsOrderflow.pcr_oi ?? "--"} | PCR(Vol):{" "}
-                {optionsOrderflow.pcr_volume ?? "--"}
-              </div>
-            )}
-          </div>
-          <table className="w-full text-xs">
-            <thead className="border-b border-border text-foreground-muted">
-              <tr>
-                <th className="py-1 text-left font-normal">CE</th>
-                <th className="py-1 text-right font-normal">CE LTP</th>
-                <th className="py-1 text-right font-normal">Strike</th>
-                <th className="py-1 text-right font-normal">PE LTP</th>
-                <th className="py-1 text-left font-normal">PE</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(optionsBoard.strikes ?? []).map((row) => (
-                <tr key={row.strike} className="border-b border-border/60">
-                  <td className="py-1">
-                    <button
-                      type="button"
-                      className="text-left hover:text-profit"
-                      onClick={() => {
-                        if (row.ce?.symbol) {
-                          setSelectedOptionSymbol(row.ce.symbol);
-                        }
-                      }}
-                    >
-                      {row.ce?.symbol || "--"}
-                    </button>
-                  </td>
-                  <td className="py-1 text-right tabular-nums">{formatLtp(row.ce?.ltp)}</td>
-                  <td
-                    className={`py-1 text-right tabular-nums ${
-                      row.strike === optionsBoard.atm_strike
-                        ? "text-foreground font-semibold"
-                        : "text-foreground-muted"
-                    }`}
-                  >
-                    {row.strike.toFixed(2)}
-                  </td>
-                  <td className="py-1 text-right tabular-nums">{formatLtp(row.pe?.ltp)}</td>
-                  <td className="py-1 text-left">
-                    <button
-                      type="button"
-                      className="text-left hover:text-loss"
-                      onClick={() => {
-                        if (row.pe?.symbol) {
-                          setSelectedOptionSymbol(row.pe.symbol);
-                        }
-                      }}
-                    >
-                      {row.pe?.symbol || "--"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <OptionsBoardPanel
+          board={optionsBoard}
+          orderflow={optionsOrderflow}
+          underlying={optionsUnderlying}
+          expiry={optionsExpiry}
+          onUnderlyingChange={setOptionsUnderlying}
+          onExpiryChange={setOptionsExpiry}
+          onSelectOption={setSelectedOptionSymbol}
+        />
       );
     } else {
       centerPanelContent = (
@@ -827,105 +1018,12 @@ export default function TerminalPage() {
     }
   } else if (terminalView === "positions") {
     centerPanelContent = (
-      <div className="h-full w-full overflow-auto p-2">
-        <div className="mb-2 flex items-center gap-4 text-xs">
-          <span className="text-foreground-muted">
-            Live Net P&L:{" "}
-            <span
-              className={
-                positionsSummary.net_pnl_live >= 0
-                  ? "text-profit tabular-nums"
-                  : "text-loss tabular-nums"
-              }
-            >
-              {positionsSummary.net_pnl_live.toFixed(2)}
-            </span>
-          </span>
-          <span className="text-foreground-muted">
-            Paper Net P&L:{" "}
-            <span
-              className={
-                positionsSummary.net_pnl_paper >= 0
-                  ? "text-profit tabular-nums"
-                  : "text-loss tabular-nums"
-              }
-            >
-              {positionsSummary.net_pnl_paper.toFixed(2)}
-            </span>
-          </span>
-          <span className="text-foreground-muted">
-            Total:{" "}
-            <span
-              className={
-                positionsSummary.net_pnl_total >= 0
-                  ? "text-profit tabular-nums"
-                  : "text-loss tabular-nums"
-              }
-            >
-              {positionsSummary.net_pnl_total.toFixed(2)}
-            </span>
-          </span>
-        </div>
-        {positionsError && <div className="mb-2 text-xs text-loss">{positionsError}</div>}
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-surface border-b border-border text-foreground-muted">
-            <tr>
-              <th className="py-1 text-left font-normal">Symbol</th>
-              <th className="py-1 text-left font-normal">Mode</th>
-              <th className="py-1 text-left font-normal">Side</th>
-              <th className="py-1 text-right font-normal">Qty</th>
-              <th className="py-1 text-right font-normal">Entry</th>
-              <th className="py-1 text-right font-normal">LTP</th>
-              <th className="py-1 text-right font-normal">Unrealized</th>
-              <th className="py-1 text-right font-normal">Net P&L</th>
-              <th className="py-1 text-right font-normal">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {positions.map((pos) => (
-              <tr key={`${pos.mode}-${pos.id}`} className="border-b border-border/60">
-                <td className="py-1 pr-2">{pos.symbol}</td>
-                <td className="py-1 pr-2">{pos.mode || "LIVE"}</td>
-                <td className="py-1 pr-2">{pos.net_qty >= 0 ? "LONG" : "SHORT"}</td>
-                <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
-                <td className="py-1 pr-2 text-right tabular-nums">
-                  {Number(pos.entry_price || 0).toFixed(2)}
-                </td>
-                <td className="py-1 pr-2 text-right tabular-nums">
-                  {Number(pos.current_price || 0).toFixed(2)}
-                </td>
-                <td
-                  className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
-                >
-                  {Number(pos.unrealized_pnl || 0).toFixed(2)}
-                </td>
-                <td
-                  className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
-                >
-                  {Number(pos.net_pnl || 0).toFixed(2)}
-                </td>
-                <td className="py-1 pr-2 text-right">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-6 px-2 text-xs"
-                    onClick={() => void squarePosition(pos)}
-                  >
-                    Square
-                  </Button>
-                </td>
-              </tr>
-            ))}
-            {positions.length === 0 && (
-              <tr>
-                <td colSpan={9} className="py-8 text-center text-foreground-muted">
-                  No open positions
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <PositionsPanel
+        summary={positionsSummary}
+        error={positionsError}
+        positions={positions}
+        onSquare={squarePosition}
+      />
     );
   }
 
