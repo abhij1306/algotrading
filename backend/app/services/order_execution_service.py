@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..brokers.plugins.fyers import FyersBroker
+from ..brokers.plugins.fyers import FyersBroker, quote_last_price
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
@@ -36,12 +36,8 @@ class OrderExecutionService:
         self, fyers_symbol: str, fallback_price: float = 0.0
     ) -> float:
         try:
-            quote = self.broker.get_quote(fyers_symbol)
-            value = quote.get("v", {}) if isinstance(quote, dict) else {}
-            lp = safe_float(value.get("lp"), 0.0)
-            if lp > 0:
-                return lp
-            return safe_float(quote.get("last_price"), fallback_price)
+            lp = quote_last_price(self.broker.get_quote(fyers_symbol))
+            return lp if lp > 0 else fallback_price
         except Exception:
             return fallback_price
 
@@ -217,6 +213,7 @@ class OrderExecutionService:
             "type": order_params.get("type", "MARKET"),
             "product": order_params.get("product", "INTRADAY"),
             "price": float(order_params.get("price", 0.0)),
+            "trigger_price": safe_float(order_params.get("trigger_price"), 0.0),
         }
         broker_resp = self.broker.place_order(broker_order)
 
@@ -284,12 +281,14 @@ class OrderExecutionService:
         try:
             effective_mode = self._resolve_mode(order_params, mode)
             quantity = self._validate_quantity(order_params)
+            db_symbol, fyers_symbol = self._resolve_symbols(order_params)
             if effective_mode == "LIVE":
-                risk_error = self._run_live_risk_checks(order_params, db)
+                # Risk price estimates quote the broker, which needs the Fyers symbol.
+                risk_params = {**order_params, "fyers_symbol": fyers_symbol}
+                risk_error = self._run_live_risk_checks(risk_params, db)
                 if risk_error:
                     return risk_error
 
-            db_symbol, fyers_symbol = self._resolve_symbols(order_params)
             new_order = self._create_order_record(
                 order_params, db_symbol, fyers_symbol, quantity, effective_mode
             )

@@ -7,10 +7,30 @@ from threading import Lock
 from typing import Any
 
 from ...services.fyers_client import get_fyers_client
-from ..base import BrokerFunds, IBroker, OrderResponse, Position
+from ...utils.helpers import safe_float
+from ..base import BrokerFunds, BrokerUnavailableError, IBroker, OrderResponse, Position
 
 CLIENT_NOT_INITIALIZED = "Client not initialized"
 logger = logging.getLogger(__name__)
+
+# Fyers order "type": 1 = LIMIT, 2 = MARKET, 3 = SL-M (stop market), 4 = SL (stop limit)
+FYERS_ORDER_TYPES = {"LIMIT": 1, "MARKET": 2, "SL-M": 3, "SL": 4}
+STOP_ORDER_TYPES = {"SL", "SL-M"}
+LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
+
+
+def quote_last_price(quote: dict[str, Any] | None) -> float:
+    """Last traded price from a FyersBroker.get_quote() result ({"v": {"lp": ...}}).
+
+    Returns 0.0 when the quote is empty or carries no usable price.
+    """
+    if not isinstance(quote, dict):
+        return 0.0
+    values = quote.get("v")
+    if not isinstance(values, dict):
+        return 0.0
+    price = safe_float(values.get("lp"), 0.0)
+    return price if price > 0 else 0.0
 
 
 class FyersBroker(IBroker):
@@ -109,14 +129,41 @@ class FyersBroker(IBroker):
                 details={"side": side},
             )
 
+        order_type = str(order.get("type") or "MARKET").upper()
+        if order_type not in FYERS_ORDER_TYPES:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message="Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
+                details={"type": order.get("type")},
+            )
+
+        trigger_price = safe_float(order.get("trigger_price"), 0.0)
+        if order_type in STOP_ORDER_TYPES and trigger_price <= 0:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=f"{order_type} order requires a positive trigger price.",
+                details={"type": order_type, "trigger_price": order.get("trigger_price")},
+            )
+
+        limit_price = safe_float(order.get("price"), 0.0)
+        if order_type in LIMIT_PRICED_ORDER_TYPES and limit_price <= 0:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=f"{order_type} order requires a positive limit price.",
+                details={"type": order_type, "price": order.get("price")},
+            )
+
         data = {
             "symbol": order["symbol"],
             "qty": order["quantity"],
-            "type": 2 if order.get("type", "MARKET") == "MARKET" else 1,
+            "type": FYERS_ORDER_TYPES[order_type],
             "side": 1 if side == "BUY" else -1,
             "productType": product_map.get(order.get("product", "INTRADAY").upper(), "INTRADAY"),
-            "limitPrice": order.get("price", 0) if order.get("type") != "MARKET" else 0,
-            "stopPrice": 0,
+            "limitPrice": limit_price if order_type in LIMIT_PRICED_ORDER_TYPES else 0,
+            "stopPrice": trigger_price if order_type in STOP_ORDER_TYPES else 0,
             "validity": "DAY",
             "disclosedQty": 0,
             "offlineOrder": False,
@@ -189,40 +236,41 @@ class FyersBroker(IBroker):
 
     def get_positions(self) -> list[Position]:
         if not self.client:
-            return []
+            raise BrokerUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
 
         response = self._call_with_guard(
             "positions",
             lambda: self.client.positions(),
             timeout_sec=2.0,
-            fallback={"s": "error", "netPositions": []},
+            fallback={"s": "error", "message": "Fyers positions timeout/unavailable"},
         )
         # Response: {"s": "ok", "netPositions": [...]}
+        if not isinstance(response, dict) or response.get("s") != "ok":
+            message = response.get("message") if isinstance(response, dict) else None
+            raise BrokerUnavailableError(message or "Fyers positions request failed")
 
         positions = []
-        if response.get("s") == "ok":
-            net_positions = response.get("netPositions", [])
-            for p in net_positions:
-                # Fyers side: 1 (Long), -1 (Short)
-                qty = p.get("netQty", 0)
-                if qty == 0:
-                    continue
+        for p in response.get("netPositions", []):
+            # Fyers side: 1 (Long), -1 (Short)
+            qty = p.get("netQty", 0)
+            if qty == 0:
+                continue
 
-                side = "LONG" if qty > 0 else "SHORT"
+            side = "LONG" if qty > 0 else "SHORT"
 
-                positions.append(
-                    Position(
-                        symbol=p.get("symbol"),
-                        side=side,
-                        quantity=abs(qty),
-                        entry_price=float(p.get("buyAvg", 0))
-                        if side == "LONG"
-                        else float(p.get("sellAvg", 0)),
-                        current_price=float(p.get("ltp", 0)),
-                        pnl=float(p.get("pl", 0)),
-                        product_type=p.get("productType", "INTRADAY"),
-                    )
+            positions.append(
+                Position(
+                    symbol=p.get("symbol"),
+                    side=side,
+                    quantity=abs(qty),
+                    entry_price=float(p.get("buyAvg", 0))
+                    if side == "LONG"
+                    else float(p.get("sellAvg", 0)),
+                    current_price=float(p.get("ltp", 0)),
+                    pnl=float(p.get("pl", 0)),
+                    product_type=p.get("productType", "INTRADAY"),
                 )
+            )
         return positions
 
     def get_orders(self) -> list[dict[str, Any]]:
