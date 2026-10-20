@@ -66,6 +66,8 @@ let orderNetworkFailures = 0;
 // Order POSTs answered 200 with a body cut off mid-JSON.
 let orderTruncatedResponses = 0;
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
+// Square-off POSTs that fail as a dropped connection before any response arrives.
+let squareNetworkFailures = 0;
 
 function respond(url: string): Response {
   if (url.includes("/api/trading/positions/square")) {
@@ -100,6 +102,10 @@ function installFetch(): Captured[] {
       calls.push({ url: source.url, method: source.method, body });
       if (source.url.includes(ORDER_PATH) && orderNetworkFailures > 0) {
         orderNetworkFailures -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      if (source.url.includes("/positions/square") && squareNetworkFailures > 0) {
+        squareNetworkFailures -= 1;
         throw new TypeError("Failed to fetch");
       }
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
@@ -280,13 +286,20 @@ describe("terminal data", () => {
   beforeEach(() => {
     paperPositions = [];
     squareResult = { status: "SUCCESS" };
+    squareNetworkFailures = 0;
     calls = installFetch();
+    stubClientOrderIds();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     globalThis.history.replaceState(null, "", "/");
   });
+
+  function squareBodies(): string[] {
+    return calls.filter((call) => call.url.includes("/square")).map((call) => call.body);
+  }
 
   function boardUrls(): string[] {
     return calls
@@ -366,9 +379,30 @@ describe("terminal data", () => {
 
     expect(await screen.findByText("PAPER square submitted for SBIN")).toBeInTheDocument();
     expect(await screen.findByText("No open positions")).toBeInTheDocument();
-    expect(calls.filter((call) => call.url.includes("/square")).map((call) => call.body)).toEqual([
-      '{"symbol":"SBIN","mode":"PAPER"}',
+    expect(squareBodies()).toEqual([
+      '{"symbol":"SBIN","mode":"PAPER","product_type":"INTRADAY","client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
+  });
+
+  it("retries a dropped square-off with the same client_order_id, then a new click gets a new one", async () => {
+    paperPositions = [OPEN_POSITION];
+    squareNetworkFailures = 1;
+    squareResult = { status: "ERROR", message: "Order rejected by broker" };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Square" }));
+
+    expect(await screen.findByText("Order rejected by broker")).toBeInTheDocument();
+    const ids = () => squareBodies().map((body) => JSON.parse(body).client_order_id);
+    expect(ids()).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0]]);
+
+    squareResult = { status: "SUCCESS" };
+    fireEvent.click(screen.getByRole("button", { name: "Square" }));
+
+    expect(await screen.findByText("PAPER square submitted for SBIN")).toBeInTheDocument();
+    expect(ids()).toEqual([CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[0], CLIENT_ORDER_IDS[1]]);
   });
 
   it("keeps a position whose square-off the broker rejected and shows the reason", async () => {

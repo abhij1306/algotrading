@@ -556,10 +556,14 @@ function useSquareAction(onMessage: (message: string | null) => void) {
     squaring: square.isPending,
     squarePosition: (row: PositionItem) => {
       onMessage(null);
-      square.mutate(row, {
-        onSuccess: () => onMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`),
-        onError: (error) => onMessage(errorText(error, "Failed to square position")),
-      });
+      // A new click is a new intent; retries of this mutation reuse this id.
+      square.mutate(
+        { row, clientOrderId: crypto.randomUUID() },
+        {
+          onSuccess: () => onMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`),
+          onError: (error) => onMessage(errorText(error, "Failed to square position")),
+        },
+      );
     },
   };
 }

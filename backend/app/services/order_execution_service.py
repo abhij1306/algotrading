@@ -8,12 +8,18 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..brokers.plugins.fyers import FyersBroker, fyers_order_tag
+from ..brokers.plugins.fyers import (
+    FYERS_ORDER_TYPES,
+    FyersBroker,
+    fyers_order_tag,
+    quote_last_price,
+)
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
 from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
+from ..utils.logger import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +28,13 @@ NO_PAPER_PRICE_MESSAGE = (
     "Subscribe the symbol to live data or use a LIMIT order."
 )
 LIVE_SUBMIT_FAILED_MESSAGE = "Broker order submission failed"
+LIVE_REJECTED_MESSAGE = "Broker rejected the order"
+LIVE_MODIFY_FAILED_MESSAGE = "Broker order modify failed"
+LIVE_MODIFY_REJECTED_MESSAGE = "Broker rejected the modify"
+LIVE_CANCEL_FAILED_MESSAGE = "Broker order cancel failed"
+LIVE_CANCEL_REJECTED_MESSAGE = "Broker rejected the cancel"
+# The longest broker reason passed on to the client after a fixed message.
+MAX_BROKER_REASON_LENGTH = 120
 ORDER_FAILED_MESSAGE = "Order placement failed"
 CLIENT_ORDER_ID_REQUIRED_MESSAGE = "LIVE order requires a client_order_id (UUID v4)"
 INVALID_CLIENT_ORDER_ID_MESSAGE = "client_order_id must be a UUID v4"
@@ -29,6 +42,8 @@ DUPLICATE_ORDER_MESSAGE = "Duplicate client_order_id: returning the existing ord
 # A LIVE row is committed in this state before the broker is called.
 PENDING_SUBMIT = "PENDING_SUBMIT"
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
+# A LIVE row in one of these states has no working broker order to modify.
+LIVE_UNMODIFIABLE_STATES = {PENDING_SUBMIT, "ERROR", *PAPER_TERMINAL_STATES}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
 
@@ -43,6 +58,26 @@ def order_price_error(order_type: str, price: float, trigger_price: float) -> st
     if order_type in LIMIT_PRICED_ORDER_TYPES and price <= 0:
         return f"{order_type} order requires a positive limit price."
     return None
+
+
+def broker_reason(response: object) -> str | None:
+    """Short, printable reason from a structured broker reply's "message" field, else None.
+
+    Only a reply the broker returned (a dict) is read; exception text never is.
+    """
+    if not isinstance(response, dict):
+        return None
+    message = response.get("message")
+    if not isinstance(message, str):
+        return None
+    text = "".join(ch for ch in " ".join(message.split()) if ch.isprintable())
+    return text[:MAX_BROKER_REASON_LENGTH] or None
+
+
+def with_broker_reason(fixed_message: str, response: object) -> str:
+    """The fixed client message, plus the broker's structured reason when it gave one."""
+    reason = broker_reason(response)
+    return f"{fixed_message}: {reason}" if reason else fixed_message
 
 
 def normalize_client_order_id(value: object) -> str | None:
@@ -327,20 +362,34 @@ class OrderExecutionService:
         broker_resp = self.broker.place_order(broker_order)
 
         if not isinstance(broker_resp, dict):
-            logger.error("Broker returned non-dict response: %s", broker_resp)
+            logger.error("Broker returned non-dict response for %s", new_order.internal_id)
             new_order.status = "ERROR"
-            new_order.reject_reason = "Malformed broker response"
-            return {"status": "ERROR", "message": "Malformed broker response"}
+            new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
+            return {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
 
         if broker_resp.get("status") == "SUBMITTED" and broker_resp.get("order_id"):
-            new_order.id = str(broker_resp.get("order_id"))
+            order_id = str(broker_resp.get("order_id"))
+            message = broker_reason(broker_resp) or "Submitted"
+            new_order.id = order_id
             new_order.status = "SUBMITTED"
-            new_order.broker_message = str(broker_resp.get("message", "Submitted"))
-            return broker_resp
+            new_order.broker_message = message
+            return {"status": "SUBMITTED", "order_id": order_id, "message": message}
 
-        new_order.status = "REJECTED"
-        new_order.reject_reason = str(broker_resp.get("message", "Order rejected by broker"))
-        return broker_resp
+        if broker_resp.get("status") == "REJECTED":
+            # A structured rejection: a fixed message plus the broker's short reason.
+            message = with_broker_reason(LIVE_REJECTED_MESSAGE, broker_resp)
+            new_order.status = "REJECTED"
+        else:
+            # ERROR (the broker call raised) or an unknown status: its text stays in the log.
+            logger.error(
+                "Live order %s failed at the broker: %s",
+                new_order.internal_id,
+                safe_log_value(broker_resp.get("message")),
+            )
+            message = LIVE_SUBMIT_FAILED_MESSAGE
+            new_order.status = "ERROR"
+        new_order.reject_reason = message
+        return {"status": new_order.status, "message": message}
 
     @staticmethod
     def _apply_paper_fill(
@@ -476,6 +525,25 @@ class OrderExecutionService:
             raise
         return self._fresh_response(response, client_order_id)
 
+    def place_prechecked_live_order(
+        self, order_params: dict[str, Any], fyers_symbol: str, client_order_id: str, db: Session
+    ) -> dict[str, Any]:
+        """Persist and submit a LIVE order whose risk checks the caller already ran.
+
+        For exits (live_exit_service), which use their own checks: the row is committed
+        as PENDING_SUBMIT before the broker call, exactly as in place_order.
+        """
+        quantity = self._validate_quantity(order_params)
+        new_order = self._create_order_record(
+            order_params,
+            str(order_params["symbol"]),
+            fyers_symbol,
+            quantity,
+            "LIVE",
+            client_order_id,
+        )
+        return self._place_live_order(order_params, fyers_symbol, new_order, client_order_id, db)
+
     def _place_paper_order(
         self,
         order_params: dict[str, Any],
@@ -573,35 +641,94 @@ class OrderExecutionService:
     def _modify_live_order(
         self, order: LiveOrder, order_id: str, params: dict[str, Any], db: Session
     ) -> dict[str, Any]:
+        value_error = self._normalize_modify_params(params)
+        if value_error:
+            return {"status": "ERROR", "message": value_error}
+        if order.status in LIVE_UNMODIFIABLE_STATES:
+            return {"status": "ERROR", "message": f"Cannot modify order in {order.status} state"}
+
         # Send the full resulting order so an unchanged type and trigger are
         # preserved (an SL stays an SL) instead of collapsing to a LIMIT.
         broker_params = {
             "order_type": str(params.get("order_type") or order.order_type or "MARKET").upper(),
-            "quantity": params.get("quantity", order.quantity),
-            "price": params.get("price", order.price),
-            "trigger_price": params.get("trigger_price", order.trigger_price),
+            "quantity": int(params.get("quantity", order.quantity)),
+            "price": safe_float(params.get("price", order.price), 0.0),
+            "trigger_price": safe_float(params.get("trigger_price", order.trigger_price), 0.0),
         }
+        if broker_params["order_type"] not in FYERS_ORDER_TYPES:
+            return {
+                "status": "ERROR",
+                "message": "Invalid order type. Expected MARKET, LIMIT, SL or SL-M.",
+            }
+        price_error = order_price_error(
+            broker_params["order_type"], broker_params["price"], broker_params["trigger_price"]
+        )
+        if price_error:
+            return {"status": "ERROR", "message": price_error}
+
+        risk_error, warnings = self._live_modify_risk(order, broker_params, db)
+        if risk_error:
+            return risk_error
+
         try:
             resp = self.broker.modify_order(order_id, broker_params)
-            status = resp.get("s", "error")
-            msg = resp.get("message", "Modify failed")
-
-            if status != "ok":
-                return {"status": "ERROR", "message": msg}
-            order.order_type = broker_params["order_type"]
-            order.quantity = broker_params["quantity"]
-            order.price = safe_float(broker_params["price"], 0.0)
-            order.trigger_price = safe_float(broker_params["trigger_price"], 0.0)
-            order.broker_message = f"Modified: {msg}"
-            db.commit()
-            return {"status": "SUCCESS", "message": "Order Modified"}
         except Exception as e:
             if is_db_unavailable(e):
                 raise
-            return {"status": "ERROR", "message": str(e)}
+            # Full error stays in the server log; the client gets a fixed message.
+            logger.exception("Live modify failed for order %s", safe_log_value(order_id))
+            return {"status": "ERROR", "message": LIVE_MODIFY_FAILED_MESSAGE}
+
+        if not isinstance(resp, dict) or resp.get("s") != "ok":
+            message = with_broker_reason(LIVE_MODIFY_REJECTED_MESSAGE, resp)
+            return {"status": "ERROR", "message": message}
+        order.order_type = broker_params["order_type"]
+        order.quantity = broker_params["quantity"]
+        order.price = broker_params["price"]
+        order.trigger_price = broker_params["trigger_price"]
+        order.broker_message = with_broker_reason("Modified", resp)
+        db.commit()
+        result: dict[str, Any] = {"status": "SUCCESS", "message": "Order Modified"}
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
+    def _live_modify_risk(
+        self, order: LiveOrder, broker_params: dict[str, Any], db: Session
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """(error response, warnings) for a LIVE modify. Fails closed without a live quote."""
+        quote_symbol = order.fyers_symbol or order.symbol
+        try:
+            ltp = quote_last_price(self.broker.get_quote(quote_symbol))
+        except Exception:
+            logger.exception("Quote for live modify failed for %s", safe_log_value(quote_symbol))
+            ltp = 0.0
+        risk_params = {
+            "symbol": order.symbol,
+            "fyers_symbol": order.fyers_symbol,
+            "side": order.side,
+            "quantity": broker_params["quantity"],
+            "type": broker_params["order_type"],
+            "price": broker_params["price"],
+            "trigger_price": broker_params["trigger_price"],
+            "product": order.product_type,
+            "instrument_type": order.instrument_type,
+        }
+        quantity_increase = broker_params["quantity"] - int(order.quantity or 0)
+        result = risk_manager.pre_modify_check(risk_params, quantity_increase, ltp, db)
+        if result.status.value == "FAIL":
+            return {
+                "status": "ERROR",
+                "message": f"Risk Check Failed: {result.message}",
+                "code": result.code,
+            }, []
+        warnings = [str(w) for w in (result.details or {}).get("warnings", [])]
+        for warning in warnings:
+            logger.warning("Risk warning on live modify of %s: %s", order.id, warning)
+        return None, warnings
 
     @staticmethod
-    def _normalize_paper_modify_params(params: dict[str, Any]) -> str | None:
+    def _normalize_modify_params(params: dict[str, Any]) -> str | None:
         """Coerce quantity, price and trigger_price in `params` in place.
 
         Returns an error message for the first invalid value, else None.
@@ -634,7 +761,7 @@ class OrderExecutionService:
     def _modify_paper_order(
         self, order: LiveOrder, params: dict[str, Any], db: Session
     ) -> dict[str, Any]:
-        value_error = self._normalize_paper_modify_params(params)
+        value_error = self._normalize_modify_params(params)
         if value_error:
             return {"status": "ERROR", "message": value_error}
 
@@ -678,22 +805,28 @@ class OrderExecutionService:
     def _cancel_live_order(self, order: LiveOrder, db: Session) -> dict[str, Any]:
         try:
             resp = self.broker.cancel_order(order.id)  # Use broker ID
-            status = resp.get("s", "error")
-            msg = resp.get("message", "Cancel failed")
-
-            if status == "ok":
-                order.status = "CANCELLED"
-                db.commit()
-                return {"status": "SUCCESS", "message": "Order Cancelled"}
-            if "already cancelled" in str(msg).lower():
-                order.status = "CANCELLED"
-                db.commit()
-                return {"status": "SUCCESS", "message": "Order Already Cancelled"}
-            return {"status": "ERROR", "message": msg}
         except Exception as e:
             if is_db_unavailable(e):
                 raise
-            return {"status": "ERROR", "message": str(e)}
+            # Full error stays in the server log; the client gets a fixed message.
+            logger.exception("Live cancel failed for order %s", safe_log_value(order.id))
+            return {"status": "ERROR", "message": LIVE_CANCEL_FAILED_MESSAGE}
+
+        if not isinstance(resp, dict):
+            logger.error("Broker returned non-dict cancel response for %s", order.id)
+            return {"status": "ERROR", "message": LIVE_CANCEL_FAILED_MESSAGE}
+        if resp.get("s") == "ok":
+            order.status = "CANCELLED"
+            db.commit()
+            return {"status": "SUCCESS", "message": "Order Cancelled"}
+        if "already cancelled" in str(resp.get("message", "")).lower():
+            order.status = "CANCELLED"
+            db.commit()
+            return {"status": "SUCCESS", "message": "Order Already Cancelled"}
+        return {
+            "status": "ERROR",
+            "message": with_broker_reason(LIVE_CANCEL_REJECTED_MESSAGE, resp),
+        }
 
     @staticmethod
     def _cancel_paper_order(order: LiveOrder, db: Session) -> dict[str, Any]:

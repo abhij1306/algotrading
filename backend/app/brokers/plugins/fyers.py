@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING, Any
 
 from ...services.fyers_client import get_fyers_client
 from ...utils.helpers import safe_float
-from ..base import BrokerFunds, BrokerUnavailableError, IBroker, OrderResponse, Position
+from ..base import (
+    BrokerFunds,
+    BrokerUnavailableError,
+    IBroker,
+    OrderResponse,
+    Position,
+    WorkingOrder,
+)
 
 if TYPE_CHECKING:
     from fyers_apiv3.fyersModel import FyersModel
@@ -27,6 +34,8 @@ LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
 # inside the documented limit with room to spare.
 FYERS_ORDER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9]{1,20}$")
 ORDER_TAG_PREFIX = "ST"
+# Fyers orderbook statuses for an order that can still fill: 4 = transit, 6 = pending.
+FYERS_WORKING_ORDER_STATUSES = {4, 6}
 
 
 def _order_tag_fields(order_tag: object) -> tuple[dict[str, str], OrderResponse | None]:
@@ -342,6 +351,44 @@ class FyersBroker(IBroker):
             fallback={"orderBook": []},
         )
         return response.get("orderBook", [])
+
+    def get_working_orders(self) -> list[WorkingOrder]:
+        """Orders still working at the broker, with their unfilled quantity.
+
+        Raises BrokerUnavailableError when the orderbook cannot be read: callers that size
+        an exit from it must fail closed rather than read "no working orders".
+        """
+        if not self.client:
+            raise BrokerUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
+
+        response = self._call_with_guard(
+            "orderbook",
+            lambda: self.client.orderbook(),
+            timeout_sec=2.0,
+            fallback={"s": "error", "message": "Fyers orderbook timeout/unavailable"},
+        )
+        if not isinstance(response, dict) or response.get("s") != "ok":
+            raise BrokerUnavailableError("Fyers orderbook request failed")
+
+        working: list[WorkingOrder] = []
+        for order in response.get("orderBook") or []:
+            if int(order.get("status") or 0) not in FYERS_WORKING_ORDER_STATUSES:
+                continue
+            remaining = int(order.get("qty") or 0) - int(order.get("filledQty") or 0)
+            if remaining <= 0:
+                continue
+            side = {1: "BUY", -1: "SELL"}.get(int(order.get("side") or 0))
+            if side is None:
+                raise BrokerUnavailableError("Fyers orderbook has an order with no side")
+            working.append(
+                WorkingOrder(
+                    symbol=str(order.get("symbol") or ""),
+                    side=side,
+                    quantity=remaining,
+                    product_type=str(order.get("productType") or ""),
+                )
+            )
+        return working
 
     def get_holdings(self) -> list[dict[str, Any]]:
         if not self.client:
