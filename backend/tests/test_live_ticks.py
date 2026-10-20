@@ -1,11 +1,14 @@
 """
 Live Ticks End-to-End Test
 Tests complete tick flow from Fyers (mocked/real) to Frontend via WebSocket.
+
+Run with SMARTTRADER_LIVE_E2E=1 while the backend is running and the market feed is live.
 """
 
 import asyncio
 import json
 import logging
+import os
 import time
 
 import pytest
@@ -14,6 +17,11 @@ import websockets
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.getenv("SMARTTRADER_LIVE_E2E") != "1",
+    reason="end-to-end: needs a running backend on :8000 and a live Fyers feed",
+)
 @pytest.mark.asyncio
 async def test_websocket_ticks() -> None:
     """Test WebSocket tick delivery"""
