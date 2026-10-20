@@ -240,6 +240,26 @@ def test_symbol_re_subscribed_while_its_release_is_in_flight_is_subscribed_again
     assert live.ws_service.ws.subscribed == _fyers(["SBIN"])
 
 
+def test_symbol_released_while_its_subscribe_is_in_flight_is_unsubscribed_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = ConnectionManager()
+    monkeypatch.setattr(lms, "manager", mgr)
+    live = lms.LiveMarketService()
+
+    class RacingProvider(FakeProvider):
+        def subscribe(self, symbols: list[str]) -> None:
+            super().subscribe(symbols)
+            mgr.registry.drop_owner("ws-1")  # the only owner leaves meanwhile
+
+    live.ws_service = RacingProvider()
+    mgr.registry.add("ws-1", ["SBIN"])
+    asyncio.run(live.subscribe(["SBIN"]))
+
+    assert live.ws_service.ws.subscribed == _fyers(["SBIN"])
+    assert live.ws_service.ws.unsubscribed == _fyers(["SBIN"])
+
+
 def test_client_dropped_by_its_own_sender_still_completes_the_release() -> None:
     class BrokenSendSocket(FakeClientWebSocket):
         async def send_text(self, data: str) -> None:

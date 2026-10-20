@@ -536,6 +536,12 @@ class LiveMarketService:
             logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
         except Exception as e:
             logger.exception(f"Fyers subscription failed: {e}")
+            return
+        # The subscribe delta can go stale while the provider call runs: if the last owner
+        # released a symbol meanwhile, its unsubscribe may have reached the provider first.
+        released = sorted(s for s in symbols if not self.registry.is_held(s))
+        if released:
+            await self.unsubscribe(released)
 
     def _provider_socket_connected(self) -> bool:
         return bool(self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected())
