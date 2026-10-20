@@ -5,7 +5,6 @@ Handles live market data streaming using fyers-apiv3 WebSocket
 FIXED: Thread-safe message handling with event loop integration
 """
 
-import asyncio
 import logging
 from collections.abc import Callable
 
@@ -29,19 +28,13 @@ class FyersWebSocketService:
         self.ws = None
         self.access_token = None
         self.subscribed_symbols = set()
-        self.callbacks: dict[str, list[Callable]] = {}
         self.on_tick_handler: Callable | None = None
+        # Called on every provider (re)connect, including SDK auto-reconnects.
+        self.on_open_handler: Callable[[], None] | None = None
         self.max_symbols_per_call = 25
 
     def _chunk(self, items: list[str], size: int) -> list[list[str]]:
         return [items[i : i + size] for i in range(0, len(items), size)]
-
-    def set_loop(self, loop: asyncio.AbstractEventLoop):
-        """
-        API Compatibility Stub.
-        Loop management is now handled by the consumer (LiveMarketService) directly.
-        """
-        pass
 
     def connect(self):
         """Initialize WebSocket connection using access token"""
@@ -90,7 +83,7 @@ class FyersWebSocketService:
         self.ws.connect()
         logger.info("[FyersWS] WebSocket connected")
 
-    def subscribe(self, symbols: list[str], callback: Callable = None):
+    def subscribe(self, symbols: list[str]):
         """
         Subscribe to symbols for live data
         """
@@ -108,13 +101,6 @@ class FyersWebSocketService:
         for batch in self._chunk(unique_symbols, self.max_symbols_per_call):
             self.ws.subscribe(symbols=batch, data_type="SymbolUpdate")
 
-        # Register callback
-        if callback:
-            for symbol in unique_symbols:
-                if symbol not in self.callbacks:
-                    self.callbacks[symbol] = []
-                self.callbacks[symbol].append(callback)
-
         logger.info("[FyersWS] Subscribed to %s symbols", len(unique_symbols))
 
     def unsubscribe(self, symbols: list[str]):
@@ -130,27 +116,13 @@ class FyersWebSocketService:
             self.ws.unsubscribe(symbols=batch)
         self.subscribed_symbols -= set(unique_symbols)
 
-        for symbol in unique_symbols:
-            if symbol in self.callbacks:
-                del self.callbacks[symbol]
-
     def _on_message(self, message):
         """
         Handle incoming WebSocket message (called from WebSocket thread)
         Directly invokes handler to minimize latency.
         """
         try:
-            symbol = message.get("symbol")
-
-            # 1. Call registered callbacks (Strategy-specific)
-            if symbol in self.callbacks:
-                for callback in self.callbacks[symbol]:
-                    try:
-                        callback(message)
-                    except Exception as e:
-                        logger.error("[FyersWS] Callback error: %s", e)
-
-            # 2. Main Tick Handler (LiveMarketService)
+            # Main Tick Handler (LiveMarketService)
             if self.on_tick_handler:
                 try:
                     self.on_tick_handler(message)
@@ -179,6 +151,11 @@ class FyersWebSocketService:
     def _on_open(self):
         """Handle WebSocket open"""
         logger.info("[FyersWS] Connection established")
+        if self.on_open_handler:
+            try:
+                self.on_open_handler()
+            except Exception as e:
+                logger.error("[FyersWS] Open handler error: %s", e)
 
     def disconnect(self):
         """Close WebSocket connection"""
@@ -186,7 +163,6 @@ class FyersWebSocketService:
             self.ws.close()
             self.ws = None
             self.subscribed_symbols.clear()
-            self.callbacks.clear()
             logger.info("[FyersWS] Disconnected")
 
 

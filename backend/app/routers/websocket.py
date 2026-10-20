@@ -29,7 +29,9 @@ async def connect_websocket():
         from ..services.live_market_service import live_market
 
         # Ensure live_market captures the running loop for thread-safe broadcasting.
-        connect_status = live_market.connect(loop=asyncio.get_running_loop(), explicit=True)
+        connect_status = await live_market.connect_async(
+            loop=asyncio.get_running_loop(), explicit=True
+        )
         message_map = {
             "started": "WebSocket initialization triggered",
             "already_connected": "WebSocket already connected",

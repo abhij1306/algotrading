@@ -80,8 +80,11 @@ Implemented in `backend/app/services/live_market_service.py`:
 - `ws_manager.connect()` is handshake-safe and returns `False` if client disappears early
 - `ws_manager.broadcast()` removes dead sockets on `WebSocketDisconnect`/`RuntimeError`
 - Live service queues pending subscriptions when provider WS is not yet connected
-- Provider reconnect uses exponential backoff in thread runner (`max_retries=10`)
-- On every provider (re)connect, `LiveMarketService.on_ws_connected()` replays the aggregate symbol set of all connected clients plus any queued symbols
+- Provider connect runs in a thread (`_run_provider_connect`): after `connect()` it waits up to 15s for the socket to report connected, counts a timeout as a failed attempt, and retries with exponential backoff (5s doubling to 60s, `max_retries=10`). An explicit disconnect wakes and stops the runner immediately
+- The SDK's own `reconnect=True` reconnects are covered too: `FyersWebSocketService.on_open_handler` (wired to the SDK `on_connect` callback) calls `LiveMarketService.on_provider_open()`, which waits for the socket and then calls `on_ws_connected()`. The runner skips its own replay when that hook already ran for the attempt
+- On every provider (re)connect, `LiveMarketService.on_ws_connected()` replays the aggregate symbol set of all connected clients, HTTP-API subscriptions and any queued symbols
+- `_monitor_loop` and `_flush_loop` catch and log unexpected errors per iteration (then pause 1s) instead of dying; `CancelledError` still propagates
+- Async callers use `LiveMarketService.connect_async()`, which runs the blocking Fyers token validation in a worker thread; `connect()` stays available for sync callers
 - Dropping a client (disconnect, slow-client overflow, dead socket) goes through `ws_manager.disconnect()`, which releases provider symbols no remaining client needs via `on_symbols_released`; slow clients are closed with code 1013
 - `POST /api/websocket/disconnect` calls `LiveMarketService.disconnect()`; the monitor loop and `subscribe()` do not reconnect until an explicit `POST /api/websocket/connect` (non-explicit connects return `disconnected`)
 - The Fyers client is resolved per use (broker and option chain do not cache it), and `reset_fyers_client()` also drops the class singleton, so re-login takes effect without restart
