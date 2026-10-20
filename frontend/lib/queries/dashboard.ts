@@ -386,6 +386,7 @@ export function usePostMarketInsights(enabled: boolean) {
       };
     },
     enabled,
+    ...POLL_OPTIONS,
   });
 }
 
