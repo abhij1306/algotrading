@@ -2,8 +2,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { z } from "zod";
 import { api, parseResponse, unwrap } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
+import type { components } from "@/lib/api/schema";
+import { roundToDecimals } from "@/lib/format";
 import { isMarketOpen } from "@/lib/market-hours";
-import { roundToDecimals } from "@/lib/utils";
 import { queryKeys } from "./keys";
 import { shouldRetry } from "./query-client";
 
@@ -348,5 +349,137 @@ export function useSquarePosition() {
       }
       return queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() });
     },
+  });
+}
+
+/**
+ * The backend still resolves the order's user from this legacy query parameter and answers 401
+ * without it outside DEV_MODE. Lane 3 task 5 replaces it with a `current_user_id` dependency.
+ */
+const ORDER_USER_ID = "default_user";
+const ORDER_RETRY_DELAY_MS = 250;
+
+/** The exact body POSTed to /api/trading/order; every order carries its idempotency key. */
+export type PlaceOrderBody = components["schemas"]["OrderRequest"] & { client_order_id: string };
+
+/** The risk warning messages the backend listed; anything that is not a string is dropped. */
+const warningsSchema = z
+  .array(z.unknown())
+  .catch([])
+  .optional()
+  .transform((items = []) => items.filter((item): item is string => typeof item === "string"));
+
+/** A non-empty string the backend sent, or undefined. */
+const optionalText = z
+  .union([z.string(), z.number()])
+  .transform((value) => String(value) || undefined)
+  .optional()
+  .catch(undefined);
+
+const placeOrderResultSchema = z.object({
+  status: optionalText,
+  message: optionalText,
+  order_id: optionalText,
+  id: optionalText,
+  duplicate: z.boolean().optional().catch(undefined),
+  warnings: warningsSchema,
+});
+
+export interface PlaceOrderResult {
+  /** Sent but not confirmed by the broker: the order may be live, so it must not be placed again. */
+  unconfirmed: boolean;
+  status: string | undefined;
+  message: string | undefined;
+  orderId: string | undefined;
+  /** The client_order_id was already used: this is the existing order, not a new one. */
+  duplicate: boolean;
+  /** Risk checks that warned and were overridden with the order's risk_override_reason. */
+  warnings: string[];
+}
+
+/** True when the request may have reached the backend but its answer was lost or cut off. */
+function isCutOff(error: unknown): error is ApiError {
+  if (!(error instanceof ApiError)) return false;
+  if (error.code === "RESPONSE_SHAPE_ERROR") return true;
+  return error.code === "NETWORK_ERROR" && error.details instanceof SyntaxError;
+}
+
+async function postOrder(body: PlaceOrderBody): Promise<unknown> {
+  try {
+    return await unwrap(
+      api.POST("/api/trading/order", { params: { query: { x_user_id: ORDER_USER_ID } }, body }),
+    );
+  } catch (error) {
+    if (!isCutOff(error)) throw error;
+    // The order may have been placed: retry (same client_order_id) to read its state.
+    throw new ApiError({
+      code: "NETWORK_ERROR",
+      message: "Order response was cut off",
+      status: error.status ?? undefined,
+    });
+  }
+}
+
+/**
+ * The one call site that places an order; a rejected order throws. A dropped request, or a 200
+ * whose body was cut off, is retried with the same client_order_id, so the backend places the
+ * order at most once. A filled order can change the positions book, so it is refreshed.
+ */
+export function usePlaceOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: PlaceOrderBody): Promise<PlaceOrderResult> => {
+      const result = parseResponse(placeOrderResultSchema, await postOrder(body));
+      return {
+        unconfirmed: result.status === SUBMIT_UNCONFIRMED,
+        status: result.status,
+        message: result.message,
+        orderId: result.order_id ?? result.id,
+        duplicate: result.duplicate === true,
+        warnings: result.warnings,
+      };
+    },
+    retry: shouldRetry,
+    retryDelay: ORDER_RETRY_DELAY_MS,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() }),
+  });
+}
+
+/** The fields the backend's pre-trade risk check reads. */
+export type RiskCheckBody = components["schemas"]["RiskCheckRequest"];
+
+const riskCheckSchema = z.object({
+  // No fallback: a response without a known status is not a risk check, so it reads as unavailable.
+  status: z.enum(["PASS", "WARNING", "FAIL"]),
+  message: z.string().catch(""),
+  details: z.object({ warnings: warningsSchema }).nullish().catch(null),
+});
+
+export interface RiskCheck {
+  status: "PASS" | "WARNING" | "FAIL";
+  message: string;
+  /** Every warning; a WARNING order needs a risk_override_reason to go through. */
+  warnings: string[];
+}
+
+/**
+ * The backend's pre-trade risk check for an order, without placing it. Advisory: placing the
+ * order runs the same checks again and is what decides.
+ */
+export function useRiskCheck(order: RiskCheckBody) {
+  return useQuery({
+    queryKey: queryKeys.terminal.riskCheck(order),
+    queryFn: async (): Promise<RiskCheck> => {
+      const result = parseResponse(
+        riskCheckSchema,
+        await unwrap(api.POST("/api/trading/risk-check", { body: order })),
+      );
+      return {
+        status: result.status,
+        message: result.message,
+        warnings: result.details?.warnings ?? [],
+      };
+    },
+    staleTime: 0,
   });
 }

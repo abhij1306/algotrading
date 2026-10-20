@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, memo } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import {
   Search,
   Plus,
@@ -17,17 +17,26 @@ import {
   type OrderType,
   type TradingMode,
 } from "./order-defaults";
-import { formatPercentage, roundToDecimals } from "@/lib/utils";
+import {
+  inferInstrumentType,
+  isStopOrder,
+  optionLotSize,
+  orderBody,
+  orderDraft,
+  orderInputError,
+  orderResultMessage,
+  type OrderDraft,
+  type OrderSide,
+} from "./order";
+import { LiveOrderDialog } from "./LiveOrderDialog";
+import { formatNumber, formatSignedPercent, roundToDecimals } from "@/lib/format";
 import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import { isMarketOpen } from "@/lib/market-hours";
 import { debounce } from "@/lib/debounce";
-import { queryKeys } from "@/lib/queries/keys";
-import { shouldRetry } from "@/lib/queries/query-client";
-import { ApiError, apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
 import {
-  SUBMIT_UNCONFIRMED,
   useAddToWatchlist,
   useOptionsBoard,
+  usePlaceOrder,
   usePositionsBook,
   useSquarePosition,
   useSymbolSearch,
@@ -41,14 +50,8 @@ import {
 import { getTradingViewUrl } from "@/lib/tradingview";
 
 type TerminalView = "options" | "positions";
-type OrderSide = "BUY" | "SELL";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "D", "W", "M"];
-const OPTION_LOT_SIZES: Record<string, number> = {
-  NIFTY: 75,
-  BANKNIFTY: 30,
-  FINNIFTY: 25,
-};
 
 function getChangeTone(change: number | null | undefined): string {
   if (typeof change !== "number") {
@@ -58,26 +61,7 @@ function getChangeTone(change: number | null | undefined): string {
 }
 
 function getChangeText(change: number | null | undefined): string {
-  return typeof change === "number" ? formatPercentage(change) : "Unavailable";
-}
-
-function inferInstrumentType(symbol: string): "PE" | "CE" | "EQ" {
-  if (symbol.endsWith("PE")) {
-    return "PE";
-  }
-  if (symbol.endsWith("CE")) {
-    return "CE";
-  }
-  return "EQ";
-}
-
-/** The order tag names the flow: the instrument decides, not the terminal view. */
-function orderTag(symbol: string): "terminal-equity" | "terminal-options" {
-  return inferInstrumentType(symbol) === "EQ" ? "terminal-equity" : "terminal-options";
-}
-
-function formatLtp(value: number | null | undefined): string {
-  return typeof value === "number" ? value.toFixed(2) : "--";
+  return typeof change === "number" ? formatSignedPercent(change) : "Unavailable";
 }
 
 function errorText(error: unknown, fallback: string): string {
@@ -87,8 +71,6 @@ function errorText(error: unknown, fallback: string): string {
 type Quote = NonNullable<ReturnType<typeof useQuotes>[string]>;
 
 type PositionsSummary = { net_pnl_live: number; net_pnl_paper: number; net_pnl_total: number };
-
-const isPositive = (value: number): boolean => value > 0;
 
 function pnlTone(value: number): string {
   return value >= 0 ? "text-profit" : "text-loss";
@@ -135,113 +117,6 @@ function summarizePositions(positions: PositionItem[]): PositionsSummary {
     net_pnl_paper: roundToDecimals(paper, 2),
     net_pnl_total: roundToDecimals(live + paper, 2),
   };
-}
-
-/** A user-facing message when the order inputs are unusable, else null. */
-function orderInputError(input: {
-  symbol: string;
-  quantity: number;
-  orderType: OrderType;
-  price: number;
-  trigger: number;
-}): string | null {
-  const { symbol, quantity, orderType, price, trigger } = input;
-  if (!symbol || quantity <= 0) return "Select symbol and enter valid quantity";
-  if (orderType !== "MARKET" && orderType !== "SL-M" && !isPositive(price)) {
-    return "Enter a price greater than 0";
-  }
-  if ((orderType === "SL" || orderType === "SL-M") && !isPositive(trigger)) {
-    return "Enter a trigger price greater than 0";
-  }
-  return null;
-}
-
-type OrderInput = {
-  mode: TradingMode;
-  symbol: string;
-  side: OrderSide;
-  quantity: number;
-  orderType: OrderType;
-  price: number;
-  trigger: number;
-  liveConfirmed: boolean;
-  riskOverrideReason: string;
-  /** Idempotency key: one per submit intent, reused by every retry of that intent. */
-  clientOrderId: string;
-};
-
-// Retries reuse the intent's client_order_id, so the backend places the order at most once.
-const ORDER_RETRY_DELAY_MS = 250;
-
-async function postOrder(body: string): Promise<Response> {
-  try {
-    return await fetch("/api/trading/order?x_user_id=default_user", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-  } catch (error) {
-    throw apiErrorFromThrown(error);
-  }
-}
-
-/** Submit an order; resolves to the confirmation message, throws on rejection. */
-async function submitOrder(input: OrderInput): Promise<string> {
-  const { mode, side, orderType } = input;
-  const response = await postOrder(
-    JSON.stringify({
-      mode,
-      symbol: input.symbol,
-      side,
-      quantity: input.quantity,
-      product: "INTRADAY",
-      type: orderType,
-      price: orderType === "MARKET" ? 0 : input.price,
-      trigger_price: orderType === "SL" || orderType === "SL-M" ? input.trigger : 0,
-      tag: orderTag(input.symbol),
-      instrument_type: inferInstrumentType(input.symbol),
-      is_live_confirmation_ack: input.liveConfirmed,
-      risk_override_reason: input.riskOverrideReason.trim() || null,
-      client_order_id: input.clientOrderId,
-    }),
-  );
-  const data = await response.json().catch(() => null);
-  if (response.ok && data === null) {
-    // The order may have been placed: retry (same client_order_id) to read its state.
-    throw new ApiError({
-      code: "NETWORK_ERROR",
-      message: "Order response was cut off",
-      status: response.status,
-    });
-  }
-  if (!response.ok) {
-    throw apiErrorFromResponse({
-      status: response.status,
-      statusText: response.statusText,
-      body: data,
-    });
-  }
-  if (data?.status === SUBMIT_UNCONFIRMED) {
-    // Not rejected: the order may be live, so the user must not place it again.
-    return `${mode} ${side} unconfirmed: ${data.message || "check the broker orderbook"}`;
-  }
-  const placed = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
-  // Risk checks that warned (an overridden LIVE warning): the user sees which ones.
-  const warnings: unknown[] = Array.isArray(data?.warnings) ? data.warnings : [];
-  const warningText = warnings.filter((w): w is string => typeof w === "string").join("; ");
-  const summary = warningText ? `${placed} - risk warnings: ${warningText}` : placed;
-  return data?.duplicate ? `${summary} - already placed` : summary;
-}
-
-/** Order submission; a filled order can change the positions book, so it is refreshed. */
-function useSubmitOrder() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: submitOrder,
-    retry: shouldRetry,
-    retryDelay: ORDER_RETRY_DELAY_MS,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() }),
-  });
 }
 
 function OptionsBoardPanel({
@@ -312,7 +187,7 @@ function OptionsBoardPanel({
                   {row.ce?.symbol || "--"}
                 </button>
               </td>
-              <td className="py-1 text-right tabular-nums">{formatLtp(row.ce?.ltp)}</td>
+              <td className="py-1 text-right tabular-nums">{formatNumber(row.ce?.ltp)}</td>
               <td
                 className={`py-1 text-right tabular-nums ${
                   row.strike === optionsBoard.atm_strike
@@ -320,9 +195,9 @@ function OptionsBoardPanel({
                     : "text-foreground-muted"
                 }`}
               >
-                {row.strike.toFixed(2)}
+                {formatNumber(row.strike)}
               </td>
-              <td className="py-1 text-right tabular-nums">{formatLtp(row.pe?.ltp)}</td>
+              <td className="py-1 text-right tabular-nums">{formatNumber(row.pe?.ltp)}</td>
               <td className="py-1 text-left">
                 <button
                   type="button"
@@ -345,7 +220,7 @@ function OptionsBoardPanel({
 }
 
 function PnlValue({ value }: Readonly<{ value: number }>) {
-  return <span className={`${pnlTone(value)} tabular-nums`}>{value.toFixed(2)}</span>;
+  return <span className={`${pnlTone(value)} tabular-nums`}>{formatNumber(value)}</span>;
 }
 
 function PositionsPanel({
@@ -409,19 +284,15 @@ function PositionsPanel({
               <td className="py-1 pr-2">{pos.mode || "LIVE"}</td>
               <td className="py-1 pr-2">{pos.net_qty >= 0 ? "LONG" : "SHORT"}</td>
               <td className="py-1 pr-2 text-right tabular-nums">{Math.abs(pos.net_qty)}</td>
+              <td className="py-1 pr-2 text-right tabular-nums">{formatNumber(pos.entry_price)}</td>
               <td className="py-1 pr-2 text-right tabular-nums">
-                {Number(pos.entry_price || 0).toFixed(2)}
+                {formatNumber(pos.current_price)}
               </td>
-              <td className="py-1 pr-2 text-right tabular-nums">
-                {Number(pos.current_price || 0).toFixed(2)}
-              </td>
-              <td
-                className={`py-1 pr-2 text-right tabular-nums ${Number(pos.unrealized_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
-              >
-                {Number(pos.unrealized_pnl || 0).toFixed(2)}
+              <td className={`py-1 pr-2 text-right tabular-nums ${pnlTone(pos.unrealized_pnl)}`}>
+                {formatNumber(pos.unrealized_pnl)}
               </td>
               <td className={`py-1 pr-2 text-right tabular-nums ${pnlTone(pos.net_pnl)}`}>
-                {pos.net_pnl.toFixed(2)}
+                {formatNumber(pos.net_pnl)}
               </td>
               <td className="py-1 pr-2 text-right">
                 <Button
@@ -485,9 +356,7 @@ const WatchlistRow = memo(function WatchlistRow({
         <div className="text-xs text-foreground-muted truncate max-w-[100px]">{stock.name}</div>
       </td>
       <td className="py-2 pr-3 text-right">
-        <div className="tabular-nums font-medium">
-          {typeof stock.ltp === "number" ? stock.ltp.toFixed(2) : "--"}
-        </div>
+        <div className="tabular-nums font-medium">{formatNumber(stock.ltp)}</div>
         <div className={`tabular-nums text-xs ${getChangeTone(stock.changePct)}`}>
           {getChangeText(stock.changePct)}
         </div>
@@ -499,10 +368,6 @@ const WatchlistRow = memo(function WatchlistRow({
 const NO_WATCHLIST: WatchlistItem[] = [];
 const NO_POSITIONS: PositionItem[] = [];
 const NO_SEARCH_RESULTS: SearchResultItem[] = [];
-
-function initialSymbolFromUrl(): string {
-  return new URLSearchParams(globalThis.location.search).get("symbol") ?? "";
-}
 
 function openTradingView(symbol: string) {
   globalThis.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
@@ -518,19 +383,30 @@ function listWithSelected(saved: WatchlistItem[], selectedSymbol: string): Watch
 }
 
 /**
- * Saved watchlist plus the selected symbol. The selection is `?symbol=` or the user's pick,
- * and falls back to the first saved row, derived on render rather than synced by an effect.
+ * Saved watchlist plus the selected symbol. The selection lives in `?symbol=`, so a link (or the
+ * command palette) can open any symbol and a pick replaces it; with none set it falls back to the
+ * first saved row, derived on render rather than synced by an effect.
  */
 function useTerminalSymbols() {
   const watchlistQuery = useTerminalWatchlist();
-  const [chosenSymbol, setChosenSymbol] = useState(initialSymbolFromUrl);
+  const [searchParams, setSearchParams] = useSearchParams();
   const saved = watchlistQuery.data ?? NO_WATCHLIST;
-  const selectedSymbol = chosenSymbol || (saved[0]?.symbol ?? "");
+  const urlSymbol = searchParams.get("symbol") ?? "";
+  const selectedSymbol = urlSymbol === "" ? (saved[0]?.symbol ?? "") : urlSymbol;
   const items = useMemo(() => listWithSelected(saved, selectedSymbol), [saved, selectedSymbol]);
+  const setSelectedSymbol = (symbol: string) =>
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.set("symbol", symbol);
+        return next;
+      },
+      { replace: true },
+    );
   return {
     items,
     selectedSymbol,
-    setSelectedSymbol: setChosenSymbol,
+    setSelectedSymbol,
     isLoading: watchlistQuery.isPending,
     error: watchlistQuery.isError ? "Failed to fetch watchlist" : null,
   };
@@ -634,7 +510,7 @@ function TerminalHeader({
           </div>
           <div className="text-right">
             <div className="font-semibold tabular-nums text-xl">
-              {formatLtp(currentSymbol?.ltp)}
+              {formatNumber(currentSymbol?.ltp)}
             </div>
             {currentSymbol && (
               <div className={`tabular-nums text-xs ${getChangeTone(currentSymbol.changePct)}`}>
@@ -932,50 +808,25 @@ function ViewToolbar({
           <ListOrdered className="w-4 h-4" /> Positions
         </Button>
       </div>
-      <div className="flex items-center gap-2">
-        {view === "options" && board && (
-          <span className="text-xs text-foreground-muted">
-            {board.underlying} Spot: {roundToDecimals(board.spot_price, 2).toFixed(2)}
-          </span>
-        )}
-        <Button variant="profit" size="sm" className="h-7 text-xs px-4">
-          Buy
-        </Button>
-        <Button variant="loss" size="sm" className="h-7 text-xs px-4">
-          Sell
-        </Button>
-      </div>
+      {/* Orders are placed from the ticket only: one Buy/Sell pair, one LIVE confirmation path. */}
+      {view === "options" && board && (
+        <span className="text-xs text-foreground-muted">
+          {board.underlying} Spot: {formatNumber(board.spot_price)}
+        </span>
+      )}
     </div>
   );
 }
 
 /**
- * PAPER needs no confirmation. LIVE asks the user and returns null when they cancel,
- * so a live order is never sent without an explicit acknowledgement.
+ * Order ticket inputs and submission. Options are sized in lots of the underlying.
+ * PAPER sends on click. LIVE snapshots the order into `pendingLive`, the dialog shows it, and
+ * only its Confirm sends that snapshot with the acknowledgement; Cancel sends nothing.
  */
-function confirmLiveOrder(input: {
-  mode: TradingMode;
-  side: OrderSide;
-  quantity: number;
-  symbol: string;
-}): boolean | null {
-  if (input.mode !== "LIVE") return false;
-  const confirmed = globalThis.confirm(
-    `Confirm LIVE ${input.side} ${input.quantity} ${input.symbol}?`,
-  );
-  return confirmed ? true : null;
-}
-
-function isStopOrder(orderType: OrderType): boolean {
-  return orderType === "SL" || orderType === "SL-M";
-}
-
-/** Order ticket inputs and submission. Options are sized in lots of the underlying. */
 function useOrderTicket(params: {
   tradingMode: TradingMode;
   terminalView: TerminalView;
   activeTradeSymbol: string;
-  optionsUnderlying: string;
   onMessage: (message: string | null) => void;
 }) {
   const { tradingMode, terminalView, activeTradeSymbol, onMessage } = params;
@@ -985,54 +836,65 @@ function useOrderTicket(params: {
   const [orderPrice, setOrderPrice] = useState<number>(0);
   const [orderTrigger, setOrderTrigger] = useState<number>(0);
   const [riskOverrideReason, setRiskOverrideReason] = useState<string>("");
-  const submit = useSubmitOrder();
+  const [pendingLive, setPendingLive] = useState<OrderDraft | null>(null);
+  const submit = usePlaceOrder();
 
   const lotsMode = terminalView === "options" && inferInstrumentType(activeTradeSymbol) !== "EQ";
-  const optionLotSize = OPTION_LOT_SIZES[params.optionsUnderlying] ?? 1;
-  const quantity = lotsMode ? Math.max(1, optionLots) * optionLotSize : Math.max(1, orderQty);
+  // The lot size comes from the option's own underlying, not the board on screen, and an
+  // unknown one leaves no quantity: the order is refused rather than sized by a guess.
+  const lotSize = lotsMode ? optionLotSize(activeTradeSymbol) : null;
+  const lots = lotSize === null ? null : { count: Math.max(1, optionLots), size: lotSize };
+  let quantity: number | null = Math.max(1, orderQty);
+  if (lotsMode) quantity = lots ? lots.count * lots.size : null;
+
+  const send = (draft: OrderDraft, liveConfirmed: boolean) => {
+    // A new click is a new intent; retries of this mutation reuse this id.
+    const body = orderBody(draft, { liveConfirmed, clientOrderId: crypto.randomUUID() });
+    submit.mutate(body, {
+      onSuccess: (result) => onMessage(orderResultMessage(body, result)),
+      onError: (error) => onMessage(errorText(error, "Order failed")),
+    });
+  };
 
   const placeOrder = (side: OrderSide) => {
-    const invalid = orderInputError({
+    if (quantity === null) {
+      onMessage(`Unknown lot size for ${activeTradeSymbol}`);
+      return;
+    }
+    const input = {
+      mode: tradingMode,
       symbol: activeTradeSymbol,
+      side,
       quantity,
+      lots,
       orderType,
       price: orderPrice,
       trigger: orderTrigger,
-    });
+      riskOverrideReason,
+    };
+    const invalid = orderInputError(input);
     if (invalid) {
       onMessage(invalid);
       return;
     }
     onMessage(null);
-    const liveConfirmed = confirmLiveOrder({
-      mode: tradingMode,
-      side,
-      quantity,
-      symbol: activeTradeSymbol,
-    });
-    if (liveConfirmed === null) {
-      onMessage("Live order cancelled");
+    const draft = orderDraft(input);
+    if (tradingMode === "LIVE") {
+      setPendingLive(draft);
       return;
     }
-    submit.mutate(
-      {
-        mode: tradingMode,
-        symbol: activeTradeSymbol,
-        side,
-        quantity,
-        orderType,
-        price: orderPrice,
-        trigger: orderTrigger,
-        liveConfirmed,
-        riskOverrideReason,
-        // A new click is a new intent; retries of this mutation reuse this id.
-        clientOrderId: crypto.randomUUID(),
-      },
-      {
-        onSuccess: onMessage,
-        onError: (error) => onMessage(errorText(error, "Order failed")),
-      },
-    );
+    send(draft, false);
+  };
+
+  const confirmLive = () => {
+    if (!pendingLive) return;
+    setPendingLive(null);
+    send(pendingLive, true);
+  };
+
+  const cancelLive = () => {
+    setPendingLive(null);
+    onMessage("Live order cancelled");
   };
 
   return {
@@ -1049,10 +911,13 @@ function useOrderTicket(params: {
     riskOverrideReason,
     setRiskOverrideReason,
     lotsMode,
-    optionLotSize,
+    lotSize,
     quantity,
     isSubmitting: submit.isPending,
     placeOrder,
+    pendingLive,
+    confirmLive,
+    cancelLive,
   };
 }
 
@@ -1187,24 +1052,16 @@ function OrderTicket({
   tradingMode,
   terminalView,
   activeTradeSymbol,
-  optionsUnderlying,
   message: orderMessage,
   onMessage,
 }: Readonly<{
   tradingMode: TradingMode;
   terminalView: TerminalView;
   activeTradeSymbol: string;
-  optionsUnderlying: string;
   message: string | null;
   onMessage: (message: string | null) => void;
 }>) {
-  const ticket = useOrderTicket({
-    tradingMode,
-    terminalView,
-    activeTradeSymbol,
-    optionsUnderlying,
-    onMessage,
-  });
+  const ticket = useOrderTicket({ tradingMode, terminalView, activeTradeSymbol, onMessage });
 
   return (
     <div className="w-56 flex-shrink-0 p-3 border-l border-border bg-surface">
@@ -1214,9 +1071,9 @@ function OrderTicket({
       </div>
       {ticket.lotsMode && (
         <div className="mb-2 text-xs text-foreground-muted">
-          Lot Size: <span className="tabular-nums text-foreground">{ticket.optionLotSize}</span> |
+          Lot Size: <span className="tabular-nums text-foreground">{ticket.lotSize ?? "--"}</span> |
           Lots: <span className="tabular-nums text-foreground">{ticket.optionLots}</span> | Qty:{" "}
-          <span className="tabular-nums text-foreground">{ticket.quantity}</span>
+          <span className="tabular-nums text-foreground">{ticket.quantity ?? "--"}</span>
         </div>
       )}
       <div className="flex items-center gap-2 mb-3">
@@ -1246,6 +1103,13 @@ function OrderTicket({
           </div>
         )}
       </div>
+      {ticket.pendingLive && (
+        <LiveOrderDialog
+          draft={ticket.pendingLive}
+          onConfirm={ticket.confirmLive}
+          onCancel={ticket.cancelLive}
+        />
+      )}
     </div>
   );
 }
@@ -1341,7 +1205,6 @@ export default function TerminalPage() {
           tradingMode={tradingMode}
           terminalView={terminalView}
           activeTradeSymbol={activeTradeSymbol}
-          optionsUnderlying={chain.underlying}
           message={orderMessage}
           onMessage={setOrderMessage}
         />

@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
@@ -72,6 +72,25 @@ let orderTruncatedResponses = 0;
 // Body every order POST answers with.
 let orderResult: Record<string, unknown> = { status: "accepted", order_id: "ord-1" };
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
+const RISK_CHECK_PATH = "/api/trading/risk-check";
+const RISK_PASS = {
+  can_trade: true,
+  status: "PASS",
+  message: "All risk checks passed",
+  code: "OK",
+  details: { warnings: [] },
+};
+// Body every pre-trade risk check answers with.
+let riskResult: Record<string, unknown> = RISK_PASS;
+// While set, risk-check requests wait for it, so a test can see the dialog mid-check.
+let riskHold: Promise<void> | null = null;
+
+/** The dialog's Confirm button once the risk check has settled and enabled it. */
+async function enabledConfirm(dialog: HTMLElement, side: "BUY" | "SELL"): Promise<HTMLElement> {
+  const confirm = within(dialog).getByRole("button", { name: `Confirm LIVE ${side}` });
+  await vi.waitFor(() => expect(confirm).toBeEnabled());
+  return confirm;
+}
 // Square-off POSTs that fail as a dropped connection before any response arrives.
 let squareNetworkFailures = 0;
 
@@ -95,6 +114,7 @@ function respond(url: string): Response {
     });
   }
   if (url.includes(ORDER_PATH)) return Response.json(orderResult);
+  if (url.includes(RISK_CHECK_PATH)) return Response.json(riskResult);
   return Response.json([]);
 }
 
@@ -118,6 +138,7 @@ function installFetch(): Captured[] {
         squareNetworkFailures -= 1;
         throw new TypeError("Failed to fetch");
       }
+      if (source.url.includes(RISK_CHECK_PATH) && riskHold) await riskHold;
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
         orderTruncatedResponses -= 1;
         return new Response('{"status":"acc', { status: 200 });
@@ -132,12 +153,12 @@ function orderBodies(calls: Captured[]): string[] {
   return calls.filter((call) => call.url.includes(ORDER_PATH)).map((call) => call.body);
 }
 
-function renderPage() {
+function renderPage(url = "/terminal") {
   const client = createQueryClient();
   client.setDefaultOptions({ queries: { retry: false } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[url]}>
         <TerminalPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -178,6 +199,8 @@ describe("terminal order payload", () => {
     fireEvent.click(ticketButton("Buy"));
 
     await screen.findByText("PAPER BUY accepted (ord-1)");
+    // PAPER sends on click: no confirmation dialog.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(orderBodies(calls)).toEqual([
       '{"mode":"PAPER","symbol":"SBIN","side":"BUY","quantity":3,"product":"INTRADAY","type":"LIMIT","price":801.5,"trigger_price":0,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
@@ -195,6 +218,30 @@ describe("terminal order payload", () => {
     expect(orderBodies(calls)).toEqual([
       '{"mode":"PAPER","symbol":"NIFTY26OCT25000CE","side":"SELL","quantity":150,"product":"INTRADAY","type":"MARKET","price":0,"trigger_price":0,"tag":"terminal-options","instrument_type":"CE","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
+  });
+
+  it("sizes a ?symbol= option in lots of its own underlying, not the board's", async () => {
+    renderPage("/terminal?symbol=BANKNIFTY26OCT50000CE");
+    await screen.findByText("State Bank");
+    setValue(/order type/i, "MARKET");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    await screen.findByText("PAPER BUY accepted (ord-1)");
+    expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([30]);
+  });
+
+  it("refuses an option whose lot size it does not know", async () => {
+    renderPage("/terminal?symbol=MIDCPNIFTY26OCT12000CE");
+    await screen.findByText("State Bank");
+    setValue(/order type/i, "MARKET");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    expect(
+      await screen.findByText("Unknown lot size for MIDCPNIFTY26OCT12000CE"),
+    ).toBeInTheDocument();
+    expect(orderBodies(calls)).toEqual([]);
   });
 
   it("blocks an SL order without a trigger, then sends it once the trigger is set", async () => {
@@ -218,8 +265,6 @@ describe("terminal order payload", () => {
   });
 
   it("sends a LIVE order only after confirmation, with the trimmed override reason", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
     renderPage();
     await screen.findAllByText("State Bank");
     fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
@@ -227,12 +272,241 @@ describe("terminal order payload", () => {
     setValue(/risk override reason/i, "  hedge  ");
 
     fireEvent.click(ticketButton("Buy"));
+    const dialog = await screen.findByRole("dialog", { name: "Place LIVE BUY order for SBIN?" });
+    expect(orderBodies(calls)).toEqual([]);
+
+    fireEvent.click(await enabledConfirm(dialog, "BUY"));
 
     await screen.findByText("LIVE BUY accepted (ord-1)");
-    expect(confirm.mock.calls).toEqual([["Confirm LIVE BUY 1 SBIN?"]]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(orderBodies(calls)).toEqual([
       '{"mode":"LIVE","symbol":"SBIN","side":"BUY","quantity":1,"product":"INTRADAY","type":"LIMIT","price":800,"trigger_price":0,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":true,"risk_override_reason":"hedge","client_order_id":"11111111-1111-4111-8111-111111111111"}',
     ]);
+  });
+});
+
+function dialogRows(dialog: HTMLElement): [string, string][] {
+  return within(dialog)
+    .getAllByRole("term")
+    .map((term) => [term.textContent ?? "", term.nextElementSibling?.textContent ?? ""]);
+}
+
+describe("terminal LIVE confirmation", () => {
+  let calls: Captured[];
+
+  beforeEach(() => {
+    paperPositions = [];
+    orderNetworkFailures = 0;
+    orderTruncatedResponses = 0;
+    orderResult = { status: "accepted", order_id: "ord-1" };
+    riskResult = RISK_PASS;
+    riskHold = null;
+    calls = installFetch();
+    stubClientOrderIds();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function riskBodies(): string[] {
+    return calls.filter((call) => call.url.includes(RISK_CHECK_PATH)).map((call) => call.body);
+  }
+
+  async function riskPanelText(): Promise<string> {
+    const panel = screen.getByRole("region", { name: "Risk check" });
+    await vi.waitFor(() => expect(panel.textContent).not.toBe("Checking risk..."));
+    return panel.textContent ?? "";
+  }
+
+  it("runs the risk check for the shown order and lists its warnings before Confirm", async () => {
+    riskResult = {
+      can_trade: true,
+      status: "WARNING",
+      message: "Approaching daily loss limit",
+      code: "DAILY_LOSS_WARNING",
+      details: { warnings: ["Approaching daily loss limit. Current P&L: ₹-4500.00"] },
+    };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe(
+      "Risk warnings, overridden by your reason:Approaching daily loss limit. Current P&L: ₹-4500.00",
+    );
+    expect(riskBodies()).toEqual([
+      '{"symbol":"SBIN","side":"SELL","quantity":4,"product":"INTRADAY","type":"SL","price":790,"instrument_type":"EQ"}',
+    ]);
+    expect(orderBodies(calls)).toEqual([]);
+  });
+
+  it("says a warned order without a reason will be rejected", async () => {
+    riskResult = {
+      can_trade: true,
+      status: "WARNING",
+      message: "Large order",
+      code: "LARGE_ORDER",
+      details: { warnings: ["Large order value"] },
+    };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/^price$/i, "800");
+    fireEvent.click(ticketButton("Buy"));
+    await screen.findByRole("dialog");
+
+    expect(await riskPanelText()).toBe(
+      "Risk warnings: add a risk override reason, or the order will be rejected.Large order value",
+    );
+  });
+
+  it("keeps Confirm disabled until the risk check has answered", async () => {
+    let release = () => {};
+    riskHold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const dialog = await openLiveStopOrder();
+
+    const confirm = within(dialog).getByRole("button", { name: "Confirm LIVE SELL" });
+    expect(screen.getByRole("region", { name: "Risk check" }).textContent).toBe("Checking risk...");
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(orderBodies(calls)).toEqual([]);
+
+    release();
+
+    expect(await riskPanelText()).toBe("All risk checks passed.");
+    expect(confirm).toBeEnabled();
+  });
+
+  it("says a failing order will be rejected", async () => {
+    riskResult = {
+      can_trade: false,
+      status: "FAIL",
+      message: "Daily order limit reached",
+      code: "DAILY_ORDER_LIMIT",
+      details: null,
+    };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe("Will be rejected: Daily order limit reached");
+  });
+
+  it("says when the risk check is unavailable", async () => {
+    riskResult = { detail: "not a risk check" };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe(
+      "Risk check unavailable; the order is checked again when placed.",
+    );
+  });
+
+  async function openLiveStopOrder() {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/order type/i, "SL");
+    setValue(/^quantity$/i, "4");
+    setValue(/^price$/i, "790");
+    setValue(/^trigger$/i, "792.5");
+    setValue(/risk override reason/i, "  hedge  ");
+    fireEvent.click(ticketButton("Sell"));
+    return screen.findByRole("dialog", { name: "Place LIVE SELL order for SBIN?" });
+  }
+
+  it("lists every field it will send and sends nothing until confirmed", async () => {
+    const dialog = await openLiveStopOrder();
+
+    expect(dialogRows(dialog)).toEqual([
+      ["Mode", "LIVE"],
+      ["Side", "SELL"],
+      ["Symbol", "SBIN"],
+      ["Instrument", "EQ"],
+      ["Quantity", "4"],
+      ["Order type", "SL"],
+      ["Price", "790.00"],
+      ["Trigger", "792.50"],
+      ["Product", "INTRADAY"],
+      ["Risk override reason", "hedge"],
+    ]);
+    // Focus starts on Cancel, so Enter cancels rather than places the order.
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(orderBodies(calls)).toEqual([]);
+
+    fireEvent.click(await enabledConfirm(dialog, "SELL"));
+
+    await screen.findByText("LIVE SELL accepted (ord-1)");
+    expect(orderBodies(calls)).toEqual([
+      '{"mode":"LIVE","symbol":"SBIN","side":"SELL","quantity":4,"product":"INTRADAY","type":"SL","price":790,"trigger_price":792.5,"tag":"terminal-equity","instrument_type":"EQ","is_live_confirmation_ack":true,"risk_override_reason":"hedge","client_order_id":"11111111-1111-4111-8111-111111111111"}',
+    ]);
+  });
+
+  it("sends the order it showed, even if the ticket changes while it is open", async () => {
+    const dialog = await openLiveStopOrder();
+    setValue(/^quantity$/i, "40");
+
+    fireEvent.click(await enabledConfirm(dialog, "SELL"));
+
+    await screen.findByText("LIVE SELL accepted (ord-1)");
+    expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([4]);
+  });
+
+  it("shows an option order's lots and the market price it will send", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/order type/i, "MARKET");
+    setValue(/^lots$/i, "2");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Place LIVE BUY order for NIFTY26OCT25000CE?",
+    });
+    expect(dialogRows(dialog)).toEqual([
+      ["Mode", "LIVE"],
+      ["Side", "BUY"],
+      ["Symbol", "NIFTY26OCT25000CE"],
+      ["Instrument", "CE"],
+      ["Quantity", "150 (2 lots of 75)"],
+      ["Order type", "MARKET"],
+      ["Price", "Market"],
+      ["Trigger", "None"],
+      ["Product", "INTRADAY"],
+      ["Risk override reason", "None"],
+    ]);
+  });
+
+  it("shows a price with more than two decimals exactly as it will be sent", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/^price$/i, "800.004");
+
+    fireEvent.click(ticketButton("Buy"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Place LIVE BUY order for SBIN?" });
+    expect(dialogRows(dialog)[6]).toEqual(["Price", "800.004"]);
+  });
+
+  it("sends nothing when cancelled", async () => {
+    const dialog = await openLiveStopOrder();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(await screen.findByText("Live order cancelled")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(orderBodies(calls)).toEqual([]);
+  });
+
+  it("sends nothing when dismissed with Escape", async () => {
+    const dialog = await openLiveStopOrder();
+
+    // The browser fires `cancel` on a modal dialog when Escape is pressed.
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+
+    expect(await screen.findByText("Live order cancelled")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(orderBodies(calls)).toEqual([]);
   });
 });
 
@@ -346,7 +620,6 @@ describe("terminal data", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    globalThis.history.replaceState(null, "", "/");
   });
 
   function squareBodies(): string[] {
@@ -360,8 +633,7 @@ describe("terminal data", () => {
   }
 
   it("selects the ?symbol= symbol and lists it after the saved watchlist", async () => {
-    globalThis.history.replaceState(null, "", "/terminal?symbol=TCS");
-    renderPage();
+    renderPage("/terminal?symbol=TCS");
     await screen.findAllByText("State Bank");
 
     const rows = screen.getAllByRole("button", { name: /on TradingView$/ });
@@ -373,6 +645,27 @@ describe("terminal data", () => {
     expect(screen.getByText("Trade Symbol:").textContent).toBe("Trade Symbol: TCS");
   });
 
+  it("replaces the ?symbol= selection with a watchlist pick", async () => {
+    renderPage("/terminal?symbol=TCS");
+
+    fireEvent.click(await screen.findByText("State Bank"));
+
+    expect(screen.getByText("Trade Symbol:").textContent).toBe("Trade Symbol: SBIN");
+    const rows = screen.getAllByRole("button", { name: /on TradingView$/ });
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Open SBIN on TradingView",
+      "Open SBIN on TradingView",
+    ]);
+  });
+
+  it("offers one Buy and one Sell button, the order ticket's", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+
+    expect(screen.getAllByRole("button", { name: "Buy" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Sell" })).toHaveLength(1);
+  });
+
   it("shows the board's expiry until one is picked, then requests the picked expiry", async () => {
     renderPage();
     expect(await screen.findByText("PCR(OI): 2 | PCR(Vol): 0.5")).toBeInTheDocument();
@@ -382,7 +675,7 @@ describe("terminal data", () => {
     fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
 
     await screen.findByDisplayValue("2026-11-03");
-    await screen.findByText("NIFTY Spot: 25010.50");
+    await screen.findByText("NIFTY Spot: 25,010.50");
     expect(boardUrls().at(-1)).toBe("?underlying=NIFTY&strike_count=15&expiry=2026-11-03");
   });
 
