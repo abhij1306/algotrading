@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
-import TerminalPage from "../page";
+import { TerminalScreen as TerminalPage } from "../TerminalScreen";
 
 vi.mock("@/lib/realtime/hooks", () => ({
   useConnectionStatus: () => "disconnected",

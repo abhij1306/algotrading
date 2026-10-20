@@ -19,7 +19,9 @@
 - Pages: Dashboard, Screener, Terminal, Strategies, Backtest
 - Shared realtime store: `frontend/lib/realtime` (one socket; `useQuote`/`useQuotes`/`useConnectionStatus`)
 - Terminal trading surfaces:
-  - `frontend/app/terminal/page.tsx` (options-first board + execution ticket + panels)
+  - `frontend/app/terminal/page.tsx` is the route; the terminal itself is `frontend/features/terminal/`
+    (`TerminalScreen.tsx` composes `components/`, `hooks/` and the pure, tested `lib/`: order drafts,
+    lot sizing, LIVE dialog rows and display rows)
 
 2. API Layer
 - FastAPI routers in `backend/app/routers`

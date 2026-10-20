@@ -110,6 +110,7 @@ data/_temp/ggs/
 .eggs/
 lib/
 !frontend/lib/
+!frontend/features/*/lib/
 lib64/
 parts/
 sdist/
