@@ -88,6 +88,18 @@ describe("useCommandPalette keyboard shortcut", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
+  it("ignores auto-repeat while the shortcut is held", () => {
+    setPlatform(WINDOWS);
+    renderWithProviders(<Shell />);
+
+    fireEvent.keyDown(globalThis.window, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(globalThis.window, { key: "k", ctrlKey: true, repeat: true });
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+    fireEvent.keyDown(globalThis.window, { key: "k", ctrlKey: true });
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
   it("toggles the palette with ⌘K on macOS and ignores Ctrl+K", () => {
     setPlatform(MAC);
     renderWithProviders(<Shell />);
@@ -125,6 +137,27 @@ describe("CommandPalette symbol search", () => {
     });
     expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+
+  it("drops the previous query's results while the new one is pending", async () => {
+    fetchMock.mockImplementation(async (request) => {
+      const query = new URL(request.url).searchParams.get("query");
+      return query === "TCS"
+        ? Response.json([{ symbol: "TCS", name: "Tata Consultancy Services", type: "EQUITY" }])
+        : Response.json([{ symbol: "INFY", name: "Infosys", type: "EQUITY" }]);
+    });
+    const onClose = vi.fn();
+    renderWithProviders(<CommandPalette isOpen onClose={onClose} />);
+    const input = screen.getByRole("textbox");
+
+    fireEvent.change(input, { target: { value: "TCS" } });
+    await screen.findByText("Tata Consultancy Services");
+    fireEvent.change(input, { target: { value: "INF" } });
+
+    expect(screen.queryByText("Tata Consultancy Services")).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByLabelText("location")).not.toHaveTextContent("symbol=TCS");
+    expect(await screen.findByText("Infosys")).toBeInTheDocument();
   });
 
   it("does not search for a single character", async () => {

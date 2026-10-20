@@ -55,11 +55,14 @@ function usePaletteSymbolSearch() {
   );
   const active = text.trim().length >= MIN_SEARCH_LENGTH;
   const search = useSymbolSearch(term);
-  const symbols = active ? (search.data ?? NO_SYMBOLS).slice(0, MAX_SYMBOL_RESULTS) : NO_SYMBOLS;
+  // Only list results for the text as typed now: never a previous query's (pending debounce or
+  // placeholder data), so Enter cannot open a symbol unrelated to the current input.
+  const current = active && term === text.trim() && !search.isPlaceholderData;
+  const symbols = current ? (search.data ?? NO_SYMBOLS).slice(0, MAX_SYMBOL_RESULTS) : NO_SYMBOLS;
   return {
     text,
     symbols,
-    searching: active && search.isFetching,
+    searching: active && (!current || search.isFetching),
     inputRef,
     onTextChange: (value: string) => {
       setText(value);
@@ -368,7 +371,7 @@ function createCommandPaletteStore() {
   }
 
   function onKeyDown(event: globalThis.KeyboardEvent) {
-    if (!isModifierShortcut(event, "k")) return;
+    if (event.repeat || !isModifierShortcut(event, "k")) return;
     event.preventDefault();
     setOpen(!isOpen);
   }
