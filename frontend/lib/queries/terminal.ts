@@ -49,7 +49,8 @@ const positionSchema = z.object({
   current_price: lenientNumber,
   unrealized_pnl: lenientNumber,
   realized_pnl: lenientNumber,
-  net_pnl: lenientNumber,
+  // Absent means unknown (fall back to unrealized); 0 is a real net P&L.
+  net_pnl: z.number().nullish().catch(undefined),
   product_type: z.string().catch(""),
   mode: z.enum(["PAPER", "LIVE"]).optional().catch(undefined),
 });
@@ -68,7 +69,8 @@ export interface WatchlistItem {
   symbol: string;
   name: string;
   price: number | null;
-  change: number | null;
+  /** Day change in percent (the backend's `changePercent`; its `change` is absolute). */
+  changePct: number | null;
   ltp: number | null;
 }
 
@@ -80,7 +82,9 @@ export interface SearchResultItem {
 }
 
 export type OptionsBoard = z.output<typeof optionsBoardSchema>;
-export type PositionItem = z.output<typeof positionSchema>;
+export type PositionItem = Omit<z.output<typeof positionSchema>, "net_pnl"> & {
+  net_pnl: number;
+};
 
 export interface OptionsOrderflow {
   pcr_oi: number | null;
@@ -115,7 +119,7 @@ function toWatchlistItem(row: Record<string, unknown>): WatchlistItem {
     symbol,
     name: toSafeString(row.name, symbol),
     price: roundOrNull(toSafeNumber(row.price)),
-    change: roundOrNull(toSafeNumber(row.change)),
+    changePct: roundOrNull(toSafeNumber(row.changePercent)),
     ltp: roundOrNull(toSafeNumber(row.ltp) ?? toSafeNumber(row.price)),
   };
 }
@@ -152,8 +156,8 @@ export function buildOptionsOrderflow(board: OptionsBoard): OptionsOrderflow {
   };
 }
 
-function toPositionRow(row: PositionItem): PositionItem {
-  return { ...row, net_pnl: row.net_pnl || row.unrealized_pnl || 0 };
+function toPositionRow(row: z.output<typeof positionSchema>): PositionItem {
+  return { ...row, net_pnl: row.net_pnl ?? row.unrealized_pnl };
 }
 
 export function useTerminalWatchlist() {
@@ -261,7 +265,7 @@ export function useAddToWatchlist() {
                 symbol: input.symbol,
                 name: input.name || input.symbol,
                 price: null,
-                change: null,
+                changePct: null,
                 ltp: null,
               },
               ...prev,

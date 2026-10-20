@@ -98,7 +98,8 @@ function withQuote(item: WatchlistItem, quote: Quote | undefined): WatchlistItem
     ...item,
     ltp,
     price: typeof quote.ltp === "number" ? ltp : item.price,
-    change: typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.change,
+    changePct:
+      typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.changePct,
   };
 }
 
@@ -118,8 +119,7 @@ function withQuotePnl(pos: PositionItem, quote: Quote | undefined): PositionItem
 }
 
 function summarizePositions(positions: PositionItem[]): PositionsSummary {
-  const sumNet = (rows: PositionItem[]) =>
-    rows.reduce((acc, p) => acc + Number(p.net_pnl || p.unrealized_pnl || 0), 0);
+  const sumNet = (rows: PositionItem[]) => rows.reduce((acc, p) => acc + p.net_pnl, 0);
   const live = sumNet(positions.filter((p) => p.mode !== "PAPER"));
   const paper = sumNet(positions.filter((p) => p.mode === "PAPER"));
   return {
@@ -362,10 +362,8 @@ function PositionsPanel({
               >
                 {Number(pos.unrealized_pnl || 0).toFixed(2)}
               </td>
-              <td
-                className={`py-1 pr-2 text-right tabular-nums ${Number(pos.net_pnl || 0) >= 0 ? "text-profit" : "text-loss"}`}
-              >
-                {Number(pos.net_pnl || 0).toFixed(2)}
+              <td className={`py-1 pr-2 text-right tabular-nums ${pnlTone(pos.net_pnl)}`}>
+                {pos.net_pnl.toFixed(2)}
               </td>
               <td className="py-1 pr-2 text-right">
                 <Button
@@ -432,8 +430,8 @@ const WatchlistRow = memo(function WatchlistRow({
         <div className="tabular-nums font-medium">
           {typeof stock.ltp === "number" ? stock.ltp.toFixed(2) : "--"}
         </div>
-        <div className={`tabular-nums text-xs ${getChangeTone(stock.change)}`}>
-          {getChangeText(stock.change)}
+        <div className={`tabular-nums text-xs ${getChangeTone(stock.changePct)}`}>
+          {getChangeText(stock.changePct)}
         </div>
       </td>
     </tr>
@@ -457,7 +455,7 @@ function listWithSelected(saved: WatchlistItem[], selectedSymbol: string): Watch
   if (!selectedSymbol || saved.some((item) => item.symbol === selectedSymbol)) return saved;
   return [
     ...saved,
-    { symbol: selectedSymbol, name: selectedSymbol, price: null, change: null, ltp: null },
+    { symbol: selectedSymbol, name: selectedSymbol, price: null, changePct: null, ltp: null },
   ];
 }
 
@@ -572,8 +570,8 @@ function TerminalHeader({
               {formatLtp(currentSymbol?.ltp)}
             </div>
             {currentSymbol && (
-              <div className={`tabular-nums text-xs ${getChangeTone(currentSymbol.change)}`}>
-                {getChangeText(currentSymbol.change)}
+              <div className={`tabular-nums text-xs ${getChangeTone(currentSymbol.changePct)}`}>
+                {getChangeText(currentSymbol.changePct)}
               </div>
             )}
           </div>

@@ -45,7 +45,7 @@ const OPEN_POSITION = {
   mode: "PAPER",
 };
 
-let paperPositions: (typeof OPEN_POSITION)[] = [];
+let paperPositions: Record<string, unknown>[] = [];
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
 
 function respond(url: string): Response {
@@ -54,7 +54,10 @@ function respond(url: string): Response {
     return Response.json(squareResult);
   }
   if (url.includes("/api/market/watchlist")) {
-    return Response.json([{ symbol: "SBIN", name: "State Bank", price: 800, change: 1.2 }]);
+    // `change` is the absolute move; `changePercent` is what the terminal shows.
+    return Response.json([
+      { symbol: "SBIN", name: "State Bank", price: 800, change: 9.6, changePercent: 1.21 },
+    ]);
   }
   if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
   if (url.includes("/api/trading/positions/book")) {
@@ -231,6 +234,38 @@ describe("terminal data", () => {
     await screen.findByDisplayValue("2026-11-03");
     await screen.findByText("NIFTY Spot: 25010.50");
     expect(boardUrls().at(-1)).toBe("?underlying=NIFTY&strike_count=15&expiry=2026-11-03");
+  });
+
+  it("shows the watchlist day change as the backend's percent, not its absolute move", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+
+    // The header has the same button; the watchlist row is the one inside a table row.
+    const [, rowButton] = screen.getAllByRole("button", { name: "Open SBIN on TradingView" });
+    const row = rowButton.closest("tr");
+    expect(row?.textContent).toBe("SBINState Bank800.00+1.21%");
+  });
+
+  it("keeps a net P&L of exactly 0 instead of showing the unrealized amount", async () => {
+    paperPositions = [{ ...OPEN_POSITION, realized_pnl: -100, net_pnl: 0 }];
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    const square = await screen.findByRole("button", { name: "Square" });
+    expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.000.00Square");
+    expect(screen.getByText(/Paper Net P&L/).textContent).toBe("Paper Net P&L: 0.00");
+  });
+
+  it("falls back to unrealized P&L only when net P&L is absent", async () => {
+    const { net_pnl: _omitted, ...withoutNet } = OPEN_POSITION;
+    paperPositions = [withoutNet];
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    const square = await screen.findByRole("button", { name: "Square" });
+    expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
   });
 
   it("lists open positions and drops a squared one", async () => {
