@@ -190,6 +190,27 @@ Operational endpoint:
 - LIVE: confirmation + risk + broker dispatch.
 4. Orders and account panels are served from `/api/trading/orders|positions|tradebook|funds`.
 
+### Order idempotency (`client_order_id`)
+- Every order request may carry `client_order_id`, a UUID v4 the client generates once per submit
+  intent and reuses on every retry of that intent (a new click is a new id). It is **required for
+  LIVE** (`POST /api/trading/order` and `POST /api/terminal/options/order` answer 422 without it) and
+  optional for PAPER. It is stored in `live_orders.client_order_id` under the unique index
+  `uq_live_orders_client_order_id`; `ensure_live_order_schema` adds the column and index to existing
+  databases at startup.
+- LIVE orders are persisted first: the row is committed as `PENDING_SUBMIT` before the broker is
+  called, then updated with the broker id and status. If that first commit fails the broker is never
+  called (a down database answers 503). If the database drops after the broker accepted, the row
+  stays `PENDING_SUBMIT` and the server logs the broker order id with its `client_order_id`.
+- A request whose `client_order_id` already exists returns HTTP 200 with the existing order's
+  current state and `duplicate: true`, and never reaches the broker or the paper simulator again.
+  Two concurrent identical requests race on the unique index; the loser returns the winner's row.
+  Fresh orders answer with `client_order_id` and `duplicate: false`.
+- Duplicate response: `{order_id, status, message, average_price, filled_qty, client_order_id, duplicate}`.
+- The Fyers order carries `orderTag` = `ST` + the first 18 hex digits of the `client_order_id`
+  (uppercase, 20 alphanumeric characters) so a broker order can be matched to its row.
+- The terminal tags orders by instrument: `terminal-equity` for equities, `terminal-options` for
+  options, whatever terminal view is open.
+
 ## Options Board Data Flow
 1. UI selects underlying + expiry.
 2. `GET /api/terminal/options/board` returns chain context + ATM summary.

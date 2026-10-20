@@ -22,6 +22,8 @@ import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import { isMarketOpen } from "@/lib/market-hours";
 import { debounce } from "@/lib/debounce";
 import { queryKeys } from "@/lib/queries/keys";
+import { shouldRetry } from "@/lib/queries/query-client";
+import { ApiError, apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
 import {
   useAddToWatchlist,
   useOptionsBoard,
@@ -66,6 +68,11 @@ function inferInstrumentType(symbol: string): "PE" | "CE" | "EQ" {
     return "CE";
   }
   return "EQ";
+}
+
+/** The order tag names the flow: the instrument decides, not the terminal view. */
+function orderTag(symbol: string): "terminal-equity" | "terminal-options" {
+  return inferInstrumentType(symbol) === "EQ" ? "terminal-equity" : "terminal-options";
 }
 
 function formatLtp(value: number | null | undefined): string {
@@ -156,18 +163,32 @@ type OrderInput = {
   orderType: OrderType;
   price: number;
   trigger: number;
-  tag: string;
   liveConfirmed: boolean;
   riskOverrideReason: string;
+  /** Idempotency key: one per submit intent, reused by every retry of that intent. */
+  clientOrderId: string;
 };
+
+// Retries reuse the intent's client_order_id, so the backend places the order at most once.
+const ORDER_RETRY_DELAY_MS = 250;
+
+async function postOrder(body: string): Promise<Response> {
+  try {
+    return await fetch("/api/trading/order?x_user_id=default_user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  } catch (error) {
+    throw apiErrorFromThrown(error);
+  }
+}
 
 /** Submit an order; resolves to the confirmation message, throws on rejection. */
 async function submitOrder(input: OrderInput): Promise<string> {
   const { mode, side, orderType } = input;
-  const response = await fetch("/api/trading/order?x_user_id=default_user", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const response = await postOrder(
+    JSON.stringify({
       mode,
       symbol: input.symbol,
       side,
@@ -176,17 +197,31 @@ async function submitOrder(input: OrderInput): Promise<string> {
       type: orderType,
       price: orderType === "MARKET" ? 0 : input.price,
       trigger_price: orderType === "SL" || orderType === "SL-M" ? input.trigger : 0,
-      tag: input.tag,
+      tag: orderTag(input.symbol),
       instrument_type: inferInstrumentType(input.symbol),
       is_live_confirmation_ack: input.liveConfirmed,
       risk_override_reason: input.riskOverrideReason.trim() || null,
+      client_order_id: input.clientOrderId,
     }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data?.detail || "Failed to place live order");
+  );
+  const data = await response.json().catch(() => null);
+  if (response.ok && data === null) {
+    // The order may have been placed: retry (same client_order_id) to read its state.
+    throw new ApiError({
+      code: "NETWORK_ERROR",
+      message: "Order response was cut off",
+      status: response.status,
+    });
   }
-  return `${mode} ${side} ${data.status || "submitted"} (${data.order_id || data.id || "ok"})`;
+  if (!response.ok) {
+    throw apiErrorFromResponse({
+      status: response.status,
+      statusText: response.statusText,
+      body: data,
+    });
+  }
+  const summary = `${mode} ${side} ${data?.status || "submitted"} (${data?.order_id || data?.id || "ok"})`;
+  return data?.duplicate ? `${summary} - already placed` : summary;
 }
 
 /** Order submission; a filled order can change the positions book, so it is refreshed. */
@@ -194,6 +229,8 @@ function useSubmitOrder() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: submitOrder,
+    retry: shouldRetry,
+    retryDelay: ORDER_RETRY_DELAY_MS,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() }),
   });
 }
@@ -956,9 +993,10 @@ function useOrderTicket(params: {
         orderType,
         price: orderPrice,
         trigger: orderTrigger,
-        tag: terminalView === "options" ? "terminal-options" : "terminal-live",
         liveConfirmed,
         riskOverrideReason,
+        // A new click is a new intent; retries of this mutation reuse this id.
+        clientOrderId: crypto.randomUUID(),
       },
       {
         onSuccess: onMessage,

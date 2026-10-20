@@ -19,6 +19,9 @@
   - Requires valid token.
   - Requires `is_live_confirmation_ack=true`.
   - Requires risk pass (or warning override reason where applicable).
+  - Requires a `client_order_id` (UUID v4, one per submit intent, reused on retries). The row is
+    committed as `PENDING_SUBMIT` before the broker call; a repeated id returns the existing order
+    with `duplicate: true` and never places a second order. See `docs/ARCHITECTURE.md`.
 - Symbol boundary:
   - Inbound normalize to DB format with `symbol_master.to_db`.
   - Outbound broker symbols built with `symbol_master.to_fyers` / option helpers.

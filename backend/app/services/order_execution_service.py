@@ -1,12 +1,14 @@
 import logging
 import uuid
 from datetime import date
-from typing import Any
+from typing import Any, Self
 
+from pydantic import UUID4, BaseModel, model_validator
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..brokers.plugins.fyers import FyersBroker
+from ..brokers.plugins.fyers import FyersBroker, fyers_order_tag
 from ..models.live_order import LiveOrder
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
@@ -21,6 +23,11 @@ NO_PAPER_PRICE_MESSAGE = (
 )
 LIVE_SUBMIT_FAILED_MESSAGE = "Broker order submission failed"
 ORDER_FAILED_MESSAGE = "Order placement failed"
+CLIENT_ORDER_ID_REQUIRED_MESSAGE = "LIVE order requires a client_order_id (UUID v4)"
+INVALID_CLIENT_ORDER_ID_MESSAGE = "client_order_id must be a UUID v4"
+DUPLICATE_ORDER_MESSAGE = "Duplicate client_order_id: returning the existing order"
+# A LIVE row is committed in this state before the broker is called.
+PENDING_SUBMIT = "PENDING_SUBMIT"
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
@@ -36,6 +43,38 @@ def order_price_error(order_type: str, price: float, trigger_price: float) -> st
     if order_type in LIMIT_PRICED_ORDER_TYPES and price <= 0:
         return f"{order_type} order requires a positive limit price."
     return None
+
+
+def normalize_client_order_id(value: object) -> str | None:
+    """Canonical lowercase UUID v4 string for a client_order_id, or None when absent.
+
+    Raises ValueError when the value is present but not a UUID v4.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        parsed = uuid.UUID(str(value))
+    except ValueError as exc:
+        raise ValueError(INVALID_CLIENT_ORDER_ID_MESSAGE) from exc
+    if parsed.version != 4:
+        raise ValueError(INVALID_CLIENT_ORDER_ID_MESSAGE)
+    return str(parsed)
+
+
+class ClientOrderIdField(BaseModel):
+    """Order request field: the client's idempotency key, required for LIVE orders.
+
+    The client generates one UUID v4 per submit intent and reuses it on retries.
+    """
+
+    mode: str = "PAPER"
+    client_order_id: UUID4 | None = None
+
+    @model_validator(mode="after")
+    def _live_requires_client_order_id(self) -> Self:
+        if self.mode.upper() == "LIVE" and self.client_order_id is None:
+            raise ValueError(CLIENT_ORDER_ID_REQUIRED_MESSAGE)
+        return self
 
 
 def _is_marketable(side: str, limit_price: float, ref: float) -> bool:
@@ -242,11 +281,13 @@ class OrderExecutionService:
         fyers_symbol: str,
         quantity: int,
         effective_mode: str,
+        client_order_id: str | None,
     ) -> LiveOrder:
         internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
         return LiveOrder(
             id=internal_id,
             internal_id=internal_id,
+            client_order_id=client_order_id,
             user_id=order_params.get("user_id", "default"),
             symbol=db_symbol,
             fyers_symbol=fyers_symbol,
@@ -265,9 +306,13 @@ class OrderExecutionService:
         )
 
     def _submit_live_order(
-        self, order_params: dict[str, Any], fyers_symbol: str, new_order: LiveOrder
+        self,
+        order_params: dict[str, Any],
+        fyers_symbol: str,
+        new_order: LiveOrder,
+        client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        broker_order = {
+        broker_order: dict[str, Any] = {
             "symbol": fyers_symbol,
             "quantity": int(order_params.get("quantity", 0)),
             "side": order_params.get("side", "BUY"),
@@ -276,6 +321,9 @@ class OrderExecutionService:
             "price": safe_float(order_params.get("price"), 0.0),
             "trigger_price": safe_float(order_params.get("trigger_price"), 0.0),
         }
+        if client_order_id:
+            # Lets a broker order be matched to its row if our status update is lost.
+            broker_order["order_tag"] = fyers_order_tag(client_order_id)
         broker_resp = self.broker.place_order(broker_order)
 
         if not isinstance(broker_resp, dict):
@@ -330,11 +378,15 @@ class OrderExecutionService:
         return self._run_live_risk_checks(risk_params, db)
 
     def _submit_live_order_safely(
-        self, order_params: dict[str, Any], fyers_symbol: str, new_order: LiveOrder
+        self,
+        order_params: dict[str, Any],
+        fyers_symbol: str,
+        new_order: LiveOrder,
+        client_order_id: str | None,
     ) -> dict[str, Any]:
         """Submit a LIVE order; a broker exception becomes a fixed ERROR on the order."""
         try:
-            return self._submit_live_order(order_params, fyers_symbol, new_order)
+            return self._submit_live_order(order_params, fyers_symbol, new_order, client_order_id)
         except Exception:
             # Full error stays in the server log; the client and the stored
             # order get a fixed message (no broker error text leaks).
@@ -342,6 +394,103 @@ class OrderExecutionService:
             new_order.status = "ERROR"
             new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
             return {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
+
+    @staticmethod
+    def _find_by_client_order_id(client_order_id: str | None, db: Session) -> LiveOrder | None:
+        if client_order_id is None:
+            return None
+        return db.query(LiveOrder).filter(LiveOrder.client_order_id == client_order_id).first()
+
+    @staticmethod
+    def _duplicate_response(order: LiveOrder) -> dict[str, Any]:
+        """The current state of an order already placed under the same client_order_id."""
+        return {
+            "order_id": order.id,
+            "status": order.status,
+            "message": DUPLICATE_ORDER_MESSAGE,
+            "average_price": float(order.average_price or 0.0),
+            "filled_qty": int(order.filled_qty or 0),
+            "client_order_id": order.client_order_id,
+            "duplicate": True,
+        }
+
+    @staticmethod
+    def _fresh_response(response: dict[str, Any], client_order_id: str | None) -> dict[str, Any]:
+        return {**response, "client_order_id": client_order_id, "duplicate": False}
+
+    def _insert_order(
+        self, new_order: LiveOrder, client_order_id: str | None, db: Session
+    ) -> LiveOrder | None:
+        """Commit a new order row. Returns None once it is saved, or the existing row when a
+        concurrent request with the same client_order_id committed first."""
+        db.add(new_order)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = self._find_by_client_order_id(client_order_id, db)
+            if existing is None:
+                raise
+            logger.info(
+                "Duplicate client_order_id %s: returning existing order %s",
+                client_order_id,
+                existing.id,
+            )
+            return existing
+        return None
+
+    def _place_live_order(
+        self,
+        order_params: dict[str, Any],
+        fyers_symbol: str,
+        new_order: LiveOrder,
+        client_order_id: str,
+        db: Session,
+    ) -> dict[str, Any]:
+        """Commit the row as PENDING_SUBMIT, then call the broker, then save its outcome.
+
+        The broker is only called once the row is committed: if that commit fails, the
+        exception propagates and no order is placed. A retry with the same client_order_id
+        then finds the row and never reaches the broker again.
+        """
+        new_order.status = PENDING_SUBMIT
+        existing = self._insert_order(new_order, client_order_id, db)
+        if existing is not None:
+            return self._duplicate_response(existing)
+
+        response = self._submit_live_order_safely(
+            order_params, fyers_symbol, new_order, client_order_id
+        )
+        broker_order_id = new_order.id if new_order.status == "SUBMITTED" else None
+        try:
+            db.commit()
+        except Exception:
+            if broker_order_id is not None:
+                logger.error(
+                    "LIVE order %s (client_order_id %s) accepted by broker but its status was "
+                    "not saved; the row stays %s",
+                    broker_order_id,
+                    client_order_id,
+                    PENDING_SUBMIT,
+                )
+            raise
+        return self._fresh_response(response, client_order_id)
+
+    def _place_paper_order(
+        self,
+        order_params: dict[str, Any],
+        db_symbol: str,
+        new_order: LiveOrder,
+        client_order_id: str | None,
+        db: Session,
+    ) -> dict[str, Any]:
+        """Simulate the fill and save the row. Never reaches the broker."""
+        paper_fill = self._simulate_paper_fill(order_params, db_symbol)
+        response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
+        existing = self._insert_order(new_order, client_order_id, db)
+        if existing is not None:
+            return self._duplicate_response(existing)
+        return self._fresh_response(response, client_order_id)
 
     def place_order(
         self, order_params: dict[str, Any], db: Session, mode: str | None = None
@@ -358,16 +507,29 @@ class OrderExecutionService:
                 "type": "MARKET",
                 "price": 0,
                 "user_id": "default",
-                "tag": "manual"
+                "tag": "manual",
+                "client_order_id": "<uuid4>"  # required for LIVE, optional for PAPER
             }
             db: Database session
 
         Returns:
-            Dict with order_id, status, message
+            Dict with order_id, status, message, client_order_id and duplicate. A repeated
+            client_order_id returns the existing order with duplicate=True and places nothing.
         """
-        new_order: LiveOrder | None = None
         try:
             effective_mode = self._resolve_mode(order_params, mode)
+            client_order_id = normalize_client_order_id(order_params.get("client_order_id"))
+            if effective_mode == "LIVE" and client_order_id is None:
+                return {
+                    "status": "ERROR",
+                    "message": CLIENT_ORDER_ID_REQUIRED_MESSAGE,
+                    "code": "CLIENT_ORDER_ID_REQUIRED",
+                }
+            # Before the risk checks: the first order may itself change their outcome.
+            existing = self._find_by_client_order_id(client_order_id, db)
+            if existing is not None:
+                return self._duplicate_response(existing)
+
             quantity = self._validate_quantity(order_params)
             db_symbol, fyers_symbol = self._resolve_symbols(order_params)
             risk_error = self._pre_trade_error(order_params, effective_mode, fyers_symbol, db)
@@ -375,40 +537,25 @@ class OrderExecutionService:
                 return risk_error
 
             new_order = self._create_order_record(
-                order_params, db_symbol, fyers_symbol, quantity, effective_mode
+                order_params, db_symbol, fyers_symbol, quantity, effective_mode, client_order_id
             )
-            db.add(new_order)
-            db.flush()
-
-            if effective_mode == "LIVE":
-                response = self._submit_live_order_safely(order_params, fyers_symbol, new_order)
-            else:
-                paper_fill = self._simulate_paper_fill(order_params, db_symbol)
-                response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
-
-            db.commit()
-            return response
+            if effective_mode == "LIVE" and client_order_id is not None:
+                return self._place_live_order(
+                    order_params, fyers_symbol, new_order, client_order_id, db
+                )
+            return self._place_paper_order(order_params, db_symbol, new_order, client_order_id, db)
 
         except ValueError as e:
-            # Request validation (mode, quantity, symbol); the message is written for the user.
+            # Request validation (mode, quantity, symbol, client_order_id); the message is
+            # written for the user.
             db.rollback()
             return {"status": "ERROR", "message": str(e)}
         except Exception as e:
-            # Read before rollback, which expunges the flushed row.
-            submitted_id = (
-                new_order.id if new_order is not None and new_order.status == "SUBMITTED" else None
-            )
             db.rollback()
             if is_db_unavailable(e):
                 # Fail closed: the API answers 503, never "placed". A LIVE order only reaches
-                # the broker after its PENDING row is flushed, so a DB that is already down
-                # stops it first. If the DB drops between the broker call and the commit,
-                # the broker order exists but is not recorded: say so in the log.
-                if submitted_id is not None:
-                    logger.error(
-                        "LIVE order %s accepted by broker but not recorded: database unavailable",
-                        submitted_id,
-                    )
+                # the broker after its PENDING_SUBMIT row is committed, so a DB that is down
+                # stops it first.
                 raise
             logger.exception("Order placement failed")
             return {"status": "ERROR", "message": ORDER_FAILED_MESSAGE}

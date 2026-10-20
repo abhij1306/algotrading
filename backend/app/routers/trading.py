@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.live_order import LiveOrder
 from ..services.live_market_service import live_market
-from ..services.order_execution_service import order_execution_service
+from ..services.order_execution_service import (
+    ClientOrderIdField,
+    order_execution_service,
+)
 from ..services.position_sync_service import position_sync_service
 from ..services.risk_manager import RiskStatus, risk_manager
 from ..services.symbol_master import symbol_master
@@ -39,7 +42,7 @@ LIVE_SQUARE_FALLBACK_FAILED = "LIVE_SQUARE_FALLBACK_FAILED"
 # ============== Pydantic Models ==============
 
 
-class OrderRequest(BaseModel):
+class OrderRequest(ClientOrderIdField):
     mode: str = "PAPER"  # PAPER / LIVE
     symbol: str
     side: str  # BUY / SELL
@@ -463,7 +466,8 @@ def place_order(
 
         result = order_execution_service.place_order(params, db, mode=order.mode)
 
-        if result.get("status") == "ERROR":
+        # A duplicate answers 200 with the existing order's state, whatever that state is.
+        if result.get("status") == "ERROR" and not result.get("duplicate"):
             raise HTTPException(status_code=400, detail=result.get("message"))
 
         return result

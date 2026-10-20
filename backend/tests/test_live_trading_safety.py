@@ -276,6 +276,57 @@ def test_unknown_order_type_is_rejected_before_broker() -> None:
     assert client.calls == []
 
 
+def test_live_order_sends_the_client_order_id_as_fyers_order_tag() -> None:
+    client = FakeFyersClient()
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+
+    service._submit_live_order(
+        {"symbol": "SBIN", "side": "BUY", "quantity": 1, "type": "MARKET", "product": "CNC"},
+        "NSE:SBIN-EQ",
+        LiveOrder(status="PENDING_SUBMIT"),
+        "3f2b8c1e-9d4a-4b6e-8f10-2a7c5e9d1b34",
+    )
+
+    assert client.calls == [
+        (
+            "place_order",
+            {
+                "symbol": "NSE:SBIN-EQ",
+                "qty": 1,
+                "type": 2,
+                "side": 1,
+                "productType": "CNC",
+                "limitPrice": 0,
+                "stopPrice": 0,
+                "validity": "DAY",
+                "disclosedQty": 0,
+                "offlineOrder": False,
+                "orderTag": "ST3F2B8C1E9D4A4B6E8F",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("order_tag", ["", "terminal-options", "A" * 21])
+def test_order_tag_fyers_cannot_accept_is_rejected_before_broker(order_tag: str) -> None:
+    client = FakeFyersClient()
+
+    response = make_broker(client).place_order(
+        {
+            "symbol": "NSE:SBIN-EQ",
+            "side": "BUY",
+            "quantity": 1,
+            "type": "MARKET",
+            "order_tag": order_tag,
+        }
+    )
+
+    assert response["status"] == "REJECTED"
+    assert response["message"] == "Invalid order tag. Expected 1-20 letters or digits."
+    assert client.calls == []
+
+
 # --- 3. Position sync never wipes stored positions on a broker outage -----
 
 

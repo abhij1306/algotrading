@@ -119,6 +119,7 @@ def _ensure_database_schema() -> None:
         SessionLocal,
         engine,
         ensure_backtest_schema,
+        ensure_live_order_schema,
         ensure_strategy_schema,
         ensure_universe_schema,
     )
@@ -128,6 +129,7 @@ def _ensure_database_schema() -> None:
         ensure_backtest_schema(bind=engine)
         ensure_universe_schema(bind=engine)
         ensure_strategy_schema(bind=engine)
+        ensure_live_order_schema(bind=engine)
         db = SessionLocal()
         try:
             db.execute(text("SELECT 1"))

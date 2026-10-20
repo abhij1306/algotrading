@@ -15,7 +15,10 @@ from ..database import SessionLocal, get_db
 from ..models import Company, HistoricalPrice, LiveOrder
 from ..services.fyers_client import get_fyers_client
 from ..services.option_chain_service import option_chain_service
-from ..services.order_execution_service import order_execution_service
+from ..services.order_execution_service import (
+    ClientOrderIdField,
+    order_execution_service,
+)
 from ..services.risk_manager import risk_manager
 from ..services.symbol_master import symbol_master
 
@@ -62,7 +65,7 @@ class TerminalOptionsPreviewRequest(BaseModel):
     mode: str = "PAPER"
 
 
-class TerminalOptionsOrderRequest(TerminalOptionsPreviewRequest):
+class TerminalOptionsOrderRequest(TerminalOptionsPreviewRequest, ClientOrderIdField):
     tag: str | None = "terminal-options"
     is_live_confirmation_ack: bool = False
     risk_override_reason: str | None = None
@@ -647,10 +650,12 @@ def place_options_order(
             "user_id": "terminal_user",
             "is_live_confirmation_ack": bool(req.is_live_confirmation_ack),
             "risk_override_reason": req.risk_override_reason,
+            "client_order_id": req.client_order_id,
         }
 
         result = order_execution_service.place_order(payload, db, mode=mode)
-        if result.get("status") == "ERROR":
+        # A duplicate answers 200 with the existing order's state, whatever that state is.
+        if result.get("status") == "ERROR" and not result.get("duplicate"):
             raise HTTPException(status_code=400, detail=result.get("message", "Order failed"))
         return result
     except HTTPException:

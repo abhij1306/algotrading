@@ -31,6 +31,7 @@ from app.utils.logger import DatabaseUnavailableLogFilter
 SECRET = "hunter2-secret"
 DOWN_BODY = {"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}
 DOWN_DB_URL = f"postgresql+psycopg2://postgres:{SECRET}@db.invalid:5432/algotrading"
+CLIENT_ORDER_ID = "5c0e3a2f-8b1d-4e6a-9f7c-2d4b6a8e0c13"
 
 
 def _refuse_connection() -> NoReturn:
@@ -149,6 +150,7 @@ def test_live_order_with_db_down_fails_closed_before_the_broker(
             "product": "INTRADAY",
             "mode": "LIVE",
             "is_live_confirmation_ack": True,
+            "client_order_id": CLIENT_ORDER_ID,
         },
     )
 
@@ -355,12 +357,24 @@ def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
 
     result = service.place_order(
-        {"symbol": "SBIN", "side": "BUY", "quantity": 2, "type": "MARKET", "user_id": "u-leak"},
+        {
+            "symbol": "SBIN",
+            "side": "BUY",
+            "quantity": 2,
+            "type": "MARKET",
+            "user_id": "u-leak",
+            "client_order_id": CLIENT_ORDER_ID,
+        },
         db_session,
         mode="LIVE",
     )
 
-    assert result == {"status": "ERROR", "message": "Broker order submission failed"}
+    assert result == {
+        "status": "ERROR",
+        "message": "Broker order submission failed",
+        "client_order_id": CLIENT_ORDER_ID,
+        "duplicate": False,
+    }
     assert len(broker.calls) == 1
     stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-leak").one()
     assert (stored.status, stored.reject_reason) == ("ERROR", "Broker order submission failed")
@@ -368,28 +382,46 @@ def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
     db_session.commit()
 
 
-def test_db_lost_after_broker_accepts_raises_and_logs_the_unrecorded_order(
+def test_db_lost_after_broker_accepts_raises_and_logs_the_unsaved_status(
     db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     service = OrderExecutionService()
     broker = RecordingBroker()
     service._broker = broker
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+    real_commit = db_session.commit
+    commits: list[int] = []
 
-    def lost_commit() -> NoReturn:
-        raise _connection_refused()
+    def commit_then_lose_connection() -> None:
+        # The PENDING_SUBMIT row saves before the broker call; the update after it does not.
+        commits.append(1)
+        if len(commits) > 1:
+            raise _connection_refused()
+        real_commit()
 
-    monkeypatch.setattr(db_session, "commit", lost_commit)
+    monkeypatch.setattr(db_session, "commit", commit_then_lose_connection)
 
     with pytest.raises(OperationalError):
         service.place_order(
-            {"symbol": "SBIN", "side": "BUY", "quantity": 1, "type": "MARKET", "user_id": "u-lost"},
+            {
+                "symbol": "SBIN",
+                "side": "BUY",
+                "quantity": 1,
+                "type": "MARKET",
+                "user_id": "u-lost",
+                "client_order_id": CLIENT_ORDER_ID,
+            },
             db_session,
             mode="LIVE",
         )
+    monkeypatch.undo()
 
     assert len(broker.calls) == 1
-    assert "LIVE order B-1 accepted by broker but not recorded: database unavailable" in [
-        r.getMessage() for r in caplog.records
-    ]
-    assert db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-lost").count() == 0
+    assert (
+        f"LIVE order B-1 (client_order_id {CLIENT_ORDER_ID}) accepted by broker but its "
+        "status was not saved; the row stays PENDING_SUBMIT"
+    ) in [r.getMessage() for r in caplog.records]
+    stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-lost").one()
+    assert (stored.status, stored.client_order_id) == ("PENDING_SUBMIT", CLIENT_ORDER_ID)
+    db_session.delete(stored)
+    db_session.commit()

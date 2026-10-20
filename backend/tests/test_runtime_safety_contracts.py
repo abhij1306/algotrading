@@ -37,6 +37,7 @@ def test_trading_order_uses_request_mode(
             "price": 0,
             "trigger_price": 0,
             "instrument_type": "EQ",
+            "client_order_id": "0b7e6f0e-4c1a-4f7e-9a51-3f1f5d2a9c11",
         },
     )
 
