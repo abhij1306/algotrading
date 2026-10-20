@@ -1,51 +1,53 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, Key, CheckCircle, AlertCircle, X, Wifi, WifiOff } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/type-guards";
 
+type FyersStatus = { connected: boolean; userId: string; offline: boolean };
+
+const fyersStatusKey = ["auth", "fyers", "status"] as const;
+
+async function fetchFyersStatus(): Promise<FyersStatus> {
+  try {
+    const result = await apiClient.get<{ connected: boolean; user_id?: string }>(
+      "/api/auth/fyers/status",
+    );
+    if (result.error) throw new Error(result.error.message || "Backend error");
+    const data = result.data;
+    return data?.connected
+      ? { connected: true, userId: data.user_id || "", offline: false }
+      : { connected: false, userId: "", offline: false };
+  } catch {
+    // Silently handle offline/network errors
+    return { connected: false, userId: "", offline: true };
+  }
+}
+
 export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?: boolean }>) {
-  const [connected, setConnected] = useState(false);
-  const [userId, setUserId] = useState("");
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: fyersStatusKey,
+    queryFn: fetchFyersStatus,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const connected = statusQuery.data?.connected ?? false;
+  const userId = statusQuery.data?.userId ?? "";
+  const systemOffline = statusQuery.data?.offline ?? false;
+  const checking = statusQuery.isFetching;
   const [loading, setLoading] = useState(false);
-  const [checking, setChecking] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [authCode, setAuthCode] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
-  const [systemOffline, setSystemOffline] = useState(false);
 
-  // Check connection status on mount
-  useEffect(() => {
-    checkConnection();
-  }, []);
+  const setFyersStatus = (next: FyersStatus) => {
+    queryClient.setQueryData<FyersStatus>(fyersStatusKey, next);
+  };
 
-  const checkConnection = async () => {
-    setChecking(true);
-    setSystemOffline(false);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // Reduced to 5s for faster feedback
-
-    try {
-      const result = await apiClient.get<{ connected: boolean; user_id?: string }>(
-        "/api/auth/fyers/status",
-      );
-      if (result.error) throw new Error(result.error.message || "Backend error");
-      const data = result.data;
-
-      if (data?.connected) {
-        setConnected(true);
-        setUserId(data?.user_id || "");
-      } else {
-        setConnected(false);
-      }
-    } catch {
-      // Silently handle offline/network errors
-      setConnected(false);
-      setSystemOffline(true);
-    } finally {
-      clearTimeout(timeoutId);
-      setChecking(false);
-    }
+  const checkConnection = () => {
+    void statusQuery.refetch();
   };
 
   const handleDisconnect = async () => {
@@ -55,8 +57,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
     try {
       const result = await apiClient.post("/api/auth/fyers/disconnect");
       if (result.data) {
-        setConnected(false);
-        setUserId("");
+        setFyersStatus({ connected: false, userId: "", offline: false });
         setMessage("Disconnected successfully");
         setStatus("success");
         setTimeout(() => setStatus("idle"), 2000);
@@ -128,7 +129,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
       if (result.data) {
         setStatus("success");
         setMessage("Connected successfully!");
-        setConnected(true);
+        setFyersStatus({ connected: true, userId, offline: false });
         setTimeout(() => {
           setShowModal(false);
           setAuthCode("");

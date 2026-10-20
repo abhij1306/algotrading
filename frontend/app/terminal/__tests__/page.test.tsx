@@ -1,6 +1,8 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createQueryClient } from "@/lib/queries/query-client";
 import TerminalPage from "../page";
 
 vi.mock("@/lib/realtime/hooks", () => ({
@@ -24,9 +26,11 @@ describe("terminal order defaults", () => {
   it("starts in PAPER with a LIMIT order type even if LIVE was stored earlier", () => {
     globalThis.localStorage.setItem("terminal_trading_mode", "LIVE");
     render(
-      <MemoryRouter>
-        <TerminalPage />
-      </MemoryRouter>,
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter>
+          <TerminalPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
 
     expect(screen.getByText("Mode: PAPER")).toBeInTheDocument();

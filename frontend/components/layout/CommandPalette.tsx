@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -41,11 +41,25 @@ const MOCK_SYMBOLS: SymbolResult[] = [
   { symbol: "NIFTY50", name: "NIFTY 50 Index", exchange: "NSE", price: 22450, change: 0.6 },
 ];
 
+function filterSymbols(query: string): SymbolResult[] {
+  if (query.length < 1) return [];
+  const lowerQuery = query.toLowerCase();
+  return MOCK_SYMBOLS.filter(
+    (s) => s.symbol.toLowerCase().includes(lowerQuery) || s.name.toLowerCase().includes(lowerQuery),
+  ).slice(0, 5);
+}
+
+/** Mounts the dialog only while open, so its search state starts fresh on every open. */
 export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
+  if (!isOpen) return null;
+  return <CommandPaletteDialog onClose={onClose} />;
+}
+
+function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "onClose">>) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [symbols, setSymbols] = useState<SymbolResult[]>([]);
+  const symbols = useMemo(() => filterSymbols(query), [query]);
 
   const getCommands = useCallback((): Command[] => {
     const commands: Command[] = [
@@ -145,25 +159,6 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
   }, [query, navigate, onClose]);
 
   useEffect(() => {
-    if (query.length >= 1) {
-      const lowerQuery = query.toLowerCase();
-      const filtered = MOCK_SYMBOLS.filter(
-        (s) =>
-          s.symbol.toLowerCase().includes(lowerQuery) || s.name.toLowerCase().includes(lowerQuery),
-      );
-      setSymbols(filtered.slice(0, 5));
-    } else {
-      setSymbols([]);
-    }
-  }, [query]);
-
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       const commands = getCommands();
       const totalItems = commands.length + symbols.length;
@@ -196,20 +191,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
 
     globalThis.addEventListener("keydown", handleKeyDown);
     return () => globalThis.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, selectedIndex, symbols, getCommands, navigate, onClose]);
-
-  useEffect(() => {
-    if (isOpen) {
-      setQuery("");
-      setSelectedIndex(0);
-      setTimeout(() => {
-        const input = document.getElementById("command-palette-input");
-        input?.focus();
-      }, 0);
-    }
-  }, [isOpen]);
-
-  if (!isOpen) return null;
+  }, [selectedIndex, symbols, getCommands, navigate, onClose]);
 
   const commands = getCommands();
   const hasResults = commands.length > 0 || symbols.length > 0;
@@ -234,7 +216,11 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
             id="command-palette-input"
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSelectedIndex(0);
+            }}
+            autoFocus
             placeholder="Search for apps, symbols, or commands..."
             className="flex-1 bg-transparent border-none outline-none text-lg py-4 text-foreground"
           />

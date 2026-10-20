@@ -165,9 +165,9 @@ describe("quote store", () => {
 
   it("normalises ticks and re-renders only the subscribed symbol's consumer", async () => {
     const store = createQuoteStore();
-    let sbinRenders = 0;
+    const onSbinRender = vi.fn();
     function Sbin() {
-      sbinRenders += 1;
+      onSbinRender();
       const quote = useQuote("SBIN", store);
       return <span data-testid="sbin">{quote?.ltp ?? "none"}</span>;
     }
@@ -187,10 +187,10 @@ describe("quote store", () => {
     expect(screen.getByTestId("sbin")).toHaveTextContent("812.5");
     expect(store.getQuote("SBIN")).toEqual({ ltp: 812.5, changePct: 1.2, volume: undefined });
 
-    const rendersBefore = sbinRenders;
+    const rendersBefore = onSbinRender.mock.calls.length;
     act(() =>
       FakeSocket.instances[0].receive({ type: "ticker", data: { symbol: "TCS", ltp: 4001 } }),
     );
-    expect(sbinRenders).toBe(rendersBefore);
+    expect(onSbinRender).toHaveBeenCalledTimes(rendersBefore);
   });
 });

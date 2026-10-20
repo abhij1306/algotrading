@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { useState, useEffect, useCallback, memo, useRef, useMemo } from "react";
+import { useState, useEffect, memo, useRef, useMemo } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import {
   TrendingUp,
@@ -19,7 +20,12 @@ import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui";
 import { getISTTime, MarketStatus } from "@/lib/market-hours";
 import { formatCurrency, formatPercentage, roundToDecimals } from "@/lib/utils";
-import { InsightsPanel } from "@/components/dashboard/InsightsPanel";
+import {
+  InsightsPanel,
+  getInsightSymbols,
+  useMarketInsights,
+} from "@/components/dashboard/InsightsPanel";
+import { queryKeys } from "@/lib/queries/keys";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
 interface PortfolioStats {
@@ -55,12 +61,11 @@ interface BackendMarketStatusResponse {
 
 type DashboardMode = "market" | "post_market";
 type TickRecord = { symbol?: string; ltp?: number; change_pct?: number; change?: number };
-type LoadingState = { portfolio: boolean; indices: boolean; watchlist: boolean };
 type DashboardFetchResult = {
-  watchlistData: WatchlistItem[];
   indicesData: MarketIndex[];
   nextMode: DashboardMode;
 };
+type MarketStatusSnapshot = { status: MarketStatus; istTime: string };
 type StatusBadge = {
   icon: typeof Radio;
   label: string;
@@ -71,8 +76,17 @@ type MarketSectionMeta = {
   subtitle: string;
 };
 
-const EMPTY_LOADING_STATE: LoadingState = { portfolio: false, indices: false, watchlist: false };
+const INITIAL_MARKET_STATUS: MarketStatus = { isOpen: false, message: "Loading market status" };
+const DASHBOARD_REFRESH_MS = 60_000;
 const LIVE_INDEX_SYMBOLS = new Set(["NIFTY50", "BANKNIFTY", "NIFTYIT"]);
+
+const NO_INDICES: MarketIndex[] = [];
+const NO_WATCHLIST: WatchlistItem[] = [];
+const NO_SYMBOLS: string[] = [];
+const POLL_OPTIONS = {
+  refetchInterval: DASHBOARD_REFRESH_MS,
+  refetchIntervalInBackground: true,
+} as const;
 
 const QUICK_ACTIONS = [
   { icon: Zap, label: "Trade", path: "/terminal" },
@@ -161,13 +175,11 @@ function normalizeOverviewIndices(data: unknown): MarketIndex[] {
 }
 
 function getDashboardFetchResult(
-  marketStatus: MarketStatus,
-  watchlistData: WatchlistItem[],
+  marketOpen: boolean,
   marketPayload: unknown,
 ): DashboardFetchResult {
-  if (marketStatus.isOpen) {
+  if (marketOpen) {
     return {
-      watchlistData,
       indicesData: normalizeLiveIndices(marketPayload),
       nextMode: "market",
     };
@@ -175,10 +187,47 @@ function getDashboardFetchResult(
 
   const overview = (marketPayload ?? {}) as Record<string, unknown>;
   return {
-    watchlistData,
     indicesData: normalizeOverviewIndices(overview.indices),
     nextMode: "post_market",
   };
+}
+
+async function fetchMarketStatus(): Promise<MarketStatusSnapshot> {
+  try {
+    const statusRes = await apiClient.get("/api/market/status");
+    const statusData = (statusRes.data ?? {}) as BackendMarketStatusResponse;
+    return {
+      status: {
+        isOpen: statusData.is_open === true,
+        message: statusData.message || "Market status unavailable",
+      },
+      istTime: statusData.current_time_ist || getISTTime(),
+    };
+  } catch {
+    return {
+      status: { isOpen: false, message: "Market status unavailable" },
+      istTime: getISTTime(),
+    };
+  }
+}
+
+/** Throws when the backend returns no stats so the last good stats stay on screen. */
+async function fetchPortfolioStats(): Promise<PortfolioStats> {
+  const statsRes = await apiClient.get<PortfolioStats>("/api/portfolio/stats");
+  if (!statsRes.data) throw new Error(statsRes.error?.message || "Portfolio stats unavailable");
+  return statsRes.data;
+}
+
+async function fetchWatchlist(): Promise<WatchlistItem[]> {
+  const watchlistRes = await apiClient.get("/api/market/watchlist");
+  return normalizeWatchlistData(watchlistRes.data);
+}
+
+async function fetchMarketIndices(marketOpen: boolean): Promise<DashboardFetchResult> {
+  const marketResponse = marketOpen
+    ? await apiClient.get("/api/market/indices")
+    : await apiClient.get("/api/market/overview");
+  return getDashboardFetchResult(marketOpen, marketResponse.data);
 }
 
 function getStatusBadge(isLive: boolean, isDelayed: boolean): StatusBadge {
@@ -374,115 +423,57 @@ const WatchlistRow = memo(function WatchlistRow({
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const [marketStatus, setMarketStatus] = useState<MarketStatus>({
-    isOpen: false,
-    message: "Loading market status",
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: queryKeys.dashboard.marketStatus(),
+    queryFn: fetchMarketStatus,
+    ...POLL_OPTIONS,
   });
+  const statsQuery = useQuery({
+    queryKey: queryKeys.dashboard.portfolioStats(),
+    queryFn: fetchPortfolioStats,
+    ...POLL_OPTIONS,
+  });
+  const watchlistQuery = useQuery({
+    queryKey: queryKeys.dashboard.watchlist(),
+    queryFn: fetchWatchlist,
+    ...POLL_OPTIONS,
+  });
+  const marketStatus = statusQuery.data?.status ?? INITIAL_MARKET_STATUS;
+  const indicesQuery = useQuery({
+    queryKey: queryKeys.dashboard.indices(marketStatus.isOpen),
+    queryFn: () => fetchMarketIndices(marketStatus.isOpen),
+    enabled: statusQuery.data !== undefined,
+    placeholderData: keepPreviousData,
+    ...POLL_OPTIONS,
+  });
+  const insightsQuery = useMarketInsights(marketStatus.isOpen);
   const { isConnected, lastMessage, sendMessage } = useWebSocket({ enabled: marketStatus.isOpen });
 
-  const [mounted, setMounted] = useState(false);
-  const [dashboardMode, setDashboardMode] = useState<DashboardMode>("post_market");
-  const [istTime, setIstTime] = useState<string>(getISTTime());
-  const [portfolioStats, setPortfolioStats] = useState<PortfolioStats | null>(null);
-  const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-  const [insightSymbols, setInsightSymbols] = useState<string[]>([]);
-  const [loading, setLoading] = useState<LoadingState>({
-    portfolio: true,
-    indices: true,
-    watchlist: true,
-  });
-  const indicesLoadedRef = useRef(false);
+  const [initialIstTime] = useState(getISTTime);
+  const istTime = statusQuery.data?.istTime ?? initialIstTime;
+  const dashboardMode: DashboardMode = indicesQuery.data?.nextMode ?? "post_market";
+  const portfolioStats = statsQuery.data ?? null;
+  const marketIndices = indicesQuery.data?.indicesData ?? NO_INDICES;
+  const watchlist = watchlistQuery.data ?? NO_WATCHLIST;
+  const indicesLoaded = indicesQuery.data !== undefined;
+  const insightSymbols = useMemo(
+    () =>
+      marketStatus.isOpen && insightsQuery.data && !insightsQuery.isError
+        ? getInsightSymbols(insightsQuery.data)
+        : NO_SYMBOLS,
+    [marketStatus.isOpen, insightsQuery.data, insightsQuery.isError],
+  );
+  const loading = {
+    portfolio: statsQuery.isPending,
+    indices: indicesQuery.isPending,
+    watchlist: watchlistQuery.isPending,
+  };
   const subscriptionSymbolsRef = useRef<string>("");
   const pendingTicksRef = useRef<Record<string, TickRecord>>({});
-  const fetchInFlightRef = useRef(false);
-  const fetchRequestIdRef = useRef(0);
   const openTradingView = (symbol: string) => {
     window.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
   };
-
-  // Mount setup
-  useEffect(() => {
-    setMounted(true);
-    // Reset refs on mount (for page returns)
-    indicesLoadedRef.current = false;
-    subscriptionSymbolsRef.current = "";
-  }, []);
-
-  const fetchMarketStatus = useCallback(async (): Promise<MarketStatus> => {
-    try {
-      const statusRes = await apiClient.get("/api/market/status");
-      const statusData = (statusRes.data ?? {}) as BackendMarketStatusResponse;
-      const nextStatus: MarketStatus = {
-        isOpen: statusData.is_open === true,
-        message: statusData.message || "Market status unavailable",
-      };
-      setMarketStatus(nextStatus);
-      setIstTime(statusData.current_time_ist || getISTTime());
-      return nextStatus;
-    } catch {
-      const fallbackStatus: MarketStatus = {
-        isOpen: false,
-        message: "Market status unavailable",
-      };
-      setMarketStatus(fallbackStatus);
-      setIstTime(getISTTime());
-      return fallbackStatus;
-    }
-  }, []);
-
-  // Fetch data (NO WebSocket subscription here)
-  const fetchData = useCallback(async () => {
-    if (fetchInFlightRef.current) return;
-    fetchInFlightRef.current = true;
-    const requestId = ++fetchRequestIdRef.current;
-
-    try {
-      // Load core cards quickly; do not block them on market-status/indices calls.
-      const statusPromise = fetchMarketStatus();
-      const [statsRes, watchlistRes] = await Promise.all([
-        apiClient.get("/api/portfolio/stats"),
-        apiClient.get("/api/market/watchlist"),
-      ]);
-
-      if (requestId !== fetchRequestIdRef.current) {
-        fetchInFlightRef.current = false;
-        return;
-      }
-
-      if (statsRes.data) setPortfolioStats(statsRes.data as PortfolioStats);
-      const watchlistData = normalizeWatchlistData(watchlistRes.data);
-      setWatchlist(watchlistData);
-      setLoading((prev) => ({ ...prev, portfolio: false, watchlist: false }));
-
-      const status = await statusPromise;
-      if (requestId !== fetchRequestIdRef.current) return;
-      const marketResponse = status.isOpen
-        ? await apiClient.get("/api/market/indices")
-        : await apiClient.get("/api/market/overview");
-      if (requestId !== fetchRequestIdRef.current) return;
-
-      const nextData = getDashboardFetchResult(status, watchlistData, marketResponse.data);
-      setDashboardMode(nextData.nextMode);
-      setMarketIndices(nextData.indicesData);
-      indicesLoadedRef.current = true;
-
-      setLoading((prev) => ({ ...prev, indices: false }));
-    } catch (error) {
-      console.error("Dashboard fetch error:", error);
-      setLoading(EMPTY_LOADING_STATE);
-    } finally {
-      fetchInFlightRef.current = false;
-    }
-  }, [fetchMarketStatus]);
-
-  useEffect(() => {
-    void fetchData();
-    const interval = setInterval(() => {
-      void fetchData();
-    }, 60000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
 
   const symbolsKey = useMemo(() => {
     const watchlistSymbols = watchlist.map((item: WatchlistItem) => item.symbol);
@@ -494,7 +485,7 @@ export default function DashboardPage() {
 
   // Subscribe when connected AND symbol set changes.
   useEffect(() => {
-    if (!isConnected || !marketStatus.isOpen || !indicesLoadedRef.current) return;
+    if (!isConnected || !marketStatus.isOpen || !indicesLoaded) return;
     if (!symbolsKey) return;
     const symbols = symbolsKey.split(",");
 
@@ -512,7 +503,7 @@ export default function DashboardPage() {
     subscriptionSymbolsRef.current = symbolsKey;
 
     // NO cleanup function here - the server handles cleanup when WebSocket closes
-  }, [isConnected, marketStatus.isOpen, sendMessage, symbolsKey]);
+  }, [isConnected, marketStatus.isOpen, indicesLoaded, sendMessage, symbolsKey]);
 
   // 3. Unsubscribe ONLY on component unmount
   useEffect(() => {
@@ -550,14 +541,18 @@ export default function DashboardPage() {
       if (symbols.length === 0) return;
       pendingTicksRef.current = {};
 
-      setWatchlist((prev) => applyWatchlistTicks(prev, pending));
-      setMarketIndices((prev) => applyIndexTicks(prev, pending));
+      queryClient.setQueryData<WatchlistItem[]>(queryKeys.dashboard.watchlist(), (prev) =>
+        prev ? applyWatchlistTicks(prev, pending) : prev,
+      );
+      queryClient.setQueriesData<DashboardFetchResult>(
+        { queryKey: queryKeys.dashboard.indicesRoot() },
+        (prev) =>
+          prev ? { ...prev, indicesData: applyIndexTicks(prev.indicesData, pending) } : prev,
+      );
     }, 250);
 
     return () => clearInterval(timer);
-  }, []);
-
-  if (!mounted) return null;
+  }, [queryClient]);
 
   const isLive = marketStatus.isOpen && isConnected;
   const isDelayed = marketStatus.isOpen && !isConnected;
@@ -729,11 +724,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Insights Panel - Top Gainers/Losers/Sectors */}
-      <InsightsPanel
-        marketStatus={marketStatus}
-        lastMessage={lastMessage}
-        onSymbolsChange={setInsightSymbols}
-      />
+      <InsightsPanel marketStatus={marketStatus} />
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">

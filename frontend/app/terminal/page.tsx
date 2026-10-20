@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, memo, useRef, type ReactNode } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Search,
   Plus,
@@ -19,6 +20,8 @@ import {
 import { formatPercentage, roundToDecimals } from "@/lib/utils";
 import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import { isMarketOpen } from "@/lib/market-hours";
+import { debounce } from "@/lib/debounce";
+import { queryKeys } from "@/lib/queries/keys";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
 interface WatchlistItem {
@@ -204,9 +207,35 @@ const WatchlistRow = memo(function WatchlistRow({
   );
 });
 
+const NO_SEARCH_RESULTS: SearchResultItem[] = [];
+
+/** Symbol search for the watchlist box; failures read as "no matches". */
+async function fetchSymbolSearch(term: string, signal: AbortSignal): Promise<SearchResultItem[]> {
+  const response = await fetch(
+    `/api/market/search?query=${encodeURIComponent(term)}&exclude_indices=true`,
+    { signal },
+  );
+  if (!response.ok) return [];
+  const data = (await response.json()) as Array<Record<string, unknown>>;
+  const normalized = Array.isArray(data)
+    ? data
+        .map((row) => ({
+          symbol: toSafeString(row.symbol).trim(),
+          name: toSafeString(row.name, toSafeString(row.symbol)).trim(),
+          type: typeof row.type === "string" ? row.type : undefined,
+          instrument_type:
+            typeof row.instrument_type === "string" ? row.instrument_type : undefined,
+        }))
+        .filter((row) => row.symbol.length > 0)
+    : [];
+  return normalized.slice(0, 8);
+}
+
 export default function TerminalPage() {
   const isConnected = useConnectionStatus() === "connected";
-  const [selectedSymbol, setSelectedSymbol] = useState<string>("");
+  const [selectedSymbol, setSelectedSymbol] = useState<string>(
+    () => new URLSearchParams(globalThis.location.search).get("symbol") ?? "",
+  );
   const [selectedTimeframe, setSelectedTimeframe] = useState("D");
   const [baseWatchlist, setBaseWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -222,8 +251,7 @@ export default function TerminalPage() {
   const [basePositions, setBasePositions] = useState<PositionItem[]>([]);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [watchlistQuery, setWatchlistQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
   const [watchlistActionError, setWatchlistActionError] = useState<string | null>(null);
   const [terminalView, setTerminalView] = useState<TerminalView>("options");
   const [optionsUnderlying, setOptionsUnderlying] = useState<string>("NIFTY");
@@ -235,14 +263,6 @@ export default function TerminalPage() {
   const [selectedOptionSymbol, setSelectedOptionSymbol] = useState<string>("");
   const [riskOverrideReason, setRiskOverrideReason] = useState<string>("");
   const optionsFetchInFlightRef = useRef(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(globalThis.location.search);
-    const urlSymbol = params.get("symbol");
-    if (urlSymbol) {
-      setSelectedSymbol(urlSymbol);
-    }
-  }, []);
 
   useEffect(() => {
     const fetchWatchlist = async () => {
@@ -282,24 +302,17 @@ export default function TerminalPage() {
     void fetchWatchlist();
   }, []);
 
-  useEffect(() => {
-    if (!selectedSymbol) return;
-    setBaseWatchlist((prev) => {
-      if (prev.some((item) => item.symbol === selectedSymbol)) {
-        return prev;
-      }
-      return [
-        ...prev,
-        {
-          symbol: selectedSymbol,
-          name: selectedSymbol,
-          price: null,
-          change: null,
-          ltp: null,
-        },
-      ];
-    });
-  }, [selectedSymbol]);
+  // The selected symbol is always listed, even when it is not in the saved watchlist.
+  const watchlistItems = useMemo(
+    () =>
+      !selectedSymbol || baseWatchlist.some((item) => item.symbol === selectedSymbol)
+        ? baseWatchlist
+        : [
+            ...baseWatchlist,
+            { symbol: selectedSymbol, name: selectedSymbol, price: null, change: null, ltp: null },
+          ],
+    [baseWatchlist, selectedSymbol],
+  );
 
   useEffect(() => {
     if (terminalView !== "options") {
@@ -362,55 +375,21 @@ export default function TerminalPage() {
     };
   }, [terminalView, optionsUnderlying, optionsExpiry]);
 
-  useEffect(() => {
-    if (watchlistQuery.trim().length < 2) {
-      setSearchResults([]);
-      setSearchLoading(false);
-      return;
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(async () => {
-      try {
-        setSearchLoading(true);
-        const response = await fetch(
-          `/api/market/search?query=${encodeURIComponent(watchlistQuery.trim())}&exclude_indices=true`,
-          { signal: controller.signal },
-        );
-        if (!response.ok) {
-          setSearchResults([]);
-          return;
-        }
-        const data = (await response.json()) as Array<Record<string, unknown>>;
-        const normalized = Array.isArray(data)
-          ? data
-              .map((row) => ({
-                symbol: toSafeString(row.symbol).trim(),
-                name: toSafeString(row.name, toSafeString(row.symbol)).trim(),
-                type: typeof row.type === "string" ? row.type : undefined,
-                instrument_type:
-                  typeof row.instrument_type === "string" ? row.instrument_type : undefined,
-              }))
-              .filter((row) => row.symbol.length > 0)
-          : [];
-        setSearchResults(normalized.slice(0, 8));
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        setSearchResults([]);
-      } finally {
-        if (!controller.signal.aborted) {
-          setSearchLoading(false);
-        }
-      }
-    }, 250);
-
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [watchlistQuery]);
+  const debouncedSetSearchTerm = useMemo(
+    () => debounce((value: unknown) => setSearchTerm(toSafeString(value)), 250),
+    [],
+  );
+  const searchActive = watchlistQuery.trim().length >= 2;
+  const symbolSearchQuery = useQuery({
+    queryKey: queryKeys.terminal.symbolSearch(searchTerm),
+    queryFn: ({ signal }) => fetchSymbolSearch(searchTerm, signal),
+    enabled: searchTerm.length >= 2,
+    placeholderData: keepPreviousData,
+  });
+  const searchResults = searchActive
+    ? (symbolSearchQuery.data ?? NO_SEARCH_RESULTS)
+    : NO_SEARCH_RESULTS;
+  const searchLoading = searchActive && symbolSearchQuery.isFetching;
 
   // Live quotes come from the shared quote store; rows below are derived, not synced via effects.
   const subscribedSymbols = useMemo(() => {
@@ -418,19 +397,19 @@ export default function TerminalPage() {
     return Array.from(
       new Set(
         [
-          ...baseWatchlist.map((item) => item.symbol),
+          ...watchlistItems.map((item) => item.symbol),
           selectedSymbol,
           selectedOptionSymbol,
           ...basePositions.map((position) => position.symbol),
         ].filter(Boolean),
       ),
     );
-  }, [baseWatchlist, selectedSymbol, selectedOptionSymbol, basePositions]);
+  }, [watchlistItems, selectedSymbol, selectedOptionSymbol, basePositions]);
   const quotes = useQuotes(subscribedSymbols);
 
   const watchlist = useMemo(
     () =>
-      baseWatchlist.map((item) => {
+      watchlistItems.map((item) => {
         const quote = quotes[item.symbol];
         if (!quote) return item;
         const ltp = typeof quote.ltp === "number" ? roundToDecimals(quote.ltp, 2) : item.ltp;
@@ -442,7 +421,7 @@ export default function TerminalPage() {
             typeof quote.changePct === "number" ? roundToDecimals(quote.changePct, 2) : item.change,
         };
       }),
-    [baseWatchlist, quotes],
+    [watchlistItems, quotes],
   );
 
   const addSymbolToWatchlist = async (item: SearchResultItem) => {
@@ -481,7 +460,7 @@ export default function TerminalPage() {
       });
       setSelectedSymbol(symbol);
       setWatchlistQuery("");
-      setSearchResults([]);
+      setSearchTerm("");
     } catch (err) {
       setWatchlistActionError(err instanceof Error ? err.message : "Failed to add symbol");
     }
@@ -1041,7 +1020,10 @@ export default function TerminalPage() {
               <input
                 type="text"
                 value={watchlistQuery}
-                onChange={(event) => setWatchlistQuery(event.target.value)}
+                onChange={(event) => {
+                  setWatchlistQuery(event.target.value);
+                  debouncedSetSearchTerm(event.target.value.trim());
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && searchResults[0]) {
                     event.preventDefault();

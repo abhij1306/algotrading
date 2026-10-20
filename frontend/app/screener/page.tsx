@@ -407,11 +407,10 @@ export default function ScreenerPage() {
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
 
-  useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages);
-    }
-  }, [currentPage, totalPages]);
+  // Clamp the page when the result set shrinks (adjusting state during render, not in an effect).
+  if (currentPage > totalPages) {
+    setCurrentPage(totalPages);
+  }
 
   const subscribedSymbolsKey = useMemo(() => {
     const symbols = Array.from(new Set(results.map((row) => row.symbol))).sort((a, b) =>
