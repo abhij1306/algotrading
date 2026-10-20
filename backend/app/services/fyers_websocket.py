@@ -9,6 +9,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ..utils.logger import log_exception_throttled
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -126,16 +128,15 @@ class FyersWebSocketService:
         Handle incoming WebSocket message (called from WebSocket thread)
         Directly invokes handler to minimize latency.
         """
+        if not self.on_tick_handler:
+            return
         try:
             # Main Tick Handler (LiveMarketService)
-            if self.on_tick_handler:
-                try:
-                    self.on_tick_handler(message)
-                except Exception as e:
-                    logger.exception("[FyersWS] Main handler error: %s", e)
-
+            self.on_tick_handler(message)
         except Exception as e:
-            logger.exception("[FyersWS] Error processing message: %s", e)
+            log_exception_throttled(
+                logger, "fyers_ws.tick_handler", "[FyersWS] Main handler error: %s", e
+            )
 
     def _on_error(self, error: object) -> None:
         """Handle WebSocket error"""

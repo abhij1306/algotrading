@@ -1,6 +1,4 @@
 import logging
-import os
-import time
 import uuid
 from datetime import date
 from typing import Any
@@ -23,9 +21,6 @@ NO_PAPER_PRICE_MESSAGE = (
 PAPER_TERMINAL_STATES = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
 STOP_ORDER_TYPES = {"SL", "SL-M"}
 LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
-# Fyers tick fields carrying the exchange time, in epoch seconds, most precise first.
-TICK_TIME_FIELDS = ("exch_feed_time", "last_traded_time")
-DEFAULT_PAPER_TICK_MAX_AGE_SEC = 60.0
 
 
 def order_price_error(order_type: str, price: float, trigger_price: float) -> str | None:
@@ -82,30 +77,17 @@ def _slipped_price(side: str, ref: float, slippage_bps: float) -> float:
     return ref + slip if side == "BUY" else max(0.0, ref - slip)
 
 
-def paper_tick_max_age_sec() -> float:
-    max_age = safe_float(os.getenv("PAPER_TICK_MAX_AGE_SEC"), DEFAULT_PAPER_TICK_MAX_AGE_SEC)
-    return max_age if max_age > 0 else DEFAULT_PAPER_TICK_MAX_AGE_SEC
-
-
 def latest_tick_price(db_symbol: str) -> float:
     """Last traded price from the live market-data tick cache, or 0.0 if none.
 
     This reads the market-data feed, never the order broker, so PAPER fills can
-    use it without reaching the live broker. The cache keeps ticks after a
-    disconnect or market close, so a tick is used only while the market is open
-    (DEV_MODE counts as open, as in LiveMarketService) and its exchange time is
-    within PAPER_TICK_MAX_AGE_SEC (default 60s). A tick without a time is stale.
+    use it without reaching the live broker. Only a fresh tick counts (market open
+    and exchange time within PAPER_TICK_MAX_AGE_SEC); see LiveMarketService.get_fresh_tick.
     """
     from .live_market_service import live_market
 
-    tick = live_market.get_latest_tick(db_symbol)
-    if not isinstance(tick, dict) or not live_market.is_market_open():
-        return 0.0
-    tick_time = next(
-        (safe_float(tick.get(f), 0.0) for f in TICK_TIME_FIELDS if tick.get(f) is not None),
-        0.0,
-    )
-    if tick_time <= 0 or time.time() - tick_time > paper_tick_max_age_sec():
+    tick = live_market.get_fresh_tick(db_symbol)
+    if tick is None:
         return 0.0
     price = safe_float(tick.get("ltp"), 0.0)
     return price if price > 0 else 0.0

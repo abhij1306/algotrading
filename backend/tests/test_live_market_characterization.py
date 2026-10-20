@@ -2,6 +2,7 @@
 normalisation, connect outcomes, subscribe/unsubscribe) ahead of a refactor."""
 
 import asyncio
+from collections.abc import Coroutine
 from typing import Any
 
 import pytest
@@ -40,6 +41,22 @@ class FakeProvider:
 
     def disconnect(self) -> None:
         self.disconnect_calls += 1
+
+
+@pytest.fixture
+def scheduled(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Stub run_coroutine_threadsafe: close each coroutine (no "never awaited" warning)
+    and record (coroutine name, loop) for the test to check."""
+    calls: list[Any] = []
+
+    def fake_run_coroutine_threadsafe(
+        coro: Coroutine[Any, Any, None], loop: asyncio.AbstractEventLoop
+    ) -> None:
+        calls.append((coro.cr_code.co_name, loop))
+        coro.close()
+
+    monkeypatch.setattr(lms.asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    return calls
 
 
 def _fyers(symbol: str) -> str:
@@ -160,7 +177,7 @@ def test_monitor_iteration_outcome(
     ],
 )
 def test_incoming_tick_is_normalised_into_latest_values(
-    tick: dict[str, Any], expected: dict[str, Any]
+    tick: dict[str, Any], expected: dict[str, Any], scheduled: list[Any]
 ) -> None:
     live = lms.LiveMarketService()
     loop = asyncio.new_event_loop()
@@ -171,9 +188,10 @@ def test_incoming_tick_is_normalised_into_latest_values(
         loop.close()
 
     assert live.latest_values == {"SBIN": expected}
+    assert scheduled == [("_update_buffer", loop)]
 
 
-def test_tick_without_symbol_or_loop_is_ignored() -> None:
+def test_tick_without_symbol_or_loop_is_ignored(scheduled: list[Any]) -> None:
     live = lms.LiveMarketService()
     live.handle_tick_incoming({"symbol": "NSE:SBIN-EQ", "ltp": 1.0})  # no loop yet
     loop = asyncio.new_event_loop()
@@ -184,6 +202,7 @@ def test_tick_without_symbol_or_loop_is_ignored() -> None:
         loop.close()
 
     assert live.latest_values == {}
+    assert scheduled == []
 
 
 # --- connect() outcomes --------------------------------------------------------
@@ -217,7 +236,7 @@ def test_connect_adopts_an_already_connected_provider(monkeypatch: pytest.Monkey
     provider = FakeProvider(connected=True)
     monkeypatch.setattr(fyers_websocket, "get_websocket_service", lambda: provider)
 
-    assert live.connect(prevalidated_token=True) is None
+    assert live.connect(prevalidated_token=True) == "already_connected"
     assert live.ws_connected is True
     assert live._is_connecting is False
     assert provider.on_tick_handler == live.handle_tick_incoming

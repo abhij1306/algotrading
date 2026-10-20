@@ -470,3 +470,114 @@ def test_connect_async_validates_token_off_the_event_loop(monkeypatch: pytest.Mo
     status, loop_thread = asyncio.run(scenario())
     assert status == "token_invalid"
     assert seen["thread"] != loop_thread
+
+
+def test_off_hours_cleanup_stops_a_retrying_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR #34 review: market-close cleanup must stop a runner that is backing off,
+    or it reconnects off-hours."""
+    import threading
+    import time
+
+    _fast_runner(monkeypatch, retries=10)
+    monkeypatch.setattr(lms, "WS_BACKOFF_BASE_S", 30.0)
+    monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 30.0)
+    live = lms.LiveMarketService()
+    live.ws_service = SlowConnectProvider(connect_after=None)
+    live._is_connecting = True
+    monkeypatch.setattr(live, "is_market_open", lambda: False)
+
+    thread = threading.Thread(
+        target=live._run_provider_connect, args=(live._runner_stop,), daemon=True
+    )
+    thread.start()
+    time.sleep(0.2)  # first attempt timed out, runner is now backing off for 30s
+    asyncio.run(live._check_connection_health())
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert live.ws_service.connect_calls == 1
+    assert live._is_connecting is False
+    assert live._explicitly_disconnected is False  # next session may still auto-connect
+
+
+def test_new_runner_is_not_stopped_by_the_previous_off_hours_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    started: list[threading.Event] = []
+
+    class RecordingThread:
+        def __init__(self, target: object, args: tuple[Any, ...], daemon: bool) -> None:
+            started.append(args[0])
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(lms.threading, "Thread", RecordingThread)
+    live = lms.LiveMarketService()
+    live.ws_service = SlowConnectProvider(connect_after=None)
+    live._runner_stop.set()  # an earlier off-hours cleanup
+
+    assert live._start_provider_connection() == "started"
+    assert len(started) == 1
+    assert started[0] is live._runner_stop
+    assert not started[0].is_set()
+
+
+def _tick_at(ts: float) -> dict[str, Any]:
+    return {"symbol": "SBIN", "ltp": 100.0, "exch_feed_time": ts}
+
+
+@pytest.mark.parametrize(
+    ("market_open", "age", "fresh"),
+    [(True, 5.0, True), (True, 120.0, False), (False, 5.0, False)],
+)
+def test_get_fresh_tick_requires_open_market_and_recent_tick(
+    monkeypatch: pytest.MonkeyPatch, market_open: bool, age: float, fresh: bool
+) -> None:
+    import time
+
+    monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
+    live = lms.LiveMarketService()
+    monkeypatch.setattr(live, "is_market_open", lambda: market_open)
+    live.latest_values = {"SBIN": _tick_at(time.time() - age), "TCS": {"ltp": 1.0}}
+
+    assert (live.get_fresh_tick("SBIN") is not None) is fresh
+    assert live.get_fresh_tick("TCS") is None  # no exchange time: stale
+    assert live.get_fresh_tick("INFY") is None
+    expected = {"SBIN"} if fresh else set()
+    assert set(live.get_fresh_ticks(["SBIN", "TCS", "INFY"])) == expected
+
+
+def test_hot_path_tracebacks_are_rate_limited_and_counted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from app.utils import logger as logger_module
+    from app.utils.runtime_metrics import runtime_metrics
+
+    monkeypatch.setattr(logger_module, "_last_traceback_at", {})
+    metric = "logging.suppressed_tracebacks.fyers_ws.tick_handler"
+    before = runtime_metrics.snapshot()["counters"].get(metric, 0)
+
+    def broken_handler(_message: dict[str, Any]) -> None:
+        raise ValueError("bad tick")
+
+    ws = fyers_websocket.FyersWebSocketService.__new__(fyers_websocket.FyersWebSocketService)
+    ws.on_tick_handler = broken_handler
+    with caplog.at_level(logging.DEBUG, logger=fyers_websocket.logger.name):
+        for _ in range(3):
+            ws._on_message({"symbol": "NSE:SBIN-EQ"})
+
+    with_traceback = [r for r in caplog.records if r.exc_info]
+    assert len(with_traceback) == 1
+    assert runtime_metrics.snapshot()["counters"].get(metric, 0) - before == 2
+
+    # After the interval the next failure logs a full traceback again.
+    monkeypatch.setattr(logger_module, "TRACEBACK_INTERVAL_S", 0.0)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=fyers_websocket.logger.name):
+        ws._on_message({"symbol": "NSE:SBIN-EQ"})
+    assert [r for r in caplog.records if r.exc_info]
