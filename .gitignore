@@ -294,3 +294,6 @@ archive/
 old/
 backup/
 deprecated/
+
+# Claude Code agent worktrees
+.claude/worktrees/
