@@ -15,7 +15,8 @@
     "fmt": "vp fmt",
     "lint": "vp lint",
     "type-check": "tsc --noEmit",
-    "test": "vp test run"
+    "test": "vp test run",
+    "gen:api": "python ../scripts/export_openapi.py && pnpm --filter openapi-gen exec openapi-typescript ../../openapi.json -o ../../lib/api/schema.d.ts && vp fmt lib/api/schema.d.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "5.3.0",

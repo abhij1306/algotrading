@@ -139,7 +139,12 @@ cd frontend
 pnpm check      # format, lint and type check (vp check)
 pnpm test       # vp test
 pnpm build      # vp build
+pnpm gen:api    # regenerate lib/api/schema.d.ts from the backend OpenAPI schema
 ```
+
+`pnpm gen:api` needs the backend venv active (it runs `python ../scripts/export_openapi.py`; no server
+or database needed). Run it after any backend route or response-model change and commit the result:
+CI job `api-schema` fails when the committed `lib/api/schema.d.ts` is stale.
 
 ### Backend
 ```bash

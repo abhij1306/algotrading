@@ -37,6 +37,15 @@
     - Shared market data: both route groups read from the same option data services.
     - Terminal-only: board/depth/orderflow/preview-order are UI-focused aggregates not exposed in `/api/options/*`.
     - Order alias: terminal options order endpoint maps terminal payload to `/api/trading/order` semantics.
+- Typed frontend contract:
+  - `frontend/lib/api/schema.d.ts` is generated from the FastAPI OpenAPI schema and used by the
+    `openapi-fetch` client. Never edit it by hand.
+  - `scripts/export_openapi.py` imports `app.main:app` (the lifespan does not run, so no DB, broker or
+    websocket connection) and writes the schema with sorted keys; `pnpm gen:api` in `frontend/` runs it,
+    then openapi-typescript (pinned in `frontend/tools/openapi-gen`, which carries its own TypeScript 5)
+    and `vp fmt`.
+  - CI job `api-schema` regenerates the file and fails if it differs from the committed one, so any
+    backend route or model change must ship with the regenerated types.
 
 3. Domain Services
 - `symbol_master.py`: symbol normalization and provider boundary conversion

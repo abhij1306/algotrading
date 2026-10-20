@@ -766,7 +766,10 @@ export interface paths {
     };
     /**
      * Get Portfolio Funds
-     * @description Get available funds/buying power.
+     * @description Get available funds/buying power from the broker.
+     *
+     *     Fails closed: 503 when the broker client is missing, the call fails or the reply is
+     *     not a usable funds payload, never a zero balance that looks real.
      */
     get: operations["get_portfolio_funds_api_portfolio_funds_get"];
     put?: never;
@@ -1097,40 +1100,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/strategies/vcp/backtest/{run_id}": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get Vcp Backtest */
-    get: operations["get_vcp_backtest_api_strategies_vcp_backtest__run_id__get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/strategies/vcp/backtest/{run_id}/trades": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get Vcp Backtest Trades */
-    get: operations["get_vcp_backtest_trades_api_strategies_vcp_backtest__run_id__trades_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/strategies/vcp/backtest/history": {
     parameters: {
       query?: never;
@@ -1159,6 +1128,40 @@ export interface paths {
     put?: never;
     /** Run Vcp Backtest */
     post: operations["run_vcp_backtest_api_strategies_vcp_backtest_run_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/strategies/vcp/backtest/{run_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Vcp Backtest */
+    get: operations["get_vcp_backtest_api_strategies_vcp_backtest__run_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/strategies/vcp/backtest/{run_id}/trades": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Vcp Backtest Trades */
+    get: operations["get_vcp_backtest_trades_api_strategies_vcp_backtest__run_id__trades_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1264,12 +1267,22 @@ export interface paths {
      *     Returns:
      *         {
      *             "status": "READY" | "DEGRADED" | "DOWN",
-     *             "postgresql": "OK" | "DOWN",
+     *             "postgresql": "OK" | "DOWN" | "ERROR",
      *             "fyers": "OK" | "TOKEN_EXPIRED" | "DOWN",
      *             "last_data_update": ISO timestamp,
      *             "total_symbols": int,
-     *             "recommendations": [str]
+     *             "recommendations": [str],
+     *             "startup": "COMPLETE" | "DEFERRED" | "FAILED"
      *         }
+     *
+     *     startup is DEFERRED while the database work skipped at startup (the server started with
+     *     the DB down) is still being retried in the background; status is then at best DEGRADED.
+     *     FAILED means that work hit a non-connection error after the DB came back.
+     *
+     *     postgresql DOWN means the database is unreachable: the reply is HTTP 503, the same
+     *     report plus the standard error envelope (code DATABASE_UNAVAILABLE). ERROR means it
+     *     answered but the probe query failed (schema drift, SQL bug): status DEGRADED, HTTP 200,
+     *     details in the server log.
      */
     get: operations["system_health_check_api_system_health_get"];
     put?: never;
@@ -1958,7 +1971,10 @@ export interface paths {
     };
     /**
      * Get Websocket Status
-     * @description Check WebSocket connection status
+     * @description Check WebSocket connection status.
+     *
+     *     `startup` is DEFERRED while the database work skipped at startup (DB down) is still
+     *     being retried, FAILED if that work hit a non-connection error, else COMPLETE.
      */
     get: operations["get_websocket_status_api_websocket_status_get"];
     put?: never;
@@ -2097,10 +2113,7 @@ export interface components {
     };
     /** Body_upload_bhavcopy_api_upload_upload_bhavcopy_post */
     Body_upload_bhavcopy_api_upload_upload_bhavcopy_post: {
-      /**
-       * File
-       * Format: binary
-       */
+      /** File */
       file: string;
     };
     /** ClosePositionRequest */
@@ -2194,15 +2207,15 @@ export interface components {
       /** Underlying */
       underlying: string;
     };
-    /** HaltRequest */
-    HaltRequest: {
-      /** Reason */
-      reason?: string | null;
-    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
+    };
+    /** HaltRequest */
+    HaltRequest: {
+      /** Reason */
+      reason?: string | null;
     };
     /** ModeToggleRequest */
     ModeToggleRequest: {
@@ -2215,6 +2228,8 @@ export interface components {
       new_price?: number | null;
       /** New Quantity */
       new_quantity?: number | null;
+      /** New Trigger Price */
+      new_trigger_price?: number | null;
       /** New Type */
       new_type?: string | null;
       /** Order Id */
@@ -2294,6 +2309,8 @@ export interface components {
     };
     /** OrderRequest */
     OrderRequest: {
+      /** Client Order Id */
+      client_order_id?: string | null;
       /** Expiry Date */
       expiry_date?: string | null;
       /**
@@ -2539,6 +2556,8 @@ export interface components {
     };
     /** TerminalOptionsOrderRequest */
     TerminalOptionsOrderRequest: {
+      /** Client Order Id */
+      client_order_id?: string | null;
       /** Expiry */
       expiry?: string | null;
       /**
@@ -2827,6 +2846,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Fyers rejected the auth code */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -2835,6 +2861,13 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
+      };
+      /** @description Fyers credentials missing or token exchange failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -2855,6 +2888,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Fyers credentials missing or auth URL generation failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -2877,6 +2917,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Backtest job not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {
@@ -2910,6 +2957,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Invalid backtest request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {
@@ -3334,9 +3388,9 @@ export interface operations {
   search_symbols_api_market_search_get: {
     parameters: {
       query: {
+        query: string;
         exclude_indices?: boolean;
         include_options?: boolean;
-        query: string;
       };
       header?: never;
       path?: never;
@@ -3447,8 +3501,8 @@ export interface operations {
   get_top_gainers_api_market_top_gainers_get: {
     parameters: {
       query?: {
-        index?: string;
         limit?: number;
+        index?: string;
       };
       header?: never;
       path?: never;
@@ -3552,6 +3606,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Symbol required */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -3597,10 +3658,10 @@ export interface operations {
   get_atm_strike_api_options_atm_get: {
     parameters: {
       query: {
-        /** @description Expiry date (YYYY-MM-DD). Defaults to nearest expiry. */
-        expiry?: string | null;
         /** @description Underlying symbol (e.g., NIFTY, BANKNIFTY) */
         symbol: string;
+        /** @description Expiry date (YYYY-MM-DD). Defaults to nearest expiry. */
+        expiry?: string | null;
       };
       header?: never;
       path?: never;
@@ -3662,17 +3723,24 @@ export interface operations {
           };
         };
       };
+      /** @description Cache clear is disabled outside DEBUG_INTERNAL */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   get_option_chain_api_options_chain_get: {
     parameters: {
       query: {
+        /** @description Underlying symbol (e.g., NIFTY, BANKNIFTY, RELIANCE) */
+        symbol: string;
         /** @description Expiry date (YYYY-MM-DD). Defaults to nearest expiry. */
         expiry?: string | null;
         /** @description Number of strikes to return (centered around ATM) */
         strike_count?: number;
-        /** @description Underlying symbol (e.g., NIFTY, BANKNIFTY, RELIANCE) */
-        symbol: string;
       };
       header?: never;
       path?: never;
@@ -3763,14 +3831,14 @@ export interface operations {
   get_greeks_api_options_greeks_get: {
     parameters: {
       query: {
-        /** @description Expiry date (YYYY-MM-DD). Defaults to nearest expiry. */
-        expiry?: string | null;
-        /** @description Option type: CE or PE */
-        option_type: string;
-        /** @description Strike price */
-        strike: number;
         /** @description Underlying symbol (e.g., NIFTY) */
         symbol: string;
+        /** @description Strike price */
+        strike: number;
+        /** @description Option type: CE or PE */
+        option_type: string;
+        /** @description Expiry date (YYYY-MM-DD). Defaults to nearest expiry. */
+        expiry?: string | null;
       };
       header?: never;
       path?: never;
@@ -3830,6 +3898,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Broker funds unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   get_portfolio_stats_api_portfolio_stats_get: {
@@ -3849,6 +3924,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Failed to fetch portfolio stats */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -3884,13 +3966,13 @@ export interface operations {
   get_screener_results_api_screener_results_get: {
     parameters: {
       query?: {
-        full?: boolean;
-        limit?: number;
-        page?: number;
+        universe?: string;
         query?: string | null;
+        page?: number;
+        limit?: number;
+        full?: boolean;
         sort_by?: string;
         sort_order?: string;
-        universe?: string;
       };
       header?: never;
       path?: never;
@@ -4051,6 +4133,13 @@ export interface operations {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
+      /** @description Order placement is disabled in this version */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   get_total_pnl_api_smart_trader_pnl_get: {
@@ -4186,6 +4275,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Strategy position not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -4220,6 +4316,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Strategy position not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {
@@ -4303,68 +4406,6 @@ export interface operations {
       };
     };
   };
-  get_vcp_backtest_api_strategies_vcp_backtest__run_id__get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        run_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  get_vcp_backtest_trades_api_strategies_vcp_backtest__run_id__trades_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        run_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
   get_vcp_backtest_history_api_strategies_vcp_backtest_history_get: {
     parameters: {
       query?: {
@@ -4418,6 +4459,89 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Invalid backtest request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_vcp_backtest_api_strategies_vcp_backtest__run_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Backtest run not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_vcp_backtest_trades_api_strategies_vcp_backtest__run_id__trades_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Backtest run not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -4432,8 +4556,8 @@ export interface operations {
   get_latest_vcp_scan_api_strategies_vcp_scan_latest_get: {
     parameters: {
       query?: {
-        show_all?: boolean;
         universe?: string;
+        show_all?: boolean;
       };
       header?: never;
       path?: never;
@@ -4483,6 +4607,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Invalid scan request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -4514,6 +4645,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Signal not found or invalid scan date */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -4544,6 +4682,13 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+      /** @description Signal not found or invalid scan date */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {
@@ -4578,6 +4723,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Signal not found or invalid scan date */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -4607,6 +4759,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Database unavailable (body still carries the report) */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   screener_pre_flight_api_system_pre_flight_screener_get: {
@@ -4632,9 +4791,9 @@ export interface operations {
   get_chart_data_api_terminal_chart_get: {
     parameters: {
       query: {
-        limit?: number;
         symbol: string;
         timeframe?: string;
+        limit?: number;
       };
       header?: never;
       path?: never;
@@ -4674,9 +4833,9 @@ export interface operations {
   get_options_board_api_terminal_options_board_get: {
     parameters: {
       query?: {
+        underlying?: string;
         expiry?: string | null;
         strike_count?: number;
-        underlying?: string;
       };
       header?: never;
       path?: never;
@@ -4812,9 +4971,9 @@ export interface operations {
   get_options_orderflow_api_terminal_options_orderflow_get: {
     parameters: {
       query?: {
+        underlying?: string;
         expiry?: string | null;
         strike_count?: number;
-        underlying?: string;
       };
       header?: never;
       path?: never;
@@ -5536,10 +5695,10 @@ export interface operations {
   get_universe_changes_api_universe_changes__index_code__get: {
     parameters: {
       query: {
-        /** @description End date in YYYY-MM-DD format */
-        end_date: string;
         /** @description Start date in YYYY-MM-DD format */
         start_date: string;
+        /** @description End date in YYYY-MM-DD format */
+        end_date: string;
       };
       header?: never;
       path: {
@@ -5586,10 +5745,10 @@ export interface operations {
   get_constituents_api_universe_constituents__index_code__get: {
     parameters: {
       query?: {
-        /** @description Mode: 'historical' or 'live' */
-        mode?: string;
         /** @description Date in YYYY-MM-DD format */
         target_date?: string | null;
+        /** @description Mode: 'historical' or 'live' */
+        mode?: string;
       };
       header?: never;
       path: {
@@ -5733,10 +5892,10 @@ export interface operations {
   get_symbols_api_universe_symbols__index_code__get: {
     parameters: {
       query?: {
-        /** @description Mode: 'historical' or 'live' */
-        mode?: string;
         /** @description Date in YYYY-MM-DD format */
         target_date?: string | null;
+        /** @description Mode: 'historical' or 'live' */
+        mode?: string;
       };
       header?: never;
       path: {
@@ -5804,6 +5963,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Only CSV files are allowed */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -5812,6 +5978,13 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
+      };
+      /** @description Failed to process bhavcopy file */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
