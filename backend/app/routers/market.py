@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -13,14 +14,14 @@ DB_DEPENDENCY = Depends(get_db)
 NIFTY_50_NAME = "NIFTY 50"
 
 
-@router.get("/market/status")
-def market_status():
+@router.get("/market/status", response_model=None)
+def market_status() -> dict[str, Any]:
     """Get current market status (open/closed)"""
     return get_market_status()
 
 
-@router.get("/market/indices")
-def get_market_indices():
+@router.get("/market/indices", response_model=None)
+def get_market_indices() -> list[dict[str, Any]]:
     """
     Get major market indices data.
     Returns NIFTY 50, SENSEX, BANKNIFTY, NIFTY IT
@@ -82,20 +83,20 @@ def get_market_indices():
         return []
 
 
-@router.get("/status")
-def market_status_alias():
+@router.get("/status", response_model=None)
+def market_status_alias() -> dict[str, Any]:
     """Alias for /market/status to keep API clients consistent."""
     return market_status()
 
 
-@router.get("/indices")
-def get_market_indices_alias():
+@router.get("/indices", response_model=None)
+def get_market_indices_alias() -> list[dict[str, Any]]:
     """Alias for /market/indices to keep API clients consistent."""
     return get_market_indices()
 
 
-@router.get("/quotes/live")
-def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
+@router.get("/quotes/live", response_model=None)
+def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get live quotes for multiple symbols.
     Returns live data if available, otherwise falls back to last known prices.
@@ -153,8 +154,8 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY):
         return {}
 
 
-@router.get("/quote/{symbol}")
-def get_single_quote(symbol: str):
+@router.get("/quote/{symbol}", response_model=None)
+def get_single_quote(symbol: str) -> dict[str, Any]:
     """
     Get quote for a single symbol (supports Yahoo Finance symbols like ^GSPC).
     Used for fetching US indices and other Yahoo Finance data.
@@ -185,13 +186,13 @@ def get_single_quote(symbol: str):
         return {"symbol": symbol, "price": 0, "changePercent": 0}
 
 
-@router.get("/search")
+@router.get("/search", response_model=None)
 def search_symbols(
     query: str,
     exclude_indices: bool = False,
     include_options: bool = True,
     db: Session = DB_DEPENDENCY,
-):
+) -> list[dict[str, Any]]:
     """
     Search for companies, indices, and option symbols by symbol or name
     exclude_indices: Set to True to only return equities (for analyst mode)
@@ -335,18 +336,19 @@ def _search_option_symbols(query: str, existing_results: list) -> list:
                                 break
 
                 except Exception:
-                    # Silently skip if option chain fetch fails
+                    # Skip this underlying if its option chain fetch fails
+                    logger.debug("Option chain search failed for %s", underlying, exc_info=True)
                     continue
 
         except Exception:
-            # If option chain service fails, return empty
-            pass
+            # If option chain service fails, return what we have
+            logger.debug("Option chain service unavailable for search", exc_info=True)
 
     return option_results
 
 
-@router.get("/sectors")
-def get_sectors(db: Session = DB_DEPENDENCY):
+@router.get("/sectors", response_model=None)
+def get_sectors(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get list of all available sectors
     """
@@ -364,8 +366,8 @@ def get_sectors(db: Session = DB_DEPENDENCY):
     return {"sectors": [s[0] for s in sectors]}
 
 
-@router.get("/watchlist")
-def get_watchlist(db: Session = DB_DEPENDENCY):
+@router.get("/watchlist", response_model=None)
+def get_watchlist(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
     """Get user watchlist"""
     from ..database import Company, HistoricalPrice, Watchlist
 
@@ -422,8 +424,8 @@ def get_watchlist(db: Session = DB_DEPENDENCY):
     return results
 
 
-@router.post("/watchlist")
-def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY):
+@router.post("/watchlist", response_model=None)
+def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Add to watchlist"""
     from ..database import Watchlist
 
@@ -443,8 +445,8 @@ def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY):
     return {"message": "Added"}
 
 
-@router.delete("/watchlist/{symbol}")
-def remove_from_watchlist(symbol: str, db: Session = DB_DEPENDENCY):
+@router.delete("/watchlist/{symbol}", response_model=None)
+def remove_from_watchlist(symbol: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Remove from watchlist"""
     from ..database import Watchlist
 
@@ -453,8 +455,8 @@ def remove_from_watchlist(symbol: str, db: Session = DB_DEPENDENCY):
     return {"message": "Removed"}
 
 
-@router.get("/top-movers")
-def get_top_movers(index: str = "NIFTY50", limit: int = 5):
+@router.get("/top-movers", response_model=None)
+def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
     """
     Get top gainers and losers from an index.
     Returns real-time data from Fyers during market hours.
@@ -520,8 +522,8 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5):
         return {"gainers": [], "losers": []}
 
 
-@router.get("/sector-performance")
-def get_sector_performance():
+@router.get("/sector-performance", response_model=None)
+def get_sector_performance() -> list[dict[str, Any]]:
     """
     Get sector index performance (Banking, IT, Pharma, Auto, Metal).
     Returns real-time data from Fyers during market hours.
@@ -587,8 +589,8 @@ def get_sector_performance():
         return []
 
 
-@router.get("/commodities")
-def get_commodities():
+@router.get("/commodities", response_model=None)
+def get_commodities() -> list[dict[str, Any]]:
     """
     Get commodity prices (Gold, Crude Oil) from Yahoo Finance.
     Used during post-market hours.
@@ -628,8 +630,8 @@ def get_commodities():
         return []
 
 
-@router.get("/currency/{pair}")
-def get_currency(pair: str):
+@router.get("/currency/{pair}", response_model=None)
+def get_currency(pair: str) -> dict[str, Any]:
     """
     Get currency exchange rate from Yahoo Finance.
     Example: pair="USDINR" fetches USD/INR rate.

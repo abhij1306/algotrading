@@ -3,6 +3,8 @@ Pre-flight health check endpoint for Screener
 Verifies Fyers connectivity and data freshness before UI loads
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -13,8 +15,8 @@ router = APIRouter(prefix="/api/system", tags=["System Health"])
 DB_DEPENDENCY = Depends(get_db)
 
 
-@router.get("/health")
-def system_health_check(db: Session = DB_DEPENDENCY):
+@router.get("/health", response_model=None)
+def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Comprehensive system health check
 
@@ -54,8 +56,8 @@ def system_health_check(db: Session = DB_DEPENDENCY):
     return {"status": status, **health, "recommendations": recommendations}
 
 
-@router.get("/pre-flight/screener")
-def screener_pre_flight(db: Session = DB_DEPENDENCY):
+@router.get("/pre-flight/screener", response_model=None)
+def screener_pre_flight(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Specific pre-flight check for Screener module
     Called before Screener UI loads to ensure data availability

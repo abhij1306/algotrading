@@ -13,8 +13,8 @@ from sqlalchemy import func
 from app.database import get_db_session
 from app.models import HistoricalPrice, IndexConstituentHistory, IndexUniverseDefinition
 from app.services.fyers_client import get_fyers_client
-from app.services.universe import get_universe_service
 from app.services.symbol_master import symbol_master
+from app.services.universe import get_universe_service
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices"
@@ -44,7 +44,9 @@ def _parse_csv_list(raw: str) -> list[str]:
     return [item.strip().upper() for item in raw.split(",") if item and item.strip()]
 
 
-def resolve_symbols(universe_ids: list[str], explicit_symbols: list[str]) -> tuple[list[str], dict[str, Any]]:
+def resolve_symbols(
+    universe_ids: list[str], explicit_symbols: list[str]
+) -> tuple[list[str], dict[str, Any]]:
     if explicit_symbols:
         symbols = sorted(set(explicit_symbols))
         return symbols, {"mode": "explicit_symbols", "universes": []}
@@ -86,7 +88,18 @@ def database_max_date() -> date | None:
 def load_existing_dataset() -> pd.DataFrame:
     if not OUT_PARQUET.exists():
         return pd.DataFrame(
-            columns=["date", "symbol", "open", "high", "low", "close", "volume", "source", "fyers_symbol", "year"]
+            columns=[
+                "date",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "fyers_symbol",
+                "year",
+            ]
         )
     df = pd.read_parquet(OUT_PARQUET)
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
@@ -127,7 +140,18 @@ def fetch_history(
 def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame(
-            columns=["date", "symbol", "open", "high", "low", "close", "volume", "source", "fyers_symbol", "year"]
+            columns=[
+                "date",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "fyers_symbol",
+                "year",
+            ]
         )
     records: list[dict[str, Any]] = []
     for row in candles:
@@ -172,7 +196,9 @@ def main() -> int:
     db_max = database_max_date()
     source_max = dataset_max_date(existing)
     today = datetime.now(UTC).date()
-    inferred_start = max(item for item in [db_max, source_max, DEFAULT_FIRST_HISTORY_DATE] if item is not None)
+    inferred_start = max(
+        item for item in [db_max, source_max, DEFAULT_FIRST_HISTORY_DATE] if item is not None
+    )
     start_date = (
         datetime.strptime(args.start_date, "%Y-%m-%d").date()
         if args.start_date
@@ -192,9 +218,15 @@ def main() -> int:
         "output_csv": str(OUT_CSV.relative_to(PROJECT_ROOT)),
         "field_definitions": {
             "requested_symbol_count": "Unique DB symbols requested for refresh in this run.",
-            "rows_total": "Total symbol-date rows present in the consolidated dataset after refresh.",
-            "dataset_unique_symbols_total": "Unique symbols present in the consolidated dataset after refresh.",
-            "dataset_max_date_before": "Latest date already present in the local provider cache before this run.",
+            "rows_total": (
+                "Total symbol-date rows present in the consolidated dataset after refresh."
+            ),
+            "dataset_unique_symbols_total": (
+                "Unique symbols present in the consolidated dataset after refresh."
+            ),
+            "dataset_max_date_before": (
+                "Latest date already present in the local provider cache before this run."
+            ),
             "requested_range_to": "Requested provider fetch end date for this run.",
             "max_date": "Latest date actually present in the consolidated dataset after refresh.",
         },
@@ -243,7 +275,9 @@ def main() -> int:
     summary.update(
         {
             "rows_total": int(len(combined)),
-            "dataset_unique_symbols_total": int(combined["symbol"].nunique()) if not combined.empty else 0,
+            "dataset_unique_symbols_total": int(combined["symbol"].nunique())
+            if not combined.empty
+            else 0,
             "min_date": combined["date"].min().isoformat() if not combined.empty else None,
             "max_date": combined["date"].max().isoformat() if not combined.empty else None,
             "failed_symbols": len(failures),

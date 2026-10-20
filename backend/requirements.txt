@@ -23,6 +23,14 @@ pandas-ta-openbb==0.4.23
 beautifulsoup4==4.14.3
 psutil==7.2.2
 
+# fyers-apiv3 runtime deps. fyers-apiv3 itself is installed with --no-deps
+# (see scripts/install_backend_deps.py) because it pins aiohttp==3.9.3, which
+# does not build on Python 3.14; these are the working versions.
+aiohttp==3.13.3
+websocket-client==1.6.1
+aws-lambda-powertools==3.24.0
+setuptools==68.0.0  # fyers data_ws imports pkg_resources
+
 # Code quality tools
 ruff==0.13.0
 pre-commit==4.5.0

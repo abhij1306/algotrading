@@ -4,14 +4,16 @@ Allows frontend to connect/disconnect/subscribe to live data
 """
 
 import asyncio
+import contextlib
 import logging
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from ..services.symbol_master import symbol_master
-from ..utils.ws_manager import manager
 from ..utils.errors import handle_api_error
+from ..utils.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +24,8 @@ class SubscribeRequest(BaseModel):
     symbols: list[str]
 
 
-@router.post("/connect")
-async def connect_websocket():
+@router.post("/connect", response_model=None)
+async def connect_websocket() -> dict[str, Any]:
     """Initialize Fyers WebSocket connection"""
     try:
         from ..services.live_market_service import live_market
@@ -45,25 +47,26 @@ async def connect_websocket():
             "message": message_map.get(connect_status, "WebSocket initialization completed"),
         }
     except Exception as e:
-        raise handle_api_error(e, "Failed to initialize WebSocket")
+        raise handle_api_error(e, "Failed to initialize WebSocket") from e
 
 
-@router.post("/subscribe")
-async def subscribe_symbols(request: SubscribeRequest):
+@router.post("/subscribe", response_model=None)
+async def subscribe_symbols(request: SubscribeRequest) -> dict[str, Any]:
     """Subscribe to symbols for live tick data"""
     try:
         from ..services.live_market_service import live_market
 
-        # Normalize to DB symbols at the API boundary; LiveMarketService handles provider conversion.
+        # Normalize to DB symbols at the API boundary;
+        # LiveMarketService handles provider conversion.
         db_symbols = [symbol_master.to_db(s) for s in request.symbols]
         await live_market.subscribe_api(db_symbols)
         return {"status": "subscribed", "symbols": db_symbols}
     except Exception as e:
-        raise handle_api_error(e, "Failed to subscribe to symbols")
+        raise handle_api_error(e, "Failed to subscribe to symbols") from e
 
 
-@router.post("/disconnect")
-def disconnect_websocket():
+@router.post("/disconnect", response_model=None)
+def disconnect_websocket() -> dict[str, Any]:
     """Close WebSocket connection"""
     try:
         from ..services.live_market_service import live_market
@@ -71,11 +74,11 @@ def disconnect_websocket():
         live_market.disconnect()
         return {"status": "disconnected"}
     except Exception as e:
-        raise handle_api_error(e, "Failed to disconnect WebSocket")
+        raise handle_api_error(e, "Failed to disconnect WebSocket") from e
 
 
-@router.get("/status")
-async def get_websocket_status():
+@router.get("/status", response_model=None)
+async def get_websocket_status() -> dict[str, Any]:
     """Check WebSocket connection status"""
     try:
         from ..services.live_market_service import live_market
@@ -86,7 +89,7 @@ async def get_websocket_status():
 
 
 @router.websocket("/stream")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     WebSocket endpoint for frontend clients (Terminal, Screener).
     Connect to: ws://localhost:8000/api/websocket/stream
@@ -173,15 +176,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
 
     except Exception:
-        pass  # Connection already dead
+        # Connection already dead
+        logger.debug("WebSocket stream ended with an error", exc_info=True)
     finally:
         # manager.disconnect releases symbols no other client needs via on_symbols_released.
         await manager.disconnect(websocket)
 
 
-async def _safe_send(websocket: WebSocket, data: dict):
+async def _safe_send(websocket: WebSocket, data: dict) -> None:
     """Send JSON to a WebSocket, swallowing errors if client disconnected."""
-    try:
+    # Client gone, nothing to do
+    with contextlib.suppress(Exception):
         await websocket.send_json(data)
-    except (WebSocketDisconnect, RuntimeError, Exception):
-        pass  # Client gone, nothing to do

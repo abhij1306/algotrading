@@ -49,7 +49,7 @@ class IndexUniverseDefinition(Base):
 
     # Removed duplicate index - index=True on column already creates an index
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<IndexUniverseDefinition(code={self.index_code}, name={self.index_name})>"
 
 
@@ -101,8 +101,11 @@ class IndexConstituentHistory(Base):
         Index("idx_history_lookup", "universe_id", "effective_from", "effective_to"),
     )
 
-    def __repr__(self):
-        return f"<IndexConstituentHistory(symbol={self.symbol}, period={self.effective_from} to {self.effective_to})>"
+    def __repr__(self) -> str:
+        return (
+            f"<IndexConstituentHistory(symbol={self.symbol}, "
+            f"period={self.effective_from} to {self.effective_to})>"
+        )
 
 
 class IndexWeightageChange(Base):
@@ -131,8 +134,11 @@ class IndexWeightageChange(Base):
 
     __table_args__ = (Index("idx_weightage_symbol_date", "symbol", "change_date"),)
 
-    def __repr__(self):
-        return f"<IndexWeightageChange(symbol={self.symbol}, date={self.change_date}, change={self.weight_change}%)>"
+    def __repr__(self) -> str:
+        return (
+            f"<IndexWeightageChange(symbol={self.symbol}, "
+            f"date={self.change_date}, change={self.weight_change}%)>"
+        )
 
 
 class CustomUniverse(Base):
@@ -157,7 +163,7 @@ class CustomUniverse(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<CustomUniverse(code={self.universe_code}, name={self.universe_name})>"
 
 
@@ -205,5 +211,5 @@ class UniverseSnapshot(Base):
         Index("idx_snapshot_lookup", "universe_id", "snapshot_date"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<UniverseSnapshot(universe={self.universe_id}, date={self.snapshot_date})>"

@@ -6,6 +6,7 @@ Tests verify:
 - Benchmark equity matches formula: initial_capital * (final_index / initial_index)
 - Fallback to equal-weight in symbol mode
 """
+
 from datetime import date, timedelta
 from unittest.mock import Mock, patch
 
@@ -52,8 +53,7 @@ class TestBenchmarkCalculation:
         # Calculate expected benchmark equity using buy-and-hold formula
         initial_index_price = index_prices[0]
         expected_benchmark_equity = [
-            initial_capital * (price / initial_index_price)
-            for price in index_prices
+            initial_capital * (price / initial_index_price) for price in index_prices
         ]
 
         # Simulate the benchmark calculation logic from the service
@@ -64,9 +64,7 @@ class TestBenchmarkCalculation:
         for i, (expected, actual) in enumerate(
             zip(expected_benchmark_equity, actual_benchmark_equity, strict=True)
         ):
-            assert abs(actual - expected) < 0.01, (
-                f"At index {i}: expected {expected}, got {actual}"
-            )
+            assert abs(actual - expected) < 0.01, f"At index {i}: expected {expected}, got {actual}"
 
         # Verify final equity
         final_expected = initial_capital * (index_prices[-1] / index_prices[0])
@@ -75,9 +73,7 @@ class TestBenchmarkCalculation:
             f"Final equity: expected {final_expected}, got {final_actual}"
         )
 
-    def test_benchmark_equity_formula_verification(
-        self, service: Phase1BacktestService
-    ) -> None:
+    def test_benchmark_equity_formula_verification(self, service: Phase1BacktestService) -> None:
         """
         Test that benchmark equity matches formula: initial_capital * (final_index / initial_index).
 
@@ -88,7 +84,7 @@ class TestBenchmarkCalculation:
         final_index = 1250.0
 
         # Create index price series
-        dates = pd.date_range('2025-01-01', periods=5, freq='D')
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
         index_prices = pd.Series([1000.0, 1050.0, 1100.0, 1200.0, 1250.0], index=dates)
 
         # Calculate benchmark using the service's logic
@@ -109,9 +105,7 @@ class TestBenchmarkCalculation:
         for i, price in enumerate(index_prices):
             expected = initial_capital * (price / initial_index)
             actual = benchmark_equity.iloc[i]
-            assert abs(actual - expected) < 0.01, (
-                f"At point {i}: expected {expected}, got {actual}"
-            )
+            assert abs(actual - expected) < 0.01, f"At point {i}: expected {expected}, got {actual}"
 
     def test_benchmark_with_index_decline(self, service: Phase1BacktestService) -> None:
         """
@@ -122,7 +116,7 @@ class TestBenchmarkCalculation:
         initial_capital = 1_000_000.0
 
         # Index declines from 100 to 80 (-20%)
-        dates = pd.date_range('2025-01-01', periods=5, freq='D')
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
         index_prices = pd.Series([100.0, 95.0, 90.0, 85.0, 80.0], index=dates)
 
         # Calculate benchmark
@@ -154,7 +148,7 @@ class TestBenchmarkCalculation:
         initial_capital = 1_000_000.0
 
         # Volatile index: up, down, up, down, up
-        dates = pd.date_range('2025-01-01', periods=7, freq='D')
+        dates = pd.date_range("2025-01-01", periods=7, freq="D")
         index_prices = pd.Series([100.0, 110.0, 95.0, 105.0, 90.0, 115.0, 108.0], index=dates)
 
         # Calculate benchmark
@@ -170,67 +164,55 @@ class TestBenchmarkCalculation:
                 f"At point {i} (price={price}): expected {expected}, got {actual}"
             )
 
-    @patch('app.services.backtest_phase1_service.Phase1BacktestService._load_universe_index_dataset')
-    @patch('app.services.backtest_phase1_service.Phase1BacktestService._load_universe_snapshot')
+    @patch(
+        "app.services.backtest_phase1_service.Phase1BacktestService._load_universe_index_dataset"
+    )
     def test_universe_mode_uses_buy_and_hold(
         self,
-        mock_snapshot: Mock,
         mock_index: Mock,
         service: Phase1BacktestService,
     ) -> None:
         """
         Test that universe mode uses buy-and-hold benchmark calculation.
 
-        This integration test verifies the full flow in universe mode.
+        Universe mode trades and benchmarks the canonical index dataset
+        (_load_universe_index_dataset); there is no separate constituent snapshot.
         """
-        # Setup mock data
-        dates = pd.date_range('2025-01-01', periods=5, freq='D')
-
-        # Mock universe snapshot (stock prices)
-        snapshot_data = pd.DataFrame(
-            {
-                'date': dates.repeat(2),
-                'symbol': ['STOCK1', 'STOCK2'] * 5,
-                'price': [100, 200, 102, 204, 105, 210, 103, 206, 110, 220],
-            }
-        )
-        snapshot_data['date'] = snapshot_data['date'].dt.date
-        mock_snapshot.return_value = snapshot_data
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
 
         # Mock index prices
         index_data = pd.DataFrame(
             {
-                'date': dates,
-                'symbol': ['NIFTY50'] * 5,
-                'price': [1000.0, 1020.0, 1050.0, 1030.0, 1100.0],
+                "date": dates,
+                "symbol": ["NIFTY50"] * 5,
+                "price": [1000.0, 1020.0, 1050.0, 1030.0, 1100.0],
             }
         )
-        index_data['date'] = index_data['date'].dt.date
+        index_data["date"] = index_data["date"].dt.date
         mock_index.return_value = index_data
 
         # Run backtest
         payload = {
-            'instrument_type': 'equity',
-            'start_date': '2025-01-01',
-            'end_date': '2025-01-05',
-            'initial_capital': 1_000_000.0,
-            'selection': {
-                'mode': 'universe',
-                'universe': 'NIFTY50'
-            },
-            'strategies': [{
-                'strategy_id': 'MOMENTUM_2D',
-                'weight': 1.0,
-                'enabled': True,
-                'params': {'lookback_days': 2}
-            }]
+            "instrument_type": "equity",
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-05",
+            "initial_capital": 1_000_000.0,
+            "selection": {"mode": "universe", "universe": "NIFTY50"},
+            "strategies": [
+                {
+                    "strategy_id": "MOMENTUM_2D",
+                    "weight": 1.0,
+                    "enabled": True,
+                    "params": {"lookback_days": 2},
+                }
+            ],
         }
 
         result = service.run(payload)
 
         # Verify benchmark curve exists
-        assert 'benchmark_curve' in result
-        benchmark_curve = result['benchmark_curve']
+        assert "benchmark_curve" in result
+        benchmark_curve = result["benchmark_curve"]
         assert len(benchmark_curve) > 0
 
         # Verify benchmark follows buy-and-hold formula
@@ -238,14 +220,14 @@ class TestBenchmarkCalculation:
         initial_index = 1000.0
 
         for i, point in enumerate(benchmark_curve):
-            expected_equity = initial_capital * (index_data.iloc[i]['price'] / initial_index)
-            actual_equity = point['equity']
+            expected_equity = initial_capital * (index_data.iloc[i]["price"] / initial_index)
+            actual_equity = point["equity"]
             # Allow small floating point differences
             assert abs(actual_equity - expected_equity) < 1.0, (
                 f"At point {i}: expected {expected_equity}, got {actual_equity}"
             )
 
-    @patch('app.services.backtest_phase1_service.Phase1BacktestService._load_symbol_snapshot')
+    @patch("app.services.backtest_phase1_service.Phase1BacktestService._load_symbol_snapshot")
     def test_symbol_mode_uses_equal_weight_fallback(
         self, mock_snapshot: Mock, service: Phase1BacktestService
     ) -> None:
@@ -256,54 +238,51 @@ class TestBenchmarkCalculation:
         should use equal-weight returns as the benchmark.
         """
         # Setup mock data
-        dates = pd.date_range('2025-01-01', periods=5, freq='D')
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
 
         # Mock symbol snapshot
         snapshot_data = pd.DataFrame(
             {
-                'date': dates.repeat(2),
-                'symbol': ['STOCK1', 'STOCK2'] * 5,
-                'price': [100, 200, 102, 204, 105, 210, 103, 206, 110, 220],
+                "date": dates.repeat(2),
+                "symbol": ["STOCK1", "STOCK2"] * 5,
+                "price": [100, 200, 102, 204, 105, 210, 103, 206, 110, 220],
             }
         )
-        snapshot_data['date'] = snapshot_data['date'].dt.date
+        snapshot_data["date"] = snapshot_data["date"].dt.date
         mock_snapshot.return_value = snapshot_data
 
         # Run backtest in symbol mode
         payload = {
-            'instrument_type': 'equity',
-            'start_date': '2025-01-01',
-            'end_date': '2025-01-05',
-            'initial_capital': 1_000_000.0,
-            'selection': {
-                'mode': 'symbols',
-                'symbols': ['STOCK1', 'STOCK2']
-            },
-            'strategies': [{
-                'strategy_id': 'MOMENTUM_2D',
-                'weight': 1.0,
-                'enabled': True,
-                'params': {'lookback_days': 2}
-            }]
+            "instrument_type": "equity",
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-05",
+            "initial_capital": 1_000_000.0,
+            "selection": {"mode": "symbols", "symbols": ["STOCK1", "STOCK2"]},
+            "strategies": [
+                {
+                    "strategy_id": "MOMENTUM_2D",
+                    "weight": 1.0,
+                    "enabled": True,
+                    "params": {"lookback_days": 2},
+                }
+            ],
         }
 
         result = service.run(payload)
 
         # Verify benchmark curve exists
-        assert 'benchmark_curve' in result
-        benchmark_curve = result['benchmark_curve']
+        assert "benchmark_curve" in result
+        benchmark_curve = result["benchmark_curve"]
         assert len(benchmark_curve) > 0
 
         # In symbol mode, benchmark should use equal-weight logic
         # We can't verify the exact values without reimplementing the logic,
         # but we can verify the benchmark exists and has reasonable values
         for point in benchmark_curve:
-            assert point['equity'] > 0, "Benchmark equity should be positive"
-            assert 'date' in point, "Benchmark point should have date"
+            assert point["equity"] > 0, "Benchmark equity should be positive"
+            assert "date" in point, "Benchmark point should have date"
 
-    def test_benchmark_alignment_with_portfolio_dates(
-        self, service: Phase1BacktestService
-    ) -> None:
+    def test_benchmark_alignment_with_portfolio_dates(self, service: Phase1BacktestService) -> None:
         """
         Test that benchmark is correctly aligned with portfolio return dates.
 
@@ -311,16 +290,16 @@ class TestBenchmarkCalculation:
         with portfolio dates. This test verifies that alignment works correctly.
         """
         # Portfolio dates (trading days)
-        portfolio_dates = pd.date_range('2025-01-01', periods=5, freq='D')
+        portfolio_dates = pd.date_range("2025-01-01", periods=5, freq="D")
 
         # Index prices (might have gaps)
         index_dates = pd.DatetimeIndex(
-            ['2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04', '2025-01-05']
+            ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-04", "2025-01-05"]
         )
         index_prices = pd.Series([100.0, 102.0, 105.0, 103.0, 110.0], index=index_dates)
 
         # Align using the service's logic
-        aligned_index = index_prices.reindex(portfolio_dates, method='ffill')
+        aligned_index = index_prices.reindex(portfolio_dates, method="ffill")
 
         # Verify alignment
         assert len(aligned_index) == len(portfolio_dates)
@@ -336,15 +315,13 @@ class TestBenchmarkCalculation:
         assert len(benchmark_equity) == len(portfolio_dates)
         assert benchmark_equity.iloc[0] == pytest.approx(initial_capital, abs=0.01)
 
-    def test_zero_initial_index_price_handling(
-        self, service: Phase1BacktestService
-    ) -> None:
+    def test_zero_initial_index_price_handling(self, service: Phase1BacktestService) -> None:
         """
         Test handling of edge case where initial index price is zero.
 
         This should not happen in practice, but we verify the code doesn't crash.
         """
-        dates = pd.date_range('2025-01-01', periods=3, freq='D')
+        dates = pd.date_range("2025-01-01", periods=3, freq="D")
 
         # Edge case: index starts at zero (invalid but test robustness)
         index_prices = pd.Series([0.0, 100.0, 110.0], index=dates)
@@ -358,11 +335,9 @@ class TestBenchmarkCalculation:
             if initial_index_price == 0:
                 raise ValueError("Initial index price cannot be zero")
             benchmark_ret = (index_prices / initial_index_price) - 1.0
-            _ = initial_capital * (1.0 + benchmark_ret)  # noqa: F841
+            _ = initial_capital * (1.0 + benchmark_ret)
 
-    def test_benchmark_with_single_data_point(
-        self, service: Phase1BacktestService
-    ) -> None:
+    def test_benchmark_with_single_data_point(self, service: Phase1BacktestService) -> None:
         """
         Test benchmark calculation with only one data point.
 
@@ -371,7 +346,7 @@ class TestBenchmarkCalculation:
         initial_capital = 1_000_000.0
 
         # Single data point
-        dates = pd.date_range('2025-01-01', periods=1, freq='D')
+        dates = pd.date_range("2025-01-01", periods=1, freq="D")
         index_prices = pd.Series([100.0], index=dates)
 
         # Calculate benchmark
@@ -383,9 +358,7 @@ class TestBenchmarkCalculation:
         assert abs(benchmark_equity.iloc[0] - initial_capital) < 0.01
         assert abs(benchmark_ret.iloc[0]) < 0.0001  # Return should be ~0
 
-    def test_benchmark_preserves_initial_capital(
-        self, service: Phase1BacktestService
-    ) -> None:
+    def test_benchmark_preserves_initial_capital(self, service: Phase1BacktestService) -> None:
         """
         Test that benchmark equity at t=0 always equals initial capital.
 
@@ -393,7 +366,7 @@ class TestBenchmarkCalculation:
         """
         initial_capital = 750_000.0
 
-        dates = pd.date_range('2025-01-01', periods=10, freq='D')
+        dates = pd.date_range("2025-01-01", periods=10, freq="D")
         # Random index prices
         np.random.seed(42)
         index_prices = pd.Series(
@@ -410,6 +383,7 @@ class TestBenchmarkCalculation:
         assert abs(benchmark_equity.iloc[0] - initial_capital) < 0.01, (
             f"Initial benchmark equity should be {initial_capital}, got {benchmark_equity.iloc[0]}"
         )
+
 
 class TestBenchmarkProperties:
     """Property-based tests for benchmark calculation using Hypothesis."""
@@ -429,8 +403,8 @@ class TestBenchmarkProperties:
                 allow_infinity=False,
             ),
             min_size=5,
-            max_size=60
-        )
+            max_size=60,
+        ),
     )
     @settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
     def test_property_benchmark_buy_and_hold_calculation(
@@ -465,7 +439,7 @@ class TestBenchmarkProperties:
         assume(len(index_prices) >= 2)
 
         # Create pandas Series with datetime index
-        dates = pd.date_range('2025-01-01', periods=len(index_prices), freq='D')
+        dates = pd.date_range("2025-01-01", periods=len(index_prices), freq="D")
         index_series = pd.Series(index_prices, index=dates)
 
         # Calculate benchmark using the service's logic

@@ -39,13 +39,9 @@ class SmartTraderAPIClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<APIResponse<T>> {
     try {
       const url = joinUrl(this.baseURL, endpoint);
-      const response = await fetch(url, {
-        ...options,
-        headers: {
-          "Content-Type": "application/json",
-          ...options.headers,
-        },
-      });
+      const headers = new Headers(options.headers);
+      if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+      const response = await fetch(url, { ...options, headers });
 
       // Handle non-OK responses
       if (!response.ok) {

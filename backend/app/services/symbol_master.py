@@ -21,14 +21,18 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .index_universe_loader import IndexUniverseLoader
 
 logger = logging.getLogger(__name__)
 
 # Lazy import to avoid circular dependencies
-_index_universe_loader = None
+_index_universe_loader: "IndexUniverseLoader | None" = None
 
 
-def _get_index_universe_loader():
+def _get_index_universe_loader() -> "IndexUniverseLoader":
     """Lazy load the index universe loader to avoid circular imports."""
     global _index_universe_loader
     if _index_universe_loader is None:
@@ -171,11 +175,11 @@ class SymbolMaster:
         "MIDCPNIFTY": {"lot_size": 75, "tick_size": 0.05},
     }
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cache: dict[str, SymbolInfo] = {}
         self._load_symbol_master()
 
-    def _load_symbol_master(self):
+    def _load_symbol_master(self) -> None:
         """
         Load symbol master from database and index universe.
         This runs once at startup.
@@ -256,7 +260,7 @@ class SymbolMaster:
         # Better approach: Check if date equals last Thursday?
         # Let's import a utility if available. If not, implementing a simple last-thursday check.
 
-        def get_last_thursday(year, month):
+        def get_last_thursday(year: int, month: int) -> date:
             import calendar
 
             c = calendar.monthcalendar(year, month)
@@ -271,7 +275,8 @@ class SymbolMaster:
         last_thurs = get_last_thursday(expiry.year, expiry.month)
 
         # If expiry matches last thursday, use Monthly format
-        # Note: Handling holidays (if last Thurs is holiday, expiry is Wed) is tricky without calendar.
+        # Note: Handling holidays (if last Thurs is holiday, expiry is Wed)
+        # is tricky without a calendar.
         # But Fyers usually sticks to the contract spec.
         # Let's try matching exact date.
 
@@ -375,7 +380,9 @@ class SymbolMaster:
             return alias_match
 
         # 1. Try Fyers format parsing (robust regex)
-        # FYERS_PATTERN = re.compile(r'^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$', re.IGNORECASE)
+        # FYERS_PATTERN = re.compile(
+        #     r'^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$', re.IGNORECASE
+        # )
         match = self.FYERS_PATTERN.match(symbol)
         if match:
             # groups: (exchange, ticker, -series, series)
@@ -479,17 +486,17 @@ class SymbolMaster:
         self._cache[ticker] = info
         return info
 
-    def is_valid(self, symbol: str, format: SymbolFormat = SymbolFormat.DB_FORMAT) -> bool:
+    def is_valid(self, symbol: str, fmt: SymbolFormat = SymbolFormat.DB_FORMAT) -> bool:
         """Validate symbol format"""
         if not symbol:
             return False
 
         symbol = symbol.strip().upper()
-        if format == SymbolFormat.DB_FORMAT:
+        if fmt == SymbolFormat.DB_FORMAT:
             return bool(self.DB_PATTERN.match(symbol))
-        elif format == SymbolFormat.FYERS_FORMAT:
+        elif fmt == SymbolFormat.FYERS_FORMAT:
             return bool(self.FYERS_PATTERN.match(symbol))
-        elif format == SymbolFormat.ISIN_FORMAT:
+        elif fmt == SymbolFormat.ISIN_FORMAT:
             return bool(self.ISIN_PATTERN.match(symbol))
         return False
 

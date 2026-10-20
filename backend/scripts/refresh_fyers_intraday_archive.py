@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,8 @@ from typing import Any
 import pandas as pd
 
 from app.services.fyers_client import get_fyers_client
-from app.services.universe import get_universe_service
 from app.services.symbol_master import symbol_master
+from app.services.universe import get_universe_service
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE_ROOT = PROJECT_ROOT / "archive" / "fyers_intraday"
@@ -63,7 +64,9 @@ def build_windows(args: argparse.Namespace) -> list[tuple[int, date, date]]:
     return windows
 
 
-def iter_subranges(range_from: date, range_to: date, *, max_days: int = INTRADAY_MAX_DAYS):
+def iter_subranges(
+    range_from: date, range_to: date, *, max_days: int = INTRADAY_MAX_DAYS
+) -> Iterator[tuple[date, date]]:
     current = range_from
     step = timedelta(days=max_days - 1)
     while current <= range_to:
@@ -99,15 +102,32 @@ def fetch_history(
 
 def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -> pd.DataFrame:
     if not candles:
-        return pd.DataFrame(columns=["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "fyers_symbol",
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
+        )
     frame = pd.DataFrame(candles, columns=["epoch", "open", "high", "low", "close", "volume"])
     frame["timestamp"] = (
-        pd.to_datetime(frame["epoch"], unit="s", utc=True).dt.tz_convert(IST_TIMEZONE).dt.tz_localize(None)
+        pd.to_datetime(frame["epoch"], unit="s", utc=True)
+        .dt.tz_convert(IST_TIMEZONE)
+        .dt.tz_localize(None)
     )
     frame["symbol"] = symbol
     frame["fyers_symbol"] = fyers_symbol
     frame = frame[["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"]]
-    return frame.drop_duplicates(subset=["symbol", "timestamp"]).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    return (
+        frame.drop_duplicates(subset=["symbol", "timestamp"])
+        .sort_values(["timestamp", "symbol"])
+        .reset_index(drop=True)
+    )
 
 
 def main() -> int:
@@ -131,7 +151,13 @@ def main() -> int:
     }
     if args.dry_run:
         for year, range_from, range_to in windows:
-            summary["windows"].append({"year": year, "range_from": range_from.isoformat(), "range_to": range_to.isoformat()})
+            summary["windows"].append(
+                {
+                    "year": year,
+                    "range_from": range_from.isoformat(),
+                    "range_to": range_to.isoformat(),
+                }
+            )
         print(json.dumps(summary, indent=2))
         return 0
 
@@ -173,8 +199,21 @@ def main() -> int:
             if idx % 100 == 0:
                 print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
 
-        combined = pd.concat(year_parts, ignore_index=True) if year_parts else pd.DataFrame(
-            columns=["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"]
+        combined = (
+            pd.concat(year_parts, ignore_index=True)
+            if year_parts
+            else pd.DataFrame(
+                columns=[
+                    "symbol",
+                    "fyers_symbol",
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
         )
         if not combined.empty:
             combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")

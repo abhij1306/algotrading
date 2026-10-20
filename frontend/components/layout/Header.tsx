@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Search, Bell, Moon, Sun, Command } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -10,13 +10,7 @@ interface HeaderProps {
 
 export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
   const navigate = useNavigate();
-  const [isDark, setIsDark] = useState(false);
-
-  useEffect(() => {
-    if (globalThis.window !== undefined) {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    }
-  }, []);
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains("dark"));
 
   const toggleTheme = () => {
     const html = document.documentElement;

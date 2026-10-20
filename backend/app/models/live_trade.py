@@ -23,5 +23,5 @@ class LiveTrade(Base):
 
     created_at = Column(DateTime, default=func.now())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<LiveTrade {self.id} {self.side} {self.filled_qty} @ {self.filled_price}>"

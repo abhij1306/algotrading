@@ -27,6 +27,7 @@ def test_db_to_fyers_conversion() -> None:
     fyers_special = symbol_master.to_fyers(special_symbol)
     assert fyers_special == "NSE:M&M-EQ"
 
+
 def test_fyers_to_db_conversion() -> None:
     """Test Fyers format to DB format conversion"""
     fyers_symbol = "NSE:SBIN-EQ"
@@ -37,6 +38,7 @@ def test_fyers_to_db_conversion() -> None:
     db_index = symbol_master.to_db(fyers_index)
     assert db_index == "NIFTY50"
 
+
 def test_corporate_action_alias_ltim_to_ltm() -> None:
     """Legacy LTIM symbol should map to LTM for provider compatibility."""
     assert symbol_master.to_db("LTIM") == "LTM"
@@ -44,12 +46,14 @@ def test_corporate_action_alias_ltim_to_ltm() -> None:
     assert symbol_master.to_fyers("LTIM") == "NSE:LTM-EQ"
     assert symbol_master.to_fyers("NSE:LTIM-EQ") == "NSE:LTM-EQ"
 
+
 def test_roundtrip_conversion() -> None:
     """Test bidirectional conversion"""
     original = "RELIANCE"
     fyers_format = symbol_master.to_fyers(original)
     back_to_db = symbol_master.to_db(fyers_format)
     assert back_to_db == original
+
 
 def test_batch_conversion() -> None:
     """Test batch conversions"""
@@ -59,12 +63,14 @@ def test_batch_conversion() -> None:
     assert all(s.startswith("NSE:") for s in fyers_symbols)
     assert all(s.endswith("-EQ") for s in fyers_symbols)
 
+
 def test_invalid_symbol_rejection() -> None:
     """Test that invalid symbols are rejected"""
     with pytest.raises(ValueError):
         symbol_master.to_fyers("INVALID#SYMBOL")
 
     # `to_db` is intentionally lenient, so this test covers only the strict `to_fyers` path.
+
 
 @pytest.mark.asyncio
 async def test_websocket_symbol_mapping() -> None:

@@ -32,7 +32,7 @@ class ClientConnection:
 
 
 class ConnectionManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.subscriptions: dict[WebSocket, set[str]] = {}
         self.connections: dict[WebSocket, ClientConnection] = {}
         self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
@@ -41,7 +41,7 @@ class ConnectionManager:
         self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()
 
-    def set_loop(self, loop):
+    def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         """Set event loop for thread-safe broadcasting"""
         self.loop = loop
         logger.debug(f"[WSManager] Event loop set: {loop is not None}")
@@ -102,7 +102,9 @@ class ConnectionManager:
                 )
         runtime_metrics.increment("websocket.connections.disconnected")
         runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
-        runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
+        runtime_metrics.set_gauge(
+            "websocket.subscriptions.active", float(len(self._global_subscriptions))
+        )
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
         released = sorted(removed_symbols - self._global_subscriptions)
         if released and self.on_symbols_released:
@@ -112,7 +114,7 @@ class ConnectionManager:
                 logger.warning("[WSManager] Releasing provider symbols failed: %s", exc)
         return set(released)
 
-    async def subscribe(self, websocket: WebSocket, symbols: list[str]):
+    async def subscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
         """Subscribe a specific connection to symbols"""
         async with self._lock:
             client = self.connections.get(websocket)
@@ -121,13 +123,17 @@ class ConnectionManager:
                     client.subscriptions.add(symbol)
                     self._global_subscriptions.add(symbol)
                 runtime_metrics.increment("websocket.subscriptions.added", float(len(symbols)))
-                runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
+                runtime_metrics.set_gauge(
+                    "websocket.subscriptions.active", float(len(self._global_subscriptions))
+                )
                 logger.debug(
-                    f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(client.subscriptions)}"
+                    "[WSManager] Client subscribed to %s symbols. Total symbols for client: %s",
+                    len(symbols),
+                    len(client.subscriptions),
                 )
         await asyncio.sleep(0)
 
-    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
+    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
         """Unsubscribe a specific connection from symbols"""
         async with self._lock:
             client = self.connections.get(websocket)
@@ -140,9 +146,13 @@ class ConnectionManager:
                     else set()
                 )
                 runtime_metrics.increment("websocket.subscriptions.removed", float(len(symbols)))
-                runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
+                runtime_metrics.set_gauge(
+                    "websocket.subscriptions.active", float(len(self._global_subscriptions))
+                )
                 logger.debug(
-                    f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(client.subscriptions)}"
+                    "[WSManager] Client unsubscribed from %s symbols. Remaining: %s",
+                    len(symbols),
+                    len(client.subscriptions),
                 )
         await asyncio.sleep(0)
 
@@ -151,10 +161,11 @@ class ConnectionManager:
         # Return a copy so callers can safely diff before/after subscribe/unsubscribe.
         return set(self._global_subscriptions)
 
-    async def broadcast(self, message: dict[str, Any]):
+    async def broadcast(self, message: dict[str, Any]) -> None:
         """
         Broadcast JSON message to clients.
-        Supports 'ticker_batch' (filtered per client) and single 'ticker' (broadcast to subscribers).
+        Supports 'ticker_batch' (filtered per client) and single 'ticker'
+        (broadcast to subscribers).
         """
         async with self._lock:
             active_connections = list(self.connections.values())
@@ -190,7 +201,9 @@ class ConnectionManager:
                     client_batch = [t for t in batch_data if t.get("symbol") in client_subs]
                     if not client_batch:
                         continue
-                    runtime_metrics.increment("websocket.messages.batched_tickers", float(len(client_batch)))
+                    runtime_metrics.increment(
+                        "websocket.messages.batched_tickers", float(len(client_batch))
+                    )
                     runtime_metrics.set_gauge("websocket.batch.last_size", float(len(client_batch)))
                     outbound = {"type": "ticker_batch", "data": client_batch}
                 else:
@@ -234,7 +247,9 @@ class ConnectionManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("[WSManager] Sender loop failed for client %s", client.websocket, exc_info=exc)
+            logger.exception(
+                "[WSManager] Sender loop failed for client %s", client.websocket, exc_info=exc
+            )
             await self.disconnect(client.websocket)
 
     async def get_health_snapshot(self) -> dict[str, Any]:
@@ -242,7 +257,9 @@ class ConnectionManager:
             active_connections = list(self.connections.values())
             active_symbols = len(self._global_subscriptions)
             pending_messages = sum(conn.queue.qsize() for conn in active_connections)
-            runtime_metrics.set_gauge("websocket.connections.active", float(len(active_connections)))
+            runtime_metrics.set_gauge(
+                "websocket.connections.active", float(len(active_connections))
+            )
             runtime_metrics.set_gauge("websocket.subscriptions.active", float(active_symbols))
             runtime_metrics.set_gauge("websocket.queue.pending_total", float(pending_messages))
         return {

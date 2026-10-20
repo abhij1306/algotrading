@@ -43,5 +43,5 @@ class LivePosition(Base):
 
     last_synced_at = Column(DateTime, default=func.now())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<LivePosition {self.symbol} {self.net_qty} @ {self.net_avg}>"

@@ -143,10 +143,17 @@ pnpm build      # vp build
 
 ### Backend
 ```bash
-cd backend
+# from the repo root (root ruff.toml covers start_dev.py, scripts/, data_platform/)
+ruff format --check .
 ruff check .
-pytest
+
+cd backend
+pytest        # test deps: pip install -r requirements-dev.txt
 ```
+
+### CI
+`.github/workflows/ci.yml` runs both blocks above on every pull request and on pushes to main.
+Ruff, `vp check` and the tests are expected to stay at zero errors and zero warnings.
 
 ---
 

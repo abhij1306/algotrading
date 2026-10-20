@@ -15,6 +15,7 @@ from app.main import app
 # Test database URL (use in-memory SQLite for tests)
 SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
 
+
 @pytest.fixture(scope="session")
 def test_engine() -> Generator[Engine, None, None]:
     """Create test database engine"""
@@ -27,6 +28,7 @@ def test_engine() -> Generator[Engine, None, None]:
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
+
 @pytest.fixture(scope="function")
 def db_session(test_engine: Engine) -> Generator[Session, None, None]:
     """Create a new database session for each test"""
@@ -37,9 +39,11 @@ def db_session(test_engine: Engine) -> Generator[Session, None, None]:
     finally:
         session.close()
 
+
 @pytest.fixture(scope="function")
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create a test client with database override"""
+
     def override_get_db() -> Generator[Session, None, None]:
         try:
             yield db_session
@@ -50,6 +54,7 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
 
 @pytest.fixture
 def sample_portfolio_data() -> dict[str, object]:

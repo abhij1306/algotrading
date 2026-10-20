@@ -3,7 +3,8 @@ Data repository layer for database operations
 Provides clean interface for data access
 """
 
-from datetime import date, datetime, timedelta, timezone
+import logging
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import and_, desc
@@ -18,11 +19,13 @@ from .database import (
     QuarterlyResult,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class DataRepository:
     """Repository pattern for data access"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         self.db = db
 
     # ==================== COMPANY OPERATIONS ====================
@@ -31,7 +34,7 @@ class DataRepository:
         """Get company by symbol"""
         return self.db.query(Company).filter(Company.symbol == symbol).first()
 
-    def get_or_create_company(self, symbol: str, **kwargs) -> Company:
+    def get_or_create_company(self, symbol: str, **kwargs: object) -> Company:
         """Get existing company or create new"""
         company = self.get_company(symbol)
         if not company:
@@ -52,7 +55,9 @@ class DataRepository:
 
     # ==================== HISTORICAL PRICE OPERATIONS ====================
 
-    def save_historical_prices(self, symbol: str, df: pd.DataFrame, source: str = "bhavcopy"):
+    def save_historical_prices(
+        self, symbol: str, df: pd.DataFrame, source: str = "bhavcopy"
+    ) -> int:
         """Save historical prices from DataFrame and calculate technical indicators"""
         try:
             company = self.get_or_create_company(symbol)
@@ -133,7 +138,7 @@ class DataRepository:
 
                                 self.db.commit()
                 except Exception as e:
-                    print(f"Warning: Failed to calculate indicators for {symbol}: {e}")
+                    logger.warning("Failed to calculate indicators for %s: %s", symbol, e)
                     # Don't fail the whole operation if indicator calculation fails
 
             # Log update
@@ -147,7 +152,8 @@ class DataRepository:
                     end_date=df.index.max().date(),
                 )
             except Exception:
-                pass  # Don't fail if logging fails
+                # Don't fail if logging fails
+                logger.debug("Failed to log data update for %s", symbol, exc_info=True)
 
             return records_added
         except Exception as e:
@@ -384,7 +390,7 @@ class DataRepository:
                     csv_path = os.path.join(intraday_root, "BANKNIFTY_5min_complete.csv")
 
             if csv_path and os.path.exists(csv_path):
-                print(f"[DATA] Reading intraday data from CSV: {csv_path}")
+                logger.info("[DATA] Reading intraday data from CSV: %s", csv_path)
                 df = pd.read_csv(csv_path)
                 # Map 'datetime' from CSV to 'timestamp'
                 if "datetime" in df.columns:
@@ -422,7 +428,9 @@ class DataRepository:
 
     # ==================== FINANCIAL STATEMENT OPERATIONS ====================
 
-    def save_financial_statement(self, symbol: str, data: dict, period_type: str = "quarterly"):
+    def save_financial_statement(
+        self, symbol: str, data: dict, period_type: str = "quarterly"
+    ) -> None:
         """Save financial statement data"""
         company = self.get_or_create_company(symbol)
 
@@ -447,7 +455,7 @@ class DataRepository:
             for key, value in data.items():
                 if hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.updated_at = datetime.now(UTC)
         else:
             # Create new
             statement = FinancialStatement(
@@ -482,7 +490,7 @@ class DataRepository:
 
     # ==================== QUARTERLY RESULT OPERATIONS ====================
 
-    def save_quarterly_result(self, symbol: str, data: dict):
+    def save_quarterly_result(self, symbol: str, data: dict) -> None:
         """Save quarterly result"""
         company = self.get_or_create_company(symbol)
 
@@ -501,7 +509,7 @@ class DataRepository:
             for key, value in data.items():
                 if hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.updated_at = datetime.now(UTC)
         else:
             result = QuarterlyResult(company_id=company.id, **data)
             self.db.add(result)
@@ -533,12 +541,12 @@ class DataRepository:
         error_message: str = None,
         start_date: date = None,
         end_date: date = None,
-    ):
+    ) -> None:
         """Log data update"""
         log = DataUpdateLog(
             company_id=company_id,
             data_type=data_type,
-            last_update=datetime.now(timezone.utc),
+            last_update=datetime.now(UTC),
             records_updated=records_updated,
             status=status,
             error_message=error_message,

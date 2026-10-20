@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, time
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,13 +19,16 @@ from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
 from .symbol_master import SymbolFormat, symbol_master
 
+if TYPE_CHECKING:
+    from ..brokers.plugins.fyers import FyersBroker
+
 logger = logging.getLogger(__name__)
 
 
 class RiskStatus(Enum):
     """Risk check status"""
 
-    PASS = "PASS"
+    PASS = "PASS"  # noqa: S105 - risk status value and not a password
     FAIL = "FAIL"
     WARNING = "WARNING"
 
@@ -68,11 +72,11 @@ class RiskManager:
     Risk Manager for pre-trade and post-trade risk validation.
     """
 
-    def __init__(self, config: RiskConfig | None = None):
+    def __init__(self, config: RiskConfig | None = None) -> None:
         self.config = config or RiskConfig()
         self._broker = None
 
-    def _get_broker(self):
+    def _get_broker(self) -> "FyersBroker":
         """Lazy load Fyers broker"""
         if self._broker is None:
             from ..brokers.plugins.fyers import FyersBroker
@@ -180,7 +184,10 @@ class RiskManager:
         if not is_market_hours():
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
-                message="Market is closed. Orders can only be placed during market hours (9:15 AM - 3:30 PM IST).",
+                message=(
+                    "Market is closed. Orders can only be placed during market hours "
+                    "(9:15 AM - 3:30 PM IST)."
+                ),
                 code="MARKET_CLOSED",
             )
 
@@ -216,7 +223,10 @@ class RiskManager:
             if total_pnl < -self.config.max_daily_loss:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message=f"Daily loss limit reached. Current P&L: ₹{total_pnl:.2f}, Limit: ₹{-self.config.max_daily_loss:.2f}",
+                    message=(
+                        f"Daily loss limit reached. Current P&L: ₹{total_pnl:.2f}, "
+                        f"Limit: ₹{-self.config.max_daily_loss:.2f}"
+                    ),
                     code="DAILY_LOSS_LIMIT",
                     details={"current_pnl": total_pnl, "limit": -self.config.max_daily_loss},
                 )
@@ -248,7 +258,10 @@ class RiskManager:
         if quantity > self.config.max_position_size:
             return RiskCheckResult(
                 status=RiskStatus.FAIL,
-                message=f"Order size {quantity} exceeds maximum {self.config.max_position_size} for {symbol}",
+                message=(
+                    f"Order size {quantity} exceeds maximum "
+                    f"{self.config.max_position_size} for {symbol}"
+                ),
                 code="POSITION_SIZE_LIMIT",
                 details={"quantity": quantity, "limit": self.config.max_position_size},
             )
@@ -276,7 +289,10 @@ class RiskManager:
                 )
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message="Cannot verify exposure because one or more open positions are missing live prices.",
+                    message=(
+                        "Cannot verify exposure because one or more open positions "
+                        "are missing live prices."
+                    ),
                     code="EXPOSURE_LTP_MISSING",
                     details={"symbols": symbols},
                 )
@@ -303,7 +319,10 @@ class RiskManager:
             if total_exposure > self.config.max_total_exposure:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message=f"Total exposure ₹{total_exposure:.2f} exceeds limit ₹{self.config.max_total_exposure:.2f}",
+                    message=(
+                        f"Total exposure ₹{total_exposure:.2f} exceeds limit "
+                        f"₹{self.config.max_total_exposure:.2f}"
+                    ),
                     code="EXPOSURE_LIMIT",
                     details={
                         "current_exposure": current_exposure,
@@ -346,7 +365,10 @@ class RiskManager:
             if available < estimated_margin:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message=f"Insufficient margin. Available: ₹{available:.2f}, Required: ₹{estimated_margin:.2f}",
+                    message=(
+                        f"Insufficient margin. Available: ₹{available:.2f}, "
+                        f"Required: ₹{estimated_margin:.2f}"
+                    ),
                     code="INSUFFICIENT_MARGIN",
                     details={
                         "available": available,
@@ -428,7 +450,10 @@ class RiskManager:
             if total_short > self.config.max_naked_short_quantity:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message=f"Naked short option limit exceeded. Current: {current_short}, Adding: {quantity}, Limit: {self.config.max_naked_short_quantity}",
+                    message=(
+                        f"Naked short option limit exceeded. Current: {current_short}, "
+                        f"Adding: {quantity}, Limit: {self.config.max_naked_short_quantity}"
+                    ),
                     code="NAKED_SHORT_LIMIT",
                     details={
                         "current_short": current_short,

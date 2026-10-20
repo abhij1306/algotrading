@@ -79,7 +79,7 @@ class HistoricalUniverseManager:
     - Integration with existing symbol mapper
     """
 
-    def __init__(self, data_path: Path | None = None):
+    def __init__(self, data_path: Path | None = None) -> None:
         self.data_path = data_path or DEFAULT_DATA_PATH
         self.symbol_master = symbol_master
         self.symbol_lifecycle = SymbolLifecycleService()
@@ -146,7 +146,8 @@ class HistoricalUniverseManager:
             return []
 
         # Query constituents that were active at target_date
-        # A symbol is active if: effective_from <= target_date AND (effective_to is NULL OR effective_to >= target_date)
+        # A symbol is active if: effective_from <= target_date
+        # AND (effective_to is NULL OR effective_to >= target_date)
         results = (
             db.query(IndexConstituentHistory)
             .filter(
@@ -358,7 +359,7 @@ class UniverseManager(HistoricalUniverseManager):
     - Live screening capabilities
     """
 
-    def __init__(self, data_path: Path | None = None):
+    def __init__(self, data_path: Path | None = None) -> None:
         super().__init__(data_path)
 
     def get_custom_universe_symbols(

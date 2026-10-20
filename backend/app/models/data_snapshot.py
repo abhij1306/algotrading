@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Column,
@@ -28,7 +28,7 @@ class DatasetRun(Base):
     mode = Column(String(20), nullable=False)  # full | incremental
     status = Column(String(20), nullable=False, index=True)  # running | completed | failed
     source_manifest_hash = Column(String(64))
-    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    started_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     completed_at = Column(DateTime)
     details_json = Column(Text)
 
@@ -47,7 +47,7 @@ class DatasetArtifact(Base):
     max_date = Column(Date)
     checksum = Column(String(64))
     metadata_json = Column(Text)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("run_id", "dataset_name", name="uq_dataset_artifact_run_name"),
@@ -65,7 +65,7 @@ class SnapshotIndexStock(Base):
     artifact_path = Column(String(500), nullable=False)
     run_id = Column(String(64), ForeignKey(DATASET_RUN_ID_FK), nullable=False, index=True)
     row_pointer = Column(String(120))
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("snapshot_date", "symbol", name="uq_snapshot_stock_date_symbol"),
@@ -84,7 +84,7 @@ class SnapshotIndexUniverse(Base):
     artifact_path = Column(String(500), nullable=False)
     run_id = Column(String(64), ForeignKey(DATASET_RUN_ID_FK), nullable=False, index=True)
     version = Column(String(40), nullable=False, default="v1")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(

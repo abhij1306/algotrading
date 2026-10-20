@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -11,8 +12,6 @@ from sqlalchemy import func
 from ..database import db_session_scope
 from ..models import Company, HistoricalPrice
 from ..utils.runtime_metrics import runtime_metrics
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +127,17 @@ class DailyHistoryService:
                     "source_layer",
                 ]
             ]
-            .dropna(subset=["symbol", "date", "open", "high", "low", "close", "close_ref", "volume"])
+            .dropna(
+                subset=["symbol", "date", "open", "high", "low", "close", "close_ref", "volume"]
+            )
             .sort_values(["symbol", "date"])
             .reset_index(drop=True)
         )
         duration_ms = (perf_counter() - started) * 1000.0
         runtime_metrics.observe_ms("history.equity_source.load_ms", duration_ms)
-        runtime_metrics.set_gauge("history.equity_source.rows", float(len(self._cached_equity_source)))
+        runtime_metrics.set_gauge(
+            "history.equity_source.rows", float(len(self._cached_equity_source))
+        )
         logger.info(
             "Loaded equity source cache rows=%s duration_ms=%.2f",
             len(self._cached_equity_source),
@@ -185,7 +188,9 @@ class DailyHistoryService:
         )
         duration_ms = (perf_counter() - started) * 1000.0
         runtime_metrics.observe_ms("history.index_source.load_ms", duration_ms)
-        runtime_metrics.set_gauge("history.index_source.rows", float(len(self._cached_index_source)))
+        runtime_metrics.set_gauge(
+            "history.index_source.rows", float(len(self._cached_index_source))
+        )
         logger.info(
             "Loaded index source cache rows=%s duration_ms=%.2f",
             len(self._cached_index_source),
@@ -222,12 +227,16 @@ class DailyHistoryService:
             if end_date is not None:
                 query = query.filter(HistoricalPrice.date <= end_date)
             rows = query.all()
-        runtime_metrics.observe_ms("history.equity_db.query_ms", (perf_counter() - started) * 1000.0)
+        runtime_metrics.observe_ms(
+            "history.equity_db.query_ms", (perf_counter() - started) * 1000.0
+        )
 
         if not rows:
             return self._empty_equity_frame()
 
-        df = pd.DataFrame(rows, columns=["symbol", "date", "open", "high", "low", "close", "volume"])
+        df = pd.DataFrame(
+            rows, columns=["symbol", "date", "open", "high", "low", "close", "volume"]
+        )
         for column in ["open", "high", "low", "close", "volume"]:
             df[column] = pd.to_numeric(df[column], errors="coerce")
         df["symbol"] = df["symbol"].astype(str).str.upper()
@@ -247,7 +256,9 @@ class DailyHistoryService:
                     "source_layer",
                 ]
             ]
-            .dropna(subset=["symbol", "date", "open", "high", "low", "close", "close_ref", "volume"])
+            .dropna(
+                subset=["symbol", "date", "open", "high", "low", "close", "close_ref", "volume"]
+            )
             .sort_values(["symbol", "date"])
             .reset_index(drop=True)
         )

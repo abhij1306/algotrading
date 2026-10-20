@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
 from time import perf_counter
-from typing import Iterator
 
 
 @dataclass
@@ -56,7 +56,9 @@ class RuntimeMetrics:
         finally:
             self.observe_ms(name, (perf_counter() - started) * 1000.0)
 
-    def snapshot(self, prefix: str | None = None, *, strip_prefix: bool = False) -> dict[str, object]:
+    def snapshot(
+        self, prefix: str | None = None, *, strip_prefix: bool = False
+    ) -> dict[str, object]:
         with self._lock:
             counters = dict(self._counters)
             gauges = dict(self._gauges)

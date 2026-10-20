@@ -140,9 +140,7 @@ class LiveMarketService:
                 if not self._wait_for_provider_connection(WS_CONNECT_TIMEOUT_S):
                     if self._explicitly_disconnected:
                         return
-                    raise ConnectionError(
-                        f"provider not connected within {WS_CONNECT_TIMEOUT_S}s"
-                    )
+                    raise ConnectionError(f"provider not connected within {WS_CONNECT_TIMEOUT_S}s")
                 if not self._replayed_for_attempt:
                     self.on_ws_connected()
                 return
@@ -225,7 +223,9 @@ class LiveMarketService:
                     runtime_metrics.increment("live_market.flush.batches")
                     runtime_metrics.increment("live_market.flush.ticks", float(len(batch)))
                     runtime_metrics.observe_ms("live_market.flush.broadcast_ms", duration_ms)
-                    runtime_metrics.set_gauge("live_market.buffered_symbols", float(len(self.tick_buffer)))
+                    runtime_metrics.set_gauge(
+                        "live_market.buffered_symbols", float(len(self.tick_buffer))
+                    )
 
             except asyncio.CancelledError:
                 logger.info("Broadcast flush loop cancelled")
@@ -317,7 +317,9 @@ class LiveMarketService:
 
                     # Update latest values cache
                     self.latest_values[db_symbol] = tick_db
-                    runtime_metrics.set_gauge("live_market.latest_values", float(len(self.latest_values)))
+                    runtime_metrics.set_gauge(
+                        "live_market.latest_values", float(len(self.latest_values))
+                    )
 
                     # Buffer for batch broadcast to avoid duplicate immediate sends.
                     asyncio.run_coroutine_threadsafe(self._update_buffer(tick_db), self.loop)
@@ -424,7 +426,9 @@ class LiveMarketService:
                     self._is_connecting = False
                 else:
                     # Run connection in a separate thread to avoid blocking startup
-                    self._ws_thread = threading.Thread(target=self._run_provider_connect, daemon=True)
+                    self._ws_thread = threading.Thread(
+                        target=self._run_provider_connect, daemon=True
+                    )
                     self._ws_thread.start()
                     logger.info("[START] WebSocket connection started in background thread")
                     return "started"

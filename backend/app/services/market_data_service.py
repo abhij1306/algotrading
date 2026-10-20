@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import requests
@@ -7,10 +9,17 @@ from ..utils.logger import get_logger
 
 logger = get_logger("services.market_data")
 
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+)
+
 
 class MarketDataService:
     @staticmethod
-    def calculate_adx(high, low, close, period=14):
+    def calculate_adx(
+        high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+    ) -> pd.Series | None:
         """
         Manual ADX calculation to avoid pandas_ta dependency
         """
@@ -49,7 +58,7 @@ class MarketDataService:
             return None
 
     @staticmethod
-    def get_global_indices():
+    def get_global_indices() -> list[dict[str, Any]]:
         """
         Fetches global indices and commodities using yfinance.
         Includes S&P 500, Nasdaq, Nifty, Gold, Silver.
@@ -148,7 +157,7 @@ class MarketDataService:
         return results
 
     @staticmethod
-    def get_market_sentiment():
+    def get_market_sentiment() -> dict[str, Any]:
         """
         Fetches Fear & Greed Index from CNN (US) and approximates India sentiment.
         """
@@ -160,9 +169,7 @@ class MarketDataService:
         # 1. US Fear & Greed (CNN)
         try:
             url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
+            headers = {"User-Agent": _BROWSER_USER_AGENT}
             # Use session with retries
             session = requests.Session()
             retries = requests.adapters.HTTPAdapter(max_retries=1)
@@ -182,8 +189,10 @@ class MarketDataService:
         try:
             url = "https://www.tickertape.in/market-mood-index"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "User-Agent": _BROWSER_USER_AGENT,
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                ),
                 "Accept-Language": "en-US,en;q=0.5",
             }
 
@@ -234,7 +243,8 @@ class MarketDataService:
                     )
                 else:
                     logger.warning(
-                        f"Tickertape MMI: No valid scores found from {len(potential_scores)} candidates"
+                        "Tickertape MMI: No valid scores found from %s candidates",
+                        len(potential_scores),
                     )
                     raise Exception("MMI score not found on page")
 
@@ -281,7 +291,7 @@ class MarketDataService:
         return sentiment
 
     @staticmethod
-    def get_market_condition():
+    def get_market_condition() -> dict[str, Any]:
         """
         Determines if Nifty 50 is Range-bound or Trending using Technical Analysis (ADX).
         """
@@ -352,7 +362,10 @@ class MarketDataService:
                 "status": condition,
                 "adx": round(current_adx, 2),
                 "trend_strength": trend_strength,
-                "technical_summary": f"ADX is {current_adx:.1f}. Price is {'above' if current_price > sma50 else 'below'} SMA50.",
+                "technical_summary": (
+                    f"ADX is {current_adx:.1f}. "
+                    f"Price is {'above' if current_price > sma50 else 'below'} SMA50."
+                ),
             }
 
         except Exception as e:

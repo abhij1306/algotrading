@@ -8,6 +8,7 @@ Architecture:
 - Fyers API v3: Live quotes only
 """
 
+import logging
 from datetime import datetime
 
 import pandas as pd
@@ -22,6 +23,8 @@ from .exceptions import (
     MissingTokenError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class DataProvider:
     """
@@ -32,7 +35,7 @@ class DataProvider:
     4. No direct Fyers access from UI components
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         self.db = db
         self.repo = DataRepository(db)
 
@@ -213,6 +216,6 @@ class DataProvider:
             if latest:
                 status["last_update"] = latest.created_at.isoformat()
         except Exception:
-            pass
+            logger.debug("Could not read latest data update timestamp", exc_info=True)
 
         return status

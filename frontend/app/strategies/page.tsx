@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import dynamic from "@/lib/dynamic";
 import {
   Badge,
@@ -21,7 +22,9 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui";
-import { screenerAPI, strategiesAPI } from "@/lib/api-client";
+import { strategiesAPI } from "@/lib/api-client";
+import { queryKeys } from "@/lib/queries/keys";
+import { useScreenerIndices } from "@/lib/queries/screener";
 
 type RegimePayload = {
   regime: string;
@@ -218,9 +221,65 @@ const DynamicSignalChart = dynamic(() =>
   }),
 );
 
+type StrategiesWorkspace = {
+  status: StrategyStatus | null;
+  results: ScanRow[];
+  positions: PositionRow[];
+  runs: BacktestRun[];
+};
+
+const NO_UNIVERSES: UniverseOption[] = [];
+const NO_SCAN_ROWS: ScanRow[] = [];
+const NO_POSITIONS: PositionRow[] = [];
+const NO_RUNS: BacktestRun[] = [];
+
+async function fetchWorkspace(params: {
+  universe: string;
+  showAll: boolean;
+}): Promise<StrategiesWorkspace> {
+  const [statusRes, scanRes, positionsRes, historyRes] = await Promise.all([
+    strategiesAPI.getStatus(params.universe),
+    strategiesAPI.getLatestScan(params.universe, params.showAll),
+    strategiesAPI.getPositions(),
+    strategiesAPI.getBacktestHistory(params.universe),
+  ]);
+
+  const firstError = statusRes.error ?? scanRes.error ?? positionsRes.error ?? historyRes.error;
+  if (firstError) throw new Error(firstError.message);
+
+  return {
+    status: (statusRes.data ?? null) as StrategyStatus | null,
+    results: (((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? []) as ScanRow[],
+    positions: (((positionsRes.data ?? {}) as { positions?: PositionRow[] }).positions ??
+      []) as PositionRow[],
+    runs: (((historyRes.data ?? {}) as { runs?: BacktestRun[] }).runs ?? []) as BacktestRun[],
+  };
+}
+
+async function fetchSignal(symbol: string): Promise<SignalDetail> {
+  const detailRes = await strategiesAPI.getSignal(symbol);
+  if (detailRes.error) throw new Error(detailRes.error.message);
+  if (!detailRes.data) throw new Error("Signal not found");
+  return detailRes.data as SignalDetail;
+}
+
 function formatCurrency(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
   return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+/** An error message with the time it happened, so the newest one wins the banner. */
+interface TimedError {
+  message: string;
+  at: number;
+}
+
+function latestError(errors: ReadonlyArray<TimedError | null>): string | null {
+  let latest: TimedError | null = null;
+  for (const entry of errors) {
+    if (entry && (latest === null || entry.at >= latest.at)) latest = entry;
+  }
+  return latest?.message ?? null;
 }
 
 function formatPct(value: number | null | undefined): string {
@@ -229,117 +288,84 @@ function formatPct(value: number | null | undefined): string {
 }
 
 export default function StrategiesPage() {
-  const [status, setStatus] = useState<StrategyStatus | null>(null);
-  const [results, setResults] = useState<ScanRow[]>([]);
-  const [positions, setPositions] = useState<PositionRow[]>([]);
+  const queryClient = useQueryClient();
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const [signalDetail, setSignalDetail] = useState<SignalDetail | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [availableUniverses, setAvailableUniverses] = useState<UniverseOption[]>([]);
-  const [selectedUniverse, setSelectedUniverse] = useState("NIFTY500");
+  const [actionError, setActionError] = useState<TimedError | null>(null);
+  const [universeChoice, setUniverseChoice] = useState("NIFTY500");
   const [backtestStart, setBacktestStart] = useState("2025-01-01");
   const [backtestEnd, setBacktestEnd] = useState("2026-03-13");
   const [backtestCapital, setBacktestCapital] = useState("1000000");
-  const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
 
-  const loadWorkspace = useCallback(
-    async (includeSignal = true) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [statusRes, scanRes, positionsRes, historyRes] = await Promise.all([
-          strategiesAPI.getStatus(selectedUniverse),
-          strategiesAPI.getLatestScan(selectedUniverse, showAll),
-          strategiesAPI.getPositions(),
-          strategiesAPI.getBacktestHistory(selectedUniverse),
-        ]);
+  const universesQuery = useScreenerIndices();
+  const availableUniverses: UniverseOption[] = universesQuery.data ?? NO_UNIVERSES;
+  // Fall back to the first known universe when the chosen one is not offered.
+  const selectedUniverse =
+    availableUniverses.length > 0 && !availableUniverses.some((row) => row.id === universeChoice)
+      ? availableUniverses[0].id
+      : universeChoice;
 
-        const firstError =
-          statusRes.error ?? scanRes.error ?? positionsRes.error ?? historyRes.error;
-        if (firstError) {
-          setError(firstError.message);
-          setLoading(false);
-          return;
-        }
+  const workspaceKey = queryKeys.strategies.workspace({ universe: selectedUniverse, showAll });
+  const workspaceQuery = useQuery({
+    queryKey: workspaceKey,
+    queryFn: () => fetchWorkspace({ universe: selectedUniverse, showAll }),
+    retry: false,
+  });
+  const status = workspaceQuery.data?.status ?? null;
+  const results = workspaceQuery.data?.results ?? NO_SCAN_ROWS;
+  const positions = workspaceQuery.data?.positions ?? NO_POSITIONS;
+  const backtestRuns = workspaceQuery.data?.runs ?? NO_RUNS;
+  const loading = workspaceQuery.isFetching;
 
-        setStatus((statusRes.data ?? null) as StrategyStatus | null);
-        setResults((((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? []) as ScanRow[]);
-        setPositions(
-          (((positionsRes.data ?? {}) as { positions?: PositionRow[] }).positions ??
-            []) as PositionRow[],
-        );
-        setBacktestRuns(
-          (((historyRes.data ?? {}) as { runs?: BacktestRun[] }).runs ?? []) as BacktestRun[],
-        );
+  // The explicitly selected signal, else the first scan result.
+  const signalSymbol = selectedSymbol ?? results[0]?.symbol ?? null;
+  const signalQuery = useQuery({
+    queryKey: queryKeys.strategies.signal(signalSymbol ?? ""),
+    queryFn: () => fetchSignal(signalSymbol ?? ""),
+    enabled: signalSymbol !== null,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const signalDetail = signalSymbol === null ? null : (signalQuery.data ?? null);
+  // The auto-selected first row fails quietly; only an explicitly picked signal shows its error.
+  const error = latestError([
+    actionError,
+    workspaceQuery.error
+      ? { message: workspaceQuery.error.message, at: workspaceQuery.errorUpdatedAt }
+      : null,
+    selectedSymbol !== null && signalQuery.error
+      ? { message: signalQuery.error.message, at: signalQuery.errorUpdatedAt }
+      : null,
+  ]);
 
-        const nextSymbol = includeSignal
-          ? (selectedSymbol ??
-            (((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? [])[0]?.symbol ??
-            null)
-          : selectedSymbol;
-        if (nextSymbol) {
-          const detailRes = await strategiesAPI.getSignal(nextSymbol);
-          if (!detailRes.error && detailRes.data) {
-            setSelectedSymbol(nextSymbol);
-            setSignalDetail(detailRes.data as SignalDetail);
-          }
-        }
-        setLoading(false);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load workspace");
-        setLoading(false);
-      }
-    },
-    [selectedSymbol, selectedUniverse, showAll],
-  );
+  const failAction = (message: string) => {
+    setActionError({ message, at: Date.now() });
+  };
 
-  useEffect(() => {
-    void loadWorkspace();
-  }, [loadWorkspace]);
-
-  useEffect(() => {
-    const loadUniverses = async () => {
-      const response = await screenerAPI.getIndices();
-      if (response.error) {
-        return;
-      }
-      const rows = (((response.data ?? {}) as { indices?: UniverseOption[] }).indices ??
-        []) as UniverseOption[];
-      setAvailableUniverses(rows);
-      if (rows.length > 0 && !rows.some((row) => row.id === selectedUniverse)) {
-        setSelectedUniverse(rows[0].id);
-      }
-    };
-    void loadUniverses();
-  }, []);
+  const reloadWorkspace = async () => {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.strategies.all });
+  };
 
   const formingRows = useMemo(() => results.filter((row) => !row.is_breakout), [results]);
   const breakoutRows = useMemo(() => results.filter((row) => row.is_breakout), [results]);
 
-  const onSelectSymbol = async (symbol: string) => {
+  const onSelectSymbol = (symbol: string) => {
     setSelectedSymbol(symbol);
-    const detailRes = await strategiesAPI.getSignal(symbol);
-    if (detailRes.error) {
-      setError(detailRes.error.message);
-      return;
-    }
-    setSignalDetail((detailRes.data ?? null) as SignalDetail | null);
+    setActionError(null);
   };
 
   const onRunScan = async () => {
     setBusy(true);
-    setError(null);
+    setActionError(null);
     const response = await strategiesAPI.runScan({ universe: selectedUniverse });
     setBusy(false);
     if (response.error) {
-      setError(response.error.message);
+      failAction(response.error.message);
       return;
     }
-    await loadWorkspace(false);
+    await reloadWorkspace();
   };
 
   const onToggleHalt = async () => {
@@ -349,10 +375,14 @@ export default function StrategiesPage() {
       : await strategiesAPI.halt("Manual halt from Strategies page");
     setBusy(false);
     if (response.error) {
-      setError(response.error.message);
+      failAction(response.error.message);
       return;
     }
-    setStatus((response.data ?? null) as StrategyStatus | null);
+    setActionError(null);
+    const nextStatus = (response.data ?? null) as StrategyStatus | null;
+    queryClient.setQueryData<StrategiesWorkspace>(workspaceKey, (prev) =>
+      prev ? { ...prev, status: nextStatus } : prev,
+    );
   };
 
   const onQueueToggle = async (row: ScanRow) => {
@@ -363,10 +393,11 @@ export default function StrategiesPage() {
         : await strategiesAPI.queueSignal(row.id);
     setBusy(false);
     if (response.error) {
-      setError(response.error.message);
+      failAction(response.error.message);
       return;
     }
-    await loadWorkspace(false);
+    setActionError(null);
+    await reloadWorkspace();
   };
 
   const onClosePosition = async (positionId: number) => {
@@ -374,16 +405,17 @@ export default function StrategiesPage() {
     const response = await strategiesAPI.closePosition(positionId);
     setBusy(false);
     if (response.error) {
-      setError(response.error.message);
+      failAction(response.error.message);
       return;
     }
-    await loadWorkspace(false);
+    setActionError(null);
+    await reloadWorkspace();
   };
 
   const onRunBacktest = async () => {
     const parsedCapital = Number.parseFloat(backtestCapital.trim());
     if (!Number.isFinite(parsedCapital) || Number.isNaN(parsedCapital)) {
-      setError("Enter a valid numeric capital amount before running the backtest.");
+      failAction("Enter a valid numeric capital amount before running the backtest.");
       return;
     }
     setBusy(true);
@@ -395,11 +427,12 @@ export default function StrategiesPage() {
     });
     setBusy(false);
     if (response.error) {
-      setError(response.error.message);
+      failAction(response.error.message);
       return;
     }
     setBacktestResult((response.data ?? null) as BacktestResult | null);
-    await loadWorkspace(false);
+    setActionError(null);
+    await reloadWorkspace();
   };
 
   const selectedSignal = signalDetail?.signal ?? null;
@@ -422,7 +455,14 @@ export default function StrategiesPage() {
             <Badge variant={status?.halted ? "loss" : "neutral"}>
               {status?.halted ? "HALTED" : "ACTIVE"}
             </Badge>
-            <Button variant="secondary" size="sm" onClick={() => setShowAll((value) => !value)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setShowAll((value) => !value);
+                setActionError(null);
+              }}
+            >
               {showAll ? "Hide C Grade" : "Show All"}
             </Button>
             <Button variant="secondary" size="sm" onClick={onRunScan} disabled={busy}>
@@ -450,9 +490,9 @@ export default function StrategiesPage() {
                     label="Universe"
                     value={selectedUniverse}
                     onChange={(e) => {
-                      setSelectedUniverse(e.target.value);
+                      setUniverseChoice(e.target.value);
                       setSelectedSymbol(null);
-                      setSignalDetail(null);
+                      setActionError(null);
                     }}
                   >
                     {availableUniverses.map((item) => (
@@ -509,7 +549,7 @@ export default function StrategiesPage() {
                   rows={formingRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
-                  selectedSymbol={selectedSymbol}
+                  selectedSymbol={signalSymbol}
                 />
               </TabsContent>
 
@@ -518,7 +558,7 @@ export default function StrategiesPage() {
                   rows={breakoutRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
-                  selectedSymbol={selectedSymbol}
+                  selectedSymbol={signalSymbol}
                 />
               </TabsContent>
 

@@ -4,11 +4,14 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...services.fyers_client import get_fyers_client
 from ...utils.helpers import safe_float
 from ..base import BrokerFunds, BrokerUnavailableError, IBroker, OrderResponse, Position
+
+if TYPE_CHECKING:
+    from fyers_apiv3.fyersModel import FyersModel
 
 CLIENT_NOT_INITIALIZED = "Client not initialized"
 logger = logging.getLogger(__name__)
@@ -97,7 +100,7 @@ class FyersBroker(IBroker):
             return fallback
 
     @property
-    def client(self) -> Any:
+    def client(self) -> "FyersModel | None":
         """Current Fyers SDK model, resolved on each use so re-login is picked up."""
         try:
             return get_fyers_client().fyers

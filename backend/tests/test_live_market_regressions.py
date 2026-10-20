@@ -2,7 +2,9 @@
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 
+import pytest
 from starlette.websockets import WebSocketState
 
 from app.services import fyers_client as fyers_client_module
@@ -26,10 +28,10 @@ class FakeSocket:
     def connect(self) -> None:
         pass
 
-    def subscribe(self, symbols, data_type=None) -> None:
+    def subscribe(self, symbols: list[str], data_type: object = None) -> None:
         self.subscribed.extend(symbols)
 
-    def unsubscribe(self, symbols) -> None:
+    def unsubscribe(self, symbols: list[str]) -> None:
         self.unsubscribed.extend(symbols)
 
     def close(self) -> None:
@@ -47,10 +49,10 @@ class FakeProviderService:
     def connect(self) -> None:
         pass
 
-    def subscribe(self, symbols) -> None:
+    def subscribe(self, symbols: list[str]) -> None:
         self.ws.subscribe(symbols)
 
-    def unsubscribe(self, symbols) -> None:
+    def unsubscribe(self, symbols: list[str]) -> None:
         self.ws.unsubscribe(symbols)
 
     def disconnect(self) -> None:
@@ -69,11 +71,11 @@ class FakeClientWebSocket:
     async def accept(self) -> None:
         pass
 
-    async def send_json(self, data) -> None:
+    async def send_json(self, data: dict[str, Any]) -> None:
         if self.stall and data.get("type") != "connection_established":
             await asyncio.Event().wait()
 
-    async def send_text(self, data) -> None:
+    async def send_text(self, data: str) -> None:
         pass
 
     async def close(self, code: int = 1000) -> None:
@@ -84,8 +86,8 @@ def _fyers(symbol: str) -> str:
     return symbol_master.to_fyers(symbol)
 
 
-def test_provider_reconnect_replays_client_subscriptions(monkeypatch):
-    async def scenario():
+def test_provider_reconnect_replays_client_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> list[str]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
         live = lms.LiveMarketService()
@@ -105,8 +107,10 @@ def test_provider_reconnect_replays_client_subscriptions(monkeypatch):
     assert sorted(asyncio.run(scenario())) == sorted([_fyers("SBIN"), _fyers("TCS")])
 
 
-def test_slow_client_drop_releases_only_unshared_provider_symbols(monkeypatch):
-    async def scenario():
+def test_slow_client_drop_releases_only_unshared_provider_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> tuple[FakeClientWebSocket, ConnectionManager, list[str]]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
         live = lms.LiveMarketService()
@@ -132,7 +136,9 @@ def test_slow_client_drop_releases_only_unshared_provider_symbols(monkeypatch):
     assert mgr.get_all_subscribed_symbols() == {"SBIN"}
 
 
-def test_explicit_disconnect_is_not_undone_by_automatic_connect(monkeypatch):
+def test_explicit_disconnect_is_not_undone_by_automatic_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     live = lms.LiveMarketService()
     live.dev_mode = True
     provider = FakeProviderService()
@@ -154,7 +160,9 @@ def test_explicit_disconnect_is_not_undone_by_automatic_connect(monkeypatch):
     assert live.connect(prevalidated_token=True, explicit=True) == "started"
 
 
-def test_broker_and_option_chain_use_current_client_after_relogin(monkeypatch):
+def test_broker_and_option_chain_use_current_client_after_relogin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.brokers.plugins import fyers as broker_module
     from app.services.option_chain_service import OptionChainService
 
@@ -172,16 +180,16 @@ def test_broker_and_option_chain_use_current_client_after_relogin(monkeypatch):
     assert chain._get_fyers_client().fyers == "model-new-token"
 
 
-def test_reset_fyers_client_drops_class_singleton(monkeypatch):
+def test_reset_fyers_client_drops_class_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fyers_client_module.FyersClient, "_instance", object())
     fyers_client_module.reset_fyers_client()
     assert fyers_client_module.FyersClient._instance is None
 
 
-def test_provider_connect_closes_previous_socket(monkeypatch):
+def test_provider_connect_closes_previous_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     created: list[FakeSocket] = []
 
-    def make_socket(**_kwargs):
+    def make_socket(**_kwargs: object) -> FakeSocket:
         sock = FakeSocket()
         created.append(sock)
         return sock
@@ -201,8 +209,10 @@ def test_provider_connect_closes_previous_socket(monkeypatch):
     assert created[0].closed and not created[1].closed
 
 
-def test_http_subscribed_symbols_are_replayed_and_not_released(monkeypatch):
-    async def scenario():
+def test_http_subscribed_symbols_are_replayed_and_not_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> tuple[list[str], list[str]]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
         live = lms.LiveMarketService()
@@ -227,8 +237,10 @@ def test_http_subscribed_symbols_are_replayed_and_not_released(monkeypatch):
     assert replayed == [_fyers("SBIN")]
 
 
-def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(monkeypatch):
-    async def scenario():
+def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> list[str]:
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
         live = lms.LiveMarketService()
@@ -244,9 +256,17 @@ def test_late_unsubscribe_skips_symbol_resubscribed_by_another_client(monkeypatc
 
 
 class SlowConnectProvider(FakeProviderService):
-    """connect() returns without raising; the socket only reports connected if `connect_after` set."""
+    """connect() returns without raising.
 
-    def __init__(self, connect_after: float | None, live=None, open_in_connect: bool = False):
+    The socket only reports connected if `connect_after` is set.
+    """
+
+    def __init__(
+        self,
+        connect_after: float | None,
+        live: lms.LiveMarketService | None = None,
+        open_in_connect: bool = False,
+    ) -> None:
         super().__init__()
         self.connect_calls = 0
         self.connect_after = connect_after
@@ -262,7 +282,7 @@ class SlowConnectProvider(FakeProviderService):
             self.live.on_provider_open()  # the SDK calls on_connect from inside connect()
 
 
-def _fast_runner(monkeypatch, retries: int = 3) -> None:
+def _fast_runner(monkeypatch: pytest.MonkeyPatch, retries: int = 3) -> None:
     monkeypatch.setattr(lms, "WS_MAX_RETRIES", retries)
     monkeypatch.setattr(lms, "WS_CONNECT_TIMEOUT_S", 0.05)
     monkeypatch.setattr(lms, "WS_CONNECT_POLL_S", 0.01)
@@ -270,7 +290,9 @@ def _fast_runner(monkeypatch, retries: int = 3) -> None:
     monkeypatch.setattr(lms, "WS_BACKOFF_MAX_S", 0.02)
 
 
-def test_runner_retries_and_fails_when_connect_returns_without_connecting(monkeypatch):
+def test_runner_retries_and_fails_when_connect_returns_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _fast_runner(monkeypatch, retries=3)
     live = lms.LiveMarketService()
     live._is_connecting = True
@@ -283,10 +305,12 @@ def test_runner_retries_and_fails_when_connect_returns_without_connecting(monkey
     assert live._is_connecting is False
 
 
-def test_runner_connects_once_and_replays_without_double_subscribe(monkeypatch):
+def test_runner_connects_once_and_replays_without_double_subscribe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _fast_runner(monkeypatch)
 
-    async def scenario():
+    async def scenario() -> lms.LiveMarketService:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
@@ -303,10 +327,12 @@ def test_runner_connects_once_and_replays_without_double_subscribe(monkeypatch):
     assert live.ws_service.ws.subscribed == [_fyers("SBIN")]
 
 
-def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(monkeypatch):
+def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _fast_runner(monkeypatch)
 
-    async def scenario():
+    async def scenario() -> lms.LiveMarketService:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
@@ -320,7 +346,7 @@ def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(monkeypatch):
     assert live.ws_service.ws.subscribed == [_fyers("TCS")]
 
 
-def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch):
+def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
     import time
 
@@ -340,8 +366,8 @@ def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch):
     assert live.ws_service.connect_calls == 1
 
 
-def test_sdk_reconnect_open_callback_replays_subscriptions():
-    async def scenario():
+def test_sdk_reconnect_open_callback_replays_subscriptions() -> None:
+    async def scenario() -> list[str]:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
@@ -361,12 +387,12 @@ def test_sdk_reconnect_open_callback_replays_subscriptions():
     assert asyncio.run(scenario()) == [_fyers("SBIN")] * 2
 
 
-def test_flush_loop_survives_a_broadcast_error(monkeypatch):
-    async def scenario():
+def test_flush_loop_survives_a_broadcast_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> tuple[list[dict[str, Any]], bool]:
         mgr = ConnectionManager()
-        calls: list[dict] = []
+        calls: list[dict[str, Any]] = []
 
-        async def flaky_broadcast(msg):
+        async def flaky_broadcast(msg: dict[str, Any]) -> None:
             calls.append(msg)
             if len(calls) == 1:
                 raise RuntimeError("boom")
@@ -392,11 +418,11 @@ def test_flush_loop_survives_a_broadcast_error(monkeypatch):
     assert cancelled is True
 
 
-def test_monitor_loop_survives_an_unexpected_error(monkeypatch):
+def test_monitor_loop_survives_an_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
     real_sleep = asyncio.sleep
 
-    async def scenario():
-        async def fast_sleep(_delay):
+    async def scenario() -> tuple[bool, int]:
+        async def fast_sleep(_delay: float) -> None:
             await real_sleep(0.001)
 
         live = lms.LiveMarketService()
@@ -425,7 +451,7 @@ def test_monitor_loop_survives_an_unexpected_error(monkeypatch):
     assert checks > 1
 
 
-def test_connect_async_validates_token_off_the_event_loop(monkeypatch):
+def test_connect_async_validates_token_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
 
     seen: dict[str, int] = {}
@@ -434,7 +460,7 @@ def test_connect_async_validates_token_off_the_event_loop(monkeypatch):
         seen["thread"] = threading.get_ident()
         return False
 
-    async def scenario():
+    async def scenario() -> tuple[str, int]:
         live = lms.LiveMarketService()
         monkeypatch.setattr(live, "_validate_fyers_token", fake_validate)
         status = await live.connect_async()

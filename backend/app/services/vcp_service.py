@@ -25,9 +25,9 @@ from ..models import (
     SystemConfig,
     VCPScanResult,
 )
+from ..utils.runtime_metrics import runtime_metrics
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
-from ..utils.runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,9 @@ class VCPService:
             row.value = value
         db.commit()
 
-    def _constituents_for_date(self, db: Session, universe: str, as_of: date) -> tuple[list[str], str]:
+    def _constituents_for_date(
+        self, db: Session, universe: str, as_of: date
+    ) -> tuple[list[str], str]:
         definition = (
             db.query(IndexUniverseDefinition)
             .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
@@ -186,7 +188,9 @@ class VCPService:
         scoped = scoped[scoped["date"] <= scan_date].sort_values("date").tail(260).copy()
         scoped["ma_200"] = scoped["close"].rolling(200).mean()
         latest = scoped.iloc[-1]
-        ma_200 = float(latest["ma_200"]) if not pd.isna(latest["ma_200"]) else float(latest["close"])
+        ma_200 = (
+            float(latest["ma_200"]) if not pd.isna(latest["ma_200"]) else float(latest["close"])
+        )
         close = float(latest["close"])
         bull = close >= ma_200
         return RegimeSnapshot(
@@ -320,7 +324,11 @@ class VCPService:
                 break
             low_idx = low_candidates[0]
             low_price = float(base_df["low"].iloc[low_idx])
-            depth = ((current_high_price - low_price) / current_high_price) * 100 if current_high_price > 0 else 100.0
+            depth = (
+                ((current_high_price - low_price) / current_high_price) * 100
+                if current_high_price > 0
+                else 100.0
+            )
             contractions.append(
                 {
                     "high_idx": current_high_idx,
@@ -347,13 +355,17 @@ class VCPService:
             return None
 
         final_contraction = contractions[-1]
-        final_df = base_df.iloc[final_contraction["high_idx"] : final_contraction["low_idx"] + 1].copy()
+        final_df = base_df.iloc[
+            final_contraction["high_idx"] : final_contraction["low_idx"] + 1
+        ].copy()
         if final_df.empty:
             return None
 
         avg_volume_50 = float(frame["volume"].tail(50).mean())
         final_avg_volume = float(final_df["volume"].mean())
-        volume_dry_up_pct = ((final_avg_volume / avg_volume_50) * 100.0) if avg_volume_50 > 0 else 1000.0
+        volume_dry_up_pct = (
+            ((final_avg_volume / avg_volume_50) * 100.0) if avg_volume_50 > 0 else 1000.0
+        )
         if volume_dry_up_pct > 40.0:
             return None
 
@@ -367,7 +379,9 @@ class VCPService:
         stop_level = round(final_contraction_low * (1.0 - STOP_OFFSET_PCT), 2)
         breakout_volume_mult = float(latest["volume"] / avg_volume_50) if avg_volume_50 > 0 else 0.0
         day_range = float(latest["high"] - latest["low"])
-        close_position = ((float(latest["close"]) - float(latest["low"])) / day_range) if day_range > 0 else 0.0
+        close_position = (
+            ((float(latest["close"]) - float(latest["low"])) / day_range) if day_range > 0 else 0.0
+        )
         is_breakout = bool(
             float(latest["close"]) > pivot_high
             and breakout_volume_mult >= BREAKOUT_VOLUME_MULTIPLIER
@@ -474,7 +488,13 @@ class VCPService:
         risk_distance = max(0.01, float(row.pivot_high) - float(row.stop_level))
         risk_pct = float(metadata_json.get("risk_pct", RISK_PCT_BULL))
         planned_shares = int(math.floor((DEFAULT_CAPITAL * risk_pct) / risk_distance))
-        planned_shares = max(0, min(planned_shares, int(math.floor((DEFAULT_CAPITAL * MAX_POSITION_CAP) / float(row.pivot_high)))))
+        planned_shares = max(
+            0,
+            min(
+                planned_shares,
+                int(math.floor((DEFAULT_CAPITAL * MAX_POSITION_CAP) / float(row.pivot_high))),
+            ),
+        )
         planned_value = round(planned_shares * float(row.pivot_high), 2)
         capital_risk = round(planned_shares * risk_distance, 2)
         return {
@@ -509,7 +529,9 @@ class VCPService:
             "metadata": metadata_json,
         }
 
-    def run_scan(self, universe: str = DEFAULT_UNIVERSE, scan_date: date | None = None) -> dict[str, Any]:
+    def run_scan(
+        self, universe: str = DEFAULT_UNIVERSE, scan_date: date | None = None
+    ) -> dict[str, Any]:
         started = time.perf_counter()
         scan_date = self._asof_date(scan_date)
         scan_id = str(uuid.uuid4())
@@ -596,7 +618,8 @@ class VCPService:
             runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.scan_runs")
             logger.info(
-                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s duration_ms=%.2f",
+                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s "
+                "duration_ms=%.2f",
                 universe.upper(),
                 scan_id,
                 len(symbol_frames),
@@ -614,7 +637,9 @@ class VCPService:
                 "results": results,
             }
 
-    def get_latest_scan(self, universe: str = DEFAULT_UNIVERSE, show_all: bool = False) -> dict[str, Any]:
+    def get_latest_scan(
+        self, universe: str = DEFAULT_UNIVERSE, show_all: bool = False
+    ) -> dict[str, Any]:
         db = get_db_session()
         try:
             latest_date = (
@@ -635,7 +660,11 @@ class VCPService:
             latest_row = (
                 db.query(VCPScanResult)
                 .filter(VCPScanResult.universe == universe.upper())
-                .order_by(VCPScanResult.scan_timestamp.desc(), VCPScanResult.created_at.desc(), VCPScanResult.id.desc())
+                .order_by(
+                    VCPScanResult.scan_timestamp.desc(),
+                    VCPScanResult.created_at.desc(),
+                    VCPScanResult.id.desc(),
+                )
                 .first()
             )
             if latest_row is None:
@@ -647,15 +676,24 @@ class VCPService:
                 }
             rows = (
                 db.query(VCPScanResult)
-                .filter(VCPScanResult.universe == universe.upper(), VCPScanResult.scan_id == latest_row.scan_id)
-                .order_by(VCPScanResult.grade.asc(), VCPScanResult.is_breakout.desc(), VCPScanResult.rs_rating.desc())
+                .filter(
+                    VCPScanResult.universe == universe.upper(),
+                    VCPScanResult.scan_id == latest_row.scan_id,
+                )
+                .order_by(
+                    VCPScanResult.grade.asc(),
+                    VCPScanResult.is_breakout.desc(),
+                    VCPScanResult.rs_rating.desc(),
+                )
                 .all()
             )
             if not show_all:
                 rows = [row for row in rows if row.grade in {"A", "B"}]
             return {
                 "scan_id": latest_row.scan_id,
-                "scan_timestamp": latest_row.scan_timestamp.isoformat() if latest_row.scan_timestamp else None,
+                "scan_timestamp": latest_row.scan_timestamp.isoformat()
+                if latest_row.scan_timestamp
+                else None,
                 "scan_date": latest_row.scan_date.isoformat(),
                 "universe": universe.upper(),
                 "regime": self._serialize_regime(self.get_regime(latest_row.scan_date)),
@@ -669,18 +707,29 @@ class VCPService:
         try:
             query = db.query(VCPScanResult).filter(VCPScanResult.symbol == symbol.upper())
             row = (
-                query.order_by(VCPScanResult.scan_timestamp.desc(), VCPScanResult.created_at.desc(), VCPScanResult.id.desc()).first()
+                query.order_by(
+                    VCPScanResult.scan_timestamp.desc(),
+                    VCPScanResult.created_at.desc(),
+                    VCPScanResult.id.desc(),
+                ).first()
                 if scan_date is None
-                else query.filter(VCPScanResult.scan_date == scan_date).order_by(VCPScanResult.scan_timestamp.desc()).first()
+                else query.filter(VCPScanResult.scan_date == scan_date)
+                .order_by(VCPScanResult.scan_timestamp.desc())
+                .first()
             )
             if row is None:
                 raise ValueError(f"No VCP signal found for {symbol}")
 
-            history = self._load_symbol_history(
-                symbols=[row.symbol],
-                start_date=(pd.Timestamp(row.scan_date) - pd.Timedelta(days=260)).date(),
-                end_date=row.scan_date,
-            ).sort_values("date").tail(160).copy()
+            history = (
+                self._load_symbol_history(
+                    symbols=[row.symbol],
+                    start_date=(pd.Timestamp(row.scan_date) - pd.Timedelta(days=260)).date(),
+                    end_date=row.scan_date,
+                )
+                .sort_values("date")
+                .tail(160)
+                .copy()
+            )
             history["ema_21"] = history["close_ref"].ewm(span=21, adjust=False).mean()
             history["ma_50"] = history["close_ref"].rolling(50).mean()
             history["ma_150"] = history["close_ref"].rolling(150).mean()
@@ -695,10 +744,18 @@ class VCPService:
                         "low": round(float(item["low"]), 2),
                         "close": round(float(item["close"]), 2),
                         "volume": int(item["volume"]),
-                        "ema_21": round(float(item["ema_21"]), 2) if not pd.isna(item["ema_21"]) else None,
-                        "ma_50": round(float(item["ma_50"]), 2) if not pd.isna(item["ma_50"]) else None,
-                        "ma_150": round(float(item["ma_150"]), 2) if not pd.isna(item["ma_150"]) else None,
-                        "ma_200": round(float(item["ma_200"]), 2) if not pd.isna(item["ma_200"]) else None,
+                        "ema_21": round(float(item["ema_21"]), 2)
+                        if not pd.isna(item["ema_21"])
+                        else None,
+                        "ma_50": round(float(item["ma_50"]), 2)
+                        if not pd.isna(item["ma_50"])
+                        else None,
+                        "ma_150": round(float(item["ma_150"]), 2)
+                        if not pd.isna(item["ma_150"])
+                        else None,
+                        "ma_200": round(float(item["ma_200"]), 2)
+                        if not pd.isna(item["ma_200"])
+                        else None,
                     }
                     for item in history.to_dict("records")
                 ],
@@ -759,7 +816,9 @@ class VCPService:
                         "ltp": round(ltp, 2),
                         "unrealized_pnl": round(unrealized, 2),
                         "unrealized_pnl_pct": round(((ltp / row.entry_price) - 1.0) * 100.0, 2),
-                        "r_multiple": round(unrealized / (risk_distance * max(1, row.shares_remaining)), 2),
+                        "r_multiple": round(
+                            unrealized / (risk_distance * max(1, row.shares_remaining)), 2
+                        ),
                         "two_r_status": "HIT" if row.two_r_hit else "NOT_HIT",
                         "status": row.status,
                     }
@@ -818,7 +877,11 @@ class VCPService:
             row.stop_price = float(stop_price)
             db.commit()
             db.refresh(row)
-            return {"status": "ok", "position_id": position_id, "stop_price": round(row.stop_price, 2)}
+            return {
+                "status": "ok",
+                "position_id": position_id,
+                "stop_price": round(row.stop_price, 2),
+            }
         finally:
             db.close()
 
@@ -853,7 +916,9 @@ class VCPService:
             if latest_scan is None:
                 config_latest_scan = self._get_config(db, "LAST_VCP_SCAN_DATE", "")
                 latest_scan = (
-                    datetime.strptime(config_latest_scan, "%Y-%m-%d").date() if config_latest_scan else None
+                    datetime.strptime(config_latest_scan, "%Y-%m-%d").date()
+                    if config_latest_scan
+                    else None
                 )
             pending_entries = (
                 db.query(VCPScanResult)
@@ -863,7 +928,11 @@ class VCPService:
                 )
                 .count()
             )
-            open_positions = db.query(StrategyPosition).filter(StrategyPosition.status.in_(["OPEN", "OPEN_PARTIAL"])).count()
+            open_positions = (
+                db.query(StrategyPosition)
+                .filter(StrategyPosition.status.in_(["OPEN", "OPEN_PARTIAL"]))
+                .count()
+            )
             halted = self._get_config(db, "TRADING_HALTED", "false").lower() == "true"
             return {
                 "universe": universe_filter,
@@ -875,7 +944,11 @@ class VCPService:
                 "open_positions": open_positions,
                 "scheduler": {
                     "status": "manual_phase1",
-                    "next_actions": ["scan_run_on_demand", "queued_entries_manual", "reconciliation_placeholder"],
+                    "next_actions": [
+                        "scan_run_on_demand",
+                        "queued_entries_manual",
+                        "reconciliation_placeholder",
+                    ],
                 },
                 "regime": self._serialize_regime(self.get_regime()),
                 "metrics": runtime_metrics.snapshot(prefix="strategy.vcp.", strip_prefix=True),
@@ -892,7 +965,10 @@ class VCPService:
             & (stock_df["date"] >= lookback_start)
             & (stock_df["date"] <= end_date)
         ].copy()
-        return {symbol: frame.sort_values("date").reset_index(drop=True) for symbol, frame in scoped.groupby("symbol")}
+        return {
+            symbol: frame.sort_values("date").reset_index(drop=True)
+            for symbol, frame in scoped.groupby("symbol")
+        }
 
     @staticmethod
     def _next_trading_date(trading_dates: list[date], current_date: date) -> date | None:
@@ -1040,7 +1116,11 @@ class VCPService:
                 {
                     row_date
                     for frame in symbol_frames.values()
-                    for row_date in frame[(frame["date"] >= start_date) & (frame["date"] <= end_date)]["date"].unique().tolist()
+                    for row_date in frame[
+                        (frame["date"] >= start_date) & (frame["date"] <= end_date)
+                    ]["date"]
+                    .unique()
+                    .tolist()
                 }
             )
             if not trading_dates:
@@ -1074,7 +1154,11 @@ class VCPService:
                 available_capital = capital + completed_pnl
                 constituents_list, date_mode = members_on(trading_date)
                 constituents = set(constituents_list)
-                modes.add("indicative_pre_history" if date_mode.startswith("indicative_pre_") else date_mode)
+                modes.add(
+                    "indicative_pre_history"
+                    if date_mode.startswith("indicative_pre_")
+                    else date_mode
+                )
                 day_frames = {
                     symbol: frame[frame["date"] <= trading_date].copy()
                     for symbol, frame in symbol_frames.items()
@@ -1089,7 +1173,11 @@ class VCPService:
                 }
                 candidates: list[dict[str, Any]] = []
                 for symbol, frame in day_frames.items():
-                    if len(frame) < 260 or frame["date"].max() != trading_date or symbol in active_symbols:
+                    if (
+                        len(frame) < 260
+                        or frame["date"].max() != trading_date
+                        or symbol in active_symbols
+                    ):
                         continue
                     analysis = self._analyze_pattern(
                         frame=frame,
@@ -1107,7 +1195,9 @@ class VCPService:
                 # Trades enter on next_date, so the symbol must still be a member then.
                 entry_members = set(members_on(next_date)[0])
                 candidates = [signal for signal in candidates if signal["symbol"] in entry_members]
-                for signal in sorted(candidates, key=lambda item: (item["grade"], -item["rs_rating"]))[:5]:
+                for signal in sorted(
+                    candidates, key=lambda item: (item["grade"], -item["rs_rating"])
+                )[:5]:
                     trade = self._build_backtest_trade(
                         signal=signal,
                         symbol_frame=symbol_frames[signal["symbol"]],
@@ -1119,14 +1209,19 @@ class VCPService:
                     if trade is None or trade.get("status") == "SKIPPED_GAP_UP":
                         continue
                     trades.append(trade)
-                equity_curve.append({"date": trading_date.isoformat(), "equity": round(capital + completed_pnl, 2)})
+                equity_curve.append(
+                    {"date": trading_date.isoformat(), "equity": round(capital + completed_pnl, 2)}
+                )
                 if not benchmark.empty:
                     bench_row = benchmark[benchmark["date"] == trading_date]
                     if not bench_row.empty:
                         benchmark_curve.append(
                             {
                                 "date": trading_date.isoformat(),
-                                "equity": round(capital * (float(bench_row.iloc[0]["close"]) / benchmark_start), 2),
+                                "equity": round(
+                                    capital * (float(bench_row.iloc[0]["close"]) / benchmark_start),
+                                    2,
+                                ),
                             }
                         )
 
@@ -1138,33 +1233,54 @@ class VCPService:
                 for trade in trades
                 if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= final_date
             )
-            equity_curve.append({"date": final_date.isoformat(), "equity": round(capital + final_pnl, 2)})
+            equity_curve.append(
+                {"date": final_date.isoformat(), "equity": round(capital + final_pnl, 2)}
+            )
             if not benchmark.empty:
                 bench_row = benchmark[benchmark["date"] == final_date]
                 if not bench_row.empty:
                     benchmark_curve.append(
                         {
                             "date": final_date.isoformat(),
-                            "equity": round(capital * (float(bench_row.iloc[0]["close"]) / benchmark_start), 2),
+                            "equity": round(
+                                capital * (float(bench_row.iloc[0]["close"]) / benchmark_start), 2
+                            ),
                         }
                     )
 
-            # Membership is resolved per trading date; only fully point-in-time runs are bias-corrected.
-            mode = "bias_corrected" if modes == {"bias_corrected"} else ",".join(sorted(modes)) or "unavailable"
+            # Membership is resolved per trading date;
+            # only fully point-in-time runs are bias-corrected.
+            mode = (
+                "bias_corrected"
+                if modes == {"bias_corrected"}
+                else ",".join(sorted(modes)) or "unavailable"
+            )
             if not equity_curve:
                 equity_curve = [{"date": trading_dates[0].isoformat(), "equity": capital}]
 
-            eq_series = pd.Series([row["equity"] for row in equity_curve], index=[row["date"] for row in equity_curve], dtype=float)
+            eq_series = pd.Series(
+                [row["equity"] for row in equity_curve],
+                index=[row["date"] for row in equity_curve],
+                dtype=float,
+            )
             returns = eq_series.pct_change().fillna(0.0)
             drawdown = bt_metrics.drawdown_series(eq_series)
-            ann_return = bt_metrics.annualized_return(float(eq_series.iloc[-1]), capital, len(eq_series))
+            ann_return = bt_metrics.annualized_return(
+                float(eq_series.iloc[-1]), capital, len(eq_series)
+            )
             sharpe = bt_metrics.sharpe_excess_cagr(ann_return, returns, risk_free=0.065)
             pnl_stats = bt_metrics.trade_stats([trade["pnl_inr"] for trade in trades])
-            benchmark_return = ((benchmark_curve[-1]["equity"] / capital) - 1.0) * 100.0 if benchmark_curve else 0.0
+            benchmark_return = (
+                ((benchmark_curve[-1]["equity"] / capital) - 1.0) * 100.0
+                if benchmark_curve
+                else 0.0
+            )
             metrics = {
                 "initial_capital": round(capital, 2),
                 "final_equity": round(float(eq_series.iloc[-1]), 2),
-                "total_return_pct": round(bt_metrics.total_return(float(eq_series.iloc[-1]), capital) * 100.0, 2),
+                "total_return_pct": round(
+                    bt_metrics.total_return(float(eq_series.iloc[-1]), capital) * 100.0, 2
+                ),
                 "cagr_pct": round(ann_return * 100.0, 2),
                 "max_drawdown_pct": round(abs(bt_metrics.max_drawdown(drawdown)) * 100.0, 2),
                 "sharpe_ratio": round(float(sharpe), 4),
@@ -1173,18 +1289,25 @@ class VCPService:
                 "avg_loss_inr": round(pnl_stats.avg_loss, 2),
                 "profit_factor": round(pnl_stats.profit_factor, 2),
                 "total_trades": len(trades),
-                "avg_hold_days": round(mean([trade["hold_days"] for trade in trades]), 2) if trades else 0.0,
-                "avg_r_multiple": round(mean([trade["r_multiple"] for trade in trades]), 2) if trades else 0.0,
+                "avg_hold_days": round(mean([trade["hold_days"] for trade in trades]), 2)
+                if trades
+                else 0.0,
+                "avg_r_multiple": round(mean([trade["r_multiple"] for trade in trades]), 2)
+                if trades
+                else 0.0,
                 "benchmark_return_pct": round(benchmark_return, 2),
                 "alpha_pct": round((ann_return * 100.0) - benchmark_return, 2),
-                "survivorship_bias_label": "BIAS-CORRECTED" if mode == "bias_corrected" else f"WARNING: {mode}",
+                "survivorship_bias_label": "BIAS-CORRECTED"
+                if mode == "bias_corrected"
+                else f"WARNING: {mode}",
             }
             result_payload = {
                 "metrics": metrics,
                 "equity_curve": equity_curve,
                 "benchmark_curve": benchmark_curve,
                 "drawdown_curve": [
-                    {"date": idx, "drawdown_pct": round(value * 100.0, 4)} for idx, value in drawdown.items()
+                    {"date": idx, "drawdown_pct": round(value * 100.0, 4)}
+                    for idx, value in drawdown.items()
                 ],
                 "trade_log": trades,
                 "methodology": {
@@ -1230,7 +1353,8 @@ class VCPService:
             runtime_metrics.observe_ms("strategy.vcp.backtest_ms", duration_ms)
             runtime_metrics.increment("strategy.vcp.backtest_runs")
             logger.info(
-                "VCP backtest complete universe=%s run_id=%s trades=%s trading_dates=%s duration_ms=%.2f",
+                "VCP backtest complete universe=%s run_id=%s trades=%s trading_dates=%s "
+                "duration_ms=%.2f",
                 universe,
                 run_id,
                 len(trades),

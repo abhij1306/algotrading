@@ -7,6 +7,7 @@ FIXED: Thread-safe message handling with event loop integration
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class FyersWebSocketService:
     Thread safety is delegated to the consumer (LiveMarketService).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.ws = None
         self.access_token = None
         self.subscribed_symbols = set()
@@ -36,7 +37,7 @@ class FyersWebSocketService:
     def _chunk(self, items: list[str], size: int) -> list[list[str]]:
         return [items[i : i + size] for i in range(0, len(items), size)]
 
-    def connect(self):
+    def connect(self) -> None:
         """Initialize WebSocket connection using access token"""
         if not data_ws:
             raise Exception("fyers-apiv3 not installed")
@@ -83,7 +84,7 @@ class FyersWebSocketService:
         self.ws.connect()
         logger.info("[FyersWS] WebSocket connected")
 
-    def subscribe(self, symbols: list[str]):
+    def subscribe(self, symbols: list[str]) -> None:
         """
         Subscribe to symbols for live data
         """
@@ -103,7 +104,7 @@ class FyersWebSocketService:
 
         logger.info("[FyersWS] Subscribed to %s symbols", len(unique_symbols))
 
-    def unsubscribe(self, symbols: list[str]):
+    def unsubscribe(self, symbols: list[str]) -> None:
         """Unsubscribe from symbols"""
         if not self.ws:
             return
@@ -116,7 +117,7 @@ class FyersWebSocketService:
             self.ws.unsubscribe(symbols=batch)
         self.subscribed_symbols -= set(unique_symbols)
 
-    def _on_message(self, message):
+    def _on_message(self, message: dict[str, Any]) -> None:
         """
         Handle incoming WebSocket message (called from WebSocket thread)
         Directly invokes handler to minimize latency.
@@ -132,7 +133,7 @@ class FyersWebSocketService:
         except Exception as e:
             logger.error("[FyersWS] Error processing message: %s", e)
 
-    def _on_error(self, error):
+    def _on_error(self, error: object) -> None:
         """Handle WebSocket error"""
         try:
             # Log actual errors at ERROR level with context
@@ -140,7 +141,7 @@ class FyersWebSocketService:
         except Exception:
             logger.error("[FyersWS] ERROR: <unicode error>")
 
-    def _on_close(self, message):
+    def _on_close(self, message: object) -> None:
         """Handle WebSocket close"""
         try:
             # Normal close is logged at INFO level
@@ -148,7 +149,7 @@ class FyersWebSocketService:
         except Exception:
             logger.info("[FyersWS] Connection closed")
 
-    def _on_open(self):
+    def _on_open(self) -> None:
         """Handle WebSocket open"""
         logger.info("[FyersWS] Connection established")
         if self.on_open_handler:
@@ -157,7 +158,7 @@ class FyersWebSocketService:
             except Exception as e:
                 logger.error("[FyersWS] Open handler error: %s", e)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Close WebSocket connection"""
         if self.ws:
             self.ws.close()

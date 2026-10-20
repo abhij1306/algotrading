@@ -4,6 +4,8 @@ Portfolio Router
 API endpoints for portfolio data, stats, and funds.
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -14,8 +16,8 @@ router = APIRouter(prefix="/api/portfolio")
 DB_DEPENDENCY = Depends(get_db)
 
 
-@router.get("/stats")
-def get_portfolio_stats(db: Session = DB_DEPENDENCY):
+@router.get("/stats", response_model=None)
+def get_portfolio_stats(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get portfolio statistics including total value, P&L, and returns.
     """
@@ -55,11 +57,13 @@ def get_portfolio_stats(db: Session = DB_DEPENDENCY):
             "totalReturnPercent": round(total_return_percent, 2),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch portfolio stats: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch portfolio stats: {str(e)}"
+        ) from e
 
 
-@router.get("/funds")
-def get_portfolio_funds(db: Session = DB_DEPENDENCY):
+@router.get("/funds", response_model=None)
+def get_portfolio_funds(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get available funds/buying power.
     """

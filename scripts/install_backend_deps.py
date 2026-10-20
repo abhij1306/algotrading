@@ -32,7 +32,7 @@ def main() -> int:
         )
         return 1
 
-    print("[1/2] Installing core backend dependencies...")
+    print("[1/2] Installing backend and test dependencies...")
     core = subprocess.run(
         [
             str(python),
@@ -40,16 +40,14 @@ def main() -> int:
             "pip",
             "install",
             "-r",
-            str(ROOT / "backend" / "requirements.txt"),
+            str(ROOT / "backend" / "requirements-dev.txt"),
         ]
     )
     if core.returncode != 0:
         return core.returncode
 
     print(f"[2/2] Installing {FYERS_SPEC} without its pinned dependencies...")
-    fyers = subprocess.run(
-        [str(python), "-m", "pip", "install", FYERS_SPEC, "--no-deps"]
-    )
+    fyers = subprocess.run([str(python), "-m", "pip", "install", FYERS_SPEC, "--no-deps"])
     if fyers.returncode != 0:
         return fyers.returncode
 

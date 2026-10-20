@@ -34,14 +34,18 @@ import threading
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .symbol_master import SymbolMaster
 
 logger = logging.getLogger(__name__)
 
 # Lazy import to avoid circular dependencies
-_symbol_master = None
+_symbol_master: "SymbolMaster | None" = None
 
 
-def _get_symbol_master():
+def _get_symbol_master() -> "SymbolMaster":
     """Lazy load the symbol master to avoid circular imports."""
     global _symbol_master
     if _symbol_master is None:
@@ -147,7 +151,7 @@ class IndexUniverseLoader:
         constituent = index_universe_loader.get_constituent("SBIN", "NIFTY50")
     """
 
-    def __init__(self, data_path=None):
+    def __init__(self, data_path: str | Path | None = None) -> None:
         self.data_path = Path(data_path) if data_path else DATA_PATH
         self._indices: dict[str, IndexUniverse] = {}
         self._symbol_to_indices: dict[str, set[str]] = {}
@@ -185,7 +189,9 @@ class IndexUniverseLoader:
 
             self._loaded = True
             logger.info(
-                f"Loaded {len(self._indices)} indices with {len(self._symbol_to_indices)} unique symbols"
+                "Loaded %s indices with %s unique symbols",
+                len(self._indices),
+                len(self._symbol_to_indices),
             )
 
     def _load_index_csv(self, index_id: str, filepath: Path) -> None:

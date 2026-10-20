@@ -1,10 +1,14 @@
 """
 Live Ticks End-to-End Test
 Tests complete tick flow from Fyers (mocked/real) to Frontend via WebSocket.
+
+Run with SMARTTRADER_LIVE_E2E=1 while the backend is running and the market feed is live.
 """
+
 import asyncio
 import json
 import logging
+import os
 import time
 
 import pytest
@@ -13,6 +17,11 @@ import websockets
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.getenv("SMARTTRADER_LIVE_E2E") != "1",
+    reason="end-to-end: needs a running backend on :8000 and a live Fyers feed",
+)
 @pytest.mark.asyncio
 async def test_websocket_ticks() -> None:
     """Test WebSocket tick delivery"""
@@ -26,11 +35,8 @@ async def test_websocket_ticks() -> None:
             logger.info("Connected")
 
             # Subscribe to symbols
-            symbols = ['SBIN', 'RELIANCE', 'TCS']
-            subscribe_msg = {
-                "action": "subscribe",
-                "symbols": symbols
-            }
+            symbols = ["SBIN", "RELIANCE", "TCS"]
+            subscribe_msg = {"action": "subscribe", "symbols": symbols}
 
             logger.info("Subscribing to: %s", symbols)
             await websocket.send(json.dumps(subscribe_msg))
@@ -51,11 +57,11 @@ async def test_websocket_ticks() -> None:
                     message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
                     data = json.loads(message)
 
-                    if data.get('type') == 'ticker':
-                        tick = data['data']
-                        symbol = tick.get('symbol')
+                    if data.get("type") == "ticker":
+                        tick = data["data"]
+                        symbol = tick.get("symbol")
                         # Fyers format NSE:SBIN-EQ or DB format SBIN depending on conversion
-                        ltp = tick.get('ltp') or tick.get('price')
+                        ltp = tick.get("ltp") or tick.get("price")
 
                         logger.info("Tick: %s = ₹%s", symbol, ltp)
                         received_symbols.add(symbol)
@@ -82,6 +88,7 @@ async def test_websocket_ticks() -> None:
     except Exception as e:
         logger.exception("Connection failed: %s", e)
         raise
+
 
 if __name__ == "__main__":
     # Note: This requires the backend to be running

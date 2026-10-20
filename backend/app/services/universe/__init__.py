@@ -5,7 +5,8 @@ Unified service for managing index universes and constituents.
 """
 
 import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import Any
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
 from ...models import IndexConstituentHistory, IndexUniverseDefinition, UniverseSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class UniverseMode(Enum):
@@ -61,7 +64,9 @@ class UniverseServiceImpl:
             .first()
         )
 
-    def _load_db_constituents(self, index_code: str, lookup_date: date) -> list[UniverseConstituent]:
+    def _load_db_constituents(
+        self, index_code: str, lookup_date: date
+    ) -> list[UniverseConstituent]:
         db: Session = SessionLocal()
         try:
             definition = self._load_db_definition(index_code, db)
@@ -115,7 +120,7 @@ class UniverseServiceImpl:
                 try:
                     return sorted(set(json.loads(snapshot.symbols)))
                 except Exception:
-                    pass
+                    logger.debug("Unreadable universe snapshot symbols", exc_info=True)
 
             rows = (
                 db.query(IndexConstituentHistory.symbol)
@@ -137,7 +142,9 @@ class UniverseServiceImpl:
     def _list_db_indices(self) -> list[dict]:
         db: Session = SessionLocal()
         try:
-            definitions = db.query(IndexUniverseDefinition).order_by(IndexUniverseDefinition.index_code).all()
+            definitions = (
+                db.query(IndexUniverseDefinition).order_by(IndexUniverseDefinition.index_code).all()
+            )
             indices: list[dict[str, Any]] = []
             for definition in definitions:
                 rows = (
@@ -231,9 +238,7 @@ class UniverseServiceImpl:
             return db_symbols
         return index_universe_loader.get_index_symbols(index_code)
 
-    def is_constituent(
-        self, symbol: str, index_code: str, _as_of_date: date | None = None
-    ) -> bool:
+    def is_constituent(self, symbol: str, index_code: str, _as_of_date: date | None = None) -> bool:
         """Check if a symbol is a constituent of an index."""
         from ..index_universe_loader import index_universe_loader
 
@@ -331,7 +336,7 @@ class UniverseService:
     - Live mode data
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._impl = UniverseServiceImpl()
 
     def get_constituents(

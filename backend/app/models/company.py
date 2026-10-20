@@ -50,5 +50,5 @@ class Company(Base):
         Index("ix_company_sector_index", "sector_index", "is_active"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Company(symbol={self.symbol}, name={self.name})>"

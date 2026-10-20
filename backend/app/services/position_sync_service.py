@@ -9,12 +9,16 @@ import asyncio
 import contextlib
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from ..brokers.base import BrokerUnavailableError
 from ..database import SessionLocal
 from ..models.live_position import LivePosition
 from ..utils.cache import cache_with_ttl
 from .symbol_master import symbol_master
+
+if TYPE_CHECKING:
+    from ..brokers.plugins.fyers import FyersBroker
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,7 @@ class PositionSyncService:
     Service for synchronizing positions from broker to local database.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._is_running = False
         self._lock = asyncio.Lock()
         self._task = None
@@ -32,7 +36,7 @@ class PositionSyncService:
         self._broker = None
         self._last_sync: datetime | None = None
 
-    def _get_broker(self):
+    def _get_broker(self) -> "FyersBroker":
         """Lazy load Fyers broker"""
         if self._broker is None:
             from ..brokers.plugins.fyers import FyersBroker
@@ -40,7 +44,7 @@ class PositionSyncService:
             self._broker = FyersBroker()
         return self._broker
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the position sync loop with atomic check-and-set"""
         async with self._lock:
             if self._is_running:
@@ -51,7 +55,7 @@ class PositionSyncService:
         self._task = asyncio.create_task(self._sync_loop())
         logger.info("Position sync service started")
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the position sync loop"""
         self._is_running = False
         if self._task:
@@ -60,7 +64,7 @@ class PositionSyncService:
                 await self._task
         logger.info("Position sync service stopped")
 
-    async def _sync_loop(self):
+    async def _sync_loop(self) -> None:
         """Main sync loop"""
         from ..utils.market_hours import is_market_hours
 
