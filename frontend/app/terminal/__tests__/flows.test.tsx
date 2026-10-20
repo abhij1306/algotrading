@@ -82,6 +82,15 @@ const RISK_PASS = {
 };
 // Body every pre-trade risk check answers with.
 let riskResult: Record<string, unknown> = RISK_PASS;
+// While set, risk-check requests wait for it, so a test can see the dialog mid-check.
+let riskHold: Promise<void> | null = null;
+
+/** The dialog's Confirm button once the risk check has settled and enabled it. */
+async function enabledConfirm(dialog: HTMLElement, side: "BUY" | "SELL"): Promise<HTMLElement> {
+  const confirm = within(dialog).getByRole("button", { name: `Confirm LIVE ${side}` });
+  await vi.waitFor(() => expect(confirm).toBeEnabled());
+  return confirm;
+}
 // Square-off POSTs that fail as a dropped connection before any response arrives.
 let squareNetworkFailures = 0;
 
@@ -129,6 +138,7 @@ function installFetch(): Captured[] {
         squareNetworkFailures -= 1;
         throw new TypeError("Failed to fetch");
       }
+      if (source.url.includes(RISK_CHECK_PATH) && riskHold) await riskHold;
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
         orderTruncatedResponses -= 1;
         return new Response('{"status":"acc', { status: 200 });
@@ -265,7 +275,7 @@ describe("terminal order payload", () => {
     const dialog = await screen.findByRole("dialog", { name: "Place LIVE BUY order for SBIN?" });
     expect(orderBodies(calls)).toEqual([]);
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm LIVE BUY" }));
+    fireEvent.click(await enabledConfirm(dialog, "BUY"));
 
     await screen.findByText("LIVE BUY accepted (ord-1)");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -290,6 +300,7 @@ describe("terminal LIVE confirmation", () => {
     orderTruncatedResponses = 0;
     orderResult = { status: "accepted", order_id: "ord-1" };
     riskResult = RISK_PASS;
+    riskHold = null;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -348,6 +359,25 @@ describe("terminal LIVE confirmation", () => {
     );
   });
 
+  it("keeps Confirm disabled until the risk check has answered", async () => {
+    let release = () => {};
+    riskHold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const dialog = await openLiveStopOrder();
+
+    const confirm = within(dialog).getByRole("button", { name: "Confirm LIVE SELL" });
+    expect(screen.getByRole("region", { name: "Risk check" }).textContent).toBe("Checking risk...");
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(orderBodies(calls)).toEqual([]);
+
+    release();
+
+    expect(await riskPanelText()).toBe("All risk checks passed.");
+    expect(confirm).toBeEnabled();
+  });
+
   it("says a failing order will be rejected", async () => {
     riskResult = {
       can_trade: false,
@@ -402,7 +432,7 @@ describe("terminal LIVE confirmation", () => {
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
     expect(orderBodies(calls)).toEqual([]);
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm LIVE SELL" }));
+    fireEvent.click(await enabledConfirm(dialog, "SELL"));
 
     await screen.findByText("LIVE SELL accepted (ord-1)");
     expect(orderBodies(calls)).toEqual([
@@ -414,7 +444,7 @@ describe("terminal LIVE confirmation", () => {
     const dialog = await openLiveStopOrder();
     setValue(/^quantity$/i, "40");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm LIVE SELL" }));
+    fireEvent.click(await enabledConfirm(dialog, "SELL"));
 
     await screen.findByText("LIVE SELL accepted (ord-1)");
     expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([4]);

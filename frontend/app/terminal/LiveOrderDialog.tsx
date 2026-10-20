@@ -54,11 +54,13 @@ function riskCheckText(check: RiskCheck, hasReason: boolean): string {
 }
 
 /**
- * The backend's risk check for this order, run when the dialog opens so warnings show before
- * Confirm. Placing the order checks again, so this never blocks or allows anything by itself.
+ * The backend's risk check for this order, run when the dialog opens; Confirm waits for it so
+ * warnings show first. Placing the order checks again, so its result never allows an order.
  */
-function RiskCheckPanel({ draft }: Readonly<{ draft: OrderDraft }>) {
-  const check = useRiskCheck(riskCheckBody(draft));
+function RiskCheckPanel({
+  draft,
+  check,
+}: Readonly<{ draft: OrderDraft; check: ReturnType<typeof useRiskCheck> }>) {
   const hasReason = draft.body.risk_override_reason !== null;
   let text = "Checking risk...";
   if (check.isError) text = "Risk check unavailable; the order is checked again when placed.";
@@ -99,6 +101,7 @@ export function LiveOrderDialog({
     cancelRef.current?.focus();
   };
   const { side, symbol } = draft.body;
+  const check = useRiskCheck(riskCheckBody(draft));
 
   return (
     <dialog
@@ -122,7 +125,7 @@ export function LiveOrderDialog({
           </div>
         ))}
       </dl>
-      <RiskCheckPanel draft={draft} />
+      <RiskCheckPanel draft={draft} check={check} />
       <div className="flex items-center justify-end gap-2">
         <Button ref={cancelRef} variant="secondary" className="h-8 text-sm" onClick={onCancel}>
           Cancel
@@ -130,6 +133,8 @@ export function LiveOrderDialog({
         <Button
           variant={side === "BUY" ? "profit" : "loss"}
           className="h-8 text-sm"
+          // The user sees the risk result (or that it is unavailable) before they can confirm.
+          disabled={check.isPending}
           onClick={onConfirm}
         >
           Confirm LIVE {side}
