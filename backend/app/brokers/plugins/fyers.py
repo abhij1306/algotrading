@@ -397,7 +397,8 @@ class FyersBroker(IBroker):
         try:
             positions = self.get_positions()
         except BrokerUnavailableError as exc:
-            logger.warning("Exit position for %s aborted: positions unavailable (%s)", symbol, exc)
+            # symbol is request input; keep it out of the log line (log injection).
+            logger.warning("Exit position aborted: positions unavailable (%s)", exc)
             return {
                 "status": "REJECTED",
                 "code": "BROKER_UNAVAILABLE",
