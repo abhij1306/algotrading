@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.database import ensure_universe_schema, get_db_session
+from app.database import db_session_scope, ensure_universe_schema
 from app.services.universe_sync import sync_index_universes_from_loader
 
 
@@ -30,8 +30,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     as_of_date = datetime.strptime(args.as_of_date, "%Y-%m-%d").date() if args.as_of_date else None
-    session = get_db_session()
-    try:
+    with db_session_scope() as session:
         ensure_universe_schema()
         summary = sync_index_universes_from_loader(
             session,
@@ -40,8 +39,6 @@ def main() -> int:
         )
         print(json.dumps(summary.__dict__, indent=2))
         return 0
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":

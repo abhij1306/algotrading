@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app import data_repository as repo_module
 from app import indicators
 from app.data_repository import DataRepository
-from app.database import Company, DataUpdateLog, HistoricalPrice, IntradayCandle
+from app.models import Company, DataUpdateLog, HistoricalPrice, IntradayCandle
 
 COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 

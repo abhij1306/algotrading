@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.orm import Session
 
-from app.database import Company, HistoricalPrice, Watchlist
+from app.models import Company, HistoricalPrice, Watchlist
 from app.routers import market
 from app.services import option_chain_service as chain_module
 

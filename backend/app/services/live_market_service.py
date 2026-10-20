@@ -214,6 +214,30 @@ class LiveMarketService:
         self.ws_connected = False
         self._is_connecting = False
 
+    async def shutdown(self) -> None:
+        """App shutdown: stop the monitor and flush loops and close the provider socket.
+
+        Unlike disconnect() this does not mark an explicit disconnect, so a later
+        startup in the same process (tests) can connect again.
+        """
+        self._runner_stop.set()
+        tasks = [task for task in (self.monitor_task, self.broadcast_task) if task is not None]
+        self.monitor_task = None
+        self.broadcast_task = None
+        running_loop = asyncio.get_running_loop()
+        # Tasks of an earlier, closed loop cannot be cancelled or awaited here; drop them.
+        live_tasks = [t for t in tasks if not t.done() and t.get_loop() is running_loop]
+        for task in live_tasks:
+            task.cancel()
+        try:
+            if self.ws_service:
+                self.ws_service.disconnect()
+        finally:
+            self.ws_connected = False
+            self._is_connecting = False
+            self.loop = None
+            await asyncio.gather(*live_tasks, return_exceptions=True)
+
     def on_ws_failure(self, error: Exception) -> None:
         """Callback when WebSocket connection fails"""
         self.ws_connected = False

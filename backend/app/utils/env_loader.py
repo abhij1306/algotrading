@@ -56,3 +56,17 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     if value[:1] in {'"', "'"} and value.endswith(value[0]):
         value = value[1:-1]
     return key, value
+
+
+TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    """A boolean env var: "1", "true", "yes" or "on" (any case, spaces ignored) is True.
+
+    Unset or blank gives `default`; any other value is False.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in TRUE_VALUES

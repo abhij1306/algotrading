@@ -38,6 +38,9 @@ class FakeLiveMarket:
         await asyncio.sleep(0)
         return {"market_status": "CLOSED", "fyers_connected": False}
 
+    async def shutdown(self) -> None:
+        await asyncio.sleep(0)
+
 
 def schema_work_down_for(failures: int) -> tuple[Callable[[], None], list[str]]:
     """Schema work that finds the DB down for the first `failures` calls, then succeeds."""

@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..database import get_db_session
+from ..database import db_session_scope
 from ..models.backtest import BacktestRun
 from ..utils.dates import parse_iso_date
 from ..utils.db_errors import is_db_unavailable
@@ -267,12 +267,15 @@ class Phase1BacktestService:
         }
 
     def list_runs(self) -> list[dict[str, Any]]:
-        session = get_db_session()
         try:
-            runs = (
-                session.query(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(100).all()
-            )
-            return [self._serialize_run_summary(run) for run in runs]
+            with db_session_scope() as session:
+                runs = (
+                    session.query(BacktestRun)
+                    .order_by(BacktestRun.created_at.desc())
+                    .limit(100)
+                    .all()
+                )
+                return [self._serialize_run_summary(run) for run in runs]
         except Exception as exc:
             if is_db_unavailable(exc):
                 # An empty or partial list would read as "no saved runs"; answer 503 instead.
@@ -288,8 +291,6 @@ class Phase1BacktestService:
                 }
                 for j in items
             ]
-        finally:
-            session.close()
 
     @staticmethod
     def _serialize_run_summary(run: BacktestRun) -> dict[str, Any]:
@@ -340,8 +341,7 @@ class Phase1BacktestService:
             job.params.get("strategies") or [],
             normalized,
         )
-        session = get_db_session()
-        try:
+        with db_session_scope() as session:
             primary_strategy = strategy_snapshot[0]["strategy_id"] if strategy_snapshot else None
             run = BacktestRun(
                 run_id=job.job_id,
@@ -367,12 +367,9 @@ class Phase1BacktestService:
             )
             session.merge(run)
             session.commit()
-        finally:
-            session.close()
 
     def _finalize_db_run(self, job: BacktestJob) -> None:
-        session = get_db_session()
-        try:
+        with db_session_scope() as session:
             run = session.query(BacktestRun).filter(BacktestRun.run_id == job.job_id).first()
             if run is None:
                 return
@@ -388,8 +385,6 @@ class Phase1BacktestService:
                 run.sharpe_ratio = float(metrics.get("sharpe_ratio", 0.0) or 0.0)
                 run.max_drawdown = float(metrics.get("max_drawdown_pct", 0.0) or 0.0)
             session.commit()
-        finally:
-            session.close()
 
     def _validated_run_inputs(self, payload: dict[str, Any]) -> tuple[str, date, date, float]:
         """(instrument_type, start, end, initial_capital) of a run request, or ValueError."""
@@ -607,27 +602,23 @@ class Phase1BacktestService:
         return {"job_id": job_id, "status": job.status}
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
-        session = None
         try:
-            session = get_db_session()
-            run = session.query(BacktestRun).filter(BacktestRun.run_id == job_id).first()
-            if run is not None:
-                payload: dict[str, Any] = {
-                    "job_id": run.run_id,
-                    "status": run.status,
-                    "created_at": run.created_at.isoformat() if run.created_at else None,
-                    "params": run.request_payload or {},
-                }
-                if run.error_message:
-                    payload["error"] = run.error_message
-                if run.result_payload:
-                    payload["result"] = run.result_payload
-                return payload
+            with db_session_scope() as session:
+                run = session.query(BacktestRun).filter(BacktestRun.run_id == job_id).first()
+                if run is not None:
+                    payload: dict[str, Any] = {
+                        "job_id": run.run_id,
+                        "status": run.status,
+                        "created_at": run.created_at.isoformat() if run.created_at else None,
+                        "params": run.request_payload or {},
+                    }
+                    if run.error_message:
+                        payload["error"] = run.error_message
+                    if run.result_payload:
+                        payload["result"] = run.result_payload
+                    return payload
         except Exception:
             logger.exception("Failed to load backtest job %s from database", job_id)
-        finally:
-            if session is not None:
-                session.close()
 
         job = self._jobs.get(job_id)
         if not job:

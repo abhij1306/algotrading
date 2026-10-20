@@ -9,10 +9,10 @@ from typing import NoReturn
 import pytest
 from fastapi.testclient import TestClient
 
+from app import database
 from app.exceptions import InvalidDateError
 from app.main import app
 from app.routers import strategies, universe
-from app.services import backtest_phase1_service
 from app.utils.dates import parse_iso_date, parse_optional_iso_date
 
 BAD = "2025-13-40"
@@ -150,9 +150,8 @@ def test_vcp_signal_passes_a_valid_scan_date_through(
 def test_backtest_run_rejects_an_invalid_date(
     api: TestClient, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
-    monkeypatch.setattr(
-        backtest_phase1_service, "get_db_session", lambda: SimpleNamespace(close=lambda: None)
-    )
+    no_db = SimpleNamespace(commit=lambda: None, rollback=lambda: None, close=lambda: None)
+    monkeypatch.setattr(database, "SessionLocal", lambda: no_db)
     body = {"start_date": "2025-01-01", "end_date": "2025-01-31", field: BAD}
 
     response = api.post("/api/backtest/run", json=body)

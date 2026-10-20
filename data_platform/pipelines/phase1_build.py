@@ -34,10 +34,10 @@ DATA_ROOT = PROJECT_ROOT / "data_system"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.database import (  # noqa: E402
+from backend.app.database import SessionLocal  # noqa: E402
+from backend.app.models import (  # noqa: E402
     DatasetArtifact,
     DatasetRun,
-    SessionLocal,
     SnapshotIndexStock,
     SnapshotIndexUniverse,
 )

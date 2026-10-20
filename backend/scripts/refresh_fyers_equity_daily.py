@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import func
 
-from app.database import get_db_session
+from app.database import db_session_scope
 from app.models import HistoricalPrice, IndexConstituentHistory, IndexUniverseDefinition
 from app.paths import PROJECT_ROOT, SOURCES_ROOT
 from app.services.fyers_client import get_fyers_client
@@ -57,8 +57,7 @@ def resolve_symbols(
             symbols.update(service.get_symbols(universe_id))
         return sorted(symbols), {"mode": "universes", "universes": universe_ids}
 
-    db = get_db_session()
-    try:
+    with db_session_scope() as db:
         rows = (
             db.query(IndexConstituentHistory.symbol)
             .join(
@@ -72,16 +71,11 @@ def resolve_symbols(
         )
         symbols = [row[0] for row in rows]
         return symbols, {"mode": "all_active_index_symbols", "universes": []}
-    finally:
-        db.close()
 
 
 def database_max_date() -> date | None:
-    db = get_db_session()
-    try:
+    with db_session_scope() as db:
         return db.query(func.max(HistoricalPrice.date)).scalar()
-    finally:
-        db.close()
 
 
 def load_existing_dataset() -> pd.DataFrame:

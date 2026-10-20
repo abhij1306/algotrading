@@ -15,7 +15,8 @@ except ModuleNotFoundError:
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ..database import DatasetRun, get_db
+from ..database import get_db
+from ..models import DatasetRun
 from ..paths import CURATED_ROOT, DATA_ROOT, METADATA_ROOT
 from ..services.symbol_master import symbol_master
 from ..utils.dates import parse_iso_date

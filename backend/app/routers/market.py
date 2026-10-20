@@ -219,7 +219,7 @@ def search_symbols(
                 )
 
     # Search in Company table (equities only)
-    from ..database import Company
+    from ..models import Company
 
     companies = (
         db.query(Company)
@@ -362,7 +362,7 @@ def get_sectors(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get list of all available sectors
     """
-    from ..database import Company
+    from ..models import Company
 
     # query distinct sectors
     sectors = (
@@ -379,7 +379,7 @@ def get_sectors(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
 @router.get("/watchlist", response_model=None)
 def get_watchlist(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
     """Get user watchlist"""
-    from ..database import Watchlist
+    from ..models import Watchlist
 
     items = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
     # For each symbol, fetch latest price/data
@@ -388,7 +388,7 @@ def get_watchlist(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
 
 def _watchlist_row(db: Session, item: object) -> dict[str, Any]:
     """Watchlist entry with name and latest stored close vs. that day's open."""
-    from ..database import Company
+    from ..models import Company
 
     # Determine strict symbol for query
     sym = symbol_master.to_db(item.symbol)
@@ -415,7 +415,7 @@ def _latest_close_change(
     db: Session, company_id: int
 ) -> tuple[float | None, float | None, float | None]:
     """(close, change, change %) of the latest historical bar; change is vs. its open."""
-    from ..database import HistoricalPrice
+    from ..models import HistoricalPrice
 
     latest_price = (
         db.query(HistoricalPrice)
@@ -440,7 +440,7 @@ def _latest_close_change(
 )
 def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Add to watchlist"""
-    from ..database import Watchlist
+    from ..models import Watchlist
 
     symbol = item.get("symbol")
     inst_type = item.get("instrument_type", "EQ")
@@ -461,7 +461,7 @@ def add_to_watchlist(item: dict, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
 @router.delete("/watchlist/{symbol}", response_model=None)
 def remove_from_watchlist(symbol: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """Remove from watchlist"""
-    from ..database import Watchlist
+    from ..models import Watchlist
 
     db.query(Watchlist).filter(Watchlist.symbol == symbol).delete()
     db.commit()

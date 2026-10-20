@@ -1,6 +1,7 @@
 """
-Database Configuration and Model Export
-Unified entry point for database engine, session, and models.
+Database engine, sessions and schema upkeep.
+
+Models live in `app.models`; import them from there.
 """
 
 import logging
@@ -11,50 +12,26 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Column, Engine, Table, create_engine, inspect, text
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 from sqlalchemy.schema import CreateColumn
 
-from . import models
 from .base import Base
 from .models import (
     BacktestDailyResult,
     BacktestRun,
     Company,
-    DatasetArtifact,
-    DatasetRun,
-    DataUpdateLog,
-    FinancialStatement,
-    HistoricalPrice,
-    IntradayCandle,
     LiveOrder,
-    QuarterlyResult,
-    SnapshotIndexStock,
-    SnapshotIndexUniverse,
     StrategyPosition,
     SystemConfig,
     VCPScanResult,
-    Watchlist,
 )
 from .models.live_order import CLIENT_ORDER_ID_INDEX
 from .paths import ENV_FILE
-from .utils.env_loader import load_dotenv
+from .utils.env_loader import env_flag, load_dotenv
 
 logger = logging.getLogger(__name__)
-
-MODELS_IMPORTED = models
-MODEL_EXPORTS = (
-    Company,
-    DataUpdateLog,
-    DatasetRun,
-    DatasetArtifact,
-    SnapshotIndexStock,
-    SnapshotIndexUniverse,
-    FinancialStatement,
-    HistoricalPrice,
-    IntradayCandle,
-    QuarterlyResult,
-    Watchlist,
-)
 
 # ============================================
 # Environment & Path Discovery
@@ -84,40 +61,48 @@ load_dotenv(env_path)
 # Database Configuration
 # ============================================
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "algotrading")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_CONNECT_TIMEOUT_S = 3
+SQLITE_TEST_URL = "sqlite:///./test_quant.db"
 
-if os.getenv("USE_SQLITE_TEST", "False") == "True":
-    DATABASE_URL = "sqlite:///./test_quant.db"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-else:
-    from sqlalchemy.pool import QueuePool
 
-    # Explicit driver: SQLAlchemy 2.1 made psycopg (v3) the default for postgresql://.
-    DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    engine = create_engine(
-        DATABASE_URL,
+def postgres_url_from_env() -> URL:
+    """The Postgres URL from DB_* env vars; URL.create quotes any character in the password."""
+    return URL.create(
+        # Explicit driver: SQLAlchemy 2.1 made psycopg (v3) the default for postgresql://.
+        drivername="postgresql+psycopg2",
+        username=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "algotrading"),
+    )
+
+
+def create_engine_from_env() -> Engine:
+    """SQLite when USE_SQLITE_TEST is a true flag, else pooled Postgres from DB_* env vars."""
+    if env_flag("USE_SQLITE_TEST"):
+        return create_engine(SQLITE_TEST_URL, connect_args={"check_same_thread": False})
+    return create_engine(
+        postgres_url_from_env(),
         echo=False,
         pool_pre_ping=True,
         poolclass=QueuePool,
-        pool_size=20,  # Increased from 10 for better concurrency
-        max_overflow=40,  # Increased from 20 for peak load handling
+        pool_size=20,
+        max_overflow=40,
         pool_recycle=3600,  # Recycle connections after 1 hour
-        pool_timeout=30,  # Add timeout to prevent indefinite waiting
+        pool_timeout=30,  # Do not wait forever for a pooled connection
         # A down server fails a request in seconds instead of hanging on the TCP connect.
         connect_args={"connect_timeout": DB_CONNECT_TIMEOUT_S},
     )
 
+
+engine = create_engine_from_env()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def describe_database_target() -> str:
-    """Where the engine connects, for log lines: host:port/name, never the password."""
-    url = engine.url
+def describe_database_target(url: URL | None = None) -> str:
+    """Where the engine (or `url`) connects, for log lines: host:port/name, never the password."""
+    url = url if url is not None else engine.url
     if url.get_backend_name() == "sqlite":
         return f"sqlite:{url.database}"
     return f"{url.host}:{url.port}/{url.database}"
@@ -129,14 +114,13 @@ def describe_database_target() -> str:
 
 
 def init_db() -> None:
-    """Initialize database and create all tables"""
+    """Create all tables and backfill schema changes on existing databases."""
     Base.metadata.create_all(bind=engine)
     ensure_backtest_schema(bind=engine)
     ensure_universe_schema(bind=engine)
     ensure_strategy_schema(bind=engine)
     ensure_live_order_schema(bind=engine)
-    target = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
-    logger.info("Database initialized: %s", target)
+    logger.info("Database initialized: %s", describe_database_target())
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -146,11 +130,6 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-
-def get_db_session() -> Session:
-    """Create a new database session for services"""
-    return SessionLocal()
 
 
 @contextmanager

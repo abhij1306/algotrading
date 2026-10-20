@@ -6,10 +6,10 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app import database
 from app.base import Base
 from app.database import ensure_backtest_schema
 from app.models.backtest import BacktestRun
-from app.services import backtest_phase1_service as backtest_module
 from app.services.backtest_phase1_service import Phase1BacktestService
 
 
@@ -22,7 +22,7 @@ def db_session_factory(
     testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 
-    monkeypatch.setattr(backtest_module, "get_db_session", testing_session_local)
+    monkeypatch.setattr(database, "SessionLocal", testing_session_local)
     try:
         yield testing_session_local
     finally:

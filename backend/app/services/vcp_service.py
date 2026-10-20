@@ -15,7 +15,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..data_fetcher import fetch_fyers_quotes
-from ..database import db_session_scope, get_db_session
+from ..database import db_session_scope
 from ..exceptions import DataUnavailableError
 from ..models import (
     BacktestRun,
@@ -497,8 +497,7 @@ class VCPService:
     def get_latest_scan(
         self, universe: str = DEFAULT_UNIVERSE, show_all: bool = False
     ) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             latest_date = (
                 db.query(func.max(VCPScanResult.scan_timestamp))
                 .filter(VCPScanResult.universe == universe.upper())
@@ -556,12 +555,9 @@ class VCPService:
                 "regime": self._serialize_regime(self.get_regime(latest_row.scan_date)),
                 "results": [self._serialize_scan_row(row) for row in rows],
             }
-        finally:
-            db.close()
 
     def get_signal_detail(self, symbol: str, scan_date: date | None = None) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             query = db.query(VCPScanResult).filter(VCPScanResult.symbol == symbol.upper())
             row = (
                 query.order_by(
@@ -617,12 +613,9 @@ class VCPService:
                     for item in history.to_dict("records")
                 ],
             }
-        finally:
-            db.close()
 
     def queue_signal(self, signal_id: int) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             row = db.query(VCPScanResult).filter(VCPScanResult.id == signal_id).first()
             if row is None:
                 raise ValueError("Signal not found")
@@ -630,12 +623,9 @@ class VCPService:
             db.commit()
             db.refresh(row)
             return self._serialize_scan_row(row)
-        finally:
-            db.close()
 
     def cancel_signal(self, signal_id: int) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             row = db.query(VCPScanResult).filter(VCPScanResult.id == signal_id).first()
             if row is None:
                 raise ValueError("Signal not found")
@@ -643,12 +633,9 @@ class VCPService:
             db.commit()
             db.refresh(row)
             return self._serialize_scan_row(row)
-        finally:
-            db.close()
 
     def list_positions(self) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             rows = (
                 db.query(StrategyPosition)
                 .filter(StrategyPosition.status.in_(["OPEN", "OPEN_PARTIAL"]))
@@ -681,12 +668,9 @@ class VCPService:
                     }
                 )
             return {"positions": payload}
-        finally:
-            db.close()
 
     def close_position(self, position_id: int) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             row = db.query(StrategyPosition).filter(StrategyPosition.id == position_id).first()
             if row is None:
                 raise ValueError("Position not found")
@@ -722,12 +706,9 @@ class VCPService:
                 "quote_source": quote_source,
                 "ltp_missing": quote_source != "ltp",
             }
-        finally:
-            db.close()
 
     def update_stop(self, position_id: int, stop_price: float) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             row = db.query(StrategyPosition).filter(StrategyPosition.id == position_id).first()
             if row is None:
                 raise ValueError("Position not found")
@@ -739,31 +720,22 @@ class VCPService:
                 "position_id": position_id,
                 "stop_price": round(row.stop_price, 2),
             }
-        finally:
-            db.close()
 
     def halt(self, reason: str | None = None) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             self._set_config(db, "TRADING_HALTED", "true")
             self._set_config(db, "HALT_REASON", reason or "")
             self._set_config(db, "HALTED_AT", datetime.now(UTC).isoformat())
             return self.get_status()
-        finally:
-            db.close()
 
     def resume(self) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             self._set_config(db, "TRADING_HALTED", "false")
             self._set_config(db, "HALT_REASON", "")
             return self.get_status()
-        finally:
-            db.close()
 
     def get_status(self, universe: str | None = None) -> dict[str, Any]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             universe_filter = (universe or DEFAULT_UNIVERSE).upper()
             latest_scan = (
                 db.query(func.max(VCPScanResult.scan_date))
@@ -810,8 +782,6 @@ class VCPService:
                 "regime": self._serialize_regime(self.get_regime()),
                 "metrics": runtime_metrics.snapshot(prefix="strategy.vcp.", strip_prefix=True),
             }
-        finally:
-            db.close()
 
     def _daily_symbol_map(
         self, stock_df: pd.DataFrame, symbols: list[str], start_date: date, end_date: date
@@ -1258,8 +1228,7 @@ class VCPService:
             return {"run_id": run_id, "status": "completed", "result": result_payload}
 
     def get_backtest(self, run_id: str) -> dict[str, Any] | None:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             row = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
             if row is None or (row.strategy_id or "").upper() != "VCP":
                 return None
@@ -1271,12 +1240,9 @@ class VCPService:
                 "metrics": row.summary_metrics or {},
                 "result": row.result_payload or {},
             }
-        finally:
-            db.close()
 
     def list_backtests(self, universe: str | None = None) -> list[dict[str, Any]]:
-        db = get_db_session()
-        try:
+        with db_session_scope() as db:
             query = db.query(BacktestRun).filter(BacktestRun.strategy_id == "VCP")
             if universe:
                 query = query.filter(BacktestRun.universe == universe.upper())
@@ -1294,8 +1260,6 @@ class VCPService:
                 }
                 for row in rows
             ]
-        finally:
-            db.close()
 
 
 vcp_service = VCPService()
