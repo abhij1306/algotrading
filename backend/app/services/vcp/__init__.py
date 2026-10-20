@@ -9,6 +9,5 @@
   `quotes.QuoteSource` port.
 
 `app.services.vcp_service.VCPService` wires these to the production adapters for the
-router. The backtest still lives there and moves here in a later slice
-(docs/plans/architecture/screener-backtest.md, section 4).
+router. The backtest still lives there and moves here in a later slice.
 """

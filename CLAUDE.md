@@ -34,57 +34,30 @@ pnpm dev
 
 ---
 
-## Current Canonical Docs
+## Specs and Repo Rules
 
-- Architecture + data architecture: `docs/ARCHITECTURE.md`
-- WebSocket: `docs/Websocket.md`
-- Design system: `docs/DESIGN_SYSTEM.md`
-- Symbol management: `docs/SYMBOL_MANAGEMENT.md`
-- Database/data operations: `docs/DATABASE_MANAGEMENT_PLAYBOOK.md`
-
-Compatibility pointer docs exist but are deprecated:
-- `docs/DATA_ARCHITECTURE.md`
-- `docs/TYPOGRAPHY_IMPLEMENTATION.md`
-- `docs/SPACING_RADIUS_SHADOW_TOKENS.md`
-- `docs/SYMBOL_FORMAT_RULES.md`
-
----
-
-## Project Overview
-
-SmartTrader is a quantitative trading platform for NSE with:
-- Dashboard, Screener, Terminal, Backtest
-- Live market streaming via WebSocket/Fyers
-- Paper + live trading paths
-- Phase-1 data system for 2025+ snapshots
-
----
-
-## Architecture (high level)
-
-### Backend
-- FastAPI + SQLAlchemy
-- Core services:
-  - `symbol_master.py`
-  - `index_universe_loader.py`
-  - `live_market_service.py`
-- Routers under `backend/app/routers`
-
-### Frontend
-- Vite+ (`vp`) + React Router SPA + TypeScript + Tailwind, managed with pnpm
-- Routes are declared in `frontend/router.tsx`; pages live in `frontend/app/**/page.tsx`
-- Realtime quotes: `frontend/lib/realtime` (`useQuote`, `useQuotes`, `useConnectionStatus`)
-
-### Data
-- Canonical active root: `data_system/`
-- Phase-1 active scope: 2025 onward
-- Legacy/historical assets archived under `archive/`
+- **Hire a Trader (HAT):** the specs in `docs/specs/hat/README.md` are the source of truth for
+  `backend/app/hat/`. Where repo code and the specs conflict, the specs win. Every HAT PR names the
+  spec requirement IDs it implements and the verification that proves them. New HAT code is
+  verified with TLA+ models, Hypothesis properties and Postgres checks
+  (`docs/specs/hat/11-verification.md`), not example unit tests; existing tests stay as they are.
+- **Repo paths** come from `backend/app/paths.py`; never compute them from `__file__`
+  (`backend/tests/test_paths.py`).
+- **Startup order** (`main.py` lifespan): symbol_master, then the DB (deferred and retried in the
+  background when it is down), then the Fyers token (warn only), then the index universe (warn
+  only), then the live connect (`backend/tests/test_startup_sequence.py`, `backend/tests/test_deferred_startup.py`).
+- **Schema changes** go through `init_db()`: `Base.metadata.create_all` plus idempotent
+  `ensure_*_schema()` functions. There is no Alembic. Tests build the schema on SQLite, so models
+  must create there; Postgres-only behaviour is tested with `@pytest.mark.postgres` tests (CI job
+  `backend-postgres`).
+- **Frontend: no new `useEffect`/`useLayoutEffect`** (`.claude/hooks/no-useeffect.sh` blocks them).
 
 ---
 
 ## Symbol Management Rules
 
-Always use `SymbolMaster` for conversion:
+DB format (`SBIN`, `NIFTY50`) internally; Fyers format (`NSE:SBIN-EQ`) only at the provider
+boundary. Always use `SymbolMaster` for conversion (`scripts/check_symbol_format.py` enforces it):
 
 ```python
 from app.services.symbol_master import symbol_master
@@ -126,8 +99,8 @@ Runtime behavior:
   `run_in_threadpool`/`asyncio.to_thread`. Never block in `async def`.
 - **SDK callbacks** arrive on SDK threads. Hand work to the event loop with
   `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`.
-- **Single-user localhost.** There is no API auth (decided; see "Out of scope" in
-  `docs/plans/architecture/STATUS.md`). The server binds to `127.0.0.1`. The trading safety
+- **Single-user localhost.** There is no API auth, by decision. The server binds to
+  `BACKEND_HOST` (default `127.0.0.1`). The trading safety
   rules still apply: idempotency, risk checks, fail closed, PAPER never touches the broker,
   and no broker or DB error text in responses.
 
@@ -222,9 +195,9 @@ netstat -ano | findstr :8000
 1. Plan changes
 2. Implement with tests
 3. Run quality checks
-4. Update canonical docs for any behavior/interface change
+4. Update `docs/specs/hat/` for any HAT behavior/interface change
 5. Submit
 
 ---
 
-**Last Updated:** February 19, 2026
+**Last Updated:** October 20, 2026

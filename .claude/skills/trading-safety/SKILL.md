@@ -37,5 +37,3 @@ SmartTrader can place real orders through Fyers. A bug here loses money, so thes
 ## Before you finish
 
 Check the diff against each rule above. List any rule a change could not meet and explain why in the PR description.
-
-Background and evidence for these rules: `docs/plans/architecture/trading.md`.
