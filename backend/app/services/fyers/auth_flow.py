@@ -208,7 +208,8 @@ class FyersAuthService:
         return FyersStatus(connected=True, user_id=saved.user_id)
 
     def status(self) -> FyersStatus:
-        """Whether an unexpired token is saved, cached for STATUS_CACHE_SECONDS.
+        """Whether a usable token is saved (StoredToken.is_usable, the same check FyersClient
+        applies), cached for STATUS_CACHE_SECONDS.
 
         Raises TokenStoreError when the file exists but cannot be read (not cached).
         """
@@ -216,7 +217,7 @@ class FyersAuthService:
         if self._cached_status is not None and now - self._cached_at < STATUS_CACHE_SECONDS:
             return self._cached_status
         token = self.store.load()
-        if token is None or token.is_expired():
+        if token is None or not token.is_usable():
             status = FyersStatus(connected=False, user_id=None)
         else:
             status = FyersStatus(connected=True, user_id=token.user_id or "")

@@ -95,11 +95,14 @@ class FyersClient:
             self._drop_credentials()  # the store logged why the file is not a usable token
             return
 
-        if token.is_expired():
-            # Fail closed: an expired token is never installed, so calls that skip
-            # validate_token() cannot use it either. Warn once per token file.
+        if not token.is_usable():
+            # Fail closed: an expired token (or one without a client id) is never installed,
+            # so calls that skip validate_token() cannot use it either. Warn once per file.
             if self._expired_token_mtime_ns != mtime_ns:
-                logger.warning("Fyers token expired on %s", token.expires_at)
+                if token.client_id:
+                    logger.warning("Fyers token expired on %s", token.expires_at)
+                else:
+                    logger.warning("Fyers token file has no client id; ignoring it")
                 self._expired_token_mtime_ns = mtime_ns
             self._drop_credentials()
             return

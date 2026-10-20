@@ -141,7 +141,39 @@ def test_is_expired_compares_against_utc_now() -> None:
 
     assert token.is_expired(datetime(2026, 3, 10, 18, 29, tzinfo=UTC)) is False
     assert token.is_expired(datetime(2026, 3, 10, 18, 31, tzinfo=UTC)) is True
-    assert StoredToken("t", "c", "u", None).is_expired() is False
+    assert StoredToken("t", "c", "u", None).is_expired() is True  # no expiry: fail closed
+
+
+def test_usable_needs_a_client_id_and_a_live_expiry() -> None:
+    before = datetime(2026, 3, 10, 18, 0, tzinfo=UTC)
+    expiry = datetime(2026, 3, 10, 18, 30, tzinfo=UTC)
+
+    assert StoredToken("t", "c", "u", expiry).is_usable(before) is True
+    assert StoredToken("t", None, "u", expiry).is_usable(before) is False
+    assert StoredToken("t", "c", "u", None).is_usable(before) is False
+    assert StoredToken("t", "c", "u", expiry).is_usable(expiry.replace(minute=31)) is False
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"access_token": "t", "client_id": "c"},  # no expires_at
+        {"access_token": "t", "client_id": "c", "expires_at": "soon"},  # unparseable
+        {"access_token": "t", "expires_at": "2999-01-01T00:00:00+00:00"},  # no client_id
+    ],
+)
+def test_unusable_token_file_is_unavailable(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch, document: dict[str, str]
+) -> None:
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(config_module, "token_store", store)
+    client = _isolated_client(store, monkeypatch)
+
+    client._load_credentials()
+
+    assert (client.client_id, client.access_token, client.fyers) == (None, None, None)
+    assert config_module.fyers_available() is False
 
 
 def test_missing_file_is_no_token(store: TokenStore) -> None:

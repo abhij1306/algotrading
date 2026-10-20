@@ -1,6 +1,7 @@
 """FyersAuthService and the /api/auth/fyers routes, with a fake SessionModel (no Fyers calls)."""
 
 import asyncio
+import json
 import logging
 import threading
 from collections.abc import Callable, Generator, Mapping
@@ -149,6 +150,21 @@ def test_status_is_cached_for_30_seconds(tmp_path: Path) -> None:
 def test_an_expired_token_reads_as_disconnected(tmp_path: Path) -> None:
     service, _ = make_service(tmp_path)
     service.store.save(OK_REPLY, client_id="CLIENT-100", now=datetime(2020, 1, 1, tzinfo=UTC))
+
+    assert service.status() == FyersStatus(connected=False, user_id=None)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"access_token": "t", "client_id": "c", "fy_id": "XA1234"},  # no expires_at
+        {"access_token": "t", "fy_id": "XA1234", "expires_at": "2999-01-01T00:00:00+00:00"},
+    ],
+    ids=["no-expiry", "no-client-id"],
+)
+def test_an_unusable_token_reads_as_disconnected(tmp_path: Path, document: dict[str, str]) -> None:
+    service, _ = make_service(tmp_path)
+    service.store.path.write_text(json.dumps(document), encoding="utf-8")
 
     assert service.status() == FyersStatus(connected=False, user_id=None)
 

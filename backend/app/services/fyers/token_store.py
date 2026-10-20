@@ -60,12 +60,18 @@ class StoredToken:
     client_id: str | None
     user_id: str | None
     expires_at: datetime | None
-    """Aware UTC; None when the file has no expiry. An unparseable expiry reads as expired."""
+    """Aware UTC; None when the file has no expiry. A missing or unparseable expiry reads as
+    expired (fail closed)."""
 
     def is_expired(self, now: datetime | None = None) -> bool:
         if self.expires_at is None:
-            return False
+            return True
         return (now or datetime.now(UTC)) > self.expires_at
+
+    def is_usable(self, now: datetime | None = None) -> bool:
+        """Whether FyersClient can make calls with this token: it has a client id and has not
+        expired. The one predicate for the client, the login status and fyers_available()."""
+        return bool(self.client_id) and not self.is_expired(now)
 
 
 class TokenStore:

@@ -25,7 +25,7 @@ def fyers_available() -> bool:
     except TokenStoreError:
         logger.warning("Failed to read the Fyers token file %s", token_store.path)
         return False
-    return token is not None and bool(token.client_id) and not token.is_expired()
+    return token is not None and token.is_usable()
 
 
 class Config:
