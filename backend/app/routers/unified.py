@@ -46,7 +46,7 @@ async def health_check() -> dict[str, Any]:
 
 
 @router.get("/status", response_model=None)
-async def get_status() -> dict[str, Any]:
+def get_status() -> dict[str, Any]:
     """Get current trading mode and status"""
     from ..services.fyers_client import get_fyers_client
 
@@ -96,13 +96,13 @@ def _broker_net_positions() -> list[dict[str, Any]]:
 
 
 @router.get("/positions", response_model=None, responses=BROKER_UNAVAILABLE_RESPONSES)
-async def get_positions() -> dict[str, Any]:
+def get_positions() -> dict[str, Any]:
     """Get current open positions from broker"""
     return {"positions": _broker_net_positions()}
 
 
 @router.get("/pnl", response_model=None, responses=BROKER_UNAVAILABLE_RESPONSES)
-async def get_total_pnl() -> dict[str, Any]:
+def get_total_pnl() -> dict[str, Any]:
     """Get total realized and unrealized PnL"""
     positions = _broker_net_positions()
     total_pnl = sum((Decimal(str(p.get("pl") or 0)) for p in positions), Decimal("0"))
