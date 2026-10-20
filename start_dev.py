@@ -23,6 +23,8 @@ from contextlib import closing
 from pathlib import Path
 
 HOST = "127.0.0.1"
+# Loopback-only dev servers; plain HTTP is intended.
+LOCAL_ORIGIN = f"http://{HOST}"  # NOSONAR
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 3000
 MAX_PORT_SCAN = 50
@@ -50,7 +52,7 @@ def find_available_port(preferred: int) -> int:
 def is_backend_healthy(port: int) -> bool:
     try:
         with urllib.request.urlopen(
-            f"http://{HOST}:{port}/ping", timeout=2
+            f"{LOCAL_ORIGIN}:{port}/ping", timeout=2
         ) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, ValueError):
@@ -155,7 +157,7 @@ def main() -> int:
     frontend_env = {
         **os.environ,
         "PORT": str(frontend_port),
-        "BACKEND_URL": f"http://{HOST}:{backend_port}",
+        "BACKEND_URL": f"{LOCAL_ORIGIN}:{backend_port}",
     }
 
     procs: list[subprocess.Popen] = []
@@ -178,7 +180,7 @@ def main() -> int:
             wait_for_port(backend_port, "Backend", backend_proc, timeout=90)
         wait_for_port(frontend_port, "Frontend", frontend_proc, timeout=120)
 
-        url = f"http://{HOST}:{frontend_port}"
+        url = f"{LOCAL_ORIGIN}:{frontend_port}"
         print(
             f"\nSmartTrader is running.\n  Backend:  http://{HOST}:{backend_port}\n  Frontend: {url}"
         )
