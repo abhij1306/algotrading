@@ -1,9 +1,18 @@
 # Scripts
 
-This directory now keeps only active operational helpers:
+Active helpers only (run from repo root):
 
-- `quality-checks/` for lint, symbol-format, and bundle checks
-- `setup/` for one-time database/bootstrap tasks
+- `install_backend_deps.py` installs backend deps into `venv/` (fyers-apiv3 with `--no-deps`, Python 3.14 safe)
+- `check_symbol_format.py [path]` flags ad-hoc symbol parsing outside `SymbolMaster` (defaults to `backend/app`)
+
+Dev startup is `start.bat` (Windows) or `python start_dev.py` at the repo root.
+
+Backend data/maintenance CLIs live in `backend/scripts/` (run from repo root, e.g.
+`python backend/scripts/sync_index_universes.py`):
+`sync_index_universes`, `load_bhavcopy`, `refresh_fyers_equity_daily`,
+`refresh_fyers_index_daily`, `refresh_fyers_intraday_archive`.
+
+Lint and format are `ruff` (backend) and `pnpm check` (frontend).
 
 ## Canonical Data Pipeline
 

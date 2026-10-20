@@ -145,10 +145,8 @@ Allowed long-term script shapes:
 - `refresh_fyers_index_daily`
 - `refresh_fyers_equity_daily`
 - `refresh_fyers_intraday_archive`
-- `consolidate_fyers_archives`
 
 Avoid long-term patterns like:
-- `download_fyers_nifty500_5min.py`
 - any script that bakes a single feature or a single universe into its identity
 
 Provider scripts should accept:

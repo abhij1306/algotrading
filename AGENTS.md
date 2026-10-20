@@ -23,7 +23,7 @@ This launches:
 # Backend (repo-root venv expected)
 python -m venv venv
 venv\Scripts\activate
-scripts\setup\install_backend_deps.bat
+python scripts/install_backend_deps.py
 python backend/start_server.py
 
 # Frontend
@@ -159,7 +159,7 @@ pytest
 ```
 2. Ensure dependencies installed:
 ```bash
-scripts\setup\install_backend_deps.bat
+python scripts/install_backend_deps.py
 ```
 3. Confirm port 8000 availability:
 ```bash
@@ -172,7 +172,7 @@ netstat -ano | findstr :8000
 
 ### Python 3.14 dependency note
 - `fyers-apiv3` pins an old `aiohttp` build path that can fail on Windows/Python 3.14.
-- Use `scripts\setup\install_backend_deps.bat` (or `.ps1`) to install a working set.
+- Use `python scripts/install_backend_deps.py` to install a working set.
 
 ---
 

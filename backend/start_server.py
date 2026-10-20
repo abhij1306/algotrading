@@ -1,4 +1,8 @@
-"""Backend startup script with env-driven config."""
+"""Backend startup script (run from repo root: python backend/start_server.py).
+
+Env: BACKEND_HOST, BACKEND_PORT, BACKEND_RELOAD, BACKEND_ACCESS_LOG, BACKEND_LOG_LEVEL,
+FRAMEWORK_LOG_LEVEL, DEV_MODE.
+"""
 
 import copy
 import os
@@ -26,22 +30,9 @@ def _env_level(key: str, default: str) -> str:
 
 def _build_uvicorn_log_config(framework_level: str) -> dict:
     config = copy.deepcopy(LOGGING_CONFIG)
-    config.setdefault("loggers", {})
-    config["loggers"].setdefault(
-        "websockets.server",
-        {"handlers": ["default"], "level": framework_level, "propagate": False},
-    )
-    config["loggers"].setdefault(
-        "websockets.protocol",
-        {"handlers": ["default"], "level": framework_level, "propagate": False},
-    )
-    config["loggers"].setdefault(
-        "websockets.client",
-        {"handlers": ["default"], "level": framework_level, "propagate": False},
-    )
-    config["loggers"]["websockets.server"]["level"] = framework_level
-    config["loggers"]["websockets.protocol"]["level"] = framework_level
-    config["loggers"]["websockets.client"]["level"] = framework_level
+    loggers = config.setdefault("loggers", {})
+    for name in ("websockets.server", "websockets.protocol", "websockets.client"):
+        loggers[name] = {"handlers": ["default"], "level": framework_level, "propagate": False}
     return config
 
 

@@ -74,8 +74,6 @@ openalgo/
 
 # Log files
 *.log
-backend/fyersApi.log
-backend/fyersRequests.log
 
 # Python cache
 __pycache__/
