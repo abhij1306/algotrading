@@ -365,14 +365,26 @@ def test_paper_modify_rejects_bad_values(
     assert result == {"status": "ERROR", "message": message}
 
 
-def test_paper_modify_converts_numeric_strings(orders: Session) -> None:
+def test_paper_modify_converts_numeric_strings(
+    orders: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(oes, "latest_tick_price", lambda _symbol: 810.0)
     order = add_order(orders, is_paper=1)
 
     result = oes.OrderExecutionService().modify_order(
         "ORD-1", {"quantity": "7", "price": "802.5"}, orders
     )
 
-    assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
+    assert result == {
+        "status": "SUCCESS",
+        "message": "Paper Order Modified",
+        "order_id": "ORD-1",
+        "order_status": "SUBMITTED",
+        "fill_message": "Paper limit resting (not marketable)",
+        "average_price": 0.0,
+        "filled_qty": 0,
+        "estimated_charges": 0.0,
+    }
     orders.refresh(order)
     assert (order.quantity, order.price) == (7, 802.5)
 

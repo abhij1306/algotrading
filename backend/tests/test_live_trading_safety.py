@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.brokers.plugins.fyers import FyersBroker
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
+from app.services import order_execution_service as oes_module
 from app.services import risk_manager as risk_module
 from app.services.live_market_service import live_market
 from app.services.order_execution_service import OrderExecutionService
@@ -714,15 +715,24 @@ def add_paper_order(
 @pytest.mark.parametrize(
     ("params", "stored"),
     [
-        ({"trigger_price": 807.0}, ("SL", 5, 805.0, 807.0)),
-        ({"price": 804.0, "quantity": 8}, ("SL", 8, 804.0, 806.0)),
-        ({"order_type": "SL-M"}, ("SL-M", 5, 805.0, 806.0)),
-        ({"order_type": "LIMIT", "price": 803.0}, ("LIMIT", 5, 803.0, 806.0)),
+        # Market at 812: the SELL stops stay untriggered and rest.
+        ({"trigger_price": 807.0}, ("SL", 5, 805.0, 807.0, "SUBMITTED", 0, 0.0)),
+        ({"price": 804.0, "quantity": 8}, ("SL", 8, 804.0, 806.0, "SUBMITTED", 0, 0.0)),
+        ({"order_type": "SL-M"}, ("SL-M", 5, 805.0, 806.0, "SUBMITTED", 0, 0.0)),
+        # A SELL limit at 803 is marketable: 812 less 5 bps = 811.594 -> 811.59.
+        (
+            {"order_type": "LIMIT", "price": 803.0},
+            ("LIMIT", 5, 803.0, 806.0, "FILLED", 5, 811.59),
+        ),
     ],
 )
 def test_paper_modify_applies_type_price_and_trigger(
-    order_db: Session, params: dict[str, Any], stored: tuple[str, int, float, float]
+    order_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, Any],
+    stored: tuple[str, int, float, float, str, int, float],
 ) -> None:
+    monkeypatch.setattr(oes_module, "latest_tick_price", lambda _symbol: 812.0)
     order = add_paper_order(order_db, "SL", 805.0, 806.0)
     client = FakeFyersClient()
     service = OrderExecutionService()
@@ -730,9 +740,17 @@ def test_paper_modify_applies_type_price_and_trigger(
 
     result = service.modify_order("ORD-PAPER1", params, order_db)
 
-    assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
+    assert (result["status"], result["order_status"]) == ("SUCCESS", stored[4])
     order_db.refresh(order)
-    modified = (order.order_type, order.quantity, order.price, order.trigger_price)
+    modified = (
+        order.order_type,
+        order.quantity,
+        order.price,
+        order.trigger_price,
+        order.status,
+        order.filled_qty,
+        order.average_price,
+    )
     assert modified == stored
     assert client.calls == []
 

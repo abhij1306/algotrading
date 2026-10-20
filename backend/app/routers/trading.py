@@ -7,7 +7,9 @@ API endpoints for order placement, position management, and trading operations.
 import logging
 import os
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -16,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.live_order import LiveOrder
+from ..services.execution import paper_book
 from ..services.live_exit_service import live_exit_service
 from ..services.live_market_service import live_market
 from ..services.order_execution_service import (
@@ -153,71 +156,37 @@ def _to_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _latest_price_for_symbol(symbol: str) -> float:
+def _latest_price_for_symbol(symbol: str) -> Decimal:
+    """Last tick price from the market-data cache (never the broker), or 0 if none."""
     tick = live_market.get_latest_tick(symbol)
     if tick and isinstance(tick, dict):
         ltp = tick.get("ltp")
-        if isinstance(ltp, (int, float)):
-            return float(ltp)
-    return 0.0
+        if isinstance(ltp, (int, float)) and not isinstance(ltp, bool):
+            return paper_book.to_decimal(ltp)
+    return paper_book.ZERO
 
 
-def _initial_paper_state(order: LiveOrder) -> dict[str, Any]:
-    return {
-        "symbol": order.symbol,
-        "product_type": order.product_type or "INTRADAY",
-        "instrument_type": order.instrument_type,
-        "net_qty": 0,
-        "entry_price": 0.0,
-        "realized_pnl": 0.0,
-    }
+@dataclass
+class _PaperBookEntry:
+    product_type: str
+    instrument_type: str | None
+    position: paper_book.PaperPosition = field(default_factory=paper_book.PaperPosition)
 
 
-def _resolve_fill_price(order: LiveOrder, state: dict[str, Any]) -> float:
-    px = _to_float(order.average_price, _to_float(order.price, 0.0))
+def _resolve_fill_price(order: LiveOrder, position: paper_book.PaperPosition) -> Decimal:
+    px = paper_book.to_decimal(order.average_price)
+    if px <= 0:
+        px = paper_book.to_decimal(order.price)
     if px > 0:
         return px
-    return _latest_price_for_symbol(order.symbol) or _to_float(state["entry_price"], 0.0)
+    return _latest_price_for_symbol(order.symbol) or position.entry_price
 
 
-def _apply_fill_to_flat_position(state: dict[str, Any], delta: int, px: float) -> bool:
-    if int(state["net_qty"]) != 0:
-        return False
-    state["net_qty"] = delta
-    state["entry_price"] = px
-    return True
-
-
-def _apply_fill_to_same_direction(
-    state: dict[str, Any], delta: int, px: float, net: int, entry: float
-) -> bool:
-    if not ((net > 0 and delta > 0) or (net < 0 and delta < 0)):
-        return False
-    total_qty = abs(net) + abs(delta)
-    state["entry_price"] = ((entry * abs(net)) + (px * abs(delta))) / max(total_qty, 1)
-    state["net_qty"] = net + delta
-    return True
-
-
-def _apply_fill_to_reversal(
-    state: dict[str, Any], delta: int, px: float, net: int, entry: float
-) -> None:
-    closing_qty = min(abs(net), abs(delta))
-    state["realized_pnl"] += (px - entry) * closing_qty if net > 0 else (entry - px) * closing_qty
-    net_after = net + delta
-    state["net_qty"] = net_after
-    if net_after == 0:
-        state["entry_price"] = 0.0
-    elif (net_after > 0 and net < 0) or (net_after < 0 and net > 0):
-        state["entry_price"] = px
-
-
-def _apply_paper_fill(state: dict[str, Any], order: LiveOrder) -> None:
+def _apply_paper_fill(position: paper_book.PaperPosition, order: LiveOrder) -> None:
     qty = int(order.filled_qty or order.quantity or 0)
     if qty <= 0:
         return
 
-    px = _resolve_fill_price(order, state)
     side = str(order.side or "").upper()
     if side not in {"BUY", "SELL"}:
         logger.warning(
@@ -227,28 +196,20 @@ def _apply_paper_fill(state: dict[str, Any], order: LiveOrder) -> None:
         )
         return
 
-    delta = qty if side == "BUY" else -qty
-    net = int(state["net_qty"])
-    entry = _to_float(state["entry_price"], 0.0)
-
-    if _apply_fill_to_flat_position(state, delta, px):
-        return
-
-    if _apply_fill_to_same_direction(state, delta, px, net, entry):
-        return
-
-    _apply_fill_to_reversal(state, delta, px, net, entry)
+    position.apply_fill(side, qty, _resolve_fill_price(order, position))
 
 
-def _serialize_paper_position(symbol: str, state: dict[str, Any]) -> dict[str, Any] | None:
-    net_qty = int(state["net_qty"])
+def _serialize_paper_position(symbol: str, entry: _PaperBookEntry) -> dict[str, Any] | None:
+    """API shape of an open paper position. Money is quantized to paise, sent as floats."""
+    position = entry.position
+    net_qty = position.net_qty
     if net_qty == 0:
         return None
 
-    entry_price = round(_to_float(state["entry_price"], 0.0), 2)
-    current_price = round(_latest_price_for_symbol(symbol) or entry_price, 2)
-    realized_pnl = round(_to_float(state["realized_pnl"], 0.0), 2)
-    unrealized = round((current_price - entry_price) * net_qty, 2)
+    entry_price = paper_book.to_money(position.entry_price)
+    current_price = paper_book.to_money(_latest_price_for_symbol(symbol) or entry_price)
+    realized_pnl = paper_book.to_money(position.realized_pnl)
+    unrealized = paper_book.to_money(position.unrealized_pnl(current_price))
     return {
         "id": f"PAPER-{symbol}",
         "symbol": symbol,
@@ -256,13 +217,13 @@ def _serialize_paper_position(symbol: str, state: dict[str, Any]) -> dict[str, A
         "side": "LONG" if net_qty > 0 else "SHORT",
         "quantity": abs(net_qty),
         "net_qty": net_qty,
-        "entry_price": entry_price,
-        "current_price": current_price,
-        "unrealized_pnl": unrealized,
-        "realized_pnl": realized_pnl,
-        "net_pnl": round(unrealized + realized_pnl, 2),
-        "product_type": state["product_type"],
-        "instrument_type": state["instrument_type"],
+        "entry_price": float(entry_price),
+        "current_price": float(current_price),
+        "unrealized_pnl": float(unrealized),
+        "realized_pnl": float(realized_pnl),
+        "net_pnl": float(unrealized + realized_pnl),
+        "product_type": entry.product_type,
+        "instrument_type": entry.instrument_type,
         "mode": "PAPER",
     }
 
@@ -280,14 +241,17 @@ def _build_paper_positions(db: Session, user_id: str = SINGLE_USER_ID) -> list[d
         .all()
     )
 
-    book: dict[str, dict[str, Any]] = {}
+    book: dict[str, _PaperBookEntry] = {}
     for order in orders:
-        state = book.setdefault(order.symbol, _initial_paper_state(order))
-        _apply_paper_fill(state, order)
+        entry = book.get(order.symbol)
+        if entry is None:
+            entry = _PaperBookEntry(order.product_type or "INTRADAY", order.instrument_type)
+            book[order.symbol] = entry
+        _apply_paper_fill(entry.position, order)
 
     positions = []
-    for symbol, state in book.items():
-        position = _serialize_paper_position(symbol, state)
+    for symbol, entry in book.items():
+        position = _serialize_paper_position(symbol, entry)
         if position:
             positions.append(position)
     return positions
@@ -301,8 +265,8 @@ def _create_square_order(pos: dict[str, Any], timestamp: datetime) -> LiveOrder 
     symbol = str(pos.get("symbol"))
     px = (
         _latest_price_for_symbol(symbol)
-        or _to_float(pos.get("current_price"), 0.0)
-        or _to_float(pos.get("entry_price"), 0.0)
+        or paper_book.to_decimal(pos.get("current_price"))
+        or paper_book.to_decimal(pos.get("entry_price"))
     )
     internal_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
     return LiveOrder(
@@ -319,7 +283,7 @@ def _create_square_order(pos: dict[str, Any], timestamp: datetime) -> LiveOrder 
         trigger_price=0.0,
         status="FILLED",
         filled_qty=qty,
-        average_price=round(px, 2),
+        average_price=paper_book.money_float(px),
         instrument_type=pos.get("instrument_type") or "EQ",
         order_tag="square-off-paper",
         source="MANUAL",
