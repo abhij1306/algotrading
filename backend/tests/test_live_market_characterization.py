@@ -9,6 +9,7 @@ import pytest
 
 from app.services import fyers_websocket
 from app.services import live_market_service as lms
+from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
@@ -275,19 +276,30 @@ def test_connect_starts_monitor_and_flush_tasks_on_its_loop() -> None:
 # --- subscribe / unsubscribe ---------------------------------------------------
 
 
+def _live_with_fresh_registry(monkeypatch: pytest.MonkeyPatch) -> lms.LiveMarketService:
+    monkeypatch.setattr(lms, "manager", ConnectionManager())
+    return lms.LiveMarketService()
+
+
+def _pending_count(live: lms.LiveMarketService) -> int:
+    return asyncio.run(live.get_status())["pending_subscriptions"]
+
+
 def test_subscribe_when_market_closed_queues_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
-    live = lms.LiveMarketService()
+    live = _live_with_fresh_registry(monkeypatch)
     monkeypatch.setattr(live, "is_market_open", lambda: False)
 
-    asyncio.run(live.subscribe(["NSE:SBIN-EQ", "TCS", ""]))
+    asyncio.run(live.subscribe_api(["NSE:SBIN-EQ", "TCS", ""]))
 
-    assert live.pending_subscriptions == {"SBIN", "TCS"}
+    assert live.ws_service is None
+    assert live.registry.all_symbols() == {"SBIN", "TCS"}  # replayed on provider connect
+    assert _pending_count(live) == 2
 
 
 def test_subscribe_when_open_without_provider_connects_then_queues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    live = lms.LiveMarketService()
+    live = _live_with_fresh_registry(monkeypatch)
     calls: list[str] = []
 
     async def fake_connect_async(**_kwargs: object) -> str:
@@ -297,54 +309,59 @@ def test_subscribe_when_open_without_provider_connects_then_queues(
     monkeypatch.setattr(live, "is_market_open", lambda: True)
     monkeypatch.setattr(live, "connect_async", fake_connect_async)
 
-    asyncio.run(live.subscribe(["SBIN"]))
+    asyncio.run(live.subscribe_api(["SBIN"]))
 
     assert calls == ["connect"]
-    assert live.pending_subscriptions == {"SBIN"}
+    assert live.registry.all_symbols() == {"SBIN"}
+    assert _pending_count(live) == 1
 
 
-def test_subscribe_sends_fyers_symbols_to_connected_provider() -> None:
-    live = lms.LiveMarketService()
+def test_subscribe_sends_fyers_symbols_to_connected_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _live_with_fresh_registry(monkeypatch)
     live.ws_service = FakeProvider(connected=True)
 
-    asyncio.run(live.subscribe(["SBIN", "NSE:TCS-EQ"]))
+    asyncio.run(live.subscribe_api(["SBIN", "NSE:TCS-EQ"]))
 
     assert sorted(live.ws_service.ws.subscribed) == sorted([_fyers("SBIN"), _fyers("TCS")])
-    assert live.pending_subscriptions == set()
+    assert _pending_count(live) == 0
 
 
-def test_subscribe_with_disconnected_provider_queues_symbols() -> None:
-    live = lms.LiveMarketService()
+def test_subscribe_with_disconnected_provider_queues_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _live_with_fresh_registry(monkeypatch)
     live.ws_service = FakeProvider(connected=False)
 
-    asyncio.run(live.subscribe(["SBIN"]))
+    asyncio.run(live.subscribe_api(["SBIN"]))
 
     assert live.ws_service.ws.subscribed == []
-    assert live.pending_subscriptions == {"SBIN"}
+    assert live.registry.all_symbols() == {"SBIN"}
+    assert _pending_count(live) == 1
 
 
 def test_unsubscribe_releases_only_unwanted_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lms, "manager", ConnectionManager())
-    live = lms.LiveMarketService()
+    live = _live_with_fresh_registry(monkeypatch)
     live.ws_service = FakeProvider(connected=True)
-    live.api_subscriptions = {"TCS"}
-    live.pending_subscriptions = {"SBIN", "TCS", "INFY"}
+    live.registry.add(API_OWNER, ["TCS"])
 
     asyncio.run(live.unsubscribe(["SBIN", "TCS", ""]))
 
     assert live.ws_service.ws.unsubscribed == [_fyers("SBIN")]
-    assert live.pending_subscriptions == {"TCS", "INFY"}
+    assert live.registry.all_symbols() == {"TCS"}
 
 
 def test_unsubscribe_with_disconnected_provider_only_updates_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(lms, "manager", ConnectionManager())
-    live = lms.LiveMarketService()
+    live = _live_with_fresh_registry(monkeypatch)
     live.ws_service = FakeProvider(connected=False)
-    live.pending_subscriptions = {"SBIN"}
+    live.registry.add(API_OWNER, ["SBIN"])
+    assert live.registry.remove(API_OWNER, ["SBIN"]) == {"SBIN"}
 
     asyncio.run(live.unsubscribe(["SBIN"]))
 
     assert live.ws_service.ws.unsubscribed == []
-    assert live.pending_subscriptions == set()
+    assert live.registry.all_symbols() == set()
+    assert _pending_count(live) == 0

@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketState
 from app.services import fyers_client as fyers_client_module
 from app.services import fyers_websocket
 from app.services import live_market_service as lms
+from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
@@ -134,7 +135,7 @@ def test_slow_client_drop_releases_only_unshared_provider_symbols(
     slow, mgr, unsubscribed = asyncio.run(scenario())
     assert unsubscribed == [_fyers("TCS")]  # SBIN is still needed by the healthy client
     assert slow.close_code == 1013
-    assert mgr.get_all_subscribed_symbols() == {"SBIN"}
+    assert mgr.registry.all_symbols() == {"SBIN"}
 
 
 def test_explicit_disconnect_is_not_undone_by_automatic_connect(
@@ -311,12 +312,13 @@ def test_runner_connects_once_and_replays_without_double_subscribe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fast_runner(monkeypatch)
+    monkeypatch.setattr(lms, "manager", ConnectionManager())
 
     async def scenario() -> lms.LiveMarketService:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
-        live.api_subscriptions = {"SBIN"}
+        live.registry.add(API_OWNER, ["SBIN"])
         # connect() fires the SDK on-open hook (first connect); the runner must not replay again.
         live.ws_service = SlowConnectProvider(connect_after=0, live=live, open_in_connect=True)
         await asyncio.to_thread(live._run_provider_connect)
@@ -333,12 +335,13 @@ def test_runner_replays_itself_when_sdk_open_hook_did_not_fire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fast_runner(monkeypatch)
+    monkeypatch.setattr(lms, "manager", ConnectionManager())
 
     async def scenario() -> lms.LiveMarketService:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
-        live.api_subscriptions = {"TCS"}
+        live.registry.add(API_OWNER, ["TCS"])
         live.ws_service = SlowConnectProvider(connect_after=0)
         await asyncio.to_thread(live._run_provider_connect)
         await asyncio.sleep(0.05)
@@ -368,12 +371,16 @@ def test_explicit_disconnect_stops_runner_during_backoff(monkeypatch: pytest.Mon
     assert live.ws_service.connect_calls == 1
 
 
-def test_sdk_reconnect_open_callback_replays_subscriptions() -> None:
+def test_sdk_reconnect_open_callback_replays_subscriptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lms, "manager", ConnectionManager())
+
     async def scenario() -> list[str]:
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
         live.dev_mode = True
-        live.api_subscriptions = {"SBIN"}
+        live.registry.add(API_OWNER, ["SBIN"])
         service = fyers_websocket.FyersWebSocketService()
         service.ws = FakeSocket()
         service.on_open_handler = live.on_provider_open

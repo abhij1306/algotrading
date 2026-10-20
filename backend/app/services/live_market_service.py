@@ -14,6 +14,7 @@ from ..utils.helpers import safe_float
 from ..utils.logger import log_exception_throttled
 from ..utils.runtime_metrics import runtime_metrics
 from ..utils.ws_manager import manager
+from .subscription_registry import API_OWNER, SubscriptionRegistry
 from .symbol_master import symbol_master
 
 logger = logging.getLogger(__name__)
@@ -74,11 +75,8 @@ class LiveMarketService:
         self.ws_connected = False
         self._is_connecting = False
         self._ws_thread = None
-        self.pending_subscriptions = set()
         # Set by an explicit POST /disconnect; cleared only by an explicit connect.
         self._explicitly_disconnected = False
-        # Symbols subscribed via the HTTP API (no ConnectionManager client owns them).
-        self.api_subscriptions: set[str] = set()
         self._last_connect_block_reason: str | None = None
         self._last_subscribe_market_closed_log_ts = 0.0
         # Set by disconnect() to wake a runner that is backing off; cleared by explicit connect.
@@ -88,6 +86,11 @@ class LiveMarketService:
         # Stop signal of the current connect runner thread; each runner gets a fresh event.
         self._runner_stop = threading.Event()
 
+    @property
+    def registry(self) -> SubscriptionRegistry:
+        """Who wants which symbols (websocket clients and the HTTP API owner)."""
+        return manager.registry
+
     def on_ws_connected(self) -> None:
         """Callback when WebSocket connection is established"""
         self._replayed_for_attempt = True
@@ -96,13 +99,9 @@ class LiveMarketService:
         runtime_metrics.increment("live_market.provider.connected")
         logger.info("[OK] WebSocket connection established")
 
-        # Replay everything clients currently want (survives reconnects) plus anything queued.
-        wanted = (
-            manager.get_all_subscribed_symbols()
-            | self.api_subscriptions
-            | self.pending_subscriptions
-        )
-        self.pending_subscriptions.clear()
+        # Replay everything any owner wants: survives reconnects, and covers symbols
+        # subscribed while the provider was not connected yet.
+        wanted = self.registry.all_symbols()
         if wanted:
             symbols = sorted(wanted)
             logger.info(f"Replaying {len(symbols)} subscriptions on connect")
@@ -507,7 +506,7 @@ class LiveMarketService:
             if self.is_market_open():
                 await self.connect_async()
             else:
-                self.pending_subscriptions.update(symbols)
+                # The registry still holds the symbols; on_ws_connected replays them.
                 now = time.time()
                 if now - self._last_subscribe_market_closed_log_ts > 60:
                     logger.info("Live subscribe deferred: market is closed")
@@ -515,8 +514,7 @@ class LiveMarketService:
                 return
 
         if not self._provider_socket_connected():
-            # Add to pending subscriptions
-            self.pending_subscriptions.update(symbols)
+            # The registry still holds the symbols; on_ws_connected replays them.
             logger.warning(
                 f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
             )
@@ -556,7 +554,7 @@ class LiveMarketService:
 
     async def subscribe_api(self, symbols: list[str]) -> None:
         """Subscribe on behalf of the HTTP API; these symbols are never released by client drops."""
-        self.api_subscriptions.update(symbol_master.to_db(s) for s in symbols if s)
+        self.registry.add(API_OWNER, symbols)
         await self.subscribe(symbols)
 
     async def unsubscribe(self, symbols: list[str]) -> None:
@@ -569,10 +567,8 @@ class LiveMarketService:
                 symbols_set.add(symbol_master.to_db(symbol))
             except Exception as exc:
                 logger.warning("Skipping invalid symbol for unsubscribe %s: %s", symbol, exc)
-        # A release can arrive after another client re-subscribed; keep wanted symbols.
-        symbols_set -= manager.get_all_subscribed_symbols() | self.api_subscriptions
-        if symbols_set:
-            self.pending_subscriptions.difference_update(symbols_set)
+        # A release can arrive after another owner re-subscribed; keep held symbols.
+        symbols_set = {s for s in symbols_set if not self.registry.is_held(s)}
 
         if not self._provider_socket_connected():
             return
@@ -598,7 +594,10 @@ class LiveMarketService:
                 and self.ws_service.ws is not None
                 and self.ws_service.ws.is_connected()
             ),
-            "pending_subscriptions": len(self.pending_subscriptions),
+            # Symbols waiting for the provider to connect (replayed by on_ws_connected).
+            "pending_subscriptions": (
+                0 if self._provider_socket_connected() else len(self.registry.all_symbols())
+            ),
             "metrics": runtime_metrics.snapshot(prefix="live_market.", strip_prefix=True),
             "websocket": await manager.get_health_snapshot(),
         }
