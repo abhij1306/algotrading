@@ -5,8 +5,9 @@ from pathlib import Path
 from app import paths
 from app.config import Config
 from app.data_repository import _INTRADAY_FALLBACK_ROOT
-from app.routers import data_snapshot, upload
+from app.routers import upload
 from app.services import fyers_client, history_service, index_universe_loader
+from app.services.snapshots import get_snapshot_store
 from app.utils import logger
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,8 +45,10 @@ def test_data_readers_and_writers_resolve_under_the_repository_data_system() -> 
     assert index_universe_loader.NSE_DATA_PATH == (
         REPO_ROOT / "data_system" / "03_universe" / "constituents"
     )
-    assert data_snapshot.CURATED_ROOT == REPO_ROOT / "data_system" / "04_curated" / "phase1"
-    assert data_snapshot.METADATA_ROOT == REPO_ROOT / "data_system" / "05_metadata" / "phase1"
+    assert get_snapshot_store().curated_root == REPO_ROOT / "data_system" / "04_curated" / "phase1"
+    assert (
+        get_snapshot_store().metadata_root == REPO_ROOT / "data_system" / "05_metadata" / "phase1"
+    )
 
 
 def test_bhavcopy_uploads_land_where_the_loader_reads_them() -> None:

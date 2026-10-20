@@ -41,6 +41,7 @@ from backend.app.models import (  # noqa: E402
     SnapshotIndexStock,
     SnapshotIndexUniverse,
 )
+from backend.app.services.snapshots import atomic_write_parquet  # noqa: E402
 from backend.app.services.symbol_master import symbol_master  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -1125,7 +1126,7 @@ class Phase1Builder:
         ).sort_values(["date", "symbol"])
 
         stock_out = self.paths.curated_root / SNAPSHOT_STOCK_DAILY_FILE
-        stock_snapshot.to_parquet(stock_out, index=False)
+        atomic_write_parquet(stock_snapshot, stock_out)
 
         universe_row_counts: dict[str, int] = {}
         for universe_id in self.universes:
@@ -1187,7 +1188,7 @@ class Phase1Builder:
             ).sort_values(["date", "symbol"])
 
             universe_out = self.paths.curated_root / f"snapshot_{slug}_daily.parquet"
-            universe_snapshot.to_parquet(universe_out, index=False)
+            atomic_write_parquet(universe_snapshot, universe_out)
             universe_row_counts[universe_id.upper()] = int(len(universe_snapshot))
 
         self.summary["snapshots"] = {
