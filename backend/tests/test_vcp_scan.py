@@ -188,7 +188,8 @@ def test_scan_symbols(
     )
 
     assert outcome.symbols_scanned == scanned
-    assert [summary(signal) for signal in outcome.signals] == expected
+    summaries = [summary(signal) for signal in outcome.signals]
+    assert summaries == expected
     assert outcome.regime.scan_date == scan_date
 
 
@@ -269,7 +270,8 @@ def _signal(symbol: str, grade: str, breakout: bool, depth: float, rs: int) -> d
     ],
 )
 def test_rank_signals(signals: list[dict[str, object]], expected: list[str]) -> None:
-    assert [signal["symbol"] for signal in rank_signals(signals)] == expected
+    order = [signal["symbol"] for signal in rank_signals(signals)]
+    assert order == expected
 
 
 def _row(stop_level: float, metadata: dict[str, object] | None) -> VCPScanResult:
@@ -327,17 +329,15 @@ def test_serialize_scan_row_sizing(
 ) -> None:
     signal = serialize_scan_row(row, params)
 
-    assert (
+    sizing = (
         signal["planned_shares"],
         signal["planned_position_value"],
         signal["capital_risk"],
         signal["two_r_target"],
-    ) == expected
-    assert (signal["company_name"], signal["sector"], signal["planned_entry"]) == (
-        "VCPX",
-        "Unknown",
-        100.0,
     )
+    labels = (signal["company_name"], signal["sector"], signal["planned_entry"])
+    assert sizing == expected
+    assert labels == ("VCPX", "Unknown", 100.0)
 
 
 # --- stored scan: point-in-time members, queue and cancel -----------------------------
@@ -390,21 +390,18 @@ def test_run_scan_stores_point_in_time_signals_and_queues_them(factory: sessionm
     queued = service.queue_signal(signal["id"])
     cancelled = service.cancel_signal(signal["id"])
 
-    assert (scan["universe"], scan["constituent_mode"], scan["total_symbols_scanned"]) == (
-        "NIFTY500",
-        "bias_corrected",
-        1,
-    )
+    scope_fields = (scan["universe"], scan["constituent_mode"], scan["total_symbols_scanned"])
+    assert scope_fields == ("NIFTY500", "bias_corrected", 1)
     assert scan["scan_timestamp"] == "2025-02-21T11:00:00+00:00"
     assert scan["regime"]["regime"] == "BULL"
-    assert (signal["symbol"], signal["grade"], signal["signal_status"]) == ("VCPX", "A", "SIGNAL")
+    stored = (signal["symbol"], signal["grade"], signal["signal_status"])
+    assert stored == ("VCPX", "A", "SIGNAL")
     assert queued["signal_status"] == "PENDING_ENTRY"
     assert cancelled["signal_status"] == "SIGNAL"
     latest = service.get_latest_scan("NIFTY500")
-    assert (latest["scan_id"], [row["symbol"] for row in latest["results"]]) == (
-        scan["scan_id"],
-        ["VCPX"],
-    )
+    latest_symbols = [row["symbol"] for row in latest["results"]]
+    assert latest["scan_id"] == scan["scan_id"]
+    assert latest_symbols == ["VCPX"]
 
 
 def test_queue_unknown_signal_fails(factory: sessionmaker) -> None:
