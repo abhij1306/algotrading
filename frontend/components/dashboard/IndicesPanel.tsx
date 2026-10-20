@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { Activity, Globe } from "lucide-react";
 import { formatNumber, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { MarketIndex } from "@/lib/queries/dashboard";
-import { getMarketSectionMeta } from "./model";
+import { getMarketSectionMeta, terminalPath } from "./model";
 import { PanelBody, TradingViewButton } from "./PanelStates";
 import type { PanelData } from "./useDashboardData";
 
@@ -69,7 +69,7 @@ export function IndicesPanel(
               <IndexRow
                 key={idx.name}
                 idx={idx}
-                onClick={() => void navigate(`/terminal?symbol=${idx.symbol}`)}
+                onClick={() => void navigate(terminalPath(idx.symbol))}
               />
             ))}
           </tbody>

@@ -59,6 +59,11 @@ export function getCompactIndexLabel(symbol: string): string {
   return "IT";
 }
 
+/** The terminal route for a symbol, encoded so "M&M" stays one query value. */
+export function terminalPath(symbol: string): string {
+  return `/terminal?${new URLSearchParams({ symbol }).toString()}`;
+}
+
 function roundedOr(value: number | undefined, fallback: number | null): number | null {
   return typeof value === "number" ? roundToDecimals(value, 2) : fallback;
 }

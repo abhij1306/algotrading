@@ -27,6 +27,8 @@ export interface PanelData<Row> {
 
 export interface DashboardData {
   marketStatus: MarketStatus;
+  /** False until the first market status arrives; `marketStatus` is a closed placeholder until then. */
+  marketStatusLoaded: boolean;
   /** True only while the market is open and the quote socket is connected. */
   isConnected: boolean;
   istTime: string;
@@ -72,6 +74,7 @@ export function useDashboardData(): DashboardData {
 
   return {
     marketStatus,
+    marketStatusLoaded: statusQuery.data !== undefined,
     isConnected: marketStatus.isOpen && connection === "connected",
     istTime: statusQuery.data?.istTime ?? initialIstTime,
     portfolio: { stats: statsQuery.data ?? null, loading: statsQuery.isPending },

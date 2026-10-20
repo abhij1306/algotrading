@@ -43,7 +43,7 @@ function databaseDown(): Response {
   );
 }
 
-function stubBackend(overrides: Record<string, () => Response> = {}) {
+function stubBackend(overrides: Record<string, () => Response | Promise<Response>> = {}) {
   const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const override = overrides[url.pathname];
@@ -189,5 +189,31 @@ describe("dashboard during market hours", () => {
     if (!nifty) throw new Error("index row missing");
     expect(within(nifty).getByText("22,450.50")).toBeInTheDocument();
     expect(within(nifty).getByText("-0.04%")).toHaveClass("text-loss");
+  });
+});
+
+describe("dashboard empty state", () => {
+  it("keeps the panels while the watchlist still loads after the stats failed", async () => {
+    stubBackend({
+      "/api/portfolio/stats": databaseDown,
+      "/api/market/overview": () => new Promise<Response>(() => {}),
+      "/api/market/watchlist": () => new Promise<Response>(() => {}),
+    });
+    renderDashboard();
+
+    expect(await screen.findByText("Global Markets")).toBeInTheDocument();
+    expect(screen.queryByText("No Data Available")).not.toBeInTheDocument();
+  });
+
+  it("shows the load failure once every panel has settled empty", async () => {
+    stubBackend({
+      "/api/portfolio/stats": databaseDown,
+      "/api/market/overview": () => Response.json({ indices: [] }),
+      "/api/market/watchlist": () => Response.json([]),
+    });
+    renderDashboard();
+
+    expect(await screen.findByText("No Data Available")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Database unavailable");
   });
 });

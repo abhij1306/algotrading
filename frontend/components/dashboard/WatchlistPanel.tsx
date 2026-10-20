@@ -4,6 +4,7 @@ import { ChevronRight, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui";
 import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { DashboardWatchlistItem } from "@/lib/queries/dashboard";
+import { terminalPath } from "./model";
 import { PanelBody, TradingViewButton } from "./PanelStates";
 import type { PanelData } from "./useDashboardData";
 
@@ -84,7 +85,7 @@ export function WatchlistPanel(
               <WatchlistRow
                 key={stock.symbol}
                 stock={stock}
-                onClick={() => void navigate(`/terminal?symbol=${stock.symbol}`)}
+                onClick={() => void navigate(terminalPath(stock.symbol))}
               />
             ))}
           </tbody>

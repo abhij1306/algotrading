@@ -11,7 +11,8 @@ export default function DashboardPage() {
   const { marketStatus, isConnected, portfolio, indices, watchlist } = data;
 
   const hasData = portfolio.stats || indices.rows.length > 0 || watchlist.rows.length > 0;
-  if (!hasData && !portfolio.loading) {
+  const loading = portfolio.loading || indices.loading || watchlist.loading;
+  if (!hasData && !loading) {
     return <DashboardEmptyState error={data.loadError} />;
   }
 
@@ -26,7 +27,9 @@ export default function DashboardPage() {
         />
       }
       stats={<PortfolioStatsBar stats={portfolio.stats} loading={portfolio.loading} />}
-      insights={<InsightsPanel marketStatus={marketStatus} />}
+      insights={
+        <InsightsPanel marketStatus={marketStatus} statusLoaded={data.marketStatusLoaded} />
+      }
       indices={
         <IndicesPanel data={indices} marketOpen={marketStatus.isOpen} isConnected={isConnected} />
       }

@@ -19,6 +19,8 @@ import { PostMarketInsights } from "./PostMarketInsights";
 
 interface InsightsPanelProps {
   marketStatus: MarketStatus;
+  /** Fetch nothing until the real market status is known, so no closed-market call runs early. */
+  statusLoaded: boolean;
 }
 
 const NO_SYMBOLS: string[] = [];
@@ -62,11 +64,11 @@ function applyQuotes(data: MarketInsights, quotes: QuoteMap): MarketInsights {
   };
 }
 
-export function InsightsPanel({ marketStatus }: Readonly<InsightsPanelProps>) {
-  const marketQuery = useMarketInsights(marketStatus.isOpen);
-  const postMarketQuery = usePostMarketInsights(!marketStatus.isOpen);
+export function InsightsPanel({ marketStatus, statusLoaded }: Readonly<InsightsPanelProps>) {
+  const marketQuery = useMarketInsights(statusLoaded && marketStatus.isOpen);
+  const postMarketQuery = usePostMarketInsights(statusLoaded && !marketStatus.isOpen);
   // Optional extra rows: a failed commodities fetch leaves the overview's own rows on screen.
-  const extra = useCommodities(!marketStatus.isOpen).data ?? NO_COMMODITIES;
+  const extra = useCommodities(statusLoaded && !marketStatus.isOpen).data ?? NO_COMMODITIES;
   const fetchedInsights = marketStatus.isOpen ? (marketQuery.data ?? null) : null;
   // Live ticks for the shown movers and sectors, only during market hours.
   const liveSymbols = useMemo(
