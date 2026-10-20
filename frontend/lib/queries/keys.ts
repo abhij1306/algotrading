@@ -11,6 +11,7 @@ export const queryKeys = {
       sortOrder: string;
       query: string;
     }) => ["screener", "results", params] as const,
+    liveQuotes: (symbols: readonly string[]) => ["screener", "live-quotes", symbols] as const,
   },
   backtest: {
     all: ["backtest"] as const,

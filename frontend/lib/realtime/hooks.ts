@@ -5,7 +5,6 @@ import {
   type Quote,
   type QuoteMap,
   type QuoteStore,
-  type SocketMessage,
 } from "./quote-store";
 
 /**
@@ -87,48 +86,4 @@ export function useQuotes(symbols: readonly string[], store: QuoteStore = quoteS
  */
 export function useKnownQuotes(store: QuoteStore = quoteStore): QuoteMap {
   return useSyncExternalStore(store.subscribe, store.getQuotes);
-}
-
-type WebSocketOptions = {
-  /** Do not re-render on every message (consumers that use `registerCallback`). */
-  skipStateUpdates?: boolean;
-  /** Hold the connection only while true. */
-  enabled?: boolean;
-};
-
-/**
- * Compatibility surface for components that manage their own subscriptions
- * (screener). New code should prefer `useQuote` / `useQuotes`.
- */
-export function useWebSocket(options: WebSocketOptions = {}) {
-  const { skipStateUpdates = false, enabled = true } = options;
-  const store = quoteStore;
-
-  const subscribeStatus = useCallback(
-    (onChange: () => void) => {
-      const release = enabled ? store.retain() : undefined;
-      const unsubscribe = store.subscribe(onChange);
-      return () => {
-        unsubscribe();
-        release?.();
-      };
-    },
-    [store, enabled],
-  );
-  const status = useSyncExternalStore(subscribeStatus, store.getStatus);
-  const lastMessage = useSyncExternalStore(
-    store.subscribe,
-    skipStateUpdates ? getNoMessage : store.getLastMessage,
-  );
-
-  return {
-    isConnected: enabled && status === "connected",
-    lastMessage,
-    sendMessage: store.send,
-    registerCallback: store.onMessage,
-  };
-}
-
-function getNoMessage(): SocketMessage | null {
-  return null;
 }

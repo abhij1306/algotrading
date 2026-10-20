@@ -73,7 +73,7 @@ SmartTrader is a quantitative trading platform for NSE with:
 ### Frontend
 - Vite+ (`vp`) + React Router SPA + TypeScript + Tailwind, managed with pnpm
 - Routes are declared in `frontend/router.tsx`; pages live in `frontend/app/**/page.tsx`
-- Realtime hook: `frontend/hooks/useWebSocket.ts`
+- Realtime quotes: `frontend/lib/realtime` (`useQuote`, `useQuotes`, `useConnectionStatus`)
 
 ### Data
 - Canonical active root: `data_system/`
