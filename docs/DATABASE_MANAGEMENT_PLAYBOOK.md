@@ -110,6 +110,11 @@ and a no-op on a fresh or up-to-date database. It:
   SQLite cannot alter constraints, so there the table is rebuilt from the model and the valid
   rows copied across. The `index_universe_*` tables are never modified.
 
+Postgres-only behaviour is tested by `pytest -m postgres` (`backend/tests/*_postgres.py`), which
+CI's `backend-postgres` job runs against a `postgres:18.6` service container. Locally those tests
+skip unless `SMARTTRADER_PG_TESTS=1` and `DB_NAME` names a throwaway `*_test` database (they drop
+and recreate the universe tables).
+
 ### 3. Symbol Management
 Owns:
 - provider symbol normalization
