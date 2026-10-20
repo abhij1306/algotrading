@@ -4,8 +4,8 @@ text and logs one line instead of a traceback per request."""
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Callable, Generator
-from typing import Any, NoReturn
+from collections.abc import Generator
+from typing import NoReturn
 
 import psycopg2
 import pytest
@@ -20,12 +20,14 @@ from app.database import get_db
 from app.exceptions import DatabaseUnavailableError
 from app.main import app
 from app.models.live_order import LiveOrder
-from app.routers import trading
 from app.services import fyers_client
 from app.services.history_service import daily_history_service
 from app.services.order_execution_service import OrderExecutionService
 from app.utils.db_errors import is_db_unavailable
 from app.utils.logger import DatabaseUnavailableLogFilter
+
+from fakes.broker import FakeBroker
+from fakes.market import FreezeMarket
 
 SECRET = "hunter2-secret"
 DOWN_BODY = {"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}
@@ -68,15 +70,6 @@ def down_client(down_engine: Engine) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
     app.dependency_overrides.clear()
-
-
-class RecordingBroker:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(("place_order", order))
-        return {"status": "SUBMITTED", "order_id": "B-1", "message": "ok"}
 
 
 def test_backtest_status_with_db_down_returns_503_envelope(
@@ -136,10 +129,10 @@ def test_paper_order_with_db_down_returns_503_and_leaks_nothing(
 def test_live_order_with_db_down_fails_closed_before_the_broker(
     down_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
+    fake_broker: FakeBroker,
 ) -> None:
-    broker = RecordingBroker()
-    monkeypatch.setattr(trading.order_execution_service, "_broker", broker)
+    broker = fake_broker
     freeze_market(True)
 
     response = down_client.post(
@@ -344,20 +337,11 @@ def test_log_filter_drops_traceback_and_throttles_per_site() -> None:
     assert lines[1].startswith("ERROR Other failure\nTraceback (most recent call last):")
 
 
-class RaisingBroker:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(order)
-        raise RuntimeError(f"fyers socket reset {SECRET}")
-
-
 def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = OrderExecutionService()
-    broker = RaisingBroker()
+    broker = FakeBroker(place_reply=RuntimeError(f"fyers socket reset {SECRET}"))
     service._broker = broker
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
 
@@ -386,7 +370,7 @@ def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
         "client_order_id": CLIENT_ORDER_ID,
         "duplicate": False,
     }
-    assert len(broker.calls) == 1
+    assert broker.count("place_order") == 1
     assert (stored.status, stored.reject_reason) == ("SUBMIT_UNCONFIRMED", None)
     db_session.delete(stored)
     db_session.commit()
@@ -396,7 +380,7 @@ def test_db_lost_after_broker_accepts_raises_and_logs_the_unsaved_status(
     db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     service = OrderExecutionService()
-    broker = RecordingBroker()
+    broker = FakeBroker(place_message="ok")
     service._broker = broker
     monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
     real_commit = db_session.commit
@@ -426,7 +410,7 @@ def test_db_lost_after_broker_accepts_raises_and_logs_the_unsaved_status(
         )
     monkeypatch.undo()
 
-    assert len(broker.calls) == 1
+    assert broker.count("place_order") == 1
     assert (
         f"LIVE order B-1 (client_order_id {CLIENT_ORDER_ID}) accepted by broker but its "
         "status was not saved; the row stays PENDING_SUBMIT"

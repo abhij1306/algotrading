@@ -76,7 +76,7 @@ Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_
 - [x] Paper money math moved to Decimal (`services/execution/paper_book.py`; paise, ROUND_HALF_UP).
 - [x] Paper modify re-runs the fill simulation.
 - [x] LIVE modify and cancel stop returning `str(e)`.
-- [ ] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S).
+- [x] 1. A shared FakeBroker and frozen-hours fixtures in conftest. Make coverage opt-in in `pytest.ini` (S). `fake_broker` (`tests/fakes/broker.py`) and `freeze_market(True | False | instant)`; CI passes `--cov` explicitly.
 - [x] 2. Risk fixes (S): propagate WARNING, count LIVE orders only, cast quantity to int, track daily loss per user. (#67) A LIVE place that only warns needs `risk_override_reason` and returns `warnings`; `coerce_quantity` rejects fractions; the daily loss is keyed to `LIVE_ACCOUNT_USER_ID` until task 5. Also: `/api/trading/positions` answers 503 `BROKER_UNAVAILABLE` on a failed sync, and `/positions/book` marks live rows `stale`.
 - [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
 - [ ] 4. An OrderIntent with enums (S).

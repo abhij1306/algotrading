@@ -13,6 +13,8 @@ from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
+from fakes.market import FreezeMarket
+
 
 class FakeSocket:
     def __init__(self, connected: bool = True) -> None:
@@ -110,6 +112,7 @@ def run_one_monitor_iteration(
 )
 def test_monitor_iteration_outcome(
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: FreezeMarket,
     market_open: bool,
     provider_connected: bool,
     ws_connected: bool,
@@ -121,7 +124,7 @@ def test_monitor_iteration_outcome(
     live.ws_service = provider
     live.ws_connected = ws_connected
     live._is_connecting = connecting
-    monkeypatch.setattr(live, "is_market_open", lambda: market_open)
+    freeze_market(market_open, live)
 
     connects = run_one_monitor_iteration(monkeypatch, live)
 
@@ -223,9 +226,11 @@ def test_connect_reports_invalid_token() -> None:
     assert live._last_connect_block_reason == "token_invalid"
 
 
-def test_connect_reports_market_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connect_reports_market_closed(
+    monkeypatch: pytest.MonkeyPatch, freeze_market: FreezeMarket
+) -> None:
     live = lms.LiveMarketService()
-    monkeypatch.setattr(live, "is_market_open", lambda: False)
+    freeze_market(False, live)
 
     assert live.connect(prevalidated_token=True) == "market_closed"
     assert live._last_connect_block_reason == "market_closed"
@@ -285,9 +290,11 @@ def _pending_count(live: lms.LiveMarketService) -> int:
     return asyncio.run(live.get_status())["pending_subscriptions"]
 
 
-def test_subscribe_when_market_closed_queues_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_subscribe_when_market_closed_queues_symbols(
+    monkeypatch: pytest.MonkeyPatch, freeze_market: FreezeMarket
+) -> None:
     live = _live_with_fresh_registry(monkeypatch)
-    monkeypatch.setattr(live, "is_market_open", lambda: False)
+    freeze_market(False, live)
 
     asyncio.run(live.subscribe_api(["NSE:SBIN-EQ", "TCS", ""]))
 
@@ -298,6 +305,7 @@ def test_subscribe_when_market_closed_queues_symbols(monkeypatch: pytest.MonkeyP
 
 def test_subscribe_when_open_without_provider_connects_then_queues(
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: FreezeMarket,
 ) -> None:
     live = _live_with_fresh_registry(monkeypatch)
     calls: list[str] = []
@@ -306,7 +314,7 @@ def test_subscribe_when_open_without_provider_connects_then_queues(
         calls.append("connect")
         return "token_invalid"
 
-    monkeypatch.setattr(live, "is_market_open", lambda: True)
+    freeze_market(True, live)
     monkeypatch.setattr(live, "connect_async", fake_connect_async)
 
     asyncio.run(live.subscribe_api(["SBIN"]))

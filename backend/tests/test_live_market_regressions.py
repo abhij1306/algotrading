@@ -15,6 +15,8 @@ from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
+from fakes.market import FreezeMarket
+
 
 class FakeSocket:
     """Stands in for fyers FyersDataSocket."""
@@ -480,7 +482,9 @@ def test_connect_async_validates_token_off_the_event_loop(monkeypatch: pytest.Mo
     assert seen["thread"] != loop_thread
 
 
-def test_off_hours_cleanup_stops_a_retrying_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_off_hours_cleanup_stops_a_retrying_runner(
+    monkeypatch: pytest.MonkeyPatch, freeze_market: FreezeMarket
+) -> None:
     """PR #34 review: market-close cleanup must stop a runner that is backing off,
     or it reconnects off-hours."""
     import threading
@@ -492,7 +496,7 @@ def test_off_hours_cleanup_stops_a_retrying_runner(monkeypatch: pytest.MonkeyPat
     live = lms.LiveMarketService()
     live.ws_service = SlowConnectProvider(connect_after=None)
     live._is_connecting = True
-    monkeypatch.setattr(live, "is_market_open", lambda: False)
+    freeze_market(False, live)
 
     thread = threading.Thread(
         target=live._run_provider_connect, args=(live._runner_stop,), daemon=True
@@ -542,13 +546,17 @@ def _tick_at(ts: float) -> dict[str, Any]:
     [(True, 5.0, True), (True, 120.0, False), (False, 5.0, False)],
 )
 def test_get_fresh_tick_requires_open_market_and_recent_tick(
-    monkeypatch: pytest.MonkeyPatch, market_open: bool, age: float, fresh: bool
+    monkeypatch: pytest.MonkeyPatch,
+    freeze_market: FreezeMarket,
+    market_open: bool,
+    age: float,
+    fresh: bool,
 ) -> None:
     import time
 
     monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
     live = lms.LiveMarketService()
-    monkeypatch.setattr(live, "is_market_open", lambda: market_open)
+    freeze_market(market_open, live)
     live.latest_values = {"SBIN": _tick_at(time.time() - age), "TCS": {"ltp": 1.0}}
 
     assert (live.get_fresh_tick("SBIN") is not None) is fresh

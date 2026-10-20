@@ -2,7 +2,7 @@
 LIVE limits, quantities are whole numbers, the daily loss is per user, market hours come
 from MarketHoursPolicy, and LIVE positions fail closed when the broker sync fails."""
 
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, NoReturn
@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.brokers.base import BrokerUnavailableError
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
-from app.routers import trading
 from app.services.position_sync_service import position_sync_service
 from app.services.risk_manager import (
     InvalidQuantityError,
@@ -24,49 +23,18 @@ from app.services.risk_manager import (
     RiskManager,
     RiskStatus,
     coerce_quantity,
-    risk_manager,
 )
 from app.utils.cache import clear_cache
 from app.utils.clock import FixedClock
 from app.utils.market_hours import IST, MarketHoursPolicy
 
+from fakes.broker import FakeBroker
+from fakes.market import MARKET_OPEN_INSTANT, FreezeMarket
+
 CLIENT_ORDER_ID = "5b0e4c2a-7d1f-4e3b-9a6c-2f8d1e0b7c45"
 SECRET = "token=abc123 internal broker detail"
 LOSS_WARNING = "Approaching daily loss limit. Current P&L: ₹-4500.00"
-OPEN_POLICY = MarketHoursPolicy(FixedClock(datetime(2026, 10, 20, 10, 0, tzinfo=IST)))
-
-
-class FakeBroker:
-    """Records every call. LTP 800, funds 1,000,000, every order accepted."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
-        self.positions: list[dict[str, Any]] | Exception = []
-        # None: the quote has no price; an Exception: the quote call fails.
-        self.ltp: float | Exception | None = 800.0
-
-    def get_quote(self, symbol: str) -> dict[str, Any]:
-        self.calls.append(("get_quote", symbol))
-        if isinstance(self.ltp, Exception):
-            raise self.ltp
-        return {"n": symbol, "v": {"lp": self.ltp}} if self.ltp else {"n": symbol, "v": {}}
-
-    def get_funds(self) -> dict[str, float]:
-        self.calls.append(("get_funds", None))
-        return {"available": 1_000_000.0, "used": 0.0, "total": 1_000_000.0}
-
-    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(("place_order", order))
-        return {"status": "SUBMITTED", "order_id": "B-1"}
-
-    def get_positions(self) -> list[dict[str, Any]]:
-        self.calls.append(("get_positions", None))
-        if isinstance(self.positions, Exception):
-            raise self.positions
-        return self.positions
-
-    def count(self, name: str) -> int:
-        return sum(1 for call, _ in self.calls if call == name)
+OPEN_POLICY = MarketHoursPolicy(FixedClock(MARKET_OPEN_INSTANT))
 
 
 @pytest.fixture
@@ -82,11 +50,8 @@ def rows(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
-    fake = FakeBroker()
-    monkeypatch.setattr(risk_manager, "_broker", fake)
-    monkeypatch.setattr(trading.order_execution_service, "_broker", fake)
-    return fake
+def broker(fake_broker: FakeBroker) -> FakeBroker:
+    return fake_broker
 
 
 def manager_for(
@@ -214,7 +179,7 @@ def test_live_order_warning_reaches_the_api_response(
     client: TestClient,
     rows: Session,
     broker: FakeBroker,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
     realized: float,
     override: str | None,
     status_code: int,
@@ -245,7 +210,7 @@ def test_risk_check_route_reports_a_warning_as_tradeable(
     client: TestClient,
     rows: Session,
     broker: FakeBroker,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
     realized: float,
     can_trade: bool,
     status: str,
@@ -324,7 +289,7 @@ def test_live_order_risk_never_assumes_a_price(
     client: TestClient,
     rows: Session,
     broker: FakeBroker,
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
     monkeypatch: pytest.MonkeyPatch,
     order_type: str,
     price: float,
@@ -535,12 +500,11 @@ def test_risk_market_hours_follow_the_policy(
 
 @pytest.fixture
 def synced(
-    monkeypatch: pytest.MonkeyPatch, test_engine: Engine, rows: Session
+    monkeypatch: pytest.MonkeyPatch, test_engine: Engine, rows: Session, fake_broker: FakeBroker
 ) -> Generator[FakeBroker, None, None]:
     """position_sync_service on the test database with a FakeBroker, and one stored
     LIVE position from an earlier sync."""
-    fake = FakeBroker()
-    monkeypatch.setattr(position_sync_service, "_broker", fake)
+    fake = fake_broker
     monkeypatch.setattr(
         "app.services.position_sync_service.SessionLocal", sessionmaker(bind=test_engine)
     )

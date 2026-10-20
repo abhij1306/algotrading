@@ -3,7 +3,7 @@ stop-loss order mapping, position sync during a broker outage, the margin
 check, paper fills, live modify and exit-position."""
 
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -19,6 +19,8 @@ from app.services.live_market_service import live_market
 from app.services.order_execution_service import OrderExecutionService
 from app.services.position_sync_service import PositionSyncService
 from app.services.risk_manager import RiskConfig, RiskManager, RiskStatus
+
+from fakes.market import FreezeMarket
 
 # A quote as FyersBroker.get_quote() returns it: one entry of the Fyers "d" list.
 SBIN_QUOTE = {"n": "NSE:SBIN-EQ", "s": "ok", "v": {"lp": 812.5, "bid": 812.4, "ask": 812.6}}
@@ -483,8 +485,8 @@ def order_db(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def market_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(live_market, "is_market_open", lambda: True)
+def market_open(freeze_market: FreezeMarket) -> None:
+    freeze_market(True)
 
 
 @pytest.fixture
@@ -623,12 +625,13 @@ NO_SBIN_MARKET_PRICE = (
 def test_paper_order_ignores_stale_or_closed_market_tick(
     order_db: Session,
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: FreezeMarket,
     tick_age_sec: int,
     is_open: bool,
     has_time: bool,
 ) -> None:
     monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
-    monkeypatch.setattr(live_market, "is_market_open", lambda: is_open)
+    freeze_market(is_open)
     tick: dict[str, Any] = {"symbol": "SBIN", "ltp": 812.5}
     if has_time:
         tick["exch_feed_time"] = int(time.time()) - tick_age_sec
@@ -862,7 +865,7 @@ def test_live_modify_preserves_order_type_and_trigger(
     params: dict[str, Any],
     payload: dict[str, Any],
     stored: tuple[str, int, float, float],
-    freeze_market: Callable[[bool], None],
+    freeze_market: FreezeMarket,
 ) -> None:
     # Market open and enough margin, so the modify risk checks pass.
     freeze_market(True)

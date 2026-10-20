@@ -45,8 +45,9 @@ jobs:
         run: ruff check .
 
       - name: pytest
-        # python -m puts backend/ on sys.path so tests can import `app`.
-        run: python -m pytest --durations=10
+        # python -m puts backend/ on sys.path so tests can import `app`. Coverage is
+        # opt-in (not in pytest.ini addopts), so CI asks for it here.
+        run: python -m pytest --durations=10 --cov=app --cov-report=term-missing:skip-covered
 
   backend-postgres:
     # Tests marked `postgres` (schema migrations that run against the real DB on every

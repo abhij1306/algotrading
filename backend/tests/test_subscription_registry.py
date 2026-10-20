@@ -13,6 +13,8 @@ from app.services.subscription_registry import API_OWNER, SubscriptionRegistry
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
+from fakes.market import FreezeMarket
+
 
 def test_first_owner_of_a_symbol_needs_it_and_later_owners_do_not() -> None:
     registry = SubscriptionRegistry()
@@ -198,6 +200,7 @@ def test_slow_client_drop_releases_its_symbols_exactly_when_no_other_owner_holds
 
 def test_symbols_subscribed_before_the_provider_connects_are_replayed_on_connect(
     monkeypatch: pytest.MonkeyPatch,
+    freeze_market: FreezeMarket,
 ) -> None:
     async def scenario() -> list[str]:
         mgr = ConnectionManager()
@@ -205,7 +208,7 @@ def test_symbols_subscribed_before_the_provider_connects_are_replayed_on_connect
         monkeypatch.setattr(ws_router, "manager", mgr)
         live = lms.LiveMarketService()
         live.loop = asyncio.get_running_loop()
-        monkeypatch.setattr(live, "is_market_open", lambda: False)
+        freeze_market(False, live)
 
         client = FakeClientWebSocket()
         assert await mgr.connect(client)

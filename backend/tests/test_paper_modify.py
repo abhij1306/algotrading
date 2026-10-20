@@ -11,26 +11,13 @@ from sqlalchemy.orm import Session
 from app.models.live_order import LiveOrder
 from app.routers import trading
 from app.services import order_execution_service as oes
-from app.services.risk_manager import risk_manager
+
+from fakes.broker import FakeBroker
 
 CLIENT_ORDER_ID = "5b0e2a77-1c3d-4f8e-9a6b-0d4c2e8f7a15"
 REF_PRICE = 810.0
 # 810 * (1 + 5 bps) = 810.405 -> 810.41 (paise, half up).
 BUY_FILL = 810.41
-
-
-class FakeBroker:
-    """Records every method called on it. A PAPER path must leave `calls` empty."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
-
-    def __getattr__(self, name: str) -> Callable[..., dict[str, Any]]:
-        def record(*args: object, **kwargs: object) -> dict[str, Any]:
-            self.calls.append((name, args, kwargs))
-            return {"s": "ok", "status": "SUBMITTED", "order_id": "B-1"}
-
-        return record
 
 
 @pytest.fixture
@@ -44,10 +31,9 @@ def orders(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
-    fake = FakeBroker()
-    monkeypatch.setattr(risk_manager, "_broker", fake)
-    return fake
+def broker(fake_broker: FakeBroker) -> FakeBroker:
+    """Records every broker call: a PAPER path must leave `calls` empty."""
+    return fake_broker
 
 
 @pytest.fixture
