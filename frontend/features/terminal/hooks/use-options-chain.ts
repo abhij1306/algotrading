@@ -24,9 +24,16 @@ export function useOptionsChain(enabled: boolean) {
   const snapshot = boardQuery.data ?? null;
   return {
     underlying,
-    setUnderlying,
+    // Changing the chain drops the pick outright, so coming back to a chain never revives it.
+    setUnderlying: (value: string) => {
+      setUnderlying(value);
+      setPick(null);
+    },
     expiry: chosenExpiry || (snapshot?.board.expiry ?? ""),
-    setExpiry: setChosenExpiry,
+    setExpiry: (value: string) => {
+      setChosenExpiry(value);
+      setPick(null);
+    },
     snapshot,
     isLoading: boardQuery.isFetching,
     error: boardQuery.error ? errorText(boardQuery.error, "Failed to load options board") : null,

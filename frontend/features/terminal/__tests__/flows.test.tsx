@@ -21,6 +21,9 @@ vi.mock("@/lib/realtime/hooks", () => ({
 
 const ORDER_PATH = "/api/trading/order";
 const SEARCH_PATH = "/api/market/search";
+const BOARD_PATH = "/api/terminal/options/board";
+// While set, options board requests wait for it, so a test can see the chain mid-load.
+let boardHold: Promise<void> | null = null;
 const WATCHLIST_PATH = "/api/market/watchlist";
 
 // Symbol search answers, by query text.
@@ -173,6 +176,7 @@ function installFetch(): Captured[] {
         throw new TypeError("Failed to fetch");
       }
       if (source.url.includes(RISK_CHECK_PATH) && riskHold) await riskHold;
+      if (source.url.includes(BOARD_PATH) && boardHold) await boardHold;
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
         orderTruncatedResponses -= 1;
         return new Response('{"status":"acc', { status: 200 });
@@ -889,6 +893,7 @@ describe("terminal stale selections", () => {
     orderNetworkFailures = 0;
     orderTruncatedResponses = 0;
     orderResult = { status: "accepted", order_id: "ord-1" };
+    boardHold = null;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -942,6 +947,30 @@ describe("terminal stale selections", () => {
     fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
 
     await screen.findByDisplayValue("2026-11-03");
+    await screen.findByRole("button", { name: "NIFTY26OCT25000CE" });
+    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
+  });
+
+  it("returning to a chain shows no cached board and does not revive the old pick", async () => {
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
+    fireEvent.change(screen.getByDisplayValue("NIFTY"), { target: { value: "BANKNIFTY" } });
+    await screen.findByRole("button", { name: "BANKNIFTY26OCT56000CE" });
+
+    let release = () => {};
+    boardHold = new Promise((resolve) => {
+      release = resolve;
+    });
+    fireEvent.change(screen.getByDisplayValue("BANKNIFTY"), { target: { value: "NIFTY" } });
+
+    // Until the fresh NIFTY board answers, none of its contracts can be picked.
+    expect(await screen.findByText("Loading options board...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "NIFTY26OCT25000CE" })).not.toBeInTheDocument();
+    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
+
+    release();
+
     await screen.findByRole("button", { name: "NIFTY26OCT25000CE" });
     expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
   });
