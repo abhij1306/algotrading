@@ -26,13 +26,14 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
   - Property: every seed config and the `hat_bot.execution_mode` column default equal `shadow`. Harm: a new bot trades real money before it has run in shadow.
 
 #### HAT-EXEC-012: Auto requires a broker with delivery GTT
-- **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC).
+- **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.
 - **Source:** BL "Stop placement at the broker (B17)" step 4; DS "Broker matrix"; MA "Risks" (GTT support).
 - **PR:** 13, 15
 - **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`
 - **Acceptance:**
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode auto, and an auto request for it is refused. Harm: an auto position is left without an overnight stop.
-- **[OWNER-PENDING]** Fyers GTT for CNC: until verified on a live account, the Fyers adapter reports `gtt_delivery = false`, so the MVP runs shadow and confirm only (PLAN Q8); owner to confirm after verification.
+  - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode confirm either, so it places no real order. Harm: a confirmed entry fills and then goes overnight with no resting stop, breaking "protective stops sit at the broker on every real fill" (MA "Execution modes").
+- **[OWNER-PENDING]** Fyers GTT for CNC: until verified on a live account, the Fyers adapter reports `gtt_delivery = false`, so the MVP runs shadow only until then (PLAN Q8 extended to confirm, which also places real orders); owner to confirm after verification.
 
 #### HAT-EXEC-013: Delivery only
 - **Statement:** Every HAT real order uses product CNC (delivery).
@@ -149,7 +150,7 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 | Triggered | EntryPlaced | `order.placed` | mode auto, or shadow (virtual order) |
 | AwaitingApproval | EntryPlaced | `signal.approved`, then `order.placed` | Take within expiry and chase re-check passes |
 | AwaitingApproval | Expired | `signal.expired` | no decision within 5 minutes |
-| AwaitingApproval | Cancelled | `signal.skipped` or `kill.tripped` | Skip (reason skipped; continues as shadow) or `/kill` |
+| AwaitingApproval | Cancelled | `signal.skipped` or `kill.tripped` | Skip (reason skipped) or `/kill`. On skip (and likewise on expiry, HAT-EXEC-032) the engine opens a separate virtual trade for the same signal, starting at EntryPlaced with a virtual order, which then follows this table to its own ending (HAT-EXEC-032) |
 | AwaitingApproval | Rejected | `signal.rejected` | chase re-check fails on Take |
 | EntryPlaced | Open | `order.filled`, `position.opened` | entry fill |
 | EntryPlaced | Rejected | `order.rejected` | broker rejection after the single retry |
@@ -168,12 +169,14 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
   - Property: in every reachable state, every trade is in exactly one of the 11 states, and every step changes it only along a row of the transition table. Harm: a trade reaches an impossible state (for example Open without an entry fill) and is mismanaged.
 
 #### HAT-EXEC-041: Endings are terminal and every trade ends
-- **Statement:** Closed, Rejected, Expired and Cancelled are terminal, and every trade eventually reaches one of them.
+- **Statement:** Closed, Rejected, Expired and Cancelled are terminal; every trade that has not opened (Watchlisted, Triggered, AwaitingApproval, EntryPlaced) eventually reaches an ending or Open. An open trade has no deadline: it ends only when an exit rule or the stop fires.
 - **Source:** BL "Trade lifecycle".
 - **PR:** 11
 - **Verification:** TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`
 - **Acceptance:**
-  - Property: no step leaves an ending state, and under weak fairness of the engine's exit and expiry actions every trade eventually reaches an ending. Harm: zombie trades hold risk budget or re-open.
+  - Property: no step leaves an ending state. Harm: a closed or rejected trade re-opens and holds risk budget.
+  - Property: under weak fairness of the expiry, session-end and broker-update actions, every trade in Watchlisted, Triggered, AwaitingApproval or EntryPlaced eventually reaches Open or an ending (Watchlisted ends at the session end of its trade date). Harm: pending signals and entry orders linger and block the one-signal-per-day key or fill later at a stale price.
+  - Property: whenever the model's environment fires the stop or a full exit rule for an Open or PartiallyExited trade, the trade eventually reaches Closed. Harm: an exit that fired leaves a position open.
 
 #### HAT-EXEC-042: State derived from events in one transaction
 - **Statement:** Every transition appends its event in the same transaction as the state change, and replaying the event log reproduces the current state.
@@ -240,7 +243,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 
 1. On fill: intraday stop order at the stop price (expires at day end).
 2. At ~15:25: replace it with a GTT stop for overnight, refreshed nightly.
-3. GTT limit price set 1% below trigger so gap-downs still fill [A].
+3. GTT limit price set 1% below trigger so moderate gap-downs still fill [A]. A gap below the limit price leaves the GTT unfilled; the offset reduces that risk but cannot remove it, so an open position whose GTT triggered without a fill raises a health alert.
 4. A broker without reliable GTT for delivery cannot run auto mode (HAT-EXEC-012).
 
 #### HAT-EXEC-060: Stop at the broker on every real fill
@@ -266,6 +269,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Verification:** PBT `stops.gtt_limit_offset`
 - **Acceptance:**
   - Property: for every trigger price T > 0 and tick size, the GTT limit equals T × (1 − 0.01) rounded down to the tick and is < T. Harm: a gap-down skips past the limit and the stop never fills.
+  - Property: in every behaviour where a GTT triggers and is not filled, a health alert is raised for that position. Harm: the owner believes the position is protected after the stop failed to fill.
 - **[A]** GTT limit offset 1% below trigger: validated by adapter tests per broker and observed fills.
 
 #### HAT-EXEC-063: Nightly GTT verify
@@ -424,7 +428,7 @@ The 2-character purpose code is one purpose letter plus one sequence character, 
 | exit_full | F |
 | flatten | L |
 
-Sequence character: `0`-`9` then `A`-`Z` (36 values), the count of earlier orders with the same signal and purpose.
+Sequence character: `0`-`9` then `A`-`Z` (36 values), the count of earlier orders with the same signal and purpose. The nightly GTT refresh modifies the existing GTT (`modify_gtt`, event `gtt.refreshed`) and keeps its row and tag; a new `stop_gtt` order, and so a new sequence value, is needed only when a GTT is placed afresh (after the intraday stop swap, or when the old one was cancelled or triggered). If a purpose would need a 37th order for one signal, the order is refused (fail closed) and a health alert is raised.
 
 The letters, the sequence character and the bit selection are an [OWNER-PENDING] choice (PLAN C12 fixes only the shape: `HT` + 2-character purpose code + 16-character signal encoding = 20 characters).
 
@@ -437,6 +441,7 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
   - Property: for every uuid7, purpose and sequence in 0-35, the tag matches `^HT[EDGPFL][0-9A-Z][0-9A-HJKMNP-TV-Z]{16}$`, has length 20, and decodes back to the purpose, the sequence and the 80-bit signal fragment it was built from. Harm: the broker rejects the tag, or reconciliation maps an order to the wrong signal.
   - Property: for every population of distinct uuid7 values generated in the same millisecond, distinct (signal, purpose, sequence) triples give distinct tags, and the database rejects a duplicate `hat_order.tag`. Harm: two orders share an idempotency key, so the second is silently treated as a retry of the first.
   - Property: the sequence for a new order equals the number of existing `hat_order` rows with the same signal and purpose, so a retry of the same logical order reuses its tag and a new logical order never does. Harm: a retry places a second order, or a legitimate second exit is refused as a duplicate.
+  - Property: for every position, the nightly refresh changes no `hat_order.tag`, and a request that would need sequence 36 or more is refused with an alert instead of reusing a tag. Harm: tags run out after weeks of nightly refreshes, or a reused tag collides with an older order.
   - Property: no HAT tag starts with `ST`. Harm: HAT and terminal orders are confused.
 - **[OWNER-PENDING]** purpose letters, sequence character and bit selection above; owner to confirm.
 
@@ -526,4 +531,4 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
 - **PR:** 16
 - **Verification:** PBT `exits.veto_verdict_threshold`
 - **Acceptance:**
-  - Property: for every decision history, the verdict is present iff the count of decided approvals is ≥ 50, and it compares mean R of skipped trades with mean R of taken trades. Harm: a verdict drawn from too few decisions.
+  - Property: for every decision history, the verdict is present iff the count of decided approvals is ≥ 50, and it compares mean R of skipped trades with mean R of taken trades; when either group has no closed trade, that mean is reported as not available and the verdict is "insufficient data". Harm: a verdict drawn from too few decisions, or a division by zero when every decision went one way.

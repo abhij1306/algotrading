@@ -226,7 +226,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **PR:** 7
 - **Verification:** PBT `ingest.row_checks`
 - **Acceptance:**
-  - Property: for every row (any OHLCV values, any date), the row is accepted if and only if date = trade date ∧ low ≤ open ≤ high ∧ low ≤ close ≤ high ∧ open, high, low, close > 0 ∧ volume ≥ 0; every rejected row is counted as an OHLC violation for the gate (§6). Harm: a corrupt bar produces a false breakout or a false stop trigger.
+  - Property: for every row (any OHLCV values, any date), the row is accepted if and only if date = trade date ∧ low ≤ open ≤ high ∧ low ≤ close ≤ high ∧ open, high, low, close > 0 ∧ (prev_close is null or prev_close > 0) ∧ volume ≥ 0; every rejected row is counted as an OHLC violation for the gate (§6). Harm: a corrupt bar produces a false breakout or a false stop trigger, and a zero `prev_close` would divide by zero in the corporate-action and big-move checks.
 
 #### HAT-DATA-043: Raw bars are written once per date
 - **Statement:** Accepted rows are written to `bars_daily_raw/date=<trade_date>` with `traded_value` null (MCP), `source` and `ingest_run_id`; once committed, a date's raw partition is never rewritten.
@@ -308,7 +308,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **PR:** 5
 - **Verification:** PBT `corporate_actions.adjusted_view`
 - **Acceptance:**
-  - Property: for every instrument, set of actions A and raw bar on date d, adj_price(d) = raw_price(d) × Π_{a ∈ A, a.ex_date > d} a.adjustment_factor for each of open, high, low, close and prev_close; for d on or after the latest ex_date, adj = raw. Harm: features and stops see a fake gap at every split and bonus.
+  - Property: for every instrument, set of actions A and raw bar on date d, adj_price(d) = raw_price(d) × Π_{a ∈ A, a.ex_date > d} a.adjustment_factor for each of open, high, low and close; adj_prev_close(d) = raw_prev_close(d) × Π_{a ∈ A, a.ex_date ≥ d} a.adjustment_factor, because `prev_close` on the ex-date bar is the pre-action close; for d after the latest ex_date, adj = raw. Harm: features and stops see a fake gap at every split and bonus.
   - Property: for every computation of the view, the raw Parquet files are byte-identical before and after. Harm: raw evidence is lost and adjustments become irreproducible.
   - Property: for a 1:2 split (factor 0.5), every pre-ex-date adjusted price is exactly half of raw and every post-ex-date price is unchanged. Harm: the canonical split case is wrong.
 
@@ -468,7 +468,7 @@ Features are computed with polars (T11, PLAN C1) on adjusted bars (§5) and writ
 - **PR:** 6
 - **Verification:** PBT `features.breadth`
 - **Acceptance:**
-  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i}| / |{i : sma50_i not null}|, in [0, 100]. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
+  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i}| / |{i : sma50_i not null}|, in [0, 100], when the denominator is > 0; when no member has a 50-day SMA yet (the first 49 sessions of history), breadth is null and the regime engine stores no state for that date. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
 
 #### HAT-DATA-077: Incremental features equal a full rebuild
 - **Statement:** The `features` job runs incrementally by date with a full-rebuild flag; both give identical results.

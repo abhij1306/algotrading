@@ -108,7 +108,7 @@ message_id`) linking the card to its signal or other subject.
   - Property: for every pair of consecutive watchlists of a bot, the digest's "new" set equals today minus yesterday, "dropped" equals yesterday minus today, and "top" is the first min(10, n) entries ordered by score descending. Harm: the user acts on a wrong summary of what the bot will trade.
 
 #### HAT-TG-023: Shadow trade and approval card content
-- **Statement:** A trigger produces a shadow-trade message (shadow mode) or an approval card (confirm mode) carrying symbol, entry, stop, qty, risk ₹ and R target as fixed by the engine; the card adds the catalyst headline/PDF link and its expiry time.
+- **Statement:** A trigger produces a shadow-trade message (shadow mode) or an approval card (confirm mode) carrying symbol, entry, stop, qty, risk ₹ and R target as fixed by the engine; the card adds its expiry time and, when announcements are attached (EP signals), the catalyst headline and PDF link.
 - **Source:** DS "Outbound messages"; BL "Governance" (price, size and stop fixed by the engine); DS "Announcements for EP catalysts" (headline and PDF on the card).
 - **PR:** 16
 - **Verification:** PBT `telegram.card_matches_signal`

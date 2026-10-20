@@ -68,7 +68,7 @@ Daily bars cannot show where in the day a pivot broke. The trigger proxy below i
 - **PR:** 12
 - **Verification:** PBT `costs.slippage_adverse`
 - **Acceptance:**
-  - Property: for every fill price p > 0 and slippage s >= 0 bps, a buy fills at p × (1 + s/10000) and a sell at p × (1 − s/10000), so net P&L is monotone non-increasing in s. Harm: the backtest assumes perfect fills and overstates edge.
+  - Property: for every fill price p > 0 and slippage s with 0 <= s < 10000 bps (a configured value outside this range is rejected when the run starts), a buy fills at p × (1 + s/10000) and a sell at p × (1 − s/10000), so net P&L is monotone non-increasing in s. Harm: the backtest assumes perfect fills and overstates edge.
 - **[OWNER-PENDING]** slippage default: the docs give no number; the value is set by the owner, calibrated from shadow-mode slippage, and every run records the value it used.
 
 #### HAT-BT-023: Statutory costs for delivery trades
@@ -142,7 +142,8 @@ Daily bars cannot show where in the day a pivot broke. The trigger proxy below i
   - Property: for every return series and family statistics, DSR is in [0, 1], is monotone non-increasing in N with all else fixed, and monotone non-decreasing in SR with all else fixed. Harm: more trials could make a strategy look more significant, the opposite of the correction.
   - Property: with N = 1 (or V = 0), SR0 = 0 and DSR equals the probabilistic Sharpe ratio against a zero benchmark. Harm: the first run of a family is mis-scored.
   - Property: the implementation reproduces the worked example published by Bailey & López de Prado to within 1e-6. Harm: a formula slip goes unnoticed because every other check is relative.
-- **[OWNER-PENDING]** N = 1 convention: default SR0 = 0; the paper's formula is undefined at N = 1; owner to confirm.
+  - Property: for every return series with fewer than 2 returns, zero variance, or a non-positive denominator under the square root, the run stores DSR = 0 with reason `dsr_undefined` (never NaN), so the lifecycle gate fails closed. Harm: a NaN compares false everywhere and a gate written as "not below 0.95" lets the sleeve through.
+- **[OWNER-PENDING]** N = 1 convention: default SR0 = 0; the paper's formula is undefined at N = 1; owner to confirm. Undefined-DSR convention (DSR = 0, fail closed): default; owner to confirm.
 
 ## §5 Replay verification
 

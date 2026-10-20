@@ -70,7 +70,7 @@ Tables whose SCH column list starts with `id` have a uuid v7 `id` PK. Tables wit
 - **PR:** 2
 - **Verification:** CONF `schema.time_types`, PBT `time.trade_date_ist`
 - **Acceptance:**
-  - Property: every HAT timestamp column is `DateTime(timezone=True)` with an aware-UTC default (no `datetime.utcnow`), and every `trade_date` column is `Date`. Harm: naive datetimes shift sessions by 5:30 and add deprecation warnings.
+  - Property: every HAT timestamp column is `DateTime(timezone=True)`; record-creation columns that are `not null` (`created_at`, `recorded_at`, `requested_at` and the like) have an aware-UTC default (no `datetime.utcnow`), while nullable event timestamps (`placed_at`, `closed_at`, `decided_at`, `superseded_at` and the like) have no default and stay null until the event happens; and every `trade_date` column is `Date`. Harm: naive datetimes shift sessions by 5:30 and add deprecation warnings.
   - Property: for every UTC instant t, `trade_date_of(t)` equals the calendar date of t in Asia/Kolkata. Harm: an evening job writes rows under tomorrow's or yesterday's trade date.
 
 #### HAT-SCH-016: Configs are validated JSON with a canonical hash

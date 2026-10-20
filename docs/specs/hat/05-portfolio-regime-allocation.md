@@ -117,10 +117,10 @@ Three inputs classify the market into four states each night; each sleeve has a 
 - **PR:** 9
 - **Verification:** PBT `regime.classification_total`
 - **Acceptance:**
-  - Property: for every (close, sma50, sma200, vix_pct, breadth), the classifier returns exactly one state; it returns Bear whenever close < SMA200; Correction whenever close > SMA200 and (close < SMA50 or breadth < 40); Bull volatile whenever close > SMA200 and none of the Correction conditions hold and (vix_pct >= 67 or 40 <= breadth < 50); Bull quiet otherwise only when close > SMA200, close > SMA50, vix_pct < 67 and breadth >= 50. Harm: overlapping rows give a different state depending on code order, and risk scaling becomes arbitrary.
+  - Property: for every (close, sma50, sma200, vix_pct, breadth), the classifier returns exactly one state; it returns Bear whenever close <= SMA200; Correction whenever close > SMA200 and (close <= SMA50 or breadth < 40); Bull volatile whenever close > SMA200 and none of the Correction conditions hold and (vix_pct >= 67 or 40 <= breadth < 50); Bull quiet otherwise only when close > SMA200, close > SMA50, vix_pct < 67 and breadth >= 50. Harm: overlapping rows give a different state depending on code order, and risk scaling becomes arbitrary.
   - Property: the classification is monotone in defensiveness: lowering close, raising VIX percentile or lowering breadth never moves the state to a less defensive one. Harm: worse conditions could raise exposure.
 - **[A]** state rules (200/50 SMA, VIX percentile 67, breadth 40/50%): defaults as in the table; validated by backtest of each sleeve's expectancy per state.
-- **[OWNER-PENDING]** overlap and boundary handling: default precedence Bear > Correction > Bull volatile > Bull quiet; close exactly equal to SMA200 counts as not above (Bear); docs silent; owner to confirm.
+- **[OWNER-PENDING]** overlap and boundary handling: default precedence Bear > Correction > Bull volatile > Bull quiet; close exactly equal to SMA200 counts as not above (Bear) and close exactly equal to SMA50 counts as not above (Correction), so the four rows cover every input; docs silent; owner to confirm.
 
 #### HAT-PORT-033: Momentum sleeve multipliers per state
 - **Statement:** The regime multiplier for a momentum sleeve is 1.0 (Bull quiet), 0.75 (Bull volatile), 0.5 (Correction) or 0.25 (Bear) of the confirmed state, until replaced by backtested values shrunk toward 1.0.
@@ -202,12 +202,13 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
   - Property: for every allocation change, no stop, exit order or position quantity of an open position changes as a result. Harm: a weight cut forces sales the strategy did not call for.
 
 #### HAT-PORT-054: Smoothing caps the daily multiplier move at 0.25
-- **Statement:** Each multiplier moves by at most 0.25 from its previous day's value.
+- **Statement:** Each multiplier moves by at most 0.25 from its previous day's value, except that a sleeve entering Probation (health multiplier 0) gets weight 0 at once: that is a lifecycle change (§6), not a smoothed multiplier move.
 - **Source:** BL "Allocation" (Smoothing); PL2.
 - **PR:** 9
 - **Verification:** PBT `allocator.smoothing`
 - **Acceptance:**
-  - Property: for every sequence of target multipliers, |m_t − m_{t−1}| <= 0.25 for each stored multiplier, and m_t reaches the target within ceil(|target − m_{t−1}| / 0.25) days if the target stays fixed. Harm: capital swings fully in one night on a regime flip.
+  - Property: for every sequence of target multipliers of a sleeve that stays out of Probation, |m_t − m_{t−1}| <= 0.25 for each stored multiplier, and m_t reaches the target within ceil(|target − m_{t−1}| / 0.25) days if the target stays fixed. Harm: capital swings fully in one night on a regime flip.
+  - Property: for every day on which a sleeve's health multiplier target is 0, its final weight that day is 0 regardless of the previous day's value. Harm: a sleeve past its 12% drawdown keeps getting new capital for several days while smoothing walks it down.
 - **[A]** smoothing step: default 0.25 per day; validated by backtest of allocation turnover.
 
 #### HAT-PORT-055: Unallocated weight stays cash
@@ -238,7 +239,7 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 | Retired | Still failing after 3 months or 50 more shadow trades in probation | 0; re-entry only through the full gate |
 
 #### HAT-PORT-060: Lifecycle transitions follow the table and its guards
-- **Statement:** A sleeve moves Research → Backtested → Shadow → Live, Live → Probation, Probation → Retired, and Retired → Research only, each transition guarded by its entry condition and recorded as an event.
+- **Statement:** A sleeve moves Research → Backtested → Shadow → Live, Live → Probation, Probation → Live (owner promotion only, see the pending default below), Probation → Retired, and Retired → Research only, each transition guarded by its entry condition and recorded as an event.
 - **Source:** BL "Sleeve lifecycle"; SCH `hat_bot.lifecycle_state`; PL4.
 - **PR:** 9, 12
 - **Verification:** TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`

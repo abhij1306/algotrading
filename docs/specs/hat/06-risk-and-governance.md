@@ -49,19 +49,19 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 ## §2 Position size
 
 ```
-q = floor( min( E·r / (P_entry − P_stop),  E·p_max / P_entry,  0.01·ADV20,  C / P_entry ) )
+q = floor( min( E·r / (P_entry − P_stop),  E·p_max / P_entry,  adv_cap_pct·ADV20,  C / P_entry ) )
 ```
 
-E = bot equity (allocation + realised P&L) · r = risk per trade (`risk_pct` × the sleeve's regime and health multipliers from `hat_allocation_daily.risk_pct`, × the exposure-ladder risk multiplier) · p_max = max position share of the bot (20% M, 25% Q) · ADV20 = 20-day average daily volume (1% cap [A]) · C = free cash in the broker account. Worked example (prose only): E = 1,000,000, r = 0.25%, entry 100, stop 95, p_max 20%, ADV20 = 1,000,000, C = ∞ gives min(500, 2000, 10000, ∞) = 500, so q = 500.
+E = bot equity (allocation + realised P&L) · r = risk per trade = the sleeve's `hat_allocation_daily.risk_pct` for the day (which already equals policy `risk_pct` × regime_mult × health_mult, HAT-PORT-052; the multipliers are not applied again) × the exposure-ladder risk multiplier · p_max = max position share of the bot (20% M, 25% Q) · ADV20 = 20-day average daily volume · adv_cap_pct = the policy's ADV cap (default 0.01, i.e. 1% [A]; BL writes the default into the formula as 0.01·ADV20) · C = free cash in the broker account. Worked example (prose only): E = 1,000,000, r = 0.25%, entry 100, stop 95, p_max 20%, ADV20 = 1,000,000, C = ∞ gives min(500, 2000, 10000, ∞) = 500, so q = 500.
 
 #### HAT-RISK-020: Position size formula
-- **Statement:** The quantity for every entry is q = floor(min(E·r/(P_entry − P_stop), E·p_max/P_entry, 0.01·ADV20, C/P_entry)), computed in Decimal.
+- **Statement:** The quantity for every entry is q = floor(min(E·r/(P_entry − P_stop), E·p_max/P_entry, adv_cap_pct·ADV20, C/P_entry)), computed in Decimal, with `adv_cap_pct` read from the effective risk policy (default 0.01).
 - **Source:** BL "Risk management / Position size"; B13, B14, B15.
 - **PR:** 10
 - **Verification:** PBT `sizing.formula_exact`, PBT `sizing.risk_bounded`, PBT `sizing.monotone`
 - **Acceptance:**
   - Property: for every E > 0, r in (0, 1], P_entry > P_stop > 0, p_max in (0, 1], ADV20 ≥ 0 and C ≥ 0 (or unbounded), the returned q equals floor of the minimum of the four terms computed with Decimal arithmetic. Harm: positions are sized wrong, in either direction.
-  - Property: for every input, q·(P_entry − P_stop) ≤ E·r, q·P_entry ≤ E·p_max, q ≤ 0.01·ADV20 and q·P_entry ≤ C. Harm: a single trade risks or commits more than the policy allows.
+  - Property: for every input, q·(P_entry − P_stop) ≤ E·r, q·P_entry ≤ E·p_max, q ≤ adv_cap_pct·ADV20 and q·P_entry ≤ C. Harm: a single trade risks or commits more than the policy allows.
   - Property: q never increases when r, p_max, ADV20, C or E decreases, or when the stop distance widens. Harm: tightening a limit could enlarge a position.
   - Property: no float value is used anywhere in the computation (inputs coerced to Decimal; a float input is rejected). Harm: rounding drift makes the cap checks unreliable at the boundary.
 - **[A]** ADV cap 1% of 20-day ADV: default 0.01; validated by slippage measured in shadow mode.
@@ -333,13 +333,13 @@ The invariants live in the risk manager, outside every config, so no edit can re
   - Property: for every instant and calendar, an order decision outside the open session (including holidays) is REJECT with reason `market_closed`. Harm: orders queue into an auction or holiday at an unknown price.
 
 #### HAT-RISK-076: Invariant 6, max-chase always applies
-- **Statement:** Max-chase is enforced on every entry even when the criterion is disabled or deleted from the config, using the playbook's configured percentage or, if absent, the strictest default (2%). [OWNER-PENDING]
+- **Statement:** Max-chase is enforced on every entry even when the criterion is disabled or deleted from the config, using the playbook's last configured percentage or, if none was ever configured, the strategy's documented default (Minervini-style 5, Qullamaggie-style 2; HAT-CRIT-122), and 2% for any other strategy. [OWNER-PENDING]
 - **Source:** BL "Invariants" 6; BL "Criteria library" (`max_chase`: M 5, Q 2).
 - **PR:** 10, 15
 - **Verification:** PBT `caps.max_chase_always`
 - **Acceptance:**
   - Property: for every config (with, without, or with disabled `max_chase`) and every price, an entry whose price exceeds the trigger level by more than the effective max-chase %, or whose instrument is locked at upper circuit, is REJECT with reason `max_chase`. Harm: chasing a runaway price destroys the planned R.
-- **[OWNER-PENDING]** fallback percentage when the criterion is absent: default 2% (the stricter doc value); owner to confirm.
+- **[OWNER-PENDING]** fallback percentage for a strategy with no documented default: 2% (the stricter doc value); owner to confirm.
 
 ## §8 Governance levers and strategy release gate
 

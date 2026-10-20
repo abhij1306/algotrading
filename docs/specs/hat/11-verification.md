@@ -48,7 +48,7 @@ errors.
 
 | Rank | Target | Main promise | Method | Model or area | Verify skill |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Execution router | Shadow never reaches the broker; confirm needs a valid take; auto needs a broker with GTT for delivery; no order on a stale feed or outside market hours | TLA | `ExecutionRouter` | `verify-execution` |
+| 1 | Execution router | Shadow never reaches the broker; confirm needs a valid take; confirm and auto need a broker with GTT for delivery; no order on a stale feed or outside market hours | TLA | `ExecutionRouter` | `verify-execution` |
 | 2 | Order idempotency and reconciliation | One signal never yields two entry orders; an unconfirmed order is found by tag; reconcile before the first order | TLA | `OrderReconciliation` | `verify-execution` |
 | 3 | Stop placement and stop-only-tightens | Every real open position always has a resting broker stop (intraday SL, then GTT); a stop never moves away from price | TLA, DB | `StopPlacement`; `hat_stop_only_tightens` | `verify-stops` |
 | 4 | Kill switch and manage-only | A tripped switch blocks every new entry and never blocks an exit | TLA | `KillSwitch` | `verify-risk` |
@@ -78,8 +78,8 @@ outside this list without updating this section.
 
 | Model | Promises it checks | Implemented by PR | Spec sections |
 | --- | --- | --- | --- |
-| `TradeLifecycle` | 11 states, 4 endings, legal transitions only, every non-ending state eventually ends | 11, 15 | 07 §4 |
-| `ExecutionRouter` | Mode routing (shadow/confirm/auto), mode changes effective next session, no order when stale, outside hours, killed, or (auto) without GTT | 15 | 07 §1-§3, 06 §6-§7 |
+| `TradeLifecycle` | 11 states, 4 endings, legal transitions only, every pre-entry state eventually opens or ends, a fired exit eventually closes | 11, 15 | 07 §4 |
+| `ExecutionRouter` | Mode routing (shadow/confirm/auto), mode changes effective next session, no order when stale, outside hours, killed, or (confirm or auto) without GTT | 15 | 07 §1-§3, 06 §6-§7 |
 | `ApprovalToken` | Signed, single-use, expiring token; price re-check against max-chase at take; `/kill` cancels pending approvals | 15, 16 | 08 §4, 07 §3 |
 | `StopPlacement` | Stop only tightens; intraday SL on every real fill; GTT swap around 15:25 leaves no unprotected gap; nightly GTT verify | 13, 15 | 07 §5-§6, 03 §5 |
 | `OrderReconciliation` | Persist PENDING before the broker call; tag idempotency; unconfirmed submit resolved by tag; reconcile before the first order; a rejected order is retried at most once | 13, 15 | 07 §10-§11 |

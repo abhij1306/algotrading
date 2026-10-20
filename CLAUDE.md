@@ -42,10 +42,10 @@ pnpm dev
   verified with TLA+ models, Hypothesis properties and Postgres checks
   (`docs/specs/hat/11-verification.md`), not example unit tests; existing tests stay as they are.
 - **Repo paths** come from `backend/app/paths.py`; never compute them from `__file__`
-  (`tests/test_paths.py`).
+  (`backend/tests/test_paths.py`).
 - **Startup order** (`main.py` lifespan): symbol_master, then the DB (deferred and retried in the
   background when it is down), then the Fyers token (warn only), then the index universe (warn
-  only), then the live connect (`tests/test_startup_sequence.py`, `tests/test_deferred_startup.py`).
+  only), then the live connect (`backend/tests/test_startup_sequence.py`, `backend/tests/test_deferred_startup.py`).
 - **Schema changes** go through `init_db()`: `Base.metadata.create_all` plus idempotent
   `ensure_*_schema()` functions. There is no Alembic. Tests build the schema on SQLite, so models
   must create there; Postgres-only behaviour is tested with `@pytest.mark.postgres` tests (CI job

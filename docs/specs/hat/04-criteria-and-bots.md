@@ -50,7 +50,7 @@ A bot version is nine stages evaluated in a fixed order (BL "Configuration model
 | `params` | Typed parameters validated against the type's schema |
 | `enabled`, `order` | Switch off without deleting; evaluation order |
 
-#### HAT-CRIT-020: A criterion instance carries exactly the six documented fields
+#### HAT-CRIT-020: A criterion instance carries exactly the seven documented fields
 - **Statement:** Every criterion instance in a config has `type`, `stage`, `mode` (`hard` or `score`), `weight`, `params`, `enabled` and `order`, with `weight` ignored for `hard`.
 - **Source:** BL "Configuration model / A criterion instance"; B3, B4.
 - **PR:** 8
