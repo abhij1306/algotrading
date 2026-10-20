@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
-import { useState, useEffect, memo, useRef, useMemo } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, memo, useMemo } from "react";
 import { useNavigate } from "react-router";
 import {
   TrendingUp,
@@ -15,57 +14,23 @@ import {
   Moon,
   ExternalLink,
 } from "lucide-react";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui";
 import { getISTTime, MarketStatus } from "@/lib/market-hours";
 import { formatCurrency, formatPercentage, roundToDecimals } from "@/lib/utils";
+import { InsightsPanel } from "@/components/dashboard/InsightsPanel";
 import {
-  InsightsPanel,
-  getInsightSymbols,
-  useMarketInsights,
-} from "@/components/dashboard/InsightsPanel";
-import { queryKeys } from "@/lib/queries/keys";
+  useDashboardWatchlist,
+  useMarketIndices,
+  useMarketStatus,
+  usePortfolioStats,
+  type DashboardMode,
+  type DashboardWatchlistItem as WatchlistItem,
+  type MarketIndex,
+} from "@/lib/queries/dashboard";
+import { useQuotes, useWebSocket } from "@/lib/realtime/hooks";
+import type { QuoteMap } from "@/lib/realtime/quote-store";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
-interface PortfolioStats {
-  totalValue: number;
-  dayChange: number;
-  dayChangePercent: number;
-  totalReturn: number;
-  totalReturnPercent: number;
-}
-
-interface MarketIndex {
-  name: string;
-  symbol: string;
-  value: number;
-  change: number;
-  changePercent: number;
-  type: "indian" | "global";
-  source: "websocket" | "yahoo" | "api";
-}
-
-interface WatchlistItem {
-  symbol: string;
-  price: number | null;
-  change: number | null;
-  changePercent: number | null;
-}
-
-interface BackendMarketStatusResponse {
-  is_open?: boolean;
-  message?: string;
-  current_time_ist?: string;
-}
-
-type DashboardMode = "market" | "post_market";
-type TickRecord = { symbol?: string; ltp?: number; change_pct?: number; change?: number };
-type DashboardFetchResult = {
-  indicesData: MarketIndex[];
-  nextMode: DashboardMode;
-};
-type MarketStatusSnapshot = { status: MarketStatus; istTime: string };
 type StatusBadge = {
   icon: typeof Radio;
   label: string;
@@ -77,16 +42,11 @@ type MarketSectionMeta = {
 };
 
 const INITIAL_MARKET_STATUS: MarketStatus = { isOpen: false, message: "Loading market status" };
-const DASHBOARD_REFRESH_MS = 60_000;
 const LIVE_INDEX_SYMBOLS = new Set(["NIFTY50", "BANKNIFTY", "NIFTYIT"]);
 
 const NO_INDICES: MarketIndex[] = [];
 const NO_WATCHLIST: WatchlistItem[] = [];
 const NO_SYMBOLS: string[] = [];
-const POLL_OPTIONS = {
-  refetchInterval: DASHBOARD_REFRESH_MS,
-  refetchIntervalInBackground: true,
-} as const;
 
 const QUICK_ACTIONS = [
   { icon: Zap, label: "Trade", path: "/terminal" },
@@ -102,130 +62,6 @@ function formatDashboardNumber(value: number | null | undefined): string {
 function formatDashboardPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
-}
-
-function toSafeString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function normalizeNumber(value: unknown): number | null {
-  return typeof value === "number" ? roundToDecimals(value, 2) : null;
-}
-
-function normalizeWatchlistData(data: unknown): WatchlistItem[] {
-  if (!Array.isArray(data)) return [];
-  return data
-    .slice(0, 10)
-    .map((item: Record<string, unknown>): WatchlistItem => ({
-      symbol: toSafeString(item.symbol),
-      price: normalizeNumber(item.price),
-      // `change` is the absolute price difference; it must never stand in for the percent.
-      change: normalizeNumber(item.change),
-      changePercent: normalizeNumber(item.changePercent),
-    }))
-    .filter((item: WatchlistItem) => item.symbol.length > 0);
-}
-
-function normalizeLiveIndices(data: unknown): MarketIndex[] {
-  if (!Array.isArray(data)) return [];
-  return data.map((idx: MarketIndex) => ({
-    ...idx,
-    symbol: idx.symbol || idx.name,
-    value: roundToDecimals(idx.value, 2),
-    change: roundToDecimals(idx.change, 2),
-    changePercent: roundToDecimals(idx.changePercent, 2),
-    type: "indian",
-    source: "api",
-  }));
-}
-
-function getIndexChangePercent(idx: Record<string, unknown>): number {
-  if (typeof idx.change_pct === "number") {
-    return roundToDecimals(idx.change_pct, 2);
-  }
-  if (typeof idx.changePercent === "number") {
-    return roundToDecimals(idx.changePercent, 2);
-  }
-  return 0;
-}
-
-function normalizeOverviewIndices(data: unknown): MarketIndex[] {
-  const indicesRaw = Array.isArray(data) ? data : [];
-  const globalData: MarketIndex[] = [];
-
-  for (const idx of indicesRaw as Array<Record<string, unknown>>) {
-    const symbol = toSafeString(idx.symbol);
-    const price = normalizeNumber(idx.price);
-    if (!symbol || price === null) continue;
-
-    globalData.push({
-      name: toSafeString(idx.name, symbol),
-      symbol,
-      value: price,
-      change: normalizeNumber(idx.change) ?? 0,
-      changePercent: getIndexChangePercent(idx),
-      type: "global",
-      source: "yahoo",
-    });
-  }
-
-  return globalData;
-}
-
-function getDashboardFetchResult(
-  marketOpen: boolean,
-  marketPayload: unknown,
-): DashboardFetchResult {
-  if (marketOpen) {
-    return {
-      indicesData: normalizeLiveIndices(marketPayload),
-      nextMode: "market",
-    };
-  }
-
-  const overview = (marketPayload ?? {}) as Record<string, unknown>;
-  return {
-    indicesData: normalizeOverviewIndices(overview.indices),
-    nextMode: "post_market",
-  };
-}
-
-async function fetchMarketStatus(): Promise<MarketStatusSnapshot> {
-  try {
-    const statusRes = await apiClient.get("/api/market/status");
-    const statusData = (statusRes.data ?? {}) as BackendMarketStatusResponse;
-    return {
-      status: {
-        isOpen: statusData.is_open === true,
-        message: statusData.message || "Market status unavailable",
-      },
-      istTime: statusData.current_time_ist || getISTTime(),
-    };
-  } catch {
-    return {
-      status: { isOpen: false, message: "Market status unavailable" },
-      istTime: getISTTime(),
-    };
-  }
-}
-
-/** Throws when the backend returns no stats so the last good stats stay on screen. */
-async function fetchPortfolioStats(): Promise<PortfolioStats> {
-  const statsRes = await apiClient.get<PortfolioStats>("/api/portfolio/stats");
-  if (!statsRes.data) throw new Error(statsRes.error?.message || "Portfolio stats unavailable");
-  return statsRes.data;
-}
-
-async function fetchWatchlist(): Promise<WatchlistItem[]> {
-  const watchlistRes = await apiClient.get("/api/market/watchlist");
-  return normalizeWatchlistData(watchlistRes.data);
-}
-
-async function fetchMarketIndices(marketOpen: boolean): Promise<DashboardFetchResult> {
-  const marketResponse = marketOpen
-    ? await apiClient.get("/api/market/indices")
-    : await apiClient.get("/api/market/overview");
-  return getDashboardFetchResult(marketOpen, marketResponse.data);
 }
 
 function getStatusBadge(isLive: boolean, isDelayed: boolean): StatusBadge {
@@ -262,40 +98,43 @@ function getStatTrend(value: number | null | undefined): "up" | "down" {
   return typeof value === "number" && value >= 0 ? "up" : "down";
 }
 
-function applyWatchlistTicks(
-  rows: WatchlistItem[],
-  pending: Record<string, TickRecord>,
-): WatchlistItem[] {
+function roundedOr(value: number | undefined, fallback: number | null): number | null {
+  return typeof value === "number" ? roundToDecimals(value, 2) : fallback;
+}
+
+/** Watchlist rows with the live last price and day percent laid over the fetched ones. */
+function applyWatchlistQuotes(rows: WatchlistItem[], quotes: QuoteMap): WatchlistItem[] {
   return rows.map((item) => {
-    const tick = pending[item.symbol];
-    if (!tick) return item;
+    const quote = quotes[item.symbol];
+    if (!quote) return item;
     return {
       ...item,
-      price: typeof tick.ltp === "number" ? roundToDecimals(tick.ltp, 2) : item.price,
-      changePercent:
-        typeof tick.change_pct === "number"
-          ? roundToDecimals(tick.change_pct, 2)
-          : item.changePercent,
-      change: typeof tick.change === "number" ? roundToDecimals(tick.change, 2) : item.change,
+      price: roundedOr(quote.ltp, item.price),
+      changePercent: roundedOr(quote.changePct, item.changePercent),
     };
   });
 }
 
-function applyIndexTicks(rows: MarketIndex[], pending: Record<string, TickRecord>): MarketIndex[] {
+/** Index rows with live quotes laid over them; a quoted row is marked as streaming. */
+function applyIndexQuotes(rows: MarketIndex[], quotes: QuoteMap): MarketIndex[] {
   return rows.map((idx) => {
-    const tick = pending[idx.symbol];
-    if (!tick) return idx;
+    const quote = quotes[idx.symbol];
+    if (!quote) return idx;
     return {
       ...idx,
-      value: typeof tick.ltp === "number" ? roundToDecimals(tick.ltp, 2) : idx.value,
-      changePercent:
-        typeof tick.change_pct === "number"
-          ? roundToDecimals(tick.change_pct, 2)
-          : idx.changePercent,
-      change: typeof tick.change === "number" ? roundToDecimals(tick.change, 2) : idx.change,
+      value: roundedOr(quote.ltp, idx.value) ?? idx.value,
+      changePercent: roundedOr(quote.changePct, idx.changePercent) ?? idx.changePercent,
       source: "websocket",
     };
   });
+}
+
+function PanelError({ error }: Readonly<{ error: Error }>) {
+  return (
+    <div role="alert" className="p-8 text-center text-loss">
+      {error.message}
+    </div>
+  );
 }
 
 // Memoized components for performance
@@ -420,136 +259,47 @@ const WatchlistRow = memo(function WatchlistRow({
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const statusQuery = useQuery({
-    queryKey: queryKeys.dashboard.marketStatus(),
-    queryFn: fetchMarketStatus,
-    ...POLL_OPTIONS,
-  });
-  const statsQuery = useQuery({
-    queryKey: queryKeys.dashboard.portfolioStats(),
-    queryFn: fetchPortfolioStats,
-    ...POLL_OPTIONS,
-  });
-  const watchlistQuery = useQuery({
-    queryKey: queryKeys.dashboard.watchlist(),
-    queryFn: fetchWatchlist,
-    ...POLL_OPTIONS,
-  });
+  const statusQuery = useMarketStatus();
+  const statsQuery = usePortfolioStats();
+  const watchlistQuery = useDashboardWatchlist();
   const marketStatus = statusQuery.data?.status ?? INITIAL_MARKET_STATUS;
-  const indicesQuery = useQuery({
-    queryKey: queryKeys.dashboard.indices(marketStatus.isOpen),
-    queryFn: () => fetchMarketIndices(marketStatus.isOpen),
+  const indicesQuery = useMarketIndices({
+    marketOpen: marketStatus.isOpen,
     enabled: statusQuery.data !== undefined,
-    placeholderData: keepPreviousData,
-    ...POLL_OPTIONS,
   });
-  const insightsQuery = useMarketInsights(marketStatus.isOpen);
-  const { isConnected, lastMessage, sendMessage } = useWebSocket({ enabled: marketStatus.isOpen });
+  // Connection state only; the socket is held open during market hours.
+  const { isConnected } = useWebSocket({ enabled: marketStatus.isOpen, skipStateUpdates: true });
 
   const [initialIstTime] = useState(getISTTime);
   const istTime = statusQuery.data?.istTime ?? initialIstTime;
   const dashboardMode: DashboardMode = indicesQuery.data?.nextMode ?? "post_market";
   const portfolioStats = statsQuery.data ?? null;
-  const marketIndices = indicesQuery.data?.indicesData ?? NO_INDICES;
-  const watchlist = watchlistQuery.data ?? NO_WATCHLIST;
-  const indicesLoaded = indicesQuery.data !== undefined;
-  const insightSymbols = useMemo(
+  const fetchedIndices = indicesQuery.data?.indicesData ?? NO_INDICES;
+  const fetchedWatchlist = watchlistQuery.data ?? NO_WATCHLIST;
+  const streaming = marketStatus.isOpen && dashboardMode === "market";
+  // Live quotes for the shown rows while the market is open; the store owns the subscriptions.
+  const liveSymbols = useMemo(
     () =>
-      marketStatus.isOpen && insightsQuery.data && !insightsQuery.isError
-        ? getInsightSymbols(insightsQuery.data)
+      streaming
+        ? [
+            ...fetchedWatchlist.map((item) => item.symbol),
+            ...fetchedIndices.map((idx) => idx.symbol),
+          ]
         : NO_SYMBOLS,
-    [marketStatus.isOpen, insightsQuery.data, insightsQuery.isError],
+    [streaming, fetchedWatchlist, fetchedIndices],
   );
+  const quotes = useQuotes(liveSymbols);
+  const marketIndices = applyIndexQuotes(fetchedIndices, quotes);
+  const watchlist = applyWatchlistQuotes(fetchedWatchlist, quotes);
   const loading = {
     portfolio: statsQuery.isPending,
     indices: indicesQuery.isPending,
     watchlist: watchlistQuery.isPending,
   };
-  const subscriptionSymbolsRef = useRef<string>("");
-  const pendingTicksRef = useRef<Record<string, TickRecord>>({});
+  const loadError = statsQuery.error ?? watchlistQuery.error ?? indicesQuery.error;
   const openTradingView = (symbol: string) => {
     window.open(getTradingViewUrl(symbol), "_blank", "noopener,noreferrer");
   };
-
-  const symbolsKey = useMemo(() => {
-    const watchlistSymbols = watchlist.map((item: WatchlistItem) => item.symbol);
-    const indexSymbols = marketIndices.map((idx: MarketIndex) => idx.symbol).filter(Boolean);
-    return Array.from(new Set([...watchlistSymbols, ...indexSymbols, ...insightSymbols]))
-      .sort((a, b) => a.localeCompare(b))
-      .join(",");
-  }, [watchlist, marketIndices, insightSymbols]);
-
-  // Subscribe when connected AND symbol set changes.
-  useEffect(() => {
-    if (!isConnected || !marketStatus.isOpen || !indicesLoaded) return;
-    if (!symbolsKey) return;
-    const symbols = symbolsKey.split(",");
-
-    // Guard: only act if the symbol set actually changed
-    if (subscriptionSymbolsRef.current === symbolsKey) return;
-
-    // Unsubscribe old set first (only if there was a previous set)
-    if (subscriptionSymbolsRef.current) {
-      const oldSymbols = subscriptionSymbolsRef.current.split(",");
-      sendMessage({ action: "unsubscribe", symbols: oldSymbols });
-    }
-
-    // Subscribe new set
-    sendMessage({ action: "subscribe", symbols });
-    subscriptionSymbolsRef.current = symbolsKey;
-
-    // NO cleanup function here - the server handles cleanup when WebSocket closes
-  }, [isConnected, marketStatus.isOpen, indicesLoaded, sendMessage, symbolsKey]);
-
-  // 3. Unsubscribe ONLY on component unmount
-  useEffect(() => {
-    return () => {
-      if (subscriptionSymbolsRef.current) {
-        const symbols = subscriptionSymbolsRef.current.split(",");
-        sendMessage({ action: "unsubscribe", symbols });
-        subscriptionSymbolsRef.current = "";
-      }
-    };
-  }, [sendMessage]);
-
-  // Handle live ticks
-  useEffect(() => {
-    if (lastMessage?.type === "ticker" && lastMessage.data) {
-      const tick = lastMessage.data as TickRecord;
-      if (tick.symbol) pendingTicksRef.current[tick.symbol] = tick;
-    }
-  }, [lastMessage]);
-
-  useEffect(() => {
-    if (dashboardMode === "market") return;
-    pendingTicksRef.current = {};
-    if (subscriptionSymbolsRef.current) {
-      const oldSymbols = subscriptionSymbolsRef.current.split(",");
-      sendMessage({ action: "unsubscribe", symbols: oldSymbols });
-      subscriptionSymbolsRef.current = "";
-    }
-  }, [dashboardMode, sendMessage]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const pending = pendingTicksRef.current;
-      const symbols = Object.keys(pending);
-      if (symbols.length === 0) return;
-      pendingTicksRef.current = {};
-
-      queryClient.setQueryData<WatchlistItem[]>(queryKeys.dashboard.watchlist(), (prev) =>
-        prev ? applyWatchlistTicks(prev, pending) : prev,
-      );
-      queryClient.setQueriesData<DashboardFetchResult>(
-        { queryKey: queryKeys.dashboard.indicesRoot() },
-        (prev) =>
-          prev ? { ...prev, indicesData: applyIndexTicks(prev.indicesData, pending) } : prev,
-      );
-    }, 250);
-
-    return () => clearInterval(timer);
-  }, [queryClient]);
 
   const isLive = marketStatus.isOpen && isConnected;
   const isDelayed = marketStatus.isOpen && !isConnected;
@@ -565,6 +315,9 @@ export default function DashboardPage() {
           ))}
         </div>
       );
+    }
+    if (marketIndices.length === 0 && indicesQuery.error) {
+      return <PanelError error={indicesQuery.error} />;
     }
     if (marketIndices.length === 0) {
       return <div className="p-8 text-center text-foreground-muted">No market data</div>;
@@ -601,6 +354,9 @@ export default function DashboardPage() {
         </div>
       );
     }
+    if (watchlist.length === 0 && watchlistQuery.error) {
+      return <PanelError error={watchlistQuery.error} />;
+    }
     if (watchlist.length === 0) {
       return <div className="p-8 text-center text-foreground-muted">No stocks in watchlist</div>;
     }
@@ -634,7 +390,13 @@ export default function DashboardPage() {
         <div className="text-center">
           <Activity className="w-10 h-10 mx-auto text-foreground-muted mb-3" />
           <h2 className="text-base font-medium">No Data Available</h2>
-          <p className="text-sm text-foreground-muted">Connect to Fyers to view market data</p>
+          {loadError ? (
+            <p role="alert" className="text-sm text-loss">
+              {loadError.message}
+            </p>
+          ) : (
+            <p className="text-sm text-foreground-muted">Connect to Fyers to view market data</p>
+          )}
         </div>
       </div>
     );

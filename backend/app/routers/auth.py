@@ -243,6 +243,8 @@ def generate_token(request: AuthCodeRequest) -> dict[str, Any]:
                 json.dump(response, f, indent=4)
 
             logger.info("[Fyers Auth] Access token saved to %s", ACCESS_TOKEN_FILE)
+            # Drop the cached status so the next status check reads the new token file.
+            _status_cache["cached_at"] = 0
             logger.info("[Fyers Auth] Token expires at: %s", expires_at_utc.isoformat())
             try:
                 # Ensure in-memory singleton does not keep stale token after re-login.

@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import dynamic from "@/lib/dynamic";
 import {
   Badge,
@@ -22,109 +21,26 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui";
-import { strategiesAPI } from "@/lib/api-client";
-import { queryKeys } from "@/lib/queries/keys";
 import { useScreenerIndices } from "@/lib/queries/screener";
-
-type RegimePayload = {
-  regime: string;
-  close: number;
-  ma_200: number;
-  risk_pct: number;
-};
-
-type StrategyStatus = {
-  universe?: string;
-  halted: boolean;
-  halt_reason?: string;
-  halted_at?: string;
-  latest_scan_date?: string | null;
-  pending_entries: number;
-  open_positions: number;
-  regime: RegimePayload;
-};
+import {
+  useCloseStrategyPosition,
+  useRunStrategyBacktest,
+  useRunStrategyScan,
+  useStrategiesWorkspace,
+  useStrategySignal,
+  useToggleSignalQueue,
+  useToggleStrategyHalt,
+  type BacktestRun,
+  type PositionRow,
+  type ScanRow,
+  type SignalDetail,
+  type StrategyBacktestResult,
+} from "@/lib/queries/strategies";
 
 type UniverseOption = {
   id: string;
   name: string;
   count?: number;
-};
-
-type ScanRow = {
-  id: number;
-  symbol: string;
-  company_name: string;
-  sector: string;
-  grade: string;
-  rs_rating: number;
-  contraction_count: number;
-  contraction_depths: number[];
-  final_contraction_depth: number;
-  volume_dry_up_pct: number;
-  pivot_high: number;
-  stop_level: number;
-  stop_pct: number;
-  days_in_base: number;
-  is_breakout: boolean;
-  breakout_price?: number | null;
-  breakout_volume_mult?: number | null;
-  signal_status: string;
-  planned_shares: number;
-  planned_position_value: number;
-  capital_risk: number;
-  two_r_target: number;
-};
-
-type SignalDetail = {
-  signal: ScanRow;
-  chart: Array<{
-    date: string;
-    close: number;
-    volume: number;
-    ema_21?: number | null;
-    ma_50?: number | null;
-    ma_150?: number | null;
-    ma_200?: number | null;
-  }>;
-};
-
-type PositionRow = {
-  id: number;
-  symbol: string;
-  entry_date: string;
-  entry_price: number;
-  shares: number;
-  stop_price: number;
-  ltp: number;
-  unrealized_pnl: number;
-  unrealized_pnl_pct: number;
-  r_multiple: number;
-  two_r_status: string;
-  status: string;
-};
-
-type BacktestRun = {
-  run_id: string;
-  name?: string;
-  status: string;
-  universe?: string;
-  created_at?: string | null;
-  start_date?: string | null;
-  end_date?: string | null;
-  metrics?: {
-    total_return_pct?: number;
-    sharpe_ratio?: number;
-    total_trades?: number;
-  };
-};
-
-type BacktestResult = {
-  run_id: string;
-  status: string;
-  result?: {
-    metrics?: Record<string, number | string>;
-    trade_log?: Array<Record<string, string | number>>;
-  };
 };
 
 const DynamicSignalChart = dynamic(() =>
@@ -221,47 +137,10 @@ const DynamicSignalChart = dynamic(() =>
   }),
 );
 
-type StrategiesWorkspace = {
-  status: StrategyStatus | null;
-  results: ScanRow[];
-  positions: PositionRow[];
-  runs: BacktestRun[];
-};
-
 const NO_UNIVERSES: UniverseOption[] = [];
 const NO_SCAN_ROWS: ScanRow[] = [];
 const NO_POSITIONS: PositionRow[] = [];
 const NO_RUNS: BacktestRun[] = [];
-
-async function fetchWorkspace(params: {
-  universe: string;
-  showAll: boolean;
-}): Promise<StrategiesWorkspace> {
-  const [statusRes, scanRes, positionsRes, historyRes] = await Promise.all([
-    strategiesAPI.getStatus(params.universe),
-    strategiesAPI.getLatestScan(params.universe, params.showAll),
-    strategiesAPI.getPositions(),
-    strategiesAPI.getBacktestHistory(params.universe),
-  ]);
-
-  const firstError = statusRes.error ?? scanRes.error ?? positionsRes.error ?? historyRes.error;
-  if (firstError) throw new Error(firstError.message);
-
-  return {
-    status: (statusRes.data ?? null) as StrategyStatus | null,
-    results: (((scanRes.data ?? {}) as { results?: ScanRow[] }).results ?? []) as ScanRow[],
-    positions: (((positionsRes.data ?? {}) as { positions?: PositionRow[] }).positions ??
-      []) as PositionRow[],
-    runs: (((historyRes.data ?? {}) as { runs?: BacktestRun[] }).runs ?? []) as BacktestRun[],
-  };
-}
-
-async function fetchSignal(symbol: string): Promise<SignalDetail> {
-  const detailRes = await strategiesAPI.getSignal(symbol);
-  if (detailRes.error) throw new Error(detailRes.error.message);
-  if (!detailRes.data) throw new Error("Signal not found");
-  return detailRes.data as SignalDetail;
-}
 
 function formatCurrency(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -297,36 +176,27 @@ function timedQueryError(error: Error | null, at: number): TimedError | null {
   return error ? { message: error.message, at } : null;
 }
 
-type ActionOutcome = { ok: true; data: unknown } | { ok: false };
-
 function gradeVariant(grade: string): "profit" | "warning" | "neutral" {
   if (grade === "A") return "profit";
   return grade === "B" ? "warning" : "neutral";
 }
 
 export default function StrategiesPage() {
-  const queryClient = useQueryClient();
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<TimedError | null>(null);
   const [universeChoice, setUniverseChoice] = useState("NIFTY500");
   const [backtestStart, setBacktestStart] = useState("2025-01-01");
   const [backtestEnd, setBacktestEnd] = useState("2026-03-13");
   const [backtestCapital, setBacktestCapital] = useState("1000000");
-  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+  const [backtestResult, setBacktestResult] = useState<StrategyBacktestResult | null>(null);
 
   const universesQuery = useScreenerIndices();
   const availableUniverses: UniverseOption[] = universesQuery.data ?? NO_UNIVERSES;
   // Fall back to the first known universe when the chosen one is not offered.
   const selectedUniverse = resolveUniverse(availableUniverses, universeChoice);
 
-  const workspaceKey = queryKeys.strategies.workspace({ universe: selectedUniverse, showAll });
-  const workspaceQuery = useQuery({
-    queryKey: workspaceKey,
-    queryFn: () => fetchWorkspace({ universe: selectedUniverse, showAll }),
-    retry: false,
-  });
+  const workspaceQuery = useStrategiesWorkspace({ universe: selectedUniverse, showAll });
   const status = workspaceQuery.data?.status ?? null;
   const results = workspaceQuery.data?.results ?? NO_SCAN_ROWS;
   const positions = workspaceQuery.data?.positions ?? NO_POSITIONS;
@@ -335,14 +205,18 @@ export default function StrategiesPage() {
 
   // The explicitly selected signal, else the first scan result.
   const signalSymbol = selectedSymbol ?? results[0]?.symbol ?? null;
-  const signalQuery = useQuery({
-    queryKey: queryKeys.strategies.signal(signalSymbol ?? ""),
-    queryFn: () => fetchSignal(signalSymbol ?? ""),
-    enabled: signalSymbol !== null,
-    placeholderData: keepPreviousData,
-    retry: false,
-  });
+  const signalQuery = useStrategySignal(signalSymbol);
   const signalDetail = signalSymbol === null ? null : (signalQuery.data ?? null);
+
+  const runScan = useRunStrategyScan();
+  const toggleHalt = useToggleStrategyHalt();
+  const toggleQueue = useToggleSignalQueue();
+  const closePosition = useCloseStrategyPosition();
+  const runBacktest = useRunStrategyBacktest();
+  const busy = [runScan, toggleHalt, toggleQueue, closePosition, runBacktest].some(
+    (mutation) => mutation.isPending,
+  );
+
   // The auto-selected first row fails quietly; only an explicitly picked signal shows its error.
   const error = latestError([
     actionError,
@@ -350,13 +224,12 @@ export default function StrategiesPage() {
     timedQueryError(selectedSymbol === null ? null : signalQuery.error, signalQuery.errorUpdatedAt),
   ]);
 
-  const failAction = (message: string) => {
+  const failAction = (failure: Error | string) => {
+    const message = typeof failure === "string" ? failure : failure.message;
     setActionError({ message, at: Date.now() });
   };
-
-  const reloadWorkspace = async () => {
-    await queryClient.invalidateQueries({ queryKey: queryKeys.strategies.all });
-  };
+  const clearActionError = () => setActionError(null);
+  const actionCallbacks = { onSuccess: clearActionError, onError: failAction };
 
   const formingRows = useMemo(() => results.filter((row) => !row.is_breakout), [results]);
   const breakoutRows = useMemo(() => results.filter((row) => row.is_breakout), [results]);
@@ -366,76 +239,44 @@ export default function StrategiesPage() {
     setActionError(null);
   };
 
-  /** Run one strategies request with the busy flag; a failure is shown in the banner. */
-  const runAction = async (
-    request: () => Promise<{ data?: unknown; error?: { message: string } }>,
-  ): Promise<ActionOutcome> => {
-    setBusy(true);
-    const response = await request();
-    setBusy(false);
-    if (response.error) {
-      failAction(response.error.message);
-      return { ok: false };
-    }
-    return { ok: true, data: response.data };
-  };
-
-  const onRunScan = async () => {
+  const onRunScan = () => {
     setActionError(null);
-    const outcome = await runAction(() => strategiesAPI.runScan({ universe: selectedUniverse }));
-    if (outcome.ok) await reloadWorkspace();
+    runScan.mutate(selectedUniverse, { onError: failAction });
   };
 
-  const onToggleHalt = async () => {
-    const outcome = await runAction(() =>
-      status?.halted
-        ? strategiesAPI.resume()
-        : strategiesAPI.halt("Manual halt from Strategies page"),
-    );
-    if (!outcome.ok) return;
-    setActionError(null);
-    const nextStatus = (outcome.data ?? null) as StrategyStatus | null;
-    queryClient.setQueryData<StrategiesWorkspace>(workspaceKey, (prev) =>
-      prev ? { ...prev, status: nextStatus } : prev,
-    );
+  const onToggleHalt = () => {
+    toggleHalt.mutate(status?.halted ? "resume" : "halt", actionCallbacks);
   };
 
-  const onQueueToggle = async (row: ScanRow) => {
-    const outcome = await runAction(() =>
-      row.signal_status === "PENDING_ENTRY"
-        ? strategiesAPI.cancelSignal(row.id)
-        : strategiesAPI.queueSignal(row.id),
-    );
-    if (!outcome.ok) return;
-    setActionError(null);
-    await reloadWorkspace();
+  const onQueueToggle = (row: ScanRow) => {
+    toggleQueue.mutate(row, actionCallbacks);
   };
 
-  const onClosePosition = async (positionId: number) => {
-    const outcome = await runAction(() => strategiesAPI.closePosition(positionId));
-    if (!outcome.ok) return;
-    setActionError(null);
-    await reloadWorkspace();
+  const onClosePosition = (positionId: number) => {
+    closePosition.mutate(positionId, actionCallbacks);
   };
 
-  const onRunBacktest = async () => {
+  const onRunBacktest = () => {
     const parsedCapital = Number.parseFloat(backtestCapital.trim());
     if (!Number.isFinite(parsedCapital)) {
       failAction("Enter a valid numeric capital amount before running the backtest.");
       return;
     }
-    const outcome = await runAction(() =>
-      strategiesAPI.runBacktest({
+    runBacktest.mutate(
+      {
         universe: selectedUniverse,
-        start_date: backtestStart,
-        end_date: backtestEnd,
-        initial_capital: Number(parsedCapital),
-      }),
+        startDate: backtestStart,
+        endDate: backtestEnd,
+        initialCapital: parsedCapital,
+      },
+      {
+        onSuccess: (result) => {
+          setBacktestResult(result);
+          setActionError(null);
+        },
+        onError: failAction,
+      },
     );
-    if (!outcome.ok) return;
-    setBacktestResult((outcome.data ?? null) as BacktestResult | null);
-    setActionError(null);
-    await reloadWorkspace();
   };
 
   const selectedSignal = signalDetail?.signal ?? null;
@@ -552,6 +393,7 @@ export default function StrategiesPage() {
                   rows={formingRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
+                  busy={busy}
                   selectedSymbol={signalSymbol}
                 />
               </TabsContent>
@@ -561,12 +403,13 @@ export default function StrategiesPage() {
                   rows={breakoutRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
+                  busy={busy}
                   selectedSymbol={signalSymbol}
                 />
               </TabsContent>
 
               <TabsContent value="positions" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                <PositionTable rows={positions} onClose={onClosePosition} />
+                <PositionTable rows={positions} onClose={onClosePosition} busy={busy} />
               </TabsContent>
 
               <TabsContent value="backtest" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
@@ -664,11 +507,14 @@ function SignalTable({
   selectedSymbol,
   onSelect,
   onQueueToggle,
+  busy,
 }: Readonly<{
   rows: ScanRow[];
   selectedSymbol: string | null;
   onSelect: (symbol: string) => void;
   onQueueToggle: (row: ScanRow) => void;
+  /** A strategy action is in flight; queue toggles wait for it. */
+  busy: boolean;
 }>) {
   return (
     <Table>
@@ -716,6 +562,7 @@ function SignalTable({
                 <Button
                   size="sm"
                   variant={row.signal_status === "PENDING_ENTRY" ? "secondary" : "primary"}
+                  disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
                     onQueueToggle(row);
@@ -744,9 +591,12 @@ function SignalTable({
 function PositionTable({
   rows,
   onClose,
+  busy,
 }: Readonly<{
   rows: PositionRow[];
   onClose: (positionId: number) => void;
+  /** A strategy action is in flight; closing twice would overwrite the recorded P&L. */
+  busy: boolean;
 }>) {
   return (
     <Table>
@@ -778,7 +628,7 @@ function PositionTable({
             <TableCell>{row.r_multiple?.toFixed(2) ?? "--"}</TableCell>
             <TableCell>{row.status}</TableCell>
             <TableCell>
-              <Button size="sm" variant="secondary" onClick={() => onClose(row.id)}>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onClose(row.id)}>
                 Close Now
               </Button>
             </TableCell>

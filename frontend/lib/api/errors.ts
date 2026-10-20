@@ -7,6 +7,8 @@ export type ApiErrorCode =
   | "HTTP_ERROR"
   | "VALIDATION_ERROR"
   | "RESPONSE_SHAPE_ERROR"
+  | "DATABASE_UNAVAILABLE"
+  | "BROKER_UNAVAILABLE"
   | (string & Record<never, never>);
 
 export class ApiError extends Error {
@@ -35,6 +37,59 @@ function firstValidationMessage(detail: unknown[]): string | null {
 }
 
 /**
+ * Fixed, user-facing wording for the backend's "dependency is down" codes. These win over
+ * the server's message so every screen reads the same when Postgres or the broker is down.
+ */
+const UNAVAILABLE_MESSAGES: ReadonlyMap<string, string> = new Map([
+  [
+    "DATABASE_UNAVAILABLE",
+    "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
+  ],
+  ["BROKER_UNAVAILABLE", "Broker unavailable: Fyers could not be reached. Retry once it is back."],
+]);
+
+const SERVICE_UNAVAILABLE_MESSAGE = "Service unavailable: the backend is not ready. Retry shortly.";
+
+/** The backend envelope `{ error: { code, message } }`, or null when it is not one. */
+function fromEnvelope(envelope: unknown, status: number): ApiError | null {
+  if (!isRecord(envelope)) return null;
+  const code = typeof envelope.code === "string" ? envelope.code : null;
+  const friendly = code === null ? undefined : UNAVAILABLE_MESSAGES.get(code);
+  if (code !== null && friendly !== undefined) {
+    return new ApiError({ code, message: friendly, status, details: envelope.details });
+  }
+  if (typeof envelope.message !== "string") return null;
+  return new ApiError({
+    code: code ?? "HTTP_ERROR",
+    message: envelope.message,
+    status,
+    details: envelope.details,
+  });
+}
+
+/** FastAPI's `{ detail: string | [{ msg }] }`, or null when the body is not one. */
+function fromDetail(input: {
+  body: Record<string, unknown>;
+  status: number;
+  fallback: string;
+}): ApiError | null {
+  const { body, status, fallback } = input;
+  const detail = body.detail;
+  if (typeof detail === "string") {
+    return new ApiError({ code: "HTTP_ERROR", message: detail, status, details: body });
+  }
+  if (Array.isArray(detail)) {
+    return new ApiError({
+      code: "VALIDATION_ERROR",
+      message: firstValidationMessage(detail) ?? fallback,
+      status,
+      details: detail,
+    });
+  }
+  return null;
+}
+
+/**
  * Normalise an error response body. Handles the backend envelope
  * `{ error: { code, message } }` and FastAPI's `{ detail: string | [{ msg }] }`.
  */
@@ -48,32 +103,14 @@ export function apiErrorFromResponse(input: {
   const fallback = `HTTP ${status}${statusSuffix}`;
 
   if (isRecord(body)) {
-    const envelope = body.error;
-    if (isRecord(envelope) && typeof envelope.message === "string") {
-      return new ApiError({
-        code: typeof envelope.code === "string" ? envelope.code : "HTTP_ERROR",
-        message: envelope.message,
-        status,
-        details: envelope.details,
-      });
-    }
-    const detail = body.detail;
-    if (typeof detail === "string") {
-      return new ApiError({ code: "HTTP_ERROR", message: detail, status, details: body });
-    }
-    if (Array.isArray(detail)) {
-      return new ApiError({
-        code: "VALIDATION_ERROR",
-        message: firstValidationMessage(detail) ?? fallback,
-        status,
-        details: detail,
-      });
-    }
+    const parsed = fromEnvelope(body.error, status) ?? fromDetail({ body, status, fallback });
+    if (parsed) return parsed;
   }
   if (typeof body === "string" && body.trim() !== "") {
     return new ApiError({ code: "HTTP_ERROR", message: body, status });
   }
-  return new ApiError({ code: "HTTP_ERROR", message: fallback, status });
+  const message = status === 503 ? SERVICE_UNAVAILABLE_MESSAGE : fallback;
+  return new ApiError({ code: "HTTP_ERROR", message, status });
 }
 
 export function apiErrorFromThrown(thrown: unknown): ApiError {
