@@ -18,6 +18,10 @@ except ImportError:
     logger.warning("[FyersWS] fyers-apiv3 not installed. WebSocket features unavailable.")
 
 
+class FyersWebSocketError(RuntimeError):
+    """The Fyers data socket cannot be used: SDK missing, no credentials, or not connected."""
+
+
 class FyersWebSocketService:
     """
     Manages Fyers WebSocket connections for live tick data.
@@ -40,7 +44,7 @@ class FyersWebSocketService:
     def connect(self) -> None:
         """Initialize WebSocket connection using access token"""
         if not data_ws:
-            raise Exception("fyers-apiv3 not installed")
+            raise FyersWebSocketError("fyers-apiv3 not installed")
 
         # Load access token from unified client
         from .fyers_client import get_fyers_client
@@ -48,13 +52,13 @@ class FyersWebSocketService:
         fyers_client = get_fyers_client()
 
         if fyers_client is None:
-            raise Exception("Fyers credentials not found. Please login first.")
+            raise FyersWebSocketError("Fyers credentials not found. Please login first.")
 
         client_id = fyers_client.client_id
         access_token = fyers_client.access_token
 
         if not client_id or not access_token:
-            raise Exception("Fyers credentials not found. Please login first.")
+            raise FyersWebSocketError("Fyers credentials not found. Please login first.")
 
         # Close any previous socket so reconnects do not leak the old one.
         if self.ws:
@@ -89,7 +93,7 @@ class FyersWebSocketService:
         Subscribe to symbols for live data
         """
         if not self.ws:
-            raise Exception("WebSocket not connected. Call connect() first.")
+            raise FyersWebSocketError("WebSocket not connected. Call connect() first.")
 
         unique_symbols = sorted({s for s in symbols if s})
         if not unique_symbols:

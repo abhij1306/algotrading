@@ -206,7 +206,8 @@ def test_provider_connect_closes_previous_socket(monkeypatch: pytest.MonkeyPatch
     service.connect()
 
     assert len(created) == 2
-    assert created[0].closed and not created[1].closed
+    assert created[0].closed
+    assert not created[1].closed
 
 
 def test_http_subscribed_symbols_are_replayed_and_not_released(

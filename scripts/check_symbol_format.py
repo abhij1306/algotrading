@@ -166,11 +166,11 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
             context_stripped = context.strip()
             if context_stripped.startswith("#"):
                 continue
-            if context_stripped.startswith('"""') or context_stripped.startswith("'''"):
+            if context_stripped.startswith(('"""', "'''")):
                 continue
 
             # Skip if the line is just a string literal (error message definition)
-            if context_stripped.startswith('"') or context_stripped.startswith("'"):
+            if context_stripped.startswith(('"', "'")):
                 # Check if it's a standalone string (not part of code)
                 if "=" not in context_stripped and "return" not in context_stripped:
                     continue

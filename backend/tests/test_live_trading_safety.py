@@ -679,7 +679,8 @@ def test_paper_modify_applies_type_price_and_trigger(
 
     assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
     order_db.refresh(order)
-    assert (order.order_type, order.quantity, order.price, order.trigger_price) == stored
+    modified = (order.order_type, order.quantity, order.price, order.trigger_price)
+    assert modified == stored
     assert client.calls == []
 
 
@@ -804,7 +805,8 @@ def test_live_modify_preserves_order_type_and_trigger(
     assert result == {"status": "SUCCESS", "message": "Order Modified"}
     assert client.calls == [("modify_order", payload)]
     order_db.refresh(order)
-    assert (order.order_type, order.quantity, order.price, order.trigger_price) == stored
+    modified = (order.order_type, order.quantity, order.price, order.trigger_price)
+    assert modified == stored
 
 
 def test_live_modify_to_stop_without_trigger_is_rejected_before_broker(

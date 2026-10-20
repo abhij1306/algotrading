@@ -101,7 +101,7 @@ class SymbolMaster:
         r"^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$", re.IGNORECASE
     )
     DB_PATTERN = re.compile(r"^[A-Z0-9&\.\-]{1,20}$")
-    ISIN_PATTERN = re.compile(r"^[A-Z]{2}[0-9]{10}[A-Z0-9]{2}$")
+    ISIN_PATTERN = re.compile(r"^[A-Z]{2}\d{10}[A-Z0-9]{2}$", re.ASCII)
 
     # Exchange prefixes
     EXCHANGES = ["NSE", "BSE", "MCX", "NFO", "BFO", "CDS"]

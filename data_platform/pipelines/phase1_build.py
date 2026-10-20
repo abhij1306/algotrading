@@ -77,13 +77,46 @@ MONTH_ABBR = {
     "NOV": 11,
     "DEC": 12,
 }
-NIFTY50_LINE_RE = re.compile(r"^([A-Z0-9&\-.]+)\s+.+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$")
+NIFTY50_SYMBOL_TOKEN_RE = re.compile(r"[A-Z0-9&\-.]+")
+NUMBER_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
+CORP_ACTION_RATIO_RE = re.compile(r"(\d+)\s*:\s*(\d+)")
 UNIVERSE_SYMBOL_ALIASES = {
     "TATAMOTORS": "TMPV",
 }
 EQUITY_OHLCV_FILE = "equity_ohlcv.parquet"
 EQUITY_OHLCV_ADJ_FILE = "equity_ohlcv_adj.parquet"
 SNAPSHOT_STOCK_DAILY_FILE = "snapshot_stock_daily.parquet"
+
+
+def parse_nifty50_weight_line(line: str) -> tuple[str, float] | None:
+    """Parse one constituent line of a NIFTY 50 weights PDF.
+
+    A line is "<SYMBOL> <company name...> <number> <weight>", whitespace separated.
+    Returns (symbol token, weight), or None when the line is not a constituent row.
+    """
+    tokens = line.split()
+    if len(tokens) < 4:
+        return None
+    symbol, *_, second_last, weight = tokens
+    if not NIFTY50_SYMBOL_TOKEN_RE.fullmatch(symbol):
+        return None
+    if not (NUMBER_TOKEN_RE.fullmatch(second_last) and NUMBER_TOKEN_RE.fullmatch(weight)):
+        return None
+    return symbol, float(weight)
+
+
+def find_bonus_ratio(text: str) -> tuple[int, int] | None:
+    """First "a:b" ratio after "bonus" whose first number starts on the same line, if any."""
+    pos = 0
+    while (start := text.find("bonus", pos)) >= 0:
+        line_end = text.find("\n", start)
+        if line_end < 0:
+            line_end = len(text)
+        m = CORP_ACTION_RATIO_RE.search(text, start + len("bonus"))
+        if m and m.start() < line_end:
+            return int(m.group(1)), int(m.group(2))
+        pos = line_end + 1
+    return None
 
 
 @dataclass
@@ -248,6 +281,9 @@ class Phase1Builder:
         self.summary: dict[str, Any] = {}
         self._trade_dates_cache: list[date] | None = None
         self._write_data_contract()
+
+    def _bhavcopy_files(self) -> list[Path]:
+        return sorted(self.paths.source_bhavcopy.glob("*.csv"))
 
     def _log(self, step: str, status: str, details: dict[str, Any] | None = None) -> None:
         payload = {
@@ -496,7 +532,7 @@ class Phase1Builder:
                 )
 
         # Add symbols from ingested bhavcopy for in-range dates.
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
+        for bhav_file in self._bhavcopy_files():
             try:
                 bhav = pd.read_csv(bhav_file)
             except Exception as exc:
@@ -519,7 +555,7 @@ class Phase1Builder:
             )
 
         # Include bhavcopy snapshots for freshest phase-1 dates.
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
+        for bhav_file in self._bhavcopy_files():
             try:
                 bhav = pd.read_csv(bhav_file)
             except Exception as exc:
@@ -606,7 +642,7 @@ class Phase1Builder:
             return self._trade_dates_cache
 
         trade_dates: set[date] = set()
-        for bhav_file in sorted(self.paths.source_bhavcopy.glob("*.csv")):
+        for bhav_file in self._bhavcopy_files():
             try:
                 bhav = pd.read_csv(bhav_file, usecols=lambda c: c.strip().upper() in {"DATE1"})
             except Exception:
@@ -647,11 +683,11 @@ class Phase1Builder:
                     or line.startswith("Constituents of NIFTY 50")
                 ):
                     continue
-                m = NIFTY50_LINE_RE.match(line)
-                if not m:
+                parsed = parse_nifty50_weight_line(line)
+                if not parsed:
                     continue
-                symbol = symbol_master.to_db(m.group(1).upper())
-                weight = float(m.group(3))
+                raw_symbol, weight = parsed
+                symbol = symbol_master.to_db(raw_symbol.upper())
                 rows.append({"symbol": symbol, "weight": weight})
         if not rows:
             return pd.DataFrame(columns=["symbol", "weight"]), 0.0
@@ -907,9 +943,9 @@ class Phase1Builder:
             nums = list(map(int, re.findall(r"\d+", text)))
             if len(nums) >= 2 and nums[1] != 0:
                 return "split", nums[0] / nums[1]
-        m = re.search(r"bonus.*?(\d+)\s*:\s*(\d+)", text)
-        if m:
-            a, b = map(int, m.groups())
+        ratio = find_bonus_ratio(text)
+        if ratio:
+            a, b = ratio
             if b != 0:
                 return "bonus", (a + b) / b
         return None, None
@@ -1015,6 +1051,7 @@ class Phase1Builder:
             on=["trade_date", "symbol"],
             how="left",
             suffixes=("", "_adj"),
+            validate="one_to_one",
         )
         merged["corporate_action_flag"] = (merged["close"] - merged["close_adj"]).abs() > 1e-9
         stock_snapshot = pd.DataFrame(
@@ -1062,6 +1099,7 @@ class Phase1Builder:
                 monthly[["month_key", "symbol", "weight"]],
                 on=["month_key", "symbol"],
                 how="left",
+                validate="many_to_one",
             )
             uni = uni.merge(
                 stock_snapshot[
@@ -1080,6 +1118,7 @@ class Phase1Builder:
                 left_on=["date_str", "symbol"],
                 right_on=["date", "symbol"],
                 how="left",
+                validate="many_to_one",
             )
             universe_snapshot = pd.DataFrame(
                 {

@@ -245,7 +245,7 @@ def get_next_weekly_expiry(current_date: datetime) -> datetime:
     Returns:
         Next Thursday at 3:30 PM (market close)
     """
-    # Thursday = 3 (Monday = 0)
+    # weekday() numbers Monday as 0, so Thursday is 3
     days_ahead = 3 - current_date.weekday()
 
     if days_ahead <= 0:  # Already past or on Thursday

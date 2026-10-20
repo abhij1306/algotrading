@@ -316,23 +316,6 @@ class IndexUniverseLoader:
         universe = self._indices.get(index_id)
         return universe.description if universe else ""
 
-    def get_symbols_by_date(self, index_id: str, _target_date: date) -> list[str]:
-        """
-        Get symbols for an index as of a specific date.
-
-        Note: Currently returns current constituents. Historical changes
-        would require parsing IndexInclExcl.xls for rebalance history.
-
-        Args:
-            index_id: Index identifier
-            target_date: Target date (currently ignored, returns current constituents)
-
-        Returns:
-            List of symbols
-        """
-        # TODO(#9): Implement historical constituent lookup using IndexInclExcl.xls
-        return self.get_index_symbols(index_id)
-
     def refresh(self) -> None:
         """Force reload of all index data"""
         self._loaded = False

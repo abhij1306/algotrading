@@ -181,7 +181,7 @@ class LiveMarketService:
 
         now = datetime.datetime.now(IST)
         # Weekends check
-        if now.weekday() >= 5:  # 5=Sat, 6=Sun
+        if now.weekday() >= 5:  # Saturday or Sunday
             self._market_status = "CLOSED_WEEKEND"
             return False
 

@@ -46,7 +46,7 @@ def zscore(value: float, series: pd.Series) -> float:
     return (value - mu) / sigma
 
 
-def compute_features(symbol: str, hist: pd.DataFrame) -> dict:
+def compute_features(symbol: str, hist: pd.DataFrame) -> dict | None:
     """
     Compute all technical features for a symbol
 

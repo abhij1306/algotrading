@@ -100,12 +100,11 @@ def test_sync_index_universes_populates_db_and_company_categories(
 
         sbin = session.query(Company).filter(Company.symbol == "SBIN").first()
         reliance = session.query(Company).filter(Company.symbol == "RELIANCE").first()
-        assert (
-            sbin is not None
-            and sbin.broad_market == "NIFTY500"
-            and sbin.sector_index == "NIFTYBANK"
-        )
-        assert reliance is not None and reliance.broad_market == "NIFTY500"
+        assert sbin is not None
+        assert sbin.broad_market == "NIFTY500"
+        assert sbin.sector_index == "NIFTYBANK"
+        assert reliance is not None
+        assert reliance.broad_market == "NIFTY500"
     finally:
         session.close()
 

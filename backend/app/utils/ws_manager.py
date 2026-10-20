@@ -17,6 +17,9 @@ from starlette.websockets import WebSocketState
 from .runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_CONNECTIONS_GAUGE = "websocket.connections.active"
+ACTIVE_SUBSCRIPTIONS_GAUGE = "websocket.subscriptions.active"
 SEND_TIMEOUT_SEC = 1.0
 CLIENT_QUEUE_SIZE = 8
 
@@ -63,7 +66,7 @@ class ConnectionManager:
             self.connections[websocket] = client
             self.subscriptions[websocket] = client.subscriptions
         runtime_metrics.increment("websocket.connections.accepted")
-        runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
+        runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(self.connections)))
         logger.debug(f"[WSManager] Client connected. Total: {len(self.connections)}")
 
         # Send initial welcome — client may have already disconnected (React StrictMode, page nav)
@@ -74,7 +77,7 @@ class ConnectionManager:
                     "message": "Connected to SmartTrader WebSocket Stream",
                 }
             )
-        except (WebSocketDisconnect, Exception):
+        except Exception:
             # Normal disconnect during handshake (React StrictMode, page navigation)
             logger.debug("[WSManager] Client disconnected before handshake completion")
             await self.disconnect(websocket)
@@ -101,9 +104,9 @@ class ConnectionManager:
                     else set()
                 )
         runtime_metrics.increment("websocket.connections.disconnected")
-        runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
+        runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(self.connections)))
         runtime_metrics.set_gauge(
-            "websocket.subscriptions.active", float(len(self._global_subscriptions))
+            ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
         )
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
         released = sorted(removed_symbols - self._global_subscriptions)
@@ -124,7 +127,7 @@ class ConnectionManager:
                     self._global_subscriptions.add(symbol)
                 runtime_metrics.increment("websocket.subscriptions.added", float(len(symbols)))
                 runtime_metrics.set_gauge(
-                    "websocket.subscriptions.active", float(len(self._global_subscriptions))
+                    ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
                 )
                 logger.debug(
                     "[WSManager] Client subscribed to %s symbols. Total symbols for client: %s",
@@ -147,7 +150,7 @@ class ConnectionManager:
                 )
                 runtime_metrics.increment("websocket.subscriptions.removed", float(len(symbols)))
                 runtime_metrics.set_gauge(
-                    "websocket.subscriptions.active", float(len(self._global_subscriptions))
+                    ACTIVE_SUBSCRIPTIONS_GAUGE, float(len(self._global_subscriptions))
                 )
                 logger.debug(
                     "[WSManager] Client unsubscribed from %s symbols. Remaining: %s",
@@ -257,10 +260,8 @@ class ConnectionManager:
             active_connections = list(self.connections.values())
             active_symbols = len(self._global_subscriptions)
             pending_messages = sum(conn.queue.qsize() for conn in active_connections)
-            runtime_metrics.set_gauge(
-                "websocket.connections.active", float(len(active_connections))
-            )
-            runtime_metrics.set_gauge("websocket.subscriptions.active", float(active_symbols))
+            runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(active_connections)))
+            runtime_metrics.set_gauge(ACTIVE_SUBSCRIPTIONS_GAUGE, float(active_symbols))
             runtime_metrics.set_gauge("websocket.queue.pending_total", float(pending_messages))
         return {
             "active_clients": len(active_connections),
