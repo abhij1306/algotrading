@@ -319,6 +319,30 @@ class OrderExecutionService:
             "filled_qty": paper_fill["filled_qty"],
         }
 
+    def _pre_trade_error(
+        self, order_params: dict[str, Any], effective_mode: str, fyers_symbol: str, db: Session
+    ) -> dict[str, Any] | None:
+        """Error response when a LIVE order fails its risk checks, else None. PAPER skips them."""
+        if effective_mode != "LIVE":
+            return None
+        # Risk price estimates quote the broker, which needs the Fyers symbol.
+        risk_params = {**order_params, "fyers_symbol": fyers_symbol}
+        return self._run_live_risk_checks(risk_params, db)
+
+    def _submit_live_order_safely(
+        self, order_params: dict[str, Any], fyers_symbol: str, new_order: LiveOrder
+    ) -> dict[str, Any]:
+        """Submit a LIVE order; a broker exception becomes a fixed ERROR on the order."""
+        try:
+            return self._submit_live_order(order_params, fyers_symbol, new_order)
+        except Exception:
+            # Full error stays in the server log; the client and the stored
+            # order get a fixed message (no broker error text leaks).
+            logger.exception("Live order submission failed for %s", fyers_symbol)
+            new_order.status = "ERROR"
+            new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
+            return {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
+
     def place_order(
         self, order_params: dict[str, Any], db: Session, mode: str | None = None
     ) -> dict[str, Any]:
@@ -346,12 +370,9 @@ class OrderExecutionService:
             effective_mode = self._resolve_mode(order_params, mode)
             quantity = self._validate_quantity(order_params)
             db_symbol, fyers_symbol = self._resolve_symbols(order_params)
-            if effective_mode == "LIVE":
-                # Risk price estimates quote the broker, which needs the Fyers symbol.
-                risk_params = {**order_params, "fyers_symbol": fyers_symbol}
-                risk_error = self._run_live_risk_checks(risk_params, db)
-                if risk_error:
-                    return risk_error
+            risk_error = self._pre_trade_error(order_params, effective_mode, fyers_symbol, db)
+            if risk_error:
+                return risk_error
 
             new_order = self._create_order_record(
                 order_params, db_symbol, fyers_symbol, quantity, effective_mode
@@ -360,15 +381,7 @@ class OrderExecutionService:
             db.flush()
 
             if effective_mode == "LIVE":
-                try:
-                    response = self._submit_live_order(order_params, fyers_symbol, new_order)
-                except Exception:
-                    # Full error stays in the server log; the client and the stored
-                    # order get a fixed message (no broker error text leaks).
-                    logger.exception("Live order submission failed for %s", fyers_symbol)
-                    new_order.status = "ERROR"
-                    new_order.reject_reason = LIVE_SUBMIT_FAILED_MESSAGE
-                    response = {"status": "ERROR", "message": LIVE_SUBMIT_FAILED_MESSAGE}
+                response = self._submit_live_order_safely(order_params, fyers_symbol, new_order)
             else:
                 paper_fill = self._simulate_paper_fill(order_params, db_symbol)
                 response = self._apply_paper_fill(new_order, new_order.internal_id, paper_fill)
@@ -499,36 +512,44 @@ class OrderExecutionService:
 
     def cancel_order(self, order_id: str, db: Session) -> dict[str, Any]:
         """Cancel an order"""
-        order = db.query(LiveOrder).filter(LiveOrder.id == order_id).first()
+        order = self._find_order(order_id, db)
         if not order:
-            # Try searching by internal_id if id match fails
-            order = db.query(LiveOrder).filter(LiveOrder.internal_id == order_id).first()
-            if not order:
-                return {"status": "ERROR", "message": "Order not found"}
+            return {"status": "ERROR", "message": "Order not found"}
 
         if not order.is_paper:
-            try:
-                resp = self.broker.cancel_order(order.id)  # Use broker ID
-                status = resp.get("s", "error")
-                msg = resp.get("message", "Cancel failed")
+            return self._cancel_live_order(order, db)
+        return self._cancel_paper_order(order, db)
 
-                if status == "ok":
-                    order.status = "CANCELLED"
-                    db.commit()
-                    return {"status": "SUCCESS", "message": "Order Cancelled"}
-                else:
-                    # Check if already cancelled?
-                    if "already cancelled" in str(msg).lower():
-                        order.status = "CANCELLED"
-                        db.commit()
-                        return {"status": "SUCCESS", "message": "Order Already Cancelled"}
-                    return {"status": "ERROR", "message": msg}
-            except Exception as e:
-                if is_db_unavailable(e):
-                    raise
-                return {"status": "ERROR", "message": str(e)}
+    @staticmethod
+    def _find_order(order_id: str, db: Session) -> LiveOrder | None:
+        """Order by broker id, else by internal id."""
+        order = db.query(LiveOrder).filter(LiveOrder.id == order_id).first()
+        if order:
+            return order
+        return db.query(LiveOrder).filter(LiveOrder.internal_id == order_id).first()
 
-        # Paper Mode
+    def _cancel_live_order(self, order: LiveOrder, db: Session) -> dict[str, Any]:
+        try:
+            resp = self.broker.cancel_order(order.id)  # Use broker ID
+            status = resp.get("s", "error")
+            msg = resp.get("message", "Cancel failed")
+
+            if status == "ok":
+                order.status = "CANCELLED"
+                db.commit()
+                return {"status": "SUCCESS", "message": "Order Cancelled"}
+            if "already cancelled" in str(msg).lower():
+                order.status = "CANCELLED"
+                db.commit()
+                return {"status": "SUCCESS", "message": "Order Already Cancelled"}
+            return {"status": "ERROR", "message": msg}
+        except Exception as e:
+            if is_db_unavailable(e):
+                raise
+            return {"status": "ERROR", "message": str(e)}
+
+    @staticmethod
+    def _cancel_paper_order(order: LiveOrder, db: Session) -> dict[str, Any]:
         if order.status in PAPER_TERMINAL_STATES:
             return {"status": "ERROR", "message": f"Cannot cancel order in {order.status} state"}
         order.status = "CANCELLED"

@@ -96,11 +96,7 @@ class StartupSequence:
         except Exception as e:
             if required:
                 self.failed_step = step
-                if isinstance(e, DatabaseUnavailableError):
-                    # The step already logged where and how to start the DB; no traceback.
-                    logger.error(f"[Startup] Failed: {step.value} - {e}")
-                else:
-                    logger.exception(f"[Startup] Failed: {step.value} - {e}")
+                self._log_required_failure(step, e)
                 self._has_failure = True
                 logger.error(
                     f"[Startup] Required step {step.value} failed. "
@@ -114,6 +110,16 @@ class StartupSequence:
                     f"[Startup] Optional step {step.value} failed. Continuing with remaining steps."
                 )
                 return False
+
+    @staticmethod
+    def _log_required_failure(step: StartupStep, exc: Exception) -> None:
+        """Log a required step's failure, with a traceback unless the database is down."""
+        message = f"[Startup] Failed: {step.value} - {exc}"
+        if isinstance(exc, DatabaseUnavailableError):
+            # The step already logged where and how to start the DB: one line, no traceback.
+            logger.error(message)
+        else:
+            logger.error(message, exc_info=exc)
 
     def is_complete(self) -> bool:
         """

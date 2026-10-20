@@ -1,11 +1,12 @@
-"""Characterization tests that pin current paper-fill, modify and position-sync
+"""Characterization tests that pin current paper-fill, place, modify, cancel and position-sync
 behaviour before those functions are refactored for readability."""
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.live_order import LiveOrder
@@ -269,9 +270,11 @@ def orders(db_session: Session) -> Generator[Session, None, None]:
     db_session.commit()
 
 
-def add_order(db: Session, *, is_paper: int, status: str = "SUBMITTED") -> LiveOrder:
+def add_order(
+    db: Session, *, is_paper: int, status: str = "SUBMITTED", order_id: str = "ORD-1"
+) -> LiveOrder:
     order = LiveOrder(
-        id="ORD-1",
+        id=order_id,
         internal_id="ORD-1",
         user_id="u1",
         symbol="SBIN",
@@ -352,6 +355,275 @@ def test_paper_modify_converts_numeric_strings(orders: Session) -> None:
     assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
     orders.refresh(order)
     assert (order.quantity, order.price) == (7, 802.5)
+
+
+# --- Place order -------------------------------------------------------------
+
+
+class StubPlaceBroker:
+    """Broker stand-in whose place_order records the payload and returns a fixed reply."""
+
+    def __init__(self, reply: dict[str, Any]) -> None:
+        self.reply = reply
+        self.calls: list[dict[str, Any]] = []
+
+    def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(order)
+        return self.reply
+
+
+def live_params(**overrides: object) -> dict[str, Any]:
+    return {
+        "symbol": "SBIN",
+        "fyers_symbol": "NSE:SBIN-EQ",
+        "side": "BUY",
+        "quantity": 2,
+        "type": "LIMIT",
+        "product": "INTRADAY",
+        "price": 810.0,
+        "user_id": "u-place",
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "quantity", "message"),
+    [
+        ("DEMO", 2, "Invalid mode. Use PAPER or LIVE"),
+        ("LIVE", "two", "Invalid quantity"),
+        ("PAPER", 0, "Quantity must be positive"),
+    ],
+)
+def test_place_order_rejects_bad_request_without_broker_or_row(
+    orders: Session, mode: str, quantity: object, message: str
+) -> None:
+    service = oes.OrderExecutionService()
+    broker = StubPlaceBroker({"status": "SUBMITTED", "order_id": "B-1"})
+    service._broker = broker
+
+    result = service.place_order(live_params(quantity=quantity), orders, mode=mode)
+
+    assert result == {"status": "ERROR", "message": message}
+    assert broker.calls == []
+    assert orders.query(LiveOrder).count() == 0
+
+
+def test_live_order_failing_risk_checks_never_reaches_broker(orders: Session) -> None:
+    service = oes.OrderExecutionService()
+    broker = StubPlaceBroker({"status": "SUBMITTED", "order_id": "B-1"})
+    service._broker = broker
+
+    result = service.place_order(live_params(), orders, mode="LIVE")
+
+    assert result == {
+        "status": "ERROR",
+        "message": "LIVE order requires explicit confirmation acknowledgment",
+        "code": "LIVE_CONFIRMATION_REQUIRED",
+    }
+    assert broker.calls == []
+    assert orders.query(LiveOrder).count() == 0
+
+
+@pytest.mark.parametrize(
+    ("reply", "stored"),
+    [
+        (
+            {"status": "SUBMITTED", "order_id": "B-9", "message": "Order placed"},
+            ("B-9", "SUBMITTED", None, "Order placed"),
+        ),
+        (
+            {"status": "REJECTED", "message": "Insufficient margin"},
+            (None, "REJECTED", "Insufficient margin", None),
+        ),
+    ],
+)
+def test_live_order_records_broker_outcome(
+    orders: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: dict[str, Any],
+    stored: tuple[str | None, str, str | None, str | None],
+) -> None:
+    service = oes.OrderExecutionService()
+    broker = StubPlaceBroker(reply)
+    service._broker = broker
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+
+    result = service.place_order(live_params(), orders, mode="LIVE")
+
+    assert result == reply
+    assert broker.calls == [
+        {
+            "symbol": "NSE:SBIN-EQ",
+            "quantity": 2,
+            "side": "BUY",
+            "type": "LIMIT",
+            "product": "INTRADAY",
+            "price": 810.0,
+            "trigger_price": 0.0,
+        }
+    ]
+    row = orders.query(LiveOrder).one()
+    expected_id, status, reject_reason, broker_message = stored
+    assert (row.status, row.reject_reason, row.broker_message, row.is_paper) == (
+        status,
+        reject_reason,
+        broker_message,
+        0,
+    )
+    assert row.id == (expected_id or row.internal_id)
+
+
+def test_unexpected_place_failure_returns_fixed_message_and_stores_nothing(
+    orders: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = oes.OrderExecutionService()
+
+    def broken_fill(params: dict[str, Any], db_symbol: str) -> dict[str, Any]:
+        raise RuntimeError("simulator exploded")
+
+    monkeypatch.setattr(service, "_simulate_paper_fill", broken_fill)
+
+    result = service.place_order(live_params(), orders, mode="PAPER")
+
+    assert result == {"status": "ERROR", "message": "Order placement failed"}
+    assert orders.query(LiveOrder).count() == 0
+
+
+def test_db_lost_after_broker_rejects_raises_without_unrecorded_order_log(
+    orders: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = oes.OrderExecutionService()
+    service._broker = StubPlaceBroker({"status": "REJECTED", "message": "Insufficient margin"})
+    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: None)
+
+    def lost_commit() -> NoReturn:
+        raise OperationalError("COMMIT", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(orders, "commit", lost_commit)
+    params = live_params()
+
+    with pytest.raises(OperationalError):
+        service.place_order(params, orders, mode="LIVE")
+
+    assert not [r for r in caplog.records if "not recorded" in r.getMessage()]
+
+
+# --- Cancel order ------------------------------------------------------------
+
+
+class StubCancelBroker:
+    """Broker stand-in whose cancel_order returns a fixed reply or raises."""
+
+    def __init__(self, reply: dict[str, Any] | Exception) -> None:
+        self.reply = reply
+        self.calls: list[str] = []
+
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
+        self.calls.append(order_id)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+def test_cancel_unknown_order_is_an_error(orders: Session) -> None:
+    service = oes.OrderExecutionService()
+    broker = StubCancelBroker({"s": "ok"})
+    service._broker = broker
+
+    result = service.cancel_order("NOPE", orders)
+
+    assert result == {"status": "ERROR", "message": "Order not found"}
+    assert broker.calls == []
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected", "status"),
+    [
+        ({"s": "ok"}, {"status": "SUCCESS", "message": "Order Cancelled"}, "CANCELLED"),
+        (
+            {"s": "error", "message": "Order Already Cancelled by user"},
+            {"status": "SUCCESS", "message": "Order Already Cancelled"},
+            "CANCELLED",
+        ),
+        (
+            {"s": "error", "message": "Order already executed"},
+            {"status": "ERROR", "message": "Order already executed"},
+            "SUBMITTED",
+        ),
+        ({"s": "error"}, {"status": "ERROR", "message": "Cancel failed"}, "SUBMITTED"),
+        ({}, {"status": "ERROR", "message": "Cancel failed"}, "SUBMITTED"),
+        (RuntimeError("broker down"), {"status": "ERROR", "message": "broker down"}, "SUBMITTED"),
+    ],
+)
+def test_live_cancel_outcome_per_broker_reply(
+    orders: Session,
+    reply: dict[str, Any] | Exception,
+    expected: dict[str, str],
+    status: str,
+) -> None:
+    order = add_order(orders, is_paper=0)
+    service = oes.OrderExecutionService()
+    broker = StubCancelBroker(reply)
+    service._broker = broker
+
+    result = service.cancel_order("ORD-1", orders)
+
+    assert result == expected
+    assert broker.calls == ["ORD-1"]
+    orders.refresh(order)
+    assert order.status == status
+
+
+def test_live_cancel_by_internal_id_sends_the_broker_id(orders: Session) -> None:
+    order = add_order(orders, is_paper=0, order_id="B-77")
+    service = oes.OrderExecutionService()
+    broker = StubCancelBroker({"s": "ok"})
+    service._broker = broker
+
+    result = service.cancel_order("ORD-1", orders)
+
+    assert result == {"status": "SUCCESS", "message": "Order Cancelled"}
+    assert broker.calls == ["B-77"]
+    orders.refresh(order)
+    assert order.status == "CANCELLED"
+
+
+def test_live_cancel_with_db_down_raises(orders: Session) -> None:
+    add_order(orders, is_paper=0)
+    service = oes.OrderExecutionService()
+    service._broker = StubCancelBroker(
+        OperationalError("COMMIT", {}, Exception("connection refused"))
+    )
+
+    with pytest.raises(OperationalError):
+        service.cancel_order("ORD-1", orders)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "stored"),
+    [
+        ("SUBMITTED", {"status": "SUCCESS", "message": "Paper Order Cancelled"}, "CANCELLED"),
+        (
+            "FILLED",
+            {"status": "ERROR", "message": "Cannot cancel order in FILLED state"},
+            "FILLED",
+        ),
+    ],
+)
+def test_paper_cancel_never_reaches_broker(
+    orders: Session, status: str, expected: dict[str, str], stored: str
+) -> None:
+    order = add_order(orders, is_paper=1, status=status)
+    service = oes.OrderExecutionService()
+    broker = StubCancelBroker({"s": "ok"})
+    service._broker = broker
+
+    result = service.cancel_order("ORD-1", orders)
+
+    assert result == expected
+    assert broker.calls == []
+    orders.refresh(order)
+    assert order.status == stored
 
 
 # --- Position sync -----------------------------------------------------------
