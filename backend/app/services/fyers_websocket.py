@@ -62,6 +62,13 @@ class FyersWebSocketService:
         if not client_id or not access_token:
             raise Exception("Fyers credentials not found. Please login first.")
 
+        # Close any previous socket so reconnects do not leak the old one.
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception as exc:
+                logger.debug("[FyersWS] Closing previous socket failed: %s", exc)
+
         # Create WebSocket instance
         self.access_token = f"{client_id}:{access_token}"
 

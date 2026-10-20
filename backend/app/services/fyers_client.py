@@ -322,3 +322,4 @@ def reset_fyers_client() -> None:
     """Reset singleton so fresh credentials are loaded on next access."""
     global _fyers_client
     _fyers_client = None
+    FyersClient._instance = None

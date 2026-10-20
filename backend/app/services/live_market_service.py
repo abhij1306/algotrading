@@ -46,6 +46,10 @@ class LiveMarketService:
         self._is_connecting = False
         self._ws_thread = None
         self.pending_subscriptions = set()
+        # Set by an explicit POST /disconnect; cleared only by an explicit connect.
+        self._explicitly_disconnected = False
+        # Symbols subscribed via the HTTP API (no ConnectionManager client owns them).
+        self.api_subscriptions: set[str] = set()
         self._last_connect_block_reason: str | None = None
         self._last_subscribe_market_closed_log_ts = 0.0
 
@@ -56,14 +60,27 @@ class LiveMarketService:
         runtime_metrics.increment("live_market.provider.connected")
         logger.info("[OK] WebSocket connection established")
 
-        # Process pending subscriptions
-        if self.pending_subscriptions:
-            symbols = list(self.pending_subscriptions)
-            self.pending_subscriptions.clear()
-            logger.info(f"Processing {len(symbols)} pending subscriptions: {symbols}")
+        # Replay everything clients currently want (survives reconnects) plus anything queued.
+        wanted = (
+            manager.get_all_subscribed_symbols()
+            | self.api_subscriptions
+            | self.pending_subscriptions
+        )
+        self.pending_subscriptions.clear()
+        if wanted:
+            symbols = sorted(wanted)
+            logger.info(f"Replaying {len(symbols)} subscriptions on connect")
             # We use create_task because this is called from the thread runner via on_ws_connected
             if self.loop and not self.loop.is_closed():
                 asyncio.run_coroutine_threadsafe(self.subscribe(symbols), self.loop)
+
+    def disconnect(self) -> None:
+        """Explicit disconnect: close the provider socket; stay down until an explicit connect."""
+        self._explicitly_disconnected = True
+        if self.ws_service:
+            self.ws_service.disconnect()
+        self.ws_connected = False
+        self._is_connecting = False
 
     def on_ws_failure(self, error: Exception) -> None:
         """Callback when WebSocket connection fails"""
@@ -230,8 +247,18 @@ class LiveMarketService:
         self,
         loop: asyncio.AbstractEventLoop | None = None,
         prevalidated_token: bool | None = None,
+        explicit: bool = False,
     ) -> str:
-        """Connect to external data provider if market is open and token is valid"""
+        """Connect to external data provider if market is open and token is valid.
+
+        `explicit=True` (user-initiated connect) lifts a previous explicit disconnect;
+        automatic callers (monitor loop, subscribe) stay disconnected until then.
+        """
+        if explicit:
+            self._explicitly_disconnected = False
+        elif self._explicitly_disconnected:
+            return "disconnected"
+
         # 1. Capture and set event loop
         if loop:
             self.loop = loop
@@ -304,7 +331,7 @@ class LiveMarketService:
                         """Thread runner with retry logic and connection state reporting."""
                         max_retries = 10
                         retry_count = 0
-                        while retry_count < max_retries:
+                        while retry_count < max_retries and not self._explicitly_disconnected:
                             try:
                                 logger.debug(
                                     f"[WS] Connection attempt {retry_count + 1}/{max_retries}"
@@ -397,6 +424,11 @@ class LiveMarketService:
                 f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
             )
 
+    async def subscribe_api(self, symbols: list[str]) -> None:
+        """Subscribe on behalf of the HTTP API; these symbols are never released by client drops."""
+        self.api_subscriptions.update(symbol_master.to_db(s) for s in symbols if s)
+        await self.subscribe(symbols)
+
     async def unsubscribe(self, symbols: list[str]) -> None:
         """Unsubscribe non-blocking"""
         symbols_set: set[str] = set()
@@ -407,6 +439,8 @@ class LiveMarketService:
                 symbols_set.add(symbol_master.to_db(symbol))
             except Exception as exc:
                 logger.warning("Skipping invalid symbol for unsubscribe %s: %s", symbol, exc)
+        # A release can arrive after another client re-subscribed; keep wanted symbols.
+        symbols_set -= manager.get_all_subscribed_symbols() | self.api_subscriptions
         if symbols_set:
             self.pending_subscriptions.difference_update(symbols_set)
 
@@ -464,3 +498,7 @@ live_market = LiveMarketService()
 def get_live_market_service() -> LiveMarketService:
     """Get the singleton LiveMarketService instance."""
     return live_market
+
+
+# Release provider subscriptions when a client is dropped (slow client, dead socket).
+manager.on_symbols_released = live_market.unsubscribe

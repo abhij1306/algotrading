@@ -6,6 +6,7 @@ Handles connection lifecycle and broadcasting
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -36,6 +37,8 @@ class ConnectionManager:
         self.connections: dict[WebSocket, ClientConnection] = {}
         self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
         self.loop = None
+        # Awaited with symbols no remaining client needs after a client is removed.
+        self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()
 
     def set_loop(self, loop):
@@ -80,6 +83,10 @@ class ConnectionManager:
         return True
 
     async def disconnect(self, websocket: WebSocket) -> set[str]:
+        """Remove a client and release provider subscriptions nobody else needs.
+
+        Returns the released symbols (empty if the client was already removed).
+        """
         removed_symbols: set[str] = set()
         async with self._lock:
             client = self.connections.pop(websocket, None)
@@ -97,7 +104,13 @@ class ConnectionManager:
         runtime_metrics.set_gauge("websocket.connections.active", float(len(self.connections)))
         runtime_metrics.set_gauge("websocket.subscriptions.active", float(len(self._global_subscriptions)))
         logger.debug(f"[WSManager] Client disconnected. Total: {len(self.connections)}")
-        return removed_symbols
+        released = sorted(removed_symbols - self._global_subscriptions)
+        if released and self.on_symbols_released:
+            try:
+                await self.on_symbols_released(released)
+            except Exception as exc:
+                logger.warning("[WSManager] Releasing provider symbols failed: %s", exc)
+        return set(released)
 
     async def subscribe(self, websocket: WebSocket, symbols: list[str]):
         """Subscribe a specific connection to symbols"""
@@ -192,6 +205,10 @@ class ConnectionManager:
                     runtime_metrics.increment("websocket.queue_overflow")
                     logger.warning("[WSManager] Dropping slow websocket client")
                     await self.disconnect(connection)
+                    try:
+                        await connection.close(code=1013)
+                    except Exception as close_exc:
+                        logger.debug("[WSManager] Closing slow client failed: %s", close_exc)
             except (WebSocketDisconnect, RuntimeError):
                 await self.disconnect(connection)
             except Exception:
