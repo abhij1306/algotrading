@@ -176,6 +176,15 @@ def _in_spans(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
     return any(span_start <= start and end <= span_end for span_start, span_end in spans)
 
 
+def _is_outside_code(
+    match: re.Match[str], context: str, spans: list[tuple[int, int]] | None
+) -> bool:
+    """True when the match sits in a comment or string (line heuristic if tokenizing failed)."""
+    if spans is None:
+        return _is_non_code_line(context.strip())
+    return _in_spans(match.start(), match.end(), spans)
+
+
 def check_file(filepath: Path) -> list[SymbolFormatViolation]:
     """Check a single Python file for symbol format violations.
 
@@ -202,10 +211,7 @@ def check_file(filepath: Path) -> list[SymbolFormatViolation]:
         for match in re.finditer(violation_type.pattern, content):
             line_num = content[: match.start()].count("\n") + 1
             context = lines[line_num - 1] if line_num <= len(lines) else ""
-            if spans is None:
-                if _is_non_code_line(context.strip()):
-                    continue
-            elif _in_spans(match.start(), match.end(), spans):
+            if _is_outside_code(match, context, spans):
                 continue
 
             violations.append(
