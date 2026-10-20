@@ -15,6 +15,10 @@ LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Modules log with logging.getLogger(__name__), i.e. under the "app" package
+# namespace; it gets the same handlers and level as the base logger.
+APP_LOGGER_NAMESPACE = "app"
+
 
 def setup_logging(name: str = "smarttrader") -> logging.Logger:
     """
@@ -25,6 +29,7 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
 
     # Prevent double logging if setup called multiple times
     if logger.handlers:
+        _share_handlers(logger)
         return logger
 
     formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)
@@ -42,7 +47,7 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     except OSError as e:
-        logger.warning(f"Could not create file handler: {e}. Using console logging only.")
+        logger.warning("Could not create file handler: %s. Using console logging only.", e)
 
     # Reduce framework transport/access noise unless explicitly overridden.
     framework_level = os.getenv("FRAMEWORK_LOG_LEVEL", "WARNING").upper()
@@ -52,7 +57,17 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
     logging.getLogger("websockets.server").setLevel(framework_level)
     logging.getLogger("websockets.protocol").setLevel(framework_level)
 
+    _share_handlers(logger)
     return logger
+
+
+def _share_handlers(base: logging.Logger) -> None:
+    """Attach the base logger's handlers and level to the app.* namespace (idempotent)."""
+    app_logger = logging.getLogger(APP_LOGGER_NAMESPACE)
+    app_logger.setLevel(base.level)
+    for handler in base.handlers:
+        if handler not in app_logger.handlers:
+            app_logger.addHandler(handler)
 
 
 # Global default logger
