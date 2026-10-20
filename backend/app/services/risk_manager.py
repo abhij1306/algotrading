@@ -611,7 +611,8 @@ class RiskManager:
                 return self._price_estimate_failed(order)
 
             # Rough estimate: 20% margin for intraday, 100% for CNC
-            margin_pct = 0.2 if order.product == "INTRADAY" else 1.0
+            # MIS goes to Fyers as INTRADAY, so it is margined as INTRADAY.
+            margin_pct = 0.2 if order.product in {"INTRADAY", "MIS"} else 1.0
 
             estimated_margin = order.quantity * price * margin_pct
             # BrokerFunds is a TypedDict: read it by key, not attribute.

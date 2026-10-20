@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.brokers.plugins.fyers import FyersBroker
 from app.models.live_order import LiveOrder
 from app.services import order_execution_service as oes
 from app.services.execution.intent import (
@@ -25,7 +26,7 @@ from app.services.execution.intent import (
     Product,
     Side,
 )
-from app.services.risk_manager import RiskManager
+from app.services.risk_manager import RiskManager, RiskOrder
 from app.utils.clock import FixedClock
 from app.utils.market_hours import MarketHoursPolicy
 
@@ -282,6 +283,70 @@ def test_live_market_order_is_priced_from_the_quote_not_a_stray_price(
     assert (result.code, result.message) == (
         "PRICE_ESTIMATE_FAILED",
         "Cannot estimate price for SBIN. Please provide limit price.",
+    )
+
+
+class RecordingFyersClient:
+    """The fyers-apiv3 client's place_order, recording each payload."""
+
+    def __init__(self) -> None:
+        self.placed: list[dict[str, Any]] = []
+
+    def place_order(self, data: dict[str, Any]) -> dict[str, Any]:
+        self.placed.append(data)
+        return {"s": "ok", "id": "FY-1", "message": "Order placed"}
+
+
+class RecordingBroker(FyersBroker):
+    client: Any = None  # shadows FyersBroker.client so the test can assign it
+
+    def __init__(self, client: RecordingFyersClient) -> None:
+        self.client = client
+
+
+@pytest.mark.parametrize(
+    ("product_type", "sent"),
+    [
+        ("INTRADAY", "INTRADAY"),
+        ("MIS", "INTRADAY"),
+        ("CNC", "CNC"),
+        ("MARGIN", "MARGIN"),
+        ("MTF", "MTF"),
+        ("CO", "CO"),
+        ("BO", "BO"),
+    ],
+)
+def test_every_product_reaches_fyers_as_itself(product_type: str, sent: str) -> None:
+    RecordingBroker._record_success()
+    client = RecordingFyersClient()
+    service = oes.OrderExecutionService()
+    service._broker = RecordingBroker(client)
+
+    service._submit_live_order(
+        params(type="MARKET", product=product_type),
+        "NSE:SBIN-EQ",
+        LiveOrder(status="PENDING_SUBMIT"),
+    )
+
+    assert [data["productType"] for data in client.placed] == [sent]
+
+
+@pytest.mark.parametrize(
+    ("product_type", "required"),
+    [("INTRADAY", 320.0), ("MIS", 320.0), ("CNC", 1600.0), ("MTF", 1600.0)],
+)
+def test_mis_is_margined_as_intraday(
+    fake_broker: FakeBroker, product_type: str, required: float
+) -> None:
+    manager = RiskManager()
+    manager._broker = fake_broker  # type: ignore[assignment]
+    order = RiskOrder.of(OrderIntent.from_params(params(product=product_type, price=800)))
+
+    result = manager._check_available_margin(order)
+
+    assert (result.code, result.details) == (
+        "MARGIN_OK",
+        {"available": 1_000_000.0, "required": required},
     )
 
 
