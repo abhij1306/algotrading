@@ -30,8 +30,11 @@ export const router = createBrowserRouter([
         element: <BacktestLayout />,
         children: [
           { index: true, element: page(() => import("@/app/backtest/page")) },
-          { path: "new", element: page(() => import("@/app/backtest/new/page")) },
-          { path: "results/:runId", element: page(() => import("@/app/backtest/results/[runId]/page")) },
+          { path: "new", element: <Navigate to="/backtest" replace /> },
+          {
+            path: "results/:runId",
+            element: page(() => import("@/app/backtest/results/[runId]/page")),
+          },
         ],
       },
       { path: "*", element: <NotFound /> },

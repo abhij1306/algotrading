@@ -28,7 +28,7 @@ const Price = React.forwardRef<HTMLSpanElement, PriceProps>(
       className,
       ...props
     },
-    ref
+    ref,
   ) => {
     const sizes = {
       sm: "text-xs",
@@ -57,7 +57,7 @@ const Price = React.forwardRef<HTMLSpanElement, PriceProps>(
         {formatValue()}
       </span>
     );
-  }
+  },
 );
 Price.displayName = "Price";
 
@@ -73,7 +73,7 @@ interface PriceChangeProps extends React.HTMLAttributes<HTMLDivElement> {
 const PriceChange = React.forwardRef<HTMLDivElement, PriceChangeProps>(
   (
     { value, change, changePercent, showPercent = true, size = "default", className, ...props },
-    ref
+    ref,
   ) => {
     // Handle undefined/null values
     const safeChange = change ?? 0;
@@ -93,7 +93,7 @@ const PriceChange = React.forwardRef<HTMLDivElement, PriceChangeProps>(
         </div>
       </div>
     );
-  }
+  },
 );
 PriceChange.displayName = "PriceChange";
 

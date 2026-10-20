@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router';
-import { Search, Bell, Moon, Sun, Command } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import LoginButton from '@/components/LoginButton';
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router";
+import { Search, Bell, Moon, Sun, Command } from "lucide-react";
+import { cn } from "@/lib/utils";
+import LoginButton from "@/components/LoginButton";
 
 interface HeaderProps {
   onCommandPaletteOpen: () => void;
@@ -14,30 +14,31 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
 
   useEffect(() => {
     if (globalThis.window !== undefined) {
-      setIsDark(document.documentElement.classList.contains('dark'));
+      setIsDark(document.documentElement.classList.contains("dark"));
     }
   }, []);
 
   const toggleTheme = () => {
     const html = document.documentElement;
-    if (html.classList.contains('dark')) {
-      html.classList.remove('dark');
+    if (html.classList.contains("dark")) {
+      html.classList.remove("dark");
       setIsDark(false);
     } else {
-      html.classList.add('dark');
+      html.classList.add("dark");
       setIsDark(true);
     }
   };
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', path: '/dashboard' },
-    { id: 'terminal', label: 'Terminal', path: '/terminal' },
-    { id: 'screener', label: 'Screener', path: '/screener' },
-    { id: 'strategies', label: 'Strategies', path: '/strategies' },
-    { id: 'backtest', label: 'Backtest', path: '/backtest' },
+    { id: "dashboard", label: "Dashboard", path: "/dashboard" },
+    { id: "terminal", label: "Terminal", path: "/terminal" },
+    { id: "screener", label: "Screener", path: "/screener" },
+    { id: "strategies", label: "Strategies", path: "/strategies" },
+    { id: "backtest", label: "Backtest", path: "/backtest" },
   ];
 
-  const headerClasses = "h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle";
+  const headerClasses =
+    "h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle";
   const navLeftClasses = "flex items-center gap-4";
   const navRightClasses = "flex items-center gap-1";
 
@@ -47,15 +48,13 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
       <div className={navLeftClasses}>
         {/* Logo */}
         <button
-          onClick={() => navigate('/dashboard')}
+          onClick={() => void navigate("/dashboard")}
           className="flex items-center gap-2 hover:opacity-80 transition-opacity"
         >
           <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover shadow-sm">
             <Command className="w-5 h-5 text-primary-fg" />
           </div>
-          <span className="font-semibold text-lg hidden sm:block text-foreground">
-            SmartTrader
-          </span>
+          <span className="font-semibold text-lg hidden sm:block text-foreground">SmartTrader</span>
         </button>
 
         {/* Navigation Links - Desktop */}
@@ -63,7 +62,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
           {navItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => navigate(item.path)}
+              onClick={() => void navigate(item.path)}
               className="px-3 py-1.5 text-sm font-medium transition-all rounded-md text-foreground-secondary hover:text-foreground hover:bg-background-tertiary"
             >
               {item.label}
@@ -82,7 +81,8 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
           <Search className="w-4 h-4" />
           <span className="hidden sm:inline">Search...</span>
           <kbd className="hidden md:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xxs font-medium bg-background-tertiary">
-            <span>⌘</span><span>K</span>
+            <span>⌘</span>
+            <span>K</span>
           </kbd>
         </button>
 
@@ -90,7 +90,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
         <button
           onClick={toggleTheme}
           className="p-2 rounded-lg transition-all text-foreground-secondary hover:bg-background-tertiary"
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={isDark ? "Switch to light mode" : "Switch to dark mode"}
         >
           {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
@@ -113,14 +113,14 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
 // Mobile Navigation
 export function MobileNav() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState("dashboard");
 
   const tabs = [
-    { id: 'dashboard', label: 'Home', icon: Command, path: '/dashboard' },
-    { id: 'terminal', label: 'Market', icon: Search, path: '/terminal' },
-    { id: 'screener', label: 'Screen', icon: Search, path: '/screener' },
-    { id: 'strategies', label: 'VCP', icon: Bell, path: '/strategies' },
-    { id: 'backtest', label: 'Test', icon: Bell, path: '/backtest' },
+    { id: "dashboard", label: "Home", icon: Command, path: "/dashboard" },
+    { id: "terminal", label: "Market", icon: Search, path: "/terminal" },
+    { id: "screener", label: "Screen", icon: Search, path: "/screener" },
+    { id: "strategies", label: "VCP", icon: Bell, path: "/strategies" },
+    { id: "backtest", label: "Test", icon: Bell, path: "/backtest" },
   ];
 
   return (
@@ -134,11 +134,11 @@ export function MobileNav() {
             key={tab.id}
             onClick={() => {
               setActiveTab(tab.id);
-              navigate(tab.path);
+              void navigate(tab.path);
             }}
             className={cn(
-              'flex flex-col items-center gap-1 px-4 py-2 rounded-lg transition-all',
-              isActive ? 'font-medium text-primary' : 'text-foreground-tertiary'
+              "flex flex-col items-center gap-1 px-4 py-2 rounded-lg transition-all",
+              isActive ? "font-medium text-primary" : "text-foreground-tertiary",
             )}
           >
             <Icon className="w-5 h-5" />

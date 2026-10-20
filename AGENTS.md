@@ -28,8 +28,8 @@ python backend/start_server.py
 
 # Frontend
 cd frontend
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ---
@@ -71,7 +71,8 @@ SmartTrader is a quantitative trading platform for NSE with:
 - Routers under `backend/app/routers`
 
 ### Frontend
-- Next.js App Router + TypeScript + Tailwind
+- Vite+ (`vp`) + React Router SPA + TypeScript + Tailwind, managed with pnpm
+- Routes are declared in `frontend/router.tsx`; pages live in `frontend/app/**/page.tsx`
 - Realtime hook: `frontend/hooks/useWebSocket.ts`
 
 ### Data
@@ -135,9 +136,9 @@ Runtime behavior:
 ### Frontend
 ```bash
 cd frontend
-npm run lint
-npm run type-check
-npm run build
+pnpm check      # format, lint and type check (vp check)
+pnpm test       # vp test
+pnpm build      # vp build
 ```
 
 ### Backend

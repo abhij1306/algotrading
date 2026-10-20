@@ -15,5 +15,5 @@
     "paths": { "@/*": ["./*"] }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "out", "dist", "**/__tests__/**", "**/*.test.ts", "**/*.test.tsx"]
+  "exclude": ["node_modules", "out", "dist"]
 }

@@ -54,7 +54,7 @@ const Tooltip = React.forwardRef<HTMLDivElement, TooltipProps>(
               "text-foreground-muted whitespace-nowrap",
               "animate-in fade-in zoom-in-95 duration-200",
               sideStyles[side],
-              className
+              className,
             )}
           >
             {tooltipContent}
@@ -62,7 +62,7 @@ const Tooltip = React.forwardRef<HTMLDivElement, TooltipProps>(
         )}
       </div>
     );
-  }
+  },
 );
 Tooltip.displayName = "Tooltip";
 

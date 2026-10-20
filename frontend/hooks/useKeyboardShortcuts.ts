@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate } from 'react-router';
+import { useNavigate } from "react-router";
 
 /**
  * Global keyboard shortcuts hook
@@ -25,19 +25,19 @@ export function useKeyboardShortcuts() {
       // Cmd/Ctrl + B: Run Backtest
       if (e.key === "b" && modKey) {
         e.preventDefault();
-        navigate("/strategies");
+        void navigate("/strategies");
       }
 
       // Cmd/Ctrl + P: Portfolio
       if (e.key === "p" && modKey) {
         e.preventDefault();
-        navigate("/");
+        void navigate("/");
       }
 
       // Cmd/Ctrl + S: Screener (override browser save)
       if (e.key === "s" && modKey) {
         e.preventDefault();
-        navigate("/");
+        void navigate("/");
       }
 
       // Cmd/Ctrl + ,: Settings
@@ -72,7 +72,7 @@ export function useKeyboardShortcuts() {
 export function useTableNavigation<T>(
   items: T[],
   onSelect: (item: T) => void,
-  enabled: boolean = true
+  enabled: boolean = true,
 ) {
   useEffect(() => {
     if (!enabled || items.length === 0) return;
@@ -112,7 +112,7 @@ export function useTableNavigation<T>(
       if (e.key === " ") {
         e.preventDefault();
         document.dispatchEvent(
-          new CustomEvent("table-toggle", { detail: { index: selectedIndex } })
+          new CustomEvent("table-toggle", { detail: { index: selectedIndex } }),
         );
       }
     };

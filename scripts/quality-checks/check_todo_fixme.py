@@ -96,7 +96,7 @@ def check_directory(directory: Path, extensions: list[str]) -> list[TodoViolatio
     # Directories to skip
     skip_dirs = {
         'node_modules', 'venv', '.git', 'dist', 'build',
-        '.next', '__pycache__', '.pytest_cache', 'coverage',
+        'out', '__pycache__', '.pytest_cache', 'coverage',
         '.turbo', '.vercel'
     }
 

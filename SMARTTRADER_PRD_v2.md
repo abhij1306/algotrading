@@ -71,7 +71,7 @@ This is non-negotiable and applies to every module, every widget, every page:
 ### Frontend
 | Layer | Technology |
 |---|---|
-| Framework | Next.js 14 (App Router) |
+| Framework | Vite+ with React Router (SPA) |
 | Language | TypeScript |
 | Styling | Tailwind CSS + custom design system |
 | State | React hooks — no global state library |
@@ -491,8 +491,8 @@ No toast spam for connection events. Toasts only for user-initiated actions (ord
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `DEV_MODE` | No | `true` bypasses market hours and token validation |
-| `NEXT_PUBLIC_WS_URL` | No | Override frontend WebSocket URL |
-| `NEXT_PUBLIC_API_URL` | No | Override frontend API base URL (default: `http://localhost:8000`) |
+| `VITE_WS_URL` | No | Override frontend WebSocket URL (default: same origin via the Vite proxy) |
+| `VITE_API_URL` | No | Override frontend API base URL (default: same origin via the Vite proxy) |
 | `FYERS_TOKEN_FILE` | No | Path to access token JSON (default: `fyers/config/access_token.json`) |
 
 ---

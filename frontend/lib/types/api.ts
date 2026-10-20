@@ -101,7 +101,7 @@ export interface BacktestRunInfo {
   total_return: number;
   sharpe_ratio: number;
   max_drawdown: number;
-  status: 'running' | 'completed' | 'failed';
+  status: "running" | "completed" | "failed";
   created_at: string;
 }
 

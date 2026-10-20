@@ -91,7 +91,7 @@ Implemented in `backend/app/services/live_market_service.py`:
 ## Frontend Hook Integration
 `frontend/hooks/useWebSocket.ts` behavior:
 - URL resolution:
-  - `NEXT_PUBLIC_WS_URL`, else derived from `NEXT_PUBLIC_API_URL`, else `ws://127.0.0.1:8000/api/websocket/stream`
+  - `VITE_WS_URL`, else derived from `VITE_API_URL`, else same origin `/api/websocket/stream` (proxied to the backend by Vite)
 - Heartbeat every 30s
 - Reconnect backoff with `max_retries=10`
 - `registerCallback()` for low-rerender high-frequency consumption

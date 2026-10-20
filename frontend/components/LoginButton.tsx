@@ -27,7 +27,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
 
     try {
       const result = await apiClient.get<{ connected: boolean; user_id?: string }>(
-        "/api/auth/fyers/status"
+        "/api/auth/fyers/status",
       );
       if (result.error) throw new Error(result.error.message || "Backend error");
       const data = result.data;
@@ -77,7 +77,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
 
     try {
       const result = await apiClient.get<{ url: string; detail?: string; error?: string }>(
-        "/api/auth/fyers/url"
+        "/api/auth/fyers/url",
       );
       const data = result.data;
 
@@ -105,7 +105,9 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
         }
       } else {
         setStatus("error");
-        setMessage(result.error?.message || data?.detail || data?.error || "Failed to get Login URL");
+        setMessage(
+          result.error?.message || data?.detail || data?.error || "Failed to get Login URL",
+        );
       }
     } catch (e: unknown) {
       console.error("[Fyers] Network error:", e);
@@ -288,7 +290,10 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
 
             <div className="space-y-4">
               <div>
-                <label htmlFor="fyers-auth-code" className="block text-xs font-semibold text-foreground-muted mb-2">
+                <label
+                  htmlFor="fyers-auth-code"
+                  className="block text-xs font-semibold text-foreground-muted mb-2"
+                >
                   Authorization Code
                 </label>
                 <input

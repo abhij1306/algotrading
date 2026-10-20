@@ -202,20 +202,13 @@
     /* Enable OpenType features for better typography */
     font-feature-settings:
       "cv02",
-      /* Alternate characters */
-      "cv03",
-      /* Alternate characters */
-      "cv04",
-      /* Alternate characters */
-      "cv11",
-      /* Alternate characters */
-      "tnum",
-      /* Tabular numbers */
-      "case",
-      /* Case-sensitive forms */
-      "liga",
-      /* Standard ligatures */
-      "calt";
+      /* Alternate characters */ "cv03",
+      /* Alternate characters */ "cv04",
+      /* Alternate characters */ "cv11",
+      /* Alternate characters */ "tnum",
+      /* Tabular numbers */ "case",
+      /* Case-sensitive forms */ "liga",
+      /* Standard ligatures */ "calt";
     /* Contextual alternates */
     /* Smooth font rendering */
     -webkit-font-smoothing: antialiased;
@@ -258,12 +251,9 @@
     /* Enable font features for better number display */
     font-feature-settings:
       "tnum",
-      /* Tabular numbers */
-      "zero",
-      /* Slashed zero */
-      "ss01",
-      /* Stylistic set 1 */
-      "liga";
+      /* Tabular numbers */ "zero",
+      /* Slashed zero */ "ss01",
+      /* Stylistic set 1 */ "liga";
     /* Ligatures */
     /* Smooth rendering */
     -webkit-font-smoothing: antialiased;
@@ -272,7 +262,6 @@
 }
 
 @layer components {
-
   /* Layout Containers */
   .layout-container {
     @apply flex h-screen w-full bg-background overflow-hidden;
@@ -369,7 +358,6 @@
 }
 
 @layer utilities {
-
   /* Typography Scale Utilities */
   .text-xxs {
     font-size: var(--text-xxs);
@@ -412,7 +400,9 @@
   }
 
   .font-mono {
-    font-family: var(--font-mono), var(--font-mono-fallback), ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace;
+    font-family:
+      var(--font-mono), var(--font-mono-fallback), ui-monospace, SFMono-Regular, Menlo, Monaco,
+      "Roboto Mono", monospace;
   }
 
   /* Font Weight Utilities */

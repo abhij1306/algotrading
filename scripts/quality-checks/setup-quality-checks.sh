@@ -30,12 +30,11 @@ echo "🔧 Making scripts executable..."
 chmod +x backend/scripts/check_console_log.sh
 chmod +x backend/scripts/check_symbol_format.py
 chmod +x backend/scripts/check_todo_fixme.py
-chmod +x scripts/check-bundle-size.js
 
 # Install frontend dependencies
 echo "📦 Installing frontend dependencies..."
 cd frontend
-npm install
+pnpm install
 cd ..
 
 # Install backend dependencies
@@ -51,7 +50,7 @@ echo ""
 
 echo "Frontend checks:"
 cd frontend
-npm run lint || echo "⚠️  ESLint found issues (expected on first run)"
+pnpm check || echo "⚠️  Vite+ check found issues (expected on first run)"
 cd ..
 
 echo ""

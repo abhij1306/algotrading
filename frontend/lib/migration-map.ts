@@ -52,42 +52,42 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Deep dark background
    * Unified: Semantic background token that adapts to theme
    */
-  'var(--raycast-bg-primary)': 'var(--color-background)',
+  "var(--raycast-bg-primary)": "var(--color-background)",
 
   /**
    * Secondary background - Slightly elevated surfaces
    * Raycast: Lighter than primary for cards and panels
    * Unified: Secondary background for layered content
    */
-  'var(--raycast-bg-secondary)': 'var(--color-background-secondary)',
+  "var(--raycast-bg-secondary)": "var(--color-background-secondary)",
 
   /**
    * Tertiary background - Further elevated surfaces
    * Raycast: Even lighter for nested elements
    * Unified: Tertiary background for nested content
    */
-  'var(--raycast-bg-tertiary)': 'var(--color-background-tertiary)',
+  "var(--raycast-bg-tertiary)": "var(--color-background-tertiary)",
 
   /**
    * Hover background - Interactive element hover state
    * Raycast: Subtle highlight on hover
    * Unified: Maps to tertiary background for consistency
    */
-  'var(--raycast-bg-hover)': 'var(--color-background-tertiary)',
+  "var(--raycast-bg-hover)": "var(--color-background-tertiary)",
 
   /**
    * Surface background - Card and panel surfaces
    * Raycast: Distinct surface color
    * Unified: Dedicated surface token for cards
    */
-  'var(--raycast-surface)': 'var(--color-surface)',
+  "var(--raycast-surface)": "var(--color-surface)",
 
   /**
    * Elevated background - Modals and popovers
    * Raycast: Highest elevation level
    * Unified: Elevated surface for overlays
    */
-  'var(--raycast-elevated)': 'var(--color-elevated)',
+  "var(--raycast-elevated)": "var(--color-elevated)",
 
   // ============================================================================
   // Foreground (Text) Colors
@@ -98,28 +98,28 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Highest contrast text
    * Unified: Primary text color with optimal contrast
    */
-  'var(--raycast-fg-primary)': 'var(--color-foreground)',
+  "var(--raycast-fg-primary)": "var(--color-foreground)",
 
   /**
    * Secondary foreground - Secondary text
    * Raycast: Slightly muted text
    * Unified: Secondary text for less important content
    */
-  'var(--raycast-fg-secondary)': 'var(--color-foreground-secondary)',
+  "var(--raycast-fg-secondary)": "var(--color-foreground-secondary)",
 
   /**
    * Tertiary foreground - Tertiary text
    * Raycast: More muted text
    * Unified: Tertiary text for subtle content
    */
-  'var(--raycast-fg-tertiary)': 'var(--color-foreground-tertiary)',
+  "var(--raycast-fg-tertiary)": "var(--color-foreground-tertiary)",
 
   /**
    * Muted foreground - Placeholder and disabled text
    * Raycast: Most muted text
    * Unified: Muted text for placeholders and disabled states
    */
-  'var(--raycast-fg-muted)': 'var(--color-foreground-muted)',
+  "var(--raycast-fg-muted)": "var(--color-foreground-muted)",
 
   // ============================================================================
   // Border Colors
@@ -130,21 +130,21 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Subtle border for separation
    * Unified: Standard border color
    */
-  'var(--raycast-border)': 'var(--color-border)',
+  "var(--raycast-border)": "var(--color-border)",
 
   /**
    * Subtle border - Very subtle borders
    * Raycast: Barely visible borders
    * Unified: Subtle border for minimal separation
    */
-  'var(--raycast-border-subtle)': 'var(--color-border-subtle)',
+  "var(--raycast-border-subtle)": "var(--color-border-subtle)",
 
   /**
    * Focus border - Focus ring color
    * Raycast: Accent color for focus states
    * Unified: Focus indicator color
    */
-  'var(--raycast-border-focus)': 'var(--color-border-focus)',
+  "var(--raycast-border-focus)": "var(--color-border-focus)",
 
   // ============================================================================
   // Brand Colors
@@ -155,28 +155,28 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Blue accent color
    * Unified: Primary brand color
    */
-  'var(--raycast-blue)': 'var(--color-primary)',
+  "var(--raycast-blue)": "var(--color-primary)",
 
   /**
    * Blue hover - Primary brand hover state
    * Raycast: Darker blue on hover
    * Unified: Primary hover state
    */
-  'var(--raycast-blue-hover)': 'var(--color-primary-hover)',
+  "var(--raycast-blue-hover)": "var(--color-primary-hover)",
 
   /**
    * Blue light - Primary brand light variant
    * Raycast: Light blue background
    * Unified: Primary light background
    */
-  'var(--raycast-blue-light)': 'var(--color-primary-light)',
+  "var(--raycast-blue-light)": "var(--color-primary-light)",
 
   /**
    * Primary foreground - Text on primary background
    * Raycast: White text on blue
    * Unified: Text color for primary buttons
    */
-  'var(--raycast-primary-fg)': 'var(--color-primary-foreground)',
+  "var(--raycast-primary-fg)": "var(--color-primary-foreground)",
 
   // ============================================================================
   // Semantic Financial Colors
@@ -187,70 +187,70 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Green for positive values
    * Unified: Profit color for financial gains
    */
-  'var(--raycast-green)': 'var(--color-profit)',
+  "var(--raycast-green)": "var(--color-profit)",
 
   /**
    * Green light - Profit background
    * Raycast: Light green background
    * Unified: Profit background for badges and highlights
    */
-  'var(--raycast-green-light)': 'var(--color-profit-bg)',
+  "var(--raycast-green-light)": "var(--color-profit-bg)",
 
   /**
    * Green background - Alternative profit background
    * Raycast: Green background variant
    * Unified: Same as profit background
    */
-  'var(--raycast-green-bg)': 'var(--color-profit-bg)',
+  "var(--raycast-green-bg)": "var(--color-profit-bg)",
 
   /**
    * Red - Loss/negative color
    * Raycast: Red for negative values
    * Unified: Loss color for financial losses
    */
-  'var(--raycast-red)': 'var(--color-loss)',
+  "var(--raycast-red)": "var(--color-loss)",
 
   /**
    * Red light - Loss background
    * Raycast: Light red background
    * Unified: Loss background for badges and highlights
    */
-  'var(--raycast-red-light)': 'var(--color-loss-bg)',
+  "var(--raycast-red-light)": "var(--color-loss-bg)",
 
   /**
    * Red background - Alternative loss background
    * Raycast: Red background variant
    * Unified: Same as loss background
    */
-  'var(--raycast-red-bg)': 'var(--color-loss-bg)',
+  "var(--raycast-red-bg)": "var(--color-loss-bg)",
 
   /**
    * Orange - Warning color
    * Raycast: Orange for warnings
    * Unified: Warning color for alerts
    */
-  'var(--raycast-orange)': 'var(--color-warning)',
+  "var(--raycast-orange)": "var(--color-warning)",
 
   /**
    * Orange light - Warning background
    * Raycast: Light orange background
    * Unified: Warning background for badges and alerts
    */
-  'var(--raycast-orange-light)': 'var(--color-warning-bg)',
+  "var(--raycast-orange-light)": "var(--color-warning-bg)",
 
   /**
    * Yellow - Alternative warning color
    * Raycast: Yellow for warnings
    * Unified: Maps to warning color
    */
-  'var(--raycast-yellow)': 'var(--color-warning)',
+  "var(--raycast-yellow)": "var(--color-warning)",
 
   /**
    * Yellow light - Alternative warning background
    * Raycast: Light yellow background
    * Unified: Maps to warning background
    */
-  'var(--raycast-yellow-light)': 'var(--color-warning-bg)',
+  "var(--raycast-yellow-light)": "var(--color-warning-bg)",
 
   // ============================================================================
   // Border Radius
@@ -261,35 +261,35 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Medium border radius
    * Unified: Medium radius (6px)
    */
-  'var(--raycast-radius)': 'var(--radius-md)',
+  "var(--raycast-radius)": "var(--radius-md)",
 
   /**
    * Small radius - Subtle rounding
    * Raycast: Small border radius
    * Unified: Small radius (4px)
    */
-  'var(--raycast-radius-sm)': 'var(--radius-sm)',
+  "var(--raycast-radius-sm)": "var(--radius-sm)",
 
   /**
    * Large radius - Prominent rounding
    * Raycast: Large border radius
    * Unified: Large radius (8px)
    */
-  'var(--raycast-radius-lg)': 'var(--radius-lg)',
+  "var(--raycast-radius-lg)": "var(--radius-lg)",
 
   /**
    * Extra large radius - Very prominent rounding
    * Raycast: Extra large border radius
    * Unified: Extra large radius (12px)
    */
-  'var(--raycast-radius-xl)': 'var(--radius-xl)',
+  "var(--raycast-radius-xl)": "var(--radius-xl)",
 
   /**
    * Full radius - Circular elements
    * Raycast: Fully rounded (pills, circles)
    * Unified: Full radius (9999px)
    */
-  'var(--raycast-radius-full)': 'var(--radius-full)',
+  "var(--raycast-radius-full)": "var(--radius-full)",
 
   // ============================================================================
   // Shadows
@@ -300,28 +300,28 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Small shadow for slight elevation
    * Unified: Small shadow
    */
-  'var(--raycast-shadow-sm)': 'var(--shadow-sm)',
+  "var(--raycast-shadow-sm)": "var(--shadow-sm)",
 
   /**
    * Medium shadow - Standard elevation
    * Raycast: Medium shadow for cards
    * Unified: Medium shadow
    */
-  'var(--raycast-shadow-md)': 'var(--shadow-md)',
+  "var(--raycast-shadow-md)": "var(--shadow-md)",
 
   /**
    * Large shadow - Prominent elevation
    * Raycast: Large shadow for modals
    * Unified: Large shadow
    */
-  'var(--raycast-shadow-lg)': 'var(--shadow-lg)',
+  "var(--raycast-shadow-lg)": "var(--shadow-lg)",
 
   /**
    * Extra large shadow - Maximum elevation
    * Raycast: Extra large shadow for overlays
    * Unified: Extra large shadow
    */
-  'var(--raycast-shadow-xl)': 'var(--shadow-xl)',
+  "var(--raycast-shadow-xl)": "var(--shadow-xl)",
 
   // ============================================================================
   // Typography (if Raycast had typography variables)
@@ -332,14 +332,14 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Raycast: Sans-serif font
    * Unified: Inter font family
    */
-  'var(--raycast-font-sans)': 'var(--font-sans)',
+  "var(--raycast-font-sans)": "var(--font-sans)",
 
   /**
    * Mono font - Code and financial data font
    * Raycast: Monospace font
    * Unified: JetBrains Mono font family
    */
-  'var(--raycast-font-mono)': 'var(--font-mono)',
+  "var(--raycast-font-mono)": "var(--font-mono)",
 
   // ============================================================================
   // Spacing (if Raycast had spacing variables)
@@ -350,15 +350,15 @@ export const raycastToUnifiedMapping: Record<string, string> = {
    * Note: Raycast may have used different spacing values
    * These are approximate mappings to the unified 4px-based scale
    */
-  'var(--raycast-spacing-1)': 'var(--spacing-1)', // 4px
-  'var(--raycast-spacing-2)': 'var(--spacing-2)', // 8px
-  'var(--raycast-spacing-3)': 'var(--spacing-3)', // 12px
-  'var(--raycast-spacing-4)': 'var(--spacing-4)', // 16px
-  'var(--raycast-spacing-5)': 'var(--spacing-5)', // 20px
-  'var(--raycast-spacing-6)': 'var(--spacing-6)', // 24px
-  'var(--raycast-spacing-8)': 'var(--spacing-8)', // 32px
-  'var(--raycast-spacing-10)': 'var(--spacing-10)', // 40px
-  'var(--raycast-spacing-12)': 'var(--spacing-12)', // 48px
+  "var(--raycast-spacing-1)": "var(--spacing-1)", // 4px
+  "var(--raycast-spacing-2)": "var(--spacing-2)", // 8px
+  "var(--raycast-spacing-3)": "var(--spacing-3)", // 12px
+  "var(--raycast-spacing-4)": "var(--spacing-4)", // 16px
+  "var(--raycast-spacing-5)": "var(--spacing-5)", // 20px
+  "var(--raycast-spacing-6)": "var(--spacing-6)", // 24px
+  "var(--raycast-spacing-8)": "var(--spacing-8)", // 32px
+  "var(--raycast-spacing-10)": "var(--spacing-10)", // 40px
+  "var(--raycast-spacing-12)": "var(--spacing-12)", // 48px
 };
 
 // ============================================================================
@@ -390,7 +390,7 @@ export function migrateVariable(raycastVar: string): string {
  * isRaycastVariable('var(--color-background)') // Returns: false
  */
 export function isRaycastVariable(cssVar: string): boolean {
-  return cssVar.includes('--raycast-');
+  return cssVar.includes("--raycast-");
 }
 
 /**
@@ -426,9 +426,9 @@ export function migrateCssString(cssString: string): string {
   const raycastVars = extractRaycastVariables(cssString);
 
   // Replace each Raycast variable with its unified equivalent
-  raycastVars.forEach(raycastVar => {
+  raycastVars.forEach((raycastVar) => {
     const unifiedVar = migrateVariable(raycastVar);
-    result = result.replace(new RegExp(escapeRegExp(raycastVar), 'g'), unifiedVar);
+    result = result.replace(new RegExp(escapeRegExp(raycastVar), "g"), unifiedVar);
   });
 
   return result;
@@ -453,7 +453,7 @@ export function getMigrationStats(cssString: string): {
 } {
   const allVars = cssString.match(/var\(--[a-z-]+\)/g) || [];
   const raycastVars = extractRaycastVariables(cssString);
-  const unifiedVars = allVars.filter(v => !isRaycastVariable(v));
+  const unifiedVars = allVars.filter((v) => !isRaycastVariable(v));
 
   return {
     totalVariables: allVars.length,
@@ -471,7 +471,7 @@ export function getMigrationStats(cssString: string): {
  * @returns Escaped string safe for use in RegExp
  */
 function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ============================================================================
@@ -488,14 +488,17 @@ function escapeRegExp(string: string): string {
  * @internal
  */
 export const unifiedToRaycastMapping: Record<string, string[]> = Object.entries(
-  raycastToUnifiedMapping
-).reduce((acc, [raycast, unified]) => {
-  if (!acc[unified]) {
-    acc[unified] = [];
-  }
-  acc[unified].push(raycast);
-  return acc;
-}, {} as Record<string, string[]>);
+  raycastToUnifiedMapping,
+).reduce(
+  (acc, [raycast, unified]) => {
+    if (!acc[unified]) {
+      acc[unified] = [];
+    }
+    acc[unified].push(raycast);
+    return acc;
+  },
+  {} as Record<string, string[]>,
+);
 
 // ============================================================================
 // Migration Checklist
@@ -546,4 +549,4 @@ export type RaycastVariable = keyof typeof raycastToUnifiedMapping;
  * Type for unified design token CSS variable strings.
  * Used for type safety when working with unified tokens.
  */
-export type UnifiedVariable = typeof raycastToUnifiedMapping[RaycastVariable];
+export type UnifiedVariable = (typeof raycastToUnifiedMapping)[RaycastVariable];

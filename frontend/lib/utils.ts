@@ -15,7 +15,7 @@ export function cn(...inputs: ClassValue[]) {
 export function formatCurrency(
   value: number | null | undefined,
   currency: string = "INR",
-  locale: string = "en-IN"
+  locale: string = "en-IN",
 ): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "₹0.00";
   return new Intl.NumberFormat(locale, {

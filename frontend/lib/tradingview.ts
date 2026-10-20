@@ -1,5 +1,7 @@
 export function toTradingViewSymbol(symbol: string): string {
-  const raw = String(symbol || "").trim().toUpperCase();
+  const raw = String(symbol || "")
+    .trim()
+    .toUpperCase();
   if (!raw) return "NSE:NIFTY";
 
   if (raw === "NIFTY50") return "NSE:NIFTY";

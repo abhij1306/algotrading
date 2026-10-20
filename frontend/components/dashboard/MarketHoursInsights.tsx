@@ -1,7 +1,7 @@
-import { memo } from 'react';
-import { TrendingUp, TrendingDown, Activity } from 'lucide-react';
-import { formatPercentage } from '@/lib/utils';
-import { MarketInsights, StockMover, SectorData } from './InsightsPanel';
+import { memo } from "react";
+import { TrendingUp, TrendingDown, Activity } from "lucide-react";
+import { formatPercentage } from "@/lib/utils";
+import { MarketInsights, StockMover, SectorData } from "./InsightsPanel";
 
 interface MarketHoursInsightsProps {
   data: MarketInsights;
@@ -17,7 +17,9 @@ const MoverRow = memo(function MoverRow({ stock }: { stock: StockMover }) {
       </div>
       <div className="text-right">
         <div className="text-sm tabular-nums">₹{stock.price.toFixed(2)}</div>
-        <div className={`text-xs tabular-nums flex items-center justify-end gap-1 ${isUp ? 'text-profit' : 'text-loss'}`}>
+        <div
+          className={`text-xs tabular-nums flex items-center justify-end gap-1 ${isUp ? "text-profit" : "text-loss"}`}
+        >
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
           {formatPercentage(stock.changePercent)}
         </div>
@@ -37,7 +39,7 @@ const SectorRow = memo(function SectorRow({ sector }: { sector: SectorData }) {
       </div>
       <div className="text-right">
         <div className="text-sm tabular-nums">{sector.value.toFixed(2)}</div>
-        <div className={`text-xs tabular-nums font-medium ${isUp ? 'text-profit' : 'text-loss'}`}>
+        <div className={`text-xs tabular-nums font-medium ${isUp ? "text-profit" : "text-loss"}`}>
           {formatPercentage(sector.changePercent)}
         </div>
       </div>
@@ -45,7 +47,9 @@ const SectorRow = memo(function SectorRow({ sector }: { sector: SectorData }) {
   );
 });
 
-export const MarketHoursInsights = memo(function MarketHoursInsights({ data }: MarketHoursInsightsProps) {
+export const MarketHoursInsights = memo(function MarketHoursInsights({
+  data,
+}: MarketHoursInsightsProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
       {/* Top Gainers */}
@@ -57,9 +61,7 @@ export const MarketHoursInsights = memo(function MarketHoursInsights({ data }: M
         </div>
         <div className="p-2 space-y-1">
           {data.topGainers.length > 0 ? (
-            data.topGainers.map(stock => (
-              <MoverRow key={stock.symbol} stock={stock} />
-            ))
+            data.topGainers.map((stock) => <MoverRow key={stock.symbol} stock={stock} />)
           ) : (
             <div className="p-4 text-center text-xs text-foreground-muted">No data</div>
           )}
@@ -75,9 +77,7 @@ export const MarketHoursInsights = memo(function MarketHoursInsights({ data }: M
         </div>
         <div className="p-2 space-y-1">
           {data.topLosers.length > 0 ? (
-            data.topLosers.map(stock => (
-              <MoverRow key={stock.symbol} stock={stock} />
-            ))
+            data.topLosers.map((stock) => <MoverRow key={stock.symbol} stock={stock} />)
           ) : (
             <div className="p-4 text-center text-xs text-foreground-muted">No data</div>
           )}
@@ -93,9 +93,7 @@ export const MarketHoursInsights = memo(function MarketHoursInsights({ data }: M
         </div>
         <div className="p-2 space-y-1">
           {data.sectorPerformance.length > 0 ? (
-            data.sectorPerformance.map(sector => (
-              <SectorRow key={sector.name} sector={sector} />
-            ))
+            data.sectorPerformance.map((sector) => <SectorRow key={sector.name} sector={sector} />)
           ) : (
             <div className="p-4 text-center text-xs text-foreground-muted">No data</div>
           )}

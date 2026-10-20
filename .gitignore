@@ -84,7 +84,6 @@ __pycache__/
 
 # Node
 node_modules/
-.next/
 out/
 dist/
 
@@ -172,10 +171,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Next.js
-.next/
-out/
-.vercel
 
 # Production build
 frontend/build/

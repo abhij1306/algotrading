@@ -19,7 +19,7 @@ const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableE
         {children}
       </table>
     </div>
-  )
+  ),
 );
 Table.displayName = "Table";
 
@@ -91,7 +91,7 @@ const TableHead = React.forwardRef<
       "h-9 px-4 text-left align-middle font-medium text-foreground-muted text-xs uppercase tracking-wider",
       numeric && "text-right font-mono",
       sortable && "cursor-pointer select-none hover:text-foreground transition-colors",
-      className
+      className,
     )}
     {...props}
   >
@@ -124,7 +124,7 @@ const TableCell = React.forwardRef<
         "px-4 py-2 align-middle text-sm",
         numeric && "text-right font-mono tabular-nums",
         variantStyles[variant],
-        className
+        className,
       )}
       {...props}
     />

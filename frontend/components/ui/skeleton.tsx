@@ -29,7 +29,7 @@ const Skeleton = React.forwardRef<HTMLDivElement, SkeletonProps>(
           "animate-shimmer bg-gradient-to-r from-transparent via-[rgba(255,255,255,0.05)] to-transparent bg-[length:200%_100%]",
           "bg-elevated",
           variants[variant],
-          className
+          className,
         )}
         style={{
           width: width,
@@ -39,7 +39,7 @@ const Skeleton = React.forwardRef<HTMLDivElement, SkeletonProps>(
         {...props}
       />
     );
-  }
+  },
 );
 Skeleton.displayName = "Skeleton";
 
@@ -55,7 +55,7 @@ const SkeletonCard = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLD
       <Skeleton className="h-8 w-1/2" />
       <Skeleton className="h-3 w-2/3" />
     </div>
-  )
+  ),
 );
 SkeletonCard.displayName = "SkeletonCard";
 
@@ -105,7 +105,7 @@ const SkeletonMetric = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTM
         <Skeleton className="h-8 w-8 rounded-lg" />
       </div>
     </div>
-  )
+  ),
 );
 SkeletonMetric.displayName = "SkeletonMetric";
 
@@ -116,7 +116,7 @@ const SkeletonGlassCard = React.forwardRef<HTMLDivElement, React.HTMLAttributes<
       ref={ref}
       className={cn(
         "rounded-xl border border-border-subtle bg-surface/80 backdrop-blur-xl p-4 space-y-3",
-        className
+        className,
       )}
       {...props}
     >
@@ -124,7 +124,7 @@ const SkeletonGlassCard = React.forwardRef<HTMLDivElement, React.HTMLAttributes<
       <Skeleton className="h-8 w-1/2" />
       <Skeleton className="h-3 w-2/3" />
     </div>
-  )
+  ),
 );
 SkeletonGlassCard.displayName = "SkeletonGlassCard";
 

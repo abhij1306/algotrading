@@ -14,7 +14,7 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>((props, ref) => 
   const selectClass = cn(
     "h-9 w-full rounded-md border border-border bg-background-tertiary px-3 text-sm font-medium text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50",
     error && "border-loss focus-visible:ring-loss/20",
-    className
+    className,
   );
 
   if (!label && !error) {
