@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import threading
 import time
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..utils.clock import SYSTEM_CLOCK, Clock
 from ..utils.helpers import safe_float
@@ -14,14 +13,20 @@ from ..utils.logger import log_exception_throttled
 from ..utils.market_hours import MarketHoursPolicy, MarketPhase, dev_mode_enabled
 from ..utils.runtime_metrics import runtime_metrics
 from ..utils.ws_manager import manager
+from .fyers_websocket import fyers_socket_factory, fyers_token
+from .live.data_socket import SocketFactory, TokenSource
+from .live.provider_session import (
+    ProviderSession,
+    RetryPolicy,
+    SessionState,
+    Spawn,
+    spawn_daemon_thread,
+)
 from .live.ticks import TickPayload, normalize_tick
 from .subscription_registry import API_OWNER, SubscriptionRegistry
 from .symbol_master import symbol_master
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from .fyers_websocket import FyersWebSocketService
 
 # _market_status shown by get_status() for each market phase.
 MARKET_STATUS_BY_PHASE: dict[MarketPhase, str] = {
@@ -33,12 +38,6 @@ MARKET_STATUS_BY_PHASE: dict[MarketPhase, str] = {
     MarketPhase.POST_MARKET: "CLOSED_OFF_HOURS",
 }
 
-# Provider connect runner tuning.
-WS_MAX_RETRIES = 10
-WS_CONNECT_TIMEOUT_S = 15.0
-WS_CONNECT_POLL_S = 0.1
-WS_BACKOFF_BASE_S = 5.0
-WS_BACKOFF_MAX_S = 60.0
 # Pause after an unexpected loop error so a persistent failure cannot busy-spin.
 LOOP_ERROR_PAUSE_S = 1.0
 # Fyers tick fields carrying the exchange time, in epoch seconds, most precise first.
@@ -63,11 +62,19 @@ def tick_time(tick: TickPayload) -> float:
 class LiveMarketService:
     """
     Orchestrates live market data flow.
-    Enforces market hours (see app.utils.market_hours).
+    Enforces market hours (see app.utils.market_hours); the provider socket itself is
+    owned by a ProviderSession (see app.services.live.provider_session).
     """
 
-    def __init__(self, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.ws_service: FyersWebSocketService | None = None
+    def __init__(
+        self,
+        clock: Clock = SYSTEM_CLOCK,
+        *,
+        socket_factory: SocketFactory = fyers_socket_factory,
+        token_source: TokenSource = fyers_token,
+        retry: RetryPolicy | None = None,
+        spawn: Spawn = spawn_daemon_thread,
+    ) -> None:
         self._market_status = "UNKNOWN"
         self.tick_buffer = {}
         self.latest_values = {}
@@ -77,142 +84,42 @@ class LiveMarketService:
         # Read once at construction; tests flip it directly.
         self.dev_mode = dev_mode_enabled()
         self.market_hours = MarketHoursPolicy(clock=clock)
-        # Connection state tracking
-        self.ws_connected = False
-        self._is_connecting = False
-        self._ws_thread = None
+        self.session = ProviderSession(
+            socket_factory=socket_factory,
+            token_source=token_source,
+            desired_symbols=self._desired_provider_symbols,
+            on_message=self.handle_tick_incoming,
+            retry=retry,
+            spawn=spawn,
+        )
         # Set by an explicit POST /disconnect; cleared only by an explicit connect.
         self._explicitly_disconnected = False
         self._last_connect_block_reason: str | None = None
         self._last_subscribe_market_closed_log_ts = 0.0
-        # Set by disconnect() to wake a runner that is backing off; cleared by explicit connect.
-        self._disconnect_event = threading.Event()
-        # True once the current connect attempt has replayed subscriptions (avoids double replay).
-        self._replayed_for_attempt = False
-        # Stop signal of the current connect runner thread; each runner gets a fresh event.
-        self._runner_stop = threading.Event()
 
     @property
     def registry(self) -> SubscriptionRegistry:
         """Who wants which symbols (websocket clients and the HTTP API owner)."""
         return manager.registry
 
-    def on_ws_connected(self) -> None:
-        """Callback when WebSocket connection is established"""
-        self._replayed_for_attempt = True
-        self.ws_connected = True
-        self._is_connecting = False
-        runtime_metrics.increment("live_market.provider.connected")
-        logger.info("[OK] WebSocket connection established")
+    @property
+    def ws_service(self) -> ProviderSession | None:
+        """The session while it holds a socket, else None.
 
-        # Replay everything any owner wants: survives reconnects, and covers symbols
-        # subscribed while the provider was not connected yet.
-        wanted = self.registry.all_symbols()
-        if wanted:
-            symbols = sorted(wanted)
-            logger.info(f"Replaying {len(symbols)} subscriptions on connect")
-            # We use create_task because this is called from the thread runner via on_ws_connected
-            if self.loop and not self.loop.is_closed():
-                asyncio.run_coroutine_threadsafe(self.subscribe(symbols), self.loop)
-
-    def on_provider_open(self) -> None:
-        """SDK on-open hook: runs on the first connect and on every SDK auto-reconnect.
-
-        The SDK invokes its on_connect callback right after (re)starting the socket, which can
-        be before the handshake finished, so wait briefly for the connection before replaying.
+        Kept for routers/auth.py, which still calls `ws_service.disconnect()` until the
+        TokenStore PR moves it to disconnect().
         """
-        if self._explicitly_disconnected:
-            return
-        if not self._wait_for_provider_connection(WS_CONNECT_TIMEOUT_S):
-            logger.debug("[WS] Provider open callback fired but socket is not connected")
-            return
-        self.on_ws_connected()
+        return self.session if self.session.has_socket else None
 
-    def _provider_is_connected(self) -> bool:
-        ws = self.ws_service.ws if self.ws_service else None
-        if ws is None or not hasattr(ws, "is_connected"):
-            return False
-        try:
-            return bool(ws.is_connected())
-        except Exception:
-            return False
-
-    def _wait_for_provider_connection(self, timeout: float) -> bool:
-        """Poll until the provider socket reports connected; False on timeout or disconnect."""
-        deadline = time.monotonic() + timeout
-        while True:
-            if self._explicitly_disconnected or self._runner_stop.is_set():
-                return False
-            if self._provider_is_connected():
-                return True
-            if time.monotonic() >= deadline:
-                return False
-            self._disconnect_event.wait(WS_CONNECT_POLL_S)
-
-    def _attempt_provider_connect(self) -> None:
-        """One provider connect attempt. Raises when the provider did not connect in time.
-
-        Returns normally once connected, or when an explicit disconnect arrived meanwhile.
-        """
-        runtime_metrics.increment("live_market.provider.connect_attempts")
-        self._replayed_for_attempt = False
-        self.ws_service.connect()
-        if self._explicitly_disconnected or self._runner_stop.is_set():
-            # disconnect() or off-hours cleanup raced with connect(): no live socket left behind.
-            self.ws_service.disconnect()
-            return
-        if not self._wait_for_provider_connection(WS_CONNECT_TIMEOUT_S):
-            if self._explicitly_disconnected or self._runner_stop.is_set():
-                return
-            raise ConnectionError(f"provider not connected within {WS_CONNECT_TIMEOUT_S}s")
-        if not self._replayed_for_attempt:
-            self.on_ws_connected()
-
-    def _stop_requested(self, stop: threading.Event) -> bool:
-        return self._explicitly_disconnected or stop.is_set()
-
-    def _run_provider_connect(self, stop: threading.Event | None = None) -> None:
-        """Blocking connect with bounded wait, retry count and backoff (runs in a thread).
-
-        Stops early when `stop` (this runner's event) is set by an explicit disconnect
-        or by the monitor's off-hours cleanup.
-        """
-        stop = stop or self._runner_stop
-        retry_count = 0
-        last_error: Exception = ConnectionError("provider connection failed")
-        while retry_count < WS_MAX_RETRIES and not self._stop_requested(stop):
-            try:
-                logger.debug(f"[WS] Connection attempt {retry_count + 1}/{WS_MAX_RETRIES}")
-                self._attempt_provider_connect()
-                return
-            except Exception as e:
-                last_error = e
-                retry_count += 1
-                log_exception_throttled(
-                    logger,
-                    "live_market.connect_retry",
-                    "[WS] Connection attempt %s failed: %s",
-                    retry_count,
-                    e,
-                )
-                if retry_count >= WS_MAX_RETRIES:
-                    break
-                # Exponential backoff: 5, 10, 20, 40, 60...; wakes early on explicit disconnect.
-                delay = min(WS_BACKOFF_BASE_S * (2 ** (retry_count - 1)), WS_BACKOFF_MAX_S)
-                logger.debug(f"[WS] Reconnection attempt in {delay} seconds...")
-                stop.wait(delay)
-        if not self._stop_requested(stop):
-            self.on_ws_failure(last_error)
+    def _desired_provider_symbols(self) -> list[str]:
+        """Every symbol any owner holds, in provider format: the session's replay set."""
+        fyers_symbols, _invalid = self._to_fyers_symbols(self.registry.all_symbols())
+        return fyers_symbols
 
     def disconnect(self) -> None:
         """Explicit disconnect: close the provider socket; stay down until an explicit connect."""
         self._explicitly_disconnected = True
-        self._disconnect_event.set()
-        self._runner_stop.set()
-        if self.ws_service:
-            self.ws_service.disconnect()
-        self.ws_connected = False
-        self._is_connecting = False
+        self.session.close()
 
     async def shutdown(self) -> None:
         """App shutdown: stop the monitor and flush loops and close the provider socket.
@@ -220,7 +127,6 @@ class LiveMarketService:
         Unlike disconnect() this does not mark an explicit disconnect, so a later
         startup in the same process (tests) can connect again.
         """
-        self._runner_stop.set()
         tasks = [task for task in (self.monitor_task, self.broadcast_task) if task is not None]
         self.monitor_task = None
         self.broadcast_task = None
@@ -230,20 +136,10 @@ class LiveMarketService:
         for task in live_tasks:
             task.cancel()
         try:
-            if self.ws_service:
-                self.ws_service.disconnect()
+            self.session.stop()
         finally:
-            self.ws_connected = False
-            self._is_connecting = False
             self.loop = None
             await asyncio.gather(*live_tasks, return_exceptions=True)
-
-    def on_ws_failure(self, error: Exception) -> None:
-        """Callback when WebSocket connection fails"""
-        self.ws_connected = False
-        self._is_connecting = False
-        runtime_metrics.increment("live_market.provider.failed")
-        logger.error(f"[ERROR] WebSocket connection failed: {error}")
 
     def is_market_open(self) -> bool:
         """Whether the market is open now (DEV_MODE counts as open); updates _market_status."""
@@ -298,32 +194,23 @@ class LiveMarketService:
 
     async def _check_connection_health(self) -> None:
         """One monitor check: reconnect during market hours, disconnect off-hours."""
+        state = self.session.state
         if not self.is_market_open():
-            # Ensure we are disconnected off-hours
-            if self.ws_connected or self._is_connecting:
+            # Ensure we are disconnected off-hours, including a runner that is retrying.
+            if state in (SessionState.CONNECTING, SessionState.CONNECTED, SessionState.DROPPED):
                 logger.info("[WS] Market closed. Cleaning up connection.")
-                # Stop a runner that is retrying so it cannot reconnect off-hours.
-                self._runner_stop.set()
-                if self.ws_service:
-                    self.ws_service.disconnect()
-                self.ws_connected = False
-                self._is_connecting = False
+                self.session.stop()
             return
 
-        if self._provider_is_connected():
-            # The socket may be connected while our flag is still false.
-            self.ws_connected = True
+        if self.session.is_connected() or state is SessionState.CONNECTING:
             return
 
-        if self.ws_connected:
+        if state in (SessionState.CONNECTED, SessionState.DROPPED):
             logger.info("[WS] Connection dropped during market hours. Triggering reconnect...")
-            runtime_metrics.increment("live_market.provider.reconnect_triggered")
-            self.ws_connected = False
-            await self.connect_async()
-        elif not self._is_connecting:
+        else:
             logger.debug("[WS] Market is open but not connected. Triggering connection...")
-            runtime_metrics.increment("live_market.provider.reconnect_triggered")
-            await self.connect_async()
+        runtime_metrics.increment("live_market.provider.reconnect_triggered")
+        await self.connect_async()
 
     async def _monitor_loop(self) -> None:
         """
@@ -383,7 +270,7 @@ class LiveMarketService:
         needs_validation = (
             prevalidated_token is None
             and (explicit or not self._explicitly_disconnected)
-            and not (self._is_connecting or self.ws_connected)
+            and not self.session.busy
         )
         if needs_validation:
             prevalidated_token = await asyncio.to_thread(self._validate_fyers_token)
@@ -402,14 +289,13 @@ class LiveMarketService:
         """
         if explicit:
             self._explicitly_disconnected = False
-            self._disconnect_event.clear()
         elif self._explicitly_disconnected:
             return "disconnected"
 
         self._capture_loop(loop)
         self._ensure_background_tasks()
 
-        if self._is_connecting or self.ws_connected:
+        if self.session.busy:
             self._last_connect_block_reason = None
             return "already_connected"
 
@@ -433,11 +319,13 @@ class LiveMarketService:
         self._last_connect_block_reason = None
         logger.info(f"Market is OPEN ({self._market_status}). Connecting to Fyers...")
         try:
-            return self._start_provider_connection()
+            if not self.session.start():
+                return "already_connected"
         except Exception as e:
-            self._is_connecting = False
             logger.exception(f"Failed to connect to Fyers: {e}")
             return "error"
+        logger.info("[START] Provider connection started in background thread")
+        return "started"
 
     def _capture_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         """Remember the event loop that ticks and background tasks are scheduled on."""
@@ -459,58 +347,18 @@ class LiveMarketService:
         if self.broadcast_task is None or self.broadcast_task.done():
             self.broadcast_task = self.loop.create_task(self._flush_loop())
 
-    def _start_provider_connection(self) -> str:
-        """Attach to the provider socket, connecting it on a background thread if needed.
-
-        Returns "started" when a connect thread was launched, "already_connected" when the
-        provider socket was already connected.
-        """
-        self._is_connecting = True
-        # A new connection supersedes any stop request aimed at an earlier runner.
-        self._runner_stop = threading.Event()
-        from .fyers_websocket import get_websocket_service
-
-        self.ws_service = get_websocket_service()
-
-        # Register handlers
-        self.ws_service.on_tick_handler = self.handle_tick_incoming
-        # Fires on first connect and every SDK auto-reconnect (replays subscriptions).
-        self.ws_service.on_open_handler = self.on_provider_open
-
-        ws = self.ws_service.ws
-        if ws and hasattr(ws, "is_connected") and ws.is_connected():
-            logger.info("[OK] WebSocket already connected")
-            self.ws_connected = True
-            self._is_connecting = False
-            return "already_connected"
-
-        # Run connection in a separate thread to avoid blocking startup
-        self._ws_thread = threading.Thread(
-            target=self._run_provider_connect, args=(self._runner_stop,), daemon=True
-        )
-        self._ws_thread.start()
-        logger.info("[START] WebSocket connection started in background thread")
-        return "started"
-
     async def subscribe(self, symbols: list[str]) -> None:
         """Subscribe to symbols non-blocking"""
         symbols = list({symbol_master.to_db(s) for s in symbols if s})
-        if not self.ws_service:
-            if self.is_market_open():
-                await self.connect_async()
+        if not self.session.is_connected():
+            # The registry still holds the symbols; the session replays them on connect.
+            if self.session.state is SessionState.IDLE:
+                await self._connect_for_subscribe()
             else:
-                # The registry still holds the symbols; on_ws_connected replays them.
-                now = time.time()
-                if now - self._last_subscribe_market_closed_log_ts > 60:
-                    logger.info("Live subscribe deferred: market is closed")
-                    self._last_subscribe_market_closed_log_ts = now
-                return
-
-        if not self._provider_socket_connected():
-            # The registry still holds the symbols; on_ws_connected replays them.
-            logger.warning(
-                f"Fyers WebSocket not connected. {len(symbols)} symbols queued for subscription."
-            )
+                logger.warning(
+                    f"Fyers WebSocket not connected. {len(symbols)} symbols queued "
+                    "for subscription."
+                )
             return
 
         try:
@@ -525,7 +373,7 @@ class LiveMarketService:
 
             # CRITICAL FIX: Run blocking SDK call in executor
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.ws_service.subscribe, fyers_symbols)
+            await loop.run_in_executor(None, self.session.subscribe, fyers_symbols)
             logger.info(f"Subscribed to {len(fyers_symbols)} symbols")
         except Exception as e:
             logger.exception(f"Fyers subscription failed: {e}")
@@ -536,8 +384,15 @@ class LiveMarketService:
         if released:
             await self.unsubscribe(released)
 
-    def _provider_socket_connected(self) -> bool:
-        return bool(self.ws_service and self.ws_service.ws and self.ws_service.ws.is_connected())
+    async def _connect_for_subscribe(self) -> None:
+        """A subscribe while the session is idle: connect when the market is open."""
+        if self.is_market_open():
+            await self.connect_async()
+            return
+        now = time.time()
+        if now - self._last_subscribe_market_closed_log_ts > 60:
+            logger.info("Live subscribe deferred: market is closed")
+            self._last_subscribe_market_closed_log_ts = now
 
     @staticmethod
     def _to_fyers_symbols(symbols: list[str] | set[str]) -> tuple[list[str], list[str]]:
@@ -569,7 +424,7 @@ class LiveMarketService:
         # A release can arrive after another owner re-subscribed; keep held symbols.
         symbols_set = {s for s in symbols_set if not self.registry.is_held(s)}
 
-        if not self._provider_socket_connected():
+        if not self.session.is_connected():
             return
         try:
             fyers_symbols: list[str] = []
@@ -581,7 +436,7 @@ class LiveMarketService:
             if not fyers_symbols:
                 return
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
+            await loop.run_in_executor(None, self.session.unsubscribe, fyers_symbols)
         except Exception as e:
             logger.exception(f"Fyers unsubscription failed: {e}")
             return
@@ -592,17 +447,13 @@ class LiveMarketService:
             await self.subscribe(regained)
 
     async def get_status(self) -> dict[str, Any]:
+        connected = self.session.is_connected()
         return {
             "market_status": self._market_status,
-            "fyers_connected": (
-                self.ws_service is not None
-                and self.ws_service.ws is not None
-                and self.ws_service.ws.is_connected()
-            ),
-            # Symbols waiting for the provider to connect (replayed by on_ws_connected).
-            "pending_subscriptions": (
-                0 if self._provider_socket_connected() else len(self.registry.all_symbols())
-            ),
+            "fyers_connected": connected,
+            "provider_state": self.session.state.value,
+            # Symbols waiting for the provider to connect (the session replays them).
+            "pending_subscriptions": 0 if connected else len(self.registry.all_symbols()),
             "metrics": runtime_metrics.snapshot(prefix="live_market.", strip_prefix=True),
             "websocket": await manager.get_health_snapshot(),
         }

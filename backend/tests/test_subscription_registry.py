@@ -13,6 +13,7 @@ from app.services.subscription_registry import API_OWNER, SubscriptionRegistry
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
+from fakes.data_socket import connected_live, make_live
 from fakes.market import FreezeMarket
 
 
@@ -111,26 +112,6 @@ def test_concurrent_add_and_remove_keep_refcounts_consistent() -> None:
 # --- Slow client at the router/service level --------------------------------------
 
 
-class FakeSocket:
-    def __init__(self) -> None:
-        self.subscribed: list[str] = []
-        self.unsubscribed: list[str] = []
-
-    def is_connected(self) -> bool:
-        return True
-
-
-class FakeProvider:
-    def __init__(self) -> None:
-        self.ws = FakeSocket()
-
-    def subscribe(self, symbols: list[str]) -> None:
-        self.ws.subscribed.extend(symbols)
-
-    def unsubscribe(self, symbols: list[str]) -> None:
-        self.ws.unsubscribed.extend(symbols)
-
-
 class FakeClientWebSocket:
     """Browser client; send_json blocks after the handshake when `stall` is set."""
 
@@ -165,10 +146,9 @@ def test_slow_client_drop_releases_its_symbols_exactly_when_no_other_owner_holds
 ) -> None:
     async def scenario() -> tuple[FakeClientWebSocket, list[str], list[str], list[str]]:
         mgr = ConnectionManager()
-        live = lms.LiveMarketService()
-        live.ws_service = FakeProvider()
-        mgr.on_symbols_released = live.unsubscribe
         monkeypatch.setattr(lms, "manager", mgr)
+        live, factory = connected_live()
+        mgr.on_symbols_released = live.unsubscribe
         monkeypatch.setattr(ws_router, "manager", mgr)
 
         slow = FakeClientWebSocket(stall=True)
@@ -178,17 +158,17 @@ def test_slow_client_drop_releases_its_symbols_exactly_when_no_other_owner_holds
         await live.subscribe_api(["RELIANCE"])
         await ws_router._stream_subscribe(slow, ["NSE:SBIN-EQ", "TCS", "RELIANCE", "INFY"], live)
         await ws_router._stream_subscribe(healthy, ["SBIN"], live)
-        subscribed = list(live.ws_service.ws.subscribed)
+        subscribed = list(factory.last.subscribed)
 
         for _ in range(30):
             await mgr.broadcast({"type": "ticker_batch", "data": [{"symbol": "TCS", "ltp": 1}]})
             await asyncio.sleep(0)
         await asyncio.sleep(0.05)
-        released_on_drop = list(live.ws_service.ws.unsubscribed)
+        released_on_drop = list(factory.last.unsubscribed)
 
         # SBIN is released only once its last owner (the healthy client) lets go.
         await ws_router._stream_unsubscribe(healthy, ["SBIN"], live)
-        return slow, subscribed, released_on_drop, live.ws_service.ws.unsubscribed
+        return slow, subscribed, released_on_drop, factory.last.unsubscribed
 
     slow, subscribed, released_on_drop, unsubscribed = asyncio.run(scenario())
     assert sorted(subscribed) == sorted(_fyers(["RELIANCE", "INFY", "SBIN", "TCS"]))
@@ -206,7 +186,7 @@ def test_symbols_subscribed_before_the_provider_connects_are_replayed_on_connect
         mgr = ConnectionManager()
         monkeypatch.setattr(lms, "manager", mgr)
         monkeypatch.setattr(ws_router, "manager", mgr)
-        live = lms.LiveMarketService()
+        live, factory = make_live()
         live.loop = asyncio.get_running_loop()
         freeze_market(False, live)
 
@@ -216,10 +196,8 @@ def test_symbols_subscribed_before_the_provider_connects_are_replayed_on_connect
         await ws_router._stream_unsubscribe(client, ["TCS"], live)
         await live.subscribe_api(["INFY"])
 
-        live.ws_service = FakeProvider()  # provider comes up
-        live.on_ws_connected()
-        await asyncio.sleep(0.05)
-        return live.ws_service.ws.subscribed
+        assert live.session.start() is True  # provider comes up
+        return factory.last.subscribed
 
     assert sorted(asyncio.run(scenario())) == sorted(_fyers(["INFY", "SBIN"]))
 
@@ -229,18 +207,19 @@ def test_symbol_re_subscribed_while_its_release_is_in_flight_is_subscribed_again
 ) -> None:
     mgr = ConnectionManager()
     monkeypatch.setattr(lms, "manager", mgr)
-    live = lms.LiveMarketService()
+    live, factory = connected_live()
+    socket = factory.last
+    real_unsubscribe = socket.unsubscribe
 
-    class RacingProvider(FakeProvider):
-        def unsubscribe(self, symbols: list[str]) -> None:
-            super().unsubscribe(symbols)
-            mgr.registry.add("ws-2", ["SBIN"])  # another client re-subscribes meanwhile
+    def racing_unsubscribe(symbols: list[str], data_type: str = "SymbolUpdate") -> None:
+        real_unsubscribe(symbols, data_type)
+        mgr.registry.add("ws-2", ["SBIN"])  # another client re-subscribes meanwhile
 
-    live.ws_service = RacingProvider()
+    socket.unsubscribe = racing_unsubscribe  # type: ignore[method-assign]
     asyncio.run(live.unsubscribe(["SBIN"]))
 
-    assert live.ws_service.ws.unsubscribed == _fyers(["SBIN"])
-    assert live.ws_service.ws.subscribed == _fyers(["SBIN"])
+    assert socket.unsubscribed == _fyers(["SBIN"])
+    assert socket.subscribed == _fyers(["SBIN"])
 
 
 def test_symbol_released_while_its_subscribe_is_in_flight_is_unsubscribed_again(
@@ -248,19 +227,20 @@ def test_symbol_released_while_its_subscribe_is_in_flight_is_unsubscribed_again(
 ) -> None:
     mgr = ConnectionManager()
     monkeypatch.setattr(lms, "manager", mgr)
-    live = lms.LiveMarketService()
+    live, factory = connected_live()
+    socket = factory.last
+    real_subscribe = socket.subscribe
 
-    class RacingProvider(FakeProvider):
-        def subscribe(self, symbols: list[str]) -> None:
-            super().subscribe(symbols)
-            mgr.registry.drop_owner("ws-1")  # the only owner leaves meanwhile
+    def racing_subscribe(symbols: list[str], data_type: str = "SymbolUpdate") -> None:
+        real_subscribe(symbols, data_type)
+        mgr.registry.drop_owner("ws-1")  # the only owner leaves meanwhile
 
-    live.ws_service = RacingProvider()
+    socket.subscribe = racing_subscribe  # type: ignore[method-assign]
     mgr.registry.add("ws-1", ["SBIN"])
     asyncio.run(live.subscribe(["SBIN"]))
 
-    assert live.ws_service.ws.subscribed == _fyers(["SBIN"])
-    assert live.ws_service.ws.unsubscribed == _fyers(["SBIN"])
+    assert socket.subscribed == _fyers(["SBIN"])
+    assert socket.unsubscribed == _fyers(["SBIN"])
 
 
 def test_client_dropped_by_its_own_sender_still_completes_the_release() -> None:
