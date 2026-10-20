@@ -5,7 +5,7 @@ Track symbol lifecycle changes (mergers, name changes, de-listings, etc.)
 """
 
 from datetime import UTC, date, datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Column, Date, DateTime, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
@@ -18,7 +18,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class SymbolChangeType(str, Enum):
+class SymbolChangeType(StrEnum):
     """Types of symbol changes"""
 
     MERGER = "merger"  # Company merged with another

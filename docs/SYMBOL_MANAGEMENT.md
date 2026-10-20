@@ -126,9 +126,9 @@ These helpers are still part of provider mapping and must not bypass canonical n
 Manual symbol manipulation is forbidden:
 
 ```python
-symbol.replace('NSE:', '').replace('-EQ', '')
+symbol.replace("NSE:", "").replace("-EQ", "")
 f"NSE:{symbol}-EQ"
-symbol.split(':')[1]
+symbol.split(":")[1]
 ```
 
 Also forbidden:

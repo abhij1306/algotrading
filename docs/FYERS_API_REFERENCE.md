@@ -549,14 +549,17 @@ Download symbol master files:
 ```python
 from fyers_apiv3.FyersWebsocket import data_ws
 
+
 def onmessage(message):
     print("Response:", message)
 
+
 def onopen():
     data_type = "SymbolUpdate"
-    symbols = ['NSE:SBIN-EQ', 'NSE:NIFTY50-INDEX']
+    symbols = ["NSE:SBIN-EQ", "NSE:NIFTY50-INDEX"]
     fyers.subscribe(symbols=symbols, data_type=data_type)
     fyers.keep_running()
+
 
 access_token = "app_id:access_token"
 
@@ -568,7 +571,7 @@ fyers = data_ws.FyersDataSocket(
     reconnect=True,
     on_connect=onopen,
     on_message=onmessage,
-    reconnect_retry=10
+    reconnect_retry=10,
 )
 
 fyers.connect()
@@ -586,19 +589,18 @@ fyers.connect()
 ```python
 from fyers_apiv3.FyersWebsocket import order_ws
 
+
 def onOrder(message):
     print("Order:", message)
+
 
 def onopen():
     data_type = "OnOrders"  # or "OnTrades", "OnPositions", "OnGeneral"
     fyers.subscribe(data_type=data_type)
     fyers.keep_running()
 
-fyers = order_ws.FyersOrderSocket(
-    access_token=access_token,
-    on_connect=onopen,
-    on_orders=onOrder
-)
+
+fyers = order_ws.FyersOrderSocket(access_token=access_token, on_connect=onopen, on_orders=onOrder)
 
 fyers.connect()
 ```
@@ -685,12 +687,7 @@ from fyers_apiv3 import fyersModel
 client_id = "YOUR_APP_ID-100"
 access_token = "YOUR_ACCESS_TOKEN"
 
-fyers = fyersModel.FyersModel(
-    client_id=client_id,
-    token=access_token,
-    is_async=False,
-    log_path=""
-)
+fyers = fyersModel.FyersModel(client_id=client_id, token=access_token, is_async=False, log_path="")
 ```
 
 ### Common Operations
@@ -712,7 +709,7 @@ data = {
     "date_format": "1",
     "range_from": "2024-01-01",
     "range_to": "2024-12-31",
-    "cont_flag": "1"
+    "cont_flag": "1",
 }
 history = fyers.history(data)
 
@@ -727,7 +724,7 @@ order_data = {
     "stopPrice": 0,
     "validity": "DAY",
     "disclosedQty": 0,
-    "offlineOrder": False
+    "offlineOrder": False,
 }
 response = fyers.place_order(order_data)
 ```

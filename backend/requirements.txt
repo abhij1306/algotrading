@@ -1,37 +1,41 @@
-fastapi==0.128.6
-uvicorn[standard]==0.40.0
-requests==2.31.0
-# Tested compatibility matrix (2026-02-19, Python 3.14):
-# pandas 3.0.x + numpy 2.4.x + scipy 1.17.x + pyarrow 22.x
-pandas==3.0.0
-numpy==2.4.2
-scipy==1.17.0
-pyarrow==22.0.0
-pypdf==5.2.0
-python-dotenv==1.2.1
-pydantic==2.12.5
-sqlalchemy==2.0.46
-psycopg2-binary==2.9.11
-python-multipart==0.0.22
+fastapi==0.150.0
+uvicorn[standard]==0.54.0
+requests==2.34.2
+# Tested compatibility matrix (2026-10-20, Python 3.14):
+# pandas 3.0.x + numpy 2.5.x + scipy 1.18.x + pyarrow 26.x
+pandas==3.0.6
+numpy==2.5.4
+scipy==1.18.1
+pyarrow==26.0.0
+pypdf==6.21.1
+python-dotenv==1.2.4
+pydantic==2.14.1
+sqlalchemy==2.1.5
+psycopg2-binary==2.9.13
+python-multipart==0.0.32
 pyyaml==6.0.3
-pytz==2025.2
-httpx==0.28.1
+pytz==2026.5
+httpx2==2.15.1  # starlette.testclient (httpx is deprecated there since starlette 1.x)
 
 # Market data and analysis
-yfinance==1.1.0
-pandas-ta-openbb==0.4.23
-beautifulsoup4==4.14.3
+yfinance==1.7.0
+pandas-ta-openbb==0.4.25
+beautifulsoup4==4.15.0
 psutil==7.2.2
+# Transitive (statsmodels -> formulaic): its wrapt>=1.17.0rc1 specifier lets pip
+# pick release candidates, so hold wrapt at the latest stable release.
+wrapt==2.5.1
 
 # fyers-apiv3 runtime deps. fyers-apiv3 itself is installed with --no-deps
 # (see scripts/install_backend_deps.py) because it pins aiohttp==3.9.3, which
 # does not build on Python 3.14; these are the working versions.
-aiohttp==3.13.3
-websocket-client==1.6.1
-aws-lambda-powertools==3.24.0
-setuptools==68.0.0  # fyers data_ws imports pkg_resources
+aiohttp==3.14.5
+websocket-client==1.9.2
+aws-lambda-powertools==3.36.0
+setuptools==80.10.2  # <81: fyers 3.2.0 data_ws/tbt_ws still import pkg_resources
+protobuf==7.36.2  # fyers 3.2.0 imports google.protobuf without declaring it
 
 # Code quality tools
-ruff==0.13.0
-pre-commit==4.5.0
-hypothesis==6.140.2
+ruff==0.17.1
+pre-commit==4.7.0
+hypothesis==6.170.5

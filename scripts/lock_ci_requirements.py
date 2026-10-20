@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 LOCK = BACKEND / "requirements-ci.lock"
-FYERS_SPEC = "fyers-apiv3==3.1.10"
+FYERS_SPEC = "fyers-apiv3==3.2.0"
 PLATFORM_ARGS = [
     "--only-binary",
     ":all:",
