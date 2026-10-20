@@ -294,3 +294,33 @@ def test_missing_live_quote_stays_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert isinstance(raised.value, DataNotFoundError)
     assert raised.value.status_code == 404
+
+
+def test_options_preview_bad_expiry_is_400_with_our_message(api: TestClient) -> None:
+    body = {
+        "underlying": "NIFTY",
+        "expiry": "not-a-date",
+        "strike": 24000,
+        "option_type": "CE",
+        "side": "BUY",
+        "quantity": 75,
+    }
+
+    response = api.post("/api/terminal/options/preview-order", json=body)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid expiry date; use YYYY-MM-DD"}
+
+
+def test_options_preview_unrelated_value_error_is_500_without_its_text(
+    api: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def bad_config(*_args: object, **_kwargs: object) -> NoReturn:
+        raise ValueError(MARKER)
+
+    monkeypatch.setattr(terminal, "_quote_ltp", bad_config)
+
+    response = api.post("/api/terminal/options/preview-order", json=PREVIEW_BODY)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to preview options order"}

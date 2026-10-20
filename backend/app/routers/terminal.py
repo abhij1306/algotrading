@@ -346,6 +346,10 @@ def _load_index_yfinance_candles(symbol: str, timeframe: str, limit: int) -> pd.
         return pd.DataFrame()
 
 
+class InvalidOptionRequestError(ValueError):
+    """Bad option request input; its message is ours and safe to return to the client."""
+
+
 def _build_option_symbols(
     symbol: str | None,
     underlying: str | None,
@@ -354,13 +358,21 @@ def _build_option_symbols(
     option_type: str | None,
 ) -> tuple[str, str]:
     if symbol:
-        db_symbol = symbol_master.to_db(symbol)
+        try:
+            db_symbol = symbol_master.to_db(symbol)
+        except ValueError as exc:
+            raise InvalidOptionRequestError("Invalid option symbol") from exc
         return db_symbol, symbol_master.to_fyers(db_symbol)
 
     if not (underlying and expiry and strike and option_type):
-        raise ValueError("Provide symbol, or (underlying + expiry + strike + option_type)")
+        raise InvalidOptionRequestError(
+            "Provide symbol, or (underlying + expiry + strike + option_type)"
+        )
 
-    expiry_date = date.fromisoformat(expiry)
+    try:
+        expiry_date = date.fromisoformat(expiry)
+    except ValueError as exc:
+        raise InvalidOptionRequestError("Invalid expiry date; use YYYY-MM-DD") from exc
     # Prefer symbol resolution from live chain to avoid format mismatches.
     chain = option_chain_service.get_option_chain(
         underlying=underlying.upper(),
@@ -619,8 +631,8 @@ def preview_options_order(
         }
     except HTTPException:
         raise
-    except ValueError as exc:
-        # Input validation (symbol/expiry/strike parsing) raises ValueError with our text.
+    except InvalidOptionRequestError as exc:
+        # Only our own input checks reach the client; any other ValueError is a 500.
         logger.info("Terminal options preview rejected: %s", safe_log_value(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

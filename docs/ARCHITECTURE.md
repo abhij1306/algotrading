@@ -267,8 +267,8 @@ Operational endpoint:
   fixed message; `handle_api_error`/`sanitize_error_message` return only the fixed message in every environment.
   Validation messages we write ourselves (a `ValueError` raised by our own input checks) may still be returned.
 - Broker-backed reads fail closed: `GET /api/smart-trader/positions` and `/pnl` answer HTTP 503
-  `{"error": {"code": "BROKER_UNAVAILABLE", "message": "Broker not connected" | "Broker unavailable"}}`
-  instead of an empty list or a zero P&L.
+  `{"error": {"code": "BROKER_UNAVAILABLE", "message": "Broker unavailable"}}` instead of an empty list or a
+  zero P&L. The message is `"Broker not connected"` when there is no client or the login token is invalid.
 - Missing local datasets answer HTTP 503 `DATA_UNAVAILABLE`; for example `GET /api/strategies/regime` (and every
   route that needs the regime) when the NIFTY50 index history is missing.
 
