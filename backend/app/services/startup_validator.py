@@ -12,6 +12,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
 
+from ..exceptions import DatabaseUnavailableError
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,7 +96,11 @@ class StartupSequence:
         except Exception as e:
             if required:
                 self.failed_step = step
-                logger.exception(f"[Startup] Failed: {step.value} - {e}")
+                if isinstance(e, DatabaseUnavailableError):
+                    # The step already logged where and how to start the DB; no traceback.
+                    logger.error(f"[Startup] Failed: {step.value} - {e}")
+                else:
+                    logger.exception(f"[Startup] Failed: {step.value} - {e}")
                 self._has_failure = True
                 logger.error(
                     f"[Startup] Required step {step.value} failed. "

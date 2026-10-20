@@ -25,6 +25,7 @@ import pandas as pd
 
 from ..database import get_db_session
 from ..models.backtest import BacktestRun
+from ..utils.db_errors import is_db_unavailable
 from ..utils.helpers import safe_float
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
@@ -275,6 +276,9 @@ class Phase1BacktestService:
             )
             return [self._serialize_run_summary(run) for run in runs]
         except Exception as exc:
+            if is_db_unavailable(exc):
+                # An empty or partial list would read as "no saved runs"; answer 503 instead.
+                raise
             logger.warning("Falling back to in-memory backtest run listing: %s", exc)
             items = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
             return [

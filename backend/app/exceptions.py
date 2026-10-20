@@ -128,6 +128,20 @@ class DatabaseError(SmartTraderError):
         )
 
 
+class DatabaseUnavailableError(SmartTraderError):
+    """Raised when the database cannot be reached (down, refusing or dropping connections).
+
+    The client gets a fixed 503 envelope; the driver error is only logged server-side.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="DATABASE_UNAVAILABLE",
+            message="Database unavailable",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
 class BacktestError(SmartTraderError):
     """Raised when backtest execution fails"""
 

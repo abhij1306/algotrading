@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..utils.db_errors import is_db_unavailable
 
 router = APIRouter(prefix="/api/activity")
 DB_DEPENDENCY = Depends(get_db)
@@ -57,6 +58,8 @@ def get_recent_activity(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
 
         return activities[:5]  # Return last 5 activities
 
-    except Exception:
+    except Exception as exc:
+        if is_db_unavailable(exc):
+            raise  # an empty list would read as "no recent activity"; the API answers 503
         # Return empty on error
         return []

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..services.symbol_master import symbol_master
+from ..utils.db_errors import is_db_unavailable
 from ..utils.market_hours import get_market_status
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,8 @@ def get_live_quotes(symbols: str, db: Session = DB_DEPENDENCY) -> dict[str, Any]
         return quotes
 
     except Exception as e:
+        if is_db_unavailable(e):
+            raise  # an empty map would read as "no quotes"; the API answers 503
         logger.warning("Error fetching quotes: %s", e)
         return {}
 
@@ -528,6 +531,8 @@ def get_top_movers(index: str = "NIFTY50", limit: int = 5) -> dict[str, Any]:
         return {"gainers": gainers, "losers": losers}
 
     except Exception as e:
+        if is_db_unavailable(e):
+            raise  # empty lists would read as "no movers today"; the API answers 503
         logger.exception(f"Error fetching top movers: {e}")
         return {"gainers": [], "losers": []}
 

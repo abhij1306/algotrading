@@ -6,17 +6,23 @@ Verifies Fyers connectivity and data freshness before UI loads
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from ..data_layer.provider import DataProvider
 from ..database import get_db
+from ..exceptions import DatabaseUnavailableError
 
 router = APIRouter(prefix="/api/system", tags=["System Health"])
 DB_DEPENDENCY = Depends(get_db)
 
 
-@router.get("/health", response_model=None)
-def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
+@router.get(
+    "/health",
+    response_model=None,
+    responses={503: {"description": "Database unavailable (body still carries the report)"}},
+)
+def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any] | JSONResponse:
     """
     Comprehensive system health check
 
@@ -29,6 +35,9 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
             "total_symbols": int,
             "recommendations": [str]
         }
+
+    With the database down the reply is HTTP 503: the same report plus the standard
+    error envelope (code DATABASE_UNAVAILABLE).
     """
     provider = DataProvider(db)
     health = provider.health_check()
@@ -37,9 +46,7 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     status = "READY"
     recommendations = []
 
-    if health["postgresql"] != "OK":
-        status = "DOWN"
-        recommendations.append("PostgreSQL database is unavailable. Check connection.")
+    db_down = health["postgresql"] != "OK"
 
     if health["fyers"] == "TOKEN_EXPIRED":
         status = "DEGRADED"
@@ -48,12 +55,22 @@ def system_health_check(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
         status = "DEGRADED"
         recommendations.append("Fyers API unavailable. Screener will use cached data only.")
 
-    if health["last_update"] is None:
+    if db_down:
+        # A down database outranks a degraded broker.
+        status = "DOWN"
+        recommendations.insert(
+            0, "PostgreSQL database is unavailable. Start it: net start postgresql-x64-18"
+        )
+    elif health["last_update"] is None:
         recommendations.append(
             "No historical data found. Run canonical bhavcopy + phase1 pipeline."
         )
 
-    return {"status": status, **health, "recommendations": recommendations}
+    report = {"status": status, **health, "recommendations": recommendations}
+    if db_down:
+        error = DatabaseUnavailableError()
+        return JSONResponse(status_code=error.status_code, content={**report, **error.to_dict()})
+    return report
 
 
 @router.get("/pre-flight/screener", response_model=None)
@@ -73,6 +90,8 @@ def screener_pre_flight(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     provider = DataProvider(db)
     health = provider.health_check()
+    if health["postgresql"] != "OK":
+        raise DatabaseUnavailableError()
 
     fyers_ok = health["fyers"] == "OK"
     data_exists = health["total_symbols"] > 0

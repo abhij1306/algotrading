@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from ..data_repository import DataRepository
 from ..database import Company, FinancialStatement, HistoricalPrice
+from ..utils.db_errors import is_db_unavailable
+from ..utils.logger import log_warning_throttled
 from .exceptions import (
     DataNotFoundError,
     DataSourceUnavailableError,
@@ -204,12 +206,20 @@ class DataProvider:
         }
 
         # Check PostgreSQL
+        # Driver and broker error text goes to the server log only, never into the reply.
         try:
             count = self.db.query(Company).count()
             status["postgresql"] = "OK"
             status["total_symbols"] = count
         except Exception as e:
-            status["postgresql"] = f"DOWN: {str(e)}"
+            self.db.rollback()
+            status["postgresql"] = "DOWN"
+            if is_db_unavailable(e):
+                log_warning_throttled(
+                    logger, "health.postgresql", "Health check: database unreachable"
+                )
+            else:
+                logger.exception("Health check: database query failed")
 
         # Check Fyers
         try:
@@ -222,7 +232,11 @@ class DataProvider:
             if "token" in str(e).lower() or "401" in str(e):
                 status["fyers"] = "TOKEN_EXPIRED"
             else:
-                status["fyers"] = f"DOWN: {str(e)}"
+                status["fyers"] = "DOWN"
+                logger.warning("Health check: Fyers unavailable (%s)", type(e).__name__)
+
+        if status["postgresql"] != "OK":
+            return status
 
         # Get latest data update timestamp
         try:
