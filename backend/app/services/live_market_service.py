@@ -585,6 +585,12 @@ class LiveMarketService:
             await loop.run_in_executor(None, self.ws_service.unsubscribe, fyers_symbols)
         except Exception as e:
             logger.exception(f"Fyers unsubscription failed: {e}")
+            return
+        # The check above is not atomic with the provider call: an owner may have
+        # re-subscribed meanwhile and its subscribe may have reached the provider first.
+        regained = sorted(s for s in symbols_set if self.registry.is_held(s))
+        if regained:
+            await self.subscribe(regained)
 
     async def get_status(self) -> dict[str, Any]:
         return {

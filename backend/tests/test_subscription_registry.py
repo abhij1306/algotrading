@@ -219,3 +219,46 @@ def test_symbols_subscribed_before_the_provider_connects_are_replayed_on_connect
         return live.ws_service.ws.subscribed
 
     assert sorted(asyncio.run(scenario())) == sorted(_fyers(["INFY", "SBIN"]))
+
+
+def test_symbol_re_subscribed_while_its_release_is_in_flight_is_subscribed_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = ConnectionManager()
+    monkeypatch.setattr(lms, "manager", mgr)
+    live = lms.LiveMarketService()
+
+    class RacingProvider(FakeProvider):
+        def unsubscribe(self, symbols: list[str]) -> None:
+            super().unsubscribe(symbols)
+            mgr.registry.add("ws-2", ["SBIN"])  # another client re-subscribes meanwhile
+
+    live.ws_service = RacingProvider()
+    asyncio.run(live.unsubscribe(["SBIN"]))
+
+    assert live.ws_service.ws.unsubscribed == _fyers(["SBIN"])
+    assert live.ws_service.ws.subscribed == _fyers(["SBIN"])
+
+
+def test_client_dropped_by_its_own_sender_still_completes_the_release() -> None:
+    class BrokenSendSocket(FakeClientWebSocket):
+        async def send_text(self, data: str) -> None:
+            raise RuntimeError("socket gone")
+
+    async def scenario() -> list[list[str]]:
+        mgr = ConnectionManager()
+        released: list[list[str]] = []
+
+        async def on_released(symbols: list[str]) -> None:
+            await asyncio.sleep(0.01)  # a cancelled sender task would stop here
+            released.append(symbols)
+
+        mgr.on_symbols_released = on_released
+        client = BrokenSendSocket()
+        assert await mgr.connect(client)
+        await mgr.subscribe(client, ["TCS"])
+        await mgr.broadcast({"type": "ticker", "data": {"symbol": "TCS", "ltp": 1.0}})
+        await asyncio.sleep(0.1)
+        return released
+
+    assert asyncio.run(scenario()) == [["TCS"]]

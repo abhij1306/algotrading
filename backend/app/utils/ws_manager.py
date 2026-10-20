@@ -92,7 +92,9 @@ class ConnectionManager:
         async with self._lock:
             client = self.connections.pop(websocket, None)
             if client:
-                if client.sender_task:
+                # The sender loop disconnects its own client on a send error; cancelling
+                # itself would abort the provider release awaited below.
+                if client.sender_task and client.sender_task is not asyncio.current_task():
                     client.sender_task.cancel()
                 released_symbols = self.registry.drop_owner(client.client_id)
         runtime_metrics.increment("websocket.connections.disconnected")
