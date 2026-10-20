@@ -10,6 +10,7 @@ Both servers run as children of this process; Ctrl+C stops them. Ports: backend 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -50,13 +51,15 @@ def find_available_port(preferred: int) -> int:
 
 
 def is_backend_healthy(port: int) -> bool:
+    """True only if the listener on `port` is the SmartTrader API (not just any HTTP 200)."""
     try:
-        with urllib.request.urlopen(
-            f"{LOCAL_ORIGIN}:{port}/ping", timeout=2
-        ) as response:
-            return response.status == 200
+        with urllib.request.urlopen(f"{LOCAL_ORIGIN}:{port}/", timeout=2) as response:
+            if response.status != 200:
+                return False
+            body = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ValueError):
         return False
+    return isinstance(body, dict) and "SmartTrader" in str(body.get("message", ""))
 
 
 def venv_python(root: Path) -> Path:
@@ -172,7 +175,7 @@ def main() -> int:
 
         print(f"Launching frontend on {LOCAL_ORIGIN}:{frontend_port}")
         frontend_proc = subprocess.Popen(
-            [pnpm, "dev"], cwd=root / "frontend", env=frontend_env
+            [pnpm, "dev", "--strictPort"], cwd=root / "frontend", env=frontend_env
         )
         procs.append(frontend_proc)
 
