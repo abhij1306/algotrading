@@ -3,13 +3,9 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import TerminalPage from "../page";
 
-vi.mock("@/hooks/useWebSocket", () => ({
-  useWebSocket: () => ({
-    isConnected: false,
-    lastMessage: null,
-    sendMessage: vi.fn(),
-    registerCallback: () => () => undefined,
-  }),
+vi.mock("@/lib/realtime/hooks", () => ({
+  useConnectionStatus: () => "disconnected",
+  useQuotes: () => ({}),
 }));
 
 describe("terminal order defaults", () => {
