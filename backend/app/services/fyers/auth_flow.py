@@ -14,6 +14,7 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 STATUS_CACHE_SECONDS = 30.0
 _SESSION_STATE = "fyers_api_state"
 AUTH_CODE_REJECTED = "Fyers rejected the auth code. Please log in again."
+LOGIN_CANCELLED = "Login was cancelled by a logout. Please log in again."
 
 
 class FyersAuthError(Exception):
@@ -42,6 +44,10 @@ class MissingCredentialsError(FyersAuthError):
 
 class TokenRejectedError(FyersAuthError):
     """Fyers did not return a token for the auth code."""
+
+
+class LoginCancelledError(TokenRejectedError):
+    """A logout ran while this login was waiting for Fyers; its token was not saved."""
 
 
 @dataclass(frozen=True)
@@ -67,22 +73,26 @@ class Session(Protocol):
 
 SessionFactory = Callable[..., Session]
 
-_CREDENTIAL_ENV = ("CLIENT_ID", "SECRET_KEY", "REDIRECT_URI")
+# Each credential: the name the login flow has always read first, then the names
+# .env.example also documents (FYERS_APP_ID, FYERS_SECRET_KEY, FYERS_CLIENT_ID).
+_CREDENTIAL_ENV: dict[str, tuple[str, ...]] = {
+    "client_id": ("CLIENT_ID", "FYERS_APP_ID", "FYERS_CLIENT_ID"),
+    "secret_key": ("SECRET_KEY", "FYERS_SECRET_KEY"),
+    "redirect_uri": ("REDIRECT_URI",),
+}
 
 
 def credentials_from_env() -> FyersCredentials:
     """Read the app credentials from the environment (loaded from .env at startup)."""
-    values = {name: os.getenv(name) or "" for name in _CREDENTIAL_ENV}
-    for name in _CREDENTIAL_ENV:
-        if not values[name]:
+    values: dict[str, str] = {}
+    for field_name, names in _CREDENTIAL_ENV.items():
+        value = next((os.getenv(name) for name in names if os.getenv(name)), None)
+        if not value:
             raise MissingCredentialsError(
-                f"{name} not found in environment variables. Please add it to .env file."
+                f"{names[0]} not found in environment variables. Please add it to .env file."
             )
-    return FyersCredentials(
-        client_id=values["CLIENT_ID"],
-        secret_key=values["SECRET_KEY"],
-        redirect_uri=values["REDIRECT_URI"],
-    )
+        values[field_name] = value
+    return FyersCredentials(**values)
 
 
 def _sdk_session(**kwargs: str) -> Session:
@@ -159,6 +169,8 @@ class FyersAuthService:
         self._clock = clock
         self._cached_status: FyersStatus | None = None
         self._cached_at = 0.0
+        self._lock = threading.Lock()
+        self._logouts = 0
 
     def login_url(self) -> str:
         creds = self._credentials()
@@ -185,6 +197,8 @@ class FyersAuthService:
             response_type="code",
             grant_type="authorization_code",
         )
+        with self._lock:
+            logouts_at_start = self._logouts
         session.set_token(auth_code)
         reply = session.generate_token()
         logger.info("[Fyers Auth] Token exchange reply status: %s", reply.get("s", "unknown"))
@@ -194,7 +208,13 @@ class FyersAuthService:
             logger.warning("[Fyers Auth] Fyers rejected the auth code (code %s)", reply.get("code"))
             raise TokenRejectedError(AUTH_CODE_REJECTED)
 
-        saved = self.store.save(reply, client_id=creds.client_id)
+        # Save and logout are serialised: a logout that ran while Fyers was answering wins,
+        # so this login cannot write the token back after the user logged out.
+        with self._lock:
+            if self._logouts != logouts_at_start:
+                logger.info("[Fyers Auth] Logout during login; the new token was discarded")
+                raise LoginCancelledError(LOGIN_CANCELLED)
+            saved = self.store.save(reply, client_id=creds.client_id)
         logger.info("[Fyers Auth] Access token saved; expires at %s", saved.expires_at)
         self.invalidate_status()
         self._refresh_client()
@@ -235,7 +255,10 @@ class FyersAuthService:
             self._on_disconnect()
         except Exception:
             logger.warning("[Fyers] WebSocket disconnect failed", exc_info=True)
-        if self.store.clear():
+        with self._lock:
+            self._logouts += 1
+            removed = self.store.clear()
+        if removed:
             logger.info("[Fyers] Access token removed")
         self.invalidate_status()
         self._refresh_client()

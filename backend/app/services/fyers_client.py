@@ -36,6 +36,25 @@ class FyersClient:
     """
 
     _instance = None
+    _fyers: Any = None
+
+    @property
+    def fyers(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+        """The SDK model, or None once the loaded token has passed its expiry.
+
+        Every caller that reaches the SDK goes through here, so a token that expires while
+        the app runs (the file, and so its mtime, unchanged) stops being used at once,
+        even by calls that skip validate_token().
+        """
+        if self._fyers is not None and self.token_expires_at is not None:
+            if datetime.now(UTC) > self.token_expires_at:
+                logger.warning("Fyers token expired on %s; dropping it", self.token_expires_at)
+                self._drop_credentials()
+        return self._fyers
+
+    @fyers.setter
+    def fyers(self, model: Any) -> None:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+        self._fyers = model
 
     def __new__(cls) -> Self:
         if cls._instance is None:

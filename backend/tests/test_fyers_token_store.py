@@ -154,6 +154,22 @@ def test_usable_needs_a_client_id_and_a_live_expiry() -> None:
     assert StoredToken("t", "c", "u", expiry).is_usable(expiry.replace(minute=31)) is False
 
 
+def test_a_token_that_expires_while_running_stops_being_used(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _isolated_client(store, monkeypatch)
+    store.save(REPLY, client_id="CLIENT-100")
+    client._load_credentials()
+    client.fyers = "sdk-model"
+    assert client.fyers == "sdk-model"
+
+    # Midnight IST passes; the file (and its mtime) is unchanged.
+    client.token_expires_at = datetime(2020, 1, 1, tzinfo=UTC)
+
+    assert client.fyers is None
+    assert (client.client_id, client.access_token) == (None, None)
+
+
 @pytest.mark.parametrize(
     "document",
     [

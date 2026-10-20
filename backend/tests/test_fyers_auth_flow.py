@@ -358,6 +358,7 @@ def test_credentials_from_env_names_the_missing_variable(
 ) -> None:
     monkeypatch.setenv("CLIENT_ID", "c")
     monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("FYERS_SECRET_KEY", raising=False)
     monkeypatch.setenv("REDIRECT_URI", "https://example.test/")
 
     with pytest.raises(MissingCredentialsError) as excinfo:
@@ -366,6 +367,61 @@ def test_credentials_from_env_names_the_missing_variable(
     assert excinfo.value.message == (
         "SECRET_KEY not found in environment variables. Please add it to .env file."
     )
+
+
+def test_credentials_from_env_accepts_the_documented_fyers_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("CLIENT_ID", "SECRET_KEY", "FYERS_CLIENT_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FYERS_APP_ID", "APP-1")
+    monkeypatch.setenv("FYERS_SECRET_KEY", "s3")
+    monkeypatch.setenv("REDIRECT_URI", "https://example.test/")
+
+    assert credentials_from_env() == FyersCredentials("APP-1", "s3", "https://example.test/")
+
+
+def test_credentials_from_env_prefers_the_login_flow_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIENT_ID", "APP-legacy")
+    monkeypatch.setenv("FYERS_APP_ID", "APP-1")
+    monkeypatch.setenv("SECRET_KEY", "s-legacy")
+    monkeypatch.setenv("FYERS_SECRET_KEY", "s3")
+    monkeypatch.setenv("REDIRECT_URI", "https://example.test/")
+
+    assert credentials_from_env() == FyersCredentials(
+        "APP-legacy", "s-legacy", "https://example.test/"
+    )
+
+
+def test_a_logout_during_login_wins(tmp_path: Path, use_service: Installer) -> None:
+    refresh = Recorder()
+    feed_up = Recorder()
+    service, session = make_service(tmp_path, on_token_change=refresh, on_login=feed_up)
+
+    def generate_token_while_user_logs_out() -> Mapping[str, Any]:
+        service.disconnect()  # the logout request lands while Fyers is answering
+        return OK_REPLY
+
+    session.generate_token = generate_token_while_user_logs_out  # type: ignore[method-assign]
+    api = use_service(service)
+
+    response = api.post("/api/auth/fyers/token", json={"auth_code": "code"})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Login was cancelled by a logout. Please log in again."}
+    assert service.store.load() is None
+    assert service.status() == FyersStatus(connected=False, user_id=None)
+    assert feed_up.calls == 0
+
+
+def test_a_login_after_a_logout_still_saves(tmp_path: Path) -> None:
+    service, _ = make_service(tmp_path)
+    service.disconnect()
+
+    assert service.exchange("code") == FyersStatus(connected=True, user_id="XA1234")
+    assert service.store.load() is not None
 
 
 def test_process_service_uses_the_shared_token_store() -> None:
