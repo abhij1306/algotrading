@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { formatInr } from "./format";
 
 /**
  * Utility function to merge Tailwind CSS classes
@@ -9,73 +10,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/**
- * Format a number as currency
- */
+// Formatting lives in lib/format.ts. These names stay only for callers not yet switched over
+// (dashboard, terminal, lib/queries/terminal.ts and the dashboard insight panels); new code
+// imports from "@/lib/format".
+export { formatSignedPercent as formatPercentage, roundToDecimals } from "./format";
+
+/** @deprecated Use formatInr from "@/lib/format". Rupees only, so currency and locale are fixed. */
 export function formatCurrency(
   value: number | null | undefined,
-  currency: string = "INR",
-  locale: string = "en-IN",
+  _currency: "INR" = "INR",
+  _locale: "en-IN" = "en-IN",
 ): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "₹0.00";
-  return new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-/**
- * Format a number as percentage
- */
-export function formatPercent(value: number | null | undefined, decimals: number = 2): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "0.00%";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${value.toFixed(decimals)}%`;
-}
-
-/**
- * Alias for formatPercent for consistency with design system
- */
-export function formatPercentage(value: number | null | undefined, decimals: number = 2): string {
-  return formatPercent(value, decimals);
-}
-
-/**
- * Format a large number with abbreviations (K, M, B, T)
- */
-export function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "0";
-  if (Math.abs(value) >= 1e7) return `₹${(value / 1e7).toFixed(2)}Cr`; // Crores for Indian market
-  if (Math.abs(value) >= 1e5) return `₹${(value / 1e5).toFixed(2)}L`; // Lakhs for Indian market
-  if (Math.abs(value) >= 1e3) return `₹${(value / 1e3).toFixed(2)}K`;
-  return `₹${value.toFixed(2)}`;
-}
-
-/**
- * Alias for formatCompact for consistency with design system
- */
-export function formatLargeNumber(value: number | null | undefined): string {
-  return formatCompact(value);
-}
-
-/**
- * Format price with appropriate decimal places
- */
-export function formatPrice(value: number): string {
-  if (value >= 1000) return value.toFixed(2);
-  if (value >= 1) return value.toFixed(3);
-  return value.toFixed(6);
-}
-
-/**
- * Round a numeric value to fixed decimals and return as number.
- * Useful for keeping realtime UI values deterministic with provider precision.
- */
-export function roundToDecimals(value: number | null | undefined, decimals: number = 2): number {
-  if (value === null || value === undefined || Number.isNaN(value)) return 0;
-  const factor = 10 ** decimals;
-  const epsilon = value >= 0 ? Number.EPSILON : -Number.EPSILON;
-  return Math.round((value + epsilon) * factor) / factor;
+  return formatInr(value);
 }

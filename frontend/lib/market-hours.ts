@@ -1,7 +1,15 @@
 /**
- * Market Hours Utility
- * Checks if current time is within market trading hours (9:15 AM - 3:30 PM IST)
+ * NSE market hours from the local clock, read in IST through lib/time, so the answer does not
+ * depend on the machine's time zone.
+ *
+ * The regular session runs from 09:15:00.000 to 15:30:00.000 IST, Monday to Friday, both ends
+ * inclusive.
+ * Exchange holidays are not modelled: the repo has no NSE holiday calendar, so a weekday holiday
+ * reads as a normal session day. The backend's /api/market/status is the better source when it
+ * is reachable.
  */
+
+import { formatIstTime, istParts } from "./time";
 
 export interface MarketStatus {
   isOpen: boolean;
@@ -9,74 +17,37 @@ export interface MarketStatus {
   nextSession?: string;
 }
 
-/**
- * Check if market is currently open
- * NSE trading hours: 9:15 AM - 3:30 PM IST (Mon-Fri)
- */
-export function isMarketOpen(): MarketStatus {
-  const now = new Date();
+const SESSION_OPEN_SECOND = 9 * 3600 + 15 * 60;
+const SESSION_CLOSE_SECOND = 15 * 3600 + 30 * 60;
+const FRIDAY = 5;
 
-  // Convert to IST (UTC+5:30)
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(now.getTime() + istOffset);
-
-  const day = istTime.getUTCDay(); // 0 = Sunday, 6 = Saturday
-  const hours = istTime.getUTCHours();
-  const minutes = istTime.getUTCMinutes();
-  const currentMinutes = hours * 60 + minutes;
-
-  // Check if weekend
-  if (day === 0 || day === 6) {
-    return {
-      isOpen: false,
-      message: "Market Closed (Weekend)",
-      nextSession: "Monday 9:15 AM",
-    };
+/** Whether the regular NSE session is open at `now` (default: the current instant). */
+export function isMarketOpen(now: Date = new Date()): MarketStatus {
+  const parts = istParts(now);
+  if (parts === null) return { isOpen: false, message: "Market Closed" };
+  if (parts.dayOfWeek === 0 || parts.dayOfWeek === 6) {
+    return { isOpen: false, message: "Market Closed (Weekend)", nextSession: "Monday 9:15 AM" };
   }
 
-  // Market hours: 9:15 AM (555 minutes) to 3:30 PM (930 minutes)
-  const marketOpen = 9 * 60 + 15; // 555 minutes
-  const marketClose = 15 * 60 + 30; // 930 minutes
-
-  if (currentMinutes < marketOpen) {
-    return {
-      isOpen: false,
-      message: "Market Closed (Pre-market)",
-      nextSession: "Today 9:15 AM",
-    };
+  const second = parts.hour * 3600 + parts.minute * 60 + parts.second;
+  // IST is a whole-minute offset from UTC, so the UTC millisecond is the IST millisecond.
+  const pastClose =
+    second > SESSION_CLOSE_SECOND ||
+    (second === SESSION_CLOSE_SECOND && now.getUTCMilliseconds() > 0);
+  if (second < SESSION_OPEN_SECOND) {
+    return { isOpen: false, message: "Market Closed (Pre-market)", nextSession: "Today 9:15 AM" };
   }
-
-  if (currentMinutes > marketClose) {
+  if (pastClose) {
     return {
       isOpen: false,
       message: "Market Closed (Post-market)",
-      nextSession: "Tomorrow 9:15 AM",
+      nextSession: parts.dayOfWeek === FRIDAY ? "Monday 9:15 AM" : "Tomorrow 9:15 AM",
     };
   }
-
-  return {
-    isOpen: true,
-    message: "Market Open",
-  };
+  return { isOpen: true, message: "Market Open" };
 }
 
-/**
- * Get IST time string
- */
-export function getISTTime(): string {
-  const now = new Date();
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(now.getTime() + istOffset);
-
-  return istTime.toISOString().slice(11, 19) + " IST";
-}
-
-/**
- * Check if it's a holiday (basic check - can be enhanced with holiday API)
- */
-export function isHoliday(): boolean {
-  // Weekends only: NSE exchange holidays are not modelled (no holiday calendar source exists).
-  const now = new Date();
-  const day = now.getDay();
-  return day === 0 || day === 6;
+/** The IST wall-clock time at `now`, as "14:05:09 IST". */
+export function getISTTime(now: Date = new Date()): string {
+  return `${formatIstTime(now)} IST`;
 }
