@@ -57,6 +57,7 @@ class ModifyOrderRequest(BaseModel):
     new_quantity: int | None = None
     new_price: float | None = None
     new_type: str | None = None
+    new_trigger_price: float | None = None
 
 
 class ExitPositionRequest(BaseModel):
@@ -465,6 +466,8 @@ def modify_order(req: ModifyOrderRequest, db: DBSession) -> dict[str, Any]:
         params["price"] = req.new_price
     if req.new_type is not None:
         params["order_type"] = req.new_type
+    if req.new_trigger_price is not None:
+        params["trigger_price"] = req.new_trigger_price
 
     result = order_execution_service.modify_order(req.order_id, params, db)
 

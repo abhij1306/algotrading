@@ -340,16 +340,18 @@ class RiskManager:
             margin_pct = 0.2 if product == "INTRADAY" else 1.0
 
             estimated_margin = quantity * price * margin_pct
+            # BrokerFunds is a TypedDict: read it by key, not attribute.
+            available = float(funds["available"])
 
-            if funds.available < estimated_margin:
+            if available < estimated_margin:
                 return RiskCheckResult(
                     status=RiskStatus.FAIL,
-                    message=f"Insufficient margin. Available: ₹{funds.available:.2f}, Required: ₹{estimated_margin:.2f}",
+                    message=f"Insufficient margin. Available: ₹{available:.2f}, Required: ₹{estimated_margin:.2f}",
                     code="INSUFFICIENT_MARGIN",
                     details={
-                        "available": funds.available,
+                        "available": available,
                         "required": estimated_margin,
-                        "shortfall": estimated_margin - funds.available,
+                        "shortfall": estimated_margin - available,
                     },
                 )
 
@@ -357,7 +359,7 @@ class RiskManager:
                 status=RiskStatus.PASS,
                 message="Sufficient margin available",
                 code="MARGIN_OK",
-                details={"available": funds.available, "required": estimated_margin},
+                details={"available": available, "required": estimated_margin},
             )
         except Exception as e:
             logger.error(f"Error checking margin: {e}")
