@@ -319,11 +319,23 @@ def test_fyers_available_reads_the_store_at_call_time(
     assert config_module.fyers_available() is False  # undecodable
 
 
-def test_fyers_available_falls_back_to_env(
+def test_fyers_available_ignores_env_credentials_the_client_cannot_use(
     store: TokenStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config_module, "token_store", store)
     monkeypatch.setenv("FYERS_CLIENT_ID", "env-client")
     monkeypatch.setenv("FYERS_ACCESS_TOKEN", "env-token")
 
-    assert config_module.fyers_available() is True
+    assert config_module.fyers_available() is False
+
+
+def test_fyers_available_is_false_when_the_token_file_is_unreadable(
+    store: TokenStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied() -> None:
+        raise TokenStoreError("Fyers token file could not be read")
+
+    monkeypatch.setattr(store, "load", denied)
+    monkeypatch.setattr(config_module, "token_store", store)
+
+    assert config_module.fyers_available() is False

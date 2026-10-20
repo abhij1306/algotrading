@@ -16,17 +16,16 @@ logger = logging.getLogger(__name__)
 def fyers_available() -> bool:
     """Whether Fyers API calls can be made right now, read at call time.
 
-    True for an unexpired saved login token with a client id, or for FYERS_CLIENT_ID plus
-    FYERS_ACCESS_TOKEN in the environment. Never raises: an unreadable token file is "no".
+    True only for an unexpired saved login token with a client id: the Fyers client reads its
+    credentials from the same TokenStore, so this never reports a source the client can't use.
+    Never raises: an unreadable token file is "no".
     """
     try:
         token = token_store.load()
     except TokenStoreError:
         logger.warning("Failed to read the Fyers token file %s", token_store.path)
-        token = None
-    if token is not None and token.client_id and not token.is_expired():
-        return True
-    return bool(os.getenv("FYERS_CLIENT_ID") and os.getenv("FYERS_ACCESS_TOKEN"))
+        return False
+    return token is not None and bool(token.client_id) and not token.is_expired()
 
 
 class Config:

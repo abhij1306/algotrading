@@ -96,11 +96,13 @@ def _reset_fyers_client() -> None:
 
 
 def _disconnect_live_feed() -> None:
+    """The same explicit disconnect as POST /api/websocket/disconnect: closes the socket, stops
+    the runner and keeps the feed down until an explicit connect, so a runner in flight cannot
+    reconnect on its own after a later login."""
     from app.services.live_market_service import live_market
 
-    if live_market.ws_service:
-        live_market.ws_service.disconnect()
-        logger.info("[Fyers] WebSocket disconnected")
+    live_market.disconnect()
+    logger.info("[Fyers] Live feed disconnected")
 
 
 class FyersAuthService:

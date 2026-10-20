@@ -212,6 +212,37 @@ def test_disconnect_stops_the_feed_removes_the_token_and_drops_the_client(
     assert service.status() == FyersStatus(connected=False, user_id=None)
 
 
+def test_logout_is_an_explicit_live_feed_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.live_market_service import live_market
+
+    class FakeSocket:
+        closed = False
+
+        def disconnect(self) -> None:
+            self.closed = True
+
+    socket = FakeSocket()
+    monkeypatch.setattr(live_market, "ws_service", socket)
+    monkeypatch.setattr(live_market, "ws_connected", True)
+    monkeypatch.setattr(live_market, "_is_connecting", False)
+    monkeypatch.setattr(live_market, "_explicitly_disconnected", False)
+    monkeypatch.setattr(live_market, "_runner_stop", type(live_market._runner_stop)())
+    monkeypatch.setattr(live_market, "_disconnect_event", type(live_market._disconnect_event)())
+    service = FyersAuthService(
+        TokenStore(tmp_path / "access_token.json"), on_token_change=Recorder()
+    )
+
+    service.disconnect()
+
+    assert socket.closed is True
+    assert live_market.ws_connected is False
+    # The runner is stopped and stays down until an explicit connect, even after a new login.
+    assert live_market._explicitly_disconnected is True
+    assert live_market._runner_stop.is_set()
+
+
 def test_credentials_from_env_names_the_missing_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
