@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from datetime import UTC, date, datetime
@@ -14,6 +15,7 @@ from ..services.live_market_service import live_market
 from ..services.market_data_service import MarketDataService
 from ..services.yfinance_service import yfinance_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/market", tags=["Market Dashboard"])
 DB_DEPENDENCY = Depends(get_db)
 
@@ -50,8 +52,12 @@ def get_market_overview() -> dict[str, Any]:
             "condition": condition,
             "timestamp": datetime.now(UTC).isoformat(),
         }
-    except Exception as e:
-        payload = {"error": str(e), "timestamp": datetime.now(UTC).isoformat()}
+    except Exception:
+        logger.exception("Market overview failed")
+        payload = {
+            "error": "Market overview unavailable",
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
 
     with _overview_cache_lock:
         _overview_cache_ts = now
@@ -98,13 +104,14 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
         # Try to get live data from cache
         data["indices"].update(_live_index_quotes(indices))
 
-    # Fallback for indices not found in live cache or if market is closed
+    # Fallback for indices without a fresh live tick or if market is closed
     missing_indices = [idx for idx in indices if idx not in data["indices"]]
     if missing_indices:
-        # Try yfinance, then the database
-        quotes = yfinance_service.get_quotes(missing_indices)
-        for index, quote in quotes.items():
-            fallback = quote or _database_index_quote(db, index)
+        # Try yfinance, then the database, per index: a short or empty yfinance reply
+        # still falls back to the stored close.
+        quotes = yfinance_service.get_quotes(missing_indices) or {}
+        for index in missing_indices:
+            fallback = quotes.get(index) or _database_index_quote(db, index)
             if fallback:
                 data["indices"][index] = fallback
 
@@ -112,10 +119,10 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
 
 
 def _live_index_quotes(indices: list[str]) -> dict[str, dict[str, Any]]:
-    """Price and change of each index with a cached live tick."""
+    """Price and change of each index with a fresh live tick (see get_fresh_tick)."""
     quotes = {}
     for index in indices:
-        tick = live_market.get_latest_tick(index)
+        tick = live_market.get_fresh_tick(index)
         if tick:
             quotes[index] = {
                 "price": tick.get("ltp") or tick.get("price"),
@@ -163,11 +170,13 @@ def get_top_gainers(
         return {"data": [], "is_live": False, "message": "No constituents found for index"}
 
     is_market_open = live_market.is_market_open()
-    gainers = _live_gainers(symbols) if is_market_open else []
+    ticks = live_market.get_fresh_ticks(symbols) if is_market_open else {}
+    gainers = _live_gainers(ticks)
 
-    # If no live gainers (e.g. market just opened or closed), use yfinance
-    if not gainers:
-        gainers = _yfinance_gainers(symbols)
+    # Constituents without a fresh live tick (market closed, not subscribed, stale) use yfinance
+    missing = [symbol for symbol in symbols if symbol not in ticks]
+    if missing:
+        gainers.extend(_yfinance_gainers(missing))
 
     # Sort and limit
     gainers.sort(key=lambda x: x["change_pct"], reverse=True)
@@ -200,11 +209,11 @@ def _index_constituents(db: Session, index: str, current_date: date) -> list[str
     return [s[0] for s in symbols_query]
 
 
-def _live_gainers(symbols: list[str]) -> list[dict[str, Any]]:
-    """Symbols with a positive change in the live tick cache."""
+def _live_gainers(ticks: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Symbols whose live tick has a positive change."""
     gainers = []
-    for symbol, tick in live_market.get_latest_ticks(symbols).items():
-        change_pct = tick.get("chp") or tick.get("change_pct", 0)
+    for symbol, tick in ticks.items():
+        change_pct = tick.get("chp") or tick.get("change_pct") or 0
         if change_pct > 0:
             gainers.append(
                 {

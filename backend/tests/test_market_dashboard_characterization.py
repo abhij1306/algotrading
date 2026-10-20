@@ -12,9 +12,14 @@ from app.routers import market_dashboard
 
 
 class FakeLive:
-    def __init__(self, is_open: bool, ticks: dict[str, dict]) -> None:
+    """Ticks in `ticks` are fresh unless listed in `stale` (cached but too old)."""
+
+    def __init__(
+        self, is_open: bool, ticks: dict[str, dict], stale: frozenset[str] = frozenset()
+    ) -> None:
         self.is_open = is_open
         self.ticks = ticks
+        self.stale = stale
         self.requested: list[list[str]] = []
 
     def is_market_open(self) -> bool:
@@ -23,21 +28,25 @@ class FakeLive:
     async def get_status(self) -> dict:
         return {"connected": self.is_open}
 
-    def get_latest_tick(self, symbol: str) -> dict | None:
-        return self.ticks.get(symbol)
+    def get_fresh_tick(self, symbol: str) -> dict | None:
+        return None if symbol in self.stale else self.ticks.get(symbol)
 
-    def get_latest_ticks(self, symbols: list[str]) -> dict[str, dict]:
+    def get_fresh_ticks(self, symbols: list[str]) -> dict[str, dict]:
         self.requested.append(list(symbols))
-        return {s: self.ticks[s] for s in symbols if s in self.ticks}
+        fresh = {s: self.get_fresh_tick(s) for s in symbols}
+        return {s: tick for s, tick in fresh.items() if tick is not None}
 
 
 class FakeQuotes:
-    def __init__(self, quotes: dict[str, dict | None]) -> None:
+    def __init__(self, quotes: dict[str, dict | None], only_known: bool = False) -> None:
         self.quotes = quotes
+        self.only_known = only_known  # reply only for symbols it has (like a failed batch)
         self.requested: list[list[str]] = []
 
     def get_quotes(self, symbols: list[str]) -> dict[str, dict | None]:
         self.requested.append(list(symbols))
+        if self.only_known:
+            return {s: self.quotes[s] for s in symbols if s in self.quotes}
         return {s: self.quotes.get(s) for s in symbols}
 
 
@@ -47,9 +56,10 @@ def _use(monkeypatch: pytest.MonkeyPatch, live: FakeLive, quotes: FakeQuotes) ->
     monkeypatch.setattr(market_dashboard, "_top_gainers_cache", {})
 
 
-def test_overview_v2_live_with_database_fallback(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def banknifty_close(db_session: Session) -> None:
+    if db_session.query(Company).filter(Company.symbol == "BANKNIFTY").first():
+        return
     company = Company(symbol="BANKNIFTY", name="Bank Nifty")
     db_session.add(company)
     db_session.flush()
@@ -65,6 +75,20 @@ def test_overview_v2_live_with_database_fallback(
         )
     )
     db_session.commit()
+
+
+BANKNIFTY_DB_QUOTE = {
+    "price": 48000.0,
+    "change_pct": 0,
+    "source": "database",
+    "date": "2026-02-03",
+}
+
+
+@pytest.mark.usefixtures("banknifty_close")
+def test_overview_v2_live_with_database_fallback(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     quotes = FakeQuotes({})
     _use(monkeypatch, FakeLive(True, {"NIFTY50": {"price": 25000.5, "change_pct": 0.4}}), quotes)
 
@@ -75,15 +99,38 @@ def test_overview_v2_live_with_database_fallback(
         "is_live": True,
         "indices": {
             "NIFTY50": {"price": 25000.5, "change_pct": 0.4, "source": "live"},
-            "BANKNIFTY": {
-                "price": 48000.0,
-                "change_pct": 0,
-                "source": "database",
-                "date": "2026-02-03",
-            },
+            "BANKNIFTY": BANKNIFTY_DB_QUOTE,
         },
     }
     assert quotes.requested == [["BANKNIFTY"]]
+
+
+@pytest.mark.usefixtures("banknifty_close")
+def test_overview_v2_empty_yfinance_reply_still_uses_database(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #34 review: get_quotes returning {} (not {index: None}) must not skip the DB."""
+    _use(monkeypatch, FakeLive(False, {}), FakeQuotes({}, only_known=True))
+
+    data = asyncio.run(market_dashboard.get_market_overview_v2(db=db_session))
+
+    assert data["indices"]["BANKNIFTY"] == BANKNIFTY_DB_QUOTE
+
+
+@pytest.mark.usefixtures("banknifty_close")
+def test_overview_v2_ignores_stale_live_ticks(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = {"NIFTY50": {"ltp": 1.0, "chp": 0.5}, "BANKNIFTY": {"ltp": 2.0, "chp": 9.0}}
+    quotes = FakeQuotes({"NIFTY50": {"price": 3.0, "change_pct": 1.0, "source": "yfinance"}})
+    _use(monkeypatch, FakeLive(True, ticks, stale=frozenset(ticks)), quotes)
+
+    data = asyncio.run(market_dashboard.get_market_overview_v2(db=db_session))
+
+    assert data["indices"] == {
+        "NIFTY50": {"price": 3.0, "change_pct": 1.0, "source": "yfinance"},
+        "BANKNIFTY": BANKNIFTY_DB_QUOTE,
+    }
 
 
 def test_overview_v2_closed_uses_yfinance(
@@ -189,7 +236,7 @@ def test_top_gainers_yfinance_fallback(
             "CCC": {"price": 3.0, "change_pct": 4.0},
         }
     )
-    _use(monkeypatch, FakeLive(True, {"AAA": {"ltp": 9.0, "chp": -2.0}}), quotes)
+    _use(monkeypatch, FakeLive(False, {"AAA": {"ltp": 9.0, "chp": 5.0}}), quotes)
 
     result = market_dashboard.get_top_gainers(limit=10, index=gainers_index, db=db_session)
 
@@ -197,6 +244,34 @@ def test_top_gainers_yfinance_fallback(
         "data": [
             {"symbol": "CCC", "price": 3.0, "change_pct": 4.0, "source": "yfinance"},
             {"symbol": "AAA", "price": 1.0, "change_pct": 0.5, "source": "yfinance"},
+        ],
+        "is_live": False,
+        "count": 2,
+    }
+
+
+def test_top_gainers_fall_back_per_constituent_without_a_fresh_tick(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, gainers_index: str
+) -> None:
+    """PR #34 review: one live tick must not hide the other constituents, and a stale
+    tick counts as missing."""
+    quotes = FakeQuotes(
+        {
+            "AAA": {"price": 1.0, "change_pct": 0.5},
+            "BBB": {"price": 2.0, "change_pct": 6.0},
+            "CCC": {"price": 3.0, "change_pct": 4.0},
+        }
+    )
+    ticks = {"AAA": {"ltp": 9.0, "chp": -2.0}, "BBB": {"ltp": 8.0, "chp": 7.0}}
+    _use(monkeypatch, FakeLive(True, ticks, stale=frozenset({"BBB"})), quotes)
+
+    result = market_dashboard.get_top_gainers(limit=10, index=gainers_index, db=db_session)
+
+    assert sorted(quotes.requested[0]) == ["BBB", "CCC"]
+    assert result == {
+        "data": [
+            {"symbol": "BBB", "price": 2.0, "change_pct": 6.0, "source": "yfinance"},
+            {"symbol": "CCC", "price": 3.0, "change_pct": 4.0, "source": "yfinance"},
         ],
         "is_live": True,
         "count": 2,
