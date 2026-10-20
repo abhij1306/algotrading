@@ -8,7 +8,7 @@ from fastapi import HTTPException
 class DataNotFoundError(HTTPException):
     """Raised when requested data does not exist"""
 
-    def __init__(self, symbol: str, detail: str = None):
+    def __init__(self, symbol: str, detail: str = None) -> None:
         message = detail or f"No data found for symbol: {symbol}"
         super().__init__(status_code=404, detail=message)
 
@@ -16,7 +16,7 @@ class DataNotFoundError(HTTPException):
 class DataSourceUnavailableError(HTTPException):
     """Raised when external data source is down"""
 
-    def __init__(self, source: str, detail: str = None):
+    def __init__(self, source: str, detail: str = None) -> None:
         message = (
             detail or f"Data source '{source}' is currently unavailable. Please check connection."
         )
@@ -26,14 +26,14 @@ class DataSourceUnavailableError(HTTPException):
 class InvalidSymbolError(HTTPException):
     """Raised when symbol is malformed or unknown"""
 
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str) -> None:
         super().__init__(status_code=400, detail=f"Invalid or unknown symbol: '{symbol}'")
 
 
 class MissingTokenError(HTTPException):
     """Raised when Fyers access token is expired/missing"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
             status_code=401, detail="Fyers access token missing or expired. Please re-authenticate."
         )

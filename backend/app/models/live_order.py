@@ -49,5 +49,5 @@ class LiveOrder(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<LiveOrder {self.id} {self.side} {self.quantity} {self.symbol} @ {self.status}>"

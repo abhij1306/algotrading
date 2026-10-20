@@ -70,7 +70,7 @@ class SymbolHistory(Base):
     created_at = Column(DateTime, default=datetime.now(UTC))
     updated_at = Column(DateTime, default=datetime.now(UTC), onupdate=datetime.now(UTC))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SymbolHistory {self.old_symbol} -> {self.new_symbol} ({self.change_type.value})>"
 
     def is_active_on(self, check_date: date) -> bool:

@@ -4,7 +4,9 @@ Checks if NSE market is open (9:15 AM - 3:30 PM IST, Mon-Fri)
 """
 
 import os
+from collections.abc import Callable
 from datetime import datetime, time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -62,26 +64,26 @@ def get_market_status() -> dict:
     }
 
 
-def require_market_open():
+def require_market_open() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator to ensure market is open before executing endpoint.
     Raises HTTPException(503) if market is closed.
     """
 
-    def decorator(func):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         from functools import wraps
 
         from fastapi import HTTPException
 
         @wraps(func)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - wraps any endpoint
             is_open, message = is_market_open()
             if not is_open:
                 raise HTTPException(status_code=503, detail=f"Service unavailable: {message}")
             return await func(*args, **kwargs)
 
         @wraps(func)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - wraps any endpoint
             is_open, message = is_market_open()
             if not is_open:
                 raise HTTPException(status_code=503, detail=f"Service unavailable: {message}")

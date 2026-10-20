@@ -6,12 +6,15 @@ For production, consider Redis
 import time
 from collections.abc import Callable
 from functools import wraps
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 _cache: dict[str, tuple[Any, float]] = {}
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def cache_with_ttl(ttl_seconds: int = 300):
+
+def cache_with_ttl(ttl_seconds: int = 300) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
     Decorator to cache function results with TTL.
 
@@ -25,9 +28,9 @@ def cache_with_ttl(ttl_seconds: int = 300):
             return symbols
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             # Create cache key from function name and arguments
             cache_key = f"{func.__module__}.{func.__name__}:{str(args)}:{str(kwargs)}"
 
@@ -48,7 +51,7 @@ def cache_with_ttl(ttl_seconds: int = 300):
     return decorator
 
 
-def clear_cache(pattern: str | None = None):
+def clear_cache(pattern: str | None = None) -> None:
     """
     Clear cache entries.
 

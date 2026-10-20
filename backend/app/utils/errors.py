@@ -5,6 +5,7 @@ Sanitizes error messages to prevent information leakage
 
 import logging
 import os
+from collections.abc import Mapping
 
 from fastapi import HTTPException, status
 
@@ -156,7 +157,13 @@ class SafeHTTPException(HTTPException):
     HTTPException that automatically sanitizes error messages in production.
     """
 
-    def __init__(self, status_code: int, detail: str, user_message: str | None = None, **kwargs):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        user_message: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         """
         Args:
             status_code: HTTP status code
@@ -172,4 +179,4 @@ class SafeHTTPException(HTTPException):
         else:
             response_detail = detail
 
-        super().__init__(status_code=status_code, detail=response_detail, **kwargs)
+        super().__init__(status_code=status_code, detail=response_detail, headers=headers)

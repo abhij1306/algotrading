@@ -32,7 +32,7 @@ class ClientConnection:
 
 
 class ConnectionManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.subscriptions: dict[WebSocket, set[str]] = {}
         self.connections: dict[WebSocket, ClientConnection] = {}
         self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
@@ -41,7 +41,7 @@ class ConnectionManager:
         self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()
 
-    def set_loop(self, loop):
+    def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         """Set event loop for thread-safe broadcasting"""
         self.loop = loop
         logger.debug(f"[WSManager] Event loop set: {loop is not None}")
@@ -114,7 +114,7 @@ class ConnectionManager:
                 logger.warning("[WSManager] Releasing provider symbols failed: %s", exc)
         return set(released)
 
-    async def subscribe(self, websocket: WebSocket, symbols: list[str]):
+    async def subscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
         """Subscribe a specific connection to symbols"""
         async with self._lock:
             client = self.connections.get(websocket)
@@ -127,11 +127,13 @@ class ConnectionManager:
                     "websocket.subscriptions.active", float(len(self._global_subscriptions))
                 )
                 logger.debug(
-                    f"[WSManager] Client subscribed to {len(symbols)} symbols. Total symbols for client: {len(client.subscriptions)}"
+                    "[WSManager] Client subscribed to %s symbols. Total symbols for client: %s",
+                    len(symbols),
+                    len(client.subscriptions),
                 )
         await asyncio.sleep(0)
 
-    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]):
+    async def unsubscribe(self, websocket: WebSocket, symbols: list[str]) -> None:
         """Unsubscribe a specific connection from symbols"""
         async with self._lock:
             client = self.connections.get(websocket)
@@ -148,7 +150,9 @@ class ConnectionManager:
                     "websocket.subscriptions.active", float(len(self._global_subscriptions))
                 )
                 logger.debug(
-                    f"[WSManager] Client unsubscribed from {len(symbols)} symbols. Remaining: {len(client.subscriptions)}"
+                    "[WSManager] Client unsubscribed from %s symbols. Remaining: %s",
+                    len(symbols),
+                    len(client.subscriptions),
                 )
         await asyncio.sleep(0)
 
@@ -157,10 +161,11 @@ class ConnectionManager:
         # Return a copy so callers can safely diff before/after subscribe/unsubscribe.
         return set(self._global_subscriptions)
 
-    async def broadcast(self, message: dict[str, Any]):
+    async def broadcast(self, message: dict[str, Any]) -> None:
         """
         Broadcast JSON message to clients.
-        Supports 'ticker_batch' (filtered per client) and single 'ticker' (broadcast to subscribers).
+        Supports 'ticker_batch' (filtered per client) and single 'ticker'
+        (broadcast to subscribers).
         """
         async with self._lock:
             active_connections = list(self.connections.values())

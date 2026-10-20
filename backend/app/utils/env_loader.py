@@ -1,8 +1,9 @@
+import logging
 import os
 from pathlib import Path
 
 
-def load_dotenv(path: str = ".env"):
+def load_dotenv(path: str = ".env") -> None:
     """
     Manually load .env file into os.environ.
     Replaces python-dotenv dependency to fix PyInstaller build issues.
@@ -45,4 +46,4 @@ def load_dotenv(path: str = ".env"):
                     if key not in os.environ:
                         os.environ[key] = value
     except Exception as e:
-        print(f"Warning: Failed to load .env file: {e}")
+        logging.getLogger(__name__).warning("Failed to load .env file: %s", e)

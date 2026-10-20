@@ -173,7 +173,9 @@ calculate_rsi = rsi
 # --- Advanced Indicators ---
 
 
-def calculate_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+def calculate_macd(
+    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """Calculate MACD, Signal, and Histogram"""
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
@@ -183,7 +185,9 @@ def calculate_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: in
     return macd_line, signal_line, histogram
 
 
-def calculate_bbands(series: pd.Series, period: int = 20, num_std: float = 2.0):
+def calculate_bbands(
+    series: pd.Series, period: int = 20, num_std: float = 2.0
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """Calculate Bollinger Bands"""
     ma = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
@@ -194,7 +198,7 @@ def calculate_bbands(series: pd.Series, period: int = 20, num_std: float = 2.0):
 
 def calculate_stoch(
     high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3
-):
+) -> tuple[pd.Series, pd.Series]:
     """Calculate Stochastic Oscillator"""
     lowest_low = low.rolling(window=k_period).min()
     highest_high = high.rolling(window=k_period).max()
@@ -204,7 +208,7 @@ def calculate_stoch(
     return k, d
 
 
-def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14):
+def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
     """Calculate Average Directional Index (ADX)"""
     plus_dm = high.diff()
     minus_dm = low.diff()

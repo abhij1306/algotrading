@@ -1,6 +1,8 @@
-from typing import Any
+import logging
 
 from ..database import AgentAuditLog, SessionLocal
+
+logger = logging.getLogger(__name__)
 
 
 class AuditLogger:
@@ -19,7 +21,7 @@ class AuditLogger:
         reasoning: str,
         confidence: float,
         status: str = "SUCCESS",
-    ):
+    ) -> None:
         """Log a high-level agent decision (e.g., Signal Generated, Trade Executed)"""
         db = SessionLocal()
         try:
@@ -37,7 +39,7 @@ class AuditLogger:
             db.add(log)
             db.commit()
         except Exception as e:
-            print(f"[ERROR] [AUDIT FAIL] {e}")
+            logger.error("[AUDIT FAIL] %s", e)
         finally:
             db.close()
 
@@ -46,12 +48,13 @@ class AuditLogger:
         broker_name: str,
         method: str,
         params: dict,
-        response: Any,
+        response: object,
         duration_ms: int,
         error: str = None,
-    ):
+    ) -> None:
         """Log a broker API call (Simulated or Real)"""
-        # For API logs, we might want a separate table 'SystemLogs' or use AuditLog with specific types
+        # For API logs, we might want a separate table 'SystemLogs'
+        # or use AuditLog with specific types
         # Using AgentAuditLog with type="BROKER_API"
 
         status = "FAILURE" if error else "SUCCESS"

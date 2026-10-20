@@ -5,7 +5,7 @@ Shared utility helpers for the SmartTrader backend.
 from typing import Any
 
 
-def safe_float(value: Any, default: float = 0.0) -> float:
+def safe_float(value: Any, default: float = 0.0) -> float:  # noqa: ANN401 - any payload value
     """
     Safely convert a value to float, returning a default on failure.
 
@@ -22,7 +22,7 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def safe_int(value: Any, default: int = 0) -> int:
+def safe_int(value: Any, default: int = 0) -> int:  # noqa: ANN401 - any payload value
     """
     Safely convert a value to int, returning a default on failure.
 
