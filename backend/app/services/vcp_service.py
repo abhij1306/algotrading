@@ -1,3 +1,10 @@
+"""VCP strategy facade for `routers/strategies.py`.
+
+Scan, regime, positions and config live in `app.services.vcp`; this class wires them to
+the production adapters and delegates. The backtest still lives here until it moves to
+`vcp/backtest.py` (docs/plans/architecture/screener-backtest.md, section 4).
+"""
+
 from __future__ import annotations
 
 import logging
@@ -11,47 +18,39 @@ from statistics import mean
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import db_session_scope
-from ..exceptions import DataUnavailableError
-from ..models import (
-    BacktestRun,
-    Company,
-    IndexConstituentHistory,
-    IndexUniverseDefinition,
-    VCPScanResult,
-)
+from ..models import BacktestRun
 from ..utils.runtime_metrics import runtime_metrics
 from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
-from .vcp import config, pattern
-from .vcp.config import DEFAULT_UNIVERSE
+from .vcp import pattern
+from .vcp import universe as vcp_universe
+from .vcp.config import (
+    DEFAULT_CAPITAL,
+    DEFAULT_UNIVERSE,
+    GAP_UP_MAX_PCT,
+    MAX_POSITION_CAP,
+    RISK_PCT_BULL,
+    TRAIL_SLIPPAGE_PCT,
+)
 from .vcp.pattern import STOP_OFFSET_PCT
 from .vcp.positions import PositionService
 from .vcp.quotes import FyersQuoteSource
+from .vcp.regime import REGIME_DATA_UNAVAILABLE, RegimeService, RegimeSnapshot
+from .vcp.scan import INVALID_STOP_DISTANCE, ScanService, build_signal
 
 logger = logging.getLogger(__name__)
 
-REGIME_DATA_UNAVAILABLE = "Market regime unavailable: NIFTY50 index history is missing"
-DEFAULT_CAPITAL = 1_000_000.0
-RISK_PCT_BULL = 0.01
-RISK_PCT_BEAR = 0.005
-MAX_POSITION_CAP = 0.20
-GAP_UP_MAX_PCT = 0.02
-TRAIL_SLIPPAGE_PCT = 0.001
-# Log message for a signal or trade dropped because its stop leaves no tradable risk.
-INVALID_STOP_DISTANCE = "Invalid stop distance"
-
-
-@dataclass
-class RegimeSnapshot:
-    scan_date: date
-    regime: str
-    close: float
-    ma_200: float
-    risk_pct: float
+__all__ = [
+    "DEFAULT_CAPITAL",
+    "DEFAULT_UNIVERSE",
+    "REGIME_DATA_UNAVAILABLE",
+    "RegimeSnapshot",
+    "VCPService",
+    "vcp_service",
+]
 
 
 @dataclass
@@ -72,562 +71,46 @@ class _VCPBacktestState:
 
 
 class VCPService:
-    def __init__(self, positions: PositionService | None = None) -> None:
+    def __init__(
+        self,
+        positions: PositionService | None = None,
+        regime: RegimeService | None = None,
+        scan: ScanService | None = None,
+    ) -> None:
         self._positions = positions or PositionService(FyersQuoteSource())
+        self._regime = regime or RegimeService(daily_history_service)
+        self._scan = scan or ScanService(daily_history_service, self._regime)
 
-    def _load_symbol_history(
-        self,
-        symbols: list[str],
-        start_date: date,
-        end_date: date,
-    ) -> pd.DataFrame:
-        return daily_history_service.load_equity_history(
-            symbols=symbols,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-    @staticmethod
-    def _get_config(db: Session, key: str, default: str) -> str:
-        return config.get_config(db, key, default)
-
-    @staticmethod
-    def _set_config(db: Session, key: str, value: str) -> None:
-        config.set_config(db, key, value)
-
-    def _constituents_for_date(
-        self, db: Session, universe: str, as_of: date
-    ) -> tuple[list[str], str]:
-        definition = (
-            db.query(IndexUniverseDefinition)
-            .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
-            .first()
-        )
-        if definition is None:
-            return [], "unavailable"
-
-        earliest = (
-            db.query(func.min(IndexConstituentHistory.effective_from))
-            .filter(IndexConstituentHistory.universe_id == definition.id)
-            .scalar()
-        )
-        if earliest and as_of < earliest:
-            rows = (
-                db.query(IndexConstituentHistory.symbol)
-                .filter(
-                    IndexConstituentHistory.universe_id == definition.id,
-                    IndexConstituentHistory.effective_to.is_(None),
-                )
-                .order_by(IndexConstituentHistory.symbol.asc())
-                .all()
-            )
-            return [row[0] for row in rows], f"indicative_pre_{earliest.isoformat()}"
-
-        rows = (
-            db.query(IndexConstituentHistory.symbol)
-            .filter(
-                IndexConstituentHistory.universe_id == definition.id,
-                IndexConstituentHistory.effective_from <= as_of,
-                (
-                    IndexConstituentHistory.effective_to.is_(None)
-                    | (IndexConstituentHistory.effective_to >= as_of)
-                ),
-            )
-            .order_by(IndexConstituentHistory.symbol.asc())
-            .all()
-        )
-        symbols = [row[0] for row in rows]
-        if symbols:
-            return symbols, "bias_corrected"
-
-        fallback_rows = (
-            db.query(IndexConstituentHistory.symbol)
-            .filter(
-                IndexConstituentHistory.universe_id == definition.id,
-                IndexConstituentHistory.effective_to.is_(None),
-            )
-            .order_by(IndexConstituentHistory.symbol.asc())
-            .all()
-        )
-        return [row[0] for row in fallback_rows], "live_fallback"
-
-    def _constituents_in_range(
-        self, db: Session, universe: str, start_date: date, end_date: date
-    ) -> list[str]:
-        """Every symbol that was a member at any point in [start_date, end_date]."""
-        symbols: set[str] = set()
-        definition = (
-            db.query(IndexUniverseDefinition)
-            .filter(IndexUniverseDefinition.index_code == universe.upper().strip())
-            .first()
-        )
-        if definition is not None:
-            rows = (
-                db.query(IndexConstituentHistory.symbol)
-                .filter(
-                    IndexConstituentHistory.universe_id == definition.id,
-                    IndexConstituentHistory.effective_from <= end_date,
-                    (
-                        IndexConstituentHistory.effective_to.is_(None)
-                        | (IndexConstituentHistory.effective_to >= start_date)
-                    ),
-                )
-                .all()
-            )
-            symbols.update(row[0] for row in rows)
-        return sorted(symbols)
-
-    def _company_meta(self, db: Session, symbols: list[str]) -> dict[str, dict[str, str]]:
-        if not symbols:
-            return {}
-        rows = db.query(Company).filter(Company.symbol.in_(symbols)).all()
-        return {
-            row.symbol: {"name": row.name or row.symbol, "sector": row.sector or "Unknown"}
-            for row in rows
-        }
-
-    @staticmethod
-    def _asof_date(requested: date | None = None) -> date:
-        if requested is not None:
-            return requested
-        latest = daily_history_service.latest_equity_date()
-        if latest is None:
-            raise ValueError("Canonical daily equity history is empty")
-        return latest
-
-    def get_regime(self, as_of: date | None = None) -> RegimeSnapshot:
-        scoped = daily_history_service.load_index_history("NIFTY50")
-        if scoped.empty:
-            logger.warning("Regime unavailable: NIFTY50 index history is missing")
-            raise DataUnavailableError(REGIME_DATA_UNAVAILABLE)
-        scan_date = as_of or scoped["date"].max()
-        scoped = scoped[scoped["date"] <= scan_date].sort_values("date").tail(260).copy()
-        if scoped.empty:
-            logger.warning(
-                "Regime unavailable: no NIFTY50 index history on or before %s", scan_date
-            )
-            raise DataUnavailableError(REGIME_DATA_UNAVAILABLE)
-        scoped["ma_200"] = scoped["close"].rolling(200).mean()
-        latest = scoped.iloc[-1]
-        ma_200 = (
-            float(latest["ma_200"]) if not pd.isna(latest["ma_200"]) else float(latest["close"])
-        )
-        close = float(latest["close"])
-        bull = close >= ma_200
-        return RegimeSnapshot(
-            scan_date=scan_date,
-            regime="BULL" if bull else "BEAR",
-            close=round(close, 2),
-            ma_200=round(ma_200, 2),
-            risk_pct=RISK_PCT_BULL if bull else RISK_PCT_BEAR,
-        )
-
-    def _compute_rs_map(self, symbol_frames: dict[str, pd.DataFrame]) -> dict[str, int]:
-        return pattern.compute_rs_map(symbol_frames)
-
-    @staticmethod
-    def _signal_shares(
-        symbol: str, capital: float, risk_pct: float, pivot_high: float, stop_level: float
-    ) -> int | None:
-        """Shares risking `risk_pct` of capital, capped at MAX_POSITION_CAP; None if zero."""
-        risk_distance = pivot_high - stop_level
-        shares = int(math.floor((capital * risk_pct) / risk_distance))
-        if shares > 0:
-            shares = min(shares, int(math.floor((capital * MAX_POSITION_CAP) / pivot_high)))
-        if shares > 0:
-            return shares
-        logger.warning(
-            INVALID_STOP_DISTANCE,
-            extra={
-                "symbol": symbol,
-                "capital": round(capital, 2),
-                "risk_pct": risk_pct,
-                "pivot_high": round(pivot_high, 2),
-                "stop_level": round(stop_level, 2),
-                "risk_distance": round(risk_distance, 4),
-                "shares": shares,
-            },
-        )
-        return None
-
-    def _analyze_pattern(
-        self,
-        frame: pd.DataFrame,
-        rs_rating: int,
-        company_meta: dict[str, str],
-        regime: RegimeSnapshot,
-        capital: float,
-    ) -> dict[str, Any] | None:
-        setup = pattern.analyze_pattern(frame, rs_rating)
-        if setup is None:
-            return None
-
-        symbol = str(frame["symbol"].iloc[-1])
-        pivot_high = setup.pivot_high
-        stop_level = setup.stop_level
-        risk_distance = pivot_high - stop_level
-        if risk_distance <= 0:
-            logger.warning(
-                INVALID_STOP_DISTANCE,
-                extra={
-                    "symbol": symbol,
-                    "pivot_high": round(pivot_high, 2),
-                    "final_contraction_low": round(setup.final_contraction_low, 2),
-                    "stop_level": round(stop_level, 2),
-                    "stop_offset_pct": STOP_OFFSET_PCT,
-                },
-            )
-            return None
-        stop_pct = (risk_distance / pivot_high) * 100 if pivot_high > 0 else 0.0
-
-        shares = self._signal_shares(symbol, capital, regime.risk_pct, pivot_high, stop_level)
-        if shares is None:
-            return None
-        depths = setup.contraction_depths
-        breakout = setup.breakout
-        position_value = shares * pivot_high
-        two_r_target = pivot_high + (2.0 * risk_distance)
-        return {
-            "symbol": symbol,
-            "company_name": company_meta.get("name") or symbol,
-            "sector": company_meta.get("sector") or "Unknown",
-            "grade": setup.grade,
-            "rs_rating": int(rs_rating),
-            "stage2_conditions_met": int(setup.stage2.conditions_met),
-            "contraction_count": len(setup.contractions),
-            "contraction_depths": depths,
-            "final_contraction_depth": float(depths[-1]),
-            "volume_dry_up_pct": round(setup.volume.dry_up_pct, 2),
-            "pivot_high": round(pivot_high, 2),
-            "stop_level": round(stop_level, 2),
-            "stop_pct": round(stop_pct, 2),
-            "days_in_base": int(setup.days_in_base),
-            "is_breakout": breakout.is_breakout,
-            "breakout_price": round(setup.latest_close, 2) if breakout.is_breakout else None,
-            "breakout_volume_mult": round(breakout.volume_mult, 2),
-            "close_position_in_range": round(breakout.close_position, 4),
-            "overhead_clear": True,
-            "regime": regime.regime,
-            "signal_status": "SIGNAL",
-            "planned_entry": round(pivot_high, 2),
-            "planned_shares": shares,
-            "planned_position_value": round(position_value, 2),
-            "capital_risk": round(shares * max(0.0, pivot_high - stop_level), 2),
-            "two_r_target": round(two_r_target, 2),
-            "metadata_json": {
-                "stage2": setup.stage2.averages(),
-                "volume_slope": round(setup.volume.slope, 4),
-                "base_depth_pct": round(setup.base_depth_pct, 2),
-                "final_contraction_low": round(setup.final_contraction_low, 2),
-                "stop_offset_pct": STOP_OFFSET_PCT,
-                "risk_pct": regime.risk_pct,
-            },
-        }
-
-    @staticmethod
-    def _serialize_regime(regime: RegimeSnapshot) -> dict[str, Any]:
-        return {
-            "scan_date": regime.scan_date.isoformat(),
-            "regime": regime.regime,
-            "close": regime.close,
-            "ma_200": regime.ma_200,
-            "risk_pct": round(regime.risk_pct * 100.0, 2),
-        }
-
-    @staticmethod
-    def _serialize_scan_row(row: VCPScanResult) -> dict[str, Any]:
-        metadata_json = row.metadata_json or {}
-        risk_distance = max(0.01, float(row.pivot_high) - float(row.stop_level))
-        risk_pct = float(metadata_json.get("risk_pct", RISK_PCT_BULL))
-        planned_shares = int(math.floor((DEFAULT_CAPITAL * risk_pct) / risk_distance))
-        planned_shares = max(
-            0,
-            min(
-                planned_shares,
-                int(math.floor((DEFAULT_CAPITAL * MAX_POSITION_CAP) / float(row.pivot_high))),
-            ),
-        )
-        planned_value = round(planned_shares * float(row.pivot_high), 2)
-        capital_risk = round(planned_shares * risk_distance, 2)
-        return {
-            "id": row.id,
-            "scan_date": row.scan_date.isoformat(),
-            "symbol": row.symbol,
-            "company_name": row.company_name or row.symbol,
-            "sector": row.sector or "Unknown",
-            "grade": row.grade,
-            "rs_rating": row.rs_rating,
-            "stage2_conditions_met": row.stage2_conditions_met,
-            "contraction_count": row.contraction_count,
-            "contraction_depths": row.contraction_depths,
-            "final_contraction_depth": row.final_contraction_depth,
-            "volume_dry_up_pct": row.volume_dry_up_pct,
-            "pivot_high": row.pivot_high,
-            "stop_level": row.stop_level,
-            "stop_pct": row.stop_pct,
-            "days_in_base": row.days_in_base,
-            "is_breakout": row.is_breakout,
-            "breakout_price": row.breakout_price,
-            "breakout_volume_mult": row.breakout_volume_mult,
-            "close_position_in_range": row.close_position_in_range,
-            "overhead_clear": row.overhead_clear,
-            "regime": row.regime,
-            "signal_status": row.signal_status,
-            "planned_entry": row.pivot_high,
-            "planned_shares": planned_shares,
-            "planned_position_value": planned_value,
-            "capital_risk": capital_risk,
-            "two_r_target": round(float(row.pivot_high) + (2.0 * risk_distance), 2),
-            "metadata": metadata_json,
-        }
+    # --- scan -------------------------------------------------------------------
 
     def run_scan(
         self, universe: str = DEFAULT_UNIVERSE, scan_date: date | None = None
     ) -> dict[str, Any]:
-        started = time.perf_counter()
-        scan_date = self._asof_date(scan_date)
-        scan_id = str(uuid.uuid4())
-        scan_timestamp = datetime.now(UTC)
-        with db_session_scope() as db:
-            symbols, constituent_mode = self._constituents_for_date(db, universe, scan_date)
-            if not symbols:
-                raise ValueError(f"No constituents found for {universe} on {scan_date.isoformat()}")
-            scoped = self._load_symbol_history(
-                symbols=symbols,
-                start_date=(pd.Timestamp(scan_date) - pd.Timedelta(days=420)).date(),
-                end_date=scan_date,
-            )
-            symbol_frames = {
-                symbol: frame.copy()
-                for symbol, frame in scoped.groupby("symbol", sort=True)
-                if len(frame) >= 260 and frame["date"].max() == scan_date
-            }
-            company_meta = self._company_meta(db, list(symbol_frames.keys()))
-            rs_map = self._compute_rs_map(symbol_frames)
-            regime = self.get_regime(scan_date)
-            capital = float(self._get_config(db, "DEFAULT_CAPITAL", str(DEFAULT_CAPITAL)))
-
-            persisted: list[VCPScanResult] = []
-            for symbol, frame in symbol_frames.items():
-                result = self._analyze_pattern(
-                    frame=frame,
-                    rs_rating=rs_map.get(symbol, 0),
-                    company_meta=company_meta.get(symbol, {"name": symbol, "sector": "Unknown"}),
-                    regime=regime,
-                    capital=capital,
-                )
-                if result is None:
-                    continue
-                record = VCPScanResult(
-                    scan_id=scan_id,
-                    scan_date=scan_date,
-                    scan_timestamp=scan_timestamp,
-                    universe=universe.upper(),
-                    symbol=result["symbol"],
-                    company_name=result["company_name"],
-                    sector=result["sector"],
-                    grade=result["grade"],
-                    rs_rating=result["rs_rating"],
-                    stage2_conditions_met=result["stage2_conditions_met"],
-                    contraction_count=result["contraction_count"],
-                    contraction_depths=result["contraction_depths"],
-                    final_contraction_depth=result["final_contraction_depth"],
-                    volume_dry_up_pct=result["volume_dry_up_pct"],
-                    pivot_high=result["pivot_high"],
-                    stop_level=result["stop_level"],
-                    stop_pct=result["stop_pct"],
-                    days_in_base=result["days_in_base"],
-                    is_breakout=result["is_breakout"],
-                    breakout_price=result["breakout_price"],
-                    breakout_volume_mult=result["breakout_volume_mult"],
-                    close_position_in_range=result["close_position_in_range"],
-                    overhead_clear=result["overhead_clear"],
-                    regime=result["regime"],
-                    signal_status="SIGNAL",
-                    metadata_json=result["metadata_json"],
-                )
-                db.add(record)
-                persisted.append(record)
-
-            db.commit()
-            for record in persisted:
-                db.refresh(record)
-
-            self._set_config(db, "LAST_VCP_SCAN_DATE", scan_date.isoformat())
-            self._set_config(db, "LAST_VCP_SCAN_UNIVERSE", universe.upper())
-            self._set_config(db, "LAST_VCP_SCAN_RESULT_COUNT", str(len(persisted)))
-
-            results = [self._serialize_scan_row(record) for record in persisted]
-            results.sort(
-                key=lambda item: (
-                    {"A": 0, "B": 1, "C": 2}.get(item["grade"], 3),
-                    0 if item["is_breakout"] else 1,
-                    item["final_contraction_depth"],
-                    -item["rs_rating"],
-                )
-            )
-            duration_ms = (time.perf_counter() - started) * 1000.0
-            runtime_metrics.observe_ms("strategy.vcp.scan_ms", duration_ms)
-            runtime_metrics.increment("strategy.vcp.scan_runs")
-            logger.info(
-                "VCP scan complete universe=%s scan_id=%s eligible_symbols=%s results=%s "
-                "duration_ms=%.2f",
-                universe.upper(),
-                scan_id,
-                len(symbol_frames),
-                len(results),
-                duration_ms,
-            )
-            return {
-                "scan_id": scan_id,
-                "scan_timestamp": scan_timestamp.isoformat(),
-                "scan_date": scan_date.isoformat(),
-                "universe": universe.upper(),
-                "regime": self._serialize_regime(regime),
-                "constituent_mode": constituent_mode,
-                "total_symbols_scanned": len(symbol_frames),
-                "results": results,
-            }
+        return self._scan.run_scan(universe, scan_date)
 
     def get_latest_scan(
         self, universe: str = DEFAULT_UNIVERSE, show_all: bool = False
     ) -> dict[str, Any]:
-        with db_session_scope() as db:
-            latest_date = (
-                db.query(func.max(VCPScanResult.scan_timestamp))
-                .filter(VCPScanResult.universe == universe.upper())
-                .scalar()
-            )
-            config_latest_date = self._get_config(db, "LAST_VCP_SCAN_DATE", "")
-            if latest_date is None and config_latest_date:
-                latest_date = datetime.strptime(config_latest_date, "%Y-%m-%d").date()
-            if latest_date is None:
-                return {
-                    "scan_date": None,
-                    "universe": universe.upper(),
-                    "results": [],
-                    "regime": self._serialize_regime(self.get_regime()),
-                }
-            latest_row = (
-                db.query(VCPScanResult)
-                .filter(VCPScanResult.universe == universe.upper())
-                .order_by(
-                    VCPScanResult.scan_timestamp.desc(),
-                    VCPScanResult.created_at.desc(),
-                    VCPScanResult.id.desc(),
-                )
-                .first()
-            )
-            if latest_row is None:
-                return {
-                    "scan_date": None,
-                    "universe": universe.upper(),
-                    "results": [],
-                    "regime": self._serialize_regime(self.get_regime()),
-                }
-            rows = (
-                db.query(VCPScanResult)
-                .filter(
-                    VCPScanResult.universe == universe.upper(),
-                    VCPScanResult.scan_id == latest_row.scan_id,
-                )
-                .order_by(
-                    VCPScanResult.grade.asc(),
-                    VCPScanResult.is_breakout.desc(),
-                    VCPScanResult.rs_rating.desc(),
-                )
-                .all()
-            )
-            if not show_all:
-                rows = [row for row in rows if row.grade in {"A", "B"}]
-            return {
-                "scan_id": latest_row.scan_id,
-                "scan_timestamp": latest_row.scan_timestamp.isoformat()
-                if latest_row.scan_timestamp
-                else None,
-                "scan_date": latest_row.scan_date.isoformat(),
-                "universe": universe.upper(),
-                "regime": self._serialize_regime(self.get_regime(latest_row.scan_date)),
-                "results": [self._serialize_scan_row(row) for row in rows],
-            }
+        return self._scan.get_latest_scan(universe, show_all)
 
     def get_signal_detail(self, symbol: str, scan_date: date | None = None) -> dict[str, Any]:
-        with db_session_scope() as db:
-            query = db.query(VCPScanResult).filter(VCPScanResult.symbol == symbol.upper())
-            row = (
-                query.order_by(
-                    VCPScanResult.scan_timestamp.desc(),
-                    VCPScanResult.created_at.desc(),
-                    VCPScanResult.id.desc(),
-                ).first()
-                if scan_date is None
-                else query.filter(VCPScanResult.scan_date == scan_date)
-                .order_by(VCPScanResult.scan_timestamp.desc())
-                .first()
-            )
-            if row is None:
-                raise ValueError(f"No VCP signal found for {symbol}")
-
-            history = (
-                self._load_symbol_history(
-                    symbols=[row.symbol],
-                    start_date=(pd.Timestamp(row.scan_date) - pd.Timedelta(days=260)).date(),
-                    end_date=row.scan_date,
-                )
-                .sort_values("date")
-                .tail(160)
-                .copy()
-            )
-            history["ema_21"] = history["close_ref"].ewm(span=21, adjust=False).mean()
-            history["ma_50"] = history["close_ref"].rolling(50).mean()
-            history["ma_150"] = history["close_ref"].rolling(150).mean()
-            history["ma_200"] = history["close_ref"].rolling(200).mean()
-            return {
-                "signal": self._serialize_scan_row(row),
-                "chart": [
-                    {
-                        "date": item["date"].isoformat(),
-                        "open": round(float(item["open"]), 2),
-                        "high": round(float(item["high"]), 2),
-                        "low": round(float(item["low"]), 2),
-                        "close": round(float(item["close"]), 2),
-                        "volume": int(item["volume"]),
-                        "ema_21": round(float(item["ema_21"]), 2)
-                        if not pd.isna(item["ema_21"])
-                        else None,
-                        "ma_50": round(float(item["ma_50"]), 2)
-                        if not pd.isna(item["ma_50"])
-                        else None,
-                        "ma_150": round(float(item["ma_150"]), 2)
-                        if not pd.isna(item["ma_150"])
-                        else None,
-                        "ma_200": round(float(item["ma_200"]), 2)
-                        if not pd.isna(item["ma_200"])
-                        else None,
-                    }
-                    for item in history.to_dict("records")
-                ],
-            }
+        return self._scan.get_signal_detail(symbol, scan_date)
 
     def queue_signal(self, signal_id: int) -> dict[str, Any]:
-        with db_session_scope() as db:
-            row = db.query(VCPScanResult).filter(VCPScanResult.id == signal_id).first()
-            if row is None:
-                raise ValueError("Signal not found")
-            row.signal_status = "PENDING_ENTRY"
-            db.commit()
-            db.refresh(row)
-            return self._serialize_scan_row(row)
+        return self._scan.queue_signal(signal_id)
 
     def cancel_signal(self, signal_id: int) -> dict[str, Any]:
-        with db_session_scope() as db:
-            row = db.query(VCPScanResult).filter(VCPScanResult.id == signal_id).first()
-            if row is None:
-                raise ValueError("Signal not found")
-            row.signal_status = "SIGNAL"
-            db.commit()
-            db.refresh(row)
-            return self._serialize_scan_row(row)
+        return self._scan.cancel_signal(signal_id)
+
+    # --- regime -----------------------------------------------------------------
+
+    def get_regime(self, as_of: date | None = None) -> RegimeSnapshot:
+        return self._regime.get_regime(as_of)
+
+    def get_regime_summary(self) -> dict[str, Any]:
+        return self._regime.summary()
+
+    # --- positions and status ---------------------------------------------------
 
     def list_positions(self) -> dict[str, Any]:
         return self._positions.list_positions()
@@ -647,9 +130,44 @@ class VCPService:
         return self.get_status()
 
     def get_status(self, universe: str | None = None) -> dict[str, Any]:
-        return self._positions.get_status(
-            universe, regime=lambda: self._serialize_regime(self.get_regime())
+        return self._positions.get_status(universe, regime=self._regime.summary)
+
+    # --- backtest ---------------------------------------------------------------
+
+    def _load_symbol_history(
+        self,
+        symbols: list[str],
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
+        return daily_history_service.load_equity_history(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
         )
+
+    @staticmethod
+    def _constituents_for_date(
+        db: Session, universe_code: str, as_of: date
+    ) -> tuple[list[str], str]:
+        return vcp_universe.constituents_for_date(db, universe_code, as_of)
+
+    @staticmethod
+    def _company_meta(db: Session, symbols: list[str]) -> dict[str, dict[str, str]]:
+        return vcp_universe.company_meta(db, symbols)
+
+    def _compute_rs_map(self, symbol_frames: dict[str, pd.DataFrame]) -> dict[str, int]:
+        return pattern.compute_rs_map(symbol_frames)
+
+    def _analyze_pattern(
+        self,
+        frame: pd.DataFrame,
+        rs_rating: int,
+        company_meta: dict[str, str],
+        regime: RegimeSnapshot,
+        capital: float,
+    ) -> dict[str, Any] | None:
+        return build_signal(frame, rs_rating, company_meta, regime, capital)
 
     def _daily_symbol_map(
         self, stock_df: pd.DataFrame, symbols: list[str], start_date: date, end_date: date
@@ -806,7 +324,7 @@ class VCPService:
         """(per-symbol history frames, trading dates in range) for a backtest."""
         # Load everyone who was a member at any point in the range, not just the
         # end-date members, so names dropped from the index stay tradable until they left.
-        range_symbols = self._constituents_in_range(db, universe, start_date, end_date)
+        range_symbols = vcp_universe.constituents_in_range(db, universe, start_date, end_date)
         combined = self._load_symbol_history(
             symbols=range_symbols,
             start_date=(pd.Timestamp(start_date) - pd.Timedelta(days=420)).date(),

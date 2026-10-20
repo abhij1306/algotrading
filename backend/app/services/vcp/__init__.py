@@ -1,8 +1,14 @@
 """VCP (volatility contraction pattern) strategy package.
 
-`pattern` holds the pure pattern-detection and relative-strength functions.
-`positions` holds open positions, manual close/stop, halt and status, reading prices
-through the `quotes.QuoteSource` port; `config` holds the `system_config` helpers.
-Scan, regime and backtest still live in `app.services.vcp_service`
-and move here in later slices (docs/plans/architecture/screener-backtest.md, section 4).
+- `config`: defaults, `VCPParams` and the `system_config` keys and helpers.
+- `pattern`: pure pattern-detection and relative-strength functions.
+- `universe`: point-in-time index membership and company metadata.
+- `regime`: NIFTY50 vs its 200-day average, read through the `IndexHistory` port.
+- `scan`: the universe scan, signal sizing, ranking and stored-signal views.
+- `positions`: open positions, manual close/stop, halt and status, priced through the
+  `quotes.QuoteSource` port.
+
+`app.services.vcp_service.VCPService` wires these to the production adapters for the
+router. The backtest still lives there and moves here in a later slice
+(docs/plans/architecture/screener-backtest.md, section 4).
 """

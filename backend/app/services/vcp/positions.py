@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -21,7 +20,15 @@ from ...models import StrategyPosition, VCPScanResult
 from ...utils.clock import SYSTEM_CLOCK, Clock
 from ...utils.market_hours import IST
 from ...utils.runtime_metrics import runtime_metrics
-from .config import DEFAULT_UNIVERSE, get_config, set_config
+from .config import (
+    DEFAULT_UNIVERSE,
+    HALT_REASON_KEY,
+    HALTED_AT_KEY,
+    TRADING_HALTED_KEY,
+    get_config,
+    last_scan_date,
+    set_config,
+)
 from .quotes import QuoteSource
 
 OPEN_STATUSES = ("OPEN", "OPEN_PARTIAL")
@@ -177,14 +184,14 @@ class PositionService:
 
     def halt(self, reason: str | None = None) -> None:
         with self._session_scope() as db:
-            set_config(db, "TRADING_HALTED", "true")
-            set_config(db, "HALT_REASON", reason or "")
-            set_config(db, "HALTED_AT", self._clock.now().isoformat())
+            set_config(db, TRADING_HALTED_KEY, "true")
+            set_config(db, HALT_REASON_KEY, reason or "")
+            set_config(db, HALTED_AT_KEY, self._clock.now().isoformat())
 
     def resume(self) -> None:
         with self._session_scope() as db:
-            set_config(db, "TRADING_HALTED", "false")
-            set_config(db, "HALT_REASON", "")
+            set_config(db, TRADING_HALTED_KEY, "false")
+            set_config(db, HALT_REASON_KEY, "")
 
     def get_status(
         self, universe: str | None, regime: Callable[[], dict[str, Any]]
@@ -198,12 +205,7 @@ class PositionService:
                 .scalar()
             )
             if latest_scan is None:
-                config_latest_scan = get_config(db, "LAST_VCP_SCAN_DATE", "")
-                latest_scan = (
-                    datetime.strptime(config_latest_scan, "%Y-%m-%d").date()
-                    if config_latest_scan
-                    else None
-                )
+                latest_scan = last_scan_date(db)
             pending_entries = (
                 db.query(VCPScanResult)
                 .filter(
@@ -217,12 +219,12 @@ class PositionService:
                 .filter(StrategyPosition.status.in_(OPEN_STATUSES))
                 .count()
             )
-            halted = get_config(db, "TRADING_HALTED", "false").lower() == "true"
+            halted = get_config(db, TRADING_HALTED_KEY, "false").lower() == "true"
             return {
                 "universe": universe_filter,
                 "halted": halted,
-                "halt_reason": get_config(db, "HALT_REASON", ""),
-                "halted_at": get_config(db, "HALTED_AT", ""),
+                "halt_reason": get_config(db, HALT_REASON_KEY, ""),
+                "halted_at": get_config(db, HALTED_AT_KEY, ""),
                 "latest_scan_date": latest_scan.isoformat() if latest_scan else None,
                 "pending_entries": pending_entries,
                 "open_positions": open_positions,
