@@ -1,0 +1,287 @@
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { z } from "zod";
+import { api, parseResponse, unwrap } from "@/lib/api/client";
+import { isMarketOpen } from "@/lib/market-hours";
+import { roundToDecimals } from "@/lib/utils";
+import { queryKeys } from "./keys";
+
+const OPTIONS_POLL_OPEN_MS = 3000;
+const OPTIONS_POLL_CLOSED_MS = 20_000;
+const POSITIONS_POLL_MS = 7000;
+const OPTIONS_STRIKE_COUNT = 15;
+const MAX_SEARCH_RESULTS = 8;
+
+const rowsSchema = z.array(z.record(z.string(), z.unknown())).catch([]);
+
+const nullableNumber = z.number().nullable().catch(null);
+
+const optionsLegSchema = z
+  .object({
+    symbol: z.string().nullable().catch(null),
+    ltp: nullableNumber,
+    oi: nullableNumber,
+    volume: nullableNumber,
+    change_pct: nullableNumber,
+  })
+  .nullable()
+  .catch(null);
+
+const optionsBoardSchema = z.object({
+  underlying: z.string().catch(""),
+  spot_price: z.number().catch(0),
+  expiry: z.string().catch(""),
+  atm_strike: z.number().catch(0),
+  strikes: z
+    .array(z.object({ strike: z.number(), ce: optionsLegSchema, pe: optionsLegSchema }))
+    .catch([]),
+  timestamp: z.string().catch(""),
+});
+
+// Number(value || 0), as the page did before validation moved here.
+const lenientNumber = z.coerce.number().catch(0);
+
+const positionSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform(String).catch(""),
+  symbol: z.string(),
+  net_qty: lenientNumber,
+  entry_price: lenientNumber,
+  current_price: lenientNumber,
+  unrealized_pnl: lenientNumber,
+  realized_pnl: lenientNumber,
+  net_pnl: lenientNumber,
+  product_type: z.string().catch(""),
+  mode: z.enum(["PAPER", "LIVE"]).optional().catch(undefined),
+});
+
+const positionsBookSchema = z.object({
+  live_positions: z.array(positionSchema).catch([]),
+  paper_positions: z.array(positionSchema).catch([]),
+});
+
+export interface WatchlistItem {
+  symbol: string;
+  name: string;
+  price: number | null;
+  change: number | null;
+  ltp: number | null;
+}
+
+export interface SearchResultItem {
+  symbol: string;
+  name: string;
+  type?: string;
+  instrument_type?: string;
+}
+
+export type OptionsBoard = z.output<typeof optionsBoardSchema>;
+export type PositionItem = z.output<typeof positionSchema>;
+
+export interface OptionsOrderflow {
+  pcr_oi: number | null;
+  pcr_volume: number | null;
+  ce_oi: number;
+  pe_oi: number;
+  ce_volume: number;
+  pe_volume: number;
+  timestamp: string;
+}
+
+export interface OptionsBoardSnapshot {
+  board: OptionsBoard;
+  orderflow: OptionsOrderflow;
+}
+
+function toSafeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function toSafeString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function roundOrNull(value: number | null): number | null {
+  return value === null ? null : roundToDecimals(value, 2);
+}
+
+function toWatchlistItem(row: Record<string, unknown>): WatchlistItem {
+  const symbol = toSafeString(row.symbol);
+  return {
+    symbol,
+    name: toSafeString(row.name, symbol),
+    price: roundOrNull(toSafeNumber(row.price)),
+    change: roundOrNull(toSafeNumber(row.change)),
+    ltp: roundOrNull(toSafeNumber(row.ltp) ?? toSafeNumber(row.price)),
+  };
+}
+
+function toSearchResult(row: Record<string, unknown>): SearchResultItem {
+  return {
+    symbol: toSafeString(row.symbol).trim(),
+    name: toSafeString(row.name, toSafeString(row.symbol)).trim(),
+    type: typeof row.type === "string" ? row.type : undefined,
+    instrument_type: typeof row.instrument_type === "string" ? row.instrument_type : undefined,
+  };
+}
+
+/** Put/call totals and ratios across the board's strikes. */
+export function buildOptionsOrderflow(board: OptionsBoard): OptionsOrderflow {
+  let ceOi = 0;
+  let peOi = 0;
+  let ceVol = 0;
+  let peVol = 0;
+  for (const row of board.strikes) {
+    ceOi += Number(row.ce?.oi || 0);
+    peOi += Number(row.pe?.oi || 0);
+    ceVol += Number(row.ce?.volume || 0);
+    peVol += Number(row.pe?.volume || 0);
+  }
+  return {
+    ce_oi: ceOi,
+    pe_oi: peOi,
+    ce_volume: ceVol,
+    pe_volume: peVol,
+    pcr_oi: ceOi > 0 ? roundToDecimals(peOi / ceOi, 4) : null,
+    pcr_volume: ceVol > 0 ? roundToDecimals(peVol / ceVol, 4) : null,
+    timestamp: board.timestamp,
+  };
+}
+
+function toPositionRow(row: PositionItem): PositionItem {
+  return { ...row, net_pnl: row.net_pnl || row.unrealized_pnl || 0 };
+}
+
+export function useTerminalWatchlist() {
+  return useQuery({
+    queryKey: queryKeys.terminal.watchlist(),
+    queryFn: async () =>
+      parseResponse(rowsSchema, await unwrap(api.GET("/api/market/watchlist")))
+        .map(toWatchlistItem)
+        .filter((row) => row.symbol.length > 0),
+  });
+}
+
+/** Symbol search for the watchlist box; failures read as "no matches". */
+export function useSymbolSearch(term: string) {
+  return useQuery({
+    queryKey: queryKeys.terminal.symbolSearch(term),
+    queryFn: async ({ signal }): Promise<SearchResultItem[]> => {
+      try {
+        const rows = parseResponse(
+          rowsSchema,
+          await unwrap(
+            api.GET("/api/market/search", {
+              params: { query: { query: term, exclude_indices: true } },
+              signal,
+            }),
+          ),
+        );
+        return rows
+          .map(toSearchResult)
+          .filter((row) => row.symbol.length > 0)
+          .slice(0, MAX_SEARCH_RESULTS);
+      } catch {
+        return [];
+      }
+    },
+    enabled: term.length >= 2,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * Polls the options board while `enabled`: every 3s in market hours, 20s otherwise.
+ * An empty `expiry` lets the backend pick the nearest one.
+ */
+export function useOptionsBoard(params: { underlying: string; expiry: string; enabled: boolean }) {
+  const { underlying, expiry, enabled } = params;
+  return useQuery({
+    queryKey: queryKeys.terminal.optionsBoard({ underlying, expiry }),
+    queryFn: async (): Promise<OptionsBoardSnapshot> => {
+      const board = parseResponse(
+        optionsBoardSchema,
+        await unwrap(
+          api.GET("/api/terminal/options/board", {
+            params: {
+              query: {
+                underlying,
+                strike_count: OPTIONS_STRIKE_COUNT,
+                expiry: expiry || undefined,
+              },
+            },
+          }),
+        ),
+      );
+      return { board, orderflow: buildOptionsOrderflow(board) };
+    },
+    enabled,
+    placeholderData: keepPreviousData,
+    refetchInterval: () => (isMarketOpen().isOpen ? OPTIONS_POLL_OPEN_MS : OPTIONS_POLL_CLOSED_MS),
+  });
+}
+
+/** Live then paper positions, polled every 7s while `enabled`. */
+export function usePositionsBook(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.terminal.positions(),
+    queryFn: async () => {
+      const book = parseResponse(
+        positionsBookSchema,
+        await unwrap(api.GET("/api/trading/positions/book")),
+      );
+      return [...book.live_positions, ...book.paper_positions].map(toPositionRow);
+    },
+    enabled,
+    refetchInterval: POSITIONS_POLL_MS,
+  });
+}
+
+/** Adds a symbol, puts it at the top of the cached watchlist and refreshes the dashboard's. */
+export function useAddToWatchlist() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { symbol: string; name: string; instrumentType: string }) => {
+      await unwrap(
+        api.POST("/api/market/watchlist", {
+          body: { symbol: input.symbol, instrument_type: input.instrumentType },
+        }),
+      );
+    },
+    onSuccess: (_data, input) => {
+      queryClient.setQueryData<WatchlistItem[]>(queryKeys.terminal.watchlist(), (prev = []) =>
+        prev.some((row) => row.symbol === input.symbol)
+          ? prev
+          : [
+              {
+                symbol: input.symbol,
+                name: input.name || input.symbol,
+                price: null,
+                change: null,
+                ltp: null,
+              },
+              ...prev,
+            ],
+      );
+      return queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.watchlist() });
+    },
+  });
+}
+
+/** Squares a position and drops it from the cached book until the next poll. */
+export function useSquarePosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (row: PositionItem) => {
+      await unwrap(
+        api.POST("/api/trading/positions/square", {
+          body: { symbol: row.symbol, mode: row.mode || "PAPER" },
+        }),
+      );
+    },
+    onSuccess: (_data, row) => {
+      queryClient.setQueryData<PositionItem[]>(queryKeys.terminal.positions(), (prev = []) =>
+        prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+      );
+      return queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() });
+    },
+  });
+}

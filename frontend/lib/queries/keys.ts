@@ -28,6 +28,10 @@ export const queryKeys = {
   terminal: {
     all: ["terminal"] as const,
     symbolSearch: (term: string) => ["terminal", "symbol-search", term] as const,
+    watchlist: () => ["terminal", "watchlist"] as const,
+    optionsBoard: (params: { underlying: string; expiry: string }) =>
+      ["terminal", "options-board", params] as const,
+    positions: () => ["terminal", "positions"] as const,
   },
   dashboard: {
     all: ["dashboard"] as const,

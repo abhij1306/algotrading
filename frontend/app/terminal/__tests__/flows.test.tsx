@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
@@ -32,13 +32,32 @@ const BOARD = {
 
 type Captured = { url: string; method: string; body: string };
 
+const OPEN_POSITION = {
+  id: 7,
+  symbol: "SBIN",
+  net_qty: 10,
+  entry_price: 790,
+  current_price: 800,
+  unrealized_pnl: 100,
+  realized_pnl: 0,
+  net_pnl: 100,
+  product_type: "INTRADAY",
+  mode: "PAPER",
+};
+
+let paperPositions: (typeof OPEN_POSITION)[] = [];
+
 function respond(url: string): Response {
+  if (url.includes("/api/trading/positions/square")) {
+    paperPositions = [];
+    return Response.json({ status: "ok" });
+  }
   if (url.includes("/api/market/watchlist")) {
     return Response.json([{ symbol: "SBIN", name: "State Bank", price: 800, change: 1.2 }]);
   }
   if (url.includes("/api/terminal/options/board")) return Response.json(BOARD);
   if (url.includes("/api/trading/positions/book")) {
-    return Response.json({ live_positions: [], paper_positions: [] });
+    return Response.json({ live_positions: [], paper_positions: paperPositions });
   }
   if (url.includes(ORDER_PATH)) return Response.json({ status: "accepted", order_id: "ord-1" });
   return Response.json([]);
@@ -51,7 +70,9 @@ function installFetch(): Captured[] {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       // The typed client passes a Request; plain fetch calls pass a relative URL and init.
       const source =
-        input instanceof Request ? input : new Request(new URL(String(input), "http://api.test"), init);
+        input instanceof Request
+          ? input
+          : new Request(new URL(String(input), "http://api.test"), init);
       const body = source.method === "GET" ? "" : await source.clone().text();
       calls.push({ url: source.url, method: source.method, body });
       return respond(source.url);
@@ -89,6 +110,7 @@ describe("terminal order payload", () => {
   let calls: Captured[];
 
   beforeEach(() => {
+    paperPositions = [];
     calls = installFetch();
   });
 
@@ -159,6 +181,71 @@ describe("terminal order payload", () => {
     expect(confirm.mock.calls).toEqual([["Confirm LIVE BUY 1 SBIN?"]]);
     expect(orderBodies(calls)).toEqual([
       '{"mode":"LIVE","symbol":"SBIN","side":"BUY","quantity":1,"product":"INTRADAY","type":"LIMIT","price":800,"trigger_price":0,"tag":"terminal-options","instrument_type":"EQ","is_live_confirmation_ack":true,"risk_override_reason":"hedge"}',
+    ]);
+  });
+});
+
+describe("terminal data", () => {
+  let calls: Captured[];
+
+  beforeEach(() => {
+    paperPositions = [];
+    calls = installFetch();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    globalThis.history.replaceState(null, "", "/");
+  });
+
+  function boardUrls(): string[] {
+    return calls
+      .filter((call) => call.url.includes("/api/terminal/options/board"))
+      .map((call) => new URL(call.url).search);
+  }
+
+  it("selects the ?symbol= symbol and lists it after the saved watchlist", async () => {
+    globalThis.history.replaceState(null, "", "/terminal?symbol=TCS");
+    renderPage();
+    await screen.findAllByText("State Bank");
+
+    const rows = screen.getAllByRole("button", { name: /on TradingView$/ });
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Open TCS on TradingView",
+      "Open SBIN on TradingView",
+      "Open TCS on TradingView",
+    ]);
+    expect(screen.getByText("Trade Symbol:").textContent).toBe("Trade Symbol: TCS");
+  });
+
+  it("shows the board's expiry until one is picked, then requests the picked expiry", async () => {
+    renderPage();
+    expect(await screen.findByText("PCR(OI): 2 | PCR(Vol): 0.5")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("2026-10-27")).toBeInTheDocument();
+    expect(boardUrls()).toEqual(["?underlying=NIFTY&strike_count=15"]);
+
+    fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
+
+    await screen.findByDisplayValue("2026-11-03");
+    await screen.findByText("NIFTY Spot: 25010.50");
+    expect(boardUrls().at(-1)).toBe("?underlying=NIFTY&strike_count=15&expiry=2026-11-03");
+  });
+
+  it("lists open positions and drops a squared one", async () => {
+    paperPositions = [OPEN_POSITION];
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+
+    const square = await screen.findByRole("button", { name: "Square" });
+    expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
+
+    fireEvent.click(square);
+
+    expect(await screen.findByText("PAPER square submitted for SBIN")).toBeInTheDocument();
+    expect(await screen.findByText("No open positions")).toBeInTheDocument();
+    expect(calls.filter((call) => call.url.includes("/square")).map((call) => call.body)).toEqual([
+      '{"symbol":"SBIN","mode":"PAPER"}',
     ]);
   });
 });
