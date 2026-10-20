@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatPercentage } from "@/lib/utils";
 import { focusOnMount } from "@/lib/focus";
 
 interface Command {
@@ -19,7 +19,8 @@ interface SymbolResult {
   name: string;
   exchange: string;
   price?: number;
-  change?: number;
+  /** Day change in percent (e.g. 1.2 means +1.2%), not an absolute price difference. */
+  changePercent: number;
 }
 
 interface CommandPaletteProps {
@@ -28,18 +29,30 @@ interface CommandPaletteProps {
 }
 
 const MOCK_SYMBOLS: SymbolResult[] = [
-  { symbol: "RELIANCE", name: "Reliance Industries", exchange: "NSE", price: 2450.5, change: 1.2 },
+  {
+    symbol: "RELIANCE",
+    name: "Reliance Industries",
+    exchange: "NSE",
+    price: 2450.5,
+    changePercent: 1.2,
+  },
   {
     symbol: "TCS",
     name: "Tata Consultancy Services",
     exchange: "NSE",
     price: 3890.25,
-    change: -0.5,
+    changePercent: -0.5,
   },
-  { symbol: "INFY", name: "Infosys Ltd", exchange: "NSE", price: 1650.75, change: 0.8 },
-  { symbol: "HDFCBANK", name: "HDFC Bank", exchange: "NSE", price: 1420, change: 0.3 },
-  { symbol: "SBIN", name: "State Bank of India", exchange: "NSE", price: 675.5, change: 1.5 },
-  { symbol: "NIFTY50", name: "NIFTY 50 Index", exchange: "NSE", price: 22450, change: 0.6 },
+  { symbol: "INFY", name: "Infosys Ltd", exchange: "NSE", price: 1650.75, changePercent: 0.8 },
+  { symbol: "HDFCBANK", name: "HDFC Bank", exchange: "NSE", price: 1420, changePercent: 0.3 },
+  {
+    symbol: "SBIN",
+    name: "State Bank of India",
+    exchange: "NSE",
+    price: 675.5,
+    changePercent: 1.5,
+  },
+  { symbol: "NIFTY50", name: "NIFTY 50 Index", exchange: "NSE", price: 22450, changePercent: 0.6 },
 ];
 
 function filterSymbols(query: string): SymbolResult[] {
@@ -263,11 +276,10 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
                         <div
                           className={cn(
                             "text-xs tabular-nums",
-                            (symbol.change || 0) >= 0 ? "text-profit" : "text-loss",
+                            symbol.changePercent >= 0 ? "text-profit" : "text-loss",
                           )}
                         >
-                          {(symbol.change || 0) >= 0 ? "+" : ""}
-                          {symbol.change}%
+                          {formatPercentage(symbol.changePercent)}
                         </div>
                       </div>
                     </button>

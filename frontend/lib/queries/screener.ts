@@ -96,3 +96,11 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuotes> {
     ),
   );
 }
+
+/**
+ * Day change in percent from one `/api/market/quotes/live` entry. The entry's `change` is the
+ * absolute price difference, so it never stands in for the percent: no `change_pct`, no percent.
+ */
+export function liveQuoteChangePercent(quote: LiveQuotes[string]): number | undefined {
+  return typeof quote.change_pct === "number" ? quote.change_pct : undefined;
+}
