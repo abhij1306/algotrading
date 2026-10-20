@@ -133,8 +133,8 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [ ] 4. Move the terminal into `features/terminal` and split it (L).
 
 ### Lane 9: dashboard
-- [ ] 1. Move the dashboard to quote-store selectors and Query, removing its 8 `useEffect`s (M).
-- [ ] 2. Split the page (M).
+- [x] 1. Move the dashboard to quote-store selectors and Query, removing its 8 `useEffect`s (M). (#46)
+- [x] 2. Split the page (M). (PR_NUM) The page composes `components/dashboard/*` sections over `useDashboardData`; formatting goes through `lib/format.ts`/`lib/time.ts`; the connection badge reads `useConnectionStatus`, so the dashboard no longer uses the `useWebSocket` shim; the post-market Commodities card gets Crude Oil from `/api/market/commodities`.
 
 ### Lane 10: screener UI
 - [ ] 1. A live overlay through `useQuote`, removing 8 `useEffect`s (M).
@@ -147,7 +147,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 12: shared frontend libraries and contracts
 - [ ] 1. `format.ts` and an IST `time.ts`, with table-driven tests. They replace `market-hours.ts`, including the `getDay` holiday bug (S-M).
-  - Partial (PR #53): `lib/format.ts`, `lib/time.ts` and an IST `lib/market-hours.ts` with tests; screener, backtest and the command palette switched. Left: the local formatters in dashboard, strategies, terminal, `lib/queries/terminal.ts` and the dashboard insight panels, then drop the `lib/utils.ts` shims.
+  - Partial (PR #53): `lib/format.ts`, `lib/time.ts` and an IST `lib/market-hours.ts` with tests; screener, backtest and the command palette switched. Dashboard and its insight panels switched with Lane 9.2. Left: the local formatters in strategies, terminal and `lib/queries/terminal.ts`, then drop the `lib/utils.ts` shims.
 - [ ] 3. Set up MSW for tests (S, optional).
 
 ## Out of scope

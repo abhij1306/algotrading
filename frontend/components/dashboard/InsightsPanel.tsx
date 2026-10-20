@@ -2,9 +2,13 @@ import { useMemo, type ReactNode } from "react";
 import type { MarketStatus } from "@/lib/market-hours";
 import {
   getInsightSymbols,
+  mergeCommodities,
+  useCommodities,
   useMarketInsights,
   usePostMarketInsights,
+  type CommodityData,
   type MarketInsights,
+  type PostMarketData,
   type SectorData,
   type StockMover,
 } from "@/lib/queries/dashboard";
@@ -18,6 +22,7 @@ interface InsightsPanelProps {
 }
 
 const NO_SYMBOLS: string[] = [];
+const NO_COMMODITIES: CommodityData[] = [];
 
 function moverWithQuote(row: StockMover, quotes: QuoteMap): StockMover {
   const quote = quotes[row.symbol];
@@ -39,6 +44,15 @@ function sectorWithQuote(row: SectorData, quotes: QuoteMap): SectorData {
   };
 }
 
+/** The post-market snapshot plus the commodity rows (Crude Oil) the overview does not carry. */
+function withCommodities(
+  data: PostMarketData | undefined,
+  extra: readonly CommodityData[],
+): PostMarketData | null {
+  if (!data) return null;
+  return { ...data, commodities: mergeCommodities(data.commodities, extra) };
+}
+
 /** The fetched movers and sectors with any live quote laid over them. */
 function applyQuotes(data: MarketInsights, quotes: QuoteMap): MarketInsights {
   return {
@@ -51,6 +65,8 @@ function applyQuotes(data: MarketInsights, quotes: QuoteMap): MarketInsights {
 export function InsightsPanel({ marketStatus }: Readonly<InsightsPanelProps>) {
   const marketQuery = useMarketInsights(marketStatus.isOpen);
   const postMarketQuery = usePostMarketInsights(!marketStatus.isOpen);
+  // Optional extra rows: a failed commodities fetch leaves the overview's own rows on screen.
+  const extra = useCommodities(!marketStatus.isOpen).data ?? NO_COMMODITIES;
   const fetchedInsights = marketStatus.isOpen ? (marketQuery.data ?? null) : null;
   // Live ticks for the shown movers and sectors, only during market hours.
   const liveSymbols = useMemo(
@@ -59,7 +75,7 @@ export function InsightsPanel({ marketStatus }: Readonly<InsightsPanelProps>) {
   );
   const quotes = useQuotes(liveSymbols);
   const marketInsights = fetchedInsights ? applyQuotes(fetchedInsights, quotes) : null;
-  const postMarketData = marketStatus.isOpen ? null : (postMarketQuery.data ?? null);
+  const postMarketData = marketStatus.isOpen ? null : withCommodities(postMarketQuery.data, extra);
   const loading = marketStatus.isOpen ? marketQuery.isPending : postMarketQuery.isPending;
   const failure = marketStatus.isOpen ? marketQuery.error : postMarketQuery.error;
   const failureLabel = marketStatus.isOpen

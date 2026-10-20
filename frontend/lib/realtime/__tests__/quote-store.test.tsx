@@ -73,8 +73,8 @@ describe("quote store", () => {
 
   it("opens one socket for many consumers and closes after the last unsubscribes", async () => {
     const store = createQuoteStore();
-    const a = renderHook(() => useConnectionStatus(store));
-    const b = renderHook(() => useConnectionStatus(store));
+    const a = renderHook(() => useConnectionStatus({ store }));
+    const b = renderHook(() => useConnectionStatus({ store }));
     expect(FakeSocket.instances).toHaveLength(1);
 
     act(() => FakeSocket.instances[0].open());
@@ -90,9 +90,21 @@ describe("quote store", () => {
     expect(FakeSocket.instances[0].readyState).toBe(FakeSocket.CLOSED);
   });
 
+  it("holds no socket and reads disconnected while disabled", () => {
+    const store = createQuoteStore();
+    const connected = renderHook(() => useConnectionStatus({ store }));
+    act(() => FakeSocket.instances[0].open());
+
+    const disabled = renderHook(() => useConnectionStatus({ store, enabled: false }));
+    expect(disabled.result.current).toBe("disconnected");
+    expect(FakeSocket.instances).toHaveLength(1);
+
+    connected.unmount();
+  });
+
   it("does not double-connect under StrictMode", async () => {
     const store = createQuoteStore();
-    renderHook(() => useConnectionStatus(store), { wrapper: StrictMode });
+    renderHook(() => useConnectionStatus({ store }), { wrapper: StrictMode });
     await flush();
     expect(FakeSocket.instances).toHaveLength(1);
     expect(FakeSocket.instances[0].readyState).not.toBe(FakeSocket.CLOSED);
@@ -100,13 +112,13 @@ describe("quote store", () => {
 
   it("keeps the newer connection when a superseded socket closes late", async () => {
     const store = createQuoteStore();
-    const first = renderHook(() => useConnectionStatus(store));
+    const first = renderHook(() => useConnectionStatus({ store }));
     const firstSocket = FakeSocket.instances[0];
     act(() => firstSocket.open());
     first.unmount();
     await flush();
 
-    const second = renderHook(() => useConnectionStatus(store));
+    const second = renderHook(() => useConnectionStatus({ store }));
     const secondSocket = FakeSocket.instances[1];
     act(() => secondSocket.open());
     expect(second.result.current).toBe("connected");

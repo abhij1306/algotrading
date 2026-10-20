@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { TrendingUp, TrendingDown, Activity } from "lucide-react";
-import { formatPercentage } from "@/lib/utils";
+import { formatInr, formatNumber, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { MarketInsights, StockMover, SectorData } from "@/lib/queries/dashboard";
 
 interface MarketHoursInsightsProps {
@@ -8,7 +8,7 @@ interface MarketHoursInsightsProps {
 }
 
 const MoverRow = memo(function MoverRow({ stock }: { stock: StockMover }) {
-  const isUp = stock.changePercent >= 0;
+  const isUp = !roundsNegative(stock.changePercent);
   return (
     <div className="flex items-center justify-between py-2 px-3 hover:bg-surface/50 rounded transition-colors">
       <div className="flex-1">
@@ -16,12 +16,12 @@ const MoverRow = memo(function MoverRow({ stock }: { stock: StockMover }) {
         <div className="text-xs text-foreground-muted truncate max-w-[120px]">{stock.name}</div>
       </div>
       <div className="text-right">
-        <div className="text-sm tabular-nums">₹{stock.price.toFixed(2)}</div>
+        <div className="text-sm tabular-nums">{formatInr(stock.price)}</div>
         <div
           className={`text-xs tabular-nums flex items-center justify-end gap-1 ${isUp ? "text-profit" : "text-loss"}`}
         >
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          {formatPercentage(stock.changePercent)}
+          {formatSignedPercent(stock.changePercent)}
         </div>
       </div>
     </div>
@@ -29,7 +29,7 @@ const MoverRow = memo(function MoverRow({ stock }: { stock: StockMover }) {
 });
 
 const SectorRow = memo(function SectorRow({ sector }: { sector: SectorData }) {
-  const isUp = sector.changePercent >= 0;
+  const isUp = !roundsNegative(sector.changePercent);
 
   return (
     <div className="flex items-center justify-between py-2 px-3 hover:bg-surface/50 rounded transition-colors">
@@ -38,9 +38,9 @@ const SectorRow = memo(function SectorRow({ sector }: { sector: SectorData }) {
         <div className="text-xs text-foreground-muted truncate max-w-[120px]">{sector.name}</div>
       </div>
       <div className="text-right">
-        <div className="text-sm tabular-nums">{sector.value.toFixed(2)}</div>
+        <div className="text-sm tabular-nums">{formatNumber(sector.value)}</div>
         <div className={`text-xs tabular-nums font-medium ${isUp ? "text-profit" : "text-loss"}`}>
-          {formatPercentage(sector.changePercent)}
+          {formatSignedPercent(sector.changePercent)}
         </div>
       </div>
     </div>

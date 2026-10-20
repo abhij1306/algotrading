@@ -1,6 +1,13 @@
 import { memo } from "react";
 import { Globe, TrendingUp, TrendingDown, DollarSign } from "lucide-react";
-import { formatPercentage } from "@/lib/utils";
+import {
+  formatInr,
+  formatNumber,
+  formatSignedPercent,
+  PLACEHOLDER,
+  roundsNegative,
+} from "@/lib/format";
+import { formatIstDateTime } from "@/lib/time";
 import type { PostMarketData, IndexData, CommodityData } from "@/lib/queries/dashboard";
 
 interface PostMarketInsightsProps {
@@ -13,21 +20,20 @@ function toneClass(hasChange: boolean, isUp: boolean): string {
 }
 
 const IndexRow = memo(function IndexRow({ index }: { index: IndexData }) {
-  const hasValue = typeof index.value === "number" && Number.isFinite(index.value);
   const hasChange = typeof index.changePercent === "number" && Number.isFinite(index.changePercent);
-  const isUp = hasChange ? (index.changePercent ?? 0) >= 0 : false;
+  const isUp = hasChange && !roundsNegative(index.changePercent);
   return (
     <div className="flex items-center justify-between py-2 px-3 hover:bg-surface/50 rounded transition-colors">
       <div className="font-medium text-sm">{index.name}</div>
       <div className="text-right">
-        <div className="text-sm tabular-nums">{hasValue ? (index.value ?? 0).toFixed(2) : "—"}</div>
+        <div className="text-sm tabular-nums">{formatNumber(index.value)}</div>
         <div
           className={`text-xs tabular-nums flex items-center justify-end gap-1 ${toneClass(hasChange, isUp)}`}
         >
           {hasChange ? (
             <>
               {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-              {formatPercentage(index.changePercent)}
+              {formatSignedPercent(index.changePercent)}
             </>
           ) : (
             "Unavailable"
@@ -42,16 +48,16 @@ const CommodityCard = memo(function CommodityCard({ commodity }: { commodity: Co
   const hasPrice = typeof commodity.price === "number" && Number.isFinite(commodity.price);
   const hasChange =
     typeof commodity.changePercent === "number" && Number.isFinite(commodity.changePercent);
-  const isUp = hasChange ? (commodity.changePercent ?? 0) >= 0 : false;
+  const isUp = hasChange && !roundsNegative(commodity.changePercent);
   return (
     <div className="p-3 rounded-lg border border-border bg-surface hover:bg-surface/80 transition-colors">
       <div className="text-xs text-foreground-muted mb-1">{commodity.name}</div>
       <div className="flex items-baseline justify-between">
         <div className="text-base font-semibold tabular-nums">
-          {hasPrice ? `$${(commodity.price ?? 0).toFixed(2)}` : "—"}
+          {hasPrice ? `$${formatNumber(commodity.price)}` : PLACEHOLDER}
         </div>
         <div className={`text-sm tabular-nums font-medium ${toneClass(hasChange, isUp)}`}>
-          {hasChange ? formatPercentage(commodity.changePercent) : "Unavailable"}
+          {hasChange ? formatSignedPercent(commodity.changePercent) : "Unavailable"}
         </div>
       </div>
     </div>
@@ -103,16 +109,16 @@ export const PostMarketInsights = memo(function PostMarketInsights({
             <div className="text-xs text-foreground-muted mb-1">USD/INR</div>
             <div className="flex items-baseline justify-between">
               <div className="text-base font-semibold tabular-nums">
-                {typeof data.currency.rate === "number" ? `₹${data.currency.rate.toFixed(2)}` : "—"}
+                {formatInr(data.currency.rate)}
               </div>
               <div
                 className={`text-sm tabular-nums font-medium ${toneClass(
                   typeof data.currency.changePercent === "number",
-                  (data.currency.changePercent ?? 0) >= 0,
+                  !roundsNegative(data.currency.changePercent),
                 )}`}
               >
                 {typeof data.currency.changePercent === "number"
-                  ? formatPercentage(data.currency.changePercent)
+                  ? formatSignedPercent(data.currency.changePercent)
                   : "Unavailable"}
               </div>
             </div>
@@ -125,9 +131,7 @@ export const PostMarketInsights = memo(function PostMarketInsights({
                 {data.vix.map((vixEntry) => (
                   <div key={vixEntry.name} className="flex items-center justify-between text-sm">
                     <span>{vixEntry.name}</span>
-                    <span className="tabular-nums">
-                      {typeof vixEntry.value === "number" ? vixEntry.value.toFixed(2) : "—"}
-                    </span>
+                    <span className="tabular-nums">{formatNumber(vixEntry.value)}</span>
                   </div>
                 ))}
               </div>
@@ -171,14 +175,14 @@ export const PostMarketInsights = memo(function PostMarketInsights({
             <div className="text-sm">{data.condition?.status ?? "Unavailable"}</div>
             {typeof data.condition?.adx === "number" && (
               <div className="text-xs text-foreground-muted mt-1">
-                ADX: {data.condition.adx.toFixed(2)}
+                ADX: {formatNumber(data.condition.adx)}
               </div>
             )}
           </div>
 
           {data.timestamp && (
             <div className="text-xs text-foreground-muted px-1">
-              Snapshot: {new Date(data.timestamp).toLocaleString("en-IN", { hour12: false })}
+              Snapshot: {formatIstDateTime(data.timestamp)} IST
             </div>
           )}
         </div>

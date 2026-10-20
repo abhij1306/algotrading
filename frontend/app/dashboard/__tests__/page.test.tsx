@@ -23,8 +23,16 @@ const RESPONSES: Record<string, unknown> = {
     { symbol: "TCS", price: 3890.25, change: -19.5, changePercent: -0.5 },
   ],
   "/api/market/overview": {
-    indices: [{ symbol: "^NSEI", name: "NIFTY 50", price: 22450, change: 112.25, change_pct: 0.5 }],
+    indices: [
+      { symbol: "^NSEI", name: "NIFTY 50", price: 22450, change: 112.25, change_pct: 0.5 },
+      { symbol: "GC=F", name: "Gold", price: 2400.5, change: 12, change_pct: 0.5 },
+    ],
+    timestamp: "2026-10-20T10:05:09+00:00",
   },
+  "/api/market/commodities": [
+    { name: "Gold", symbol: "GC=F", price: 2399.9, changePercent: 0.4 },
+    { name: "Crude Oil", symbol: "CL=F", price: 78.4, changePercent: -1.25 },
+  ],
   "/api/market/currency/USDINR": { rate: 83.25, changePercent: 0.1 },
 };
 
@@ -112,6 +120,7 @@ describe("dashboard data loading", () => {
     expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
     expect(new Set(requestedPaths(fetchMock))).toEqual(
       new Set([
+        "/api/market/commodities",
         "/api/market/currency/USDINR",
         "/api/market/overview",
         "/api/market/status",
@@ -130,5 +139,55 @@ describe("dashboard data loading", () => {
     );
     expect(screen.queryByText("No stocks in watchlist")).not.toBeInTheDocument();
     expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
+  });
+});
+
+describe("dashboard post-market insights", () => {
+  beforeEach(() => {
+    stubBackend();
+  });
+
+  it("adds Crude Oil from the commodities endpoint after the overview's Gold", async () => {
+    renderDashboard();
+
+    expect(await screen.findByText("Crude Oil")).toBeInTheDocument();
+    expect(screen.getByText("$78.40")).toBeInTheDocument();
+    expect(screen.getByText("-1.25%")).toBeInTheDocument();
+    expect(screen.getByText("$2,400.50")).toBeInTheDocument();
+    expect(screen.queryByText("$2,399.90")).not.toBeInTheDocument();
+  });
+
+  it("shows the snapshot time in IST whatever the machine's zone", async () => {
+    renderDashboard();
+
+    expect(await screen.findByText("Snapshot: 20 Oct 2026, 15:35:09 IST")).toBeInTheDocument();
+  });
+});
+
+describe("dashboard during market hours", () => {
+  it("shows the delayed badge and the NSE indices when the socket is not connected", async () => {
+    stubBackend({
+      "/api/market/status": () =>
+        Response.json({ is_open: true, current_time_ist: "10:00:00 IST" }),
+      "/api/market/indices": () =>
+        Response.json([
+          {
+            name: "NIFTY 50",
+            symbol: "NIFTY50",
+            value: 22450.5,
+            change: -10,
+            changePercent: -0.04,
+          },
+        ]),
+    });
+    renderDashboard();
+
+    expect(await screen.findByText("DELAYED")).toBeInTheDocument();
+    expect(screen.getByText("10:00:00 IST")).toBeInTheDocument();
+    expect(screen.getByText("NSE Delayed (Disconnected)")).toBeInTheDocument();
+    const nifty = (await screen.findByText("NIFTY 50")).closest("tr");
+    if (!nifty) throw new Error("index row missing");
+    expect(within(nifty).getByText("22,450.50")).toBeInTheDocument();
+    expect(within(nifty).getByText("-0.04%")).toHaveClass("text-loss");
   });
 });

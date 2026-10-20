@@ -9,7 +9,7 @@
  * is reachable.
  */
 
-import { formatIstTime, istParts } from "./time";
+import { istParts } from "./time";
 
 export interface MarketStatus {
   isOpen: boolean;
@@ -45,9 +45,4 @@ export function isMarketOpen(now: Date = new Date()): MarketStatus {
     };
   }
   return { isOpen: true, message: "Market Open" };
-}
-
-/** The IST wall-clock time at `now`, as "14:05:09 IST". */
-export function getISTTime(now: Date = new Date()): string {
-  return `${formatIstTime(now)} IST`;
 }

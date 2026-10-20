@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getISTTime, isMarketOpen } from "../market-hours";
+import { isMarketOpen } from "../market-hours";
 
 /** A UTC instant; IST is UTC+05:30, so 09:15 IST is 03:45 UTC and 15:30 IST is 10:00 UTC. */
 const utc = (iso: string): Date => new Date(`${iso}Z`);
@@ -42,15 +42,5 @@ describe("isMarketOpen", () => {
 
   it("reports closed for an invalid instant", () => {
     expect(isMarketOpen(new Date(Number.NaN))).toEqual({ isOpen: false, message: "Market Closed" });
-  });
-});
-
-describe("getISTTime", () => {
-  it.each([
-    ["2026-10-20T03:45:00", "09:15:00 IST"],
-    ["2026-10-16T18:30:00", "00:00:00 IST"],
-    ["2026-10-16T18:29:59", "23:59:59 IST"],
-  ])("%s UTC is %s", (iso, expected) => {
-    expect(getISTTime(utc(iso))).toBe(expected);
   });
 });

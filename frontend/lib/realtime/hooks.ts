@@ -14,20 +14,27 @@ import {
  * first mounted consumer and closes after the last, with no effects in components.
  */
 
-/** Connection state. Holds the socket open while the calling component is mounted. */
-export function useConnectionStatus(store: QuoteStore = quoteStore): ConnectionStatus {
+/**
+ * Connection state. Holds the socket open while the calling component is mounted and `enabled`
+ * is true; while disabled it holds nothing and reads "disconnected".
+ */
+export function useConnectionStatus(
+  options: { enabled?: boolean; store?: QuoteStore } = {},
+): ConnectionStatus {
+  const { enabled = true, store = quoteStore } = options;
   const subscribe = useCallback(
     (onChange: () => void) => {
-      const release = store.retain();
+      const release = enabled ? store.retain() : undefined;
       const unsubscribe = store.subscribe(onChange);
       return () => {
         unsubscribe();
-        release();
+        release?.();
       };
     },
-    [store],
+    [store, enabled],
   );
-  return useSyncExternalStore(subscribe, store.getStatus);
+  const status = useSyncExternalStore(subscribe, store.getStatus);
+  return enabled ? status : "disconnected";
 }
 
 /** Live quote for one symbol; re-renders only when that symbol's quote changes. */
@@ -91,7 +98,7 @@ type WebSocketOptions = {
 
 /**
  * Compatibility surface for components that manage their own subscriptions
- * (screener, dashboard). New code should prefer `useQuote` / `useQuotes`.
+ * (screener). New code should prefer `useQuote` / `useQuotes`.
  */
 export function useWebSocket(options: WebSocketOptions = {}) {
   const { skipStateUpdates = false, enabled = true } = options;
