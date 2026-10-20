@@ -1,6 +1,7 @@
 """Regression tests for live-market subscription lifecycle and Fyers client refresh."""
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -553,8 +554,6 @@ def test_get_fresh_tick_requires_open_market_and_recent_tick(
 def test_hot_path_tracebacks_are_rate_limited_and_counted(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    import logging
-
     from app.utils import logger as logger_module
     from app.utils.runtime_metrics import runtime_metrics
 
@@ -581,3 +580,48 @@ def test_hot_path_tracebacks_are_rate_limited_and_counted(
     with caplog.at_level(logging.DEBUG, logger=fyers_websocket.logger.name):
         ws._on_message({"symbol": "NSE:SBIN-EQ"})
     assert [r for r in caplog.records if r.exc_info]
+
+
+class FixedStatusLiveMarket:
+    """A live_market whose connect always reports one status."""
+
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+    async def connect_async(self, **_kwargs: object) -> str:
+        await asyncio.sleep(0)
+        return self.status
+
+
+def test_connect_route_and_startup_log_report_the_same_status_message(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(lms, "live_market", FixedStatusLiveMarket("token_invalid"))
+
+    from app.main import _log_live_market_status
+    from app.routers.websocket import connect_websocket
+
+    assert asyncio.run(connect_websocket()) == {
+        "status": "token_invalid",
+        "message": "WebSocket deferred because Fyers token is invalid/expired",
+    }
+
+    with caplog.at_level(logging.INFO, logger="smarttrader.main"):
+        _log_live_market_status("token_invalid")
+    assert [r.getMessage() for r in caplog.records if r.name == "smarttrader.main"] == [
+        "[WARN] Live market: WebSocket deferred because Fyers token is invalid/expired "
+        "(token_invalid)"
+    ]
+
+
+def test_connect_route_reports_a_generic_message_for_an_unknown_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lms, "live_market", FixedStatusLiveMarket("something_new"))
+
+    from app.routers.websocket import connect_websocket
+
+    assert asyncio.run(connect_websocket()) == {
+        "status": "something_new",
+        "message": "WebSocket initialization completed",
+    }

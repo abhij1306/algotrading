@@ -33,24 +33,13 @@ class SubscribeRequest(BaseModel):
 async def connect_websocket() -> dict[str, Any]:
     """Initialize Fyers WebSocket connection"""
     try:
-        from ..services.live_market_service import live_market
+        from ..services.live_market_service import connect_status_message, live_market
 
         # Ensure live_market captures the running loop for thread-safe broadcasting.
         connect_status = await live_market.connect_async(
             loop=asyncio.get_running_loop(), explicit=True
         )
-        message_map = {
-            "started": "WebSocket initialization triggered",
-            "already_connected": "WebSocket already connected",
-            "disconnected": "WebSocket was explicitly disconnected",
-            "market_closed": "WebSocket deferred because market is closed",
-            "token_invalid": "WebSocket deferred because Fyers token is invalid/expired",
-            "error": "WebSocket initialization failed",
-        }
-        return {
-            "status": connect_status,
-            "message": message_map.get(connect_status, "WebSocket initialization completed"),
-        }
+        return {"status": connect_status, "message": connect_status_message(connect_status)}
     except Exception as e:
         raise handle_api_error(e, "Failed to initialize WebSocket") from e
 

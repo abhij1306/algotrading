@@ -630,13 +630,21 @@ class LiveMarketService:
         fresh = {symbol: self.get_fresh_tick(symbol) for symbol in symbols}
         return {symbol: tick for symbol, tick in fresh.items() if tick is not None}
 
-    def get_latest_ticks(self, symbols: list[str]) -> dict:
-        """Get latest ticks for multiple symbols"""
-        return {
-            symbol: self.latest_values.get(symbol)
-            for symbol in symbols
-            if symbol in self.latest_values
-        }
+
+# User-facing message for each status that connect()/connect_async() returns.
+CONNECT_STATUS_MESSAGES: dict[str, str] = {
+    "started": "WebSocket initialization triggered",
+    "already_connected": "WebSocket already connected",
+    "disconnected": "WebSocket was explicitly disconnected",
+    "market_closed": "WebSocket deferred because market is closed",
+    "token_invalid": "WebSocket deferred because Fyers token is invalid/expired",
+    "error": "WebSocket initialization failed",
+}
+
+
+def connect_status_message(status: str) -> str:
+    """The message for a connect() status, with a generic one for an unknown status."""
+    return CONNECT_STATUS_MESSAGES.get(status, "WebSocket initialization completed")
 
 
 # Singleton
