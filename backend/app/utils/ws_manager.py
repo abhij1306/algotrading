@@ -36,18 +36,11 @@ class ClientConnection:
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self.subscriptions: dict[WebSocket, set[str]] = {}
         self.connections: dict[WebSocket, ClientConnection] = {}
         self._global_subscriptions: set[str] = set()  # Cache for O(1) lookup
-        self.loop = None
         # Awaited with symbols no remaining client needs after a client is removed.
         self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()
-
-    def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
-        """Set event loop for thread-safe broadcasting"""
-        self.loop = loop
-        logger.debug(f"[WSManager] Event loop set: {loop is not None}")
 
     async def connect(self, websocket: WebSocket) -> bool:
         """
@@ -64,7 +57,6 @@ class ConnectionManager:
         client.sender_task = asyncio.create_task(self._sender_loop(client))
         async with self._lock:
             self.connections[websocket] = client
-            self.subscriptions[websocket] = client.subscriptions
         runtime_metrics.increment("websocket.connections.accepted")
         runtime_metrics.set_gauge(ACTIVE_CONNECTIONS_GAUGE, float(len(self.connections)))
         logger.debug(f"[WSManager] Client connected. Total: {len(self.connections)}")
@@ -93,7 +85,6 @@ class ConnectionManager:
         removed_symbols: set[str] = set()
         async with self._lock:
             client = self.connections.pop(websocket, None)
-            self.subscriptions.pop(websocket, None)
             if client:
                 removed_symbols = set(client.subscriptions)
                 if client.sender_task:

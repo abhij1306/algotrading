@@ -90,14 +90,6 @@ async def _step_get_event_loop(app: FastAPI) -> None:
     await asyncio.sleep(0)
 
 
-async def _step_set_ws_manager_loop(app: FastAPI) -> None:
-    from .utils.ws_manager import manager
-
-    manager.set_loop(app.state.loop)
-    logger.info("[OK] WebSocket manager loop set")
-    await asyncio.sleep(0)
-
-
 async def _step_validate_symbol_master() -> None:
     from .services.symbol_master import symbol_master
 
@@ -193,14 +185,15 @@ async def _step_load_index_universe() -> None:
 
 
 def _log_live_market_status(connect_status: str) -> None:
+    from .services.live_market_service import connect_status_message
+
+    message = f"Live market: {connect_status_message(connect_status)} ({connect_status})"
     if connect_status in {"started", "already_connected"}:
-        logger.info("[OK] Live market service connection initialized")
+        logger.info(f"[OK] {message}")
     elif connect_status == "market_closed":
-        logger.info("[INFO] Live market connection deferred: market closed")
-    elif connect_status == "token_invalid":
-        logger.warning("[WARN] Live market connection deferred: Fyers token invalid/expired")
+        logger.info(f"[INFO] {message}")
     else:
-        logger.warning(f"[WARN] Live market connection deferred: {connect_status}")
+        logger.warning(f"[WARN] {message}")
 
 
 async def _step_connect_live_market(app: FastAPI) -> None:
@@ -221,14 +214,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Startup sequence (docs/Websocket.md, "Startup Sequence"):
     1. Get event loop
-    2. Set loop for WebSocket manager
-    3. Validate symbol_master
-    4. Validate database (deferred, not fatal, when the DB is down)
-    5. Validate Fyers token (warn-only)
-    6. Load index universe (warn-only)
-    7. Connect live_market with event loop
+    2. Validate symbol_master
+    3. Validate database (deferred, not fatal, when the DB is down)
+    4. Validate Fyers token (warn-only)
+    5. Load index universe (warn-only)
+    6. Connect live_market with event loop
 
-    Steps 5-7 do not use the database, so they run even when step 4 finds it down. The
+    Steps 4-6 do not use the database, so they run even when step 3 finds it down. The
     deferred schema work is retried in the background until the database answers.
     """
     from .services.deferred_startup import DeferredStartup
@@ -246,11 +238,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sequence.execute_step(
             StartupStep.SET_EVENT_LOOP,
             lambda: _step_get_event_loop(app),
-            required=True,
-        )
-        await sequence.execute_step(
-            StartupStep.SET_WS_MANAGER_LOOP,
-            lambda: _step_set_ws_manager_loop(app),
             required=True,
         )
         await sequence.execute_step(

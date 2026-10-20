@@ -13,14 +13,13 @@
 ## Startup Sequence
 `backend/app/main.py` lifespan, in order:
 1. Get the event loop
-2. Set the loop on the WebSocket manager
-3. Validate `symbol_master`
-4. Validate the database (create/upgrade the schema, `SELECT 1`)
-5. Validate the Fyers token (warn-only)
-6. Check the index universe data path (warn-only)
-7. `live_market.connect(loop, prevalidated_token)`; market-hours rules apply, so off-hours it returns `market_closed` and the monitor loop connects once the market opens
+2. Validate `symbol_master`
+3. Validate the database (create/upgrade the schema, `SELECT 1`)
+4. Validate the Fyers token (warn-only)
+5. Check the index universe data path (warn-only)
+6. `live_market.connect(loop, prevalidated_token)`; market-hours rules apply, so off-hours it returns `market_closed` and the monitor loop connects once the market opens
 
-Steps 5-7 do not use the database. If step 4 finds Postgres down it is deferred, not fatal: steps 5-7
+Steps 4-6 do not use the database. If step 3 finds Postgres down it is deferred, not fatal: steps 4-6
 still run, so live market streaming works without the DB. A background task retries the deferred schema
 work with backoff (5s doubling to 60s), runs it once when the DB answers, logs
 `[OK] Database reachable again; deferred startup completed` and stops. Shutdown cancels it.

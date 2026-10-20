@@ -52,7 +52,7 @@ The area files hold the design and evidence. This file tracks what is left. Lane
 ### Lane 1: live feed
 Files: `ws_manager.py`, `routers/websocket.py`, `live_market_service.py`, `fyers_websocket.py`, `utils/market_hours.py`.
 
-- [ ] 1. Live cleanup (S): remove `set_loop`/`loop`, `get_latest_ticks` and `ConnectionManager.subscriptions`; share one status-to-message map.
+- [x] 1. Live cleanup (S): remove `set_loop`/`loop`, `get_latest_ticks` and `ConnectionManager.subscriptions`; share one status-to-message map.
 - [ ] 2. SubscriptionRegistry, a pure refcount (M). The router stops diffing subscriptions. Add registry and slow-client tests.
 - [ ] 3. MarketHoursPolicy, a Clock and a tick-normalizer module (S-M). Delete the copies of 9:15/15:30, including the dead `RiskConfig` fields.
 - [ ] 4. ProviderSession behind a DataSocket protocol, with fake-socket tests (L).
