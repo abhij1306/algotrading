@@ -1130,6 +1130,25 @@ class VCPService:
                             }
                         )
 
+            # The loop stops before the last date (no next session to enter on), so record the
+            # final equity point here; otherwise exits realised on the last day are dropped.
+            final_date = trading_dates[-1]
+            final_pnl = sum(
+                float(trade["pnl_inr"])
+                for trade in trades
+                if datetime.strptime(trade["exit_date"], "%Y-%m-%d").date() <= final_date
+            )
+            equity_curve.append({"date": final_date.isoformat(), "equity": round(capital + final_pnl, 2)})
+            if not benchmark.empty:
+                bench_row = benchmark[benchmark["date"] == final_date]
+                if not bench_row.empty:
+                    benchmark_curve.append(
+                        {
+                            "date": final_date.isoformat(),
+                            "equity": round(capital * (float(bench_row.iloc[0]["close"]) / benchmark_start), 2),
+                        }
+                    )
+
             # Membership is resolved per trading date; only fully point-in-time runs are bias-corrected.
             mode = "bias_corrected" if modes == {"bias_corrected"} else ",".join(sorted(modes)) or "unavailable"
             if not equity_curve:

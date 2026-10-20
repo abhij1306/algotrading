@@ -19,6 +19,7 @@ JOIN_DATE = date(2024, 3, 1)  # LATER_JOINER enters the index here
 LEAVE_DATE = date(2024, 2, 1)  # DROPPED stops being a member the day before this
 RUN_START = date(2024, 1, 1)
 RUN_END = date(2024, 4, 30)
+TRADE_PNL = 10.0  # every fake trade realises this on its entry day
 
 
 @pytest.fixture
@@ -111,7 +112,7 @@ def test_backtest_membership_is_point_in_time(
         entries.append((signal["symbol"], entry_date))
         return {
             "symbol": signal["symbol"],
-            "pnl_inr": 0.0,
+            "pnl_inr": TRADE_PNL,
             "hold_days": 1,
             "r_multiple": 0.0,
             "entry_date": entry_date.isoformat(),
@@ -145,3 +146,9 @@ def test_backtest_membership_is_point_in_time(
     assert min(joiner) >= JOIN_DATE
     assert result["methodology"]["survivorship_mode"] == "bias_corrected"
     assert result["metrics"]["survivorship_bias_label"] == "BIAS-CORRECTED"
+    # Equity must include exits realised on the final trading date.
+    metrics = result["metrics"]
+    assert metrics["final_equity"] == round(
+        metrics["initial_capital"] + TRADE_PNL * len(signals), 2
+    )
+    assert result["equity_curve"][-1]["date"] == RUN_END.isoformat()
