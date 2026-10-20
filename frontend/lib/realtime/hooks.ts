@@ -52,7 +52,10 @@ const NO_QUOTES: QuoteMap = {};
 
 /** Live quotes for a set of symbols. Pass an empty list to hold no subscriptions. */
 export function useQuotes(symbols: readonly string[], store: QuoteStore = quoteStore): QuoteMap {
-  const symbolsKey = useMemo(() => [...new Set(symbols)].sort().join(","), [symbols]);
+  const symbolsKey = useMemo(
+    () => [...new Set(symbols)].sort((a, b) => a.localeCompare(b)).join(","),
+    [symbols],
+  );
   const subscribe = useCallback(
     (onChange: () => void) => {
       if (symbolsKey === "") return store.subscribe(onChange);

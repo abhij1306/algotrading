@@ -208,7 +208,7 @@ export default function TerminalPage() {
   const isConnected = useConnectionStatus() === "connected";
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState("D");
-  const [baseWatchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [baseWatchlist, setBaseWatchlist] = useState<WatchlistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tradingMode, setTradingMode] = useState<TradingMode>(DEFAULT_TRADING_MODE);
@@ -219,7 +219,7 @@ export default function TerminalPage() {
   const [orderTrigger, setOrderTrigger] = useState<number>(0);
   const [orderBusy, setOrderBusy] = useState(false);
   const [orderMessage, setOrderMessage] = useState<string | null>(null);
-  const [basePositions, setPositions] = useState<PositionItem[]>([]);
+  const [basePositions, setBasePositions] = useState<PositionItem[]>([]);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [watchlistQuery, setWatchlistQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
@@ -271,7 +271,7 @@ export default function TerminalPage() {
               }))
           : [];
 
-        setWatchlist(normalized);
+        setBaseWatchlist(normalized);
         setSelectedSymbol((current) => current || normalized[0]?.symbol || "");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load watchlist");
@@ -284,7 +284,7 @@ export default function TerminalPage() {
 
   useEffect(() => {
     if (!selectedSymbol) return;
-    setWatchlist((prev) => {
+    setBaseWatchlist((prev) => {
       if (prev.some((item) => item.symbol === selectedSymbol)) {
         return prev;
       }
@@ -466,7 +466,7 @@ export default function TerminalPage() {
         throw new Error(data?.detail || "Failed to add symbol");
       }
 
-      setWatchlist((prev) => {
+      setBaseWatchlist((prev) => {
         if (prev.some((w) => w.symbol === symbol)) return prev;
         return [
           {
@@ -502,7 +502,7 @@ export default function TerminalPage() {
         const data = (await response.json()) as PositionsBookResponse;
         const liveRows = Array.isArray(data.live_positions) ? data.live_positions : [];
         const paperRows = Array.isArray(data.paper_positions) ? data.paper_positions : [];
-        setPositions(
+        setBasePositions(
           [...liveRows, ...paperRows].map((row) => ({
             ...row,
             current_price: Number(row.current_price || 0),
@@ -666,7 +666,9 @@ export default function TerminalPage() {
         throw new Error(payload?.detail || "Failed to square position");
       }
       setOrderMessage(`${row.mode || "PAPER"} square submitted for ${row.symbol}`);
-      setPositions((prev) => prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)));
+      setBasePositions((prev) =>
+        prev.filter((p) => !(p.symbol === row.symbol && p.mode === row.mode)),
+      );
     } catch (error) {
       setOrderMessage(error instanceof Error ? error.message : "Failed to square position");
     }
