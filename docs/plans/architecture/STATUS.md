@@ -140,7 +140,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 ### Lane 10: screener UI
 - [x] 1. A live overlay through `useQuote`, removing 8 `useEffect`s (M). The page reads `useQuotes` for the rendered rows and derives each row's live values during render; the REST fallback is `useLiveQuotePoll` in `lib/queries/screener.ts`, which during market hours also polls symbols whose streamed quote is over 5s old (store `receivedAt`, render-time clock from `lib/use-now.ts`), with the fresher quote winning; cell flashes compare against the previous render's value. No effects remain in `app/screener`.
 - [x] 2. Delete the `useWebSocket` compatibility shim (S). `hooks/useWebSocket.ts` and the store's `onMessage`/`lastMessage` surface are gone; the fake socket used by the store tests is shared from `lib/realtime/__tests__/fake-socket.ts`.
-- [ ] 3. Split the page, with tests for sort and format (M).
+- [x] 3. Split the page, with tests for sort and format (M). The page is now `useScreenerData` (filters, server-side sort, paging), `useLiveOverlay` (stream, poll and stale-quote fallback) and `components/screener/`; sort, poll selection, quote priority, cell formatting and paging are table-tested pure functions in `screener-view.ts`.
 
 ### Lane 11: strategies and backtest pages
 - [x] 1. Split the strategies page, and turn queue, cancel and halt into mutations (M-L). Mutations in PR #46; the page is now `useStrategyData`, `useStrategyActions` and `components/strategies/`, every action stays disabled while one is in flight, and the local formatters are gone for `lib/format.ts`.
