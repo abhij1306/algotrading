@@ -74,109 +74,28 @@ def sync_index_universes_from_loader(
     sector_mapping: dict[str, list[str]] = {}
 
     for index_code in available_indices:
-        definition = definitions.get(index_code)
-        if definition is None:
-            definition = IndexUniverseDefinition(
-                index_code=index_code,
-                index_name=loader.get_index_description(index_code) or index_code,
-                description=loader.get_index_description(index_code) or index_code,
-                is_custom=False,
-                last_download_date=target_date,
-            )
-            db.add(definition)
-            db.flush()
-            definitions[index_code] = definition
-            definitions_created += 1
-        else:
-            definition.index_name = loader.get_index_description(index_code) or index_code
-            definition.description = loader.get_index_description(index_code) or index_code
-            definition.last_download_date = target_date
+        definition, created = _upsert_definition(db, definitions, index_code, target_date)
+        definitions_created += int(created)
 
         universe = loader.get_index_universe(index_code)
         constituents = universe.constituents if universe else []
         current_symbols = {constituent.symbol for constituent in constituents}
 
-        active_rows = {
-            row.symbol: row
-            for row in db.query(IndexConstituentHistory)
-            .filter(
-                IndexConstituentHistory.universe_id == definition.id,
-                IndexConstituentHistory.effective_to.is_(None),
-            )
-            .all()
-        }
-
-        for symbol, row in active_rows.items():
-            if symbol not in current_symbols:
-                row.effective_to = target_date - timedelta(days=1)
-                constituents_closed += 1
-
+        mapping = broad_mapping if _is_broad_index(index_code) else sector_mapping
         for constituent in constituents:
-            if _is_broad_index(index_code):
-                broad_mapping.setdefault(constituent.symbol, []).append(index_code)
-            else:
-                sector_mapping.setdefault(constituent.symbol, []).append(index_code)
+            mapping.setdefault(constituent.symbol, []).append(index_code)
 
-            row = active_rows.get(constituent.symbol)
-            source_file = INDEX_FILES.get(index_code, "")
-            if row is None:
-                db.add(
-                    IndexConstituentHistory(
-                        universe_id=definition.id,
-                        symbol=constituent.symbol,
-                        fyers_symbol=symbol_master.to_fyers(constituent.symbol),
-                        isin=constituent.isin,
-                        effective_from=target_date,
-                        effective_to=None,
-                        weight=getattr(constituent, "weight", None),
-                        company_name=constituent.company_name,
-                        industry=constituent.industry,
-                        source_file=source_file,
-                        import_date=target_date,
-                    )
-                )
-                constituents_added += 1
-            else:
-                row.fyers_symbol = symbol_master.to_fyers(constituent.symbol)
-                row.isin = constituent.isin
-                row.weight = getattr(constituent, "weight", None)
-                row.company_name = constituent.company_name
-                row.industry = constituent.industry
-                row.source_file = source_file
-                row.import_date = target_date
-
-        snapshot = (
-            db.query(UniverseSnapshot)
-            .filter(
-                UniverseSnapshot.universe_id == definition.id,
-                UniverseSnapshot.snapshot_date == target_date,
-            )
-            .first()
+        added, closed = _sync_constituents(
+            db, definition.id, index_code, constituents, current_symbols, target_date
         )
-        payload = json.dumps(sorted(current_symbols))
-        if snapshot is None:
-            db.add(
-                UniverseSnapshot(
-                    universe_id=definition.id,
-                    snapshot_date=target_date,
-                    symbols=payload,
-                    source_data_date=target_date,
-                )
-            )
-        else:
-            snapshot.symbols = payload
-            snapshot.source_data_date = target_date
+        constituents_added += added
+        constituents_closed += closed
+
+        _write_snapshot(db, definition.id, current_symbols, target_date)
         snapshots_written += 1
 
     if update_company_categories:
-        companies = db.query(Company).filter(Company.is_active.is_(True)).all()
-        for company in companies:
-            broad_indices = broad_mapping.get(company.symbol, [])
-            sector_indices = sector_mapping.get(company.symbol, [])
-            company.broad_market = broad_indices[0] if broad_indices else None
-            company.sector_index = sector_indices[0] if sector_indices else None
-            if broad_indices or sector_indices:
-                companies_updated += 1
+        companies_updated = _update_company_categories(db, broad_mapping, sector_mapping)
 
     db.commit()
 
@@ -191,3 +110,130 @@ def sync_index_universes_from_loader(
     )
     logger.info("Universe sync complete: %s", summary)
     return summary
+
+
+def _upsert_definition(
+    db: Session,
+    definitions: dict[str, IndexUniverseDefinition],
+    index_code: str,
+    target_date: date,
+) -> tuple[IndexUniverseDefinition, bool]:
+    """The index's definition, created (and flushed for its id) or refreshed; True if created."""
+    loader = index_universe_loader
+    definition = definitions.get(index_code)
+    if definition is None:
+        definition = IndexUniverseDefinition(
+            index_code=index_code,
+            index_name=loader.get_index_description(index_code) or index_code,
+            description=loader.get_index_description(index_code) or index_code,
+            is_custom=False,
+            last_download_date=target_date,
+        )
+        db.add(definition)
+        db.flush()
+        definitions[index_code] = definition
+        return definition, True
+
+    definition.index_name = loader.get_index_description(index_code) or index_code
+    definition.description = loader.get_index_description(index_code) or index_code
+    definition.last_download_date = target_date
+    return definition, False
+
+
+def _sync_constituents(
+    db: Session,
+    universe_id: int,
+    index_code: str,
+    constituents: list,
+    current_symbols: set[str],
+    target_date: date,
+) -> tuple[int, int]:
+    """Close dropped members, add new ones and refresh the rest; returns (added, closed)."""
+    active_rows = {
+        row.symbol: row
+        for row in db.query(IndexConstituentHistory)
+        .filter(
+            IndexConstituentHistory.universe_id == universe_id,
+            IndexConstituentHistory.effective_to.is_(None),
+        )
+        .all()
+    }
+
+    closed = 0
+    for symbol, row in active_rows.items():
+        if symbol not in current_symbols:
+            row.effective_to = target_date - timedelta(days=1)
+            closed += 1
+
+    added = 0
+    source_file = INDEX_FILES.get(index_code, "")
+    for constituent in constituents:
+        row = active_rows.get(constituent.symbol)
+        if row is None:
+            row = IndexConstituentHistory(
+                universe_id=universe_id,
+                symbol=constituent.symbol,
+                effective_from=target_date,
+                effective_to=None,
+            )
+            _apply_constituent(row, constituent, source_file, target_date)
+            db.add(row)
+            added += 1
+        else:
+            _apply_constituent(row, constituent, source_file, target_date)
+    return added, closed
+
+
+def _apply_constituent(
+    row: IndexConstituentHistory, constituent: object, source_file: str, target_date: date
+) -> None:
+    """Copy the loader's constituent details onto a history row."""
+    row.fyers_symbol = symbol_master.to_fyers(constituent.symbol)
+    row.isin = constituent.isin
+    row.weight = getattr(constituent, "weight", None)
+    row.company_name = constituent.company_name
+    row.industry = constituent.industry
+    row.source_file = source_file
+    row.import_date = target_date
+
+
+def _write_snapshot(
+    db: Session, universe_id: int, current_symbols: set[str], target_date: date
+) -> None:
+    """Create or overwrite the universe's member snapshot for the target date."""
+    snapshot = (
+        db.query(UniverseSnapshot)
+        .filter(
+            UniverseSnapshot.universe_id == universe_id,
+            UniverseSnapshot.snapshot_date == target_date,
+        )
+        .first()
+    )
+    payload = json.dumps(sorted(current_symbols))
+    if snapshot is None:
+        db.add(
+            UniverseSnapshot(
+                universe_id=universe_id,
+                snapshot_date=target_date,
+                symbols=payload,
+                source_data_date=target_date,
+            )
+        )
+    else:
+        snapshot.symbols = payload
+        snapshot.source_data_date = target_date
+
+
+def _update_company_categories(
+    db: Session, broad_mapping: dict[str, list[str]], sector_mapping: dict[str, list[str]]
+) -> int:
+    """Set each active company's first broad and sector index; returns how many have one."""
+    companies_updated = 0
+    for company in db.query(Company).filter(Company.is_active.is_(True)).all():
+        broad_indices = broad_mapping.get(company.symbol, [])
+        sector_indices = sector_mapping.get(company.symbol, [])
+        company.broad_market = broad_indices[0] if broad_indices else None
+        company.sector_index = sector_indices[0] if sector_indices else None
+        if broad_indices or sector_indices:
+            companies_updated += 1
+    return companies_updated

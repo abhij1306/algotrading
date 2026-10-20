@@ -60,12 +60,7 @@ class YFinanceService:
 
         # If symbols list is too long, yfinance might be slow.
         # But for overview/top gainers (50-100 symbols), it should be okay.
-        yf_symbols = [
-            f"{s}.NS"
-            if s not in ["NIFTY50", "BANKNIFTY"]
-            else ("^NSEI" if s == "NIFTY50" else "^NSEBANK")
-            for s in symbols
-        ]
+        yf_symbols = [YAHOO_INDEX_SYMBOLS.get(s, f"{s}.NS") for s in symbols]
 
         try:
             # Fetch data in bulk
@@ -73,37 +68,10 @@ class YFinanceService:
                 yf_symbols, period="5d", interval="1d", progress=False, group_by="ticker"
             )
 
-            for i, symbol in enumerate(symbols):
-                yf_sym = yf_symbols[i]
+            for symbol, yf_sym in zip(symbols, yf_symbols, strict=True):
                 try:
                     ticker_data = data[yf_sym] if len(yf_symbols) > 1 else data
-                    ticker_data = ticker_data.dropna(how="all")
-
-                    if ticker_data.empty:
-                        quotes[symbol] = None
-                        continue
-
-                    latest = ticker_data.iloc[-1]
-                    prev_close = (
-                        ticker_data.iloc[-2]["Close"] if len(ticker_data) >= 2 else latest["Open"]
-                    )
-
-                    current_price = latest["Close"]
-                    if pd.isna(current_price):
-                        current_price = latest["Open"]
-
-                    change = current_price - prev_close
-                    change_pct = (change / prev_close) * 100 if prev_close != 0 else 0
-
-                    quotes[symbol] = {
-                        "price": float(current_price),
-                        "change_pct": float(change_pct),
-                        "volume": int(latest.get("Volume", 0)),
-                        "open": float(latest.get("Open", 0)),
-                        "high": float(latest.get("High", 0)),
-                        "low": float(latest.get("Low", 0)),
-                        "source": "yfinance",
-                    }
+                    quotes[symbol] = _quote_from_bars(ticker_data.dropna(how="all"))
                 except Exception as e:
                     logger.warning(f"Failed to process {symbol} from yfinance: {e}")
                     quotes[symbol] = None
@@ -119,6 +87,36 @@ class YFinanceService:
         """Get quote for single symbol"""
         quotes = YFinanceService.get_quotes([symbol])
         return quotes.get(symbol)
+
+
+# DB symbols of indices and their Yahoo tickers; equities use "<symbol>.NS"
+YAHOO_INDEX_SYMBOLS = {"NIFTY50": "^NSEI", "BANKNIFTY": "^NSEBANK"}
+
+
+def _quote_from_bars(ticker_data: pd.DataFrame) -> dict | None:
+    """Latest price and change vs. the previous close (or today's open), or None if empty."""
+    if ticker_data.empty:
+        return None
+
+    latest = ticker_data.iloc[-1]
+    prev_close = ticker_data.iloc[-2]["Close"] if len(ticker_data) >= 2 else latest["Open"]
+
+    current_price = latest["Close"]
+    if pd.isna(current_price):
+        current_price = latest["Open"]
+
+    change = current_price - prev_close
+    change_pct = (change / prev_close) * 100 if prev_close != 0 else 0
+
+    return {
+        "price": float(current_price),
+        "change_pct": float(change_pct),
+        "volume": int(latest.get("Volume", 0)),
+        "open": float(latest.get("Open", 0)),
+        "high": float(latest.get("High", 0)),
+        "low": float(latest.get("Low", 0)),
+        "source": "yfinance",
+    }
 
 
 # Singleton instance
