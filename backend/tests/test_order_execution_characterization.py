@@ -13,6 +13,7 @@ from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
 from app.services import order_execution_service as oes
 from app.services.position_sync_service import PositionSyncService
+from app.services.risk_manager import risk_manager
 from app.utils import market_hours
 
 # --- Paper fill simulation ---------------------------------------------------
@@ -261,6 +262,9 @@ class StubModifyBroker:
     def get_quote(self, symbol: str) -> dict[str, Any]:
         return {"n": symbol, "v": {"lp": 800.0}}
 
+    def get_funds(self) -> dict[str, float]:
+        return {"available": 100_000.0, "used": 0.0, "total": 100_000.0}
+
     def modify_order(self, order_id: str, params: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((order_id, params))
         if isinstance(self.reply, Exception):
@@ -328,6 +332,8 @@ def test_live_modify_failure_leaves_order_unchanged(
     service = oes.OrderExecutionService()
     broker = StubModifyBroker(reply)
     service._broker = broker
+    # The +1 notional is margin-checked through the risk manager's broker.
+    monkeypatch.setattr(risk_manager, "_broker", broker)
 
     result = service.modify_order("ORD-1", {"price": 801.0}, orders)
 

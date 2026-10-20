@@ -181,43 +181,64 @@ class RiskManager:
             status=RiskStatus.PASS, message="All risk checks passed", code="RISK_PASS"
         )
 
+    @staticmethod
+    def _effective_price(order: dict, ltp: float) -> float:
+        """Price an order is valued at: its limit for LIMIT/SL, else the live price."""
+        if str(order.get("type") or "MARKET").upper() in {"LIMIT", "SL"}:
+            return float(order.get("price") or 0)
+        return ltp
+
     def pre_modify_check(
-        self, order_params: dict, quantity_increase: int, ltp: float, db: Session | None = None
+        self, order_params: dict, current: dict, ltp: float, db: Session | None = None
     ) -> RiskCheckResult:
         """Checks for changing a working LIVE order.
 
         Args:
             order_params: the order as it will be after the change (symbol, side, quantity,
                 type, price, trigger_price, product, instrument_type)
-            quantity_increase: new quantity minus current quantity
+            current: the order as it is now (quantity, type, price)
             ltp: last traded price from a fresh quote; 0 when none was available
             db: Database session
 
         Every modify must pass market hours, the per-order size limit and the price band.
-        A modify that adds quantity adds exposure, so it also runs the daily-loss, exposure,
-        margin and naked-short checks on the added quantity. A PASS carries any warnings in
-        details["warnings"].
+        A modify that raises the order's notional (more quantity, a higher limit, or a
+        switch to a dearer type) runs the exposure and margin checks on the notional
+        increase; one that adds quantity also runs the daily-loss and naked-short checks.
+        Fails closed when either notional cannot be priced. A PASS carries any warnings
+        in details["warnings"].
         """
         checks = [
             self._check_market_hours,
             lambda: self._check_position_size(order_params, db),
             lambda: self._check_price_band(order_params, ltp),
         ]
-        if quantity_increase > 0:
-            limit_price = float(order_params.get("price") or 0)
-            added = {
-                **order_params,
-                "quantity": quantity_increase,
-                # A limit order is valued at its limit; anything else at the live price.
-                "price": limit_price if order_params.get("type") in {"LIMIT", "SL"} else ltp,
-            }
+        new_qty = int(order_params.get("quantity") or 0)
+        old_qty = int(current.get("quantity") or 0)
+        new_price = self._effective_price(order_params, ltp)
+        old_price = self._effective_price(current, ltp)
+        if new_price <= 0 or old_price <= 0:
+            return RiskCheckResult(
+                status=RiskStatus.FAIL,
+                message=(
+                    f"Cannot price the order for {order_params.get('symbol', '')}; modify rejected."
+                ),
+                code="PRICE_ESTIMATE_FAILED",
+            )
+        notional_increase = new_qty * new_price - old_qty * old_price
+        if notional_increase > 0:
+            # Valued as one unit at the notional increase: exposure and margin both
+            # multiply quantity by price.
+            added_value = {**order_params, "quantity": 1, "price": notional_increase}
             checks += [
-                lambda: self._check_daily_loss_limit(db),
-                lambda: self._check_total_exposure(added, db),
-                lambda: self._check_available_margin(added),
+                lambda: self._check_total_exposure(added_value, db),
+                lambda: self._check_available_margin(added_value),
             ]
+        quantity_increase = new_qty - old_qty
+        if quantity_increase > 0:
+            added_qty = {**order_params, "quantity": quantity_increase}
+            checks.append(lambda: self._check_daily_loss_limit(db))
             if order_params.get("instrument_type") in ["CE", "PE"]:
-                checks.append(lambda: self._check_naked_short_option(added, db))
+                checks.append(lambda: self._check_naked_short_option(added_qty, db))
 
         warnings: list[str] = []
         for check in checks:

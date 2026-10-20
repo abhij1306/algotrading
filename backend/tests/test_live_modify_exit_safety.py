@@ -270,6 +270,81 @@ def test_live_modify_with_invalid_values_never_reaches_broker(
     assert broker.calls == []
 
 
+def add_open_exposure(db: Session, value: float) -> None:
+    """An open position worth `value` at its LTP of 100."""
+    db.add(
+        LivePosition(
+            id="default_user-NSE:ITC-EQ-INTRADAY",
+            symbol="ITC",
+            fyers_symbol="NSE:ITC-EQ",
+            product_type="INTRADAY",
+            side="LONG",
+            net_qty=int(value / 100),
+            ltp=100.0,
+            last_synced_at=datetime.now(),
+        )
+    )
+    db.commit()
+
+
+@pytest.mark.usefixtures("market_open")
+@pytest.mark.parametrize(
+    ("current_type", "params", "setup", "code"),
+    [
+        # Same quantity, limit 800 -> 900: notional +500 takes 499,900 past 500,000.
+        ("LIMIT", {"price": 900.0}, "near_exposure_limit", "EXPOSURE_LIMIT"),
+        # Same quantity, notional +50 needs 10 of intraday margin; 5 is available.
+        ("LIMIT", {"price": 810.0}, "low_margin", "INSUFFICIENT_MARGIN"),
+        # LIMIT 800 -> MARKET at LTP 820: notional +100.
+        ("LIMIT", {"order_type": "MARKET"}, "low_margin", "INSUFFICIENT_MARGIN"),
+        # MARKET at LTP 820 -> LIMIT 830: notional +50.
+        ("MARKET", {"order_type": "LIMIT", "price": 830.0}, "low_margin", "INSUFFICIENT_MARGIN"),
+        # A MARKET order cannot be valued without a live price.
+        ("MARKET", {"order_type": "LIMIT", "price": 801.0}, "no_quote", "PRICE_ESTIMATE_FAILED"),
+    ],
+)
+def test_live_modify_that_raises_notional_at_same_quantity_is_risk_checked(
+    orders: Session,
+    service: oes.OrderExecutionService,
+    broker: FakeBroker,
+    current_type: str,
+    params: dict[str, Any],
+    setup: str,
+    code: str,
+) -> None:
+    broker.ltp = 820.0
+    if setup == "near_exposure_limit":
+        add_open_exposure(orders, 499_980.0)
+    if setup == "low_margin":
+        broker.available = 5.0
+    if setup == "no_quote":
+        broker.ltp = 0.0
+    order = add_live_order(orders, order_type=current_type)
+
+    result = service.modify_order("FY-1", params, orders)
+
+    assert (result["status"], result["code"]) == ("ERROR", code)
+    assert broker.calls_named("modify_order") == []
+    orders.refresh(order)
+    assert (order.quantity, order.price, order.order_type) == (5, 800.0, current_type)
+
+
+@pytest.mark.usefixtures("market_open")
+def test_live_modify_that_lowers_the_price_skips_margin_and_exposure(
+    orders: Session, service: oes.OrderExecutionService, broker: FakeBroker
+) -> None:
+    broker.available = 0.0  # a margin check would fail
+    add_open_exposure(orders, 499_980.0)  # so would an exposure check on any increase
+    order = add_live_order(orders)
+
+    result = service.modify_order("FY-1", {"price": 795.0}, orders)
+
+    assert result == {"status": "SUCCESS", "message": "Order Modified"}
+    assert broker.calls_named("get_funds") == []
+    orders.refresh(order)
+    assert order.price == 795.0
+
+
 @pytest.mark.usefixtures("market_open")
 def test_live_modify_that_reduces_quantity_skips_margin_and_exposure(
     orders: Session, service: oes.OrderExecutionService, broker: FakeBroker

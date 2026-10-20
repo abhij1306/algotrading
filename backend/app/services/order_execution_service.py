@@ -714,8 +714,12 @@ class OrderExecutionService:
             "product": order.product_type,
             "instrument_type": order.instrument_type,
         }
-        quantity_increase = broker_params["quantity"] - int(order.quantity or 0)
-        result = risk_manager.pre_modify_check(risk_params, quantity_increase, ltp, db)
+        current = {
+            "quantity": int(order.quantity or 0),
+            "type": str(order.order_type or "MARKET").upper(),
+            "price": safe_float(order.price, 0.0),
+        }
+        result = risk_manager.pre_modify_check(risk_params, current, ltp, db)
         if result.status.value == "FAIL":
             return {
                 "status": "ERROR",
