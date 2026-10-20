@@ -19,20 +19,29 @@ export function useOptionsChain(enabled: boolean) {
   const [underlying, setUnderlying] = useState("NIFTY");
   const [chosenExpiry, setChosenExpiry] = useState("");
   const [pick, setPick] = useState<OptionPick | null>(null);
+  // When the selectors last changed (epoch ms); 0 until the user changes them.
+  const [chainChangedAt, setChainChangedAt] = useState(0);
   const chain = optionChainKey(underlying, chosenExpiry);
   const boardQuery = useOptionsBoard({ underlying, expiry: chosenExpiry, enabled });
-  const snapshot = boardQuery.data ?? null;
+  // Only a board fetched after the selectors last changed is shown: a cached copy of a chain
+  // the user comes back to stays hidden (and unpickable) until its refetch answers.
+  const snapshot =
+    boardQuery.data && boardQuery.dataUpdatedAt > chainChangedAt ? boardQuery.data : null;
+  // Changing the chain drops the pick outright, so coming back to a chain never revives it.
+  const changeChain = () => {
+    setPick(null);
+    setChainChangedAt(Date.now());
+  };
   return {
     underlying,
-    // Changing the chain drops the pick outright, so coming back to a chain never revives it.
     setUnderlying: (value: string) => {
       setUnderlying(value);
-      setPick(null);
+      changeChain();
     },
     expiry: chosenExpiry || (snapshot?.board.expiry ?? ""),
     setExpiry: (value: string) => {
       setChosenExpiry(value);
-      setPick(null);
+      changeChain();
     },
     snapshot,
     isLoading: boardQuery.isFetching,

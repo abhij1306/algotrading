@@ -230,8 +230,9 @@ export function useOptionsBoard(params: { underlying: string; expiry: string; en
       return { board, orderflow: buildOptionsOrderflow(board) };
     },
     enabled,
-    // No placeholder, and nothing kept once the selectors move on: while a chain loads, neither
-    // another chain's board nor an old cached copy of this one shows (and is pickable).
+    // No placeholder, and a chain the selectors return to is always fetched again: the caller
+    // shows only a board fetched after its selectors last changed.
+    staleTime: 0,
     gcTime: 0,
     refetchInterval: () => (isMarketOpen().isOpen ? OPTIONS_POLL_OPEN_MS : OPTIONS_POLL_CLOSED_MS),
   });
