@@ -22,7 +22,7 @@ class StartupStep(Enum):
     SET_WS_MANAGER_LOOP = "set_ws_manager_loop"
     VALIDATE_SYMBOL_MASTER = "validate_symbol_master"
     VALIDATE_DATABASE = "validate_database"
-    VALIDATE_FYERS_TOKEN = "validate_fyers_token"  # noqa: S105 - step name, not a secret
+    VALIDATE_FYERS_TOKEN = "validate_fyers_token"  # noqa: S105 - step name and not a secret
     LOAD_INDEX_UNIVERSE = "load_index_universe"
     CONNECT_LIVE_MARKET = "connect_live_market"
 

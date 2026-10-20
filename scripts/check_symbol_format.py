@@ -284,6 +284,13 @@ def main() -> int:
         # Default to backend/app directory
         path = Path(__file__).resolve().parent.parent / "backend" / "app"
 
+    # Only check files inside this repository.
+    repo_root = Path(__file__).resolve().parent.parent
+    path = path.resolve()
+    if not path.is_relative_to(repo_root):
+        print(f"Error: Path is outside the repository: {path}", file=sys.stderr)
+        return 2
+
     if not path.exists():
         print(f"Error: Path does not exist: {path}", file=sys.stderr)
         return 2

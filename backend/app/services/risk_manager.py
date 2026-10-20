@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class RiskStatus(Enum):
     """Risk check status"""
 
-    PASS = "PASS"  # noqa: S105 - risk status value, not a password
+    PASS = "PASS"  # noqa: S105 - risk status value and not a password
     FAIL = "FAIL"
     WARNING = "WARNING"
 
