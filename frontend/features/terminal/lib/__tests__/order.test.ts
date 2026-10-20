@@ -116,6 +116,7 @@ describe("quantityError", () => {
     ["a whole quantity", 3, null, null],
     ["a fractional quantity", 1.5, null, "Quantity must be a whole number greater than 0"],
     ["a negative quantity", -2, null, "Quantity must be a whole number greater than 0"],
+    ["an unsafe integer", 2 ** 53, null, "Quantity must be a whole number greater than 0"],
     ["whole lots", 150, { count: 2, size: 75 }, null],
     [
       "fractional lots",

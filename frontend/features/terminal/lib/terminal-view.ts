@@ -163,16 +163,15 @@ export function searchView(input: {
   searchTerm: string;
   data: SearchResultItem[] | undefined;
   isPlaceholderData: boolean;
-  isFetching: boolean;
 }): SearchView {
   const query = input.text.trim();
   const active = query.length >= 2;
   if (!active) return { active, results: NO_RESULTS, loading: false };
   const current = input.searchTerm === query && !input.isPlaceholderData;
-  if (!current) return { active, results: NO_RESULTS, loading: true };
-  // A refresh of this same query keeps its results usable; only a first fetch reads as pending.
-  const results = input.data ?? NO_RESULTS;
-  return { active, results, loading: input.isFetching && input.data === undefined };
+  // Until this query has an answer (fetching, or paused offline) it reads as pending; a refresh
+  // of an answered query keeps its results usable.
+  if (!current || input.data === undefined) return { active, results: NO_RESULTS, loading: true };
+  return { active, results: input.data, loading: false };
 }
 
 /** At least 1, as the quantity and lots inputs always were. */

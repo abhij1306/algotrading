@@ -25,7 +25,6 @@ export function useWatchlistSearch() {
     searchTerm,
     data: symbolSearchQuery.data,
     isPlaceholderData: symbolSearchQuery.isPlaceholderData,
-    isFetching: symbolSearchQuery.isFetching,
   });
   return {
     text,

@@ -327,7 +327,7 @@ describe("shownOptionSymbol", () => {
 
 describe("searchView", () => {
   const sbin = [{ symbol: "SBIN", name: "State Bank" }];
-  const settled = { isPlaceholderData: false, isFetching: false };
+  const settled = { isPlaceholderData: false };
 
   it.each([
     [
@@ -342,17 +342,12 @@ describe("searchView", () => {
     ],
     [
       "nothing while the previous query's results stand in",
-      { text: "INF", searchTerm: "INF", data: sbin, isPlaceholderData: true, isFetching: true },
+      { text: "INF", searchTerm: "INF", data: sbin, isPlaceholderData: true },
       { active: true, results: [], loading: true },
     ],
     [
-      "the current results while the same query refreshes",
-      { text: "SB", searchTerm: "SB", data: sbin, isPlaceholderData: false, isFetching: true },
-      { active: true, results: sbin, loading: false },
-    ],
-    [
-      "pending on the first fetch of the current query",
-      { text: "SB", searchTerm: "SB", data: undefined, isPlaceholderData: false, isFetching: true },
+      "pending, not 'No matches', until the current query has an answer (or while offline)",
+      { text: "SB", searchTerm: "SB", data: undefined, ...settled },
       { active: true, results: [], loading: true },
     ],
     [

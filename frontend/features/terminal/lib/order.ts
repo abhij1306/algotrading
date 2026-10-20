@@ -58,7 +58,8 @@ export interface TicketInput {
 export function quantityError(quantity: number, lots: TicketInput["lots"]): string | null {
   const lotsMessage = lots ? `Lots must be a whole number (lot size ${lots.size})` : null;
   if (lots && !Number.isInteger(lots.count)) return lotsMessage;
-  if (!Number.isInteger(quantity) || quantity <= 0) {
+  // Safe integers only: a larger one may already have been rounded on the way in.
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
     return "Quantity must be a whole number greater than 0";
   }
   if (lots && quantity !== lots.count * lots.size) return lotsMessage;
