@@ -7,6 +7,8 @@ import { getErrorMessage } from "@/lib/type-guards";
 type FyersStatus = { connected: boolean; userId: string; offline: boolean };
 
 const fyersStatusKey = ["auth", "fyers", "status"] as const;
+/** Re-check the Fyers status at most this often (and on window focus), so an offline badge clears. */
+const FYERS_STATUS_STALE_MS = 30_000;
 
 async function fetchFyersStatus(): Promise<FyersStatus> {
   try {
@@ -30,12 +32,14 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
     queryKey: fyersStatusKey,
     queryFn: fetchFyersStatus,
     retry: false,
-    staleTime: Infinity,
+    staleTime: FYERS_STATUS_STALE_MS,
+    refetchOnWindowFocus: true,
   });
   const connected = statusQuery.data?.connected ?? false;
   const userId = statusQuery.data?.userId ?? "";
   const systemOffline = statusQuery.data?.offline ?? false;
-  const checking = statusQuery.isFetching;
+  // Spinner on first load and on a manual retry from the offline badge, not on background refetches.
+  const checking = statusQuery.isPending || (statusQuery.isFetching && systemOffline);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [authCode, setAuthCode] = useState("");
@@ -129,11 +133,11 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
       if (result.data) {
         setStatus("success");
         setMessage("Connected successfully!");
-        setFyersStatus({ connected: true, userId, offline: false });
+        // Re-read the real status (including the user id) from the backend.
+        void queryClient.invalidateQueries({ queryKey: fyersStatusKey });
         setTimeout(() => {
           setShowModal(false);
           setAuthCode("");
-          checkConnection(); // Refresh connection status
         }, 2000);
       } else {
         setStatus("error");

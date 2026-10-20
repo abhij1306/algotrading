@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, memo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, useRef, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Search,
@@ -379,6 +379,11 @@ export default function TerminalPage() {
     () => debounce((value: unknown) => setSearchTerm(toSafeString(value)), 250),
     [],
   );
+  // Stable ref callback on the search input: its cleanup drops a pending search on unmount.
+  const cancelSearchOnUnmount = useCallback(
+    () => () => debouncedSetSearchTerm.cancel(),
+    [debouncedSetSearchTerm],
+  );
   const searchActive = watchlistQuery.trim().length >= 2;
   const symbolSearchQuery = useQuery({
     queryKey: queryKeys.terminal.symbolSearch(searchTerm),
@@ -427,6 +432,8 @@ export default function TerminalPage() {
   const addSymbolToWatchlist = async (item: SearchResultItem) => {
     const symbol = item.symbol.trim().toUpperCase();
     if (!symbol) return;
+    // A result was picked: drop any pending debounced search so a stale query does not fire.
+    debouncedSetSearchTerm.cancel();
 
     try {
       setWatchlistActionError(null);
@@ -1018,6 +1025,7 @@ export default function TerminalPage() {
             <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-background border border-border">
               <Search className="w-4 h-4 text-foreground-muted" />
               <input
+                ref={cancelSearchOnUnmount}
                 type="text"
                 value={watchlistQuery}
                 onChange={(event) => {

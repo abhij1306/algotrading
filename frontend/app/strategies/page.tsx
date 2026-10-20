@@ -268,6 +268,20 @@ function formatCurrency(value: number | null | undefined): string {
   return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
 
+/** An error message with the time it happened, so the newest one wins the banner. */
+interface TimedError {
+  message: string;
+  at: number;
+}
+
+function latestError(errors: ReadonlyArray<TimedError | null>): string | null {
+  let latest: TimedError | null = null;
+  for (const entry of errors) {
+    if (entry && (latest === null || entry.at >= latest.at)) latest = entry;
+  }
+  return latest?.message ?? null;
+}
+
 function formatPct(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -278,7 +292,7 @@ export default function StrategiesPage() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<TimedError | null>(null);
   const [universeChoice, setUniverseChoice] = useState("NIFTY500");
   const [backtestStart, setBacktestStart] = useState("2025-01-01");
   const [backtestEnd, setBacktestEnd] = useState("2026-03-13");
@@ -315,7 +329,20 @@ export default function StrategiesPage() {
     retry: false,
   });
   const signalDetail = signalSymbol === null ? null : (signalQuery.data ?? null);
-  const error = actionError ?? workspaceQuery.error?.message ?? signalQuery.error?.message ?? null;
+  // The auto-selected first row fails quietly; only an explicitly picked signal shows its error.
+  const error = latestError([
+    actionError,
+    workspaceQuery.error
+      ? { message: workspaceQuery.error.message, at: workspaceQuery.errorUpdatedAt }
+      : null,
+    selectedSymbol !== null && signalQuery.error
+      ? { message: signalQuery.error.message, at: signalQuery.errorUpdatedAt }
+      : null,
+  ]);
+
+  const failAction = (message: string) => {
+    setActionError({ message, at: Date.now() });
+  };
 
   const reloadWorkspace = async () => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.strategies.all });
@@ -326,6 +353,7 @@ export default function StrategiesPage() {
 
   const onSelectSymbol = (symbol: string) => {
     setSelectedSymbol(symbol);
+    setActionError(null);
   };
 
   const onRunScan = async () => {
@@ -334,7 +362,7 @@ export default function StrategiesPage() {
     const response = await strategiesAPI.runScan({ universe: selectedUniverse });
     setBusy(false);
     if (response.error) {
-      setActionError(response.error.message);
+      failAction(response.error.message);
       return;
     }
     await reloadWorkspace();
@@ -347,9 +375,10 @@ export default function StrategiesPage() {
       : await strategiesAPI.halt("Manual halt from Strategies page");
     setBusy(false);
     if (response.error) {
-      setActionError(response.error.message);
+      failAction(response.error.message);
       return;
     }
+    setActionError(null);
     const nextStatus = (response.data ?? null) as StrategyStatus | null;
     queryClient.setQueryData<StrategiesWorkspace>(workspaceKey, (prev) =>
       prev ? { ...prev, status: nextStatus } : prev,
@@ -364,7 +393,7 @@ export default function StrategiesPage() {
         : await strategiesAPI.queueSignal(row.id);
     setBusy(false);
     if (response.error) {
-      setActionError(response.error.message);
+      failAction(response.error.message);
       return;
     }
     setActionError(null);
@@ -376,7 +405,7 @@ export default function StrategiesPage() {
     const response = await strategiesAPI.closePosition(positionId);
     setBusy(false);
     if (response.error) {
-      setActionError(response.error.message);
+      failAction(response.error.message);
       return;
     }
     setActionError(null);
@@ -386,7 +415,7 @@ export default function StrategiesPage() {
   const onRunBacktest = async () => {
     const parsedCapital = Number.parseFloat(backtestCapital.trim());
     if (!Number.isFinite(parsedCapital) || Number.isNaN(parsedCapital)) {
-      setActionError("Enter a valid numeric capital amount before running the backtest.");
+      failAction("Enter a valid numeric capital amount before running the backtest.");
       return;
     }
     setBusy(true);
@@ -398,7 +427,7 @@ export default function StrategiesPage() {
     });
     setBusy(false);
     if (response.error) {
-      setActionError(response.error.message);
+      failAction(response.error.message);
       return;
     }
     setBacktestResult((response.data ?? null) as BacktestResult | null);
@@ -426,7 +455,14 @@ export default function StrategiesPage() {
             <Badge variant={status?.halted ? "loss" : "neutral"}>
               {status?.halted ? "HALTED" : "ACTIVE"}
             </Badge>
-            <Button variant="secondary" size="sm" onClick={() => setShowAll((value) => !value)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setShowAll((value) => !value);
+                setActionError(null);
+              }}
+            >
               {showAll ? "Hide C Grade" : "Show All"}
             </Button>
             <Button variant="secondary" size="sm" onClick={onRunScan} disabled={busy}>
@@ -456,6 +492,7 @@ export default function StrategiesPage() {
                     onChange={(e) => {
                       setUniverseChoice(e.target.value);
                       setSelectedSymbol(null);
+                      setActionError(null);
                     }}
                   >
                     {availableUniverses.map((item) => (
