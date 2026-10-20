@@ -167,31 +167,18 @@ class TestBenchmarkCalculation:
     @patch(
         "app.services.backtest_phase1_service.Phase1BacktestService._load_universe_index_dataset"
     )
-    @patch("app.services.backtest_phase1_service.Phase1BacktestService._load_universe_snapshot")
     def test_universe_mode_uses_buy_and_hold(
         self,
-        mock_snapshot: Mock,
         mock_index: Mock,
         service: Phase1BacktestService,
     ) -> None:
         """
         Test that universe mode uses buy-and-hold benchmark calculation.
 
-        This integration test verifies the full flow in universe mode.
+        Universe mode trades and benchmarks the canonical index dataset
+        (_load_universe_index_dataset); there is no separate constituent snapshot.
         """
-        # Setup mock data
         dates = pd.date_range("2025-01-01", periods=5, freq="D")
-
-        # Mock universe snapshot (stock prices)
-        snapshot_data = pd.DataFrame(
-            {
-                "date": dates.repeat(2),
-                "symbol": ["STOCK1", "STOCK2"] * 5,
-                "price": [100, 200, 102, 204, 105, 210, 103, 206, 110, 220],
-            }
-        )
-        snapshot_data["date"] = snapshot_data["date"].dt.date
-        mock_snapshot.return_value = snapshot_data
 
         # Mock index prices
         index_data = pd.DataFrame(
@@ -348,7 +335,7 @@ class TestBenchmarkCalculation:
             if initial_index_price == 0:
                 raise ValueError("Initial index price cannot be zero")
             benchmark_ret = (index_prices / initial_index_price) - 1.0
-            _ = initial_capital * (1.0 + benchmark_ret)  # noqa: F841
+            _ = initial_capital * (1.0 + benchmark_ret)
 
     def test_benchmark_with_single_data_point(self, service: Phase1BacktestService) -> None:
         """
