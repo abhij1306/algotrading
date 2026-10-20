@@ -130,7 +130,7 @@ def _connect_live_feed() -> None:
     if loop is None or loop.is_closed():
         logger.info("[Fyers] Live feed not reconnected after login: no app event loop yet")
         return
-    if live_market.ws_service is not None:
+    if live_market.has_provider_socket():
         # The open socket was built with the previous token. Close it so the explicit connect
         # below builds a new socket from the refreshed client (and so the new token).
         live_market.disconnect()

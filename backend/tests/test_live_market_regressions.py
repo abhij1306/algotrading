@@ -19,7 +19,13 @@ from app.services.subscription_registry import API_OWNER
 from app.services.symbol_master import symbol_master
 from app.utils.ws_manager import ConnectionManager
 
-from fakes.data_socket import FakeSocketFactory, connected_live, make_live, wait_until_backing_off
+from fakes.data_socket import (
+    FakeSocketFactory,
+    connected_live,
+    make_live,
+    run_inline,
+    wait_until_backing_off,
+)
 from fakes.market import MARKET_OPEN_INSTANT, FreezeMarket
 
 
@@ -491,26 +497,26 @@ def test_connect_route_reports_a_generic_message_for_an_unknown_status(
     }
 
 
-@pytest.mark.parametrize("state", ["connected", "connecting"])
-def test_legacy_ws_service_disconnect_is_the_explicit_disconnect(state: str) -> None:
-    """routers/auth.py logout calls `ws_service.disconnect()`: it must keep the feed down."""
-    if state == "connecting":
-        live, factory = make_live(spawn=lambda _target: None)  # runner not done yet
-    else:
-        live, factory = make_live()
-    live.dev_mode = True
-    assert live.session.start() is True
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("idle", False),
+        ("connecting", True),  # a connect in flight builds a socket with the current token
+        ("connected", True),
+        ("dropped", True),  # the dropped socket is still held (the SDK may reconnect it)
+        ("closed", False),
+        ("failed", False),
+    ],
+)
+def test_has_provider_socket_follows_the_session(state: str, expected: bool) -> None:
+    factory = FakeSocketFactory(comes_up=state != "failed")
+    spawn = (lambda _target: None) if state == "connecting" else run_inline
+    live, factory = make_live(factory, spawn=spawn)
+    if state != "idle":
+        assert live.session.start() is True
+    if state == "dropped":
+        factory.last.drop()
+    elif state == "closed":
+        live.disconnect()
 
-    shim = live.ws_service
-    assert shim is not None
-    shim.disconnect()
-
-    assert live.session.state is SessionState.CLOSED
-    assert all(s.closed for s in factory.sockets)
-    assert live.connect(prevalidated_token=True) == "disconnected"  # the monitor stays down
-
-
-def test_legacy_ws_service_is_none_while_idle() -> None:
-    live, _factory = make_live()
-
-    assert live.ws_service is None
+    assert live.has_provider_socket() is expected

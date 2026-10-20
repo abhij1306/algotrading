@@ -27,7 +27,7 @@ from app.services.fyers.auth_flow import (
 from app.services.fyers.token_store import TokenStore
 from app.services.live.provider_session import SessionState
 
-from fakes.data_socket import connected_live
+from fakes.data_socket import connected_live, make_live
 
 SECRET_TOKEN = "tok-very-secret-123"
 OK_REPLY = {"s": "ok", "access_token": SECRET_TOKEN, "fy_id": "XA1234"}
@@ -291,10 +291,15 @@ def test_a_failed_live_feed_reconnect_does_not_fail_the_login(
     assert service.store.load() is not None
 
 
+@pytest.mark.parametrize(
+    ("socket_open", "expected_disconnects"),
+    [(True, [1]), (False, [])],  # only a socket built with the old token is closed first
+)
 def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, socket_open: bool, expected_disconnects: list[int]
 ) -> None:
-    live_market, _factory = connected_live()  # a socket built with the old token
+    live_market, _factory = connected_live() if socket_open else make_live()
+    assert live_market.has_provider_socket() is socket_open
     monkeypatch.setattr(lms, "live_market", live_market)
 
     loop = asyncio.new_event_loop()
@@ -327,7 +332,7 @@ def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
         worker.join(timeout=5)
         loop.close()
 
-    assert disconnects == [1]
+    assert disconnects == expected_disconnects
     assert calls == [(loop, True, loop)]
 
 

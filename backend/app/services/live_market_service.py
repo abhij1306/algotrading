@@ -102,17 +102,12 @@ class LiveMarketService:
         """Who wants which symbols (websocket clients and the HTTP API owner)."""
         return manager.registry
 
-    @property
-    def ws_service(self) -> LiveMarketService | None:
-        """Legacy shim: this service while a provider socket or connect is live, else None.
+    def has_provider_socket(self) -> bool:
+        """Whether a provider socket is open or being built (a connect in flight).
 
-        `services/fyers/auth_flow.py` checks `ws_service is not None` after a login to close
-        the socket built with the old token. Returning the service means a legacy
-        `ws_service.disconnect()` is the explicit disconnect(), so a connect in flight or the
-        monitor cannot reconnect after it.
+        Either one may carry the token that was current when it was built.
         """
-        busy = self.session.has_socket or self.session.state is SessionState.CONNECTING
-        return self if busy else None
+        return self.session.has_socket or self.session.state is SessionState.CONNECTING
 
     def _desired_provider_symbols(self) -> list[str]:
         """Every symbol any owner holds, in provider format: the session's replay set."""
