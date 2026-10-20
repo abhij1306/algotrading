@@ -138,7 +138,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [x] 2. Split the page (M). (#57) The page composes `components/dashboard/*` sections over `useDashboardData`; formatting goes through `lib/format.ts`/`lib/time.ts`; the connection badge reads `useConnectionStatus`, so the dashboard no longer uses the `useWebSocket` shim; the post-market Commodities card gets Crude Oil from `/api/market/commodities`.
 
 ### Lane 10: screener UI
-- [x] 1. A live overlay through `useQuote`, removing 8 `useEffect`s (M). The page reads `useQuotes` for the rendered rows and derives each row's live values during render; the REST fallback is `useLiveQuotePoll` in `lib/queries/screener.ts`; cell flashes compare against the previous render's value. No effects remain in `app/screener`.
+- [x] 1. A live overlay through `useQuote`, removing 8 `useEffect`s (M). The page reads `useQuotes` for the rendered rows and derives each row's live values during render; the REST fallback is `useLiveQuotePoll` in `lib/queries/screener.ts`, which during market hours also polls symbols whose streamed quote is over 5s old (store `receivedAt`, render-time clock from `lib/use-now.ts`), with the fresher quote winning; cell flashes compare against the previous render's value. No effects remain in `app/screener`.
 - [x] 2. Delete the `useWebSocket` compatibility shim (S). `hooks/useWebSocket.ts` and the store's `onMessage`/`lastMessage` surface are gone; the fake socket used by the store tests is shared from `lib/realtime/__tests__/fake-socket.ts`.
 - [ ] 3. Split the page, with tests for sort and format (M).
 

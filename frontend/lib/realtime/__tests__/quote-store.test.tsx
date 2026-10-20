@@ -150,7 +150,12 @@ describe("quote store", () => {
       }),
     );
     expect(screen.getByTestId("sbin")).toHaveTextContent("812.5");
-    expect(store.getQuote("SBIN")).toEqual({ ltp: 812.5, changePct: 1.2, volume: undefined });
+    expect(store.getQuote("SBIN")).toEqual({
+      ltp: 812.5,
+      changePct: 1.2,
+      volume: undefined,
+      receivedAt: Date.now(),
+    });
 
     const rendersBefore = onSbinRender.mock.calls.length;
     act(() =>

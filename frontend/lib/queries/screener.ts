@@ -120,14 +120,18 @@ function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/** REST quotes in the quote store's shape; entries with no price, percent or volume are dropped. */
-export function toQuoteMap(quotes: LiveQuotes): QuoteMap {
+/**
+ * REST quotes in the quote store's shape, stamped with when they arrived; entries with no price,
+ * percent or volume are dropped.
+ */
+export function toQuoteMap(quotes: LiveQuotes, receivedAt: number): QuoteMap {
   const map: Record<string, Quote> = {};
   for (const [symbol, entry] of Object.entries(quotes)) {
     const quote: Quote = {
       ltp: numberOrUndefined(entry.ltp),
       changePct: liveQuoteChangePercent(entry),
       volume: numberOrUndefined(entry.volume),
+      receivedAt,
     };
     if (quote.ltp === undefined && quote.changePct === undefined && quote.volume === undefined) {
       continue;
@@ -138,7 +142,8 @@ export function toQuoteMap(quotes: LiveQuotes): QuoteMap {
 }
 
 /**
- * REST polling fallback for symbols the websocket is not streaming: every 3s while the market is
+ * REST polling fallback for symbols the websocket is not streaming (or streams stale quotes for):
+ * every 3s while the market is
  * open, every minute otherwise, paused while the tab is hidden. Polls nothing for an empty list
  * or more than `MAX_LIVE_POLL_SYMBOLS` symbols.
  */
@@ -147,8 +152,7 @@ export function useLiveQuotePoll(symbols: readonly string[]) {
   const sorted = enabled ? [...symbols].sort((a, b) => a.localeCompare(b)) : NO_SYMBOLS;
   return useQuery({
     queryKey: queryKeys.screener.liveQuotes(sorted),
-    queryFn: () => fetchLiveQuotes(sorted),
-    select: toQuoteMap,
+    queryFn: async () => toQuoteMap(await fetchLiveQuotes(sorted), Date.now()),
     enabled,
     staleTime: 0,
     refetchInterval: () => (isMarketOpen().isOpen ? LIVE_POLL_OPEN_MS : LIVE_POLL_CLOSED_MS),

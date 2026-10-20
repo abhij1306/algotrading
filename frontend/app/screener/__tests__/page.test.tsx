@@ -106,14 +106,53 @@ async function connectedScreener() {
   return view;
 }
 
+// Wednesday 21 Oct 2026 in IST: 17:30 (closed) and 10:30 (open). Only the clock is faked.
+const MARKET_CLOSED = new Date("2026-10-21T12:00:00Z");
+const MARKET_OPEN = new Date("2026-10-21T05:00:00Z");
+
 beforeEach(() => {
   FakeSocket.instances = [];
   holder.store = null;
   vi.stubGlobal("WebSocket", FakeSocket);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(MARKET_CLOSED);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+function polledSymbolLists(fetchMock: ReturnType<typeof stubBackend>): string[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(input instanceof Request ? input.url : String(input)))
+    .filter((url) => url.pathname === "/api/market/quotes/live")
+    .map((url) => url.searchParams.get("symbols") ?? "");
+}
+
+describe("screener live overlay during market hours", () => {
+  it("polls a symbol whose stream went silent for over 5s and shows the fresher price", async () => {
+    vi.setSystemTime(MARKET_OPEN);
+    const fetchMock = stubBackend({ SBIN: { ltp: 820, change_pct: 3 } });
+    await connectedScreener();
+    expect(await screen.findByText("820.00")).toBeInTheDocument();
+
+    vi.setSystemTime(MARKET_OPEN.getTime() + 100);
+    act(() => socket().receive({ type: "ticker", data: { symbol: "SBIN", ltp: 812, chp: 1.5 } }));
+    expect(within(rowOf("SBIN")).getByText("812.00")).toBeInTheDocument();
+    expect(within(rowOf("SBIN")).getByText("+1.50%")).toBeInTheDocument();
+    await waitFor(() => expect(polledSymbolLists(fetchMock)).toContain("INFY,TCS"));
+    const pollsBeforeSilence = polledSymbolLists(fetchMock).length;
+
+    // The socket stays connected but no tick arrives for 6s.
+    vi.setSystemTime(MARKET_OPEN.getTime() + 6100);
+
+    await waitFor(() => expect(within(rowOf("SBIN")).getByText("820.00")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    expect(within(rowOf("SBIN")).getByText("+3.00%")).toBeInTheDocument();
+    expect(polledSymbolLists(fetchMock).slice(pollsBeforeSilence)).toContain("INFY,SBIN,TCS");
+  });
 });
 
 describe("screener live overlay", () => {

@@ -20,6 +20,8 @@ import {
 import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import type { Quote, QuoteMap } from "@/lib/realtime/quote-store";
 import { debounce } from "@/lib/debounce";
+import { isMarketOpen } from "@/lib/market-hours";
+import { useNow } from "@/lib/use-now";
 import { Badge, Button } from "@/components/ui";
 import {
   formatCompactNumber,
@@ -40,6 +42,9 @@ type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 const RPP_OPTIONS = [25, 50, 100];
 const NO_ROWS: ScreenerResult[] = [];
 const NO_QUOTES: QuoteMap = {};
+/** A streamed quote older than this counts as missing while the market is open. */
+const STREAM_STALE_MS = 5000;
+const CLOCK_TICK_MS = 1000;
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -134,6 +139,19 @@ function withLiveQuote(
 /** The symbols the socket has not streamed a quote for. */
 function unstreamedSymbols(symbols: string[], streamed: QuoteMap): string[] {
   return symbols.filter((symbol) => streamed[symbol] === undefined);
+}
+
+/** Whether a streamed quote is missing or older than `STREAM_STALE_MS` at `now`. */
+function isStale(quote: Quote | undefined, now: number): boolean {
+  return quote?.receivedAt === undefined || now - quote.receivedAt > STREAM_STALE_MS;
+}
+
+/** The two quotes with the one that arrived last first. */
+function newestFirst(
+  a: Quote | undefined,
+  b: Quote | undefined,
+): [Quote | undefined, Quote | undefined] {
+  return (b?.receivedAt ?? -Infinity) > (a?.receivedAt ?? -Infinity) ? [b, a] : [a, b];
 }
 
 function openTradingView(symbol: string) {
@@ -296,13 +314,27 @@ export default function ScreenerPage() {
   // back to REST polling.
   const visibleSymbols = useMemo(() => results.map((row) => row.symbol), [results]);
   const streamedQuotes = useQuotes(visibleSymbols);
-  const polledQuotes =
-    useLiveQuotePoll(connected ? unstreamedSymbols(visibleSymbols, streamedQuotes) : visibleSymbols)
-      .data ?? NO_QUOTES;
-  // While connected the stream wins; while down the store stops updating, so the poll does.
-  const [liveQuotes, fallbackQuotes] = connected
-    ? [streamedQuotes, polledQuotes]
-    : [polledQuotes, streamedQuotes];
+  // While the market is open a connected socket can still go silent, so streamed quotes age
+  // out: stale ones are polled too, and whichever quote arrived last wins. The clock re-renders
+  // the page so a silent socket is noticed.
+  const now = useNow(CLOCK_TICK_MS);
+  const agingStream = connected && isMarketOpen(new Date(now)).isOpen;
+  let symbolsToPoll = visibleSymbols;
+  if (agingStream) {
+    symbolsToPoll = visibleSymbols.filter((symbol) => isStale(streamedQuotes[symbol], now));
+  } else if (connected) {
+    symbolsToPoll = unstreamedSymbols(visibleSymbols, streamedQuotes);
+  }
+  const polledQuotes = useLiveQuotePoll(symbolsToPoll).data ?? NO_QUOTES;
+
+  /** A row's quotes in priority order. */
+  const quotesFor = (symbol: string): [Quote | undefined, Quote | undefined] => {
+    const streamed = streamedQuotes[symbol];
+    const polled = polledQuotes[symbol];
+    if (agingStream) return newestFirst(streamed, polled);
+    // While connected the stream wins; while down the store stops updating, so the poll does.
+    return connected ? [streamed, polled] : [polled, streamed];
+  };
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
 
@@ -469,15 +501,18 @@ export default function ScreenerPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {results.map((row) => (
-              <StockRow
-                key={row.symbol}
-                row={row}
-                live={liveQuotes[row.symbol]}
-                fallback={fallbackQuotes[row.symbol]}
-                onOpen={openTerminal}
-              />
-            ))}
+            {results.map((row) => {
+              const [live, fallback] = quotesFor(row.symbol);
+              return (
+                <StockRow
+                  key={row.symbol}
+                  row={row}
+                  live={live}
+                  fallback={fallback}
+                  onOpen={openTerminal}
+                />
+              );
+            })}
           </tbody>
         </table>
 
