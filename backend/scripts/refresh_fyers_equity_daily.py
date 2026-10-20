@@ -13,8 +13,8 @@ from sqlalchemy import func
 from app.database import get_db_session
 from app.models import HistoricalPrice, IndexConstituentHistory, IndexUniverseDefinition
 from app.services.fyers_client import get_fyers_client
-from app.services.universe import get_universe_service
 from app.services.symbol_master import symbol_master
+from app.services.universe import get_universe_service
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices"
@@ -218,9 +218,15 @@ def main() -> int:
         "output_csv": str(OUT_CSV.relative_to(PROJECT_ROOT)),
         "field_definitions": {
             "requested_symbol_count": "Unique DB symbols requested for refresh in this run.",
-            "rows_total": "Total symbol-date rows present in the consolidated dataset after refresh.",
-            "dataset_unique_symbols_total": "Unique symbols present in the consolidated dataset after refresh.",
-            "dataset_max_date_before": "Latest date already present in the local provider cache before this run.",
+            "rows_total": (
+                "Total symbol-date rows present in the consolidated dataset after refresh."
+            ),
+            "dataset_unique_symbols_total": (
+                "Unique symbols present in the consolidated dataset after refresh."
+            ),
+            "dataset_max_date_before": (
+                "Latest date already present in the local provider cache before this run."
+            ),
             "requested_range_to": "Requested provider fetch end date for this run.",
             "max_date": "Latest date actually present in the consolidated dataset after refresh.",
         },

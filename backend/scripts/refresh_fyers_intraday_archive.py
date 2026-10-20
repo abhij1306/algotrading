@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,8 @@ from typing import Any
 import pandas as pd
 
 from app.services.fyers_client import get_fyers_client
-from app.services.universe import get_universe_service
 from app.services.symbol_master import symbol_master
+from app.services.universe import get_universe_service
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE_ROOT = PROJECT_ROOT / "archive" / "fyers_intraday"
@@ -63,7 +64,9 @@ def build_windows(args: argparse.Namespace) -> list[tuple[int, date, date]]:
     return windows
 
 
-def iter_subranges(range_from: date, range_to: date, *, max_days: int = INTRADAY_MAX_DAYS):
+def iter_subranges(
+    range_from: date, range_to: date, *, max_days: int = INTRADAY_MAX_DAYS
+) -> Iterator[tuple[date, date]]:
     current = range_from
     step = timedelta(days=max_days - 1)
     while current <= range_to:

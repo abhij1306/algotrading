@@ -85,7 +85,7 @@ def load_bhavcopy(csv_path: str, target_date: date = None) -> dict:
 
     try:
         # First, get all existing symbols
-        existing_symbols = set([c[0] for c in db.query(Company.symbol).all()])
+        existing_symbols = {c[0] for c in db.query(Company.symbol).all()}
 
         # Find new symbols to add
         new_symbols = bhavcopy_symbols - existing_symbols
@@ -208,7 +208,7 @@ def find_latest_bhavcopy() -> str:
     return str(latest)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Load NSE bhavcopy into database")
     parser.add_argument("--file", "-f", help="Path to bhavcopy CSV file")
     parser.add_argument("--date", "-d", help="Target date (YYYY-MM-DD)", default=None)

@@ -14,7 +14,7 @@ from app.services.universe_sync import sync_index_universes_from_loader
 
 
 class _StubConstituent:
-    def __init__(self, symbol: str, company_name: str, industry: str, isin: str):
+    def __init__(self, symbol: str, company_name: str, industry: str, isin: str) -> None:
         self.symbol = symbol
         self.company_name = company_name
         self.industry = industry
@@ -22,7 +22,7 @@ class _StubConstituent:
 
 
 class _StubUniverse:
-    def __init__(self, symbols: list[str], constituents: list[_StubConstituent]):
+    def __init__(self, symbols: list[str], constituents: list[_StubConstituent]) -> None:
         self.symbols = symbols
         self.constituents = constituents
 
