@@ -558,14 +558,15 @@ class OptionChainService:
                     option_type="call" if option_type == "CE" else "put",
                 )
 
-                greeks = get_option_greeks(
-                    s=spot_price,
-                    k=strike,
-                    t=tte,
-                    r=RISK_FREE_RATE,
-                    sigma=iv,
-                    option_type="call" if option_type == "CE" else "put",
-                )
+                if iv > 0:  # 0.0 means the quote could not be fitted
+                    greeks = get_option_greeks(
+                        s=spot_price,
+                        k=strike,
+                        t=tte,
+                        r=RISK_FREE_RATE,
+                        sigma=iv,
+                        option_type="call" if option_type == "CE" else "put",
+                    )
             except Exception as e:
                 logger.debug(f"Could not calculate Greeks: {e}")
 

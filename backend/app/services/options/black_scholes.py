@@ -128,7 +128,9 @@ def calculate_implied_volatility(
 ) -> float:
     """Implied volatility by Newton-Raphson; `t` in years.
 
-    Returns 0.0 at or after expiry, where the price no longer depends on volatility.
+    Returns 0.0 ("no implied volatility") at or after expiry, where the price no longer
+    depends on volatility, and when no volatility reproduces `option_price` (for example a
+    quote below intrinsic value), so callers never mistake a failed fit for an IV.
     """
     if t <= 0:
         return 0.0
@@ -143,7 +145,7 @@ def calculate_implied_volatility(
         if vega < 1e-10:
             break
         sigma = max(sigma - diff / vega, 0.01)
-    return float(sigma)
+    return 0.0
 
 
 def calculate_atm_strike(spot_price: float, strike_interval: float = 50.0) -> float:
@@ -152,7 +154,12 @@ def calculate_atm_strike(spot_price: float, strike_interval: float = 50.0) -> fl
 
 
 def _expired_greeks(s: float, k: float, option_type: str) -> dict[str, float]:
-    call_delta = 1.0 if s > k else 0.0 if s < k else 0.5
+    if s > k:
+        call_delta = 1.0
+    elif s < k:
+        call_delta = 0.0
+    else:
+        call_delta = 0.5
     delta = call_delta if option_type == "call" else call_delta - 1.0
     return {"delta": delta, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
 

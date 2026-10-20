@@ -154,6 +154,18 @@ def test_implied_volatility_after_expiry_is_zero_not_an_error() -> None:
     assert calculate_implied_volatility(5.0, 22000, 22000, 0.0, 0.065) == 0.0
 
 
+def test_unfittable_quote_has_no_implied_volatility_or_greeks() -> None:
+    # A 22000 call quoted at 50 with spot 22500 is below intrinsic: no volatility fits it.
+    assert calculate_implied_volatility(50.0, 22500, 22000, 10 / 365, 0.065) == 0.0
+    expiry = (datetime.now(IST) + timedelta(days=10)).date()
+
+    leg = OptionChainService()._create_option_leg(
+        {"ltp": 50.0}, 22000.0, expiry, "CE", 22500.0, include_greeks=True
+    )
+
+    assert (leg.iv, leg.greeks) == (0.0, {})
+
+
 # --- option chain uses the same clock --------------------------------------------------
 
 
