@@ -2,6 +2,7 @@
 stop-loss order mapping, position sync during a broker outage, the margin
 check, paper fills, live modify and exit-position."""
 
+import time
 from collections.abc import Generator
 from typing import Any
 
@@ -432,8 +433,14 @@ def order_db(db_session: Session) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def sbin_tick(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(live_market.latest_values, "SBIN", {"symbol": "SBIN", "ltp": 812.5})
+def market_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_market, "is_market_open", lambda: True)
+
+
+@pytest.fixture
+def sbin_tick(monkeypatch: pytest.MonkeyPatch, market_open: None) -> None:
+    tick = {"symbol": "SBIN", "ltp": 812.5, "exch_feed_time": int(time.time())}
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
 
 
 def place_paper_order(
@@ -547,6 +554,184 @@ def test_paper_order_without_any_price_is_rejected_without_broker(
     assert (response["status"], response["message"]) == ("REJECTED", message)
     assert (stored.status, stored.reject_reason, stored.filled_qty) == ("REJECTED", message, 0)
     assert client.calls == []
+
+
+NO_SBIN_MARKET_PRICE = (
+    "No market price available for SBIN; paper MARKET order rejected. "
+    "Subscribe the symbol to live data or use a LIMIT order."
+)
+
+
+@pytest.mark.parametrize(
+    ("tick_age_sec", "is_open", "has_time"),
+    [
+        (120, True, True),  # older than the 60s default
+        (0, False, True),  # fresh, but the market is closed
+        (0, True, False),  # no exchange time on the tick
+    ],
+)
+def test_paper_order_ignores_stale_or_closed_market_tick(
+    order_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tick_age_sec: int,
+    is_open: bool,
+    has_time: bool,
+) -> None:
+    monkeypatch.delenv("PAPER_TICK_MAX_AGE_SEC", raising=False)
+    monkeypatch.setattr(live_market, "is_market_open", lambda: is_open)
+    tick: dict[str, Any] = {"symbol": "SBIN", "ltp": 812.5}
+    if has_time:
+        tick["exch_feed_time"] = int(time.time()) - tick_age_sec
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
+    client = FakeFyersClient()
+
+    market_response, _ = place_paper_order(order_db, client)
+    limit_response, _ = place_paper_order(order_db, client, type="LIMIT", price=800.0)
+
+    assert (market_response["status"], market_response["message"]) == (
+        "REJECTED",
+        NO_SBIN_MARKET_PRICE,
+    )
+    # A LIMIT falls back to its own price instead of the stale 812.5 tick.
+    assert (limit_response["status"], limit_response["average_price"]) == ("FILLED", 800.0)
+    assert client.calls == []
+
+
+@pytest.mark.usefixtures("market_open")
+def test_paper_tick_max_age_is_configurable(
+    order_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PAPER_TICK_MAX_AGE_SEC", "300")
+    tick = {"symbol": "SBIN", "ltp": 812.5, "last_traded_time": int(time.time()) - 120}
+    monkeypatch.setitem(live_market.latest_values, "SBIN", tick)
+
+    response, _ = place_paper_order(order_db, FakeFyersClient())
+
+    assert (response["status"], response["average_price"]) == ("FILLED", 812.91)
+
+
+@pytest.mark.usefixtures("sbin_tick")
+@pytest.mark.parametrize("order_type", ["SL", "SL-M"])
+@pytest.mark.parametrize("trigger_price", [None, 0, -1])
+def test_paper_stop_order_without_trigger_is_rejected(
+    order_db: Session, order_type: str, trigger_price: float | None
+) -> None:
+    client = FakeFyersClient()
+
+    response, stored = place_paper_order(
+        order_db, client, type=order_type, price=815.0, trigger_price=trigger_price
+    )
+
+    message = f"{order_type} order requires a positive trigger price."
+    assert (response["status"], response["message"], response["filled_qty"]) == (
+        "REJECTED",
+        message,
+        0,
+    )
+    assert (stored.status, stored.reject_reason) == ("REJECTED", message)
+    assert client.calls == []
+
+
+# --- 6a. Paper modify applies or rejects every change ----------------------
+
+
+def add_paper_order(
+    db: Session, order_type: str, price: float, trigger_price: float, status: str = "SUBMITTED"
+) -> LiveOrder:
+    order = LiveOrder(
+        id="ORD-PAPER1",
+        internal_id="ORD-PAPER1",
+        user_id="paper_user",
+        symbol="SBIN",
+        fyers_symbol="NSE:SBIN-EQ",
+        side="SELL",
+        quantity=5,
+        order_type=order_type,
+        product_type="INTRADAY",
+        price=price,
+        trigger_price=trigger_price,
+        status=status,
+        is_paper=1,
+    )
+    db.add(order)
+    db.commit()
+    return order
+
+
+@pytest.mark.parametrize(
+    ("params", "stored"),
+    [
+        ({"trigger_price": 807.0}, ("SL", 5, 805.0, 807.0)),
+        ({"price": 804.0, "quantity": 8}, ("SL", 8, 804.0, 806.0)),
+        ({"order_type": "SL-M"}, ("SL-M", 5, 805.0, 806.0)),
+        ({"order_type": "LIMIT", "price": 803.0}, ("LIMIT", 5, 803.0, 806.0)),
+    ],
+)
+def test_paper_modify_applies_type_price_and_trigger(
+    order_db: Session, params: dict[str, Any], stored: tuple[str, int, float, float]
+) -> None:
+    order = add_paper_order(order_db, "SL", 805.0, 806.0)
+    client = FakeFyersClient()
+    service = OrderExecutionService()
+    service._broker = make_broker(client)
+
+    result = service.modify_order("ORD-PAPER1", params, order_db)
+
+    assert result == {"status": "SUCCESS", "message": "Paper Order Modified"}
+    order_db.refresh(order)
+    assert (order.order_type, order.quantity, order.price, order.trigger_price) == stored
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("order_type", "price", "trigger_price", "status", "params", "message"),
+    [
+        (
+            "LIMIT",
+            805.0,
+            0.0,
+            "SUBMITTED",
+            {"order_type": "SL-M"},
+            "SL-M order requires a positive trigger price.",
+        ),
+        (
+            "SL",
+            805.0,
+            806.0,
+            "SUBMITTED",
+            {"trigger_price": 0},
+            "Trigger price must be a positive number",
+        ),
+        (
+            "SL",
+            805.0,
+            806.0,
+            "FILLED",
+            {"trigger_price": 807.0},
+            "Cannot modify order in FILLED state",
+        ),
+    ],
+)
+def test_paper_modify_rejects_invalid_change_without_saving(
+    order_db: Session,
+    order_type: str,
+    price: float,
+    trigger_price: float,
+    status: str,
+    params: dict[str, Any],
+    message: str,
+) -> None:
+    order = add_paper_order(order_db, order_type, price, trigger_price, status)
+
+    result = OrderExecutionService().modify_order("ORD-PAPER1", params, order_db)
+
+    assert result == {"status": "ERROR", "message": message}
+    order_db.refresh(order)
+    assert (order.order_type, order.price, order.trigger_price) == (
+        order_type,
+        price,
+        trigger_price,
+    )
 
 
 # --- 6. Live modify keeps the order type and trigger -----------------------
