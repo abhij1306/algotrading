@@ -81,6 +81,7 @@ Files: `routers/trading.py`, `terminal.py`, `order_execution_service.py`, `risk_
 - [ ] 3. Replace the raw `SessionLocal()` calls in `position_sync`, `risk_manager` and `terminal` (S).
 - [ ] 4. An OrderIntent with enums (S).
 - [ ] 5. A `current_user_id` dependency (S). Remove the hard-coded default, terminal and dev users, and add a backfill.
+  - `POST /api/trading/order` still answers 401 without `x-user-id` (header or `?x_user_id=`) outside DEV_MODE, so the terminal's `usePlaceOrder` sends `x_user_id=default_user` (one constant in `lib/queries/terminal.ts`). Drop it with this task.
 - [ ] 6. Extract `paper_book.py`, with position-math and reversal tests (M). Started: the pure math and its tests are in `services/execution/paper_book.py`; the DB-backed book and square-off still live in `routers/trading.py`.
 - [ ] 7. A broker contract (S-M): Quote and Ack types, `get_broker()`, and no more dual-key sniffing.
 - [ ] 8. PaperVenue and LiveVenue (M-L). Delete terminal `/paper/order`, and add an import-guard test.
@@ -128,9 +129,9 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [ ] 7. Consolidate the writers, with a bootstrap that replaces the `sys.path` hacks (L).
 
 ### Lane 8: terminal UI
-- [ ] 1. One `placeOrder` mutation through the typed client (S). Drop `x_user_id`.
-- [ ] 2. A LIVE confirmation dialog showing every order field (S).
-- [ ] 3. Wire up or remove the toolbar Buy/Sell buttons, and read `?symbol=` with `useSearchParams` (S).
+- [x] 1. One `placeOrder` mutation through the typed client (S). `usePlaceOrder` in `lib/queries/terminal.ts` is the only call site; retries reuse the click's `client_order_id`, and a cut-off 200 is retried, not reported as placed. `x_user_id` stays until Lane 3 task 5 because the backend still needs it.
+- [x] 2. A LIVE confirmation dialog showing every order field (S). `app/terminal/LiveOrderDialog.tsx` is a native modal `<dialog>`. It shows the snapshot taken at click time and sends exactly that; focus starts on Cancel; Escape and Cancel send nothing. Square-off never used `confirm()`.
+- [x] 3. Wire up or remove the toolbar Buy/Sell buttons, and read `?symbol=` with `useSearchParams` (S). Removed: the ticket has no side to prefill (its own Buy/Sell submit), so they would have been a second submit path. The selected symbol now lives in `?symbol=`.
 - [ ] 4. Move the terminal into `features/terminal` and split it (L).
 
 ### Lane 9: dashboard
@@ -147,8 +148,8 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [x] 2. Split the backtest results page (S-M). Header, metrics strip, run summary, charts and trade log are in `components/backtest/`; chart rows and tones are tested pure functions.
 
 ### Lane 12: shared frontend libraries and contracts
-- [ ] 1. `format.ts` and an IST `time.ts`, with table-driven tests. They replace `market-hours.ts`, including the `getDay` holiday bug (S-M).
-  - Partial (PR #53): `lib/format.ts`, `lib/time.ts` and an IST `lib/market-hours.ts` with tests; screener, backtest and the command palette switched. Dashboard and its insight panels switched with Lane 9.2. Left: the local formatters in strategies, terminal and `lib/queries/terminal.ts`, then drop the `lib/utils.ts` shims.
+- [x] 1. `format.ts` and an IST `time.ts`, with table-driven tests. They replace `market-hours.ts`, including the `getDay` holiday bug (S-M).
+  - Partial (PR #53): `lib/format.ts`, `lib/time.ts` and an IST `lib/market-hours.ts` with tests; screener, backtest and the command palette switched. Dashboard and its insight panels switched with Lane 9.2. Strategies switched with Lane 11.1; terminal and `lib/queries/terminal.ts` with Lane 8.1-3, which also deleted the `lib/utils.ts` shims.
 - [ ] 3. Set up MSW for tests (S, optional).
 
 ## Out of scope
