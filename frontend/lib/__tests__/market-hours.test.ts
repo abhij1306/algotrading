@@ -31,6 +31,15 @@ describe("isMarketOpen", () => {
     expect(isMarketOpen(utc(iso))).toEqual({ isOpen, message, nextSession });
   });
 
+  it.each([
+    ["2026-10-20T10:00:00.000", true],
+    ["2026-10-20T10:00:00.001", false],
+    ["2026-10-20T10:00:00.500", false],
+    ["2026-10-20T03:44:59.999", false],
+  ])("%s UTC is open=%s at millisecond precision", (iso, isOpen) => {
+    expect(isMarketOpen(utc(iso)).isOpen).toBe(isOpen);
+  });
+
   it("reports closed for an invalid instant", () => {
     expect(isMarketOpen(new Date(Number.NaN))).toEqual({ isOpen: false, message: "Market Closed" });
   });

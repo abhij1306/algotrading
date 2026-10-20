@@ -7,6 +7,7 @@ import {
   formatNumber,
   formatSignedPercent,
   roundToDecimals,
+  roundsNegative,
 } from "../format";
 
 type Missing = null | undefined;
@@ -72,6 +73,10 @@ describe("formatSignedPercent", () => {
     [-0.001, 2, "+0.00%"],
     [1.234, 2, "+1.23%"],
     [-1.235, 2, "-1.24%"],
+    [10.075, 2, "+10.08%"],
+    [-10.075, 2, "-10.08%"],
+    [-0.004, 2, "+0.00%"],
+    [-0.005, 2, "-0.01%"],
     [-0.5, 2, "-0.50%"],
     [12.345, 1, "+12.3%"],
     [123456.7, 2, "+123456.70%"],
@@ -136,10 +141,32 @@ describe("roundToDecimals", () => {
     [-1.005, 2, -1.01],
     [-0.001, 2, 0],
     [123.456789, 4, 123.4568],
+    [10.075, 2, 10.08],
+    [-10.075, 2, -10.08],
+    [1.0049999, 2, 1],
+    [1e21, 2, 1e21],
+    [123456789012.345, 2, 123456789012.35],
+    [1e20, 2, 1e20],
+    [1e-7, 2, 0],
+    [-0, 2, 0],
     [null, 2, 0],
     [undefined, 2, 0],
     [Number.NaN, 2, 0],
   ])("roundToDecimals(%s, %s) is %s", (value, decimals, expected) => {
     expect(Object.is(roundToDecimals(value, decimals), expected)).toBe(true);
+  });
+});
+
+describe("roundsNegative agrees with the sign formatSignedPercent prints", () => {
+  it.each([
+    [-0.004, false, "+0.00%"],
+    [-0.005, true, "-0.01%"],
+    [-0, false, "+0.00%"],
+    [0.004, false, "+0.00%"],
+    [-1.5, true, "-1.50%"],
+    [null, false, "--"],
+  ])("%s: negative=%s, shown as %s", (value, negative, shown) => {
+    expect(roundsNegative(value)).toBe(negative);
+    expect(formatSignedPercent(value)).toBe(shown);
   });
 });

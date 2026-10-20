@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui";
 import { useBacktestResult } from "@/lib/queries/backtest";
-import { formatCompactInr, formatSignedPercent } from "@/lib/format";
+import { formatCompactInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import { runStatusVariant } from "@/lib/status-variants";
 
 type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
@@ -423,7 +423,10 @@ export default function BacktestResultPage() {
                                 {t.exit_price.toFixed(2)}
                               </div>
                             </TableCell>
-                            <TableCell numeric variant={t.return_pct >= 0 ? "profit" : "loss"}>
+                            <TableCell
+                              numeric
+                              variant={roundsNegative(t.return_pct) ? "loss" : "profit"}
+                            >
                               {formatSignedPercent(t.return_pct)}
                             </TableCell>
                           </TableRow>

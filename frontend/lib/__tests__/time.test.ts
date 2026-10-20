@@ -33,6 +33,18 @@ describe("IST wall clock from UTC instants", () => {
     expect(istDayOfWeek(instant)).toBe(weekday);
   });
 
+  it.each([
+    ["2026-10-20T09:15:00", "20 Oct 2026, 09:15:00"],
+    ["2026-10-20 09:15", "20 Oct 2026, 09:15:00"],
+    ["2026-10-20T23:59:59.999", "20 Oct 2026, 23:59:59"],
+  ])("reads the offset-less date-time %s as IST wall-clock time", (input, expected) => {
+    expect(formatIstDateTime(input)).toBe(expected);
+  });
+
+  it("reads a date-only string as that IST calendar date", () => {
+    expect(formatIstDate("2026-10-20")).toBe("20 Oct 2026");
+  });
+
   it("reads epoch milliseconds and ISO strings with an offset", () => {
     expect(formatIstDateTime(Date.UTC(2026, 9, 20, 4, 0, 0))).toBe("20 Oct 2026, 09:30:00");
     expect(formatIstDateTime("2026-10-20T09:30:00+05:30")).toBe("20 Oct 2026, 09:30:00");

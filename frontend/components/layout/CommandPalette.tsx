@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router";
 import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
-import { formatInr, formatSignedPercent } from "@/lib/format";
+import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { debounce } from "@/lib/debounce";
 import { focusOnMount } from "@/lib/focus";
@@ -80,7 +80,12 @@ function LiveQuote({ quote }: Readonly<{ quote: Quote | undefined }>) {
     <div className="text-right">
       <div className="font-medium tabular-nums">{formatInr(ltp)}</div>
       {changePct === undefined ? null : (
-        <div className={cn("text-xs tabular-nums", changePct >= 0 ? "text-profit" : "text-loss")}>
+        <div
+          className={cn(
+            "text-xs tabular-nums",
+            roundsNegative(changePct) ? "text-loss" : "text-profit",
+          )}
+        >
           {formatSignedPercent(changePct)}
         </div>
       )}

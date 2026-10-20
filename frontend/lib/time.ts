@@ -3,7 +3,7 @@
  *
  * Everything goes through Intl.DateTimeFormat with timeZone "Asia/Kolkata", so the output is the
  * same whatever zone the machine is in. Inputs are instants: a Date, epoch milliseconds or an ISO
- * string. An invalid input renders as PLACEHOLDER.
+ * string (one without an offset is read as IST). An invalid input renders as PLACEHOLDER.
  */
 
 import { PLACEHOLDER } from "./format";
@@ -63,8 +63,24 @@ const istFormatter = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 });
 
+/** "2026-10-20T09:15" or "2026-10-20 09:15:00.5": a date-time with no zone or offset. */
+const NAIVE_DATE_TIME = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+
+/**
+ * The instant an input names. A date-time string with no offset is read as IST wall-clock time
+ * (the exchange's zone), not the machine's zone, so it means the same instant everywhere. A
+ * date-only string is UTC midnight, as Date parses it, which is the same IST calendar date.
+ */
 function toDate(input: DateInput): Date | null {
-  const date = input instanceof Date ? input : new Date(input);
+  let date: Date;
+  if (input instanceof Date) {
+    date = input;
+  } else if (typeof input === "string") {
+    const naive = NAIVE_DATE_TIME.exec(input.trim());
+    date = new Date(naive === null ? input : `${naive[1]}T${naive[2]}+05:30`);
+  } else {
+    date = new Date(input);
+  }
   return Number.isNaN(date.getTime()) ? null : date;
 }
 

@@ -2,7 +2,8 @@
  * NSE market hours from the local clock, read in IST through lib/time, so the answer does not
  * depend on the machine's time zone.
  *
- * The regular session runs 09:15:00-15:30:00 IST, Monday to Friday, both ends inclusive.
+ * The regular session runs from 09:15:00.000 to 15:30:00.000 IST, Monday to Friday, both ends
+ * inclusive.
  * Exchange holidays are not modelled: the repo has no NSE holiday calendar, so a weekday holiday
  * reads as a normal session day. The backend's /api/market/status is the better source when it
  * is reachable.
@@ -29,10 +30,14 @@ export function isMarketOpen(now: Date = new Date()): MarketStatus {
   }
 
   const second = parts.hour * 3600 + parts.minute * 60 + parts.second;
+  // IST is a whole-minute offset from UTC, so the UTC millisecond is the IST millisecond.
+  const pastClose =
+    second > SESSION_CLOSE_SECOND ||
+    (second === SESSION_CLOSE_SECOND && now.getUTCMilliseconds() > 0);
   if (second < SESSION_OPEN_SECOND) {
     return { isOpen: false, message: "Market Closed (Pre-market)", nextSession: "Today 9:15 AM" };
   }
-  if (second > SESSION_CLOSE_SECOND) {
+  if (pastClose) {
     return {
       isOpen: false,
       message: "Market Closed (Post-market)",

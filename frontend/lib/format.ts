@@ -46,15 +46,33 @@ function enIn(
 }
 
 /**
- * Round to fixed decimals and return a number, so realtime values stay at provider precision.
- * Not a display formatter: a missing value becomes 0.
+ * Round half away from zero to fixed decimals and return a number, so realtime values stay at
+ * provider precision. Not a display formatter: a missing value becomes 0, and negative zero
+ * becomes 0.
+ *
+ * Shifting the decimal point through the number's text ("10.075e2") rounds the decimal the
+ * value was written as, so 10.075 gives 10.08 even though 10.075 * 100 is 1007.4999999999999.
  */
 export function roundToDecimals(value: MaybeNumber, decimals: number = 2): number {
   if (!isFiniteNumber(value)) return 0;
-  const factor = 10 ** decimals;
-  const epsilon = value >= 0 ? Number.EPSILON : -Number.EPSILON;
-  const rounded = Math.round((value + epsilon) * factor) / factor;
-  return rounded === 0 ? 0 : rounded;
+  const magnitude = Math.abs(value);
+  // Whole numbers need no rounding; this also covers every value from 2^53 up.
+  if (Number.isInteger(magnitude)) return value === 0 ? 0 : value;
+  const text = String(magnitude);
+  // Below 1e-6 the text is in exponent notation with no decimal point to shift: scale directly.
+  const rounded = text.includes("e")
+    ? Math.round(magnitude * 10 ** decimals) / 10 ** decimals
+    : Number(`${Math.round(Number(`${text}e${decimals}`))}e-${decimals}`);
+  if (rounded === 0) return 0;
+  return value < 0 ? -rounded : rounded;
+}
+
+/**
+ * True when the value is still below zero after rounding to `decimals`, so a tone or color
+ * agrees with the sign formatSignedPercent prints. A missing value is not negative.
+ */
+export function roundsNegative(value: MaybeNumber, decimals: number = 2): boolean {
+  return roundToDecimals(value, decimals) < 0;
 }
 
 /** "1,23,456.78": Indian grouping with exactly `decimals` fraction digits. */
@@ -72,9 +90,8 @@ export function formatInr(value: MaybeNumber, decimals: number = 2): string {
 /** "+1.23%", "-0.50%", "+0.00%": the sign is always shown; a value that rounds to zero is "+". */
 export function formatSignedPercent(value: MaybeNumber, decimals: number = 2): string {
   if (!isFiniteNumber(value)) return PLACEHOLDER;
-  const digits = Math.abs(value).toFixed(decimals);
-  const sign = value < 0 && Number(digits) !== 0 ? "-" : "+";
-  return `${sign}${digits}%`;
+  const rounded = roundToDecimals(value, decimals);
+  return `${rounded < 0 ? "-" : "+"}${Math.abs(rounded).toFixed(decimals)}%`;
 }
 
 /**
