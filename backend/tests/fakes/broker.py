@@ -13,7 +13,7 @@ Configure it in three ways (attributes can also be passed to the constructor):
 - `modify_reply` (default `{"s": "ok", ...}`), `cancel_reply` (default `{"s": "ok"}`) and
   `place_reply` are the replies of the writes; an exception instance is raised instead.
   `place_reply = None` (the default) accepts every order as `B-<n>` (with `place_message`
-  when set) and adds it to `working`.
+  when set). Any accepted place (SUBMITTED with an id) is added to `working`.
 - `script(method, *outcomes)` queues one outcome per call, ahead of everything above:
   each is returned, or raised when it is an exception. Build them with `accepted`,
   `rejected` and `unconfirmed` (the reply of a timeout or a lost answer).
@@ -128,13 +128,20 @@ class FakeBroker:
     def place_order(self, order: dict[str, Any]) -> Any:  # noqa: ANN401 - see place_reply
         queue = self._call("place_order", order)
         if queue:
-            return _settle(queue.popleft())
-        if self.circuit_open:
-            return rejected(BROKER_CIRCUIT_OPEN)
-        if self.place_reply is not None:
-            return _settle(self.place_reply)
-        # An accepted order keeps working at the broker until it fills.
-        if isinstance(self.working, list):
+            reply = _settle(queue.popleft())
+        elif self.circuit_open:
+            reply = rejected(BROKER_CIRCUIT_OPEN)
+        elif self.place_reply is not None:
+            reply = _settle(self.place_reply)
+        else:
+            reply = accepted(f"B-{self.count('place_order')}", self.place_message)
+        if (
+            isinstance(reply, dict)
+            and reply.get("status") == "SUBMITTED"
+            and reply.get("order_id")
+            and isinstance(self.working, list)
+        ):
+            # An accepted order keeps working at the broker until it fills.
             self.working.append(
                 {
                     "symbol": order["symbol"],
@@ -143,7 +150,7 @@ class FakeBroker:
                     "product_type": order["product"],
                 }
             )
-        return accepted(f"B-{self.count('place_order')}", self.place_message)
+        return reply
 
     def modify_order(self, order_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
         queue = self._call("modify_order", (order_id, params))

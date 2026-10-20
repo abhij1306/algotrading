@@ -4,11 +4,14 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 from app.services import live_market_service as lms
 from app.utils import market_hours
 from app.utils.clock import FixedClock
 from app.utils.market_hours import IST, MarketHoursPolicy, MarketPhase
+
+from fakes.market import FreezeMarket
 
 # IST is UTC+05:30, so 09:15 IST is 03:45 UTC and 15:30 IST is 10:00 UTC.
 # 2025-01-06 is a Monday.
@@ -207,3 +210,21 @@ def test_monitor_check_disconnects_when_the_clock_passes_the_close() -> None:
 
     assert provider.disconnect_calls == 1
     assert live.ws_connected is False
+
+
+def test_freeze_market_drives_the_module_helpers(freeze_market: FreezeMarket) -> None:
+    @market_hours.require_market_open()
+    def guarded() -> str:
+        return "ran"
+
+    clock = freeze_market(False)
+    closed = (market_hours.is_market_hours(), market_hours.is_market_open())
+    with pytest.raises(HTTPException) as raised:
+        guarded()
+
+    clock.set(datetime(2026, 10, 20, 15, 30, tzinfo=IST))  # the last open instant
+    opened = (market_hours.is_market_hours(), market_hours.is_market_open(), guarded())
+
+    assert closed == (False, (False, "Market closed (Weekend)"))
+    assert raised.value.status_code == 503
+    assert opened == (True, (True, "Market open"), "ran")

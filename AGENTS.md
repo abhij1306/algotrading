@@ -153,8 +153,8 @@ ruff format --check .
 ruff check .
 
 cd backend
-pytest        # test deps: pip install -r requirements-dev.txt
-pytest --cov=app --cov-report=term-missing:skip-covered   # coverage is opt-in; CI passes these
+python -m pytest   # test deps: pip install -r requirements-dev.txt; -m puts backend/ on sys.path
+python -m pytest --cov=app --cov-report=term-missing:skip-covered   # coverage is opt-in; CI passes these
 ```
 
 Trading test fixtures (`backend/tests/conftest.py`):

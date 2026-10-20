@@ -65,7 +65,7 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> FreezeMarket:
             monkeypatch.setattr(service, "market_hours", policy)
             monkeypatch.setattr(service, "dev_mode", False)
         helper = market_hours.is_market_open
-        monkeypatch.setattr(market_hours, "is_market_open", lambda p=policy: helper(p))
+        monkeypatch.setattr(market_hours, "is_market_open", lambda policy=policy: helper(policy))
         return clock
 
     return freeze
