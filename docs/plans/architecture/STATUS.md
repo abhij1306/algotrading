@@ -147,6 +147,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 12: shared frontend libraries and contracts
 - [ ] 1. `format.ts` and an IST `time.ts`, with table-driven tests. They replace `market-hours.ts`, including the `getDay` holiday bug (S-M).
+  - Partial (PR #PRNUM): `lib/format.ts`, `lib/time.ts` and an IST `lib/market-hours.ts` with tests; screener, backtest and the command palette switched. Left: the local formatters in dashboard, strategies, terminal, `lib/queries/terminal.ts` and the dashboard insight panels, then drop the `lib/utils.ts` shims.
 - [ ] 3. Set up MSW for tests (S, optional).
 
 ## Out of scope

@@ -26,6 +26,7 @@ import {
   type BacktestRunPayload,
   type StrategyMeta,
 } from "@/lib/queries/backtest";
+import { formatCompactInr } from "@/lib/format";
 import { runStatusVariant } from "@/lib/status-variants";
 import { deriveFormDefaults, type SelectionMode } from "./form-defaults";
 
@@ -39,13 +40,6 @@ type AllocationEdit = Partial<Pick<StrategyAllocation, "enabled" | "weight">>;
 
 const RECENT_RUNS_LIMIT = 12;
 const NO_STRATEGIES: StrategyMeta[] = [];
-
-function formatCompactCapital(value: number | null | undefined): string {
-  if (typeof value !== "number" || Number.isNaN(value)) return "--";
-  if (value >= 10000000) return `₹${(value / 10000000).toFixed(1)}Cr`;
-  if (value >= 100000) return `₹${(value / 100000).toFixed(1)}L`;
-  return `₹${value.toLocaleString("en-IN")}`;
-}
 
 export default function BacktestPage() {
   const navigate = useNavigate();
@@ -277,7 +271,7 @@ export default function BacktestPage() {
                       <div className="flex justify-between">
                         <span className="text-foreground-muted">Capital</span>
                         <span className="mono-num text-foreground">
-                          {formatCompactCapital(Number(initialCapital) || 0)}
+                          {formatCompactInr(Number(initialCapital) || 0, 1)}
                         </span>
                       </div>
                       <div className="flex justify-between">
@@ -413,7 +407,7 @@ export default function BacktestPage() {
                                 : r.params.selection?.universe || "NIFTY50"}
                             </TableCell>
                             <TableCell numeric className="text-foreground">
-                              {formatCompactCapital(r.params.initial_capital)}
+                              {formatCompactInr(r.params.initial_capital, 1)}
                             </TableCell>
                             <TableCell className="text-right">
                               <Button

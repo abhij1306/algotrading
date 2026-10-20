@@ -22,7 +22,12 @@ import {
 import { debounce } from "@/lib/debounce";
 import { isMarketOpen } from "@/lib/market-hours";
 import { Badge, Button } from "@/components/ui";
-import { formatPercentage, roundToDecimals } from "@/lib/utils";
+import {
+  formatCompactNumber,
+  formatCrores,
+  formatSignedPercent,
+  roundToDecimals,
+} from "@/lib/format";
 import { getTradingViewUrl } from "@/lib/tradingview";
 
 type ScreenerResult = ScreenerRow;
@@ -61,19 +66,6 @@ function toNumber(value: unknown): number {
 
 function toSafeString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
-}
-
-function formatVolume(value: number): string {
-  if (value >= 10000000) return `${(value / 10000000).toFixed(1)}Cr`;
-  if (value >= 100000) return `${(value / 100000).toFixed(1)}L`;
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
-  return Math.round(value).toLocaleString("en-IN");
-}
-
-function formatMarketCap(value: number): string {
-  if (value >= 100000) return `${(value / 100000).toFixed(0)}L Cr`;
-  if (value >= 1000) return `${(value / 1000).toFixed(0)}K Cr`;
-  return `${Math.round(value)} Cr`;
 }
 
 function getFlashClassName(flash?: FlashState): string | undefined {
@@ -301,17 +293,17 @@ const StockRow = memo(function StockRow({
         <div className="flex items-center justify-end gap-1">
           {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
           <span className={getFlashClassName(flashStateByField.change)}>
-            {formatPercentage(toNumber(stock.change))}
+            {formatSignedPercent(toNumber(stock.change))}
           </span>
         </div>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
         <span className={getFlashClassName(flashStateByField.volume)}>
-          {formatVolume(toNumber(stock.volume))}
+          {formatCompactNumber(toNumber(stock.volume))}
         </span>
       </td>
       <td className="py-2 text-right tabular-nums text-foreground-muted">
-        {formatMarketCap(toNumber(stock.marketCap))}
+        {formatCrores(toNumber(stock.marketCap))}
       </td>
       <td className={`py-2 text-right tabular-nums ${rsiClassName}`}>
         {rsi > 0 ? rsi.toFixed(1) : "--"}

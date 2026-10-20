@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui";
 import { useBacktestResult } from "@/lib/queries/backtest";
+import { formatCompactInr, formatSignedPercent } from "@/lib/format";
 import { runStatusVariant } from "@/lib/status-variants";
 
 type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
@@ -24,12 +25,6 @@ type CurvePoint = { date: string; equity?: number; drawdown_pct?: number };
 function winRateTone(winRate: number): string {
   if (winRate > 50) return "text-profit";
   return winRate < 50 ? "text-loss" : "text-foreground";
-}
-
-function formatRupeeLakh(value: number): string {
-  if (!Number.isFinite(value)) return "--";
-  if (value >= 100000) return `₹${(value / 100000).toFixed(2)}L`;
-  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
 
 // Dynamic import for recharts to reduce initial bundle size
@@ -272,7 +267,7 @@ export default function BacktestResultPage() {
                   Final Equity
                 </div>
                 <div className="mono-num text-2xl font-semibold text-foreground">
-                  {metrics ? formatRupeeLakh(metrics.final_equity) : "--"}
+                  {metrics ? formatCompactInr(metrics.final_equity) : "--"}
                 </div>
               </div>
               <div className="border-r border-border px-4 py-2">
@@ -429,8 +424,7 @@ export default function BacktestResultPage() {
                               </div>
                             </TableCell>
                             <TableCell numeric variant={t.return_pct >= 0 ? "profit" : "loss"}>
-                              {t.return_pct >= 0 ? "+" : ""}
-                              {t.return_pct.toFixed(2)}%
+                              {formatSignedPercent(t.return_pct)}
                             </TableCell>
                           </TableRow>
                         ))}
