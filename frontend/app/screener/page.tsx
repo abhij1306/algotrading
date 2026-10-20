@@ -39,6 +39,7 @@ type FlashState = { direction: FlashDirection; phase: 0 | 1 };
 
 const RPP_OPTIONS = [25, 50, 100];
 const NO_ROWS: ScreenerResult[] = [];
+const NO_QUOTES: QuoteMap = {};
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -116,17 +117,12 @@ function getEmptyStateMessage(indices: IndexItem[], error: string | null): strin
   return "No results found";
 }
 
-/**
- * A server row with live values laid over it. While the socket is connected the streamed quote
- * wins; otherwise the REST-polled quote does, since the store's quotes stop updating.
- */
+/** A server row with live values laid over it, field by field: `first`, then `second`. */
 function withLiveQuote(
   row: ScreenerResult,
-  streamed: Quote | undefined,
-  polled: Quote | undefined,
-  connected: boolean,
+  first: Quote | undefined,
+  second: Quote | undefined,
 ): ScreenerResult {
-  const [first, second] = connected ? [streamed, polled] : [polled, streamed];
   return {
     ...row,
     price: roundToDecimals(first?.ltp ?? second?.ltp ?? row.price, 2),
@@ -135,9 +131,9 @@ function withLiveQuote(
   };
 }
 
-/** Symbols the REST fallback polls: all of them while disconnected, else those with no stream. */
-function symbolsToPoll(symbols: string[], streamed: QuoteMap, connected: boolean): string[] {
-  return connected ? symbols.filter((symbol) => streamed[symbol] === undefined) : symbols;
+/** The symbols the socket has not streamed a quote for. */
+function unstreamedSymbols(symbols: string[], streamed: QuoteMap): string[] {
+  return symbols.filter((symbol) => streamed[symbol] === undefined);
 }
 
 function openTradingView(symbol: string) {
@@ -178,20 +174,18 @@ function resolveSelectedUniverse(current: string, indices: IndexItem[]): string 
 
 const StockRow = memo(function StockRow({
   row,
-  streamed,
-  polled,
-  connected,
+  live,
+  fallback,
   onOpen,
 }: {
   row: ScreenerResult;
-  /** This symbol's quote from the socket store; a stable reference until it changes. */
-  streamed: Quote | undefined;
-  /** This symbol's quote from the REST fallback. */
-  polled: Quote | undefined;
-  connected: boolean;
+  /** The quote that wins; quotes are stable references until they change. */
+  live: Quote | undefined;
+  /** Fills the fields `live` lacks. */
+  fallback: Quote | undefined;
   onOpen: (symbol: string) => void;
 }) {
-  const stock = withLiveQuote(row, streamed, polled, connected);
+  const stock = withLiveQuote(row, live, fallback);
   const priceFlash = useFlash(toNumber(stock.price));
   const changeFlash = useFlash(toNumber(stock.change));
   const volumeFlash = useFlash(toNumber(stock.volume));
@@ -302,9 +296,13 @@ export default function ScreenerPage() {
   // back to REST polling.
   const visibleSymbols = useMemo(() => results.map((row) => row.symbol), [results]);
   const streamedQuotes = useQuotes(visibleSymbols);
-  const polledQuotes = useLiveQuotePoll(
-    symbolsToPoll(visibleSymbols, streamedQuotes, connected),
-  ).data;
+  const polledQuotes =
+    useLiveQuotePoll(connected ? unstreamedSymbols(visibleSymbols, streamedQuotes) : visibleSymbols)
+      .data ?? NO_QUOTES;
+  // While connected the stream wins; while down the store stops updating, so the poll does.
+  const [liveQuotes, fallbackQuotes] = connected
+    ? [streamedQuotes, polledQuotes]
+    : [polledQuotes, streamedQuotes];
 
   const totalPages = Math.max(1, Math.ceil(totalResults / itemsPerPage));
 
@@ -314,7 +312,7 @@ export default function ScreenerPage() {
   }
 
   const openTerminal = useCallback(
-    (symbol: string) => void navigate(`/terminal?symbol=${symbol}`),
+    (symbol: string) => void navigate(`/terminal?symbol=${encodeURIComponent(symbol)}`),
     [navigate],
   );
 
@@ -475,9 +473,8 @@ export default function ScreenerPage() {
               <StockRow
                 key={row.symbol}
                 row={row}
-                streamed={streamedQuotes[row.symbol]}
-                polled={polledQuotes?.[row.symbol]}
-                connected={connected}
+                live={liveQuotes[row.symbol]}
+                fallback={fallbackQuotes[row.symbol]}
                 onOpen={openTerminal}
               />
             ))}
