@@ -13,6 +13,7 @@ import {
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   fetchLiveQuotes,
+  liveQuoteChangePercent,
   useScreenerIndices,
   useScreenerResults,
   type ScreenerIndex,
@@ -136,16 +137,6 @@ function normalizeTickerMessage(raw: TickData): TickData | null {
     change_pct: changePct,
     volume,
   };
-}
-
-function getFallbackChange(quote: Record<string, unknown>): number | undefined {
-  if (typeof quote.change_pct === "number") {
-    return quote.change_pct;
-  }
-  if (typeof quote.change === "number") {
-    return quote.change;
-  }
-  return undefined;
 }
 
 function getFlashStateByField(
@@ -561,7 +552,7 @@ export default function ScreenerPage() {
         const quoteMap = await fetchLiveQuotes(fallbackSymbols);
         for (const [symbol, quote] of Object.entries(quoteMap)) {
           const ltp = typeof quote.ltp === "number" ? quote.ltp : undefined;
-          const changePct = getFallbackChange(quote);
+          const changePct = liveQuoteChangePercent(quote);
           const volume = typeof quote.volume === "number" ? quote.volume : undefined;
 
           if (ltp === undefined && changePct === undefined && volume === undefined) continue;

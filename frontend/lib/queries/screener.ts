@@ -96,3 +96,14 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuotes> {
     ),
   );
 }
+
+/**
+ * Day change in percent from one `/api/market/quotes/live` entry. The entry's `change` is the
+ * absolute price difference, so it never stands in for the percent: no `change_pct`, no percent.
+ * Database fallback entries (`source: "database"`) carry a placeholder `change_pct: 0`, not a
+ * computed change, so they give no percent either and the row keeps its own.
+ */
+export function liveQuoteChangePercent(quote: LiveQuotes[string]): number | undefined {
+  if (quote.source === "database") return undefined;
+  return typeof quote.change_pct === "number" ? quote.change_pct : undefined;
+}

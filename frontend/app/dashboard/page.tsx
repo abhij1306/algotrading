@@ -116,15 +116,13 @@ function normalizeWatchlistData(data: unknown): WatchlistItem[] {
   if (!Array.isArray(data)) return [];
   return data
     .slice(0, 10)
-    .map((item: Record<string, unknown>) => {
-      const rawChange = item.change;
-      return {
-        symbol: toSafeString(item.symbol),
-        price: normalizeNumber(item.price),
-        change: normalizeNumber(rawChange),
-        changePercent: normalizeNumber(item.changePercent ?? rawChange),
-      } as WatchlistItem;
-    })
+    .map((item: Record<string, unknown>): WatchlistItem => ({
+      symbol: toSafeString(item.symbol),
+      price: normalizeNumber(item.price),
+      // `change` is the absolute price difference; it must never stand in for the percent.
+      change: normalizeNumber(item.change),
+      changePercent: normalizeNumber(item.changePercent),
+    }))
     .filter((item: WatchlistItem) => item.symbol.length > 0);
 }
 
@@ -321,7 +319,6 @@ const StatItem = memo(function StatItem({
       <span className="text-base font-semibold tabular-nums">{value}</span>
       {change !== undefined && (
         <span className={`text-sm tabular-nums ${trend === "up" ? "text-profit" : "text-loss"}`}>
-          {trend === "up" ? "+" : ""}
           {formatPercentage(change)}
         </span>
       )}
@@ -338,7 +335,7 @@ const IndexRow = memo(function IndexRow({
   onClick: () => void;
   onOpenTradingView: (symbol: string) => void;
 }) {
-  const isUp = (idx.change ?? 0) >= 0;
+  const isUp = idx.changePercent >= 0;
   return (
     <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
       <td className="py-2 pl-4">
@@ -660,7 +657,7 @@ export default function DashboardPage() {
               {marketIndices
                 .filter((idx) => LIVE_INDEX_SYMBOLS.has(idx.symbol))
                 .map((idx) => {
-                  const isUp = (idx.change ?? 0) >= 0;
+                  const isUp = idx.changePercent >= 0;
                   const isLive = idx.source === "websocket";
                   const label = getCompactIndexLabel(idx.symbol);
                   return (

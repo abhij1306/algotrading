@@ -7,7 +7,7 @@ import { createQueryClient, shouldRetry } from "../query-client";
 
 // The client reads VITE_API_URL at import time; node cannot build a Request from a relative URL.
 vi.stubEnv("VITE_API_URL", "http://api.test");
-const { useScreenerResults } = await import("../screener");
+const { liveQuoteChangePercent, useScreenerResults } = await import("../screener");
 
 function wrapperFor() {
   const client = createQueryClient();
@@ -86,6 +86,19 @@ describe("useScreenerResults", () => {
 
     expect(result.current.error).toBeInstanceOf(ApiError);
     expect(result.current.error?.message).toBe("Universe not found");
+  });
+});
+
+describe("liveQuoteChangePercent", () => {
+  it("reads the percent field and never treats the absolute change as a percent", () => {
+    expect(liveQuoteChangePercent({ ltp: 812.5, change: 5.5, change_pct: 0.68 })).toBe(0.68);
+    expect(liveQuoteChangePercent({ ltp: 812.5, change: 5.5 })).toBeUndefined();
+  });
+
+  it("ignores the placeholder zero of a database fallback quote", () => {
+    const fallback = { ltp: 812.5, change: 0, change_pct: 0, source: "database" };
+    expect(liveQuoteChangePercent(fallback)).toBeUndefined();
+    expect(liveQuoteChangePercent({ ...fallback, source: "fyers" })).toBe(0);
   });
 });
 
