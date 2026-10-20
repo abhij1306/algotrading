@@ -4,7 +4,7 @@
  */
 
 import { formatNumber, formatSignedPercent, PLACEHOLDER } from "@/lib/format";
-import type { ScanRow, StrategyBacktestResult } from "@/lib/queries/strategies";
+import type { PriceStatus, ScanRow, StrategyBacktestResult } from "@/lib/queries/strategies";
 
 export interface UniverseOption {
   id: string;
@@ -79,4 +79,16 @@ export function backtestHeadline(
     sharpe: formatMetric(metrics.sharpe_ratio, 2),
     trades: formatMetric(metrics.total_trades, 0),
   };
+}
+
+const PRICE_STATUS_LABELS = {
+  OPEN: "Between stop and 2R",
+  STOP_HIT: "Stop hit",
+  TARGET_HIT: "2R target hit",
+  PRICE_UNAVAILABLE: "Price unavailable",
+} as const satisfies Record<PriceStatus, string>;
+
+/** How a position's last price reads against its stop and 2R target. */
+export function priceStatusLabel(status: PriceStatus): string {
+  return PRICE_STATUS_LABELS[status];
 }

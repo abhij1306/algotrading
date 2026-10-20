@@ -50,17 +50,25 @@ const scanRowSchema = z.object({
   two_r_target: z.number().catch(0),
 });
 
-const positionRowSchema = z.object({
+/** Where the last price sits against the stop and 2R target; unknown values read as unavailable. */
+export const PRICE_STATUSES = ["OPEN", "STOP_HIT", "TARGET_HIT", "PRICE_UNAVAILABLE"] as const;
+export type PriceStatus = (typeof PRICE_STATUSES)[number];
+
+/** A live-priced number: null when the backend has no quote, and null for garbage too, never 0. */
+const livePrice = z.number().nullable().catch(null);
+
+export const positionRowSchema = z.object({
   id: z.number(),
   symbol: z.string(),
   entry_date: z.string().catch(""),
   entry_price: z.number().catch(0),
   shares: z.number().catch(0),
   stop_price: z.number().catch(0),
-  ltp: z.number().catch(0),
-  unrealized_pnl: z.number().catch(0),
-  unrealized_pnl_pct: z.number().catch(0),
-  r_multiple: optionalNumber,
+  ltp: livePrice,
+  unrealized_pnl: livePrice,
+  unrealized_pnl_pct: livePrice,
+  r_multiple: livePrice,
+  price_status: z.enum(PRICE_STATUSES).catch("PRICE_UNAVAILABLE"),
   two_r_status: z.string().catch(""),
   status: z.string().catch(""),
 });
