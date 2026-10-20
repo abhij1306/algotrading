@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Company, HistoricalPrice
@@ -78,92 +80,20 @@ def load_bhavcopy(csv_path: str, target_date: date = None) -> dict:
     # Get symbols from bhavcopy for company sync
     bhavcopy_symbols = set(df_eq["SYMBOL"].str.strip().tolist())
 
-    # Get symbols from bhavcopy
-    bhavcopy_symbols = set(df_eq["SYMBOL"].str.strip().tolist())
-
     db = SessionLocal()
 
     try:
-        # First, get all existing symbols
-        existing_symbols = {c[0] for c in db.query(Company.symbol).all()}
-
-        # Find new symbols to add
-        new_symbols = bhavcopy_symbols - existing_symbols
-        if new_symbols:
-            logger.info(f"Adding {len(new_symbols)} new companies to database")
-            for sym in new_symbols:
-                try:
-                    company = Company(symbol=sym, is_active=True)
-                    db.add(company)
-                except Exception as e:
-                    logger.warning(f"Could not add {sym}: {e}")
-            db.commit()
-            stats["added"] = len(new_symbols)
-
-        # Mark all bhavcopy symbols as active (they traded today)
-        if bhavcopy_symbols:
-            logger.info(f"Marking {len(bhavcopy_symbols)} companies as active")
-            db.query(Company).filter(Company.symbol.in_(bhavcopy_symbols)).update(
-                {Company.is_active: True}, synchronize_session=False
-            )
-            db.commit()
-            stats["activated"] = len(bhavcopy_symbols)
+        _sync_companies(db, bhavcopy_symbols, stats)
     except Exception as e:
         logger.warning(f"Error updating company list: {e}")
 
     try:
         for _, row in df_eq.iterrows():
             try:
-                symbol = row["SYMBOL"].strip()
-
-                # Find company in database
-                company = db.query(Company).filter(Company.symbol == symbol).first()
-                if not company:
-                    stats["skipped"] += 1
-                    continue
-
-                # Check if price already exists for this date
-                existing = (
-                    db.query(HistoricalPrice)
-                    .filter(
-                        HistoricalPrice.company_id == company.id,
-                        HistoricalPrice.date == target_date,
-                    )
-                    .first()
-                )
-
-                if existing:
-                    # Update existing record
-                    existing.open = float(row["OPEN_PRICE"])
-                    existing.high = float(row["HIGH_PRICE"])
-                    existing.low = float(row["LOW_PRICE"])
-                    existing.close = float(row["CLOSE_PRICE"])
-                    existing.volume = (
-                        int(row["TTL_TRD_QNTY"]) if pd.notna(row["TTL_TRD_QNTY"]) else 0
-                    )
-                    existing.deliverable_qty = (
-                        int(row["DELIV_QTY"]) if pd.notna(row["DELIV_QTY"]) else 0
-                    )
-                    existing.delivery_pct = (
-                        float(row["DELIV_PER"]) if pd.notna(row["DELIV_PER"]) else 0
-                    )
+                if _upsert_price(db, row, target_date):
+                    stats["success"] += 1
                 else:
-                    # Create new record
-                    price_record = HistoricalPrice(
-                        company_id=company.id,
-                        date=target_date,
-                        open=float(row["OPEN_PRICE"]),
-                        high=float(row["HIGH_PRICE"]),
-                        low=float(row["LOW_PRICE"]),
-                        close=float(row["CLOSE_PRICE"]),
-                        volume=int(row["TTL_TRD_QNTY"]) if pd.notna(row["TTL_TRD_QNTY"]) else 0,
-                        deliverable_qty=int(row["DELIV_QTY"]) if pd.notna(row["DELIV_QTY"]) else 0,
-                        delivery_pct=float(row["DELIV_PER"]) if pd.notna(row["DELIV_PER"]) else 0,
-                    )
-                    db.add(price_record)
-
-                stats["success"] += 1
-
+                    stats["skipped"] += 1
             except Exception as e:
                 stats["failed"] += 1
                 stats["errors"].append(f"{row.get('SYMBOL', 'UNKNOWN')}: {str(e)}")
@@ -179,6 +109,69 @@ def load_bhavcopy(csv_path: str, target_date: date = None) -> dict:
         db.close()
 
     return stats
+
+
+def _sync_companies(db: Session, bhavcopy_symbols: set[str], stats: dict) -> None:
+    """Add companies new in the bhavcopy and mark every traded symbol active."""
+    existing_symbols = {c[0] for c in db.query(Company.symbol).all()}
+
+    new_symbols = bhavcopy_symbols - existing_symbols
+    if new_symbols:
+        logger.info(f"Adding {len(new_symbols)} new companies to database")
+        for sym in new_symbols:
+            try:
+                db.add(Company(symbol=sym, is_active=True))
+            except Exception as e:
+                logger.warning(f"Could not add {sym}: {e}")
+        db.commit()
+        stats["added"] = len(new_symbols)
+
+    # Mark all bhavcopy symbols as active (they traded today)
+    if bhavcopy_symbols:
+        logger.info(f"Marking {len(bhavcopy_symbols)} companies as active")
+        db.query(Company).filter(Company.symbol.in_(bhavcopy_symbols)).update(
+            {Company.is_active: True}, synchronize_session=False
+        )
+        db.commit()
+        stats["activated"] = len(bhavcopy_symbols)
+
+
+def _price_fields(row: pd.Series) -> Iterator[tuple[str, object]]:
+    """HistoricalPrice OHLCV and delivery fields of a bhavcopy row, converted one at a time.
+
+    Blank volume/delivery values count as 0.
+    """
+    yield "open", float(row["OPEN_PRICE"])
+    yield "high", float(row["HIGH_PRICE"])
+    yield "low", float(row["LOW_PRICE"])
+    yield "close", float(row["CLOSE_PRICE"])
+    yield "volume", int(row["TTL_TRD_QNTY"]) if pd.notna(row["TTL_TRD_QNTY"]) else 0
+    yield "deliverable_qty", int(row["DELIV_QTY"]) if pd.notna(row["DELIV_QTY"]) else 0
+    yield "delivery_pct", float(row["DELIV_PER"]) if pd.notna(row["DELIV_PER"]) else 0
+
+
+def _upsert_price(db: Session, row: pd.Series, target_date: date) -> bool:
+    """Insert or update the row's price for the date; False when the company is unknown."""
+    symbol = row["SYMBOL"].strip()
+    company = db.query(Company).filter(Company.symbol == symbol).first()
+    if not company:
+        return False
+
+    existing = (
+        db.query(HistoricalPrice)
+        .filter(
+            HistoricalPrice.company_id == company.id,
+            HistoricalPrice.date == target_date,
+        )
+        .first()
+    )
+    if existing:
+        # Same order as the original field-by-field update
+        for name, value in _price_fields(row):
+            setattr(existing, name, value)
+    else:
+        db.add(HistoricalPrice(company_id=company.id, date=target_date, **dict(_price_fields(row))))
+    return True
 
 
 def find_latest_bhavcopy() -> str:

@@ -184,6 +184,24 @@ def write_outputs(df: pd.DataFrame) -> None:
     df.sort_values(["date", "symbol"]).to_csv(OUT_CSV, index=False)
 
 
+SUMMARY_FIELD_DEFINITIONS = {
+    "requested_symbol_count": "Unique DB symbols requested for refresh in this run.",
+    "rows_total": ("Total symbol-date rows present in the consolidated dataset after refresh."),
+    "dataset_unique_symbols_total": (
+        "Unique symbols present in the consolidated dataset after refresh."
+    ),
+    "dataset_max_date_before": (
+        "Latest date already present in the local provider cache before this run."
+    ),
+    "requested_range_to": "Requested provider fetch end date for this run.",
+    "max_date": "Latest date actually present in the consolidated dataset after refresh.",
+}
+
+
+def _parse_date_arg(raw: str) -> date | None:
+    return datetime.strptime(raw, "%Y-%m-%d").date() if raw else None
+
+
 def main() -> None:
     args = parse_args()
     universes = _parse_csv_list(args.universes)
@@ -199,12 +217,8 @@ def main() -> None:
     inferred_start = max(
         item for item in [db_max, source_max, DEFAULT_FIRST_HISTORY_DATE] if item is not None
     )
-    start_date = (
-        datetime.strptime(args.start_date, "%Y-%m-%d").date()
-        if args.start_date
-        else inferred_start + timedelta(days=1)
-    )
-    end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else today
+    start_date = _parse_date_arg(args.start_date) or inferred_start + timedelta(days=1)
+    end_date = _parse_date_arg(args.end_date) or today
 
     summary: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -216,28 +230,37 @@ def main() -> None:
         "requested_range_to": end_date.isoformat(),
         "output_parquet": str(OUT_PARQUET.relative_to(PROJECT_ROOT)),
         "output_csv": str(OUT_CSV.relative_to(PROJECT_ROOT)),
-        "field_definitions": {
-            "requested_symbol_count": "Unique DB symbols requested for refresh in this run.",
-            "rows_total": (
-                "Total symbol-date rows present in the consolidated dataset after refresh."
-            ),
-            "dataset_unique_symbols_total": (
-                "Unique symbols present in the consolidated dataset after refresh."
-            ),
-            "dataset_max_date_before": (
-                "Latest date already present in the local provider cache before this run."
-            ),
-            "requested_range_to": "Requested provider fetch end date for this run.",
-            "max_date": "Latest date actually present in the consolidated dataset after refresh.",
-        },
+        "field_definitions": SUMMARY_FIELD_DEFINITIONS,
     }
     if args.dry_run or start_date > end_date:
         summary["status"] = "dry_run" if args.dry_run else "noop"
         print(json.dumps(summary, indent=2))
         return
 
-    failures: dict[str, Any] = {}
     parts: list[pd.DataFrame] = [existing] if not existing.empty else []
+    failures = _fetch_symbols(symbols, start_date, end_date, args.throttle, parts)
+
+    combined = pd.concat(parts, ignore_index=True) if parts else existing
+    if not combined.empty:
+        combined = _normalize_dataset(combined)
+        write_outputs(combined)
+
+    summary.update(_dataset_stats(combined))
+    summary["failed_symbols"] = len(failures)
+    MANIFEST_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    FAILED_PATH.write_text(json.dumps(failures, indent=2), encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+
+
+def _fetch_symbols(
+    symbols: list[str],
+    start_date: date,
+    end_date: date,
+    throttle: float,
+    parts: list[pd.DataFrame],
+) -> dict[str, Any]:
+    """Fetch each symbol's candles into `parts`; returns the failures by symbol."""
+    failures: dict[str, Any] = {}
     for idx, symbol in enumerate(symbols, start=1):
         try:
             fyers_symbol = symbol_master.to_fyers(symbol)
@@ -245,47 +268,47 @@ def main() -> None:
                 fyers_symbol=fyers_symbol,
                 start_date=start_date,
                 end_date=end_date,
-                throttle_s=args.throttle,
+                throttle_s=throttle,
             )
             candles = response.get("candles") if isinstance(response, dict) else None
-            if candles:
-                frame = candles_to_frame(symbol, fyers_symbol, candles)
-                if not frame.empty:
-                    parts.append(frame)
-            else:
+            if not candles:
                 failures[symbol] = response
+            elif not (frame := candles_to_frame(symbol, fyers_symbol, candles)).empty:
+                parts.append(frame)
         except Exception as exc:
             failures[symbol] = {"error": str(exc)}
         if idx % 100 == 0:
             print(f"[fyers-equity-daily] processed {idx}/{len(symbols)}")
-        time.sleep(args.throttle)
+        time.sleep(throttle)
+    return failures
 
-    combined = pd.concat(parts, ignore_index=True) if parts else existing
-    if not combined.empty:
-        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
-        combined["year"] = pd.to_datetime(combined["date"], errors="coerce").dt.year
-        combined = (
-            combined.dropna(subset=["date", "symbol"])
-            .drop_duplicates(subset=["date", "symbol"], keep="last")
-            .sort_values(["date", "symbol"])
-            .reset_index(drop=True)
-        )
-        write_outputs(combined)
 
-    summary.update(
-        {
-            "rows_total": int(len(combined)),
-            "dataset_unique_symbols_total": int(combined["symbol"].nunique())
-            if not combined.empty
-            else 0,
-            "min_date": combined["date"].min().isoformat() if not combined.empty else None,
-            "max_date": combined["date"].max().isoformat() if not combined.empty else None,
-            "failed_symbols": len(failures),
-        }
+def _normalize_dataset(combined: pd.DataFrame) -> pd.DataFrame:
+    """Coerce dates, derive year, keep the last row per (date, symbol) and sort."""
+    combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
+    combined["year"] = pd.to_datetime(combined["date"], errors="coerce").dt.year
+    return (
+        combined.dropna(subset=["date", "symbol"])
+        .drop_duplicates(subset=["date", "symbol"], keep="last")
+        .sort_values(["date", "symbol"])
+        .reset_index(drop=True)
     )
-    MANIFEST_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    FAILED_PATH.write_text(json.dumps(failures, indent=2), encoding="utf-8")
-    print(json.dumps(summary, indent=2))
+
+
+def _dataset_stats(combined: pd.DataFrame) -> dict[str, Any]:
+    if combined.empty:
+        return {
+            "rows_total": int(len(combined)),
+            "dataset_unique_symbols_total": 0,
+            "min_date": None,
+            "max_date": None,
+        }
+    return {
+        "rows_total": int(len(combined)),
+        "dataset_unique_symbols_total": int(combined["symbol"].nunique()),
+        "min_date": combined["date"].min().isoformat(),
+        "max_date": combined["date"].max().isoformat(),
+    }
 
 
 if __name__ == "__main__":

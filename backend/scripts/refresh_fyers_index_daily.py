@@ -134,22 +134,7 @@ def main() -> int:
     refresh_summary: dict[str, Any] = {}
 
     for idx, universe_id in enumerate(universes, start=1):
-        scoped_existing = (
-            existing[existing["universe_id"] == universe_id]
-            if not existing.empty
-            else pd.DataFrame()
-        )
-        scoped_max = scoped_existing["date"].max() if not scoped_existing.empty else None
-        if args.start_date:
-            start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
-        else:
-            start_date = (
-                (scoped_max + pd.Timedelta(days=1))
-                if scoped_max is not None
-                else DEFAULT_FIRST_HISTORY_DATE
-            )
-            if hasattr(start_date, "date"):
-                start_date = start_date.date()
+        start_date = _universe_start_date(args.start_date, existing, universe_id)
         end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else today
 
         fyers_symbol = symbol_master.to_fyers(universe_id)
@@ -161,42 +146,18 @@ def main() -> int:
         if args.dry_run or start_date > end_date:
             continue
 
-        try:
-            response = fetch_history(
-                fyers_symbol=fyers_symbol,
-                start_date=start_date,
-                end_date=end_date,
-                throttle_s=args.throttle,
-            )
-            candles = response.get("candles") if isinstance(response, dict) else None
-            if candles:
-                frame = candles_to_frame(universe_id, fyers_symbol, candles)
-                if not frame.empty:
-                    parts.append(frame)
-                    refresh_summary[universe_id]["rows_added"] = int(len(frame))
-                else:
-                    refresh_summary[universe_id]["rows_added"] = 0
-            else:
-                failures.append(
-                    {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "response": response}
-                )
-        except Exception as exc:
-            failures.append(
-                {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "error": str(exc)}
-            )
+        failure = _refresh_universe(
+            universe_id, fyers_symbol, start_date, end_date, args.throttle, parts, refresh_summary
+        )
+        if failure is not None:
+            failures.append(failure)
         if idx % 10 == 0:
             print(f"[fyers-index-daily] processed {idx}/{len(universes)}")
         time.sleep(args.throttle)
 
     combined = pd.concat(parts, ignore_index=True) if parts else existing
     if not combined.empty:
-        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
-        combined = (
-            combined.dropna(subset=["date", "universe_id"])
-            .drop_duplicates(subset=["date", "universe_id"], keep="last")
-            .sort_values(["date", "universe_id"])
-            .reset_index(drop=True)
-        )
+        combined = _normalize_dataset(combined)
         combined.to_parquet(OUT_PARQUET, index=False)
         combined.to_csv(OUT_CSV, index=False)
 
@@ -204,10 +165,7 @@ def main() -> int:
         "generated_at": datetime.now(UTC).isoformat(),
         "universes_requested": universes,
         "universes_processed": len(universes),
-        "rows_total": int(len(combined)),
-        "universes_total": int(combined["universe_id"].nunique()) if not combined.empty else 0,
-        "min_date": combined["date"].min().isoformat() if not combined.empty else None,
-        "max_date": combined["date"].max().isoformat() if not combined.empty else None,
+        **_dataset_stats(combined),
         "failed_universes": failures,
         "refresh_summary": refresh_summary,
         "output_parquet": str(OUT_PARQUET.relative_to(PROJECT_ROOT)),
@@ -218,6 +176,75 @@ def main() -> int:
     SUMMARY_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(json.dumps(manifest, indent=2))
     return 0
+
+
+def _universe_start_date(start_arg: str, existing: pd.DataFrame, universe_id: str) -> date:
+    """--start-date if given, else the day after the universe's last stored date, else 2016."""
+    if start_arg:
+        return datetime.strptime(start_arg, "%Y-%m-%d").date()
+    scoped_existing = (
+        existing[existing["universe_id"] == universe_id] if not existing.empty else pd.DataFrame()
+    )
+    scoped_max = scoped_existing["date"].max() if not scoped_existing.empty else None
+    start_date = (
+        (scoped_max + pd.Timedelta(days=1))
+        if scoped_max is not None
+        else DEFAULT_FIRST_HISTORY_DATE
+    )
+    if hasattr(start_date, "date"):
+        start_date = start_date.date()
+    return start_date
+
+
+def _refresh_universe(
+    universe_id: str,
+    fyers_symbol: str,
+    start_date: date,
+    end_date: date,
+    throttle: float,
+    parts: list[pd.DataFrame],
+    refresh_summary: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fetch one universe's candles into `parts`; returns its failure record, if any."""
+    try:
+        response = fetch_history(
+            fyers_symbol=fyers_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            throttle_s=throttle,
+        )
+        candles = response.get("candles") if isinstance(response, dict) else None
+        if not candles:
+            return {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "response": response}
+        frame = candles_to_frame(universe_id, fyers_symbol, candles)
+        if not frame.empty:
+            parts.append(frame)
+        refresh_summary[universe_id]["rows_added"] = int(len(frame))
+    except Exception as exc:
+        return {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "error": str(exc)}
+    return None
+
+
+def _normalize_dataset(combined: pd.DataFrame) -> pd.DataFrame:
+    """Coerce dates, keep the last row per (date, universe) and sort."""
+    combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
+    return (
+        combined.dropna(subset=["date", "universe_id"])
+        .drop_duplicates(subset=["date", "universe_id"], keep="last")
+        .sort_values(["date", "universe_id"])
+        .reset_index(drop=True)
+    )
+
+
+def _dataset_stats(combined: pd.DataFrame) -> dict[str, Any]:
+    if combined.empty:
+        return {"rows_total": 0, "universes_total": 0, "min_date": None, "max_date": None}
+    return {
+        "rows_total": int(len(combined)),
+        "universes_total": int(combined["universe_id"].nunique()),
+        "min_date": combined["date"].min().isoformat(),
+        "max_date": combined["date"].max().isoformat(),
+    }
 
 
 if __name__ == "__main__":
