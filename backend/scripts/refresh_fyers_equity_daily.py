@@ -4,7 +4,6 @@ import argparse
 import json
 import time
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -12,12 +11,12 @@ from sqlalchemy import func
 
 from app.database import get_db_session
 from app.models import HistoricalPrice, IndexConstituentHistory, IndexUniverseDefinition
+from app.paths import PROJECT_ROOT, SOURCES_ROOT
 from app.services.fyers_client import get_fyers_client
 from app.services.symbol_master import symbol_master
 from app.services.universe import get_universe_service
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-OUT_DIR = PROJECT_ROOT / "data_system" / "01_sources" / "fyers_stock_prices"
+OUT_DIR = SOURCES_ROOT / "fyers_stock_prices"
 OUT_YEAR_DIR = OUT_DIR / "yearly"
 OUT_PARQUET = OUT_DIR / "stock_price_daily.parquet"
 OUT_CSV = OUT_DIR / "stock_price_daily.csv"

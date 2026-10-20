@@ -4759,6 +4759,13 @@ export interface operations {
           "application/json": unknown;
         };
       };
+      /** @description Invalid scan date */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Signal not found or invalid scan date */
       404: {
         headers: {

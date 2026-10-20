@@ -5,7 +5,6 @@ Phase-1 snapshot read APIs backed by curated parquet artifacts.
 import json
 import logging
 from collections.abc import Iterable
-from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,16 +16,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import DatasetRun, get_db
+from ..paths import CURATED_ROOT, DATA_ROOT, METADATA_ROOT
 from ..services.symbol_master import symbol_master
+from ..utils.dates import parse_iso_date
 
 router = APIRouter(prefix="/api/data", tags=["Data Snapshots"])
 DBSession = Annotated[Session, Depends(get_db)]
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-PHASE1_ROOT = PROJECT_ROOT / "data_system"
-CURATED_ROOT = PHASE1_ROOT / "04_curated" / "phase1"
-METADATA_ROOT = PHASE1_ROOT / "05_metadata" / "phase1"
 SNAPSHOT_RESPONSES = {
     400: {"description": "Invalid request parameters"},
     404: {"description": "Requested snapshot data was not found"},
@@ -86,14 +83,6 @@ def _require_file(path: Path) -> str | None:
     return None
 
 
-def _parse_date(value: str) -> date:
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as exc:
-        detail = f"Invalid date '{value}', expected YYYY-MM-DD"
-        raise ValueError(detail) from exc
-
-
 @router.get(
     "/snapshot/stock",
     responses=SNAPSHOT_RESPONSES,
@@ -102,10 +91,7 @@ def get_stock_snapshot(
     date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],
     symbol: Annotated[str, Query(description="Stock symbol")],
 ) -> dict[str, Any]:
-    try:
-        target_date = _parse_date(date)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    target_date = parse_iso_date(date, field="date")
     normalized_symbol = symbol_master.to_db(symbol)
 
     path = CURATED_ROOT / "snapshot_stock_daily.parquet"
@@ -139,10 +125,7 @@ def get_universe_snapshot(
     date: Annotated[str, Query(description="Snapshot date (YYYY-MM-DD)")],
     universe: Annotated[str, Query(description="Universe identifier")] = "NIFTY50",
 ) -> dict[str, Any]:
-    try:
-        target_date = _parse_date(date)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    target_date = parse_iso_date(date, field="date")
     universe_id = universe.strip().upper()
     if universe_id != "NIFTY50":
         detail = "Phase-1 currently supports universe=NIFTY50 only"
@@ -172,7 +155,7 @@ def get_universe_snapshot(
 @router.get("/snapshot/status")
 def get_snapshot_status(db: DBSession) -> dict[str, Any]:
     status = {
-        "phase1_root_exists": PHASE1_ROOT.exists(),
+        "phase1_root_exists": DATA_ROOT.exists(),
         "curated": _collect_artifact_status(
             CURATED_ROOT,
             [

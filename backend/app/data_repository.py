@@ -19,6 +19,7 @@ from .database import (
     IntradayCandle,
     QuarterlyResult,
 )
+from .paths import SOURCES_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +45,8 @@ PRICE_FEATURE_COLUMNS = {
 
 INTRADAY_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
-# Canonical intraday fallback source under data_system (app/.. is backend, backend/.. is root).
-_INTRADAY_FALLBACK_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data_system",
-    "01_sources",
-    "nse_intraday",
-)
+# Canonical intraday fallback source under data_system.
+_INTRADAY_FALLBACK_ROOT = str(SOURCES_ROOT / "nse_intraday")
 
 
 def _intraday_fallback_csv(symbol: str, timeframe: int) -> str | None:

@@ -10,11 +10,11 @@ from typing import Any
 
 import pandas as pd
 
+from app.paths import PROJECT_ROOT
 from app.services.fyers_client import get_fyers_client
 from app.services.symbol_master import symbol_master
 from app.services.universe import get_universe_service
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE_ROOT = PROJECT_ROOT / "archive" / "fyers_intraday"
 IST_TIMEZONE = "Asia/Kolkata"
 INTRADAY_MAX_DAYS = 100

@@ -70,7 +70,10 @@ The following backbone is feature-agnostic and must not be owned by any single f
 
 1. Database Management
 - Defines storage contracts, ingestion stages, validation, publication, and DB sync rules.
-- Owns canonical roots under `data_system/`.
+- Owns canonical roots under `data_system/`. Backend code imports them (and the repo root, `.env`,
+  `logs/`, the Fyers token file) from `backend/app/paths.py`; do not compute paths from `__file__`.
+- Request dates are parsed with `app.utils.dates.parse_iso_date`, which answers a malformed date with
+  a fixed 400 `INVALID_DATE` envelope naming the field.
 - Strategy/backtest/live-trading code may consume these contracts but must not redefine them.
 
 2. Universe Management

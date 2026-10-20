@@ -36,6 +36,7 @@ from .models import (
     Watchlist,
 )
 from .models.live_order import CLIENT_ORDER_ID_INDEX
+from .paths import ENV_FILE
 from .utils.env_loader import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def get_env_file() -> Path | str:
                 return p
         return ".env"
     else:
-        return Path(__file__).resolve().parent.parent.parent / ".env"
+        return ENV_FILE
 
 
 env_path = get_env_file()

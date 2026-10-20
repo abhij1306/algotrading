@@ -21,6 +21,7 @@ from ..models.universe import (
     IndexUniverseDefinition,
     UniverseSnapshot,
 )
+from ..paths import INDEX_WEIGHTAGE_DIR
 from ..services.symbol_lifecycle import SymbolLifecycleService
 from ..services.symbol_master import symbol_master
 
@@ -43,7 +44,7 @@ NSE_INDEX_FILES = {
 }
 
 # Default data path for weightage files
-DEFAULT_DATA_PATH = Path(__file__).parent.parent.parent.parent / "data" / "index_weightage"
+DEFAULT_DATA_PATH = INDEX_WEIGHTAGE_DIR
 
 
 @dataclass

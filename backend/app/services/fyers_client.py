@@ -6,10 +6,10 @@ Handles authentication, token management, and data fetching.
 import json
 import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import ModuleType
 from typing import Any, Self
 
+from ..paths import FYERS_TOKEN_PATH
 from ..utils.logger import get_logger
 from .symbol_master import symbol_master
 
@@ -28,10 +28,6 @@ def _get_fyers_model() -> ModuleType:
 
 # Setup Logging
 logger = get_logger("services.fyers_client")
-
-# FIXED: Use Path and project root instead of os.getcwd()
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-FYERS_TOKEN_PATH = PROJECT_ROOT / "fyers" / "config" / "access_token.json"
 
 
 class FyersClient:

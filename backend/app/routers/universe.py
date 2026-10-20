@@ -5,7 +5,7 @@ API endpoints for managing index universes with historical and live modes.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,18 +14,19 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..engines.universe_manager import UniverseManager
+from ..exceptions import InvalidDateError
 from ..models.universe import CustomUniverse
 from ..services.universe import (
     UniverseConstituent,
     UniverseMode,
     get_universe_service,
 )
+from ..utils.dates import parse_iso_date, parse_optional_iso_date
 from ..utils.errors import handle_api_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 DB_DEPENDENCY = Annotated[Session, Depends(get_db)]
-DATE_FORMAT = "%Y-%m-%d"
 BAD_REQUEST_RESPONSE = {400: {"description": "Invalid universe input"}}
 NOT_IMPLEMENTED_RESPONSE = {501: {"description": "Historical universe mode not implemented"}}
 NOT_FOUND_RESPONSE = {404: {"description": "Universe not found"}}
@@ -95,15 +96,6 @@ def constituent_to_response(c: UniverseConstituent) -> UniverseConstituentRespon
     )
 
 
-def _parse_target_date(target_date: str | None) -> date | None:
-    if not target_date:
-        return None
-    try:
-        return datetime.strptime(target_date, DATE_FORMAT).date()
-    except ValueError as e:
-        raise ValueError(f"Invalid date format: {target_date}. Use YYYY-MM-DD") from e
-
-
 def _parse_universe_mode(mode: str) -> UniverseMode:
     normalized_mode = (mode or "").strip().lower()
     if normalized_mode == "historical":
@@ -163,7 +155,7 @@ def get_constituents(
 
         # Parse mode
         universe_mode = _parse_universe_mode(mode)
-        target_date_obj = _parse_target_date(target_date)
+        target_date_obj = parse_optional_iso_date(target_date, field="target_date")
 
         # Get constituents
         result = service.get_constituents(
@@ -181,7 +173,7 @@ def get_constituents(
             count=len(result.constituents),
         )
 
-    except HTTPException:
+    except (HTTPException, InvalidDateError):
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -212,7 +204,7 @@ def get_symbols(
 
         # Parse mode
         universe_mode = _parse_universe_mode(mode)
-        target_date_obj = _parse_target_date(target_date)
+        target_date_obj = parse_optional_iso_date(target_date, field="target_date")
 
         # Get symbols
         symbols = service.get_symbols(
@@ -227,7 +219,7 @@ def get_symbols(
             "target_date": target_date,
         }
 
-    except HTTPException:
+    except (HTTPException, InvalidDateError):
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -256,14 +248,8 @@ def get_universe_changes(
     Returns additions, removals, and weight changes.
     """
     try:
-        # Parse dates
-        try:
-            start = datetime.strptime(start_date, DATE_FORMAT).date()
-            end = datetime.strptime(end_date, DATE_FORMAT).date()
-        except ValueError as e:
-            raise HTTPException(
-                status_code=400, detail="Invalid date format. Use YYYY-MM-DD"
-            ) from e
+        start = parse_iso_date(start_date, field="start_date")
+        end = parse_iso_date(end_date, field="end_date")
 
         service = get_universe_service()
         changes = service.get_universe_changes(
@@ -279,7 +265,7 @@ def get_universe_changes(
             weight_changes=[UniverseChange(**c) for c in changes.get("weight_changes", [])],
         )
 
-    except HTTPException:
+    except (HTTPException, InvalidDateError):
         raise
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e

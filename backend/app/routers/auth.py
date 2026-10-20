@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fyers_apiv3 import fyersModel
 from pydantic import BaseModel
 
+from app.paths import PROJECT_ROOT
 from app.utils.errors import handle_api_error
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,7 @@ def get_base_dir() -> str:
             return os.path.dirname(exe_dir)
         return os.getcwd()
     else:
-        # Development mode - go up from backend/app/routers/ to project root
-        return os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        )
+        return str(PROJECT_ROOT)
 
 
 BASE_DIR = get_base_dir()

@@ -7,11 +7,11 @@ API endpoint to upload and process bhavcopy CSV files.
 import asyncio
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from ..paths import SOURCES_ROOT
 from ..utils.errors import handle_api_error
 
 router = APIRouter()
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 BHAVCOPY_FILE = File(...)
 
 # Upload directory
-UPLOAD_DIR = Path(__file__).parent.parent.parent / "data_system" / "01_sources" / "nse_bhavcopy"
+UPLOAD_DIR = SOURCES_ROOT / "nse_bhavcopy"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 

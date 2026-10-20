@@ -5,17 +5,16 @@ import json
 import logging
 import time
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from app.paths import PROJECT_ROOT, SOURCES_ROOT
 from app.services.fyers_client import get_fyers_client
 from app.services.symbol_master import symbol_master
 from app.services.universe import get_universe_service
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-OUT_DIR = PROJECT_ROOT / "data_system" / "01_sources" / "fyers_index_prices"
+OUT_DIR = SOURCES_ROOT / "fyers_index_prices"
 OUT_PARQUET = OUT_DIR / "universe_index_price_daily.parquet"
 OUT_CSV = OUT_DIR / "universe_index_price_daily.csv"
 SUMMARY_PATH = OUT_DIR / "universe_index_price_summary.json"
