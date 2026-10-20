@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from app.services.option_chain_service import OptionChainService, OptionLeg, OptionStrike
-from app.strategies.black_scholes import price_synthetic_option
+from app.services.options.black_scholes import price_synthetic_option
 
 HIST = pd.DataFrame({"close": [100 + np.sin(i / 3) * 3 for i in range(40)]})
 
@@ -64,7 +64,8 @@ HIST = pd.DataFrame({"close": [100 + np.sin(i / 3) * 3 for i in range(40)]})
                 "strike": 22000.0,
                 "current_time": datetime(2025, 1, 6, 10, 0),
             },
-            424.6111709637251,
+            # 3 days 5.5 h to Thursday 15:30 IST as ACT/365 (was 424.61 on trading-hour years)
+            171.43832536457074,
         ),
         (
             {"underlying_price": 100.0, "strike": 500.0, "days_to_expiry": 1, "volatility": 0.01},
