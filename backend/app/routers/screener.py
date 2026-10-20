@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, desc, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..constants.indices import DEFAULT_SCREENER_UNIVERSE
 from ..data_fetcher import fetch_fyers_quotes
@@ -26,6 +26,7 @@ RESULTS_ERROR_RESPONSES = {
     500: {"description": "Failed to load screener results"},
 }
 INDICES_ERROR_RESPONSES = {500: {"description": "Failed to load screener universes"}}
+LIVE_SORT_FIELDS = {"price", "change", "volume"}
 
 
 def _get_cached_screener_payload(cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
@@ -84,6 +85,7 @@ def _build_screener_query(
     db: Session, normalized_universe: str, normalized_query: str | None
 ) -> object:
     universe_service = get_universe_service()
+    prev_hist = aliased(HistoricalPrice)
     latest_prices_subquery = (
         db.query(
             HistoricalPrice.company_id,
@@ -92,15 +94,43 @@ def _build_screener_query(
         .group_by(HistoricalPrice.company_id)
         .subquery()
     )
+    previous_prices_subquery = (
+        db.query(
+            HistoricalPrice.company_id.label("company_id"),
+            latest_prices_subquery.c.latest_date.label("latest_date"),
+            func.max(HistoricalPrice.date).label("previous_date"),
+        )
+        .join(
+            latest_prices_subquery,
+            HistoricalPrice.company_id == latest_prices_subquery.c.company_id,
+        )
+        .filter(HistoricalPrice.date < latest_prices_subquery.c.latest_date)
+        .group_by(HistoricalPrice.company_id, latest_prices_subquery.c.latest_date)
+        .subquery()
+    )
 
     companies_query = (
-        db.query(Company, HistoricalPrice)
+        db.query(Company, HistoricalPrice, prev_hist.close.label("previous_close"))
         .join(latest_prices_subquery, Company.id == latest_prices_subquery.c.company_id)
         .join(
             HistoricalPrice,
             and_(
                 HistoricalPrice.company_id == Company.id,
                 HistoricalPrice.date == latest_prices_subquery.c.latest_date,
+            ),
+        )
+        .outerjoin(
+            previous_prices_subquery,
+            and_(
+                previous_prices_subquery.c.company_id == Company.id,
+                previous_prices_subquery.c.latest_date == latest_prices_subquery.c.latest_date,
+            ),
+        )
+        .outerjoin(
+            prev_hist,
+            and_(
+                prev_hist.company_id == Company.id,
+                prev_hist.date == previous_prices_subquery.c.previous_date,
             ),
         )
         .filter(Company.is_active.is_(True))
@@ -139,7 +169,9 @@ def _apply_screener_sort(
     sort_expr = sort_mapping.get(normalized_sort)
     if sort_expr is None:
         raise HTTPException(status_code=400, detail=f"Invalid sort field: {normalized_sort}")
-    return companies_query.order_by(None).order_by(desc(sort_expr) if descending else sort_expr)
+    primary_order = desc(sort_expr) if descending else sort_expr
+    secondary_order = desc(Company.symbol) if descending and normalized_sort == "symbol" else Company.symbol.asc()
+    return companies_query.order_by(None).order_by(primary_order, secondary_order)
 
 
 def _hydrate_quotes(symbols: list[str], full: bool) -> dict[str, dict[str, Any]]:
@@ -153,11 +185,12 @@ def _hydrate_quotes(symbols: list[str], full: bool) -> dict[str, dict[str, Any]]
 
 
 def _serialize_screener_row(
-    company: Company, hist: HistoricalPrice, quote: dict[str, Any] | None
+    company: Company, hist: HistoricalPrice, previous_close: float | None, quote: dict[str, Any] | None
 ) -> dict[str, Any]:
     price = float(hist.close or 0)
     volume = int(hist.volume or 0)
-    change = ((hist.close - hist.open) / hist.open * 100) if hist.open else 0.0
+    prev_close = float(previous_close or 0)
+    change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
 
     price, volume, change = _apply_quote_to_row(price, volume, change, quote)
 
@@ -173,6 +206,22 @@ def _serialize_screener_row(
         "macd": round(float(hist.macd or 0), 4),
         "adx": round(float(hist.adx or 0), 2),
     }
+
+
+def _sort_serialized_rows(
+    rows: list[dict[str, Any]], normalized_sort: str, normalized_order: str
+) -> list[dict[str, Any]]:
+    reverse = normalized_order == "desc"
+
+    def sort_key(row: dict[str, Any]) -> tuple[Any, str]:
+        if normalized_sort == "symbol":
+            return (str(row["symbol"]), str(row["symbol"]))
+        value = row.get(normalized_sort)
+        if value is None:
+            value = 0
+        return (value, str(row["symbol"]))
+
+    return sorted(rows, key=sort_key, reverse=reverse)
 
 
 def _apply_quote_to_row(
@@ -213,17 +262,31 @@ def _load_screener_payload(
     if companies_query is None:
         return {"results": [], "total": 0, "page": page, "limit": limit}
 
-    companies_query = _apply_screener_sort(companies_query, normalized_order, normalized_sort)
     total_records = companies_query.order_by(None).count()
-    if full:
-        rows = companies_query.limit(1200).all()
-    else:
-        rows = companies_query.offset((page - 1) * limit).limit(limit).all()
-    live_quotes = _hydrate_quotes([company.symbol for company, _ in rows], full)
+
+    if normalized_sort in LIVE_SORT_FIELDS:
+        rows = companies_query.all()
+        live_quotes = _hydrate_quotes([company.symbol for company, _, _ in rows], False)
+        serialized = [
+            _serialize_screener_row(company, hist, previous_close, live_quotes.get(company.symbol))
+            for company, hist, previous_close in rows
+        ]
+        sorted_rows = _sort_serialized_rows(serialized, normalized_sort, normalized_order)
+        paged_rows = sorted_rows if full else sorted_rows[(page - 1) * limit : page * limit]
+        return {
+            "results": paged_rows,
+            "total": total_records,
+            "page": page,
+            "limit": limit,
+        }
+
+    companies_query = _apply_screener_sort(companies_query, normalized_order, normalized_sort)
+    rows = companies_query.all() if full else companies_query.offset((page - 1) * limit).limit(limit).all()
+    live_quotes = _hydrate_quotes([company.symbol for company, _, _ in rows], full)
     return {
         "results": [
-            _serialize_screener_row(company, hist, live_quotes.get(company.symbol))
-            for company, hist in rows
+            _serialize_screener_row(company, hist, previous_close, live_quotes.get(company.symbol))
+            for company, hist, previous_close in rows
         ],
         "total": total_records,
         "page": page,

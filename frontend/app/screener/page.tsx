@@ -171,13 +171,6 @@ function getFallbackChange(quote: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
-function shouldResort(sortField: SortField, flashes: Array<{ field: FlashField }>): boolean {
-  if (!['change', 'volume', 'price'].includes(sortField)) {
-    return false;
-  }
-  return flashes.some((flash) => flash.field === sortField);
-}
-
 function getFlashStateByField(
   symbol: string,
   flashByCell: Record<string, FlashState>
@@ -703,10 +696,6 @@ export default function ScreenerPage() {
       }
 
       if (nextResults) {
-        if (shouldResort(sortField, flashes)) {
-          nextResults.sort((a, b) => compareBySort(a, b, sortField, sortDirection));
-        }
-
         resultsRef.current = nextResults;
         setResults(nextResults);
         if (flashes.length > 0) {
@@ -716,7 +705,7 @@ export default function ScreenerPage() {
     }, TICK_FLUSH_MS);
 
     return () => clearInterval(timer);
-  }, [applyFlashes, sortField, sortDirection]);
+  }, [applyFlashes]);
 
   const handleSort = useCallback(
     (field: SortField) => {
