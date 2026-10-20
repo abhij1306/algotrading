@@ -130,7 +130,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 
 ### Lane 8: terminal UI
 - [x] 1. One `placeOrder` mutation through the typed client (S). `usePlaceOrder` in `lib/queries/terminal.ts` is the only call site; retries reuse the click's `client_order_id`, and a cut-off 200 is retried, not reported as placed. `x_user_id` stays until Lane 3 task 5 because the backend still needs it.
-- [x] 2. A LIVE confirmation dialog showing every order field (S). `app/terminal/LiveOrderDialog.tsx` is a native modal `<dialog>`. It shows the snapshot taken at click time and sends exactly that; focus starts on Cancel; Escape and Cancel send nothing. Square-off never used `confirm()`.
+- [x] 2. A LIVE confirmation dialog showing every order field (S). `app/terminal/LiveOrderDialog.tsx` is a native modal `<dialog>`. It shows the snapshot taken at click time and sends exactly that; focus starts on Cancel; Escape and Cancel send nothing. On open it runs `POST /api/trading/risk-check` for that order and lists any warnings (or the failure) before Confirm; placing the order still re-checks, and the overridden warnings in its response show in the ticket message. Square-off never used `confirm()`.
 - [x] 3. Wire up or remove the toolbar Buy/Sell buttons, and read `?symbol=` with `useSearchParams` (S). Removed: the ticket has no side to prefill (its own Buy/Sell submit), so they would have been a second submit path. The selected symbol now lives in `?symbol=`.
 - [ ] 4. Move the terminal into `features/terminal` and split it (L).
 

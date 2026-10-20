@@ -133,6 +133,11 @@ export function orderResultMessage(body: PlaceOrderBody, result: PlaceOrderResul
     // Not rejected: the order may be live, so the user must not place it again.
     return `${mode} ${side} unconfirmed: ${result.message ?? "check the broker orderbook"}`;
   }
-  const summary = `${mode} ${side} ${result.status ?? "submitted"} (${result.orderId ?? "ok"})`;
+  const placed = `${mode} ${side} ${result.status ?? "submitted"} (${result.orderId ?? "ok"})`;
+  // Risk checks that warned (an overridden LIVE warning): the user sees which ones.
+  const summary =
+    result.warnings.length > 0
+      ? `${placed} - risk warnings: ${result.warnings.join("; ")}`
+      : placed;
   return result.duplicate ? `${summary} - already placed` : summary;
 }

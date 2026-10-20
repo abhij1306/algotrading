@@ -72,6 +72,16 @@ let orderTruncatedResponses = 0;
 // Body every order POST answers with.
 let orderResult: Record<string, unknown> = { status: "accepted", order_id: "ord-1" };
 let squareResult: { status: string; message?: string } = { status: "SUCCESS" };
+const RISK_CHECK_PATH = "/api/trading/risk-check";
+const RISK_PASS = {
+  can_trade: true,
+  status: "PASS",
+  message: "All risk checks passed",
+  code: "OK",
+  details: { warnings: [] },
+};
+// Body every pre-trade risk check answers with.
+let riskResult: Record<string, unknown> = RISK_PASS;
 // Square-off POSTs that fail as a dropped connection before any response arrives.
 let squareNetworkFailures = 0;
 
@@ -95,6 +105,7 @@ function respond(url: string): Response {
     });
   }
   if (url.includes(ORDER_PATH)) return Response.json(orderResult);
+  if (url.includes(RISK_CHECK_PATH)) return Response.json(riskResult);
   return Response.json([]);
 }
 
@@ -278,6 +289,7 @@ describe("terminal LIVE confirmation", () => {
     orderNetworkFailures = 0;
     orderTruncatedResponses = 0;
     orderResult = { status: "accepted", order_id: "ord-1" };
+    riskResult = RISK_PASS;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -285,6 +297,77 @@ describe("terminal LIVE confirmation", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  function riskBodies(): string[] {
+    return calls.filter((call) => call.url.includes(RISK_CHECK_PATH)).map((call) => call.body);
+  }
+
+  async function riskPanelText(): Promise<string> {
+    const panel = screen.getByRole("region", { name: "Risk check" });
+    await vi.waitFor(() => expect(panel.textContent).not.toBe("Checking risk..."));
+    return panel.textContent ?? "";
+  }
+
+  it("runs the risk check for the shown order and lists its warnings before Confirm", async () => {
+    riskResult = {
+      can_trade: true,
+      status: "WARNING",
+      message: "Approaching daily loss limit",
+      code: "DAILY_LOSS_WARNING",
+      details: { warnings: ["Approaching daily loss limit. Current P&L: ₹-4500.00"] },
+    };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe(
+      "Risk warnings, overridden by your reason:Approaching daily loss limit. Current P&L: ₹-4500.00",
+    );
+    expect(riskBodies()).toEqual([
+      '{"symbol":"SBIN","side":"SELL","quantity":4,"product":"INTRADAY","type":"SL","price":790,"instrument_type":"EQ"}',
+    ]);
+    expect(orderBodies(calls)).toEqual([]);
+  });
+
+  it("says a warned order without a reason will be rejected", async () => {
+    riskResult = {
+      can_trade: true,
+      status: "WARNING",
+      message: "Large order",
+      code: "LARGE_ORDER",
+      details: { warnings: ["Large order value"] },
+    };
+    renderPage();
+    await screen.findAllByText("State Bank");
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    setValue(/^price$/i, "800");
+    fireEvent.click(ticketButton("Buy"));
+    await screen.findByRole("dialog");
+
+    expect(await riskPanelText()).toBe(
+      "Risk warnings: add a risk override reason, or the order will be rejected.Large order value",
+    );
+  });
+
+  it("says a failing order will be rejected", async () => {
+    riskResult = {
+      can_trade: false,
+      status: "FAIL",
+      message: "Daily order limit reached",
+      code: "DAILY_ORDER_LIMIT",
+      details: null,
+    };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe("Will be rejected: Daily order limit reached");
+  });
+
+  it("says when the risk check is unavailable", async () => {
+    riskResult = { detail: "not a risk check" };
+    await openLiveStopOrder();
+
+    expect(await riskPanelText()).toBe(
+      "Risk check unavailable; the order is checked again when placed.",
+    );
   });
 
   async function openLiveStopOrder() {

@@ -362,6 +362,13 @@ const ORDER_RETRY_DELAY_MS = 250;
 /** The exact body POSTed to /api/trading/order; every order carries its idempotency key. */
 export type PlaceOrderBody = components["schemas"]["OrderRequest"] & { client_order_id: string };
 
+/** The risk warning messages the backend listed; anything that is not a string is dropped. */
+const warningsSchema = z
+  .array(z.unknown())
+  .catch([])
+  .optional()
+  .transform((items = []) => items.filter((item): item is string => typeof item === "string"));
+
 /** A non-empty string the backend sent, or undefined. */
 const optionalText = z
   .union([z.string(), z.number()])
@@ -375,6 +382,7 @@ const placeOrderResultSchema = z.object({
   order_id: optionalText,
   id: optionalText,
   duplicate: z.boolean().optional().catch(undefined),
+  warnings: warningsSchema,
 });
 
 export interface PlaceOrderResult {
@@ -385,6 +393,8 @@ export interface PlaceOrderResult {
   orderId: string | undefined;
   /** The client_order_id was already used: this is the existing order, not a new one. */
   duplicate: boolean;
+  /** Risk checks that warned and were overridden with the order's risk_override_reason. */
+  warnings: string[];
 }
 
 /** True when the request may have reached the backend but its answer was lost or cut off. */
@@ -426,10 +436,50 @@ export function usePlaceOrder() {
         message: result.message,
         orderId: result.order_id ?? result.id,
         duplicate: result.duplicate === true,
+        warnings: result.warnings,
       };
     },
     retry: shouldRetry,
     retryDelay: ORDER_RETRY_DELAY_MS,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.terminal.positions() }),
+  });
+}
+
+/** The fields the backend's pre-trade risk check reads. */
+export type RiskCheckBody = components["schemas"]["RiskCheckRequest"];
+
+const riskCheckSchema = z.object({
+  // No fallback: a response without a known status is not a risk check, so it reads as unavailable.
+  status: z.enum(["PASS", "WARNING", "FAIL"]),
+  message: z.string().catch(""),
+  details: z.object({ warnings: warningsSchema }).nullish().catch(null),
+});
+
+export interface RiskCheck {
+  status: "PASS" | "WARNING" | "FAIL";
+  message: string;
+  /** Every warning; a WARNING order needs a risk_override_reason to go through. */
+  warnings: string[];
+}
+
+/**
+ * The backend's pre-trade risk check for an order, without placing it. Advisory: placing the
+ * order runs the same checks again and is what decides.
+ */
+export function useRiskCheck(order: RiskCheckBody) {
+  return useQuery({
+    queryKey: queryKeys.terminal.riskCheck(order),
+    queryFn: async (): Promise<RiskCheck> => {
+      const result = parseResponse(
+        riskCheckSchema,
+        await unwrap(api.POST("/api/trading/risk-check", { body: order })),
+      );
+      return {
+        status: result.status,
+        message: result.message,
+        warnings: result.details?.warnings ?? [],
+      };
+    },
+    staleTime: 0,
   });
 }
