@@ -331,7 +331,9 @@ describe("indicator colours", () => {
     [50, ""],
     [30, ""],
     [29.9, "text-profit"],
-    [0, "text-profit"],
+    [0.1, "text-profit"],
+    [0, ""],
+    [-1, ""],
   ])("RSI %d gives %j", (rsi, expected) => {
     expect(getRsiClassName(rsi)).toBe(expected);
   });

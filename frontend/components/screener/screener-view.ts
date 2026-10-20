@@ -145,10 +145,10 @@ export function getFlashClassName(flash?: FlashState): string | undefined {
   return flash.phase === 0 ? "screener-flash-down-a" : "screener-flash-down-b";
 }
 
-/** Overbought RSI reads as a loss, oversold as a profit. */
+/** Overbought RSI reads as a loss, oversold as a profit; a missing (zero) RSI is uncoloured. */
 export function getRsiClassName(rsi: number): string {
   if (rsi > 70) return "text-loss";
-  if (rsi < 30) return "text-profit";
+  if (rsi > 0 && rsi < 30) return "text-profit";
   return "";
 }
 
