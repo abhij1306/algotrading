@@ -1,0 +1,9 @@
+{
+  "venvPath": ".",
+  "venv": "venv",
+  "extraPaths": ["backend"],
+  "include": ["backend", "data_platform", "start_dev.py"],
+  "exclude": ["**/__pycache__", "frontend", "archive", "data_system", "venv"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "standard"
+}
