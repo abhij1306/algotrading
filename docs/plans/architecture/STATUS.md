@@ -118,7 +118,7 @@ Files: `main.py`, `database.py`, `config.py`, `exceptions.py`, `utils/errors.py`
 - [ ] 8. Golden-value tests for the indicators. Switch callers to the shared indicators and delete the unused `calculate_*` (S-M).
 
 ### Lane 7: data and screener
-- [ ] 1. `paths.py` and `utils/dates.parse_iso_date` (S). Land this early.
+- [x] 1. `paths.py` and `utils/dates.parse_iso_date` (S) (#61).
 - [ ] 2. A SnapshotStore, with tests using temporary parquet files (M).
 - [ ] 3. Extract a ScreenerService (M).
 - [ ] 4. Cap the live sort at the top K (S).
