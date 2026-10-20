@@ -25,6 +25,7 @@ from ..models import (
     SystemConfig,
     VCPScanResult,
 )
+from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
 from ..utils.runtime_metrics import runtime_metrics
 
@@ -1136,30 +1137,22 @@ class VCPService:
 
             eq_series = pd.Series([row["equity"] for row in equity_curve], index=[row["date"] for row in equity_curve], dtype=float)
             returns = eq_series.pct_change().fillna(0.0)
-            rolling_peak = eq_series.cummax()
-            drawdown = ((eq_series / rolling_peak) - 1.0).fillna(0.0)
-            wins = [trade for trade in trades if trade["pnl_inr"] > 0]
-            losses = [trade for trade in trades if trade["pnl_inr"] <= 0]
-            ann_return = ((eq_series.iloc[-1] / capital) ** (252 / max(1, len(eq_series))) - 1.0) if len(eq_series) else 0.0
-            ann_std = float(returns.std(ddof=0) * np.sqrt(252)) if len(returns) else 0.0
-            sharpe = ((ann_return - 0.065) / ann_std) if ann_std > 0 else 0.0
+            drawdown = bt_metrics.drawdown_series(eq_series)
+            ann_return = bt_metrics.annualized_return(float(eq_series.iloc[-1]), capital, len(eq_series))
+            sharpe = bt_metrics.sharpe_excess_cagr(ann_return, returns, risk_free=0.065)
+            pnl_stats = bt_metrics.trade_stats([trade["pnl_inr"] for trade in trades])
             benchmark_return = ((benchmark_curve[-1]["equity"] / capital) - 1.0) * 100.0 if benchmark_curve else 0.0
             metrics = {
                 "initial_capital": round(capital, 2),
                 "final_equity": round(float(eq_series.iloc[-1]), 2),
-                "total_return_pct": round(((float(eq_series.iloc[-1]) / capital) - 1.0) * 100.0, 2),
+                "total_return_pct": round(bt_metrics.total_return(float(eq_series.iloc[-1]), capital) * 100.0, 2),
                 "cagr_pct": round(ann_return * 100.0, 2),
-                "max_drawdown_pct": round(abs(float(drawdown.min())) * 100.0, 2),
+                "max_drawdown_pct": round(abs(bt_metrics.max_drawdown(drawdown)) * 100.0, 2),
                 "sharpe_ratio": round(float(sharpe), 4),
-                "win_rate_pct": round((len(wins) / len(trades) * 100.0), 2) if trades else 0.0,
-                "avg_win_inr": round(mean([trade["pnl_inr"] for trade in wins]), 2) if wins else 0.0,
-                "avg_loss_inr": round(mean([trade["pnl_inr"] for trade in losses]), 2) if losses else 0.0,
-                "profit_factor": round(
-                    abs(sum(trade["pnl_inr"] for trade in wins) / sum(trade["pnl_inr"] for trade in losses)),
-                    2,
-                )
-                if losses and sum(trade["pnl_inr"] for trade in losses) != 0
-                else 0.0,
+                "win_rate_pct": round(pnl_stats.win_rate * 100.0, 2),
+                "avg_win_inr": round(pnl_stats.avg_win, 2),
+                "avg_loss_inr": round(pnl_stats.avg_loss, 2),
+                "profit_factor": round(pnl_stats.profit_factor, 2),
                 "total_trades": len(trades),
                 "avg_hold_days": round(mean([trade["hold_days"] for trade in trades]), 2) if trades else 0.0,
                 "avg_r_multiple": round(mean([trade["r_multiple"] for trade in trades]), 2) if trades else 0.0,
