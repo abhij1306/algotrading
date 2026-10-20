@@ -44,7 +44,9 @@ def get_latest_vcp_scan(universe: str = DEFAULT_UNIVERSE, show_all: bool = False
 @router.post("/vcp/scan/run")
 def run_vcp_scan(request: ScanRunRequest):
     try:
-        return vcp_service.run_scan(universe=request.universe, scan_date=_parse_date(request.scan_date))
+        return vcp_service.run_scan(
+            universe=request.universe, scan_date=_parse_date(request.scan_date)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

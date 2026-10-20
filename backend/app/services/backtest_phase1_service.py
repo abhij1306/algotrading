@@ -117,7 +117,9 @@ class Phase1BacktestService:
         existing = set(df["symbol"].str.upper().unique().tolist())
         missing = [s for s in normalized if s not in existing]
         if missing:
-            raise ValueError(f"Symbols missing in canonical daily history: {', '.join(missing[:10])}")
+            raise ValueError(
+                f"Symbols missing in canonical daily history: {', '.join(missing[:10])}"
+            )
         return df
 
     def _build_signal(
@@ -227,7 +229,10 @@ class Phase1BacktestService:
         return {
             "data_ready": any_equity,
             "instrument_capabilities": {
-                "equity": {"enabled": any_equity, "note": "Backtest ready from canonical daily history"},
+                "equity": {
+                    "enabled": any_equity,
+                    "note": "Backtest ready from canonical daily history",
+                },
                 "options": {
                     "enabled": False,
                     "note": "Options historical dataset not onboarded yet",
@@ -266,10 +271,7 @@ class Phase1BacktestService:
         session = get_db_session()
         try:
             runs = (
-                session.query(BacktestRun)
-                .order_by(BacktestRun.created_at.desc())
-                .limit(100)
-                .all()
+                session.query(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(100).all()
             )
             return [self._serialize_run_summary(run) for run in runs]
         except Exception as exc:

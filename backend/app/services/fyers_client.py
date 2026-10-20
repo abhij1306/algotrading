@@ -132,7 +132,9 @@ class FyersClient:
             logger.error(f"Failed checking token file changes: {e}")
             return False
 
-    def _connect(self, *, skip_validation: bool = False, suppress_missing_credentials_log: bool = False):
+    def _connect(
+        self, *, skip_validation: bool = False, suppress_missing_credentials_log: bool = False
+    ):
         """Initialize FyersModel instance"""
         if self._connecting:
             logger.debug("Skipping nested Fyers _connect call")

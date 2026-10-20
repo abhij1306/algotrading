@@ -171,7 +171,9 @@ def ensure_backtest_schema(*, bind=None) -> None:
             continue
 
         existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-        missing_columns = [column for column in table.columns if column.name not in existing_columns]
+        missing_columns = [
+            column for column in table.columns if column.name not in existing_columns
+        ]
         if not missing_columns:
             continue
 
@@ -200,7 +202,9 @@ def ensure_universe_schema(*, bind=None) -> None:
     if "index_universe_definitions" not in existing_tables:
         return
 
-    columns = {column["name"]: column for column in inspector.get_columns("index_universe_definitions")}
+    columns = {
+        column["name"]: column for column in inspector.get_columns("index_universe_definitions")
+    }
     index_code = columns.get("index_code")
     current_length = getattr(index_code.get("type"), "length", None) if index_code else None
     if current_length is not None and current_length >= 50:
@@ -223,11 +227,19 @@ def ensure_strategy_schema(*, bind=None) -> None:
             continue
 
         existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-        missing_columns = [column for column in table.columns if column.name not in existing_columns]
+        missing_columns = [
+            column for column in table.columns if column.name not in existing_columns
+        ]
         if not missing_columns:
-            if table.name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in existing_columns:
+            if (
+                table.name == "positions"
+                and "pnl_rs" in existing_columns
+                and "pnl_inr" in existing_columns
+            ):
                 with db_engine.begin() as connection:
-                    connection.execute(text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"))
+                    connection.execute(
+                        text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)")
+                    )
                 logger.warning("Backfilled positions.pnl_inr from legacy pnl_rs")
             continue
 
@@ -239,9 +251,17 @@ def ensure_strategy_schema(*, bind=None) -> None:
                 added.append(column.name)
             if table.name == "vcp_scan_results":
                 if "scan_id" in added:
-                    connection.execute(text("UPDATE vcp_scan_results SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"))
+                    connection.execute(
+                        text(
+                            "UPDATE vcp_scan_results SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"
+                        )
+                    )
                 if "scan_timestamp" in added:
-                    connection.execute(text("UPDATE vcp_scan_results SET scan_timestamp = COALESCE(scan_timestamp, created_at)"))
+                    connection.execute(
+                        text(
+                            "UPDATE vcp_scan_results SET scan_timestamp = COALESCE(scan_timestamp, created_at)"
+                        )
+                    )
             if table.name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
                 connection.execute(text("UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"))
 

@@ -51,7 +51,19 @@ def resolve_universes(raw: str) -> list[str]:
 
 def load_existing_dataset() -> pd.DataFrame:
     if not OUT_PARQUET.exists():
-        return pd.DataFrame(columns=["date", "universe_id", "fyers_symbol", "open", "high", "low", "close", "volume", "source"])
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "universe_id",
+                "fyers_symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+            ]
+        )
     df = pd.read_parquet(OUT_PARQUET)
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     return df
@@ -122,12 +134,20 @@ def main() -> int:
     refresh_summary: dict[str, Any] = {}
 
     for idx, universe_id in enumerate(universes, start=1):
-        scoped_existing = existing[existing["universe_id"] == universe_id] if not existing.empty else pd.DataFrame()
+        scoped_existing = (
+            existing[existing["universe_id"] == universe_id]
+            if not existing.empty
+            else pd.DataFrame()
+        )
         scoped_max = scoped_existing["date"].max() if not scoped_existing.empty else None
         if args.start_date:
             start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
         else:
-            start_date = (scoped_max + pd.Timedelta(days=1)) if scoped_max is not None else DEFAULT_FIRST_HISTORY_DATE
+            start_date = (
+                (scoped_max + pd.Timedelta(days=1))
+                if scoped_max is not None
+                else DEFAULT_FIRST_HISTORY_DATE
+            )
             if hasattr(start_date, "date"):
                 start_date = start_date.date()
         end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else today
@@ -157,9 +177,13 @@ def main() -> int:
                 else:
                     refresh_summary[universe_id]["rows_added"] = 0
             else:
-                failures.append({"universe_id": universe_id, "fyers_symbol": fyers_symbol, "response": response})
+                failures.append(
+                    {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "response": response}
+                )
         except Exception as exc:
-            failures.append({"universe_id": universe_id, "fyers_symbol": fyers_symbol, "error": str(exc)})
+            failures.append(
+                {"universe_id": universe_id, "fyers_symbol": fyers_symbol, "error": str(exc)}
+            )
         if idx % 10 == 0:
             print(f"[fyers-index-daily] processed {idx}/{len(universes)}")
         time.sleep(args.throttle)

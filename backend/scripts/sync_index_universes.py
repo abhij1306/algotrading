@@ -13,8 +13,12 @@ from app.services.universe_sync import sync_index_universes_from_loader
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync index universes from canonical CSV files into DB.")
-    parser.add_argument("--as-of-date", help="Effective date in YYYY-MM-DD format. Defaults to today.")
+    parser = argparse.ArgumentParser(
+        description="Sync index universes from canonical CSV files into DB."
+    )
+    parser.add_argument(
+        "--as-of-date", help="Effective date in YYYY-MM-DD format. Defaults to today."
+    )
     parser.add_argument(
         "--skip-company-categories",
         action="store_true",

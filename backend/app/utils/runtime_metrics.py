@@ -56,7 +56,9 @@ class RuntimeMetrics:
         finally:
             self.observe_ms(name, (perf_counter() - started) * 1000.0)
 
-    def snapshot(self, prefix: str | None = None, *, strip_prefix: bool = False) -> dict[str, object]:
+    def snapshot(
+        self, prefix: str | None = None, *, strip_prefix: bool = False
+    ) -> dict[str, object]:
         with self._lock:
             counters = dict(self._counters)
             gauges = dict(self._gauges)

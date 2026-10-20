@@ -44,7 +44,9 @@ def _parse_csv_list(raw: str) -> list[str]:
     return [item.strip().upper() for item in raw.split(",") if item and item.strip()]
 
 
-def resolve_symbols(universe_ids: list[str], explicit_symbols: list[str]) -> tuple[list[str], dict[str, Any]]:
+def resolve_symbols(
+    universe_ids: list[str], explicit_symbols: list[str]
+) -> tuple[list[str], dict[str, Any]]:
     if explicit_symbols:
         symbols = sorted(set(explicit_symbols))
         return symbols, {"mode": "explicit_symbols", "universes": []}
@@ -86,7 +88,18 @@ def database_max_date() -> date | None:
 def load_existing_dataset() -> pd.DataFrame:
     if not OUT_PARQUET.exists():
         return pd.DataFrame(
-            columns=["date", "symbol", "open", "high", "low", "close", "volume", "source", "fyers_symbol", "year"]
+            columns=[
+                "date",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "fyers_symbol",
+                "year",
+            ]
         )
     df = pd.read_parquet(OUT_PARQUET)
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
@@ -127,7 +140,18 @@ def fetch_history(
 def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame(
-            columns=["date", "symbol", "open", "high", "low", "close", "volume", "source", "fyers_symbol", "year"]
+            columns=[
+                "date",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "fyers_symbol",
+                "year",
+            ]
         )
     records: list[dict[str, Any]] = []
     for row in candles:
@@ -172,7 +196,9 @@ def main() -> int:
     db_max = database_max_date()
     source_max = dataset_max_date(existing)
     today = datetime.now(UTC).date()
-    inferred_start = max(item for item in [db_max, source_max, DEFAULT_FIRST_HISTORY_DATE] if item is not None)
+    inferred_start = max(
+        item for item in [db_max, source_max, DEFAULT_FIRST_HISTORY_DATE] if item is not None
+    )
     start_date = (
         datetime.strptime(args.start_date, "%Y-%m-%d").date()
         if args.start_date
@@ -243,7 +269,9 @@ def main() -> int:
     summary.update(
         {
             "rows_total": int(len(combined)),
-            "dataset_unique_symbols_total": int(combined["symbol"].nunique()) if not combined.empty else 0,
+            "dataset_unique_symbols_total": int(combined["symbol"].nunique())
+            if not combined.empty
+            else 0,
             "min_date": combined["date"].min().isoformat() if not combined.empty else None,
             "max_date": combined["date"].max().isoformat() if not combined.empty else None,
             "failed_symbols": len(failures),

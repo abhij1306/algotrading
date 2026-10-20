@@ -61,7 +61,9 @@ class UniverseServiceImpl:
             .first()
         )
 
-    def _load_db_constituents(self, index_code: str, lookup_date: date) -> list[UniverseConstituent]:
+    def _load_db_constituents(
+        self, index_code: str, lookup_date: date
+    ) -> list[UniverseConstituent]:
         db: Session = SessionLocal()
         try:
             definition = self._load_db_definition(index_code, db)
@@ -137,7 +139,9 @@ class UniverseServiceImpl:
     def _list_db_indices(self) -> list[dict]:
         db: Session = SessionLocal()
         try:
-            definitions = db.query(IndexUniverseDefinition).order_by(IndexUniverseDefinition.index_code).all()
+            definitions = (
+                db.query(IndexUniverseDefinition).order_by(IndexUniverseDefinition.index_code).all()
+            )
             indices: list[dict[str, Any]] = []
             for definition in definitions:
                 rows = (
@@ -231,9 +235,7 @@ class UniverseServiceImpl:
             return db_symbols
         return index_universe_loader.get_index_symbols(index_code)
 
-    def is_constituent(
-        self, symbol: str, index_code: str, _as_of_date: date | None = None
-    ) -> bool:
+    def is_constituent(self, symbol: str, index_code: str, _as_of_date: date | None = None) -> bool:
         """Check if a symbol is a constituent of an index."""
         from ..index_universe_loader import index_universe_loader
 

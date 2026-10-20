@@ -214,7 +214,9 @@ class OrderExecutionService:
             raise ValueError("Quantity must be positive")
         return quantity
 
-    def _run_live_risk_checks(self, order_params: dict[str, Any], db: Session) -> dict[str, Any] | None:
+    def _run_live_risk_checks(
+        self, order_params: dict[str, Any], db: Session
+    ) -> dict[str, Any] | None:
         if not bool(order_params.get("is_live_confirmation_ack", False)):
             return {
                 "status": "ERROR",

@@ -87,7 +87,11 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY):
     # Check if market is open
     is_market_open = live_market.is_market_open()
 
-    data = {"market_status": await live_market.get_status(), "is_live": is_market_open, "indices": {}}
+    data = {
+        "market_status": await live_market.get_status(),
+        "is_live": is_market_open,
+        "indices": {},
+    }
 
     if is_market_open:
         # Try to get live data from cache

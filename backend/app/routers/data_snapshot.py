@@ -56,9 +56,7 @@ def _read_latest_run_log() -> dict[str, Any] | None:
         return None
 
     lines = [
-        line.strip()
-        for line in run_log.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        line.strip() for line in run_log.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
     for idx in range(len(lines) - 1, -1, -1):
         try:
@@ -84,10 +82,7 @@ def _serialize_latest_db_run(db: Session) -> dict[str, Any] | None:
 
 def _require_file(path: Path) -> str | None:
     if ds is None:
-        return (
-            "pyarrow is not installed. "
-            "Install backend requirements to enable snapshot APIs."
-        )
+        return "pyarrow is not installed. Install backend requirements to enable snapshot APIs."
     if not path.exists():
         return f"Phase-1 artifact not available: {path}"
     return None

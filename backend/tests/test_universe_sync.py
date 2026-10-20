@@ -44,7 +44,9 @@ class _StubLoader:
                 _StubConstituent("RELIANCE", "Reliance Industries", "Energy", "INE002A01018"),
             ]
         else:
-            constituents = [_StubConstituent("SBIN", "State Bank of India", "Banks", "INE062A01020")]
+            constituents = [
+                _StubConstituent("SBIN", "State Bank of India", "Banks", "INE062A01020")
+            ]
         return _StubUniverse([item.symbol for item in constituents], constituents)
 
 
@@ -98,7 +100,11 @@ def test_sync_index_universes_populates_db_and_company_categories(
 
         sbin = session.query(Company).filter(Company.symbol == "SBIN").first()
         reliance = session.query(Company).filter(Company.symbol == "RELIANCE").first()
-        assert sbin is not None and sbin.broad_market == "NIFTY500" and sbin.sector_index == "NIFTYBANK"
+        assert (
+            sbin is not None
+            and sbin.broad_market == "NIFTY500"
+            and sbin.sector_index == "NIFTYBANK"
+        )
         assert reliance is not None and reliance.broad_market == "NIFTY500"
     finally:
         session.close()

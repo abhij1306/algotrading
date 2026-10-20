@@ -79,27 +79,17 @@ class TestStartupSequenceIntegrity:
             await asyncio.sleep(0)
 
         # Execute step 1 successfully
-        result1 = await sequence.execute_step(
-            StartupStep.SET_EVENT_LOOP,
-            step1,
-            required=True
-        )
+        result1 = await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step1, required=True)
         assert result1 is True
 
         # Execute step 2 which fails
         with pytest.raises(ValueError, match="Step 2 failed"):
             await sequence.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER,
-                step2_fails,
-                required=True
+                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
             )
 
         # Execute step 3 - should be skipped
-        result3 = await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE,
-            step3,
-            required=True
-        )
+        result3 = await sequence.execute_step(StartupStep.VALIDATE_DATABASE, step3, required=True)
         assert result3 is False
 
         # Verify execution log
@@ -137,26 +127,18 @@ class TestStartupSequenceIntegrity:
             await asyncio.sleep(0)
 
         # Execute step 1
-        await sequence.execute_step(
-            StartupStep.SET_EVENT_LOOP,
-            step1,
-            required=True
-        )
+        await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step1, required=True)
 
         # Execute step 2 (optional) which fails
         result2 = await sequence.execute_step(
             StartupStep.VALIDATE_FYERS_TOKEN,
             step2_fails,
-            required=False  # Optional step
+            required=False,  # Optional step
         )
         assert result2 is False
 
         # Execute step 3 - should still execute
-        result3 = await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE,
-            step3,
-            required=True
-        )
+        result3 = await sequence.execute_step(StartupStep.VALIDATE_DATABASE, step3, required=True)
         assert result3 is True
 
         # Verify all steps were attempted
@@ -183,11 +165,7 @@ class TestStartupSequenceIntegrity:
 
         # Execute failing step
         with pytest.raises(RuntimeError):
-            await sequence.execute_step(
-                StartupStep.VALIDATE_DATABASE,
-                failing_step,
-                required=True
-            )
+            await sequence.execute_step(StartupStep.VALIDATE_DATABASE, failing_step, required=True)
 
         # Verify failure was tracked
         assert sequence.failed_step == StartupStep.VALIDATE_DATABASE
@@ -258,16 +236,12 @@ class TestStartupSequenceIntegrity:
         # Execute first failing step
         with pytest.raises(ValueError, match="First failure"):
             await sequence.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER,
-                step2_fails,
-                required=True
+                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
             )
 
         # Try to execute second failing step (should be skipped)
         result = await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE,
-            step3_fails,
-            required=True
+            StartupStep.VALIDATE_DATABASE, step3_fails, required=True
         )
 
         # Verify first failure is tracked
@@ -288,7 +262,7 @@ class TestStartupSequenceIntegrity:
             "VALIDATE_DATABASE",
             "VALIDATE_FYERS_TOKEN",
             "LOAD_INDEX_UNIVERSE",
-            "CONNECT_LIVE_MARKET"
+            "CONNECT_LIVE_MARKET",
         ]
 
         enum_steps = [step.name for step in StartupStep]
@@ -324,9 +298,7 @@ class TestStartupSequenceIntegrity:
 
         with pytest.raises(ValueError):
             await sequence2.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER,
-                step2_fails,
-                required=True
+                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
             )
 
         sequence2.log_summary()  # Should log failure

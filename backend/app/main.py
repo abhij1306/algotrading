@@ -140,7 +140,9 @@ async def _step_validate_fyers_token(app: FastAPI) -> None:
     if app.state.fyers_token_valid:
         logger.info("[OK] Fyers token validated")
     else:
-        logger.warning("[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode.")
+        logger.warning(
+            "[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode."
+        )
 
 
 async def _step_load_index_universe() -> None:

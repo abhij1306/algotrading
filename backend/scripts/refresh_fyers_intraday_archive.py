@@ -99,15 +99,32 @@ def fetch_history(
 
 def candles_to_frame(symbol: str, fyers_symbol: str, candles: list[list[Any]]) -> pd.DataFrame:
     if not candles:
-        return pd.DataFrame(columns=["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "fyers_symbol",
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
+        )
     frame = pd.DataFrame(candles, columns=["epoch", "open", "high", "low", "close", "volume"])
     frame["timestamp"] = (
-        pd.to_datetime(frame["epoch"], unit="s", utc=True).dt.tz_convert(IST_TIMEZONE).dt.tz_localize(None)
+        pd.to_datetime(frame["epoch"], unit="s", utc=True)
+        .dt.tz_convert(IST_TIMEZONE)
+        .dt.tz_localize(None)
     )
     frame["symbol"] = symbol
     frame["fyers_symbol"] = fyers_symbol
     frame = frame[["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"]]
-    return frame.drop_duplicates(subset=["symbol", "timestamp"]).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    return (
+        frame.drop_duplicates(subset=["symbol", "timestamp"])
+        .sort_values(["timestamp", "symbol"])
+        .reset_index(drop=True)
+    )
 
 
 def main() -> int:
@@ -131,7 +148,13 @@ def main() -> int:
     }
     if args.dry_run:
         for year, range_from, range_to in windows:
-            summary["windows"].append({"year": year, "range_from": range_from.isoformat(), "range_to": range_to.isoformat()})
+            summary["windows"].append(
+                {
+                    "year": year,
+                    "range_from": range_from.isoformat(),
+                    "range_to": range_to.isoformat(),
+                }
+            )
         print(json.dumps(summary, indent=2))
         return 0
 
@@ -173,8 +196,21 @@ def main() -> int:
             if idx % 100 == 0:
                 print(f"[fyers-intraday-archive] year={year} processed {idx}/{len(symbols)}")
 
-        combined = pd.concat(year_parts, ignore_index=True) if year_parts else pd.DataFrame(
-            columns=["symbol", "fyers_symbol", "timestamp", "open", "high", "low", "close", "volume"]
+        combined = (
+            pd.concat(year_parts, ignore_index=True)
+            if year_parts
+            else pd.DataFrame(
+                columns=[
+                    "symbol",
+                    "fyers_symbol",
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
         )
         if not combined.empty:
             combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")

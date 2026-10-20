@@ -170,7 +170,9 @@ def _apply_screener_sort(
     if sort_expr is None:
         raise HTTPException(status_code=400, detail=f"Invalid sort field: {normalized_sort}")
     primary_order = desc(sort_expr) if descending else sort_expr
-    secondary_order = desc(Company.symbol) if descending and normalized_sort == "symbol" else Company.symbol.asc()
+    secondary_order = (
+        desc(Company.symbol) if descending and normalized_sort == "symbol" else Company.symbol.asc()
+    )
     return companies_query.order_by(None).order_by(primary_order, secondary_order)
 
 
@@ -185,7 +187,10 @@ def _hydrate_quotes(symbols: list[str], full: bool) -> dict[str, dict[str, Any]]
 
 
 def _serialize_screener_row(
-    company: Company, hist: HistoricalPrice, previous_close: float | None, quote: dict[str, Any] | None
+    company: Company,
+    hist: HistoricalPrice,
+    previous_close: float | None,
+    quote: dict[str, Any] | None,
 ) -> dict[str, Any]:
     price = float(hist.close or 0)
     volume = int(hist.volume or 0)
@@ -281,7 +286,11 @@ def _load_screener_payload(
         }
 
     companies_query = _apply_screener_sort(companies_query, normalized_order, normalized_sort)
-    rows = companies_query.all() if full else companies_query.offset((page - 1) * limit).limit(limit).all()
+    rows = (
+        companies_query.all()
+        if full
+        else companies_query.offset((page - 1) * limit).limit(limit).all()
+    )
     live_quotes = _hydrate_quotes([company.symbol for company, _, _ in rows], full)
     return {
         "results": [
