@@ -27,7 +27,6 @@ a = Analysis(
     datas=datas,
     hiddenimports=[
         'app.brokers.plugins.fyers',
-        'app.brokers.plugins.backtest',
         'sqlalchemy.ext.baked',
         'psycopg2',
         'app.database',
