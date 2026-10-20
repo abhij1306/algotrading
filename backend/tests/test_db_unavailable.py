@@ -30,7 +30,7 @@ from app.utils.logger import DatabaseUnavailableLogFilter
 
 SECRET = "hunter2-secret"
 DOWN_BODY = {"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}
-DOWN_DB_URL = f"postgresql://postgres:{SECRET}@db.invalid:5432/algotrading"
+DOWN_DB_URL = f"postgresql+psycopg2://postgres:{SECRET}@db.invalid:5432/algotrading"
 
 
 def _refuse_connection() -> NoReturn:
