@@ -112,6 +112,24 @@ Runtime behavior:
 - Subscriptions are aggregate-delta managed across clients
 - Use `GET /api/websocket/status` as the first operational check for provider connection,
   client counts, queue pressure, and local runtime metrics.
+- `WS /api/websocket/stream` checks the `Origin` header before `accept()` with the rule CORS
+  also uses (`app/utils/origins.py`): `config.ALLOWED_ORIGINS` (`CORS_ORIGINS`) plus any
+  `http://localhost`, `http://127.0.0.1` or `http://[::1]` origin on any port, so a frontend
+  moved off 3000 still works. Anything else, including `null` and look-alikes such as
+  `localhost.evil.com`, is refused (close code 1008 on the stream). A missing `Origin` is allowed:
+  browsers always send one, so only non-browser clients (scripts, tests) omit it.
+
+## Sync, Async and Local-Only Rules
+
+- **Sync vs async routes.** Blocking work (SDK calls, DB via the sync session, file IO) goes
+  in `def` routes, which FastAPI runs in its threadpool, or behind
+  `run_in_threadpool`/`asyncio.to_thread`. Never block in `async def`.
+- **SDK callbacks** arrive on SDK threads. Hand work to the event loop with
+  `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`.
+- **Single-user localhost.** There is no API auth (decided; see "Out of scope" in
+  `docs/plans/architecture/STATUS.md`). The server binds to `127.0.0.1`. The trading safety
+  rules still apply: idempotency, risk checks, fail closed, PAPER never touches the broker,
+  and no broker or DB error text in responses.
 
 ## Backbone Service Conventions
 

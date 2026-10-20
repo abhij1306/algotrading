@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from ..services.deferred_startup import startup_status
 from ..services.symbol_master import symbol_master
 from ..utils.errors import handle_api_error
+from ..utils.logger import log_warning_throttled, safe_log_value
+from ..utils.origins import is_frontend_origin
 from ..utils.ws_manager import manager
 
 if TYPE_CHECKING:
@@ -23,6 +25,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Close code for a handshake refused on policy grounds (RFC 6455 section 7.4.1).
+WS_POLICY_VIOLATION = 1008
 
 
 class SubscribeRequest(BaseModel):
@@ -97,6 +102,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     from ..services.live_market_service import live_market
 
+    origin = websocket.headers.get("origin")
+    if not _stream_origin_allowed(origin):
+        log_warning_throttled(
+            logger,
+            "websocket.stream_origin_rejected",
+            "Rejected /stream connection from disallowed Origin %s",
+            safe_log_value(origin),
+        )
+        # Closing before accept() refuses the handshake; the origin is not echoed back.
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
+
     # Attempt to accept and handshake — may fail if client disconnects early
     connected = await manager.connect(websocket)
     if not connected:
@@ -118,6 +135,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # manager.disconnect drops this client from the registry and releases the symbols
         # no other owner holds via on_symbols_released.
         await manager.disconnect(websocket)
+
+
+def _stream_origin_allowed(origin: str | None) -> bool:
+    """Whether a /stream handshake with this Origin header may proceed.
+
+    Browsers always send Origin on a WebSocket handshake, so a page on another site can't
+    open the stream (cross-site WebSocket hijacking): its origin must pass the frontend
+    rule shared with CORS (utils/origins.py). A missing Origin header is allowed: it comes
+    from non-browser clients such as scripts and tests, which a malicious page can't
+    impersonate.
+    """
+    return origin is None or is_frontend_origin(origin)
 
 
 async def _handle_stream_text(

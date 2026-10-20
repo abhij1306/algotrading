@@ -3,14 +3,12 @@ SmartTrader 3.0 API - FastAPI Application
 """
 
 import asyncio
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -28,6 +26,7 @@ load_dotenv()
 
 # Import routers - these may have heavy dependencies
 # E402 is suppressed below: routers read config at import, so load_dotenv() must run first.
+from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
 from .routers import (  # noqa: E402
     activity,
@@ -48,6 +47,7 @@ from .routers import (  # noqa: E402
     upload,
     websocket,
 )
+from .utils.origins import FrontendCORSMiddleware  # noqa: E402
 
 
 def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
@@ -387,16 +387,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
 
-# CORS
-# Allow frontend origins from environment variable or default to localhost
-allowed_origins = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
-).split(",")
-
+# CORS: the configured origins plus any http loopback origin (utils/origins.py), the same
+# rule as the Origin check on WS /stream.
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
+    FrontendCORSMiddleware,
+    allow_origins=list(config.ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
