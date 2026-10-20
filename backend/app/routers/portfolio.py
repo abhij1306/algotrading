@@ -80,30 +80,46 @@ def get_portfolio_funds(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
         if fyers and fyers.fyers:
             funds_data = fyers.fyers.funds()
             if isinstance(funds_data, dict):
-                available = float(funds_data.get("available", 0) or 0)
-                used = float(funds_data.get("used", 0) or 0)
-                total = float(funds_data.get("total", 0) or (available + used))
-
-                # Handle complex fund_limit structure
-                fund_limit = funds_data.get("fund_limit", [])
-                if isinstance(fund_limit, list):
-                    for f in fund_limit:
-                        if f.get("title") == "Total Balance":
-                            total = float(f.get("equityAmount", 0))
-                        if f.get("title") == "Available Balance":
-                            available = float(f.get("equityAmount", 0))
-                        if f.get("title") == "Utilized Amount":
-                            used = float(f.get("equityAmount", 0))
-
-                return {
-                    "available": available,
-                    "used": used,
-                    "total": total,
-                    "buyingPower": available,
-                }
+                return _funds_summary(funds_data)
 
         # Fallback: return zeros if broker not available
-        return {"available": 0, "used": 0, "total": 0, "buyingPower": 0}
+        return dict(ZERO_FUNDS)
     except Exception:
         # Return zeros on error
-        return {"available": 0, "used": 0, "total": 0, "buyingPower": 0}
+        return dict(ZERO_FUNDS)
+
+
+ZERO_FUNDS = {"available": 0, "used": 0, "total": 0, "buyingPower": 0}
+# Fyers fund_limit titles and the summary field each one sets.
+FUND_LIMIT_FIELDS = {
+    "Total Balance": "total",
+    "Available Balance": "available",
+    "Utilized Amount": "used",
+}
+
+
+def _funds_summary(funds_data: dict[str, Any]) -> dict[str, float]:
+    """available/used/total/buyingPower from a Fyers funds reply."""
+    available = float(funds_data.get("available", 0) or 0)
+    used = float(funds_data.get("used", 0) or 0)
+    summary = {
+        "available": available,
+        "used": used,
+        "total": float(funds_data.get("total", 0) or (available + used)),
+    }
+
+    # Handle complex fund_limit structure
+    fund_limit = funds_data.get("fund_limit", [])
+    if isinstance(fund_limit, list):
+        for f in fund_limit:
+            title = f.get("title")
+            field = FUND_LIMIT_FIELDS.get(title) if isinstance(title, str) else None
+            if field:
+                summary[field] = float(f.get("equityAmount", 0))
+
+    return {
+        "available": summary["available"],
+        "used": summary["used"],
+        "total": summary["total"],
+        "buyingPower": summary["available"],
+    }
