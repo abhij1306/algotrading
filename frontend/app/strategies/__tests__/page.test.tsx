@@ -49,7 +49,7 @@ const RESPONSES: Record<string, unknown> = {
 
 type Call = { method: string; path: string; search: string };
 
-function stubBackend(overrides: Record<string, () => Response> = {}) {
+function stubBackend(overrides: Record<string, () => Response | Promise<Response>> = {}) {
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
@@ -138,6 +138,33 @@ describe("strategies page", { timeout: 15_000 }, () => {
     await waitFor(() =>
       expect(calls.slice(queuedAt).map((call) => call.path)).toContain("/api/strategies/status"),
     );
+  });
+
+  it("sends one close request when Close Now is clicked twice", async () => {
+    let releaseClose: () => void = () => {};
+    const closeReply = new Promise<Response>((resolve) => {
+      releaseClose = () => resolve(Response.json({ status: "ok", position_id: 3 }));
+    });
+    const calls = stubBackend({
+      "/api/strategies/positions": () =>
+        Response.json({
+          positions: [{ id: 3, symbol: "TCS", entry_price: 3890, stop_price: 3700, ltp: 3950 }],
+        }),
+      "/api/strategies/positions/3/close": () => closeReply,
+    });
+    renderStrategies();
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Positions 1" }), { button: 0 });
+    const close = await screen.findByRole("button", { name: "Close Now" });
+    fireEvent.click(close);
+    await waitFor(() => expect(close).toBeDisabled());
+    fireEvent.click(close);
+    releaseClose();
+
+    await waitFor(() => expect(close).not.toBeDisabled());
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/api/strategies/positions/3/close",
+    ]);
   });
 
   it("shows the broker outage message when halting fails", async () => {

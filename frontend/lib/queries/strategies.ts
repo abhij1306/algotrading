@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { api, parseResponse, unwrap } from "@/lib/api/client";
 import { queryKeys } from "./keys";
@@ -171,7 +171,6 @@ export function useStrategySignal(symbol: string | null) {
         ),
       ),
     enabled: symbol !== null,
-    placeholderData: keepPreviousData,
     retry: false,
   });
 }
@@ -191,7 +190,11 @@ export function useRunStrategyScan() {
   });
 }
 
-/** Halts (or resumes) trading and writes the returned status into every cached workspace. */
+/**
+ * Halts (or resumes) trading. The halt flag is global, so it is written into every cached
+ * workspace at once; the rest of the returned status is for the default universe only, so
+ * the workspaces are refetched for their own counts.
+ */
 export function useToggleStrategyHalt() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -202,11 +205,13 @@ export function useToggleStrategyHalt() {
           : api.POST("/api/strategies/resume");
       return parseResponse(strategyStatusSchema, await unwrap(request));
     },
-    onSuccess: (status) => {
+    onSuccess: ({ halted, halt_reason, halted_at }) => {
       queryClient.setQueriesData<StrategiesWorkspace>(
         { queryKey: queryKeys.strategies.workspaceRoot() },
-        (prev) => (prev ? { ...prev, status } : prev),
+        (prev) =>
+          prev ? { ...prev, status: { ...prev.status, halted, halt_reason, halted_at } } : prev,
       );
+      return queryClient.invalidateQueries({ queryKey: queryKeys.strategies.workspaceRoot() });
     },
   });
 }

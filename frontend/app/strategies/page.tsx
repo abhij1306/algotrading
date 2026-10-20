@@ -393,6 +393,7 @@ export default function StrategiesPage() {
                   rows={formingRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
+                  busy={busy}
                   selectedSymbol={signalSymbol}
                 />
               </TabsContent>
@@ -402,12 +403,13 @@ export default function StrategiesPage() {
                   rows={breakoutRows}
                   onSelect={onSelectSymbol}
                   onQueueToggle={onQueueToggle}
+                  busy={busy}
                   selectedSymbol={signalSymbol}
                 />
               </TabsContent>
 
               <TabsContent value="positions" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                <PositionTable rows={positions} onClose={onClosePosition} />
+                <PositionTable rows={positions} onClose={onClosePosition} busy={busy} />
               </TabsContent>
 
               <TabsContent value="backtest" className="min-h-0 flex-1 overflow-auto px-4 pb-4">
@@ -505,11 +507,14 @@ function SignalTable({
   selectedSymbol,
   onSelect,
   onQueueToggle,
+  busy,
 }: Readonly<{
   rows: ScanRow[];
   selectedSymbol: string | null;
   onSelect: (symbol: string) => void;
   onQueueToggle: (row: ScanRow) => void;
+  /** A strategy action is in flight; queue toggles wait for it. */
+  busy: boolean;
 }>) {
   return (
     <Table>
@@ -557,6 +562,7 @@ function SignalTable({
                 <Button
                   size="sm"
                   variant={row.signal_status === "PENDING_ENTRY" ? "secondary" : "primary"}
+                  disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
                     onQueueToggle(row);
@@ -585,9 +591,12 @@ function SignalTable({
 function PositionTable({
   rows,
   onClose,
+  busy,
 }: Readonly<{
   rows: PositionRow[];
   onClose: (positionId: number) => void;
+  /** A strategy action is in flight; closing twice would overwrite the recorded P&L. */
+  busy: boolean;
 }>) {
   return (
     <Table>
@@ -619,7 +628,7 @@ function PositionTable({
             <TableCell>{row.r_multiple?.toFixed(2) ?? "--"}</TableCell>
             <TableCell>{row.status}</TableCell>
             <TableCell>
-              <Button size="sm" variant="secondary" onClick={() => onClose(row.id)}>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onClose(row.id)}>
                 Close Now
               </Button>
             </TableCell>
