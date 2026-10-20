@@ -25,6 +25,7 @@ import pandas as pd
 
 from ..database import get_db_session
 from ..models.backtest import BacktestRun
+from . import backtest_metrics as bt_metrics
 from .history_service import daily_history_service
 from ..utils.helpers import safe_float
 
@@ -200,19 +201,11 @@ class Phase1BacktestService:
         initial_capital: float,
     ) -> dict[str, Any]:
         final_equity = float(equity.iloc[-1]) if len(equity) else initial_capital
-        total_return = (final_equity / initial_capital) - 1.0 if initial_capital > 0 else 0.0
-
-        ret_std = float(portfolio_ret.std(ddof=0))
-        sharpe = 0.0
-        if ret_std > 0:
-            sharpe = float((portfolio_ret.mean() / ret_std) * np.sqrt(252))
-
-        max_dd = float(drawdown.min()) if len(drawdown) else 0.0
-
-        trade_returns = [t["return_pct"] / 100.0 for t in trades]
-        wins = len([x for x in trade_returns if x > 0])
-        losses = len([x for x in trade_returns if x <= 0])
-        win_rate = (wins / len(trade_returns)) if trade_returns else 0.0
+        total_return = bt_metrics.total_return(final_equity, initial_capital)
+        sharpe = bt_metrics.sharpe_mean_std(portfolio_ret)
+        max_dd = bt_metrics.max_drawdown(drawdown)
+        stats = bt_metrics.trade_stats([t["return_pct"] / 100.0 for t in trades])
+        wins, losses, win_rate = stats.wins, stats.losses, stats.win_rate
 
         return {
             "initial_capital": round(initial_capital, 2),
@@ -501,7 +494,7 @@ class Phase1BacktestService:
             benchmark_equity = initial_capital * (1.0 + benchmark_ret).cumprod()
 
         equity = initial_capital * (1.0 + portfolio_ret).cumprod()
-        drawdown = (equity / equity.cummax()) - 1.0
+        drawdown = bt_metrics.drawdown_series(equity)
 
         metrics = self._compute_metrics(
             equity, portfolio_ret, drawdown, combined_trades, initial_capital
