@@ -4,7 +4,9 @@ SmartTrader 3.0 API - FastAPI Application
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +23,9 @@ logger = get_logger("main")
 load_dotenv()
 
 # Import routers - these may have heavy dependencies
-from .exceptions import SmartTraderException
-from .routers import (
+# E402 is suppressed below: routers read config at import, so load_dotenv() must run first.
+from .exceptions import SmartTraderException  # noqa: E402
+from .routers import (  # noqa: E402
     activity,
     auth,
     backtest,
@@ -152,7 +155,8 @@ async def _step_load_index_universe() -> None:
         logger.info("[OK] Index universe data path available; loading deferred until first use")
     else:
         logger.warning(
-            "[WARN] Index universe data path missing; universe features will degrade until data is provided"
+            "[WARN] Index universe data path missing; "
+            "universe features will degrade until data is provided"
         )
     await asyncio.sleep(0)
 
@@ -180,7 +184,7 @@ async def _step_connect_live_market(app: FastAPI) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     Application lifespan manager with structured startup sequence.
 
@@ -253,12 +257,14 @@ app = FastAPI(
 
 # Exception handlers
 @app.exception_handler(SmartTraderException)
-async def smarttrader_exception_handler(request: Request, exc: SmartTraderException):
+async def smarttrader_exception_handler(
+    request: Request, exc: SmartTraderException
+) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error(f"Unhandled: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500, content={"error": {"code": "INTERNAL_ERROR", "message": "Server error"}}
@@ -302,11 +308,11 @@ app.include_router(strategies.router)
 logger.info("[OK] All routers registered")
 
 
-@app.get("/")
-def read_root():
+@app.get("/", response_model=None)
+def read_root() -> dict[str, Any]:
     return {"status": "ok", "message": "SmartTrader 3.0 API Running", "version": "3.0.0"}
 
 
-@app.get("/ping")
-def ping():
+@app.get("/ping", response_model=None)
+def ping() -> dict[str, Any]:
     return {"ok": True, "message": "Backend is alive"}

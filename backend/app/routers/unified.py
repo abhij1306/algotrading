@@ -4,7 +4,7 @@ Unified Trading API
 Central API for unified trading operations.
 """
 
-from typing import Any
+from typing import Any, Never
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -32,14 +32,14 @@ class ClosePositionRequest(BaseModel):
     trade_id: str
 
 
-@router.get("/health")
-async def health_check():
+@router.get("/health", response_model=None)
+async def health_check() -> dict[str, Any]:
     """Health check endpoint"""
     return {"status": "ok", "message": "Smart Trader API is available."}
 
 
-@router.get("/status")
-async def get_status():
+@router.get("/status", response_model=None)
+async def get_status() -> dict[str, Any]:
     """Get current trading mode and status"""
     from ..services.fyers_client import get_fyers_client
 
@@ -53,8 +53,8 @@ async def get_status():
     }
 
 
-@router.get("/positions")
-async def get_positions():
+@router.get("/positions", response_model=None)
+async def get_positions() -> dict[str, Any]:
     """Get current open positions from broker"""
     from ..services.fyers_client import get_fyers_client
 
@@ -74,8 +74,8 @@ async def get_positions():
         return {"positions": [], "error": str(e)}
 
 
-@router.get("/pnl")
-async def get_total_pnl():
+@router.get("/pnl", response_model=None)
+async def get_total_pnl() -> dict[str, Any]:
     """Get total realized and unrealized PnL"""
     from ..services.fyers_client import get_fyers_client
 
@@ -95,22 +95,22 @@ async def get_total_pnl():
         return {"total_pnl": 0.0}
 
 
-@router.post("/order")
-async def place_order(request: StandardOrderRequest):
+@router.post("/order", response_model=None)
+async def place_order(request: StandardOrderRequest) -> Never:
     """Place a unified order"""
     raise HTTPException(
         status_code=503, detail="Order placement is currently disabled in this version."
     )
 
 
-@router.post("/close-position")
-async def close_position(request: ClosePositionRequest):
+@router.post("/close-position", response_model=None)
+async def close_position(request: ClosePositionRequest) -> dict[str, Any]:
     """Close a specific position"""
     return {"status": "success", "message": f"Close request for {request.trade_id} received"}
 
 
-@router.post("/mode")
-async def toggle_mode(request: ModeToggleRequest):
+@router.post("/mode", response_model=None)
+async def toggle_mode(request: ModeToggleRequest) -> dict[str, Any]:
     """Toggle between PAPER and LIVE mode"""
     return {
         "previous_mode": "PAPER",

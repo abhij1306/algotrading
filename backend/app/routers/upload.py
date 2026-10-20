@@ -4,10 +4,11 @@ Bhavcopy Upload Router
 API endpoint to upload and process bhavcopy CSV files.
 """
 
-import logging
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -22,8 +23,8 @@ UPLOAD_DIR = Path(__file__).parent.parent.parent / "data_system" / "01_sources" 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-@router.post("/upload/bhavcopy")
-async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE):
+@router.post("/upload/bhavcopy", response_model=None)
+async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE) -> dict[str, Any]:
     """
     Upload a bhavcopy CSV file and process it.
 
@@ -72,11 +73,11 @@ async def upload_bhavcopy(file: UploadFile = BHAVCOPY_FILE):
         raise
     except Exception as e:
         logger.error(f"Error uploading bhavcopy: {e}", exc_info=True)
-        raise handle_api_error(e, "Failed to process bhavcopy file")
+        raise handle_api_error(e, "Failed to process bhavcopy file") from e
 
 
-@router.get("/upload/status")
-def get_upload_status():
+@router.get("/upload/status", response_model=None)
+def get_upload_status() -> dict[str, Any]:
     """Get list of uploaded bhavcopy files."""
     try:
         files = []

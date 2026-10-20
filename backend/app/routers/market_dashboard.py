@@ -1,6 +1,7 @@
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import or_
@@ -24,8 +25,8 @@ _top_gainers_cache_lock = threading.Lock()
 _top_gainers_cache: dict[tuple[int, str], tuple[float, dict]] = {}
 
 
-@router.get("/overview")
-def get_market_overview():
+@router.get("/overview", response_model=None)
+def get_market_overview() -> dict[str, Any]:
     """
     Returns a comprehensive market overview including:
     - Global Indices (US, India, etc.)
@@ -47,10 +48,10 @@ def get_market_overview():
             "indices": indices,
             "sentiment": sentiment,
             "condition": condition,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
     except Exception as e:
-        payload = {"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
+        payload = {"error": str(e), "timestamp": datetime.now(UTC).isoformat()}
 
     with _overview_cache_lock:
         _overview_cache_ts = now
@@ -58,24 +59,24 @@ def get_market_overview():
     return payload
 
 
-@router.get("/sentiment")
-def get_market_sentiment_endpoint(db: Session = DB_DEPENDENCY):
+@router.get("/sentiment", response_model=None)
+def get_market_sentiment_endpoint(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Legacy/Specific sentiment endpoint if needed, or mapped to new service.
     """
     return MarketDataService.get_market_sentiment()
 
 
-@router.get("/indices")
-def get_index_performance():
+@router.get("/indices", response_model=None)
+def get_index_performance() -> list[dict[str, Any]]:
     """
     Legacy/Specific indices endpoint.
     """
     return MarketDataService.get_global_indices()
 
 
-@router.get("/market-overview")
-async def get_market_overview_v2(db: Session = DB_DEPENDENCY):
+@router.get("/market-overview", response_model=None)
+async def get_market_overview_v2(db: Session = DB_DEPENDENCY) -> dict[str, Any]:
     """
     Get market overview with live/delayed data
     During market hours: Live data from Fyers
@@ -133,12 +134,12 @@ async def get_market_overview_v2(db: Session = DB_DEPENDENCY):
     return data
 
 
-@router.get("/top-gainers")
+@router.get("/top-gainers", response_model=None)
 def get_top_gainers(
     limit: int = 10,
     index: str = "NIFTY50",
     db: Session = DB_DEPENDENCY,
-):
+) -> dict[str, Any]:
     """Get top gainers with live/delayed data"""
     cache_key = (limit, index)
     now = time.time()

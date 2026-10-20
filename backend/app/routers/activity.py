@@ -5,6 +5,7 @@ API endpoints for recent activity and history.
 """
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -15,8 +16,8 @@ router = APIRouter(prefix="/api/activity")
 DB_DEPENDENCY = Depends(get_db)
 
 
-@router.get("/recent")
-def get_recent_activity(db: Session = DB_DEPENDENCY):
+@router.get("/recent", response_model=None)
+def get_recent_activity(db: Session = DB_DEPENDENCY) -> list[dict[str, Any]]:
     """
     Get recent trading activity (orders, trades, dividends).
     """
