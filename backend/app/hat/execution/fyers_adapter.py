@@ -90,13 +90,24 @@ _FYERS_STATUS = {1: "cancelled", 2: "filled", 4: "placed", 5: "rejected", 6: "pl
 _WORKING = {4, 6}
 
 
+def _whole_number(value: object) -> int | None:
+    """`value` as an int when it is an int, an integral float or a digit string; else None
+    (never a truncated fraction, never a bool)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value)
+    return None
+
+
 def map_fyers_status(code: object, filled_qty: object = 0, qty: object = 0) -> str:
     """A Fyers orderbook status as one of `hat_order.status`. Total: every input maps."""
-    try:
-        status = int(code)  # type: ignore[call-overload]
-    except (TypeError, ValueError, OverflowError):
-        return "unconfirmed"
-    if isinstance(code, bool):
+    status = _whole_number(code)
+    if status is None:
         return "unconfirmed"
     mapped = _FYERS_STATUS.get(status, "unconfirmed")
     if status in _WORKING:

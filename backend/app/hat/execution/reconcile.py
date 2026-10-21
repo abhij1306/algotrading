@@ -98,14 +98,22 @@ def find_mismatches(
     positions = [p for p in hat_positions if p.qty_open > 0]
     held = {p.symbol for p in positions}
     touched = held | hat_symbols | {o.symbol for o in ht_orders}
+    # The broker holds one quantity per symbol for the whole account: compare it with the sum of
+    # every bot's open quantity, and when several bots share the symbol and the sums differ the
+    # bot cannot be told (the account is blocked).
+    by_symbol: dict[str, list[HatPositionView]] = defaultdict(list)
     for position in positions:
-        quantity = broker_qty.get(position.symbol, 0)
+        by_symbol[position.symbol].append(position)
+    for symbol, views in by_symbol.items():
+        quantity = broker_qty.get(symbol, 0)
+        bot_ids = {view.bot_id for view in views}
+        sole_bot = next(iter(bot_ids)) if len(bot_ids) == 1 else None
         if quantity <= 0:
-            mismatches.append(
-                Mismatch(POSITION_MISSING_AT_BROKER, position.symbol, position.bot_id)
+            mismatches.extend(
+                Mismatch(POSITION_MISSING_AT_BROKER, symbol, b) for b in sorted(bot_ids, key=str)
             )
-        elif quantity != position.qty_open:
-            mismatches.append(Mismatch(QUANTITY_DIFFERENCE, position.symbol, position.bot_id))
+        elif quantity != sum(view.qty_open for view in views):
+            mismatches.append(Mismatch(QUANTITY_DIFFERENCE, symbol, sole_bot))
     mismatches.extend(
         Mismatch(POSITION_WITHOUT_HAT_ROW, symbol, None)
         for symbol, quantity in sorted(broker_qty.items())

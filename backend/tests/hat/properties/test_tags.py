@@ -753,6 +753,76 @@ def test_a_pending_gtt_is_not_retried_after_a_lost_answer() -> None:
     assert env.fake.calls_named("place_gtt")[0]["price"] == 99.0
 
 
+def _send_gtt(env, tag: str, tick_size: Decimal | None = None):  # noqa: ANN001, ANN202
+    return send_order(
+        env.session,
+        env.broker,
+        env.guard,
+        tag,
+        symbol="SBIN",
+        bot_id=env.bot_id,
+        tick_size=tick_size,
+    )
+
+
+def test_a_gtt_refused_before_the_call_can_be_sent_later() -> None:
+    """A GTT that was never sent (no tick, an unavailable broker) leaves no attempt marker, so
+    the next call places it instead of treating it as unresolved."""
+    from app.hat.models import HatOrder
+
+    env = exec_env()
+    live_session(env)
+    tag = reserve_order(env.session, env.request(uuid7(), "stop_gtt", trigger_price=Decimal("100")))
+    with pytest.raises(OrderRefusedError):
+        _send_gtt(env, tag)  # no tick size
+    env.fake.script("place_gtt", rejected(BROKER_CIRCUIT_OPEN))
+    with pytest.raises(BrokerUnavailableError):
+        _send_gtt(env, tag, tick_size=Decimal("0.05"))
+    assert env.session.query(HatOrder).one().placed_at is None
+    out = _send_gtt(env, tag, tick_size=Decimal("0.05"))
+    assert out.status == "placed"
+    assert env.fake.count("place_gtt") == 2
+
+
+@given(st.floats(allow_nan=False, allow_infinity=False).filter(lambda x: not x.is_integer()))
+def test_a_fractional_status_code_is_unconfirmed(code: float) -> None:
+    """A malformed code such as 2.7 is never truncated to a real status."""
+    assert map_fyers_status(code, 0, 0) == "unconfirmed"
+
+
+@given(st.dictionaries(st.sampled_from(["s", "message", "code"]), st.text(max_size=5), max_size=3))
+def test_a_gtt_reply_that_is_not_an_explicit_answer_is_unconfirmed(reply: dict) -> None:
+    """Only `ok` with an id is placed and only an explicit `error` is rejected; any other
+    dictionary may have landed."""
+    result = adapter_over(RecordingSdk(reply=reply)).place_gtt_stop(
+        GttRequest("SBIN", 1, Decimal("100"), Decimal("99"))
+    )
+    expected = "rejected" if reply.get("s") == "error" else "unconfirmed"
+    assert result.status == expected
+
+
+def test_several_bots_on_one_symbol_reconcile_against_their_sum() -> None:
+    import uuid as _uuid
+
+    from app.hat.execution.reconcile import HatPositionView
+
+    bot_a, bot_b = _uuid.uuid4(), _uuid.uuid4()
+    views = [HatPositionView(bot_a, "SBIN", 5), HatPositionView(bot_b, "SBIN", 5)]
+
+    def run(quantity: int) -> list[Mismatch]:
+        return find_mismatches(
+            broker_orders=[],
+            broker_qty={"SBIN": quantity},
+            hat_tags=set(),
+            hat_positions=views,
+            hat_symbols=set(),
+        )
+
+    assert run(10) == []
+    assert [(m.kind, m.bot_id) for m in run(12)] == [("quantity_difference", None)]
+    assert {m.bot_id for m in run(0)} == {bot_a, bot_b}
+
+
 def test_the_purposes_match_the_database_domain() -> None:
     assert set(PURPOSE_LETTERS) == set(ORDER_PURPOSES)
     assert datetime.now(UTC)  # keep the import honest for type checkers

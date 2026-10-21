@@ -248,33 +248,39 @@ def _lookup_before_retry(
     return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
 
 
-def _call_broker(
-    broker: HatBroker, row: HatOrder, tag: str, symbol: str, tick_size: Decimal | None
-) -> tuple[str, str | None, str]:
-    """Place the order or the GTT; return (status, broker id, code)."""
+def _build_request(
+    row: HatOrder, tag: str, symbol: str, tick_size: Decimal | None
+) -> GttRequest | OrderIntent:
+    """The broker request for the row. Raises before anything is stamped or sent when a GTT
+    lacks its trigger or tick, or has no valid limit price."""
     if row.purpose == GTT_PURPOSE:
         if tick_size is None or row.trigger_price is None:
             raise OrderRefusedError("gtt_needs_trigger_and_tick")
-        result = broker.place_gtt_stop(
-            GttRequest(
-                symbol=symbol,
-                qty=row.qty,
-                trigger_price=row.trigger_price,
-                limit_price=gtt_limit_price(row.trigger_price, tick_size),
-            )
-        )
-        return result.status, result.gtt_id, result.code
-    outcome = broker.place_order(
-        OrderIntent(
+        return GttRequest(
             symbol=symbol,
-            side=Side(row.side),
             qty=row.qty,
-            order_type=OrderType(row.order_type),
-            tag=tag,
-            price=row.price,
             trigger_price=row.trigger_price,
+            limit_price=gtt_limit_price(row.trigger_price, tick_size),
         )
+    return OrderIntent(
+        symbol=symbol,
+        side=Side(row.side),
+        qty=row.qty,
+        order_type=OrderType(row.order_type),
+        tag=tag,
+        price=row.price,
+        trigger_price=row.trigger_price,
     )
+
+
+def _call_broker(
+    broker: HatBroker, request: GttRequest | OrderIntent
+) -> tuple[str, str | None, str]:
+    """Place the order or the GTT; return (status, broker id, code)."""
+    if isinstance(request, GttRequest):
+        result = broker.place_gtt_stop(request)
+        return result.status, result.gtt_id, result.code
+    outcome = broker.place_order(request)
     return outcome.status, outcome.broker_order_id, outcome.code
 
 
@@ -299,16 +305,22 @@ def send_order(
         if adopted is not None:
             return adopted
         # The lookup returned absent: the same tag may be placed again.
+    request = _build_request(row, tag, symbol, tick_size)  # may refuse: nothing stamped yet
+    earlier_attempt = row.placed_at
     row.placed_at = utc_now()
     session.commit()  # the attempt is stamped before the call, so a crash is seen as unknown
     # A reconciliation or restart since the first check may have closed the gate: read it again.
     refusal = guard.refusal(bot_id, row.broker_account_id, is_entry=row.purpose == ENTRY)
     if refusal is not None:
+        row.placed_at = earlier_attempt  # nothing was sent
+        session.commit()
         raise OrderRefusedError(refusal)
 
-    status, broker_id, code = _call_broker(broker, row, tag, symbol, tick_size)
+    status, broker_id, code = _call_broker(broker, request)
     if status == "rejected" and code == CODE_UNAVAILABLE:
-        # Nothing was sent (circuit open, no client): not a rejection, so it burns no retry.
+        # Nothing was sent (circuit open, no client): not a rejection, so it burns no retry and
+        # leaves no attempt marker (a GTT with one could not be sent again).
+        row.placed_at = earlier_attempt
         session.commit()
         raise BrokerUnavailableError(code)
     if status == "placed":

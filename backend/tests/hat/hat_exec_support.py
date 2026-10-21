@@ -93,8 +93,10 @@ class SdkBackedBroker(FyersBroker):
 
 
 def reset_circuit() -> None:
-    """The breaker is class state: put it back to closed between examples."""
+    """The breaker is class state, and a failure recorded through the subclass shadows the
+    base class's value: put both back to closed between examples."""
     FyersBroker._record_success()
+    SdkBackedBroker._record_success()
 
 
 def adapter_over(sdk: RecordingSdk) -> FyersHatBroker:

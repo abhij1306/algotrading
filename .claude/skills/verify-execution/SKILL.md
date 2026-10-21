@@ -25,8 +25,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.intent_product_cnc` An intent that is not CNC, has no HT tag, has a non-positive quantity or the wrong price fields raises `InvalidIntentError` before any SDK call. Harm: a malformed or non-delivery order is sent.
 - `PBT tags.broker_errors_fail_closed` Every read raises `BrokerUnavailableError` with a fixed code when the SDK raises, returns an error or returns garbage, and a write never returns broker text. Harm: an outage reads as an empty book (nothing held, nothing open) and reconciliation or the entry gate acts on it.
 - `PBT tags.reconcile_scope` `find_mismatches` depends on the broker's orders only through the HT-tagged ones, and flags exactly the four mismatch kinds. Harm: a manual order in the same account raises a false mismatch or hides a real one.
-- `PBT tags.status_mapping_total` `map_fyers_status` maps every input (any code, any quantity type) to one of the order statuses, unknown to `unconfirmed`. Harm: an unexpected Fyers status crashes the poller or is read as filled.
-- `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never retry a GTT after a lost answer and do not read an unreachable broker as a rejection. Harm: a retry or restart double-places an entry or stop.
+- `PBT tags.status_mapping_total` `map_fyers_status` maps every input (any code, any quantity type) to one of the order statuses, unknown or fractional codes to `unconfirmed`. Harm: an unexpected Fyers status crashes the poller or is read as filled.
+- `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never retry a GTT after a lost answer and do not read an unreachable broker as a rejection, and leave no attempt marker on a GTT that was never sent. Harm: a retry or restart double-places an entry or stop.
 - `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an unreconciled or blocked bot, an entry that is not a buy, an exit that is not a sell, or an entry with the session not live is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
 - `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only). Harm: a live mode runs on an account that cannot hold a protective stop.
@@ -107,7 +107,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `b908389446147faac3d6e3944955cecb9541e995`
-Covered digest: `3fb93b6d9cb9316963c2ca88dc285a85e177dbbd6f6a38f14bc5a24e7d53bf22`
+Covered digest: `842d6c98dd16b6be2e7732a0f93ee2dc638f8227df4b68f763d5b8ea54c6f368`
 
 ## Scope changes
 

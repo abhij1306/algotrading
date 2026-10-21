@@ -515,6 +515,10 @@ class FyersBroker(IBroker):
                 message=response.get("message", "GTT Placed"),
                 details=response,
             )
+        if response.get("s") != "error":
+            # Neither ok nor an explicit rejection: the GTT may have landed.
+            logger.error("Fyers GTT reply was neither ok nor an error")
+            return unconfirmed
         return OrderResponse(
             order_id="",
             status="REJECTED",
