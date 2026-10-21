@@ -506,7 +506,7 @@ to an artefact that exists.
 | HAT-TG-050 | [08](08-telegram.md) | 3 | PBT `telegram.retention_purge` |
 | HAT-BT-010 | [09](09-backtest.md) | 11, 12 | CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity` |
 | HAT-BT-011 | [09](09-backtest.md) | 12 | PBT `backtest.no_lookahead` |
-| HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free` |
+| HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
 | HAT-BT-020 | [09](09-backtest.md) | 12 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase` |
 | HAT-BT-021 | [09](09-backtest.md) | 12 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close` |

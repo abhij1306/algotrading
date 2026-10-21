@@ -7,9 +7,11 @@ A run takes about a second, so the run-level properties use fewer examples than 
 
 import json
 import math
+import tempfile
 import uuid
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import hat_backtest_support as s
 import pyarrow as pa
@@ -21,18 +23,33 @@ from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
 from app.hat.backtest.fills import entry_fill, stop_fill
+from app.hat.backtest.market import load_market
+from app.hat.data.store import (
+    DATASET_FEATURES,
+    DATASET_SCHEMAS,
+    BarRow,
+    DataStore,
+    IndexRow,
+)
 from app.hat.engine.backtest import (
     KNOWN_GAPS,
     BacktestResult,
     MarketData,
     TradeRow,
     compute_metrics,
+    industry_on,
     run_backtest,
     trades_parquet,
 )
 from app.hat.engine.portfolio.universe import Interval
 from app.hat.engine.strategy.versions import VersionError, publish_version, seed_default_strategies
-from app.hat.models import HatBacktestRun, HatStrategyVersion
+from app.hat.models import (
+    HatBacktestRun,
+    HatIndustry,
+    HatInstrument,
+    HatStrategyVersion,
+    HatUniverseMember,
+)
 from app.hat.schema import seed_hat_reference
 
 D = Decimal
@@ -75,14 +92,15 @@ def _assert_parity(result: BacktestResult, data: MarketData, day: date) -> None:
 # --- HAT-BT-010 -------------------------------------------------------------------------------
 
 
-@given(s.paths(SESSIONS), st.integers(s.WARM_UP, SESSIONS - 1))
+@given(s.paths(SESSIONS))
 @RUNS
-def test_scan_parity(paths: dict, n: int) -> None:
+def test_scan_parity(paths: dict) -> None:
     """The watchlist the loop publishes for each simulated date equals the live nightly scan
     (`scan_bot`) of the previous session for the same version, universe and inputs."""
     data = s.market(paths, DAYS)
     result = _run(data)
-    _assert_parity(result, data, DAYS[n])
+    for day in DAYS[s.WARM_UP :]:
+        _assert_parity(result, data, day)
 
 
 # --- HAT-BT-011 -------------------------------------------------------------------------------
@@ -402,3 +420,113 @@ def test_version_status_requires_run(status: str, same_version: bool) -> None:
             assert draft.status == "draft"
             assert draft.backtest_run_id is None
         session.rollback()
+
+
+# --- HAT-BT-011 / 012: the market loader --------------------------------------------------------
+
+LOAD_DAYS = s.sessions(10)
+KINDS = st.sampled_from(["listed", "gone_before", "gone_after"])
+
+
+def _store_bar(iid: str, n: int, price: D) -> BarRow:
+    return BarRow(
+        iid,
+        f"INE{n:09d}",
+        f"S{n}",
+        "EQ",
+        price,
+        price,
+        price,
+        price,
+        None,
+        1000,
+        None,
+        "bhavcopy",
+        uuid.UUID(int=7),
+    )
+
+
+@given(
+    st.lists(st.tuples(KINDS, st.integers(0, 9), st.booleans()), min_size=1, max_size=3),
+    st.integers(2, 7),
+)
+@settings(max_examples=25, deadline=None)
+def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> None:
+    """`load_market` reads bars and index closes dated up to the period's end only; an
+    instrument delisted by the end has its last bar on or before its delisting as its last
+    traded session, and one delisted after the end has none; every industry classification
+    comes with its effective date, so the industry in force on a day is never a later
+    reclassification (HAT-BT-011, HAT-BT-012)."""
+    start, end = LOAD_DAYS[1], LOAD_DAYS[end_n]
+    engine = memory_engine()
+    universe = uuid.uuid4()
+    expected_last: dict[str, date] = {}
+    classes: dict[str, list[tuple[date, str]]] = {}
+    with tempfile.TemporaryDirectory() as tmp, Session(engine) as session:
+        store = DataStore(Path(tmp))
+        listed: dict[str, int] = {}  # instrument -> index of its last session
+        for n, (kind, k, reclass) in enumerate(rows):
+            iid = s.instrument(n)
+            last = {
+                "listed": len(LOAD_DAYS) - 1,
+                "gone_before": max(1, min(k, end_n)),
+                "gone_after": end_n + 1 + k % (len(LOAD_DAYS) - 1 - end_n),
+            }[kind]
+            listed[iid] = last
+            session.add(
+                HatInstrument(
+                    id=uuid.UUID(iid),
+                    market_id=uuid.uuid4(),
+                    isin=f"INE{n:09d}",
+                    series="EQ",
+                    symbol=f"S{n}",
+                    name=f"S{n}",
+                    face_value=D(1),
+                    delisted_on=None if kind == "listed" else LOAD_DAYS[last],
+                    active=kind == "listed",
+                )
+            )
+            session.add(
+                HatUniverseMember(
+                    universe_id=universe,
+                    instrument_id=uuid.UUID(iid),
+                    effective_from=LOAD_DAYS[0],
+                    reason="constituent",
+                )
+            )
+            classes[iid] = [(LOAD_DAYS[0], "ind-a")]
+            if reclass:
+                classes[iid].append((LOAD_DAYS[max(1, k)], "ind-b"))
+            for effective_from, industry in classes[iid]:
+                session.add(
+                    HatIndustry(
+                        instrument_id=uuid.UUID(iid),
+                        sector="s",
+                        industry=industry,
+                        effective_from=effective_from,
+                    )
+                )
+            if kind == "gone_before":
+                expected_last[iid] = LOAD_DAYS[last]
+        session.flush()
+        schema = DATASET_SCHEMAS[DATASET_FEATURES]
+        for d, day in enumerate(LOAD_DAYS):
+            alive = [i for i, last in listed.items() if d <= last]
+            if alive:
+                store.write_bars(day, [_store_bar(i, n, D(100 + d)) for n, i in enumerate(alive)])
+            store.upsert_index(day, [IndexRow(s.INDEX, D(1000), D(1000), D(1000), D(1000 + d))])
+            table = pa.Table.from_pylist(
+                [{"instrument_id": i} for i in sorted(listed)], schema=schema
+            )
+            store.write_partition(DATASET_FEATURES, day, "features", table)
+        data, _ = load_market(
+            store, session, universe_id=universe, index=s.INDEX, start=start, end=end
+        )
+    assert data.bars["date"].max() <= end
+    assert all(d <= end for d, _ in data.index_closes[s.INDEX])
+    assert dict(data.last_traded) == expected_last
+    for iid, history in classes.items():
+        assert sorted(data.industries[iid]) == sorted(history)
+        for day in LOAD_DAYS:
+            want = [name for since, name in sorted(history) if since <= day][-1]
+            assert industry_on(data, iid, day) == want

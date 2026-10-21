@@ -153,10 +153,11 @@ def load_minute_history(
 ) -> int:
     """Fetch the 1-minute history of each broker symbol in `instruments` (broker symbol ->
     instrument id) for `start..end`, aggregate it and merge it into `bars_5m`. Returns the rows
-    written. Safe to re-run: `BarStore.write` keeps a bar that did not change."""
+    written. Nothing is written unless every symbol loaded. Safe to re-run: `BarStore.write`
+    keeps a bar that did not change."""
     if start > end:
         raise MinuteHistoryError("history_bad_period")
-    written = 0
+    bars: dict[str, list[Bar]] = {}
     for symbol in sorted(instruments):
         candles: list[MinuteCandle] = []
         for first, last in _chunks(start, end):
@@ -176,5 +177,6 @@ def load_minute_history(
             if not isinstance(raw, list):
                 raise MinuteHistoryError("history_bad_candle")
             candles.extend(parse_candles(raw))
-        written += store.write(aggregate(symbol, candles), {symbol: instruments[symbol]})
-    return written
+        bars[symbol] = aggregate(symbol, candles)
+    # Every symbol is fetched before anything is written: a failure leaves the store unchanged.
+    return sum(store.write(bars[s], {s: instruments[s]}) for s in sorted(bars))

@@ -117,13 +117,13 @@ class FillModel(Protocol):
     """How a virtual fill is priced: (fill price, fees) for `qty` shares at the reference
     `price` on `side` ("buy" or "sell")."""
 
-    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]: ...
+    def fill(self, side: str, qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]: ...
 
 
 class _ShadowFills:
     """Shadow trading's fills: at the reference price, with no fees (PR 11)."""
 
-    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]:
+    def fill(self, _side: str, _qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]:
         return price, _ZERO
 
 

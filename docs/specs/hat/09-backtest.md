@@ -29,10 +29,10 @@ One engine runs backtest and live (T12). Backtests are the first stage of every 
 - **Statement:** The backtest reads the adjusted-bar view of the Parquet store (raw bars × cumulative corporate-action factors) and point-in-time universe membership, including instruments delisted since.
 - **Source:** DS "Historical data build" (delisted stocks come in automatically); SCH "Parquet" (adjusted prices are a DuckDB view); BL "Stock universes"; B27.
 - **PR:** 12
-- **Verification:** PBT `backtest.survivorship_free`
+- **Verification:** PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time`
 - **Acceptance:**
   - Property: for every generated history containing an instrument delisted at date x, the instrument is eligible on dates < x where it was a universe member, and its open positions are closed no later than its last traded bar. Harm: dead stocks vanish from the test and returns are overstated.
-- **Design (PR 12):** a position still open on its instrument's last traded session is closed at that session's close with exit reason `delisted`, so a delisted stock's loss stays in the results. Positions open on the period's last date close at that date's close with exit reason `end_of_period`.
+- **Design (PR 12):** an instrument's last traded session is its last bar on or before its `delisted_on`, and only an instrument delisted by the period's end has one (a later delisting is not visible to the run). A position still open on that session is closed at its close with exit reason `delisted`, so a delisted stock's loss stays in the results. Industry classifications are loaded with their effective dates and read as of each trade date, so a later reclassification never changes an earlier industry-cap decision. Positions still open after the period's last date close at each instrument's newest close on or before that date (an instrument need not trade on it), with exit reason `end_of_period`.
 
 #### HAT-BT-013: A run pins one strategy version and one risk-policy version
 - **Statement:** Each backtest run records and uses exactly one `strategy_version_id` and one `risk_policy_version_id` for its whole period.
@@ -74,7 +74,7 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 - **PR:** 12
 - **Verification:** PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds`
 - **Acceptance:**
-  - Property: for every fill price p > 0 and slippage s with 0 <= s < 10000 bps (a configured value outside this range is rejected when the run starts), a buy fills at p × (1 + s/10000) and a sell at p × (1 − s/10000), so net P&L is monotone non-increasing in s. Harm: the backtest assumes perfect fills and overstates edge.
+  - Property: for every fill price p > 0 and slippage s with 0 <= s < 10000 bps (a configured value outside this range is rejected when the run starts), a buy fills at p × (1 + s/10000) rounded up to 4 places and a sell at p × (1 − s/10000) rounded down to 4 places, never below 0.0001, so net P&L is monotone non-increasing in s. Harm: the backtest assumes perfect fills and overstates edge.
 - **Design (PR 12):** prices are stored to 4 places, and rounding never favours the trade: a buy's slipped price is rounded up, a sell's down, and a sell never fills below 0.0001. The slippage is a Decimal checked when the run starts (`cost_bad_slippage` otherwise); the command line takes `--slippage-bps` (default 0) and every run's metrics record it.
 - **[OWNER-PENDING]** slippage default: the docs give no number; the value is set by the owner, calibrated from shadow-mode slippage, and every run records the value it used.
 
@@ -119,7 +119,7 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 
 #### HAT-BT-032: Run record and trade output
 - **Statement:** Each run stores `strategy_version_id`, `risk_policy_version_id`, `period_start`, `period_end`, `data_snapshot`, `status`, `metrics` and `family_key`, and writes its trades to `backtests/run_id=<id>/trades.parquet`.
-- **Design (PR 12):** the trades file is written atomically under `HAT_DATA_ROOT`. On completion `metrics.dsr` stores the deflated Sharpe probability at that moment as `{prob (6 places, text), sr0, reason, trials, variance}`; the lifecycle recomputes it at evaluation time (HAT-BT-060). `metrics.returns` stores the daily-return Sharpe ratio, count, skewness and kurtosis the DSR reads.
+- **Design (PR 12):** `data_snapshot` records the sessions read, the row counts, the index, the corporate-action digest and `content_digest`, a sha256 of the bars, features, index closes, membership intervals and industry history the run read, so two snapshots with equal counts but different data differ. The trades file is written atomically under `HAT_DATA_ROOT`. On completion `metrics.dsr` stores the deflated Sharpe probability at that moment as `{prob (6 places, text), sr0, reason, trials, variance}`; the lifecycle recomputes it at evaluation time (HAT-BT-060). `metrics.returns` stores the daily-return Sharpe ratio, count, skewness and kurtosis the DSR reads.
 - **Source:** SCH "Backtest and ops tables" (`hat_backtest_run`); SCH "Parquet, backtests, ops, indexes".
 - **PR:** 3, 12
 - **Verification:** CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics`

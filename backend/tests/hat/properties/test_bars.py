@@ -1200,8 +1200,8 @@ def test_history_matches_builder(raw: list[list[Any]]) -> None:
 @settings(deadline=None)
 def test_minute_history_aggregates_to_5m(raw: list[list[Any]], first: int, span: int) -> None:
     """The loader asks for 1-minute candles in chunks of at most 100 days covering the period,
-    and the `bars_5m` rows it writes are the builder's bars of those candles; a failed response
-    writes nothing and raises a code without the broker's text."""
+    and the `bars_5m` rows it writes are the builder's bars of those candles; a failed response,
+    even for a later symbol, writes nothing and raises a code without the broker's text."""
     start = DAY + timedelta(days=first)
     end = start + timedelta(days=span)
     asked: list[dict[str, str]] = []
@@ -1220,7 +1220,8 @@ def test_minute_history_aggregates_to_5m(raw: list[list[Any]], first: int, span:
         spans = [
             (date.fromisoformat(r["range_from"]), date.fromisoformat(r["range_to"])) for r in asked
         ]
-        assert spans[0][0] == start and spans[-1][1] == end
+        assert spans[0][0] == start
+        assert spans[-1][1] == end
         assert all((hi - lo).days < CHUNK_DAYS for lo, hi in spans)
         assert all(b[0] == a[1] + timedelta(days=1) for a, b in zip(spans, spans[1:], strict=False))
         inside = [c for c in parse_candles(raw) if start <= c.at.astimezone(IST).date() <= end]
@@ -1228,12 +1229,16 @@ def test_minute_history_aggregates_to_5m(raw: list[list[Any]], first: int, span:
         stored = [r for d in sorted({b.start.date() for b in want}) for r in store.read(d)]
         assert stored == [row_from_bar(b, instrument) for b in want]
 
-        def broken(_: dict[str, str]) -> dict[str, Any]:
+        def broken(request: dict[str, str]) -> dict[str, Any]:
+            # the first symbol loads; the second fails, so neither may be written
+            if request["symbol"] == "NSE:AAA-EQ":
+                return history(request)
             return {"s": "error", "message": "token expired for client XY1234"}
 
         empty = BarStore(Path(root) / "other")
+        both = {"NSE:AAA-EQ": instrument, "NSE:ZZZ-EQ": str(uuid4())}
         try:
-            load_minute_history(broken, empty, {"NSE:AAA-EQ": instrument}, start, end)
+            load_minute_history(broken, empty, both, start, end)
         except MinuteHistoryError as exc:
             assert exc.code == "history_failed"
             assert "XY1234" not in str(exc)

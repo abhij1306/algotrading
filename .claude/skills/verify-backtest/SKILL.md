@@ -13,6 +13,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.scan_parity` The watchlist the loop publishes for each simulated date equals the live `scan_bot` of the previous session run directly on the same market (same rows, pivots, stops, scores within 1e-6). Harm: the backtest trades setups the live scan would not find.
 - `PBT backtest.no_lookahead` Replacing every bar and index close after a date d leaves every watchlist, signal, fill, closed trade and equity point on or before d unchanged (HAT-BT-011). Harm: the backtest uses prices the market had not printed, and every sleeve looks better than it is.
 - `PBT backtest.survivorship_free` An instrument that stops trading at session x is scanned as a member before x, no fill of it is dated after its last bar, and every position in it closes no later than that bar (HAT-BT-012). Harm: dead stocks vanish from the test and returns are overstated.
+- `PBT backtest.market_point_in_time` `load_market` reads bars and index closes up to the period's end only; an instrument delisted by the end has its last bar on or before its delisting as its last traded session, one delisted later has none; industry classifications come with their effective dates and `industry_on` gives the one in force on each day (HAT-BT-011, HAT-BT-012). Harm: a run closes a live stock as delisted, or a later reclassification changes an earlier industry-cap decision.
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
 - `PBT backtest.entry_fill_proxy` An entry fills at the level when the open is at or below it and the high reaches it, at the open on a gap over, and not at all when the high stays below (HAT-BT-020). Harm: the backtest buys a gap at the level, a price the market never offered.
 - `PBT backtest.entry_fill_proxy_chase` In a run, every opened entry filled at the proxy price of its level and within max chase of it, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses.
@@ -79,13 +80,13 @@ No check touches the network, Fyers or the HAT database: a run's ledger is an in
 ## Coverage
 
 Code under check:
-- `backend/app/hat/engine/backtest.py`: `run_backtest`, `compute_metrics`, `trades_parquet`, `main`
+- `backend/app/hat/engine/backtest.py`: `run_backtest`, `industry_on`, `compute_metrics`, `trades_parquet`, `main`
 - `backend/app/hat/backtest/fills.py`: `entry_fill`, `stop_fill`
 - `backend/app/hat/backtest/costs.py`: `parse_cost_model`, `load_cost_model`, `charges`, `check_slippage`, `slipped`, `BacktestFills`
 - `backend/app/hat/backtest/cost_models/cnc-delivery-1.yaml`
 - `backend/app/hat/backtest/dsr.py`: `return_stats`, `trial_variance`, `expected_max_sharpe`, `deflated_sharpe`
 - `backend/app/hat/backtest/runs.py`: `family_key`, `trial_count`, `start_run`, `complete_run`, `fail_run`, `record_backtest`, `backtest_bot`, `backtest_evidence`, `gate_evidence`
-- `backend/app/hat/backtest/market.py`: `load_market`
+- `backend/app/hat/backtest/market.py`: `load_market`, `_industries`
 - `backend/app/hat/engine/strategy/versions.py`: `publish_version`
 
 Checks:
@@ -102,14 +103,16 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `4aaec223204065f62c7653ee47c24687c4c1065a75c5fd64a5c9d8598c1c1a2a`
+Covered digest: `24ddd418037cbf1d40abaf0bbba537851f51daea26f420bb496090d8fa309db2`
 
 ## Scope changes
+
+- MFE and MAE stop at a fill: a position the stop closes on the way down, or a profit exit closes on the way up, never saw the rest of that bar (CodeAnt review of PR 12). No property isolates the excursions; the golden replay pins them (the fix moved one trade's `mae_r` and `avg_mae_r` only).
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - `dsr.bounds_and_monotonicity_in_sr` holds on the domain where the slope 1 − γ3 (SR + SR0)/2 + ((γ4 − 1)/4) SR × SR0 is non-negative at both ends. Finding: outside it a higher SR with a heavy skew scores lower; that is the paper's formula (recorded in 09 §4), and the code is not changed.
-- `dsr.bounds_and_monotonicity_bad_denominator` found that a radicand of float noise around 0 gave DSR = 1.0; `RADICAND_FLOOR` (1e-12) now scores it undefined. Real moments keep the radicand a square, so the property generates moments below that bound (γ4 = 1, γ3 ≥ 1/SR).
+- `dsr.bounds_and_monotonicity_bad_denominator` found that a radicand of float noise around 0 gave DSR = 1.0; `RADICAND_FLOOR` (1e-12) now scores it undefined. With real moments the radicand is bounded below by a square (it is never negative), so the property generates moments below that bound (γ4 = 1, γ3 ≥ 1/SR).
 - `backtest.entry_fill_proxy_chase` draws the max chase from 0.5%, 1% and 5%: the generated opens gap up by at most 3%, so a 5% chase alone could never bite (found by its scratch break, which first survived).
 - `backtest.no_lookahead` mutates bars and index closes after d; features are derived from the bars by `compute_features`, so they follow. Corporate actions and membership changes after d are covered by the adjusted view (`verify-data`) and `backtest.survivorship_free`.
 - The run-level properties use 12 examples (a run takes about a second); the pure ones use the profile's count.
@@ -138,13 +141,15 @@ Break: in `backend/app/hat/engine/backtest.py`: the nightly scan reads the bars 
 
 ```
 tests/hat/properties/test_backtest.py F
-tests/hat/properties/test_backtest.py:79: in test_scan_parity
+tests/hat/properties/test_backtest.py:96: in test_scan_parity
     @RUNS
-tests/hat/properties/test_backtest.py:85: in test_scan_parity
-    _assert_parity(result, data, DAYS[n])
-tests/hat/properties/test_backtest.py:70: in _assert_parity
+tests/hat/properties/test_backtest.py:103: in test_scan_parity
+    _assert_parity(result, data, day)
+tests/hat/properties/test_backtest.py:87: in _assert_parity
     assert [_watch_key(w) for w in ran] == [_watch_key(w) for w in live]
 ```
+
+Re-run after the CodeAnt review made the property check every simulated date of a run, not one drawn date: the same break still fails.
 
 ### PBT backtest.no_lookahead
 
@@ -172,6 +177,35 @@ tests/hat/properties/test_backtest.py:138: in test_survivorship_free
     assert all(f.day <= last for f in result.fills if f.instrument_id == victim)
 E   assert False
 E    +  where False = all(<generator object test_survivorship_free.<locals>.<genexpr> at 0x7f0055ec2420>)
+```
+
+### PBT backtest.market_point_in_time
+
+Break (CodeAnt review): in `backend/app/hat/backtest/market.py`: an instrument delisted after the period's end still gets its last loaded bar as a last traded session.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:449: in test_market_point_in_time
+tests/hat/properties/test_backtest.py:526: in test_market_point_in_time
+E   AssertionError: assert {'00000000-00...e(2025, 1, 8)} == {}
+```
+
+Break (CodeAnt review): in `backend/app/hat/backtest/market.py`: only the newest classification is loaded, in force from the start.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:449: in test_market_point_in_time
+tests/hat/properties/test_backtest.py:528: in test_market_point_in_time
+E   AssertionError: assert [(datetime.da... 1), 'ind-a')] == [(datetime.da... 6), 'ind-a')]
+```
+
+Break: in `backend/app/hat/engine/backtest.py`: `industry_on` takes the newest classification whatever the day.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:449: in test_market_point_in_time
+tests/hat/properties/test_backtest.py:531: in test_market_point_in_time
+E   AssertionError: assert 'ind-b' == 'ind-a'
 ```
 
 ### PBT backtest.version_pinned
@@ -345,6 +379,18 @@ E    +    and   PosixPath('/root') = Path('/root')
 ### CONF backtest.backtest_golden_replay
 
 Break: in `backend/app/hat/engine/backtest.py`: the open no longer checked against the stop, so a gap through it fills at the stop on the way down.
+
+```
+tests/hat/conformance/test_conf_backtest.py F
+tests/hat/conformance/test_conf_backtest.py:166: in test_backtest_golden_replay
+    assert s.golden_document() == golden
+E   AssertionError: assert {'momentum-br...ist_rows': 8}} == {'momentum-br...ist_rows': 8}}
+E
+E     Omitting 1 identical items, use -vv to show
+E     Differing items:
+```
+
+Break (CodeAnt review, excursions stop at a fill): in `backend/app/hat/engine/backtest.py`: a stopped position's excursion takes the bar's low below the stop fill.
 
 ```
 tests/hat/conformance/test_conf_backtest.py F

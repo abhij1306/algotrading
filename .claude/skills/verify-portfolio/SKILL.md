@@ -52,7 +52,7 @@ python -m pytest tests/hat/conformance -q --no-cov              # CONF portfolio
 - A new sleeve: a `hat_bot` row and a `base_weight` entry in the policy; no code (the strategy name maps to its key through `SLEEVE_OF_STRATEGY`, an unknown name is its own key). `allocator.sleeve_count_agnostic` proves any number of rows works.
 - A lifecycle rule: edit `lifecycle.py` (the guard and `EDGES`), `service.py` (the one writer) and `verification/tla/SleeveLifecycle.tla` together; keep a `\* code:` comment on every action, add a broken variant `SleeveLifecycle__<mode>.cfg` (with `EXPECT:` and the mode in the model's `ASSUME`), run both `run.sh` commands, then the properties.
 - A regime rule or threshold: edit `regime.py`, `RegimeConfirmation.tla` (if the 3-day rule changes), the 05 section 3 text and `rules_v1_config`; the stored model version holds the multiplier table, so a new table is a new `hat_regime_model_version` row.
-- Backtest evidence plugs in through `BacktestEvidence` in `service.py`, now returning `lifecycle.BacktestFacts` (DSR, trades, expectancy, trial count). The default `no_backtest_evidence` keeps Research to Backtested closed; the backtest's source is `app.hat.backtest.runs.backtest_evidence` (PR 12, `verify-backtest`).
+- Backtest evidence plugs in through `BacktestEvidence` in `service.py`, now returning `lifecycle.BacktestFacts` (DSR, trades, expectancy, trial count). The default `no_backtest_evidence` keeps Research to Backtested closed; the backtest's source is `app.hat.backtest.runs.backtest_evidence` (PR 12, `verify-backtest`), which `allocate_job` passes to `run_allocation` by default.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-portfolio` prints the digest.
 
 ## Coverage
@@ -90,7 +90,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `88939032958aa10dbd0c045036910534d65c908e47a5863734bc794d999a684a`
+Covered digest: `d8b9b5fc09d363d1875c40753e9a7b413e2387e5d0e9ff5291d2311a919bca51`
 
 ## Scope changes
 

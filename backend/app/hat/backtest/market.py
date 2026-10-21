@@ -9,6 +9,7 @@ only up to the date it decides for.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from bisect import bisect_left
 from collections.abc import Iterable
@@ -51,13 +52,18 @@ def _members(session: Session, universe_id: uuid.UUID) -> tuple[Interval, ...]:
     return tuple(Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows)
 
 
-def _industries(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, str]:
-    """Each instrument's newest industry (the classification is not kept point in time)."""
+def _industries(
+    session: Session, instruments: Iterable[uuid.UUID]
+) -> dict[str, list[tuple[date, str]]]:
+    """Each instrument's industry classifications as (effective_from, industry), oldest first:
+    the run reads the one in force on each trade date, never a later reclassification."""
     wanted = set(instruments)
-    found: dict[str, str] = {}
-    for row in session.scalars(select(HatIndustry).order_by(HatIndustry.effective_from)):
+    found: dict[str, list[tuple[date, str]]] = {}
+    for row in session.scalars(
+        select(HatIndustry).order_by(HatIndustry.instrument_id, HatIndustry.effective_from)
+    ):
         if row.instrument_id in wanted:
-            found[str(row.instrument_id)] = row.industry
+            found.setdefault(str(row.instrument_id), []).append((row.effective_from, row.industry))
     return found
 
 
@@ -88,6 +94,25 @@ def _features(store: DataStore, days: Iterable[date]) -> pl.DataFrame:
     )
 
 
+def _content_digest(market: MarketData) -> str:
+    """sha256 of what the run read: the bars, features, index closes, membership intervals and
+    industry history, each in a fixed order. Two snapshots with the same row counts but
+    different prices or members have different digests."""
+    digest = hashlib.sha256()
+    for frame in (market.bars, market.features):
+        ordered = frame.select(sorted(frame.columns)).sort(["date", "instrument_id"])
+        digest.update(ordered.write_csv().encode())
+    for name, points in sorted(market.index_closes.items()):
+        digest.update(repr((name, [(d.isoformat(), str(c)) for d, c in points])).encode())
+    digest.update(
+        repr(
+            sorted((str(m.instrument_id), m.effective_from, m.effective_to) for m in market.members)
+        ).encode()
+    )
+    digest.update(repr(sorted(market.industries.items())).encode())
+    return digest.hexdigest()
+
+
 def load_market(
     store: DataStore,
     session: Session,
@@ -115,9 +140,15 @@ def load_market(
     bars = bars.filter(pl.col("instrument_id").is_in(sorted(wanted)))
     features = _features(store, days[max(0, first - 1) :])
     series, delisted = _instruments(session, instruments)
+    # Only an instrument delisted by the period's end has a last traded session in the run; one
+    # delisted later simply has no more bars after `end`, which is not a delisting.
     last_traded: dict[str, date] = {}
-    for instrument_id in delisted:
-        dates = bars.filter(pl.col("instrument_id") == instrument_id)["date"]
+    for instrument_id, delisted_on in delisted.items():
+        if delisted_on > end:
+            continue
+        dates = bars.filter(
+            (pl.col("instrument_id") == instrument_id) & (pl.col("date") <= delisted_on)
+        )["date"]
         if dates.len():
             last_traded[instrument_id] = dates.max()  # type: ignore[assignment]
     market = MarketData(
@@ -140,5 +171,6 @@ def load_market(
         "index_points": len(closes),
         "members": len(members),
         "actions_digest": inputs_digest(actions, None),
+        "content_digest": _content_digest(market),
     }
     return market, snapshot

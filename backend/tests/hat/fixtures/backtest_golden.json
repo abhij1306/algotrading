@@ -2,7 +2,7 @@
  "momentum-breakout-ep": {
   "metrics": {
    "avg_loss_r": "-0.816219",
-   "avg_mae_r": "-1.077641",
+   "avg_mae_r": "-0.992811",
    "avg_mfe_r": "0.908236",
    "avg_win_r": null,
    "cost_model": {
@@ -85,7 +85,7 @@
     "holding_days": "6",
     "initial_stop": "602.9000",
     "instrument_id": "00000000-0000-0000-0000-000000002009",
-    "mae_r": "-0.4700190000",
+    "mae_r": "-0.2155290000",
     "mfe_r": "0.7911030000",
     "playbook": "breakout",
     "qty": "34",

@@ -169,7 +169,9 @@ class MarketData:
     text, `date`, `open`, `high`, `low`, `close`, `volume`, `traded_value`, as doubles).
     `features`: the daily features (`date`, `instrument_id`, the 02 §7 columns). `index_closes`:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
-    delisted instruments included. `last_traded`: the last session of each delisted instrument.
+    delisted instruments included. `industries`: each instrument's industry, either one name
+    or its classifications as (effective_from, industry), read point in time. `last_traded`: the
+    last session of each instrument delisted by the period's end.
     """
 
     days: tuple[date, ...]
@@ -177,7 +179,7 @@ class MarketData:
     features: pl.DataFrame
     index_closes: Mapping[str, Sequence[tuple[date, Decimal]]]
     members: tuple[Interval, ...]
-    industries: Mapping[str, str] = field(default_factory=dict)
+    industries: Mapping[str, str | Sequence[tuple[date, str]]] = field(default_factory=dict)
     series: Mapping[str, str] = field(default_factory=dict)
     last_traded: Mapping[str, date] = field(default_factory=dict)
 
@@ -310,6 +312,23 @@ class _Held:
 # --- the ledger -------------------------------------------------------------------------------
 
 
+_ALWAYS = date(1900, 1, 1)
+
+
+def _classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
+    """The instrument's industry classifications, oldest first."""
+    found = data.industries.get(instrument_id, "unknown")
+    if isinstance(found, str):
+        return [(_ALWAYS, found)]
+    return sorted(found) or [(_ALWAYS, "unknown")]
+
+
+def industry_on(data: MarketData, instrument_id: str, day: date) -> str:
+    """The industry in force on `day`: the newest classification effective on or before it."""
+    rows = [name for start, name in _classifications(data, instrument_id) if start <= day]
+    return rows[-1] if rows else "unknown"
+
+
 def _ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     """A private in-memory database seeded with the run's bot, version and universe."""
     engine = create_engine(
@@ -356,14 +375,16 @@ def _ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
             )
         )
     for instrument_id in sorted({str(i.instrument_id) for i in data.members}):
-        session.add(
-            HatIndustry(
-                instrument_id=uuid.UUID(instrument_id),
-                sector="",
-                industry=data.industries.get(instrument_id, "unknown"),
-                effective_from=date(1900, 1, 1),
+        # the live lookup reads the classification in force on the trade date
+        for effective_from, industry in _classifications(data, instrument_id):
+            session.add(
+                HatIndustry(
+                    instrument_id=uuid.UUID(instrument_id),
+                    sector="",
+                    industry=industry,
+                    effective_from=effective_from,
+                )
             )
-        )
     bot = HatBot(
         id=uuid.uuid4(),
         user_id=_SANDBOX_USER,
@@ -556,29 +577,35 @@ class _Run:
         )
 
     def _down_leg(self, position: HatPosition, bar: _Bar, day: date) -> None:
-        """The way down from the open to the low: the stop fills at min(open, stop)."""
+        """The way down from the open to the low: the stop fills at min(open, stop). A position
+        the stop closes never saw the rest of the fall, so its excursion stops at the fill."""
         held = self.held[position.id]
-        held.low = min(held.low, bar.low)
         if position.closed_at is not None:
             return
         fill = stop_fill(bar.open, bar.low, Decimal(position.current_stop))
         if fill is not None:
+            held.low = min(held.low, fill)
             self._evaluate(position, exits.ExitView(fill), "live", _at(day, _AT_LOW))
+        if position.closed_at is None:
+            held.low = min(held.low, bar.low)
 
     def _up_leg(self, position: HatPosition, low: Decimal, high: Decimal, day: date) -> None:
         """The way up to the high: each profit rule fills at the first tick price at which
-        `exits.evaluate` acts, as many times as the stack keeps acting."""
+        `exits.evaluate` acts, as many times as the stack keeps acting. A position closed on
+        the way up never saw the rest of the rise, so its excursion stops at the fill."""
         held = self.held[position.id]
-        held.high = max(held.high, high)
         for step in range(len(self.config.exits) + 2):
             if position.closed_at is not None:
                 return
             rules, state = trades.position_state(self.session, position)
             price = first_trigger(rules, state, low, high)
             if price is None:
-                return
+                break
+            held.high = max(held.high, price)
             self._evaluate(position, exits.ExitView(price), "live", _at(day, _AT_HIGH, step))
             low = price
+        if position.closed_at is None:
+            held.high = max(held.high, high)
 
     def _morning(self, day: date, prev: date | None) -> None:
         regime_off = prev is not None and not regime_allows_longs(
@@ -662,7 +689,7 @@ class _Run:
         return SignalContext(
             action="entry",
             strategy_key=self.config.bot,
-            industry=self.data.industries.get(instrument_id, "unknown"),
+            industry=industry_on(self.data, instrument_id, row.trade_date),
             entry_price=entry,
             stop_price=stop,
             trigger_level=Decimal(row.pivot),
