@@ -730,7 +730,7 @@ create table hat_event (
   occurred_at    timestamptz not null,
   user_id        uuid not null,
   bot_id         uuid,
-  aggregate_type text not null,   -- signal, order, position, strategy_version, risk_policy, bot, session, ingest
+  aggregate_type text not null,   -- signal, order, position, strategy_version, risk_policy, bot, regime, session, ingest
   aggregate_id   uuid not null,
   event_type     text not null,
   actor          text not null check (actor in ('engine','user','broker','scheduler')),
@@ -760,6 +760,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed` |
 | Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
+| Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
 | Sessions | `broker.logged_in`, `broker.session_lost`, `feed.stale` |
 
 Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload, so discipline metrics (skips, flattens, pauses) come straight from this table.
@@ -791,16 +792,16 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 #### HAT-SCH-063: Event types are exactly the MVP catalogue
 - **Statement:** `record()` accepts only the event types in the catalogue above; adding one requires a spec change here.
 - **Source:** SCH "Event types (MVP)"; PLAN PR 3 ("the event catalogue matches spec 03 §6 exactly").
-- **PR:** 3
+- **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 32 types in the catalogue table. Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 35 types in the catalogue table. Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation
-- **Statement:** `aggregate_type ∈ {signal, order, position, strategy_version, risk_policy, bot, session, ingest}`; trade-related events carry the signal ID as `correlation_id`; `causation_id` names the causing event when there is one.
+- **Statement:** `aggregate_type ∈ {signal, order, position, strategy_version, risk_policy, bot, regime, session, ingest}`; trade-related events carry the signal ID as `correlation_id`; `causation_id` names the causing event when there is one.
 - **Source:** SCH "Event log" (DDL comments).
-- **PR:** 3
+- **PR:** 3, 9
 - **Verification:** PBT `events.correlation`
 - **Acceptance:**
   - Property: for every recorded event, `aggregate_type` is in the set, every event of the Signals, Orders and Positions groups has `correlation_id` equal to its signal's id, and every non-null `causation_id` refers to an earlier event. Harm: a trade's history cannot be reassembled from the log.

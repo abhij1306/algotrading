@@ -3,7 +3,7 @@ the real policy, kill and snapshot code writes rows the database constraints acc
 service that skips its own rule is stopped by the database."""
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 import hat_db_builders as b
@@ -125,12 +125,24 @@ def test_risk__kill_rows_pass_the_scope_check(conn: Connection) -> None:
 
 def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -> None:
     """`snapshot.bots` writes one row per bot and day however often it runs; equity is allocation
-    capital (no trades yet), so a later day's lower capital 11% under the peak trips the bot kill
+    capital plus realised P&L, so a cut of capital with no trade is a reallocation and trips
+    nothing (HAT-RISK-066), while a realised loss 10% under the restated peak trips the bot kill
     and the account kill needs 15%."""
     w = b.world(conn)
     day = date(2026, 10, 19)
+    sig = b.signal(conn, w)
+    pos = b.position(
+        conn,
+        w,
+        sig,
+        is_virtual=False,
+        qty_open=0,
+        state="closed",
+        closed_at=datetime.combine(day + timedelta(days=2), time(10, 0), tzinfo=IST),
+    )
+    b.trade_result(conn, pos, realized_pnl=Decimal("-9000"), r_multiple=Decimal("-1"))
     with session_on(conn) as session:
-        for offset, capital in ((0, "100000"), (1, "89000")):
+        for offset, capital in ((0, "100000"), (1, "89000"), (2, "89000")):
             session.add(
                 HatAllocationDaily(
                     trade_date=day + timedelta(days=offset),
@@ -153,7 +165,12 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
         ).all()
         assert sorted((s.trade_date, s.equity, s.equity_peak) for s in snaps) == [
             (day, Decimal("100000"), Decimal("100000")),
-            (day + timedelta(days=1), Decimal("89000"), Decimal("100000")),
+            (day + timedelta(days=1), Decimal("89000"), Decimal("89000")),
         ]
-        tripped = evaluate_drawdown_kills(session, seed_policy(), b.later(5))
+        assert evaluate_drawdown_kills(session, seed_policy(), b.later(5)) == []
+        for _ in range(2):
+            snapshot_bots(session, day + timedelta(days=2))
+        loss = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=2)))
+        assert (loss.equity, loss.equity_peak) == (Decimal("80000"), Decimal("89000"))
+        tripped = evaluate_drawdown_kills(session, seed_policy(), b.later(6))
         assert tripped == [str(w["bot"])]

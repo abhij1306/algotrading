@@ -101,6 +101,7 @@ Three inputs classify the market into four states each night; each sleeve has a 
   - Property: in every sequence of raw daily states, the confirmed state at day t differs from the confirmed state at day t−1 only if the raw state equals the new confirmed state on days t−2, t−1 and t. Harm: one wild day moves capital in or out of the market.
   - Property: in every sequence, whenever the raw state stays at some value s for 3 consecutive days, the confirmed state is s at the end of the 3rd day (liveness). Harm: the engine never acknowledges a real change in market conditions.
 - **[A]** confirmation length: default 3 days; validated by backtest of sleeve drawdowns with 1-5 days.
+- **[OWNER-PENDING]** first day: with no earlier stored day there is nothing to confirm against, so the first raw state is the confirmed state (bootstrap); docs silent; owner to confirm.
 
 #### HAT-PORT-031: Regime inputs are computed exactly as defined
 - **Statement:** Trend uses NIFTY 500 close vs its SMA200 and SMA50; volatility is the percentile rank of today's India VIX among its trailing 252 daily values; breadth is the percentage of universe members with close above their SMA50, plus the advance/decline ratio.
@@ -109,7 +110,8 @@ Three inputs classify the market into four states each night; each sleeve has a 
 - **Verification:** PBT `regime.inputs`
 - **Acceptance:**
   - Property: for every generated index, VIX and member bar history, the VIX percentile is in [0, 100] and monotone non-decreasing in today's VIX, breadth is in [0, 100], and every input on date d uses only data dated <= d. Harm: the regime reads the future in backtests or mis-scales risk live.
-- **[OWNER-PENDING]** percentile rank definition: default = 100 × (count of the trailing 252 values strictly below today's) / 252; docs silent; owner to confirm.
+- **[OWNER-PENDING]** percentile rank definition: default = 100 × (count of the trailing 252 values, today's included, that are strictly below today's) / 252, so the window is today and the 251 days before it; docs silent; owner to confirm.
+- The advance/decline ratio is stored with the inputs when the ingest provides it (PR 7) and does not enter the v1 classification; a day without index, VIX or breadth values, or with too little history for the SMAs and the VIX window, fails the `regime` job with a stable code and stores nothing.
 
 #### HAT-PORT-032: Classification is total and deterministic
 - **Statement:** Every combination of inputs maps to exactly one of the four states, using the table above, with the more defensive state winning where rows overlap.
@@ -140,6 +142,7 @@ Three inputs classify the market into four states each night; each sleeve has a 
   - Property: for every (market_id, model_version_id, trade_date), at most one `hat_regime_state` row exists. Harm: two regime readings for one day give two different allocations.
   - Property: in every reachable state of the lifecycle model, no regime action changes `lifecycle_state`. Harm: a bear market retires a sound sleeve, or a bull market promotes an unproven one.
   - Property: a `hat_regime_model_version` row of kind `rules`, version 1, exists and is referenced by every v1 regime state. Harm: regime outputs cannot be traced to the rules that produced them.
+- **[OWNER-PENDING]** reading of `state` and `confirmed`: default = `state` is the day's raw classification, `confirmed` is true when it equals the confirmed state, and the confirmed state itself and the run length are kept in `inputs` (`confirmed_state`, `raw_state`, `run`); the allocator reads the confirmed state; owner to confirm.
 
 ## §4 Health multiplier (per sleeve)
 
@@ -173,6 +176,7 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 - **Acceptance:**
   - Property: for every base weight b in [0,1], regime and health inputs, and policy bounds [lo, hi] with hi <= 1.0 in the default policy, the stored `final_weight` equals b × clamp(m_regime) × m_health for live sleeves and 0 otherwise, and 0 <= final_weight <= b. Harm: the allocator gives a sleeve more weight than its base.
   - Property: for every allocation, the stored `regime_mult` and `health_mult` are the values used, so `final_weight = base_weight × regime_mult × health_mult` holds row by row. Harm: the audit trail cannot explain a weight.
+- Where a cap binds (HAT-PORT-011 and HAT-PORT-055), `final_weight` is the product scaled down in proportion and rounded down, so it is below base × regime_mult × health_mult; the row identity holds exactly when no cap binds. A sleeve returning from health 0 (a previous health multiplier of 0) restarts at its target, not at 0 plus a smoothing step.
 - **[OWNER-PENDING]** health 0 vs lower bound 0.25: default reading is that bounds apply to the regime multiplier and to the health values 1.0 and 0.5, while health 0 moves the sleeve to Probation whose weight is 0 (BL lifecycle table); owner to confirm.
 
 #### HAT-PORT-051: Multipliers above 1 only through a policy increase
@@ -246,6 +250,7 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 - **Acceptance:**
   - Property: in every reachable state, every lifecycle change is one of the allowed edges and is accompanied by an event in the same transaction. Harm: a sleeve skips the backtest or shadow stage and trades unproven.
   - Property: in every reachable state, a Live sleeve passed through Backtested and Shadow since it last left Research. Harm: a retired sleeve returns to money without the full gate.
+- Re-entry to Live from Probation restarts the health multiplier at its target (no ramp), because the sleeve's previous multiplier was 0.
 - **[OWNER-PENDING]** Probation → Live recovery: docs do not define it; default = not automatic, only by owner promotion after the probation condition no longer holds, recorded as an event; owner to confirm.
 
 #### HAT-PORT-061: Backtested requires DSR probability ≥ 0.95 and ≥ 200 trades
@@ -275,14 +280,16 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
   - Property: for every sequence of live trade R values with n >= 50, the trigger fires iff the 90% CI upper bound of mean R is < 0, and it never fires on the expectancy rule with n < 50. Harm: a sleeve with negative edge keeps real capital, or a sound sleeve is benched on noise.
   - Property: in every reachable state, a Probation sleeve has final_weight 0 and its signals route as shadow. Harm: a failing sleeve still places real orders.
 - **[OWNER-PENDING]** CI method: default two-sided Student-t interval on mean R; docs silent; owner to confirm.
+- The health multiplier an allocation reads is that of the sleeve's latest snapshot dated before the trade date (a new sleeve with none has the full value); a sleeve whose snapshot cannot be read fails the `allocate` job with a stable code instead of being given a default.
 
 #### HAT-PORT-064: Retirement and re-entry
 - **Statement:** A Probation sleeve is Retired when it is still failing after 3 months or after 50 more shadow trades in Probation, and a Retired sleeve re-enters only through Research and the full gate.
 - **Source:** BL "Sleeve lifecycle"; PL4.
 - **PR:** 9
-- **Verification:** TLA `SleeveLifecycle!AllowedTransitions`
+- **Verification:** TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.retire_gate`
 - **Acceptance:**
   - Property: in every reachable state, Retired has the single outgoing edge to Research, and Probation → Retired happens only after 3 calendar months or 50 shadow trades in Probation with the failure condition still true. Harm: a retired sleeve returns to live money without fresh evidence.
+- **[OWNER-PENDING]** failure condition: a Probation sleeve is still failing while it has no shadow trade yet, no backtest expectancy is known, or the mean R of its shadow trades since it entered Probation is below the discounted benchmark of HAT-PORT-065; docs silent; owner to confirm.
 
 #### HAT-PORT-065: Live results are compared against a discounted backtest
 - **Statement:** The lifecycle evidence compares live expectancy against the backtest expectancy reduced by a configured decay discount, not the raw backtest.
@@ -292,6 +299,15 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 - **Acceptance:**
   - Property: for every backtest expectancy E_bt and discount δ in [0, 1], the benchmark used is E_bt × (1 − δ) and it never exceeds E_bt when E_bt >= 0. Harm: normal post-publication decay is read as failure, or real failure is hidden.
 - **[OWNER-PENDING]** discount δ: docs give the 26% / 58% figures but no setting; default δ = 0.58 (both MVP methods are widely published); owner to confirm.
+
+#### HAT-PORT-066: Lifecycle, regime and allocation changes are events
+- **Statement:** Every change of a sleeve's lifecycle state, every stored regime row and every allocation row appends its event (`sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed`) in the transaction of the change, and only one function writes `hat_bot.lifecycle_state`, so no change can skip its guard or its event.
+- **Source:** SCH §6 (event catalogue); BL "Sleeve lifecycle"; HAT-SCH-062.
+- **PR:** 9
+- **Verification:** CONF `lifecycle_single_writer`, PBT `lifecycle.transition_records_its_event`
+- **Acceptance:**
+  - Property: for every (current state, target, evidence), a transition either changes the state and appends exactly one `sleeve.lifecycle_changed` event naming from and to, or changes nothing and appends nothing. Harm: the audit trail disagrees with the state.
+  - Property: no code outside the one transition function assigns `lifecycle_state`. Harm: a second writer skips the lifecycle guard.
 
 ## §7 Regime model v2 (Phase 2 spec, not built in MVP)
 

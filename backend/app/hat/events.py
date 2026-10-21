@@ -2,7 +2,7 @@
 
 `record` never commits and never opens a session of its own: the event is written by the same
 database transaction as the state change it describes, so the two commit or roll back together
-(HAT-SCH-062, HAT-DEC-I15). It accepts only the 32 event types of the MVP catalogue
+(HAT-SCH-062, HAT-DEC-I15). It accepts only the 35 event types of the MVP catalogue
 (HAT-SCH-063), so a typo cannot create an event no replay or discipline metric reads.
 
 Event ids: Postgres assigns the `bigint` identity. SQLite cannot give a composite primary key an
@@ -42,7 +42,8 @@ __all__ = [
     "record",
 ]
 
-# Spec 03 §6 "Event types (MVP)", verbatim. `CONF events.catalogue` compares this with the spec.
+# Spec 03 §6 "Event types (MVP)", verbatim (the Portfolio group is PR 9's).
+# `CONF events.catalogue` compares this with the spec.
 EVENT_GROUPS: dict[str, tuple[str, ...]] = {
     "Data": ("ingest.completed", "ingest.failed", "quality.failed"),
     "Signals": (
@@ -76,6 +77,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "risk.change_requested",
         "risk.change_effective",
     ),
+    "Portfolio": ("sleeve.lifecycle_changed", "regime.state_recorded", "allocation.computed"),
     "Sessions": ("broker.logged_in", "broker.session_lost", "feed.stale"),
 }
 EVENT_TYPES: frozenset[str] = frozenset(t for group in EVENT_GROUPS.values() for t in group)
@@ -88,6 +90,7 @@ AGGREGATE_TYPES: frozenset[str] = frozenset(
         "strategy_version",
         "risk_policy",
         "bot",
+        "regime",
         "session",
         "ingest",
     }

@@ -146,7 +146,7 @@ not_in_catalogue = st.one_of(st.text(max_size=30), near_misses).filter(
 
 @given(event_type=not_in_catalogue, aggregate_type=st.sampled_from(AGGREGATES))
 def test_unknown_type_rejected(event_type: str, aggregate_type: str) -> None:
-    """For every string outside the 32-type catalogue, `record()` raises and writes nothing."""
+    """For every string outside the 35-type catalogue, `record()` raises and writes nothing."""
     aggregate_id = uuid.uuid4()
     with Session(ENGINE) as session:
         try:
