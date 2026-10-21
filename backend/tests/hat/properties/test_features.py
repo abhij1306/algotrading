@@ -721,6 +721,43 @@ def test_incremental_equals_full(world: list[Series], rng: Lcg, chunk: int, step
             assert digest(sa) == digest(sb), f"breadth of {day} differs"
 
 
+@given(
+    world=histories(max_instruments=3),
+    rng=RNG,
+    cut=st.integers(0, 330),
+    change=st.sampled_from(["actions", "universe"]),
+)
+@settings(max_examples=8, deadline=None)
+def test_changed_inputs_rebuild_everything(
+    world: list[Series], rng: Lcg, cut: int, change: str
+) -> None:
+    """After a full run, a new corporate action or a new universe, even when the next run stops
+    at an earlier date (`through`), never leaves a stale date behind: once a run without `through`
+    follows, every date equals a fresh full rebuild with the new inputs."""
+    dates = sorted({r["date"] for s in world for r in s.rows})
+    if len(dates) < 3:
+        return
+    actions = _split_actions(world, rng) or [
+        ActionFactor(world[0].iid, dates[len(dates) // 2], Decimal("0.5"))
+    ]
+    old_actions, new_actions = ([], actions) if change == "actions" else (actions, actions)
+    old_universe, new_universe = (None, None) if change == "actions" else (None, {world[0].iid})
+    stop = EPOCH + timedelta(days=cut)
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = _write_store(Path(tmp) / "staged", world, {})
+        fresh = _write_store(Path(tmp) / "fresh", world, {})
+        run_features(staged, old_actions, universe=old_universe)
+        run_features(staged, new_actions, through=stop, universe=new_universe)
+        run_features(staged, new_actions, universe=new_universe)
+        run_features(fresh, new_actions, full=True, universe=new_universe)
+        a, b = read_features(staged), read_features(fresh)
+        assert list(a) == list(b) == dates
+        for day in dates:
+            assert same_features(a[day], b[day]), f"features of {day} are stale"
+            sa = staged.read_partition(DATASET_BREADTH, day)
+            assert digest(sa) == digest(fresh.read_partition(DATASET_BREADTH, day))
+
+
 # --- HAT-DATA-073 split invariance -----------------------------------------------------------
 
 

@@ -417,7 +417,7 @@ Implementation rules the table leaves open (PR 6; they follow the definitions ab
 - **`adtr20` and a missing previous close.** `prev_close` is the bar's own (adjusted) `prev_close`. A bar with a previous close of zero or less (a first listing day) uses its own range, high − low.
 - **`mom_rank`** is the maximum over the windows that have a value; null when none has.
 - **Breadth** is stored in `breadth_daily/date=…` (one row: `universe_size`, `with_sma50`, `above_sma50`, `breadth_pct`). A close is above its SMA50 only when it exceeds it by more than a relative 1e-12, so float noise in the mean never flips a flat price.
-- **Incremental runs.** A run computes the dates that have no partition; a change in the stored corporate actions (adjusted history moves) makes the run a full rebuild, and so does the `full` flag. A correction of bars of an already featured date needs the `full` flag.
+- **Incremental runs.** A run computes the dates that have no partition; a change in the stored corporate actions (adjusted history moves) or in the universe (the percentiles and breadth move) makes the run a full rebuild, and so does the `full` flag; the change is recorded only once every date is rebuilt, so a run limited to earlier dates leaves the next run to finish it. Runs are serialised by a lock. A correction of bars of an already featured date needs the `full` flag.
 
 #### HAT-DATA-070: Feature dataset has exactly the specified columns
 - **Statement:** `features_daily/date=…` has exactly the columns in the §7 table, one row per instrument per date.
@@ -471,12 +471,12 @@ Implementation rules the table leaves open (PR 6; they follow the definitions ab
 - **[OWNER-PENDING]** Single `mom_rank` column definition: default max of per-window percentiles (supports `match: any`; `match: all` reads the `ret*` columns); owner to confirm.
 
 #### HAT-DATA-076: Breadth inputs for the regime
-- **Statement:** The features job computes, per date, the % of universe members above their 50-day SMA and stores it in `breadth_daily/date=…`, alongside the advance/decline ratio that the nightly ingest takes from `get_market_breadth` (PR 7).
+- **Statement:** The features job computes, per date, the % of universe members above their 50-day SMA and stores it in `breadth_daily/date=…` (universe size, members with an SMA50, members above it, the percentage). The advance/decline ratio from `get_market_breadth` is not part of that dataset; the nightly ingest stores it (PR 7).
 - **Source:** BL "Regime engine v1" (Breadth input); PLAN PR 6.
 - **PR:** 6
 - **Verification:** PBT `features.breadth`
 - **Acceptance:**
-  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i}| / |{i : sma50_i not null}|, in [0, 100], when the denominator is > 0; when no member has a 50-day SMA yet (the first 49 sessions of history), breadth is null and the regime engine stores no state for that date. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
+  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i, by more than a relative 1e-12}| / |{i : sma50_i not null}|, in [0, 100], when the denominator is > 0; when no member has a 50-day SMA yet (the first 49 sessions of history), breadth is null and the regime engine stores no state for that date. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
 
 #### HAT-DATA-077: Incremental features equal a full rebuild
 - **Statement:** The `features` job runs incrementally by date with a full-rebuild flag; both give identical results.

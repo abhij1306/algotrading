@@ -12,9 +12,9 @@ partition (or every date, with `full=True`) and writes each partition atomically
 Incremental equals full (HAT-DATA-077): both load the same way (the target dates plus, for every
 instrument, the 252 rows before the first target), so a date has the same inputs either way. Two
 things change old dates and so force a full rebuild even without the flag: a change in the
-corporate actions (adjusted history moves; the digest of the factor set is kept in
-`features_daily/_state.json`) and a correction of already-featured bars (the caller passes
-`full=True`; the ingest does so).
+corporate actions or the universe (adjusted history and the percentiles move; a digest of both
+is kept in `features_daily/_state.json`) and a correction of already-featured bars (the caller
+passes `full=True`; the ingest does so).
 
 Full-history rebuild: about 4,150 dates x about 3,000 instruments. The rebuild runs in chunks of
 `CHUNK_DAYS` target dates, so memory stays at about (CHUNK_DAYS + 252) x instruments rows.
@@ -24,6 +24,7 @@ Measured runtime is in the verify-features skill.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import logging
@@ -251,10 +252,13 @@ class FeaturesReport:
     rows: int = 0
 
 
-def actions_digest(actions: Iterable[ActionFactor]) -> str:
-    """Order-independent sha256 of the (instrument, ex-date, factor) set the adjusted view uses."""
+def inputs_digest(actions: Iterable[ActionFactor], universe: Collection[str] | None) -> str:
+    """Order-independent sha256 of what changes old dates without changing their bars: the
+    (instrument, ex-date, factor) set the adjusted view uses and the universe the percentiles
+    and breadth rank over."""
     lines = sorted(f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in actions)
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    scope = "*" if universe is None else ",".join(sorted(universe))
+    return hashlib.sha256(("\n".join(lines) + "\nuniverse:" + scope).encode()).hexdigest()
 
 
 def _state_path(store: DataStore) -> Path:
@@ -263,13 +267,13 @@ def _state_path(store: DataStore) -> Path:
 
 def _read_digest(store: DataStore) -> str | None:
     try:
-        return json.loads(_state_path(store).read_text(encoding="utf-8")).get("actions_digest")
+        return json.loads(_state_path(store).read_text(encoding="utf-8")).get("inputs_digest")
     except (OSError, ValueError):
         return None
 
 
 def _write_digest(store: DataStore, digest: str) -> None:
-    text = json.dumps({"actions_digest": digest}, sort_keys=True)
+    text = json.dumps({"inputs_digest": digest}, sort_keys=True)
     atomic_replace(_state_path(store), lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
@@ -342,19 +346,34 @@ def run_features(
     chunk_days: int = CHUNK_DAYS,
 ) -> FeaturesReport:
     """Compute and write the features of every date up to `through` that lacks a partition (all
-    dates when `full` or when the corporate actions changed since the last run). Safe to repeat
-    and to resume after a crash: a partition is replaced whole, and the action digest is
-    recorded only after the last date is written."""
+    dates when `full` or when the corporate actions or the universe changed since the last run).
+    Safe to repeat and to resume after a crash: a partition is replaced whole, and the inputs
+    digest is recorded only after the last date is written."""
     if chunk_days < 1:
         raise FeaturesError("features_bad_chunk")
     actions = list(actions)
-    digest = actions_digest(actions)
-    days = [d for d in store.days(DATASET_BARS) if through is None or d <= through]
+    store.root.mkdir(parents=True, exist_ok=True)
+    with (store.root / ".features.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time: runs must not interleave writes
+        return _run_locked(store, actions, through, full, universe, chunk_days)
+
+
+def _run_locked(
+    store: DataStore,
+    actions: list[ActionFactor],
+    through: date | None,
+    full: bool,
+    universe: Collection[str] | None,
+    chunk_days: int,
+) -> FeaturesReport:
+    digest = inputs_digest(actions, universe)
+    all_days = store.days(DATASET_BARS)
+    days = [d for d in all_days if through is None or d <= through]
     report = FeaturesReport()
     if full:
         report.full, report.reason = True, "full_requested"
     elif (previous := _read_digest(store)) != digest:
-        report.full, report.reason = True, "actions_changed" if previous else "first_run"
+        report.full, report.reason = True, "inputs_changed" if previous else "first_run"
     targets = days if report.full else [d for d in days if not _has_partitions(store, d)]
     if targets:
         con = store.connect(actions)
@@ -376,7 +395,10 @@ def run_features(
                 report.dates.extend(chunk)
         finally:
             con.close()
-    _write_digest(store, digest)
+    # A rebuild that stopped at `through` leaves later dates on the old inputs, so the new
+    # digest is recorded only when every date was covered; the next run then finishes the job.
+    if not (report.full and len(days) < len(all_days)):
+        _write_digest(store, digest)
     return report
 
 

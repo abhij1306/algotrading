@@ -385,7 +385,10 @@ class DataStore:
         """Replace the day's `part-<name>.parquet` of a derived dataset (features, breadth) by
         `table`, which must have exactly the dataset's schema. Writing the same table again
         rewrites the same file (HAT-DATA-082)."""
-        if dataset in (DATASET_BARS, DATASET_INDEX) or table.schema != DATASET_SCHEMAS[dataset]:
+        if (
+            dataset not in (DATASET_FEATURES, DATASET_BREADTH)
+            or table.schema != DATASET_SCHEMAS[dataset]
+        ):
             raise StoreError("store_bad_schema")
         if not name.isalnum():
             raise StoreError("store_bad_raw_name")

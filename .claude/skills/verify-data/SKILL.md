@@ -48,6 +48,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT features.batching_changes_nothing` Computing a few instruments at a time and dropping early dates (the memory bounds of the full rebuild) gives exactly the one-shot features and breadth. Harm: the full rebuild differs from the nightly run.
 - `PBT features.load_lookback` For every instrument, including ones that stopped trading for longer than the slice read, the loader returns the rows of the requested dates plus exactly the lookback rows before them, equal to `bars_daily` (latest run per day), bounded or not. Harm: features of the first dates of a run are null or wrong, and incremental differs from full.
 - `PBT features.incremental_equals_full` Runs through successive cut dates, with a corporate action arriving part-way and any chunk size, leave the same features and breadth for every date as one full rebuild. Harm: live features drift from backtest features.
+- `PBT features.changed_inputs_rebuild_everything` After a full run, a new corporate action or a new universe, even when the next run stops at an earlier date, leaves no stale date once a later run without a limit follows: every date equals a fresh full rebuild. Harm: part of history keeps the old split adjustment or the old universe's percentiles.
 - `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
 - `PBT features.pandas_equivalence` SMA50/150/200 equal `stage2_metrics`' averages and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
 - `CONF features.schema` Every written features partition has exactly the §7 columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
@@ -141,6 +142,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Instruments outside the universe get null `rs_pct` and `mom_rank`; the universe is one static set per run (point-in-time membership arrives with PR 9).
 - The advance/decline ratio of HAT-DATA-076 comes from `get_market_breadth` in the nightly ingest (PR 7), not from the features job.
 - A correction of bars of an already featured date is not detected: the caller runs with `full`.
+- Runs are serialised with a file lock (`.features.lock` under the data root); two concurrent rebuilds are not tested, the lock is `fcntl.flock` as the index upsert uses.
 
 ## Scratch breaks
 
@@ -724,6 +726,30 @@ E   AssertionError: features of 2020-02-04 differ
 E   assert False
 E    +  where False = same_features(shape: (1, 18)\n┌───────────────┬──────────┬───────┬───────┬───┬────────┬────────┬────────┬──────────┐\n│ instrument_id ...  ┆ null   
 E   Failing test case: test_incremental_equals_full(
+```
+
+### PBT features.changed_inputs_rebuild_everything
+
+Break: the new inputs digest is recorded even when the rebuild stopped at an earlier date.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:725: in test_changed_inputs_rebuild_everything
+tests/hat/properties/test_features.py:756: in test_changed_inputs_rebuild_everything
+E   AssertionError: features of 2020-01-15 are stale
+E   assert False
+E    +  where False = same_features(shape: (1, 18)\n┌───────────────┬──────────┬───────┬──────
+```
+
+Second break: the universe is left out of the inputs digest.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:725: in test_changed_inputs_rebuild_everything
+tests/hat/properties/test_features.py:758: in test_changed_inputs_rebuild_everything
+E   AssertionError: assert 'b6a12e93b449ff89' == '443b2dcc24581983'
+E     
+E     - 443b2dcc24581983
 ```
 
 ### PBT features.job_idempotent
