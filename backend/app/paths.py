@@ -6,6 +6,7 @@ instead of counting `Path(__file__).parents[N]`, so moving a module or the `data
 tree is a one-line change.
 """
 
+import os
 from pathlib import Path
 
 # backend/app/paths.py -> backend/app -> backend -> repository root
@@ -23,3 +24,7 @@ SOURCES_ROOT = DATA_ROOT / "01_sources"
 UNIVERSE_CONSTITUENTS_DIR = DATA_ROOT / "03_universe" / "constituents"
 CURATED_ROOT = DATA_ROOT / "04_curated" / "phase1"
 METADATA_ROOT = DATA_ROOT / "05_metadata" / "phase1"
+
+# Hire a Trader (HAT): Parquet bars, raw bhavcopy zips and backtest outputs. Gitignored.
+# HAT_DATA_ROOT overrides it (HAT-OVR-052); an empty value means the default.
+HAT_DATA_ROOT = Path(os.environ.get("HAT_DATA_ROOT", "").strip() or DATA_ROOT / "hat")

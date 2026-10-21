@@ -179,7 +179,8 @@ Each critical area gets a skill an agent can follow cold, mid-change, without le
 | `.claude/skills/verify-execution/SKILL.md` | `ExecutionRouter`, `OrderReconciliation`, `ApprovalToken`, `TradeLifecycle`; PBT `tags`, `telegram` |
 | `.claude/skills/verify-stops/SKILL.md` | `StopPlacement`; DB `governance.stop_only_rises`; PBT `stops`, `exits` |
 | `.claude/skills/verify-risk/SKILL.md` | `KillSwitch`; PBT `sizing`, `caps`, `exposure` |
-| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler` |
+| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
+| `.claude/skills/verify-governance/SKILL.md` | DB `governance`, `reference`, `portfolio`, `migration` checks; PBT `ids`, `time`, `config`, `risk_policy`; CONF `schema`, boundaries |
 | `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `bars`, `ingest` |
 | `.claude/skills/verify-portfolio/SKILL.md` | `RegimeConfirmation`, `SleeveLifecycle`; PBT `allocator`, `health`, `regime`, `costs`, `dsr`, `criteria`, `scoring`, `config` |
 
