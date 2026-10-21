@@ -161,14 +161,14 @@ outside this list without updating this section.
 ## §6 CI job
 
 #### HAT-VER-060: One CI job runs TLC and the Hypothesis suite
-- **Statement:** `.github/workflows/ci.yml` gains a `verification` job that installs Java 17+ and the pinned TLC, runs every model and every broken variant, then runs `python -m pytest backend/tests/hat/properties -q` under the `ci` Hypothesis profile.
+- **Statement:** `.github/workflows/ci.yml` gains verification jobs that together install Java 17+ and the pinned TLC, run every model and every broken variant (`verification-tla`), run the conformance checks (`verification-conformance`), and run `backend/tests/hat/properties` under the `ci` Hypothesis profile, sharded across a matrix of parallel jobs (`verification-properties`, each with pytest-xdist). The shards are a partition of the property files (CONF `ci_verification_job`).
 - **Source:** OWN-FV.
 - **PR:** 2
 - **Verification:** CONF `ci_verification_job`
 - **Acceptance:**
-  - Property: on every pull request, the `verification` job fails whenever any model reports a violation, any broken variant reports none, or any Hypothesis property fails. Harm: a broken guarantee merges because nothing ran the check.
-  - Property: the job's runtime stays under 15 minutes. Harm: agents stop rerunning a slow check on every change.
-- **[OWNER-PENDING]** 15-minute budget: default; owner to confirm. The `verification` job is added to the required checks the protocol lists (backend, backend-postgres, frontend, api-schema, SonarCloud).
+  - Property: on every pull request, the verification jobs fail whenever any model reports a violation, any broken variant reports none, or any Hypothesis property fails. Harm: a broken guarantee merges because nothing ran the check.
+  - Property: each verification job's runtime stays under 5 minutes (hard timeout 10). Harm: agents stop rerunning a slow check on every change.
+- **[OWNER-PENDING]** 5-minute budget per job: default; owner to confirm. The verification jobs (`verification-tla`, `verification-conformance`, `verification-properties (1..4)`) are added to the required checks the protocol lists (backend, backend-postgres, frontend, api-schema, SonarCloud). The `backend` job runs only the legacy suite; it no longer runs `tests/hat/properties` or `tests/hat/conformance`.
 
 ## §7 Project-local verify skills
 

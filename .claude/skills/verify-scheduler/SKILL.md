@@ -17,7 +17,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.disabled_starts_nothing` With HAT disabled `start_scheduler` creates no task and touches no logging or database, and with it enabled on a non-Postgres dialect it raises before any task exists. Harm: HAT runs without the database triggers that protect it.
 - `PBT ops.log_records_structured` Every record under `app.hat` renders as one JSON line with `ts`, `level`, `msg` and each context key given. Harm: logs cannot be parsed during an incident.
 - `DB ops.job_run_unique` The database rejects a second `hat_job_run` row for one (job, trade_date), including under concurrent inserts. Harm: idempotency rests on application code alone and a race runs a job twice.
-- `CONF verification harness` The TLC runner is pinned by version and sha256 and refuses a mismatching jar; every model has a cfg, stated bounds and assumptions, a code location per action and a broken variant per property; the `ci` Hypothesis profile is registered and loaded; the CI `verification` job runs everything inside 15 minutes; every DB check has a broken variant; every spec requirement is well formed; verify skills are complete and current. Harm: a check silently stops running or stops being able to fail.
+- `CONF verification harness` The TLC runner is pinned by version and sha256 and refuses a mismatching jar; every model has a cfg, stated bounds and assumptions, a code location per action and a broken variant per property; the `ci` Hypothesis profile is registered and loaded; the CI verification jobs (`verification-tla`, `verification-conformance`, sharded `verification-properties`) run everything, each inside the 5-minute target; every DB check has a broken variant; every spec requirement is well formed; verify skills are complete and current. Harm: a check silently stops running or stops being able to fail.
 
 ## Run
 
@@ -73,14 +73,14 @@ Checks:
 - `backend/tests/hat/conformance/hat_conf_skills.py`
 - `backend/tests/hat/conformance/hat_conf_spec.py`
 - `backend/tests/hat/conftest.py`
-- `.github/workflows/ci.yml`: job `verification`
+- `.github/workflows/ci.yml`: jobs `verification-tla`, `verification-conformance`, `verification-properties`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `bd89183746bcd4b305c0b15bbf86260091bd602d`
-Covered digest: `fbe18f9a0829ba2283fa4ba3435528ae92d90b5d042699d6bda52f149c1f8088`
+Covered digest: `3403c4cc738f708db37512b70e73b36d4169c1a727709426609354168834b3d8`
 
 ## Scope changes
 
