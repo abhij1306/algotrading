@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.hat.clock import require_aware
 
 from .errors import HatError
-from .models import HatEvent
+from .models import HatEvent, HatOrder, HatPosition
 from .models.events import EVENT_ACTORS
 from .settings import load_settings
 from .time import utc_now
@@ -144,6 +144,26 @@ def _check(
         raise EventError("payload is not JSON serializable") from exc
 
 
+_LINKED_ROWS = {"order": HatOrder, "position": HatPosition}
+
+
+def _check_linked_signal(
+    session: Session,
+    aggregate_type: str,
+    aggregate_id: uuid.UUID,
+    event_type: str,
+    correlation_id: uuid.UUID | None,
+) -> None:
+    """HAT-SCH-064: a trade event about an order or a position carries the id of the signal that
+    row belongs to; an unknown row, or another signal's id, is refused."""
+    model = _LINKED_ROWS.get(aggregate_type)
+    if model is None or event_type not in TRADE_EVENT_TYPES:
+        return
+    linked = session.scalar(select(model.signal_id).where(model.id == aggregate_id))
+    if linked is None or linked != correlation_id:
+        raise EventError("an order or position event's correlation_id is its own signal's id")
+
+
 def _next_sqlite_id(session: Session) -> int:
     bind = session.get_bind()
     key = str(bind.engine.url)
@@ -172,7 +192,8 @@ def record(
 
     Nothing is committed: the caller's commit (or rollback) decides the event together with the
     state change it describes. Raises `EventError`, writing nothing, when the type, aggregate
-    type or actor is outside the catalogue, a trade event has no `correlation_id`, a user event
+    type or actor is outside the catalogue, a trade event has no `correlation_id` (or, about an
+    order or a position, not the id of that row's signal), a user event
     has no `chat_id`, the payload is not JSON, or `causation_id` names no earlier event.
     """
     _check(
@@ -183,6 +204,7 @@ def record(
         payload=payload,
         correlation_id=correlation_id,
     )
+    _check_linked_signal(session, aggregate_type, aggregate_id, event_type, correlation_id)
     if causation_id is not None:
         found = session.execute(select(HatEvent.id).where(HatEvent.id == causation_id)).first()
         if found is None:

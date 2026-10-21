@@ -1,11 +1,11 @@
 ---
 name: verify-execution
-description: How to run, read and update the checks behind Hire a Trader's broker interface, the Fyers adapter, order tags, idempotent order submission, reconciliation, account onboarding and the broker session (TLA+ OrderReconciliation, tag, adapter, submission and session properties, broker CONF checks). Use before and after any change to backend/app/hat/execution (the Fyers broker, session, login and token store included), backend/app/hat/api/fyers_auth.py, FakeBroker or the OrderReconciliation model.
+description: How to run, read and update the checks behind Hire a Trader's broker interface, the Fyers adapter, order tags, idempotent order submission, reconciliation, account onboarding, the broker session, the execution router, execution modes and confirm-mode approvals (TLA+ OrderReconciliation, ExecutionRouter, ApprovalToken, tag, adapter, submission, session and router properties, broker CONF checks). Use before and after any change to backend/app/hat/execution (the router, modes, Fyers broker, session, login and token store included), backend/app/hat/engine/approvals.py, backend/app/hat/api/fyers_auth.py, FakeBroker or the OrderReconciliation, ExecutionRouter or ApprovalToken model.
 ---
 
 # verify-execution
 
-Checks that an order reaches the broker at most once per tag and only after its attempt is persisted, that an unknown outcome is looked up by tag before any retry, that nothing is sent before a reconciliation or while a mismatch blocks it, that an unreadable broker never reads as an empty one, and that the Fyers adapter is a thin, CNC-only wrapper over HAT's own Fyers broker, session and login (K2), with one login and one token store. Specs: `docs/specs/hat/07-execution.md` §8-§11, `docs/specs/hat/10-ops.md` §2 (HAT-OPS-031, 032, 051), HAT-BRK-080, 091, 100, 112, HAT-DEC-I7, I8, I9, I10, BD2, HAT-SCH-053, HAT-EXEC-062, `11-verification.md` (HAT-VER-030..034, 072).
+Checks that an order reaches the broker at most once per tag and only after its attempt is persisted, that an unknown outcome is looked up by tag before any retry, that nothing is sent before a reconciliation or while a mismatch blocks it, that an unreadable broker never reads as an empty one, and that the Fyers adapter is a thin, CNC-only wrapper over HAT's own Fyers broker, session and login (K2), with one login and one token store. Since PR 15b it also checks the execution router: one risk check, three routes by the bot's effective mode, confirm cards that expire and re-check max-chase and the live conditions on Take, skips that continue as veto trades, and mode changes that wait for the next session open. Specs: `docs/specs/hat/07-execution.md` §8-§11, `docs/specs/hat/10-ops.md` §2 (HAT-OPS-031, 032, 051), HAT-BRK-080, 091, 100, 112, HAT-DEC-I7, I8, I9, I10, BD2, HAT-SCH-053, HAT-EXEC-062, 07 §1-§3 and §13 (HAT-EXEC-010..012, 020..023, 030..032), HAT-GOV-084, `11-verification.md` (HAT-VER-030..034, 072).
 
 ## Properties
 
@@ -29,7 +29,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never retry a GTT after a lost answer and do not read an unreachable broker as a rejection, and leave no attempt marker on a GTT that was never sent. Harm: a retry or restart double-places an entry or stop.
 - `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an unreconciled or blocked bot, an entry that is not a buy, an exit that is not a sell, or an entry with the session not live is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
-- `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only). Harm: a live mode runs on an account that cannot hold a protective stop.
+- `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only); a mode outside the three runs shadow and its request is refused as unknown (`UnknownModeError`), whatever the account. Harm: a live mode runs on an account that cannot hold a protective stop.
 - `PBT broker.account_active_after_check` `onboard_account` marks an account active only when funds, positions and holdings were all fetched, whichever one fails. Harm: an account that cannot be read is treated as ready.
 - `PBT broker.one_session_owner` `SessionRegistry` hands out one owner per account, serialises that owner's calls and refuses a call after release; the adapter's session status never raises and maps (connected, client, store error) to live, expired, missing or unknown; `record_session` writes the morning login. Harm: two owners race for one session, or a broken token store reads as live.
 - `PBT ops.session_backoff_alert` The reconnect delay is 1 s doubling to 30 s, and an outage raises exactly one alert after 2 minutes, none after a recovery until the next outage. Harm: a dead session retries in a tight loop or alerts every minute.
@@ -88,6 +88,36 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `DB runtime.publish_serialised` Two real nightly publishes of one bot and day, the first holding inside its scan after its "already published?" read, write one `watchlist.published`; the second waits on the bot's lock and skips. Harm: duplicate watchlist rows and events.
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
+- `TLA ExecutionRouter!RouteByMode` Each routed signal takes the route of the mode it was routed by: shadow a virtual position, confirm a card (a real order only after a Take), auto a real order. Harm: a signal is routed under the wrong mode.
+- `TLA ExecutionRouter!ShadowNeverCallsBroker` A shadow signal never reaches the broker. Harm: a paper strategy places real orders.
+- `TLA ExecutionRouter!RiskBeforeRoute` Nothing is routed without passing evaluate_signal. Harm: an entry skips every cap and kill.
+- `TLA ExecutionRouter!EntryHasStop` Every accepted entry carries its stop. Harm: a position with no stop to place at the broker.
+- `TLA ExecutionRouter!MaxChaseAlwaysApplied` Max-chase is applied at the trigger and again at a Take. Harm: an entry buys after the price ran away.
+- `TLA ExecutionRouter!SkipBecomesShadow` A skipped or expired card continues as a virtual veto trade, never a real order. Harm: veto scoring misses skipped trades.
+- `TLA ExecutionRouter!ExitsNeverAsk` No exit waits for the user. Harm: an exit stalls on a card while the price falls.
+- `TLA ExecutionRouter!NoOrderOutsideHours` No entry and no order outside the calendar session, a late Take included. Harm: an order on a closed market.
+- `TLA ExecutionRouter!NoOrderWhenStale` No entry and no order on a stale feed or a failed quality gate, a Take included. Harm: an order on a frozen feed.
+- `TLA ExecutionRouter!GateFreshBeforeFirstEntry` No entry before the session's regime gate is known. Harm: yesterday's gate admits today's entries.
+- `TLA ExecutionRouter!GateOffNoEntry` No entry while the regime gate is off, a Take included. Harm: longs bought in a regime the plan forbids.
+- `TLA ExecutionRouter!ModeDomain` The mode in force, the queued mode and every signal's mode are one of the three. Harm: an unknown mode routes by accident.
+- `TLA ExecutionRouter!LongOnly` Every entry order buys. Harm: a short in a long-only system.
+- `TLA ExecutionRouter!AutoNeedsGtt` No real order without GTT for delivery, at the route and at a Take. Harm: a real position goes overnight without a broker stop.
+- `TLA ExecutionRouter!NoAddToOpenPosition` At most one of the bot's positions or pending entries on an instrument (a veto trade holds none). Harm: pyramiding into a held name.
+- `TLA ExecutionRouter!ModeChangeNextSession` The mode in force changes only at a session open. Harm: a bot switches to real orders mid-session.
+- `TLA ExecutionRouter!ApprovalsDecided` Every card is eventually taken, skipped or expired (liveness). Harm: a card hangs and its slot is never freed.
+- `TLA ExecutionRouter!ExitsComplete` A due exit is eventually sent, in every mode (liveness). Harm: a real position is never closed.
+- `TLA ApprovalToken!NoTakeAfterExpiry` No card is taken at or after its expiry. Harm: an approval opens a position at a price the user never saw.
+- `TLA ApprovalToken!ChaseRecheckOnTake` No Take places an order at a price past the max-chase level. Harm: the user approves an entry that already ran away.
+- `TLA ApprovalToken!SingleDecision` A card is decided at most once. Harm: a double tap places two orders.
+- `TLA ApprovalToken!CardsDecided` Every sent card is eventually decided (liveness). Harm: an undecided card waits forever.
+- `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement) allow it and otherwise no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+- `PBT router.refused_entry_is_not_sent` An auto entry whose bot became manage-only (account, bot, manual or health kill, or a pause) after the signal committed sends nothing: an unsent reserved order is cancelled and the signal ends Rejected with the kill or pause reason; an order that may be at the broker (unconfirmed) is left to reconciliation, neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
+- `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
+- `PBT router.skip_and_expiry_become_one_veto_trade` Any mix of Skips, sweeps and late Takes ends a card Cancelled or Expired with exactly one virtual veto trade at the card's quantity and stop, no broker call, replays that match, no slot held and a stop-out that is not the bot's. Harm: a skip is scored twice or never, or blocks the bot's next entries.
+- `PBT router.rejected_entry_is_retried_once` A rejected auto entry is alerted and retried once under the next tag; a second rejection ends Rejected with one `entry.not_placed` alert and no third order. Harm: a retry storm or a silent failure.
+- `PBT router.reconcile_before_first_order` The first real entry of a session reconciles first; an unreadable broker or an unknown HT order places nothing and ends the entry Rejected with an alert. Harm: an order on top of an unmatched book.
+- `PBT router.mode_change_takes_effect_next_session` A change queued outside hours routes nothing differently before the next open (the evening and the next pre-open included) and everything after; one asked in hours is refused and writes nothing; the open applies it to the bot row once. Harm: a bot switches to real orders mid-session.
+- `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
 
 ## Run
 
@@ -97,6 +127,10 @@ verification/tla/run.sh OrderReconciliation            # the model must pass
 verification/tla/run.sh --broken OrderReconciliation   # each variant must fail with its EXPECT line
 verification/tla/run.sh TradeLifecycle                # the model must pass
 verification/tla/run.sh --broken TradeLifecycle       # each variant must fail with its EXPECT line
+verification/tla/run.sh ExecutionRouter               # the router model must pass
+verification/tla/run.sh --broken ExecutionRouter      # 18 variants, one per property
+verification/tla/run.sh ApprovalToken
+verification/tla/run.sh --broken ApprovalToken
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_tags.py tests/hat/properties/test_broker.py \
   tests/hat/properties/test_stops.py tests/hat/properties/test_ops.py -q --no-cov
@@ -107,6 +141,7 @@ python -m pytest tests/hat/conformance/test_conf_broker.py -q --no-cov
 CI=1 python -m pytest tests/hat/properties/test_exits.py tests/hat/properties/test_trades.py -q --no-cov
 CI=1 python -m pytest tests/hat/properties/test_config.py -k trade_keeps_entry_version -q --no-cov
 python -m pytest tests/hat/conformance/test_conf_lifecycle.py -q --no-cov
+CI=1 python -m pytest tests/hat/properties/test_router.py -q --no-cov   # the router on FakeBroker
 # the DB checks need a throwaway Postgres whose database name ends in _test
 SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
   python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or publish_serialised or state_domain"
@@ -120,6 +155,7 @@ When a check fails, decide which side is wrong before touching anything.
 
 - TLC prints a counterexample as numbered states. Each action names its function in the `\* code:` comment above it in `OrderReconciliation.tla`. Replay the steps against the real functions (`reserve_order`, `send_order`, `ReconciliationService.run`, `onboard_account`, `SessionRegistry.acquire`). If the code can take them, it is a bug: fix it or record a finding. If it cannot (a guard the model omits), it is a model error: add the guard and say so under "Scope changes". An earlier draft of this model showed an entry placed after a reconcile blocked the bot between stamp and call; the real `send_order` now reads the guard again just before the call, and the model's `PlaceCall` guards `reconciled` and `~blocked`.
 - A failing property test prints a falsifying example; a state-machine failure lists the steps. Re-run them by hand against `FakeBroker`.
+- `ExecutionRouter` and `ApprovalToken`: replay a counterexample against `ExecutionRouter.route`, `take`, `skip`, `expire`, `place_entry` and `approvals.take`/`skip`/`expire_due`, then against `test_router.py`'s `Rig` (the real router, adapter and `FakeBroker`). The router model merges an auto entry's route and placement into one step and stands a placed entry for the open position; a counterexample that needs a fill, a broker stop or a rejection belongs to `OrderReconciliation` or `StopPlacement`.
 - Never weaken a property or shrink a strategy. Narrowing needs a reason under "Scope changes".
 - Model bounds: three tags (the original and up to two retries; the protocol allows one), one retry, two broker orders per tag counted, one divergence, two session owners, two restarts. Assumptions: each action is one transaction or one broker call, a crash can fall between any two, a rejection means nothing was placed, and the tag lookup is consistent with the broker's book.
 - Known windows, kept visible:
@@ -186,12 +222,23 @@ Trade lifecycle (PR 11):
 - `backend/tests/hat/db/hat_db_runtime.py`
 - `backend/tests/hat/db/test_db_broken_variants.py`
 
+Execution router and approvals (PR 15b):
+- `verification/tla/ExecutionRouter.tla` and `verification/tla/ExecutionRouter.cfg`
+- `verification/tla/broken/ExecutionRouter__any_mode.cfg`, `verification/tla/broken/ExecutionRouter__apply_now.cfg`, `verification/tla/broken/ExecutionRouter__confirm_places_now.cfg`, `verification/tla/broken/ExecutionRouter__exit_asks.cfg`, `verification/tla/broken/ExecutionRouter__exits_wait.cfg`, `verification/tla/broken/ExecutionRouter__gate_unknown_ok.cfg`, `verification/tla/broken/ExecutionRouter__no_expiry_sweep.cfg`, `verification/tla/broken/ExecutionRouter__no_gtt_gate.cfg`, `verification/tla/broken/ExecutionRouter__no_stop_check.cfg`, `verification/tla/broken/ExecutionRouter__place_unchecked.cfg`, `verification/tla/broken/ExecutionRouter__pyramid.cfg`, `verification/tla/broken/ExecutionRouter__route_without_risk.cfg`, `verification/tla/broken/ExecutionRouter__shadow_calls_broker.cfg`, `verification/tla/broken/ExecutionRouter__short_entry.cfg`, `verification/tla/broken/ExecutionRouter__skip_drops_trade.cfg`, `verification/tla/broken/ExecutionRouter__take_ignores_feed.cfg`, `verification/tla/broken/ExecutionRouter__take_ignores_gate.cfg`, `verification/tla/broken/ExecutionRouter__take_ignores_hours.cfg`, `verification/tla/broken/ExecutionRouter__take_skips_chase.cfg`
+- `verification/tla/ApprovalToken.tla` and `verification/tla/ApprovalToken.cfg`
+- `verification/tla/broken/ApprovalToken__decide_twice.cfg`, `verification/tla/broken/ApprovalToken__no_chase_recheck.cfg`, `verification/tla/broken/ApprovalToken__no_sweep.cfg`, `verification/tla/broken/ApprovalToken__take_after_expiry.cfg`
+- `backend/app/hat/execution/router.py`
+- `backend/app/hat/execution/modes.py`
+- `backend/app/hat/engine/approvals.py`
+- `backend/app/hat/notify.py`
+- `backend/tests/hat/properties/test_router.py`
+
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `c06b009d5659e7aaab2861b1ce2b5d44bec55978740206dc48ebe00773534bd3`
+Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
+Covered digest: `32ae692e8cf1d128c4cf1fda4294a5150727daa08145ba362085d51dcd09c233`
 
 ## Scope changes
 
@@ -206,7 +253,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The order payload uses the broker symbol stored in `hat_broker_symbol` (-BE for a trade-for-trade stock) and falls back to the converted -EQ symbol only when the stored symbols cannot be read (`tags.fyers_payload_mapping`, `test_order_goes_out_under_the_stored_broker_symbol`; found in review).
 
 - `OrderReconciliation` models one signal with one entry purpose: signals are independent rows keyed by tag, so one stands for "any number". Exits and stops are not modelled: they never consult the entry block (covered by `tags.refusals_before_the_broker` on the real code).
-- `ExecutionRouter!NoEntryWithoutSession` and `ExecutionRouter!AutoNeedsGtt` belong to PR 15 and 16 and the router model is not built here. Session liveness and the confirm/auto gate are proven on the real code (`tags.refusals_before_the_broker`, `broker.confirm_and_auto_need_gtt`). `AutoNeedsGtt` was added to `KNOWN_GAPS` for that reason.
+- `ExecutionRouter!NoEntryWithoutSession` and `ExecutionRouter!AutoNeedsGtt` belong to PR 15 and 16 and the router model is not built here. Session liveness and the confirm/auto gate are proven on the real code (`tags.refusals_before_the_broker`, `broker.confirm_and_auto_need_gtt`). `AutoNeedsGtt` was added to `KNOWN_GAPS` for that reason. (PR 15b built the model: `AutoNeedsGtt` left `KNOWN_GAPS`; `NoEntryWithoutSession` waits for PR 16, and `tags.refusals_before_the_broker` still checks the session on the real order path.)
 - `CONF mvp_seed_scope` covers the broker half only; PR 8 extends it.
 - `gtt_limit_price` raises when the rounded price is not positive (a trigger within about a tick of zero): a refinement of the spec property, not a weakening.
 - PR 13 updated harness files covered by `verify-scheduler` without narrowing any check: `MERGED_PRS` includes 13, `KNOWN_GAPS` lost `TLA OrderReconciliation!AtMostOneEntryPerSignal` and gained `TLA ExecutionRouter!AutoNeedsGtt`, and `test_ops.py` gained `test_session_backoff_alert`.
@@ -215,7 +262,13 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 11 added `TradeLifecycle` and the shadow engine; `TLA TradeLifecycle!TypeOK` is the one property without a broken variant. The model puts the entry's Triggered and EntryPlaced steps inside one commit (Watchlisted to Open or Rejected), so AwaitingApproval and the confirm and auto paths are checked only as rows of the table (`CONF lifecycle_transitions_match_spec`), not as model actions: they are PR 15.
 - `DB runtime.per_bot_serialised` commits real rows and empties `hat_event` and the runtime tables with TRUNCATE afterwards (the event log refuses DELETE). Its broken variants are code breaks (`lock_bot` a no-op, or keyed per call), registered in `test_db_broken_variants.py` with an undo list.
-- `evaluate_position` and `open_entry` refuse a real position or a confirm or auto bot (`position_not_virtual`, `mode_not_shadow`); the router (PR 15) owns them. A virtual trade's continuation after a confirm skip is PR 15.
+- `evaluate_position` and `open_entry` refuse a real position or a confirm or auto bot (`position_not_virtual`, `mode_not_shadow`); the router (PR 15) owns them. A virtual trade's continuation after a confirm skip is PR 15. (PR 15b: `open_entry` takes the effective mode and routes all three; `evaluate_position` still refuses a real position until 15c, and drives veto trades.)
+
+- PR 15b added `ExecutionRouter` (16 invariants, 2 liveness properties) and `ApprovalToken` (3 invariants, 1 liveness property). `TypeOK` of each is the one property without a broken variant. Bounds and their reasons are in each model's header: two signals on one instrument (enough for `NoAddToOpenPosition`), one card per signal, the quality gate and the feed folded into one input, an auto entry routed and placed in one step, a placed entry standing for the open position (fills, rejections and broker stops are `OrderReconciliation`'s and 15c's `StopPlacement`'s). `ApprovalToken` checks the decision service; the token's signature and single use at the Telegram edge are PR 16's (`SecondConfirmRequired` is not built).
+- `ExecutionRouter!UserCannotRaiseRisk`, `RejectNoCard` and `NoEntryWithoutSession` name PR 16 in their README rows and are not in this model yet.
+- `router.take_rechecks_max_chase` needed two `@example`s: its first draft drew the over-chase region too rarely to catch a removed re-check in 40 examples (recorded below). `router.mode_change_takes_effect_next_session` gained a pre-open probe after its first draft could not see a change read as effective at its request (recorded below).
+- The router properties found two bugs, fixed here: an approval written with an IST timestamp read back on SQLite five and a half hours late (approval times are now stored in UTC), and a veto trade counted as one of the bot's slots and stop-outs (`trades.bot_snapshot` and `portfolio.service.trade_results` now leave veto trades out).
+- `order.rejected` drives the lifecycle step to Rejected only with `final: true` (15c sends it); the router ends a twice-rejected entry with `signal.rejected` (stage `route`) from Triggered. `CONF lifecycle_transitions_match_spec` still compares the table.
 
 ## Scratch breaks
 
@@ -430,6 +483,14 @@ Break: `_gtt_ready` ignores the `gtt_delivery` capability.
 
 ```
 E   AssertionError: assert 'confirm' == 'shadow'
+```
+
+Second break: `request_mode` drops the unknown-mode check, so a mode outside the three is refused as a GTT problem.
+
+```
+E   app.hat.execution.modes.ModeRefusedError: mode needs an active account with GTT for delivery
+E   Failing test case: test_confirm_and_auto_need_gtt(
+E       mode='live',
 ```
 
 ### PBT broker.account_active_after_check
@@ -1057,4 +1118,389 @@ Break: in `backend/app/hat/engine/watchlist.py`: `scan_and_publish` takes no bot
 
 ```
 tests/hat/db/test_db_broken_variants.py::test_check_fails_when_rule_is_broken[runtime.publish_serialised-...] PASSED (the check raised AssertionError: 2 publishes)
+```
+
+### TLA ExecutionRouter!RouteByMode
+
+Break: broken variant `ExecutionRouter__confirm_places_now.cfg` (the model's `BrokenMode = "confirm_places_now"`): a confirm signal is placed at the trigger with no card.
+
+```
+Error: Invariant RouteByMode is violated.
+State 3: <SessionOpen ...>
+State 4: <GateRefresh ...>
+State 5: <Route ...>
+```
+
+### TLA ExecutionRouter!ShadowNeverCallsBroker
+
+Break: broken variant `ExecutionRouter__shadow_calls_broker.cfg` (the model's `BrokenMode = "shadow_calls_broker"`): a shadow route also sends a real order.
+
+```
+Error: Invariant ShadowNeverCallsBroker is violated.
+State 2: <SessionOpen ...>
+State 3: <GateRefresh ...>
+State 4: <Route ...>
+```
+
+### TLA ExecutionRouter!RiskBeforeRoute
+
+Break: broken variant `ExecutionRouter__route_without_risk.cfg` (the model's `BrokenMode = "route_without_risk"`): `Route` skips the risk check.
+
+```
+Error: Invariant RiskBeforeRoute is violated.
+State 1: <Initial ...>
+State 2: <Route ...>
+```
+
+### TLA ExecutionRouter!EntryHasStop
+
+Break: broken variant `ExecutionRouter__no_stop_check.cfg` (the model's `BrokenMode = "no_stop_check"`): the risk check accepts an entry with no stop.
+
+```
+Error: Invariant EntryHasStop is violated.
+State 2: <SessionOpen ...>
+State 3: <GateRefresh ...>
+State 4: <Route ...>
+```
+
+### TLA ExecutionRouter!MaxChaseAlwaysApplied
+
+Break: broken variant `ExecutionRouter__take_skips_chase.cfg` (the model's `BrokenMode = "take_skips_chase"`): a Take places without the max-chase re-check.
+
+```
+Error: Invariant MaxChaseAlwaysApplied is violated.
+State 5: <Route ...>
+State 6: <PriceMove ...>
+State 7: <Take ...>
+```
+
+### TLA ExecutionRouter!SkipBecomesShadow
+
+Break: broken variant `ExecutionRouter__skip_drops_trade.cfg` (the model's `BrokenMode = "skip_drops_trade"`): a Skip or an expiry opens no veto trade.
+
+```
+Error: Invariant SkipBecomesShadow is violated.
+State 4: <GateRefresh ...>
+State 5: <Route ...>
+State 6: <Skip ...>
+```
+
+### TLA ExecutionRouter!ExitsNeverAsk
+
+Break: broken variant `ExecutionRouter__exit_asks.cfg` (the model's `BrokenMode = "exit_asks"`): an exit of a confirm position waits for the user.
+
+```
+Error: Invariant ExitsNeverAsk is violated.
+State 6: <Take ...>
+State 7: <ExitDue ...>
+State 8: <ExitSend ...>
+```
+
+### TLA ExecutionRouter!NoOrderOutsideHours
+
+Break: broken variant `ExecutionRouter__take_ignores_hours.cfg` (the model's `BrokenMode = "take_ignores_hours"`): a Take places after the session closed.
+
+```
+Error: Invariant NoOrderOutsideHours is violated.
+State 5: <Route ...>
+State 6: <SessionClose ...>
+State 7: <Take ...>
+```
+
+Second break: broken variant `ExecutionRouter__place_unchecked.cfg` (the model's `BrokenMode = "place_unchecked"`): an auto entry is placed under the conditions its risk check read, after the session closed.
+
+```
+Error: Invariant NoOrderOutsideHours is violated.
+State 5: <Route ...>
+State 6: <SessionClose ...>
+State 7: <Place ...>
+```
+
+### TLA ExecutionRouter!NoOrderWhenStale
+
+Break: broken variant `ExecutionRouter__take_ignores_feed.cfg` (the model's `BrokenMode = "take_ignores_feed"`): a Take places on a stale feed.
+
+```
+Error: Invariant NoOrderWhenStale is violated.
+State 5: <Route ...>
+State 6: <FeedFlip ...>
+State 7: <Take ...>
+```
+
+### TLA ExecutionRouter!GateFreshBeforeFirstEntry
+
+Break: broken variant `ExecutionRouter__gate_unknown_ok.cfg` (the model's `BrokenMode = "gate_unknown_ok"`): the risk check reads an unknown regime gate as on.
+
+```
+Error: Invariant GateFreshBeforeFirstEntry is violated.
+State 1: <Initial ...>
+State 2: <SessionOpen ...>
+State 3: <Route ...>
+```
+
+### TLA ExecutionRouter!GateOffNoEntry
+
+Break: broken variant `ExecutionRouter__take_ignores_gate.cfg` (the model's `BrokenMode = "take_ignores_gate"`): a Take places while the regime gate is off.
+
+```
+Error: Invariant GateOffNoEntry is violated.
+State 7: <SessionOpen ...>
+State 8: <GateRefresh ...>
+State 9: <Take ...>
+```
+
+### TLA ExecutionRouter!ModeDomain
+
+Break: broken variant `ExecutionRouter__any_mode.cfg` (the model's `BrokenMode = "any_mode"`): a mode request outside the three modes is queued.
+
+```
+Error: Invariant ModeDomain is violated.
+State 1: <Initial ...>
+State 2: <RequestMode ...>
+```
+
+### TLA ExecutionRouter!LongOnly
+
+Break: broken variant `ExecutionRouter__short_entry.cfg` (the model's `BrokenMode = "short_entry"`): an auto entry sells.
+
+```
+Error: Invariant LongOnly is violated.
+State 3: <SessionOpen ...>
+State 4: <GateRefresh ...>
+State 5: <Route ...>
+```
+
+### TLA ExecutionRouter!AutoNeedsGtt
+
+Break: broken variant `ExecutionRouter__no_gtt_gate.cfg` (the model's `BrokenMode = "no_gtt_gate"`): confirm and auto run without GTT for delivery.
+
+```
+Error: Invariant AutoNeedsGtt is violated.
+State 3: <SessionOpen ...>
+State 4: <GateRefresh ...>
+State 5: <Route ...>
+```
+
+### TLA ExecutionRouter!NoAddToOpenPosition
+
+Break: broken variant `ExecutionRouter__pyramid.cfg` (the model's `BrokenMode = "pyramid"`): the risk check allows a second entry on a held instrument.
+
+```
+Error: Invariant NoAddToOpenPosition is violated.
+State 3: <GateRefresh ...>
+State 4: <Route ...>
+State 5: <Route ...>
+```
+
+### TLA ExecutionRouter!ModeChangeNextSession
+
+Break: broken variant `ExecutionRouter__apply_now.cfg` (the model's `BrokenMode = "apply_now"`): a mode change applies at once, even in market hours.
+
+```
+Error: Invariant ModeChangeNextSession is violated.
+State 1: <Initial ...>
+State 2: <SessionOpen ...>
+State 3: <RequestMode ...>
+```
+
+### TLA ExecutionRouter!ApprovalsDecided
+
+Break: broken variant `ExecutionRouter__no_expiry_sweep.cfg` (the model's `BrokenMode = "no_expiry_sweep"`): no sweep expires a card past its window.
+
+```
+Error: Temporal properties were violated.
+State 10: <SessionOpen ...>
+State 11: <GateRefresh ...>
+State 12: <PriceMove ...>
+Back to state 11: <PriceMove line 288, col 5 to line 290, col 70 of module ExecutionRouter>
+```
+
+### TLA ExecutionRouter!ExitsComplete
+
+Break: broken variant `ExecutionRouter__exits_wait.cfg` (the model's `BrokenMode = "exits_wait"`): the exit of a real confirm position is never sent.
+
+```
+Error: Temporal properties were violated.
+State 14: <GateRefresh ...>
+State 15: <SessionClose ...>
+State 16: <SessionOpen ...>
+Back to state 14: <GateRefresh line 266, col 5 to line 269, col 70 of module ExecutionRouter>
+```
+
+### TLA ApprovalToken!NoTakeAfterExpiry
+
+Break: broken variant `ApprovalToken__take_after_expiry.cfg` (the model's `BrokenMode = "take_after_expiry"`): a Take is accepted at or after the card's expiry.
+
+```
+Error: Invariant NoTakeAfterExpiry is violated.
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Take ...>
+```
+
+### TLA ApprovalToken!ChaseRecheckOnTake
+
+Break: broken variant `ApprovalToken__no_chase_recheck.cfg` (the model's `BrokenMode = "no_chase_recheck"`): a Take places without the max-chase re-check.
+
+```
+Error: Invariant ChaseRecheckOnTake is violated.
+State 2: <Tick ...>
+State 3: <Send ...>
+State 4: <Take ...>
+```
+
+### TLA ApprovalToken!SingleDecision
+
+Break: broken variant `ApprovalToken__decide_twice.cfg` (the model's `BrokenMode = "decide_twice"`): a decided card accepts a second decision.
+
+```
+Error: Invariant SingleDecision is violated.
+State 2: <Send ...>
+State 3: <Take ...>
+State 4: <Take ...>
+```
+
+### TLA ApprovalToken!CardsDecided
+
+Break: broken variant `ApprovalToken__no_sweep.cfg` (the model's `BrokenMode = "no_sweep"`): no sweep expires an undecided card.
+
+```
+Error: Temporal properties were violated.
+State 8: <Tick ...>
+State 9: <Tick ...>
+State 10: <PriceMove ...>
+Back to state 9: <PriceMove line 108, col 5 to line 109, col 72 of module ApprovalToken>
+```
+
+### PBT router.routes_by_mode
+
+Break: `effective_mode` drops the GTT gate, so confirm and auto run on an account without GTT for delivery.
+
+```
+E   AssertionError: assert 'confirm' == 'shadow'
+E     
+E     - shadow
+E     + confirm
+E   Failing test case: test_routes_by_mode(
+E       mode='confirm',
+```
+
+Second break: `route` places the auto entry under the trigger's own snapshot and time (`PlacementCheck.of(request.context)`), not the conditions passed for the placement.
+
+```
+E   AssertionError: assert [{'symbol': '...'LIMIT', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}
+```
+
+Third break: `bot_snapshot` values a pending signal's slot at its trigger price (the CodeAnt finding fixed here).
+
+```
+E   AssertionError: assert Decimal('99.5000') == Decimal('100')
+E   Failing test case: test_routes_by_mode(
+E       mode='confirm',
+```
+
+### PBT router.refused_entry_is_not_sent
+
+Break: `place_entry` drops the kill and pause re-check (`_kill_refusal`).
+
+```
+E   AssertionError: assert [{'symbol': '...'LIMIT', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}
+```
+
+Second break: a refusal ignores the open entry tag (neither cancels an unsent order nor leaves a possibly sent one to reconciliation).
+
+```
+AssertionError: assert 'Rejected' == 'Triggered'
+Failing test case: test_refused_entry_is_not_sent(kill='drawdown_account', reserved='unconfirmed')
+AssertionError: assert 'pending' == 'cancelled'
+Failing test case: test_refused_entry_is_not_sent(kill='drawdown_account', reserved='pending')
+```
+
+### PBT router.take_rechecks_max_chase
+
+Break: `approvals.take` ignores the max-chase re-check, so a Take past the level is placed. (the first draft of the property, without its `@example`s, passed this break; it was strengthened and now fails). Second break: `ExecutionRouter.take` passes no live-condition refusal, and `place_entry` ignores the check (second break).
+
+```
+E   AssertionError: assert ('approved' == 'market_closed'
+E     
+E     - market_closed
+E     + approved)
+E   Failing test case: test_take_rechecks_max_chase(
+E       chase_bp=0,  # or any other generated value
+```
+
+```
+E   AssertionError: assert ('approved' == 'max_chase'
+E     
+E     - max_chase
+E     + approved)
+E   Failing explicit example: test_take_rechecks_max_chase(
+E       chase_bp=1000,
+```
+
+### PBT router.skip_and_expiry_become_one_veto_trade
+
+Break: `bot_snapshot` counts a veto trade as one of the bot's slots (the bug this PR fixed).
+
+```
+E   AssertionError: assert [OpenPosition...virtual=True)] == []
+E     
+E     Left contains one more item: OpenPosition(bot_id=UUID('1bb2696a-e02c-41e3-ac17-ae824a767836'), instrument_id=UUID('565cfc6b-c007-4b27-8b14-0b39d089...y=500, avg_entry=Decimal('100.0000'), last_price=Decimal('100.0000'), current_stop=Decimal('95.0000'), is_virtual=True)
+E     Use -v to get more diff
+E   Failing test case: test_skip_and_expiry_become_one_veto_trade(
+E       actions=[('skip', 0)],  # or any other generated value
+```
+
+### PBT router.rejected_entry_is_retried_once
+
+Break: `MAX_ENTRY_REJECTIONS = 3`: a rejected entry is retried twice.
+
+```
+E   AssertionError: assert 3 == 2
+E    +  where 3 = len([{'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}, {'symbol': 'NSE:SBIN-EQ', 'quantity'... 'side': 'BUY', 'type': 'LIMIT', ...}, {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}])
+E   Failing test case: test_rejected_entry_is_retried_once(
+E       replies=[False, False],
+E   )
+E
+```
+
+### PBT router.reconcile_before_first_order
+
+Break: `find_mismatches` ignores an unknown HT order (the fixture is a valid HT tag, `encode_tag`, so this is caught; the first fixture was not a HAT tag and passed this break).
+
+```
+E   AssertionError: assert [{'symbol': '...'LIMIT', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}
+```
+
+Second break: `place_entry` skips the reconciliation before the session's first order.
+
+```
+E   assert 0 == 1
+E    +  where 0 = len([])
+E    +    where [] = places()
+E    +      where places = <test_router.Rig object at 0x7f85636f84d0>.places
+E   Failing test case: test_reconcile_before_first_order(
+E       foreign_ht=False,  # or any other generated value
+```
+
+### PBT router.mode_change_takes_effect_next_session
+
+Break: `modes._changes` reads a queued change as effective at its request, not at the next open (the first draft passed this break; the evening and pre-open probes now fail).
+
+```
+E   AssertionError: assert 'confirm' == 'shadow'
+    |     assert modes.bot_mode(session, bot, PRE_OPEN, CALENDAR) == start
+Failing test case: test_mode_change_takes_effect_next_session(start='shadow', target='confirm', minutes=270)
+```
+
+### CONF exec__default_mode_shadow
+
+Break: `create_bot` accepts a confirm or auto bot.
+
+```
+E   Failed: DID NOT RAISE VersionError
+FAILED tests/hat/conformance/test_conf_broker.py::test_exec__default_mode_shadow
 ```

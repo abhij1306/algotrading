@@ -2,22 +2,26 @@
 
 `TriggerMonitor` (`trigger.py`) is pure; this module is what it needs around it:
 
-- `watchlist_candidates` reads the day's Watchlisted rows of the shadow bots and turns each into a
+- `watchlist_candidates` reads the day's Watchlisted rows of the active bots and turns each into a
   `Candidate` (setup levels from the row, the playbook from the strategy version the row was
-  scanned under, the last configured max-chase percentage from the bot's versions);
+  scanned under, the last configured max-chase percentage from the bot's versions, and the bot's
+  effective mode for the session, which decides where `catalyst_attached` blocks);
 - `ep_candidates` builds the episodic-pivot candidates from the 09:16 gap scan: only gap-scan
   candidates (10%/20% band or F&O, gapped at least 10%, in the universe) whose EP setup passes
   on the daily bars up to the previous session;
-- `submit_trigger` turns a fired trigger into a signal through `trades.open_entry`, so every
-  entry still passes `evaluate_signal` under the bot's lock (a skipped stop or entry filter is
-  stored as a Rejected signal with its reason);
+- `submit_trigger` turns a fired trigger into a signal through a `Route`: the execution router
+  (`execution/router.py`), or by default `trades.open_entry` under the bot's effective mode, so
+  every entry still passes `evaluate_signal` under the bot's lock (a skipped stop or entry filter
+  is stored as a Rejected signal with its reason);
 - `TriggerService` attaches the monitor to `LiveData` as a bar listener and hands each trigger to
   a worker thread (the database work never runs on the loop);
 - `DataHealthKill` is the `EventFeedHealth` hook that trips the account's data-health kill while
   the feed is stale and clears it when ticks resume (HAT-DATA-116, HAT-RISK-063).
 
-Only shadow bots are watched here. Confirm and auto go through the execution router, which arrives
-with PR 15b; until then `open_entry` refuses them and no candidate is built for them.
+Every active bot is watched, whatever its mode. A bot's effective mode is the one in force at the
+session open, gated by its account's GTT capability (`execution/modes.py:bot_mode`), so with the
+Fyers adapter (no GTT for delivery) every bot runs shadow. An auto entry needs the router to
+place its order: the default route refuses one (`auto_needs_router`) rather than leave it unplaced.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -38,10 +42,12 @@ from sqlalchemy.orm import Session
 
 from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
+from ..execution.modes import AUTO, bot_mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..risk import controls
 from ..risk.decision import SignalContext
-from ..time import utc_now
+from ..risk.sessions import SessionCalendar
+from ..time import IST, utc_now
 from . import lifecycle, trades
 from .criteria import CriterionResult, EvalContext, evaluate
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
@@ -59,16 +65,17 @@ from .trigger import (
 __all__ = [
     "ContextSource",
     "DataHealthKill",
+    "Route",
     "TriggerService",
     "ep_candidates",
     "ep_setup_passes",
+    "route_by_mode",
     "submit_trigger",
     "watchlist_candidates",
 ]
 
 logger = logging.getLogger(__name__)
 
-SHADOW = "shadow"
 ACTIVE = "active"
 DATA_HEALTH = "data_health"
 _INSTANT = timedelta(microseconds=1)
@@ -97,16 +104,23 @@ def _decimal(raw: object) -> Decimal | None:
     return value if value.is_finite() and value > 0 else None
 
 
-def _shadow_bots(session: Session) -> list[HatBot]:
+def _active_bots(session: Session) -> list[HatBot]:
     return list(
         session.scalars(
-            select(HatBot).where(
-                HatBot.status == ACTIVE,
-                HatBot.execution_mode == SHADOW,
-                HatBot.live_version_id.is_not(None),
-            )
+            select(HatBot).where(HatBot.status == ACTIVE, HatBot.live_version_id.is_not(None))
         )
     )
+
+
+def _session_mode(
+    session: Session, bot: HatBot, trade_date: date, calendar: SessionCalendar | None
+) -> str:
+    """The bot's effective mode for `trade_date`'s session, read at its open (09:15 IST when the
+    calendar does not give one)."""
+    day = calendar.days.get(trade_date) if calendar is not None else None
+    opens = day.open_at if day is not None and day.open_at is not None else None
+    at = opens or datetime.combine(trade_date, time(9, 15), tzinfo=IST)
+    return bot_mode(session, bot, at, calendar)
 
 
 def _versions_newest_first(session: Session, strategy_id: uuid.UUID) -> list[StrategyConfig]:
@@ -130,13 +144,19 @@ def _symbols(session: Session, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]
 
 
 def watchlist_candidates(
-    session: Session, trade_date: date, daily: DailySource, bars: BarsSource | None = None
+    session: Session,
+    trade_date: date,
+    daily: DailySource,
+    bars: BarsSource | None = None,
+    *,
+    calendar: SessionCalendar | None = None,
 ) -> list[Candidate]:
-    """One candidate per Watchlisted row of `trade_date` of an active shadow bot, judged by the
-    playbook of the strategy version the row was scanned under. `bars` feeds the playbook's
-    daily-bar trigger criteria."""
+    """One candidate per Watchlisted row of `trade_date` of an active bot, judged by the playbook
+    of the strategy version the row was scanned under, under the bot's effective mode for the
+    session. `bars` feeds the playbook's daily-bar trigger criteria."""
     out: list[Candidate] = []
-    for bot in _shadow_bots(session):
+    for bot in _active_bots(session):
+        mode = _session_mode(session, bot, trade_date, calendar)
         configs = _versions_newest_first(session, bot.strategy_id)
         rows = list(
             session.scalars(
@@ -162,7 +182,7 @@ def watchlist_candidates(
                 Candidate(
                     bot_id=bot.id,
                     strategy_key=config.bot,  # the key of the risk defaults (the seed names)
-                    mode=SHADOW,
+                    mode=mode,
                     playbook=playbook,
                     instrument_id=row.instrument_id,
                     symbol=symbols[row.instrument_id],
@@ -221,12 +241,14 @@ def ep_bot_candidates(
     instruments: Sequence[EpInputs],
     daily: DailySource,
     bars: BarsSource | None = None,
+    *,
+    calendar: SessionCalendar | None = None,
 ) -> list[Candidate]:
-    """The EP candidates of every active shadow bot with an `episodic_pivot` playbook, for the
-    instruments the gap scan selected (already filtered by `ep_candidates`). `bars` feeds the
-    playbook's daily-bar trigger criteria."""
+    """The EP candidates of every active bot with an `episodic_pivot` playbook, for the
+    instruments the gap scan selected (already filtered by `ep_candidates`), under the bot's
+    effective mode for the session. `bars` feeds the playbook's daily-bar trigger criteria."""
     out: list[Candidate] = []
-    for bot in _shadow_bots(session):
+    for bot in _active_bots(session):
         version = session.get(HatStrategyVersion, bot.live_version_id)
         if version is None:
             continue
@@ -235,11 +257,12 @@ def ep_bot_candidates(
         if playbook is None:
             continue
         configs = _versions_newest_first(session, bot.strategy_id)
+        mode = _session_mode(session, bot, trade_date, calendar)
         out.extend(
             Candidate(
                 bot_id=bot.id,
                 strategy_key=config.bot,  # the key of the risk defaults (the seed names)
-                mode=SHADOW,
+                mode=mode,
                 playbook=playbook,
                 instrument_id=item.instrument_id,
                 symbol=item.symbol,
@@ -297,6 +320,36 @@ def entry_request(
     )
 
 
+class Route(Protocol):
+    """Where a trigger's `EntryRequest` goes: `ExecutionRouter.route` or `route_by_mode`."""
+
+    def __call__(
+        self,
+        session: Session,
+        request: trades.EntryRequest,
+        *,
+        decide: trades.DECIDE = trades.evaluate_signal,
+    ) -> trades.EntryOutcome: ...
+
+
+def route_by_mode(
+    session: Session,
+    request: trades.EntryRequest,
+    *,
+    decide: trades.DECIDE = trades.evaluate_signal,
+) -> trades.EntryOutcome:
+    """The route without a broker: `open_entry` under the bot's effective mode, in the caller's
+    transaction (no commit). An auto bot needs the execution router to place its order, so it is
+    refused here (`auto_needs_router`) and nothing is written."""
+    bot = session.get(HatBot, request.bot_id)
+    if bot is None:
+        raise trades.TradeError("unknown_bot")
+    mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
+    if mode == AUTO:
+        raise trades.TradeError("auto_needs_router")
+    return trades.open_entry(session, request, decide=decide, mode=mode)
+
+
 def submit_trigger(
     session: Session,
     trigger: Trigger,
@@ -304,10 +357,12 @@ def submit_trigger(
     *,
     feed_stale: bool | None = None,
     decide: trades.DECIDE = trades.evaluate_signal,
+    route: Route = route_by_mode,
 ) -> trades.EntryOutcome:
-    """Write the signal of a fired trigger in the caller's transaction (no commit)."""
+    """Write the signal of a fired trigger through `route` (the default writes in the caller's
+    transaction and does not commit; the execution router commits its own steps)."""
     request = entry_request(trigger, base, feed_stale=feed_stale)
-    return trades.open_entry(session, request, decide=decide)
+    return route(session, request, decide=decide)
 
 
 class ContextSource(Protocol):
@@ -329,11 +384,13 @@ class TriggerService:
         session_factory: Callable[[], Session],
         contexts: ContextSource,
         feed_stale: Callable[[], bool],
+        route: Route = route_by_mode,
     ) -> None:
         self.monitor = monitor
         self._session_factory = session_factory
         self._contexts = contexts
         self._feed_stale = feed_stale
+        self._route = route
 
     def on_bar(self, bar: Bar) -> list[Trigger]:
         fired = self.monitor.on_bar(bar)
@@ -357,7 +414,9 @@ class TriggerService:
         try:
             with self._session_factory() as session:
                 base = self._contexts.entry_context(session, trigger.candidate.bot_id, trigger.at)
-                outcome = submit_trigger(session, trigger, base, feed_stale=stale)
+                outcome = submit_trigger(
+                    session, trigger, base, feed_stale=stale, route=self._route
+                )
                 session.commit()
         except Exception:
             logger.exception("writing a trigger failed")

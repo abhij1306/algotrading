@@ -26,6 +26,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `PBT ingest.event_and_state_atomic` An ingest outcome row and its `ingest.*` / `quality.failed` event are both stored or both absent for every failure point before commit. Harm: the night's ingest status and the audit log disagree.
 - `CONF events.catalogue` The event types in `app/hat/events.py`, group by group, equal the 32 in the spec table, and the actors and aggregate types equal the DDL. Harm: code and audits disagree on what can happen.
 - `CONF schema.runtime_columns, event_columns, indexes` The eight runtime tables, the seven ops tables and `hat_event` equal the spec columns, types, nullability, keys and uniques, and every §9 index exists with its columns, uniqueness, order and partial predicate. Harm: a trade cannot be replayed, or reconciliation by tag degrades to a full scan.
+- `PBT events.correlation_links_the_signal` `record()` refuses an Orders or Positions event whose correlation id is not the signal id of the `hat_order` or `hat_position` row it is about, or that names no such row, and writes nothing; an event that names its own signal is stored. Harm: an order's events are filed under another trade and its history cannot be replayed.
 
 ## Run
 
@@ -80,8 +81,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `190bebb96c4c3d589034a406de9b0b690804df37`
-Covered digest: `b4cb4a734cabfea5a7c78c7bf85fda32b2594f572a7755fbd459d6f1792a45f7`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `3189be878d4cf785d6df6493656c028eedfb2e5ea02bf1eab001150a9977d9c6`
 
 ## Scope changes
 
@@ -96,6 +97,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Sleeve lifecycle, regime and allocation events are not in the 32-type catalogue, so they are not recorded; PR 9 adds them with a spec change.
 
 - PR 7 added an optional `on_finish` hook to `run_job` (`ops/jobs.py`), called inside the final-status transaction; the events and the job-run recording it touches are unchanged, and the ingest outcome events (`ingest.completed`, `ingest.failed`, `quality.failed`) are written through the existing `events.record`.
+- PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
 
 ## Scratch breaks
 
@@ -259,4 +261,17 @@ Break: two separate breaks, each reverted after its check failed: `HatSignal.tri
 ```
 test_schema__columns_match_spec[runtime_columns]: AssertionError: ('hat_signal', 'trigger_price')   assert 'numeric' == 'numeric(18,4)'
 test_schema__indexes: AssertionError: SpecIndex(table='hat_event', columns=('correlation_id',), unique=False, partial=None)
+```
+
+### PBT events.correlation_links_the_signal
+
+Break: `record()` no longer calls `_check_linked_signal`.
+
+```
+E   AssertionError: ('order', 'exit.partial', 'other')
+E   assert True == ('other' == 'own'
+E     
+E     - own
+E     + other)
+E   Failing test case: test_correlation_links_the_signal(
 ```

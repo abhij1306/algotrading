@@ -29,6 +29,7 @@ from app.hat.models import (
     HatPosition,
     HatRegimeModelVersion,
     HatRegimeState,
+    HatSignal,
     HatStrategy,
     HatTradeResult,
     HatTradingCalendar,
@@ -352,11 +353,15 @@ def trade_results(
 ) -> tuple[Decimal, ...]:
     """The R multiples of the sleeve's closed real (or shadow) trades closed from `since` to
     `until` (both inclusive, either open), oldest first. A replay of an earlier trade date passes
-    its own close as `until`, so later trades never change an earlier decision."""
+    its own close as `until`, so later trades never change an earlier decision. The veto trades
+    of skipped confirm signals (virtual, but not shadow trades) are in neither: they feed the
+    veto score only (HAT-EXEC-130)."""
     query = (
         select(HatTradeResult.r_multiple, HatPosition.closed_at)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
+        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(virtual))
+        .where(HatPosition.is_virtual.is_(False) | (HatSignal.mode == "shadow"))
         .order_by(HatPosition.closed_at)
     )
     rows = session.execute(query).all()

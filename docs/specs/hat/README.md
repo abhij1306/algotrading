@@ -278,7 +278,7 @@ to an artefact that exists.
 | HAT-SCH-061 | [03](03-schema.md) | 3 | DB `events.append_only` |
 | HAT-SCH-062 | [03](03-schema.md) | 3 | PBT `events.atomic_with_state` |
 | HAT-SCH-063 | [03](03-schema.md) | 3, 9 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
-| HAT-SCH-064 | [03](03-schema.md) | 3, 9 | PBT `events.correlation` |
+| HAT-SCH-064 | [03](03-schema.md) | 3, 9 | PBT `events.correlation`, PBT `events.correlation_links_the_signal` |
 | HAT-SCH-065 | [03](03-schema.md) | 3, 16 | PBT `events.user_actor_chat_id` |
 | HAT-SCH-066 | [03](03-schema.md) | 3 | DB `events.partitions_ahead` |
 | HAT-SCH-067 | [03](03-schema.md) | 3 | PBT `events.ids_increasing` |
@@ -417,7 +417,7 @@ to an artefact that exists.
 | HAT-GOV-081 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!PauseBlocksEntriesOnly` |
 | HAT-GOV-082 | [06](06-risk-and-governance.md) | 16 | TLA `KillSwitch!FlattenNeedsConfirm` |
 | HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence` |
-| HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession` |
+| HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence` |
 | HAT-GOV-092 | [06](06-risk-and-governance.md) | 2 | DB `governance.risk_version_immutable` |
@@ -430,15 +430,15 @@ to an artefact that exists.
 | HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
 | HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
-| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `ExecutionRouter!AutoNeedsGtt` |
+| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode` |
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
-| HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute` |
+| HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
 | HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
-| HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours` |
-| HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce` |
+| HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase` |
+| HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once` |
 | HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!NoTakeAfterExpiry` |
-| HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always` |
-| HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow` |
+| HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase` |
+| HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow`, PBT `router.skip_and_expiry_become_one_veto_trade` |
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |
 | HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec` |
@@ -470,7 +470,7 @@ to an artefact that exists.
 | HAT-BRK-100 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.shape_and_roundtrip`, DB `runtime.order_tag_unique` |
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!UnconfirmedResolvedByTag` |
-| HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder` |
+| HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order` |
 | HAT-BRK-111 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!MismatchBlocksEntries` |
 | HAT-BRK-112 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.reconcile_scope` |
 | HAT-EXEC-120 | [07](07-execution-and-brokers.md) | 15 | PBT `bars.trigger_only_on_final_bars` |

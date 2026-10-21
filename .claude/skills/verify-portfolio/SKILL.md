@@ -89,8 +89,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `d8b9b5fc09d363d1875c40753e9a7b413e2387e5d0e9ff5291d2311a919bca51`
+Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
+Covered digest: `74e4bb33e40f0aad737302a045c3746e146b3ea793cf3ee98da20289fcc103a7`
 
 ## Scope changes
 
@@ -102,6 +102,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The `regime` job reads the NIFTY 500 close, India VIX and the stored breadth percentage. The advance/decline ratio is recorded as `null` until the ingest provides it (PR 7) and is not an input of the v1 classification.
 - Backtest evidence is a pluggable source (`BacktestEvidence`, default none). PR 12 supplies `runs.backtest_evidence`, whose DSR is recomputed at the family's current trial count (`dsr.evidence_current_trials`, below and in `verify-backtest`); the gate itself (`lifecycle.backtest_gate`) is fully checked.
 - The property `lifecycle.transition_records_its_event` and the nightly `run_allocation` properties run on SQLite in memory (foreign keys not enforced); `portfolio.unique_keys` covers the constraints on Postgres.
+- PR 15b: `service.trade_results` leaves out veto trades (virtual positions of confirm or auto signals), so a sleeve's shadow evidence is its shadow trades only (HAT-EXEC-032). The lifecycle, health and allocator properties pass unchanged; none was narrowed.
 
 ## Scratch breaks
 

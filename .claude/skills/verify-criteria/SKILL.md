@@ -136,8 +136,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `200b52b7826acbe32d9902440e7eccf06bea69ca09a932faf637d6ccfa278804`
+Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
+Covered digest: `4e923f8f054d03e2a150b00a3c60f75c4fac6dd6077525f3b1587fc7ed95260f`
 
 ## Scope changes
 
@@ -154,6 +154,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `create_bot` always starts shadow. A config's own `execution_mode` is accepted (the seeds declare shadow) but a mode change goes through the mode-change service of a later PR.
 - `docs/specs/hat/04-criteria-and-bots.md` quotes `level: "max(consolidation_high, opening_range_high)"` in the S2 YAML: unquoted, the comma ends the flow mapping and the block does not parse.
 - PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
+- PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 
 ## Scratch breaks
 

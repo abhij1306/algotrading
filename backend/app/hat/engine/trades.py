@@ -12,22 +12,35 @@ entry for the same bot waits for the first to commit and then sees its position.
 lock is a transaction-scoped advisory lock keyed by the bot; SQLite has one writer at a time and
 needs none.
 
-**Shadow only (D20).** Entries and exits here are virtual: the rows carry `is_virtual = true`,
-nothing in this module reaches a broker, and it imports none (CONF `import_graph_boundaries`).
-Confirm and auto go through the execution router (PR 15), which calls the same `exits.evaluate`.
+**Three modes, no broker (D20, HAT-EXEC-020).** `open_entry` takes the effective mode the
+execution router worked out (`execution/modes.py:bot_mode`) and writes what that mode needs under
+the bot's lock: shadow opens the virtual position at once; confirm stores the signal in
+AwaitingApproval with its `hat_approval` card (expiring 5 minutes later, HAT-EXEC-030); auto
+leaves the accepted signal in Triggered, holding its slot, for the router to place the real order
+(`execution/router.py`). Nothing in this module reaches a broker, and it imports none (CONF
+`import_graph_boundaries`). Exits here are virtual; real exits are the router's.
+
+**Veto trades (HAT-EXEC-032).** A confirm signal that is skipped or expires continues as a
+virtual trade for the veto score: `open_veto_trade` opens it on the signal's own row, which has
+reached its ending (Cancelled or Expired). Its events carry the signal id as every trade event
+does (HAT-SCH-064) and `veto: true` in their payload; they move only the veto position's state,
+so `replay_state` folds the signal's own events and `replay_veto_state` the veto trade's, which
+starts at EntryPlaced with its virtual order.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
@@ -35,6 +48,7 @@ from ..events import record
 from ..execution.tags import encode_tag
 from ..ids import uuid7
 from ..models import (
+    HatApproval,
     HatBot,
     HatEvent,
     HatFill,
@@ -47,7 +61,7 @@ from ..models import (
     HatWatchlistEntry,
 )
 from ..risk import controls
-from ..risk.caps import OpenPosition
+from ..risk.caps import OpenPosition, effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.policy_service import load_versions
@@ -60,6 +74,7 @@ from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
 __all__ = [
+    "APPROVAL_WINDOW",
     "SHADOW_FILLS",
     "EntryOutcome",
     "EntryRequest",
@@ -67,21 +82,33 @@ __all__ = [
     "TradeError",
     "bot_snapshot",
     "close_position",
+    "entry_price_of",
     "evaluate_position",
     "expire_watchlist",
     "lock_bot",
     "open_entry",
+    "open_veto_trade",
     "position_state",
+    "reject_signal",
     "replay_state",
+    "replay_veto_state",
     "risk_inputs",
     "trade_r",
 ]
 
 logger = logging.getLogger(__name__)
 SHADOW = "shadow"
+CONFIRM = "confirm"
+AUTO = "auto"
+MODES = (SHADOW, CONFIRM, AUTO)
 DECIDE = Callable[[SignalContext], RiskDecision]
-_SLOT_PENDING_STATES = (lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
+# HAT-EXEC-030: an approval card expires 5 minutes after it is sent.
+APPROVAL_WINDOW = timedelta(minutes=5)
+VETO = "veto"  # the payload flag of a veto trade's events
+# An accepted auto signal rests in Triggered until the router places its order: it holds a slot.
+_SLOT_PENDING_STATES = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
 _ENTERED_STATES = (
+    lifecycle.TRIGGERED,
     lifecycle.AWAITING_APPROVAL,
     lifecycle.ENTRY_PLACED,
     lifecycle.OPEN,
@@ -110,6 +137,7 @@ ENTRY_SKIP_REASONS = frozenset(
     }
 )
 _ZERO = Decimal(0)
+SIGNAL_TRIGGERED = "signal.triggered"
 _RATIO_PLACES = Decimal("0.000001")
 
 
@@ -158,6 +186,10 @@ def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
     return row or "unknown"
 
 
+# A veto trade is a virtual position of a confirm or auto signal (see `_is_veto`).
+_NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == SHADOW)
+
+
 def bot_snapshot(
     session: Session,
     bot_id: uuid.UUID,
@@ -166,12 +198,16 @@ def bot_snapshot(
 ) -> tuple[list[OpenPosition], int, int]:
     """(slots, entries today, stop-outs today) for the bot, read now.
 
-    A slot is an open position, or a signal whose entry is placed or awaiting approval and has
-    no position yet. A position with no price in `last_prices` is valued at its entry."""
+    A slot is an open position, or a signal whose entry is triggered, placed or awaiting
+    approval and has no position yet. A veto trade (the virtual trade of a skipped or expired
+    confirm signal, HAT-EXEC-032) is scored only: it holds no slot and its stop-out is not the
+    bot's. A position with no price in `last_prices` is valued at its entry."""
     prices = last_prices or {}
     slots: list[OpenPosition] = []
     for position in session.scalars(
-        select(HatPosition).where(HatPosition.bot_id == bot_id, HatPosition.closed_at.is_(None))
+        select(HatPosition)
+        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(HatPosition.bot_id == bot_id, HatPosition.closed_at.is_(None), _NOT_VETO)
     ):
         entry = Decimal(position.avg_entry)
         slots.append(
@@ -191,7 +227,7 @@ def bot_snapshot(
             HatSignal.bot_id == bot_id, HatSignal.state.in_(_SLOT_PENDING_STATES)
         )
     ):
-        entry = Decimal(signal.trigger_price)
+        entry = entry_price_of(session, signal)  # the planned price, not the level broken
         slots.append(
             OpenPosition(
                 bot_id=bot_id,
@@ -218,11 +254,13 @@ def bot_snapshot(
         select(func.count())
         .select_from(HatTradeResult)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
+        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(
             HatPosition.bot_id == bot_id,
             HatPosition.closed_at >= start,
             HatPosition.closed_at < end,
             HatTradeResult.exit_reason == HARD_STOP,
+            _NOT_VETO,
         )
     )
     return slots, int(entries or 0), int(stopouts or 0)
@@ -251,11 +289,19 @@ def _emit(
     payload: dict[str, object],
     now: datetime,
     position: HatPosition | None = None,
+    veto: bool = False,
 ) -> None:
     """Record `event_type` and, when it drives a lifecycle step, move the signal (and its
-    position) to the next state in the same transaction (HAT-EXEC-042)."""
+    position) to the next state in the same transaction (HAT-EXEC-042). A veto trade's event is
+    flagged `veto` and moves only its position: the signal has already ended."""
     step = lifecycle.step_of(event_type, payload)
-    if step is not None:
+    if veto:
+        payload = {**payload, VETO: True}
+        if step is not None and position is not None:
+            # The veto position is stored once it opens; before that its trade is EntryPlaced.
+            before = lifecycle.ENTRY_PLACED if event_type == "position.opened" else position.state
+            position.state = lifecycle.next_state(before, step)
+    elif step is not None:
         after = lifecycle.next_state(signal.state, step)
         signal.state = after
         if position is not None and after in _POSITION_STATES:
@@ -273,15 +319,37 @@ def _emit(
     )
 
 
-def replay_state(session: Session, signal_id: uuid.UUID) -> str:
-    """The state the signal's events give when folded over the transition table."""
+def _trade_steps(session: Session, signal_id: uuid.UUID, *, veto: bool) -> list[str]:
     rows = session.execute(
         select(HatEvent.event_type, HatEvent.payload)
         .where(HatEvent.correlation_id == signal_id)
         .order_by(HatEvent.id)
     ).all()
-    steps = [s for event_type, payload in rows if (s := lifecycle.step_of(event_type, payload))]
+    steps = []
+    for event_type, payload in rows:
+        if bool((payload or {}).get(VETO)) != veto:
+            continue
+        step = lifecycle.step_of(event_type, payload)
+        if step is not None:
+            steps.append(step)
+    return steps
+
+
+def replay_state(session: Session, signal_id: uuid.UUID) -> str:
+    """The state the signal's events give when folded over the transition table. The approval
+    card has no event of its own: its `hat_approval` row, written in the transaction that moved
+    the signal to AwaitingApproval, stands for the step right after `signal.triggered`."""
+    steps = _trade_steps(session, signal_id, veto=False)
+    if session.get(HatApproval, signal_id) is not None and steps[:1] == [SIGNAL_TRIGGERED]:
+        steps.insert(1, "approval.sent")
     return lifecycle.fold(steps)
+
+
+def replay_veto_state(session: Session, signal_id: uuid.UUID) -> str | None:
+    """The state of the signal's veto trade folded from its events (it starts at Triggered, so
+    its virtual order moves it to EntryPlaced), or None when it has none."""
+    steps = _trade_steps(session, signal_id, veto=True)
+    return lifecycle.fold(steps, start=lifecycle.TRIGGERED) if steps else None
 
 
 def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
@@ -324,6 +392,9 @@ class EntryOutcome:
     decision: RiskDecision | None
     position_id: uuid.UUID | None
     duplicate: bool = False
+    mode: str = SHADOW
+    # The approval card's token (confirm): handed to the card sender, stored only as its hash.
+    approval_token: str | None = field(default=None, repr=False)
 
 
 def _decision_row(decision: RiskDecision) -> dict[str, object]:
@@ -355,8 +426,6 @@ def _existing_signal(session: Session, request: EntryRequest) -> HatSignal | Non
 
 def _entry_policy(session: Session, bot: HatBot, request: EntryRequest) -> PolicyVersion:
     """The policy version a new entry is decided under, after the rules that refuse it outright."""
-    if bot.execution_mode != SHADOW:
-        raise TradeError("mode_not_shadow")  # confirm and auto are the router's (PR 15, D20)
     if request.instrument_id not in bot_universe_members(session, bot, request.trade_date):
         # Leaving the universe stops new entries (HAT-PORT-023); an open position is untouched.
         raise TradeError("not_in_universe")
@@ -375,13 +444,18 @@ def open_entry(
     *,
     decide: DECIDE = evaluate_signal,
     fills: FillModel = SHADOW_FILLS,
+    mode: str = SHADOW,
 ) -> EntryOutcome:
-    """Evaluate one trigger and, when accepted, open the virtual position, in one transaction
-    holding the bot's lock (HAT-EXEC-021, HAT-RISK-100).
+    """Evaluate one trigger and route an accepted one by `mode`, the bot's effective mode, in one
+    transaction holding the bot's lock (HAT-EXEC-020, HAT-EXEC-021, HAT-RISK-100): shadow opens
+    the virtual position, confirm stores the approval card (AwaitingApproval), auto leaves the
+    signal in Triggered for the router to place. Every mode runs the same risk check.
 
     A repeated trigger for the same (bot, playbook, instrument, day) returns the existing
     signal and writes nothing. A rejection is stored as a signal in state `Rejected` with its
     reason (shown in the daily digest only, HAT-EXEC-043)."""
+    if mode not in MODES:
+        raise TradeError("unknown_mode")
     lock_bot(session, request.bot_id)
     bot = session.get(HatBot, request.bot_id)
     if bot is None:
@@ -390,7 +464,9 @@ def open_entry(
     if existing is not None:
         # Checked before the entry rules: a retry after a mode or universe change still gets
         # the signal it already made.
-        return EntryOutcome(existing.id, existing.state, None, None, duplicate=True)
+        return EntryOutcome(
+            existing.id, existing.state, None, None, duplicate=True, mode=existing.mode
+        )
     policy = _entry_policy(session, bot, request)
     base = request.context
     slots, entries, stopouts = bot_snapshot(
@@ -403,7 +479,7 @@ def open_entry(
         bot_id=request.bot_id,
         instrument_id=request.instrument_id,
         at=request.triggered_at,
-        is_virtual=True,
+        is_virtual=mode == SHADOW,
         open_positions=slots,
         entries_today=entries,
         stopouts_today=stopouts,
@@ -417,18 +493,19 @@ def open_entry(
     # The trigger price is the level the trigger broke (HAT-CRIT-119); a caller without one
     # (a backtest proxy) records the entry price.
     trigger = base.trigger_level if base.trigger_level is not None else entry
-    signal = _signal_row(request, bot, policy, decision, signal_id, trigger, accepted=accepted)
+    signal = _signal_row(
+        request, bot, policy, decision, signal_id, mode, trigger, accepted=accepted
+    )
     session.add(signal)
     session.flush()
-    now = request.triggered_at
     _emit(
         session,
         signal,
-        "signal.triggered",
+        SIGNAL_TRIGGERED,
         aggregate_type="signal",
         aggregate_id=signal.id,
-        payload=_triggered_payload(request, trigger, entry),
-        now=now,
+        payload=_triggered_payload(request, mode, trigger, entry),
+        now=request.triggered_at,
     )
     if not accepted:
         _emit(
@@ -438,12 +515,35 @@ def open_entry(
             aggregate_type="signal",
             aggregate_id=signal.id,
             payload={"reason": signal.risk_decision["reason"]},
-            now=now,
+            now=request.triggered_at,
         )
-        return EntryOutcome(signal.id, signal.state, decision, None)
-    qty = int(decision.quantity or 0)
-    position = _virtual_entry(session, signal, bot, decision, fills.fill("buy", qty, entry), now)
-    return EntryOutcome(signal.id, signal.state, decision, position.id)
+        return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
+    return _route_accepted(session, signal, bot, decision, entry, request.triggered_at, fills)
+
+
+def _route_accepted(
+    session: Session,
+    signal: HatSignal,
+    bot: HatBot,
+    decision: RiskDecision,
+    entry: Decimal,
+    now: datetime,
+    fills: FillModel,
+) -> EntryOutcome:
+    """An accepted signal by its mode: confirm sends the card, auto waits for the router and
+    shadow opens the virtual position."""
+    mode = signal.mode
+    if mode == CONFIRM:
+        token = _send_approval(session, signal, now)
+        return EntryOutcome(
+            signal.id, signal.state, decision, None, mode=mode, approval_token=token
+        )
+    if mode == AUTO:
+        # The router places the real order after this transaction commits (HAT-BRK-101).
+        return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
+    qty, stop = int(decision.quantity or 0), decision.stop or _ZERO
+    position = _virtual_entry(session, signal, bot, qty, stop, fills.fill("buy", qty, entry), now)
+    return EntryOutcome(signal.id, signal.state, decision, position.id, mode=mode)
 
 
 def _signal_row(
@@ -452,6 +552,7 @@ def _signal_row(
     policy: PolicyVersion,
     decision: RiskDecision,
     signal_id: uuid.UUID,
+    mode: str,
     trigger: Decimal,
     *,
     accepted: bool,
@@ -475,24 +576,49 @@ def _signal_row(
         qty=qty,
         risk_amount=risk,
         currency="INR",
-        mode=SHADOW,
+        mode=mode,
         state=lifecycle.INITIAL_STATE,
         risk_decision=_decision_row(decision),
     )
 
 
 def _triggered_payload(
-    request: EntryRequest, trigger: Decimal, entry: Decimal
+    request: EntryRequest, mode: str, trigger: Decimal, entry: Decimal
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "playbook": request.playbook,
         "trigger_price": str(trigger),
-        "mode": SHADOW,
+        "mode": mode,
     }
-    if request.criteria:
+    if request.criteria or mode != SHADOW:
         payload["entry_price"] = str(entry)
+    if request.criteria:
         payload["criteria"] = [dict(item) for item in request.criteria]
+    if mode != SHADOW:
+        # The percentage the Take re-check applies (HAT-EXEC-031), fixed at the trigger.
+        strategy = request.context.strategy_key or ""
+        pct = effective_max_chase_pct(request.context.configured_max_chase_pct, strategy)
+        payload["max_chase_pct"] = str(pct)
     return payload
+
+
+def _send_approval(session: Session, signal: HatSignal, now: datetime) -> str:
+    """The approval card of a confirm signal (HAT-EXEC-030): its `hat_approval` row, expiring
+    `APPROVAL_WINDOW` after it is sent, moves the signal to AwaitingApproval in this
+    transaction. Returns the card's token; only its sha256 is stored (HAT-SCH-056)."""
+    token = secrets.token_urlsafe(32)
+    sent = as_utc(now)  # stored in UTC: SQLite keeps no offset
+    session.add(
+        HatApproval(
+            signal_id=signal.id,
+            sent_at=sent,
+            expires_at=sent + APPROVAL_WINDOW,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        )
+    )
+    signal.state = lifecycle.next_state(signal.state, "approval.sent")
+    session.flush()
+    return token
 
 
 def _virtual_order(
@@ -547,12 +673,13 @@ def _virtual_entry(
     session: Session,
     signal: HatSignal,
     bot: HatBot,
-    decision: RiskDecision,
+    qty: int,
+    stop: Decimal,
     fill: tuple[Decimal, Decimal],
     now: datetime,
+    *,
+    veto: bool = False,
 ) -> HatPosition:
-    qty = int(decision.quantity or 0)
-    stop = decision.stop or _ZERO
     entry = fill[0]
     order, _ = _virtual_order(
         session, signal, bot, None, purpose="entry", side="buy", qty=qty, fill=fill, now=now
@@ -565,6 +692,7 @@ def _virtual_entry(
         aggregate_id=order.id,
         payload={"purpose": "entry", "qty": qty, "is_virtual": True, "tag": order.tag},
         now=now,
+        veto=veto,
     )
     _emit(
         session,
@@ -574,6 +702,7 @@ def _virtual_entry(
         aggregate_id=order.id,
         payload={"qty": qty, "price": str(entry), "is_virtual": True},
         now=now,
+        veto=veto,
     )
     position = HatPosition(
         id=uuid7(),
@@ -603,8 +732,86 @@ def _virtual_entry(
         payload={"qty": qty, "avg_entry": str(entry), "stop": str(stop), "is_virtual": True},
         now=now,
         position=position,
+        veto=veto,
     )
     return position
+
+
+# --- the router's steps on a confirm or auto signal -------------------------------------------
+
+
+def entry_price_of(session: Session, signal: HatSignal) -> Decimal:
+    """The entry price the trigger planned, from its `signal.triggered` event (else the level)."""
+    payload = session.scalar(
+        select(HatEvent.payload).where(
+            HatEvent.correlation_id == signal.id, HatEvent.event_type == SIGNAL_TRIGGERED
+        )
+    )
+    raw = (payload or {}).get("entry_price")
+    price = Decimal(str(raw)) if raw is not None else Decimal(signal.trigger_price)
+    return price if price.is_finite() and price > 0 else Decimal(signal.trigger_price)
+
+
+def _veto_position(session: Session, signal_id: uuid.UUID) -> HatPosition | None:
+    return session.scalar(
+        select(HatPosition).where(
+            HatPosition.signal_id == signal_id, HatPosition.is_virtual.is_(True)
+        )
+    )
+
+
+def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> HatPosition | None:
+    """Open the virtual trade of a skipped or expired confirm signal for the veto score
+    (HAT-EXEC-032, HAT-TG-045), at the entry price, quantity and stop the card offered, under
+    the bot's lock. At most one per signal: a second call returns the one already open. None
+    when the signal is not a decided-away confirm signal or was never sized."""
+    signal = session.get(HatSignal, signal_id)
+    if signal is None:
+        raise TradeError("unknown_signal")
+    lock_bot(session, signal.bot_id)
+    session.refresh(signal)
+    approval = session.get(HatApproval, signal_id)
+    if (
+        signal.mode != CONFIRM
+        or approval is None
+        or approval.decision not in ("skip", "expired")
+        or signal.state not in (lifecycle.CANCELLED, lifecycle.EXPIRED)
+        or signal.qty <= 0
+    ):
+        return None
+    existing = _veto_position(session, signal_id)
+    if existing is not None:
+        return existing
+    bot = session.get(HatBot, signal.bot_id)
+    if bot is None:
+        raise TradeError("unknown_bot")
+    fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal))
+    return _virtual_entry(
+        session, signal, bot, signal.qty, Decimal(signal.stop_price), fill, now, veto=True
+    )
+
+
+def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: datetime) -> bool:
+    """End a routed signal whose entry was not placed (a failed Take re-check, a broker
+    rejection after the single retry, or a refusal on the order path) as Rejected with a fixed
+    reason, under the bot's lock. False when it already left Triggered or AwaitingApproval."""
+    signal = session.get(HatSignal, signal_id)
+    if signal is None:
+        raise TradeError("unknown_signal")
+    lock_bot(session, signal.bot_id)
+    session.refresh(signal)
+    if signal.state not in (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL):
+        return False
+    _emit(
+        session,
+        signal,
+        "signal.rejected",
+        aggregate_type="signal",
+        aggregate_id=signal.id,
+        payload={"reason": reason, "stage": "route"},
+        now=now,
+    )
+    return True
 
 
 # --- exits ------------------------------------------------------------------------------------
@@ -637,6 +844,11 @@ def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qt
     return (realized_pnl / risk).quantize(_RATIO_PLACES)
 
 
+def _is_veto(signal: HatSignal, position: HatPosition) -> bool:
+    """A virtual position of a confirm or auto signal is that signal's veto trade."""
+    return position.is_virtual and signal.mode != SHADOW
+
+
 def _locked_virtual_position(session: Session, position_id: uuid.UUID) -> HatPosition:
     """The position, re-read under its bot's lock; only a virtual one is the engine's."""
     position = session.get(HatPosition, position_id)
@@ -665,6 +877,7 @@ def _raise_stop(
         aggregate_id=position.id,
         payload={"from": str(old), "to": str(new)},
         now=now,
+        veto=_is_veto(signal, position),
     )
     position.current_stop = new
 
@@ -789,6 +1002,7 @@ def _virtual_exit(
     marks: _Marks,
 ) -> None:
     full = sale.full
+    veto = _is_veto(signal, position)
     purpose = "exit_full" if full else "exit_partial"
     fill = marks.fills.fill("sell", sale.qty, price)
     filled = fill[0]
@@ -813,6 +1027,7 @@ def _virtual_exit(
         payload={"purpose": purpose, "qty": sale.qty, "is_virtual": True, "rule": rule},
         now=now,
         position=position,
+        veto=veto,
     )
     _emit(
         session,
@@ -822,6 +1037,7 @@ def _virtual_exit(
         aggregate_id=order.id,
         payload={"qty": sale.qty, "price": str(filled), "is_virtual": True},
         now=now,
+        veto=veto,
     )
     position.qty_open -= sale.qty
     if not full:
@@ -834,6 +1050,7 @@ def _virtual_exit(
             payload={"qty": sale.qty, "price": str(filled), "rule": rule},
             now=now,
             position=position,
+            veto=veto,
         )
         return
     position.closed_at = now
@@ -846,6 +1063,7 @@ def _virtual_exit(
         payload={"price": str(filled), "rule": rule},
         now=now,
         position=position,
+        veto=veto,
     )
     _write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
 

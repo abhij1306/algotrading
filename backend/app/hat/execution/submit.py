@@ -30,9 +30,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..engine import lifecycle
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount, HatOrder
+from ..models import HatBrokerAccount, HatOrder, HatSignal
 from ..time import utc_now
 from .broker import (
     CODE_OK,
@@ -197,21 +198,40 @@ def _event(
     event_type: str,
     code: str = CODE_OK,
 ) -> None:
+    payload = {
+        "tag": row.tag,
+        "purpose": row.purpose,
+        "broker_order_id": row.broker_order_id,
+        "code": code,
+    }
     record(
         session,
         aggregate_type="order",
         aggregate_id=row.id,
         event_type=event_type,
         actor="engine",
-        payload={
-            "tag": row.tag,
-            "purpose": row.purpose,
-            "broker_order_id": row.broker_order_id,
-            "code": code,
-        },
+        payload=payload,
         correlation_id=row.signal_id,
         bot_id=bot_id,
     )
+    _advance(session, row, event_type, payload)
+
+
+def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str, object]) -> None:
+    """Move the order's signal along the lifecycle step its event drives, in the same commit
+    (HAT-EXEC-042): an entry `order.placed` takes a Triggered or AwaitingApproval signal to
+    EntryPlaced. An order event the table does not allow from the signal's state is logged and
+    leaves the state: the order's own bookkeeping must never fail after a broker call."""
+    step = lifecycle.step_of(event_type, payload)
+    if step is None:
+        return
+    signal = session.get(HatSignal, row.signal_id)
+    if signal is None:
+        return
+    try:
+        signal.state = lifecycle.next_state(signal.state, step)
+    except lifecycle.LifecycleStateError:
+        logger.error("order event %s does not move a signal in %s", event_type, signal.state)
 
 
 def _check_allowed(
