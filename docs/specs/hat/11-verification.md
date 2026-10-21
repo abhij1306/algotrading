@@ -181,7 +181,8 @@ Each critical area gets a skill an agent can follow cold, mid-change, without le
 | `.claude/skills/verify-risk/SKILL.md` | `KillSwitch`; PBT `sizing`, `caps`, `exposure` |
 | `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
 | `.claude/skills/verify-governance/SKILL.md` | DB `governance`, `reference`, `portfolio`, `migration` checks; PBT `ids`, `time`, `config`, `risk_policy`; CONF `schema`, boundaries |
-| `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `bars`, `ingest` |
+| `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `ingest` |
+| `.claude/skills/verify-live-data/SKILL.md` | The tick hook, 5-minute bars, staleness, pre-open gap capture, the 09:16 gap scan and announcements: PBT `bars` (live), `gapscan`, `announcements`; CONF `imports.no_second_websocket`, `single_feed_import_rule` |
 | `.claude/skills/verify-portfolio/SKILL.md` | `RegimeConfirmation`, `SleeveLifecycle`; PBT `allocator`, `health`, `regime`, `costs`, `dsr`, `criteria`, `scoring`, `config` |
 
 #### HAT-VER-070: Each verify skill is complete and registers

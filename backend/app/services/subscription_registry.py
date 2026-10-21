@@ -35,6 +35,10 @@ class SubscriptionRegistry:
         canonical.discard("")
         return canonical
 
+    def canonical_symbols(self, symbols: Iterable[str]) -> set[str]:
+        """`symbols` in the registry's canonical (DB) format, without blanks."""
+        return self._canonical(symbols)
+
     def add(self, owner: Owner, symbols: Iterable[str]) -> set[str]:
         """Give `owner` the symbols; return those no owner held before (provider subscribe)."""
         wanted = self._canonical(symbols)

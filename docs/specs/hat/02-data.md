@@ -748,8 +748,8 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
   - Property: for every time t in (09:15, 15:30] and cumulative volume V, pace(t) = V / ((t − 09:15) / 375 min), and pace is never computed before the first tick of the session. Harm: an early-morning trickle projects to a huge pace and fires false breakouts.
 - **[OWNER-PENDING]** Baseline: DS says "compared with ADV(20)", BL `volume_pace` says "× 50-day avg"; default the criterion's parameter (`vs_avg50`, so a 50-day average volume) and keep ADV(20) for `early_volume`; owner to confirm.
 
-#### HAT-DATA-116: Feed silence over 30 seconds marks the feed stale
-- **Statement:** More than 30 seconds without ticks during market hours marks the feed stale, records `feed.stale` and blocks new orders until ticks resume.
+#### HAT-DATA-116: Feed silence of 30 seconds or more marks the feed stale
+- **Statement:** A silence of 30 seconds or more (no tick in the last 30 seconds) during market hours marks the feed stale, records `feed.stale` and blocks new orders until ticks resume. The acceptance below fixes the boundary: a tick exactly 30 seconds ago no longer counts.
 - **Source:** DS "Bar builder rules"; BL "Invariants" (4: no order when the live feed is stale); BL "Kill switches" (health → manage-only, automatic re-arm).
 - **PR:** 14, 15
 - **Verification:** PBT `bars.staleness_trip`, TLA `ExecutionRouter!NoOrderWhenStale`

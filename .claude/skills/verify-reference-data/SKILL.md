@@ -82,7 +82,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2b487610c574410445216175176c3cc53be03a46`
-Covered digest: `f397239e0a031b6456d89324abd8f1a2a723c529ee59798ba07a970df5befb09`
+Covered digest: `d02b5dc46d97f9b84ae956c6497bdefe98fc153028cc86305e56e9ccc219ebb3`
 
 ## Scope changes
 
@@ -96,6 +96,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `reference.fyers_symbol_roundtrip` does not assert that every symbol gets a row: a symbol that does not round-trip (an alias such as LTIM) is reported, which is the property.
 - The Muhurat and Saturday special sessions are modelled as `MarketHoursPolicy.sessions`; the NSE holiday JSON shape (`tradingDate`, `evening_session`) is `[A]`, validated on the first live download.
 - `mcp.no_raw_error_text` checks substrings of 9 or more characters; payloads that are substrings of the stable codes themselves are excluded (`assume`).
+- `mcp.no_raw_error_text` leaves out the log record's own source location (`pathname`, `filename`, `module`) when comparing, and has an `@example` of the checkout directory: on a CI runner the path holds "algotrading", which a generated payload matched once a new module shifted Hypothesis's string pool (PR 14 finding).
 - Postgres is checked by `refresh_on_postgres` only for the unique keys; the property tests use SQLite, where the keys are the same constraints.
 
 ## Scratch breaks
