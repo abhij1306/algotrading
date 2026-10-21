@@ -91,13 +91,14 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `8d86a8a1ee33f40df26acaf45f509c5d7ef0e347`
-Covered digest: `41ec2bb8deee1574ef42c82a3881e0f2aadfc9e6fdc380e6dd683eff6b3b5ac3`
+Sync commit: `75eeea92a6ae61ea934131ea25f55dee552553b9`
+Covered digest: `4469041e6a124b3f9ea1b84b8f7367c8b9dfaf64c2e4ad155db3f706837ec85b`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 10 extended `risk/policy.py` (the policy record, direction classification and the evidence gate) without touching `cooling_off_satisfied` or `require_cooling_off`; the new rules are checked by `verify-risk`.
 - The cooling-off CHECK in the database uses `interval '168 hours'` instead of `'7 days'`: a day interval depends on the session time zone around daylight-saving changes, 168 hours does not. The property is unchanged (seven days).
 - The strategy and universe version triggers also forbid moving a published version back to `draft`, and forbid changing `config_hash` or `definition`: without this, config immutability could be bypassed by flipping status first. This widens the check.
 - `CONF schema.user_id_columns` exempts `hat_kill_switch` from the "non-null FK chain to a user_id root" rule: an account-scope kill-switch row has no bot, so its `bot_id` is null, which contradicts the spec wording of HAT-SCH-012 (an `OWNER-PENDING` item). Recorded as a finding in the PR.

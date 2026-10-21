@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Self
 
@@ -17,6 +17,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
 from ..database import db_session_scope
+from ..hat.risk.decision import EXIT_ACTIONS, LegacyChecks, RiskDecision, SignalContext, decide
 from ..models.live_order import LiveOrder
 from ..models.live_position import LivePosition
 from ..utils.market_hours import DEFAULT_POLICY, SESSION_CLOSE, SESSION_OPEN, MarketHoursPolicy
@@ -302,6 +303,59 @@ class RiskManager:
         if order.instrument_type in ["CE", "PE"]:
             checks.append(lambda: self._check_naked_short_option(order, db))
         return _with_warnings(checks, "All risk checks passed")
+
+    def evaluate_signal(self, ctx: SignalContext, db: Session | None = None) -> RiskDecision:
+        """The single risk authority for a Hire a Trader signal (HAT-RISK-100).
+
+        Runs the existing market-hours and price-band checks, then the HAT policy, sizing, caps,
+        kill switches and invariants (`app.hat.risk`), and returns ACCEPT with a quantity or
+        REJECT with a typed reason. It never raises: a missing or unreadable input is a REJECT.
+        An exit or a protective-stop move is always accepted.
+
+        The terminal and trading paths (`pre_trade_check` and the rest) are untouched. HAT never
+        takes the DEV_MODE bypass of the market-hours check. The existing margin check is not
+        composed: it calls the broker, and the sizing cash term (free cash at the broker, CNC at
+        full margin) is stricter than its estimate. `db` is only read, to fill in the VCP
+        `TRADING_HALTED` flag when the caller left it unset.
+        """
+        if ctx.action in EXIT_ACTIONS:
+            return decide(ctx, LegacyChecks(market_open=None, price_band_ok=None))
+        if ctx.smarttrader_halted is None and db is not None:
+            ctx = replace(ctx, smarttrader_halted=self._trading_halted(db))
+        return decide(ctx, self._legacy_checks_for_signal(ctx))
+
+    @staticmethod
+    def _trading_halted(db: Session) -> bool | None:
+        """The VCP halt flag; None when it cannot be read, so the decision fails closed."""
+        try:
+            from .vcp.config import TRADING_HALTED_KEY, get_config
+
+            return get_config(db, TRADING_HALTED_KEY, "false").lower() == "true"
+        except Exception:
+            logger.exception("Could not read the trading halt flag")
+            return None
+
+    def _legacy_checks_for_signal(self, ctx: SignalContext) -> LegacyChecks:
+        """The existing market-hours and price-band checks for a signal; None for one that
+        cannot be evaluated from the context."""
+        at = ctx.at
+        market_open: bool | None = None
+        if isinstance(at, datetime) and at.tzinfo is not None and at.utcoffset() is not None:
+            market_open = self.market_hours.is_open(at, dev_mode=False)
+        band_ok: bool | None = None
+        try:
+            entry, ltp = float(ctx.entry_price), float(ctx.ltp)  # type: ignore[arg-type]
+            if entry == entry and ltp == ltp and ltp > 0:  # not NaN, a price to compare with
+                order = RiskOrder(
+                    symbol=str(ctx.instrument_id or ""),
+                    side="BUY",
+                    order_type="LIMIT",
+                    price=entry,
+                )
+                band_ok = self._check_price_band(order, ltp).status is not RiskStatus.FAIL
+        except (TypeError, ValueError, OverflowError):
+            band_ok = None
+        return LegacyChecks(market_open=market_open, price_band_ok=band_ok)
 
     @staticmethod
     def _effective_price(order_type: object, price: object, ltp: float) -> float:

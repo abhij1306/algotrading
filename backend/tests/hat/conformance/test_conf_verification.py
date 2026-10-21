@@ -26,7 +26,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2, 3, 4, 13}
+MERGED_PRS = {1, 2, 3, 4, 10, 13}
 
 
 def _models() -> list[Path]:
@@ -392,6 +392,14 @@ KNOWN_GAPS = {
     # promise on the real code with PBT `broker.confirm_and_auto_need_gtt`
     # (`accounts.effective_mode` / `request_mode`); the model arrives with the router.
     "TLA ExecutionRouter!AutoNeedsGtt",
+    # PR 10 (HAT-DEC-B20, HAT-GOV-084, HAT-SCH-086): these rows name TLA properties of the
+    # ExecutionRouter model, which 11 §3 assigns to PR 15 (the order router). Their actions map
+    # to router code that does not exist yet. Until then the same promises are checked on the
+    # real code: `caps.no_pyramiding` / `caps.no_add_to_loser` (no add to an open position) and
+    # `test_mode_change.py::test_mode_change_next_session` plus `calendar.next_session_open`
+    # (a mode change takes effect at the next session open).
+    "TLA ExecutionRouter!NoAddToOpenPosition",
+    "TLA ExecutionRouter!ModeChangeNextSession",
 }
 
 
