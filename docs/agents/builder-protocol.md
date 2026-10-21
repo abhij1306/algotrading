@@ -11,7 +11,8 @@ execution.
 - Never push to or rebase `main`, never merge, never touch another builder's branch.
 - Never call real Fyers, NSE or Telegram endpoints, never place orders, never read `.env` or
   credential files.
-- Never ask CodeAnt to re-review, in any form. Ignore CodeAnt Nitpicks.
+- Never ask CodeAnt to re-review, in any form. CodeAnt Nitpicks need no reply, but a real bug is
+  fixed in this PR wherever it was spotted (a Nitpick, your own review, a test); never defer one.
 - No example-based unit tests for HAT code (see Verification).
 - **Legacy is debt.** Where pre-HAT code or tests conflict with the specs, change or delete them;
   no shims. List it under "Legacy changes" in the PR.
