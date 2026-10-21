@@ -25,7 +25,7 @@ from hat.fakes.data_socket import (
 )
 from hat.fakes.fyers_sdk import RecordingSession
 from hat_fyers_support import Ticker, token_store
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
@@ -942,3 +942,61 @@ def test_traceback_throttle(times: list[float]) -> None:
         else:
             suppressed += 1
     assert feed_metrics.snapshot()["counters"].get(counter, 0) == suppressed
+
+
+# --- the trading calendar (HAT-DATA-127) ---
+
+
+@example(offset=0, holidays=set(), today_is_a_holiday=True, second=10 * 3600, calendar="known")
+@example(offset=1, holidays=set(), today_is_a_holiday=False, second=10 * 3600, calendar="known")
+@example(offset=1, holidays=set(), today_is_a_holiday=False, second=10 * 3600, calendar="missing")
+@example(offset=1, holidays=set(), today_is_a_holiday=False, second=10 * 3600, calendar="no_source")
+@settings(max_examples=60, deadline=None)
+@given(
+    offset=st.integers(0, 20),
+    holidays=st.sets(st.integers(0, 20), max_size=10),
+    today_is_a_holiday=st.booleans(),
+    second=st.one_of(st.integers(0, 24 * 3600 - 1), st.integers(9 * 3600, 15 * 3600 + 1800)),
+    calendar=st.sampled_from(["known", "known", "known", "missing", "unreadable", "no_source"]),
+)
+def test_calendar_closed(
+    offset: int, holidays: set[int], today_is_a_holiday: bool, second: int, calendar: str
+) -> None:
+    """With HAT's trading calendar the feed may connect on a day the calendar lists as a holiday
+    never, and on any other weekday from 09:00 IST to the 15:30 close; while the calendar is
+    missing, unreadable or not wired at all, it may connect on no day. Harm: the Fyers socket
+    opens on an exchange holiday, or on a day nobody knows is a trading day."""
+    from contextlib import nullcontext
+    from datetime import date, time, timedelta
+    from unittest.mock import patch
+
+    from app.hat.data import feed as feed_module
+    from app.hat.data.calendar import CalendarDay, MarketCalendar
+
+    day = date(2026, 10, 19) + timedelta(days=offset)  # a Monday and the days after it
+    shut = {
+        date(2026, 10, 19) + timedelta(days=h)
+        for h in holidays | ({offset} if today_is_a_holiday else set())
+    }
+    rows = {h: CalendarDay(h, False, None, None, "holiday") for h in shut}
+    when = datetime.combine(day, time(), IST) + timedelta(seconds=second)
+    clock = FixedClock(when.astimezone(UTC))
+
+    def load(_session: object) -> MarketCalendar | None:
+        if calendar == "unreadable":
+            raise OSError("calendar table unreadable")
+        return MarketCalendar(time(9, 15), time(15, 30), rows) if calendar == "known" else None
+
+    source = (
+        None
+        if calendar == "no_source"
+        else feed_module.calendar_policy_source(lambda: nullcontext(object()), clock, ttl_s=0.0)
+    )
+    with patch.object(feed_module, "load_calendar", load):
+        feed = feed_module.LiveFeed(policy_source=source)
+        allowed = feed.connection_allowed()
+    if calendar == "known":
+        window = 9 * 3600 <= second <= 15 * 3600 + 1800
+        assert allowed == (day.weekday() < 5 and day not in shut and window)
+    else:
+        assert allowed is False

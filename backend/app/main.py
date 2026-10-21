@@ -176,11 +176,12 @@ def _log_live_market_status(connect_status: str) -> None:
 def _start_hat_feed(app: FastAPI) -> None:
     """HAT_ENABLED only: build HAT's live feed (the one Fyers data socket, HAT-OVR-006), hang its
     login hooks on the Fyers auth service, let the legacy readers read its ticks, and start it."""
-    from .hat.data.feed import LiveFeed
+    from .database import SessionLocal
+    from .hat.data.feed import LiveFeed, calendar_policy_source
     from .hat.execution.fyers_auth import get_fyers_auth
     from .services.live_market_service import live_market
 
-    feed = LiveFeed()
+    feed = LiveFeed(policy_source=calendar_policy_source(SessionLocal))
     feed.install_auth_hooks(get_fyers_auth())
     live_market.bind_feed(feed)
     app.state.hat_feed = feed

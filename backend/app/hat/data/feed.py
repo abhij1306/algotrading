@@ -26,12 +26,14 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import time
 from collections.abc import Callable, Iterable
 from datetime import time as clock_time
 from typing import Any, Protocol
 
 from app.hat.clock import SYSTEM_CLOCK, Clock
 
+from .calendar import load_calendar
 from .provider.data_socket import SocketFactory, TokenSource
 from .provider.fyers_websocket import fyers_socket_factory, session_token_valid
 from .provider.fyers_websocket import fyers_token as provider_token
@@ -54,7 +56,9 @@ __all__ = [
     "PREOPEN_FROM",
     "AuthHooks",
     "LiveFeed",
+    "PolicySource",
     "TickListener",
+    "calendar_policy_source",
     "connect_status_message",
 ]
 
@@ -84,6 +88,36 @@ def connect_status_message(status: str) -> str:
     return CONNECT_STATUS_MESSAGES.get(status, "Live feed connection completed")
 
 
+PolicySource = Callable[[], MarketHoursPolicy | None]
+
+
+def calendar_policy_source(
+    session_factory: Callable[[], Any],
+    clock: Clock = SYSTEM_CLOCK,
+    *,
+    ttl_s: float = 600.0,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> PolicySource:
+    """A policy source that reads HAT's trading calendar (`hat_trading_calendar`) through
+    `session_factory`, at most once per `ttl_s`. It returns None, and is read again next time,
+    when the market has no calendar yet or the read fails, so the feed stays closed."""
+    cached: list[tuple[float, MarketHoursPolicy]] = []
+
+    def source() -> MarketHoursPolicy | None:
+        now = monotonic()
+        if cached and now - cached[0][0] < ttl_s:
+            return cached[0][1]
+        with session_factory() as session:
+            calendar = load_calendar(session)
+        if calendar is None:
+            return None
+        policy = calendar.policy(clock)
+        cached[:] = [(now, policy)]
+        return policy
+
+    return source
+
+
 class AuthHooks(Protocol):
     """The part of `FyersAuthService` the feed registers on (`app.hat.execution.fyers_auth`)."""
 
@@ -95,9 +129,9 @@ class LiveFeed:
 
     def __init__(
         self,
-        clock: Clock = SYSTEM_CLOCK,
         *,
         policy: MarketHoursPolicy | None = None,
+        policy_source: PolicySource | None = None,
         symbols: SymbolMaster = symbol_master,
         registry: SubscriptionRegistry | None = None,
         socket_factory: SocketFactory = fyers_socket_factory,
@@ -108,7 +142,11 @@ class LiveFeed:
     ) -> None:
         self._symbols = symbols
         self._validate_token = validate_token
-        self.policy = policy or MarketHoursPolicy(clock=clock)
+        # Which days the market trades comes from HAT's trading calendar: a fixed `policy` or a
+        # `policy_source` that reads it. With neither, or while the source has no calendar, the
+        # feed is closed: an unknown day is never taken for a trading day.
+        self._policy = policy
+        self._policy_source = policy_source
         # Who wants which symbols: HAT's own owner and, until K5b, the legacy websocket clients.
         self.registry = registry or SubscriptionRegistry(symbols.to_db)
         self.session = ProviderSession(
@@ -144,15 +182,32 @@ class LiveFeed:
         carry the token that was current when it was built."""
         return self.session.has_socket or self.session.state is SessionState.CONNECTING
 
+    @property
+    def policy(self) -> MarketHoursPolicy | None:
+        """The market-hours policy now, or None when the calendar is unknown."""
+        if self._policy is not None:
+            return self._policy
+        if self._policy_source is None:
+            return None
+        try:
+            return self._policy_source()
+        except Exception as exc:  # an unreadable calendar is an unknown calendar
+            logger.warning("Trading calendar unavailable: %s", type(exc).__name__)
+            return None
+
     def connection_allowed(self) -> bool:
         """Whether the feed may be connected now: market hours, or the pre-open session from 09:00
-        IST on a trading day (HAT-DATA-118)."""
-        phase = self.policy.phase()
+        IST on a trading day of HAT's calendar (HAT-DATA-118). False while the calendar is unknown.
+        """
+        policy = self.policy
+        if policy is None:
+            return False
+        phase = policy.phase()
         if phase.is_open:
             return True
         if phase is not MarketPhase.PRE_MARKET:
             return False
-        return self.policy.now_ist().time() >= PREOPEN_FROM
+        return policy.now_ist().time() >= PREOPEN_FROM
 
     def status(self) -> dict[str, Any]:
         connected = self.is_connected()

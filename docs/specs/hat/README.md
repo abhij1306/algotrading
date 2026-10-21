@@ -241,7 +241,7 @@ to an artefact that exists.
 | HAT-DATA-124 | [02](02-data.md) | 14 | PBT `feed.tick_normalised`, PBT `feed.tick_flow` |
 | HAT-DATA-125 | [02](02-data.md) | 14 | PBT `feed.registry_model`, PBT `feed.registry_concurrent` |
 | HAT-DATA-126 | [02](02-data.md) | 14 | PBT `feed.provider_converges` |
-| HAT-DATA-127 | [02](02-data.md) | 14 | PBT `feed.auth_hooks`, PBT `feed.off_hours_stops_a_backing_off_runner`, PBT `feed.monitor_survives_errors`, PBT `feed.token_check_off_loop` |
+| HAT-DATA-127 | [02](02-data.md) | 14 | PBT `feed.auth_hooks`, PBT `feed.off_hours_stops_a_backing_off_runner`, PBT `feed.monitor_survives_errors`, PBT `feed.token_check_off_loop`, PBT `feed.calendar_closed` |
 | HAT-SCH-010 | [03](03-schema.md) | 2, 3 | CONF `schema.prefix_and_boundary` |
 | HAT-SCH-011 | [03](03-schema.md) | 2 | PBT `ids.uuid7_ordered`, CONF `schema.key_types` |
 | HAT-SCH-012 | [03](03-schema.md) | 2, 3 | CONF `schema.user_id_columns` |

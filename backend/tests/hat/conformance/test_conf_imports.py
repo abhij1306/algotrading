@@ -207,23 +207,41 @@ def _constructs(tree: ast.AST, name: str) -> bool:
     )
 
 
+def _calls_named(node: ast.AST, name: str) -> int:
+    return sum(
+        isinstance(n, ast.Call) and getattr(n.func, "id", "") == name for n in ast.walk(node)
+    )
+
+
+def _enabled_calls(stmts: list[ast.stmt], callee: str) -> int:
+    """Calls of `callee` in `stmts` that run only when HAT is enabled: a nested `if` that tests
+    `is_enabled()` negated counts its `else` branch only, any other nested `if` both branches."""
+    total = 0
+    for stmt in stmts:
+        if isinstance(stmt, ast.If):
+            negated = isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)
+            if negated and _calls_named(stmt.test, "is_enabled"):
+                total += _enabled_calls(stmt.orelse, callee)
+            else:
+                total += _enabled_calls(stmt.body, callee) + _enabled_calls(stmt.orelse, callee)
+        else:
+            total += _calls_named(stmt, callee)
+    return total
+
+
 def _guarded_by_hat_enabled(tree: ast.AST, callee: str) -> bool:
-    """Every call of `callee` sits inside an `if` whose test calls `is_enabled`."""
-    calls = 0
+    """Every call of `callee` sits in the body of an `if is_enabled()` (not a negated test, and
+    not under a nested `if not is_enabled()`), so it is reachable only on the enabled branch."""
     guarded = 0
     for node in ast.walk(tree):
-        if isinstance(node, ast.If) and any(
-            isinstance(n, ast.Call) and getattr(n.func, "id", "") == "is_enabled"
-            for n in ast.walk(node.test)
-        ):
-            guarded += sum(
-                isinstance(n, ast.Call) and getattr(n.func, "id", "") == callee
-                for stmt in node.body
-                for n in ast.walk(stmt)
-            )
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == callee:
-            calls += 1
+        positive = (
+            isinstance(node, ast.If)
+            and _calls_named(node.test, "is_enabled")
+            and not (isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not))
+        )
+        if positive:
+            guarded += _enabled_calls(node.body, callee)
+    calls = _calls_named(tree, callee)
     return calls > 0 and calls == guarded
 
 
@@ -257,6 +275,16 @@ def test_single_feed_import_rule() -> None:
     main = ast.parse((APP_ROOT / "main.py").read_text(encoding="utf-8"))
     assert _constructs(main, "LiveFeed")
     assert _guarded_by_hat_enabled(main, "_start_hat_feed")
+    # the checker can fail: an unguarded call, a call under a negated guard, and one under a nested
+    # `if not is_enabled()` are all refused; the plain guard passes
+    for source, expected in (
+        ("if is_enabled():\n    _start_hat_feed()\n", True),
+        ("_start_hat_feed()\n", False),
+        ("if not is_enabled():\n    _start_hat_feed()\n", False),
+        ("if is_enabled():\n    if not is_enabled():\n        _start_hat_feed()\n", False),
+        ("if is_enabled():\n    if ready:\n        _start_hat_feed()\n", True),
+    ):
+        assert _guarded_by_hat_enabled(ast.parse(source), "_start_hat_feed") is expected, source
     owners = {
         node.value
         for node in ast.walk(_hat_sources()["data/subscriptions.py"])

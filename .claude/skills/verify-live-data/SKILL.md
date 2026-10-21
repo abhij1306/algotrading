@@ -54,11 +54,12 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT feed.monitor_survives_errors` The monitor loop continues after any exception in a check and counts it. Harm: one transient error ends reconnecting for the day.
 - `PBT feed.token_check_off_loop` The Fyers token check of an async connect runs on a worker thread, never the event loop, and an invalid or failing check gives `token_invalid`. Harm: a slow broker call freezes every live quote.
 - `PBT feed.socket_factory` The factory builds the SDK socket with the given token, the SDK auto-reconnect on, no log files and exactly the session's four callbacks, and raises `FyersWebSocketError` without the SDK. Harm: a reconnect storm, files written next to the code, or events that never reach the session.
+- `PBT feed.calendar_closed` With HAT's trading calendar the feed never connects on a day it lists as a holiday and connects on other weekdays only from 09:00 IST to the 15:30 close; with the calendar missing, unreadable or not wired it connects on no day. Harm: the Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day.
 - `PBT feed.token_source` The provider token is `client_id:access_token` exactly when the Fyers session holds a model, a client id and an access token, and None otherwise. Harm: the socket is built with half a token, or an expired token is retried for ever.
 - `PBT feed.traceback_throttle` A failing site writes a full traceback first and then at most once per interval; the other failures are one counted debug line. Harm: a failing tick handler writes a traceback per tick and fills the disk.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` Only `app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK or any other WebSocket library (statically, or by name through `importlib` or `__import__`), nothing outside `app/hat` imports `fyers_apiv3`, and `LiveFeed.add_tick_listener` is the only tick input `live.py` uses. Harm: a second socket breaks the broker session and drops the feed.
-- `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and the only importers of `feed.py` are `main.py` and the legacy read side. Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
+- `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and only in the body of `if is_enabled()` (not under a negated or nested `if not is_enabled()`); the only importers of `feed.py` are `main.py` and the legacy read side. Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `LiveMarketService` is the listed legacy copy (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`; a class named `RiskManager` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
@@ -130,7 +131,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
-Covered digest: `ded3bb212a6bc2c2b27561148fb05bd90e1ba7d09af5afdade6945106c72d05f`
+Covered digest: `ecec00a6db22e6a9f25f926e2902088e6dbf96e21239bb1ba34b2cb912042930`
 
 ## Scope changes
 
@@ -145,6 +146,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `bars.history_matches_builder` (HAT-DATA-119) belongs to PR 12 and is not checked here.
 - K3 moved the data socket, the session, the tick normaliser and the subscription registry into HAT (`app/hat/data/feed.py`, `provider/`, `subscriptions.py`) and deleted their legacy tests; each is a `feed.*` property here. The session, registry, convergence and login-hook checks are Hypothesis state machines, not TLA+ models, because the promises are about one process and the fake socket is the whole environment. The fake provider forgets its subscriptions when the SDK reconnects (`FakeDataSocket.sdk_reconnect` clears them), which is the assumption the replay is checked against; a live check that Fyers keeps them would make the replay redundant but harmless.
 - `bars.listener_isolation` moved from `LiveMarketService._notify_tick_listeners` to `LiveFeed._deliver`; it no longer checks the legacy `latest_values` and broadcast batch, which are the legacy read side's own tests in `test_live_market_regressions.py`. `bars.feed_connection_window` moved the same way. `CONF imports.no_second_websocket` now allows the SDK socket in exactly one HAT module instead of none.
+- Review found `main.py` built the feed with no calendar, so weekday exchange holidays were connectable. The feed now takes its hours policy from HAT's trading calendar (`calendar_policy_source`, read at most every 10 minutes) and is closed while the calendar is missing, unreadable or not wired; `bars.feed_connection_window` keeps checking the weekday rule with a fixed empty-holiday policy and `feed.calendar_closed` checks the calendar cases.
 - `feed.registry_concurrent` raises the thread switch frequency for its run so an unguarded update shows; it draws at most 6 examples.
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
 
@@ -511,6 +513,8 @@ E   assert not True
 E    +  where True = any(<generator object test_single_feed_import_rule.<locals>.<genexpr> at 0x7f67b304de00>)
 FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule
 ```
+
+Second break (nested negated guard): in `app/main.py`, replaced `if is_enabled(): _start_hat_feed(app)` with `if is_enabled(): if not is_enabled(): _start_hat_feed(app)`; the output is `AssertionError: assert False where False = _guarded_by_hat_enabled(Module(body=[...`.
 
 ### CONF no_duplicate_fakes_or_authorities
 
@@ -880,4 +884,36 @@ E   )
 E   
 E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AXicY9RggAJGOIsBAATlAFM=') as a decorator on your test function
 FAILED tests/hat/properties/test_feed.py::test_traceback_throttle - assert Tr [cut]
+```
+
+### PBT feed.calendar_closed
+
+Break: in `app/hat/data/feed.py`, replaced `policy = calendar.policy(clock)` with `policy = MarketHoursPolicy(clock=clock)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:951: in test_calendar_closed
+tests/hat/properties/test_feed.py:1000: in test_calendar_closed
+E   assert True == ((0 < 5 and datetime.date(2026, 10, 19) not in {datetime.date(2026, 10, 19)}))
+E    +  where 0 = <built-in method weekday of datetime.date object at 0x7ff6ab52abd0>()
+E    +    where <built-in method weekday of datetime.date object at 0x7ff6ab52abd0> = datetime.date(2026, 10, 19).weekday
+E   Failing explicit example: test_calendar_closed(
+E       offset=0,
+E       holidays=set(),
+E       today_is_a_holiday=True,
+```
+
+Second break (fail open): Break: in `app/hat/data/feed.py`, replaced `if calendar is None: return None` with `if calendar is None: return MarketHoursPolicy(clock=clock)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:951: in test_calendar_closed
+tests/hat/properties/test_feed.py:1002: in test_calendar_closed
+E   assert True is False
+E   Failing explicit example: test_calendar_closed(
+E       offset=1,
+E       holidays=set(),
+E       today_is_a_holiday=False,
+E       second=36000,
+E       calendar='missing',
 ```

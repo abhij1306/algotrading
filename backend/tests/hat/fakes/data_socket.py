@@ -177,8 +177,7 @@ def make_feed(
     check never calls Fyers."""
     factory = factory or FakeSocketFactory()
     feed = LiveFeed(
-        clock,
-        policy=policy,
+        policy=policy or MarketHoursPolicy(clock=clock),
         socket_factory=factory,
         token_source=token_source,
         validate_token=token_valid,

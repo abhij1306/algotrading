@@ -858,6 +858,6 @@ EP candidates come from a full-market gap scan just after the open, because the 
 - **Statement:** `LiveFeed` connects on login and token change, honours an explicit disconnect, stops outside market hours, and its monitor survives errors without blocking the loop.
 - **Source:** PLAN PR 14.
 - **PR:** 14
-- **Verification:** PBT `feed.auth_hooks`, PBT `feed.off_hours_stops_a_backing_off_runner`, PBT `feed.monitor_survives_errors`, PBT `feed.token_check_off_loop`
+- **Verification:** PBT `feed.auth_hooks`, PBT `feed.off_hours_stops_a_backing_off_runner`, PBT `feed.monitor_survives_errors`, PBT `feed.token_check_off_loop`, PBT `feed.calendar_closed`
 - **Acceptance:**
-  - Property: for every sequence of login, token change, disconnect and expiry, the feed runs only with a valid token and no explicit disconnect, a backing-off runner is stopped outside market hours, the monitor continues after any exception, and the token check never runs on the event loop thread. Harm: the feed trades on a dead token, stays connected overnight, or stops forever after one error.
+  - Property: for every sequence of login, token change, disconnect and expiry, the feed runs only with a valid token and no explicit disconnect, a backing-off runner is stopped outside market hours, the monitor continues after any exception, the token check never runs on the event loop thread, and the feed never connects on a holiday of HAT's trading calendar or while that calendar is unknown. Harm: the feed trades on a dead token, stays connected overnight or on an exchange holiday, or stops forever after one error.
