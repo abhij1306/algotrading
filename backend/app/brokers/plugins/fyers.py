@@ -449,6 +449,16 @@ class FyersBroker(IBroker):
             or []
         )
 
+    @staticmethod
+    def _gtt_refusal(side: object, product: str, trigger: float, limit_price: float) -> str | None:
+        if side not in {"BUY", "SELL"}:
+            return "Invalid order side. Expected BUY or SELL."
+        if product not in GTT_PRODUCTS:
+            return "Invalid GTT product. Expected CNC, MARGIN or MTF."
+        if trigger <= 0 or limit_price <= 0:
+            return "A GTT order requires a positive trigger and limit price."
+        return None
+
     def place_gtt(self, gtt: dict[str, Any]) -> OrderResponse:
         """Place a single-leg GTT order.
 
@@ -460,13 +470,7 @@ class FyersBroker(IBroker):
         product = str(gtt.get("product") or "").upper()
         trigger = safe_float(gtt.get("trigger_price"), 0.0)
         limit_price = safe_float(gtt.get("price"), 0.0)
-        reason = None
-        if side not in {"BUY", "SELL"}:
-            reason = "Invalid order side. Expected BUY or SELL."
-        elif product not in GTT_PRODUCTS:
-            reason = "Invalid GTT product. Expected CNC, MARGIN or MTF."
-        elif trigger <= 0 or limit_price <= 0:
-            reason = "A GTT order requires a positive trigger and limit price."
+        reason = self._gtt_refusal(side, product, trigger, limit_price)
         if reason is not None:
             return OrderResponse(order_id="", status="REJECTED", message=reason, details=None)
         if not self.client:

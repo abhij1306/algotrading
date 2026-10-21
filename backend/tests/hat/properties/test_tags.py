@@ -782,10 +782,11 @@ def test_a_gtt_refused_before_the_call_can_be_sent_later() -> None:
     with pytest.raises(OrderRefusedError):
         _send_gtt(env, tag)  # no tick size
     env.fake.script("place_gtt", rejected(BROKER_CIRCUIT_OPEN))
+    tick = Decimal("0.05")
     with pytest.raises(BrokerUnavailableError):
-        _send_gtt(env, tag, tick_size=Decimal("0.05"))
+        _send_gtt(env, tag, tick_size=tick)
     assert env.session.query(HatOrder).one().placed_at is None
-    out = _send_gtt(env, tag, tick_size=Decimal("0.05"))
+    out = _send_gtt(env, tag, tick_size=tick)
     assert out.status == "placed"
     assert env.fake.count("place_gtt") == 2
 
