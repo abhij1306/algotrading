@@ -5,7 +5,7 @@ description: How to run, read and update the checks that keep Hire a Trader inde
 
 # verify-standalone
 
-Checks that HAT does not import or boot the legacy application (K1 of the cleanup), that the legacy code does not import HAT, and that the helpers HAT copied out of the legacy code (backtest metrics, with the clock, sessions, money and ratio helpers; the remaining legacy modules re-export them, so there is one implementation) keep their properties and their frozen oracle.
+Checks that HAT does not import or boot the app wiring or any module outside the shared infrastructure (K1 of the cleanup, finished by K6), that nothing but the database upkeep and the app wiring imports HAT, and that the helpers HAT copied out of the legacy code (backtest metrics, with the clock, sessions, money and ratio helpers) keep their properties and their frozen oracle.
 
 ## Properties
 
@@ -14,9 +14,9 @@ Checks that HAT does not import or boot the legacy application (K1 of the cleanu
 - `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12 per period (a series with a per-period deviation of 1e-13 is flat too). Harm: an enormous or infinite Sharpe ranks a flat strategy first.
 - `PBT metrics.sharpe_sign_follows_mean` With risk-free 0 the Sharpe has the sign of the mean return and is finite. Harm: a losing strategy is reported as profitable.
 - `PBT metrics.returns_guard_bad_capital` A non-positive initial capital or period count gives 0.0 for total return and CAGR, never a division error or a sign flip. Harm: a bad input prints a large false return.
-- `CONF imports.hat_decoupled_from_legacy` The legacy modules that `app/hat` and `tests/hat` import are exactly the listed pending set (K2 broker and symbols, K6 database); a new coupling fails, and a module no longer imported must leave the list. Harm: HAT quietly grows back into the code it is meant to replace.
+- `CONF imports.hat_decoupled_from_legacy` The `app` modules that `app/hat` and `tests/hat` import are exactly the `SHARED` set in `test_conf_decoupling.py` (`app.base`, `app.database`, `app.paths`, `app.utils.env_loader`: infrastructure with no legacy code and no HAT rule); a new coupling fails, and a module no longer imported must leave the set. Harm: HAT quietly grows back into code it is meant to stand apart from.
 - `CONF imports.hat_suites_boot_no_legacy_app` Collecting `tests/hat` in a fresh interpreter loads neither `app.main` nor `app.routers` (the manual-trading singletons they once also listed were deleted in K4; `risk.no_manual_trading_path` keeps them deleted). Harm: HAT suites depend on booting the whole legacy app.
-- `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry) and `app/main.py` (the wiring) import `app.hat` from legacy code; no re-export shim is left. Harm: deleting HAT or legacy code in a later PR breaks the other side.
+- `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry and schema upkeep) and `app/main.py` (the wiring) import `app.hat`; no other `app` module does. Harm: deleting or moving HAT code breaks the other side.
 - `CONF fixtures.vcp_oracle_frozen` The frozen legacy VCP outputs in `tests/hat/fixtures/vcp_oracle.json` match their recorded hash, case list and internal consistency. Harm: PR 6's characterization test compares against a drifting oracle.
 
 ## Run
@@ -33,7 +33,7 @@ No check touches the network or a database. The decoupling checks read source fi
 
 ## Bug or model error
 
-- A failing `imports.hat_decoupled_from_legacy` names the module and the HAT file. Fix the import (use the HAT copy, or inject the dependency); add to the pending set only with the cleanup PR that removes it written next to the entry.
+- A failing `imports.hat_decoupled_from_legacy` names the module and the HAT file. Fix the import (use a HAT module, or inject the dependency); add to `SHARED` only a module that holds no HAT rule and no feature code, with its reason written next to the entry.
 - A failing `imports.hat_suites_boot_no_legacy_app` lists the loaded legacy modules. Find the first import that pulled them (a test helper, a root `conftest.py` import) and make it lazy or HAT-local; never filter the list.
 - A failing `metrics.*` property is a real bug in `app/hat/backtest/metrics.py`; the legacy copy has the same flaw for a constant series (found here, fixed with `VOLATILITY_FLOOR`).
 - A failing `fixtures.vcp_oracle_frozen` means the file changed. The legacy detector it came from is deleted (K5a), so the file is now the only record of those outputs: regenerate it only on purpose, from a recovered `pattern.py`, and change the recorded hash with it.
@@ -41,7 +41,7 @@ No check touches the network or a database. The decoupling checks read source fi
 ## Updating
 
 - A new helper copied into HAT: copy it with its tests, import the HAT copy everywhere under `app/hat` and `tests/hat`, and add its code to Coverage below.
-- When a cleanup PR (K2 to K6) removes a legacy module from the pending set, delete its entry in `test_conf_decoupling.py` in the same PR.
+- A module removed from `SHARED` (no longer imported) must leave the set in the same change.
 - After re-confirming everything, update the sync commit and digest: `python backend/tests/hat/conformance/hat_conf_skills.py verify-standalone` prints the digest.
 
 ## Coverage
@@ -62,8 +62,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
-Covered digest: `fd5a48aa4cbf01fed86905181b9b3f351a72f246ac94c9c0419cedac2a024f74`
+Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
+Covered digest: `e36eb296546f47fcdbf4158653baf90ba84876b6b3487afc8a62c54a18ec4b2e`
 
 ## Scope changes
 
@@ -71,8 +71,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
 - `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
-- The pending set in `imports.hat_decoupled_from_legacy` is not empty: K2, K3 and K6 remove the entries.
-- `imports.legacy_does_not_import_hat` allows `app/database.py` until K6 gives HAT its own session factory, and the re-export shims (`utils/clock.py`, `services/fyers/auth_flow.py`, `services/fyers_client.py`, `services/symbol_master.py`, and `config.py`, which reads HAT's token store) until the legacy code that uses them is deleted (K5b/K6). K4 deleted the `paper_book`, broker-package and token-store shims. Re-exporting avoids a second copy of each helper.
+- K6 emptied `PENDING` in `test_conf_decoupling.py` and replaced it, with `PERMANENT`, by one `SHARED` set holding `app.base`, `app.database`, `app.paths` and `app.utils.env_loader`. They are kept as HAT-neutral shared infrastructure rather than moved into HAT: after K6 they hold no legacy code (`database.py` creates only HAT tables and Postgres only, `paths.py` has the roots and `HAT_DATA_ROOT`, `env_loader.py` parses `.env`), and moving them would duplicate the engine and the one `.env` loader. No check was narrowed: a new coupling is still refused.
 
 - K4 removed `services/execution/paper_book.py`, `brokers/*` and `services/fyers/token_store.py` from `SHIMS` (deleted), added `config.py` (it imports HAT's token store for the legacy data fetcher) and shortened `NEVER_LOADED` to the app and the routers. No check was narrowed: the deleted modules cannot be imported and `risk.no_manual_trading_path` asserts they stay gone.
 - K2 moved the six Fyers and symbol modules out of `PENDING` in `test_conf_decoupling.py`, added the six legacy re-export modules to `SHIMS` (they may import HAT; HAT may not import them), and added `database.py` and `main.py` to the wiring files the legacy-does-not-import-HAT check allows. The decoupling check is stricter for HAT (no `app.brokers`, `app.services` or `app.routers` import) and no check was narrowed.
@@ -166,6 +165,25 @@ E     Left contains 1 more item:
 E     {'app.utils.helpers': ['app/hat/money.py']}
 E     Use -v to get more diff
 FAILED tests/hat/conformance/test_conf_decoupling.py::test_imports__hat_decoupled_from_legacy
+```
+
+Break (K6, `SHARED` replaced `PENDING`): appended `import app.utils.logger` to `app/hat/money.py`, a module that is not in `SHARED`.
+
+```
+tests/hat/conformance/test_conf_decoupling.py F                          [100%]
+tests/hat/conformance/test_conf_decoupling.py:113: in test_imports__hat_decoupled_from_legacy
+E   AssertionError: {'app.utils.logger': ['app/hat/money.py']}
+E   assert {'app.utils.l...at/money.py']} == {}
+```
+
+Break (K6, a stale entry): added `"app.config": "break"` to `SHARED` although nothing under HAT imports it.
+
+```
+tests/hat/conformance/test_conf_decoupling.py F                          [100%]
+tests/hat/conformance/test_conf_decoupling.py:116: in test_imports__hat_decoupled_from_legacy
+E   AssertionError: assert {'app.base', ...s.env_loader'} == {'app.base', ...s.env_loader'}
+E     Extra items in the right set:
+E     'app.config'
 ```
 
 ### CONF imports.hat_suites_boot_no_legacy_app

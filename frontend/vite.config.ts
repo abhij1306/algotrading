@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, lazyPlugins } from "vite-plus";
 
-// start_dev.py sets BACKEND_URL and PORT when it picks free ports.
+// BACKEND_URL points the dev proxy at another backend; PORT moves the dev server (default 3000).
 const backend = process.env.BACKEND_URL ?? "http://127.0.0.1:8000";
 const port = Number(process.env.PORT ?? 3000);
 
@@ -159,17 +159,16 @@ export default defineConfig({
     host: "127.0.0.1",
     port,
     proxy: {
-      "/api": { target: backend, changeOrigin: true, ws: true },
+      "/api": { target: backend, changeOrigin: true },
     },
   },
   preview: {
     port,
     proxy: {
-      "/api": { target: backend, changeOrigin: true, ws: true },
+      "/api": { target: backend, changeOrigin: true },
     },
   },
   build: {
-    // electron-builder packages `out/**`; its own output goes to `dist/`.
     outDir: "out",
   },
   test: {

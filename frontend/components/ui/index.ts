@@ -25,8 +25,5 @@ export {
   TableCaption,
 } from "./table";
 
-// Navigation
-export { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs";
-
 // Form Controls
 export { Checkbox } from "./checkbox";

@@ -16,7 +16,6 @@ def db_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_NAME", "trading")
     monkeypatch.setenv("DB_USER", "trader")
     monkeypatch.setenv("DB_PASSWORD", PASSWORD)
-    monkeypatch.delenv("USE_SQLITE_TEST", raising=False)
 
 
 @pytest.mark.usefixtures("db_env")
@@ -96,25 +95,3 @@ def test_env_flag_unset_or_blank_gives_the_default(
         monkeypatch.setenv("PLAT_TEST_FLAG", raw)
 
     assert env_flag("PLAT_TEST_FLAG", default=default) is default
-
-
-@pytest.mark.usefixtures("db_env")
-@pytest.mark.parametrize(
-    ("raw", "backend"),
-    [
-        ("yes", "sqlite"),
-        ("ON", "sqlite"),
-        ("1", "sqlite"),
-        ("False", "postgresql"),
-        ("0", "postgresql"),
-    ],
-)
-def test_use_sqlite_test_flag_picks_the_backend(
-    monkeypatch: pytest.MonkeyPatch, raw: str, backend: str
-) -> None:
-    monkeypatch.setenv("USE_SQLITE_TEST", raw)
-
-    engine = database.create_engine_from_env()
-    engine.dispose()
-
-    assert engine.url.get_backend_name() == backend

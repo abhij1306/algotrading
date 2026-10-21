@@ -62,7 +62,7 @@ noise = st.dictionaries(
 @given(raw=not_true, other=noise, dialect=st.sampled_from(["sqlite", "postgresql", "mysql", ""]))
 def test_disabled_starts_nothing(raw: str | None, other: dict[str, str], dialect: str) -> None:
     """With HAT_ENABLED unset or not a true value, no scheduler, task or log handler appears,
-    on any database dialect (SmartTrader's SQLite test runs stay untouched)."""
+    on any database dialect."""
     env = dict(other)
     if raw is not None:
         env["HAT_ENABLED"] = raw

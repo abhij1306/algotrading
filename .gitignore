@@ -1,31 +1,14 @@
-# AlgoTrading - Production .gitignore
-# Excludes market data, credentials, and build artifacts
+# Hire a Trader (HAT) - what stays out of git: market data, credentials, build output.
 
 # ============================================
-# Market Data & Databases (NEVER COMMIT)
+# Market data and databases (NEVER COMMIT)
 # ============================================
 
-# NSE Data Pipeline
-nse_data/raw/
-nse_data/processed/
-nse_data/backups/
-nse_data/phase1/sources/
-nse_data/phase1/staging/
-nse_data/phase1/curated/
-nse_data/phase1/metadata/
-
-# Historical Data
+# Data directories
 data/
-historical_data/
-
-# Hire a Trader (HAT): Parquet bars, raw bhavcopy zips, backtest outputs (HAT_DATA_ROOT)
 data_system/hat/
 
-# TLA+ model checking scratch (verification/tla/run.sh)
-verification/tla/states/
-verification/tla/.tlc.out
-
-# All Data Files
+# HAT: Parquet bars, raw bhavcopy zips, backtest outputs (HAT_DATA_ROOT)
 *.parquet
 *.csv
 *.db
@@ -38,276 +21,156 @@ verification/tla/.tlc.out
 !backend/app/hat/data/
 !backend/tests/hat/fixtures/*.csv
 
-# Compressed Archives
+# Compressed archives
 *.zip
+*.tar
 *.tar.gz
+*.gz
 *.rar
 *.7z
 
+# TLA+ model checking scratch (verification/tla/run.sh)
+verification/tla/states/
+verification/tla/.tlc.out
+
 # ============================================
-# Credentials & Environment (NEVER COMMIT)
+# Credentials and environment (NEVER COMMIT)
 # ============================================
 
-# Environment Variables
 .env
 .env.local
 .env.*.local
 *.env
+!.env.example
 
-# API Keys & Secrets
 secrets/
 credentials/
 *.key
 *.pem
 *.crt
 
-# Fyers Config & Tokens
+# Fyers login token (fyers_tokens.FYERS_TOKEN_PATH) and its config
 fyers/config/access_token.json
 fyers/config/keys.env
 fyers/config/refresh_token.json
-
-# Build Results (Standalone)
-frontend/dist/
-frontend/out/
-backend/dist/
-backend/build/
-*.exe
-
-# Reference Data & Repositories
-reference/
-openalgo/
-*.tar
-*.gz
 
 # ============================================
 # Python
 # ============================================
 
-# Log files
-*.log
-
-# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Node
-node_modules/
-out/
-dist/
-
-# Environment
-.env
-.env.local
-*.env
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Database
-*.db
-*.db-journal
-*.sqlite
-*.sqlite3
-
-# Data cache
-backend/cache/
-data/_temp/ggs/
-.eggs/
-lib/
-!frontend/lib/
-!frontend/features/*/lib/
-lib64/
-parts/
-sdist/
-
-# Virtual Environments
 .venv/
 venv/
 env/
 ENV/
 .virtualenv/
-
-# Distribution / packaging
+*.egg-info/
+*.egg
+.eggs/
 build/
+dist/
 develop-eggs/
 downloads/
 eggs/
 var/
 wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+parts/
+sdist/
 MANIFEST
+.installed.cfg
+lib/
+lib64/
+!frontend/lib/
+!frontend/features/*/lib/
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage
+# Tests and coverage
 .pytest_cache/
 .hypothesis/
-.hypothesis/**
-.hypothesis/*
-backend/.hypothesis/
-backend/.hypothesis/**
 .coverage
 .coverage.*
 htmlcov/
 .tox/
 .nox/
+.ruff_cache/
 
-# Jupyter Notebook
+# Notebooks, pyenv
 .ipynb_checkpoints
 *.ipynb
-
-# pyenv
 .python-version
 
 # ============================================
-# Node.js / Frontend
+# Node and frontend
 # ============================================
 
-# Dependencies
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
-
-# Production build
+out/
 frontend/build/
 frontend/dist/
+frontend/out/
 
 # ============================================
-# IDEs & Editors
+# Editors and operating systems
 # ============================================
 
-# VSCode
 .vscode/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
-
-# PyCharm
 .idea/
 *.iml
 *.iws
-
-# Sublime Text
 *.sublime-project
 *.sublime-workspace
-
-# Vim
 *.swp
 *.swo
 *~
 
-# ============================================
-# Operating System
-# ============================================
-
-# macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
-# Linux
-*~
-
 # ============================================
-# Logs & Temporary Files
+# Logs, temporary files, local overrides
 # ============================================
 
-# Application Logs
 logs/
 *.log
 *.log.*
-
-# Temporary files
 *.tmp
 *.temp
 *.bak
-*.swp
-*.swo
-
-# Health check reports
-health_check_report.json
-data_management_audit.json
-
-# ============================================
-# Project-Specific
-# ============================================
-
-# Backtest Results
-backtest_results/
 *.pkl
 *.pickle
-
-# Screenshots & Recordings (if large)
+backtest_results/
 screenshots/
 recordings/
-
-# Local configuration overrides
 config.local.json
 settings.local.json
-
-# ============================================
-# Keep These Files (Exceptions)
-# ============================================
-
-# Keep metadata files
-!nse_data/metadata/
-!nse_data/metadata/*.csv
-
-# Keep README files
-!**/README.md
-
-# Keep example configs
-!.env.example
-!config.example.json
-
-# Keep .gitkeep files
-!.gitkeep
-
-# ============================================
-# Prevent Future Contamination
-# ============================================
-
-# Temp & Debug Scripts (NEVER COMMIT)
 temp_*.py
 debug_*.py
-# test_*.py - REMOVED to allow tests
-# Allow test files in tests directory
-!backend/tests/test_*.py
-# Allow all scripts
-!backend/scripts/*.py
-# Allow utils
-!backend/utils/*.py
 
-# SonarQube scanner temp output
+# SonarQube scanner output
 .scannerwork/
 .sonarqube/
 
-
-# Archive Folders
-archive/
-old/
-backup/
-deprecated/
-
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# ============================================
+# Keep these
+# ============================================
+
+!**/README.md
+!.gitkeep

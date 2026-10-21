@@ -21,7 +21,7 @@ $rel now has $now useEffect/useLayoutEffect calls; the last commit had $before. 
 - derived value: compute it during render, or with useMemo if it is expensive
 - reacting to a user action: do the work in the event handler
 - fetching or polling: use a TanStack Query hook (useQuery with refetchInterval)
-- external or live data such as the WebSocket: subscribe through a zustand store or useSyncExternalStore
+- external data that is not an HTTP resource: subscribe with useSyncExternalStore
 - redirects: use <Navigate> or a route redirect in frontend/router.tsx
 EOF
   exit 2

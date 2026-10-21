@@ -1,6 +1,6 @@
 """The Fyers access-token file: the only code that reads or writes it (HAT-OPS-051).
 
-HAT owns it since K2 (K4 deleted the legacy re-export). There is no DEV_MODE switch: nothing skips
+HAT owns it, path included (`FYERS_TOKEN_PATH`). There is no DEV_MODE switch: nothing skips
 the token because of a development flag.
 
 The file is JSON written by the login flow. Fields read back: ``client_id``, ``access_token``,
@@ -30,11 +30,14 @@ from pathlib import Path
 from typing import Any
 
 from app.hat.data.sessions import IST
-from app.paths import FYERS_TOKEN_PATH
+from app.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
 _POSIX_FILE_MODE = 0o600
+
+# Where the login flow saves the token (gitignored). This module is the only owner of the path.
+FYERS_TOKEN_PATH = PROJECT_ROOT / "fyers" / "config" / "access_token.json"
 
 
 class TokenStoreError(Exception):

@@ -3,15 +3,16 @@
 
 # Print tool_input.file_path from the hook JSON on stdin, with forward slashes.
 hook_file_path() {
-  node -e '
-    let s = "";
-    process.stdin.on("data", (d) => (s += d)).on("end", () => {
-      try {
-        const p = JSON.parse(s)?.tool_input?.file_path ?? "";
-        process.stdout.write(p.replaceAll("\\", "/"));
-      } catch { /* not JSON: print nothing */ }
-    });
-  '
+  local py
+  py="$(command -v python3 || command -v python)" || return 0
+  "$py" -c '
+import json, sys
+try:
+    path = (json.load(sys.stdin).get("tool_input") or {}).get("file_path") or ""
+except ValueError:
+    path = ""  # not JSON: print nothing
+sys.stdout.write(path.replace("\\", "/"))
+'
 }
 
 repo_root() {

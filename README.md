@@ -1,87 +1,71 @@
-# SmartTrader
+# Hire a Trader (HAT)
 
-AI-assisted quantitative trading platform for NSE with real-time market data, screening, terminal workflows, and Phase-1 historical snapshot data.
+A rules-based NSE swing-trading system. Bots score the market after the close, pick candidates,
+size them under a risk policy and trade through Fyers in shadow, confirm (Telegram approval) or
+auto mode. The backend is FastAPI on PostgreSQL; the frontend is a small React shell.
 
 ---
 
 ## Quick Start
 
-### One-command startup (Windows)
-
-```bash
-start.bat
-```
-
-This starts backend + frontend and opens the app URL.
-
-### Manual startup
+Python 3.14, PostgreSQL 18, Node 26 and pnpm are required.
 
 ```bash
 # backend (repo root)
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
 python scripts/install_backend_deps.py
-python backend/start_server.py
+cp .env.example .env              # fill in DB_* and the Fyers credentials
+python backend/start_server.py    # http://127.0.0.1:8000
 
 # frontend
 cd frontend
 pnpm install
-pnpm dev
+pnpm dev                          # http://127.0.0.1:3000
 ```
 
----
-
-## Canonical Documentation
-
-- `CLAUDE.md`: development guide and the rules the code enforces
-- `docs/specs/hat/README.md`: Hire a Trader (HAT) specs, the source of truth for the HAT module
+The schema is created at startup in a fresh PostgreSQL database; there is no migration tool and
+no legacy data. HAT's scheduler and live feed start only when `HAT_ENABLED=true` (default false).
 
 ---
 
-## Core Modules
+## Documentation
 
-- Dashboard
-- Terminal
-
----
-
-## Data System
-
-Active canonical data root:
-- `data_system/`
-
-Phase-1 active scope:
-- 2025 onward only for runtime/build pipeline
-
-Canonical pipeline:
-- `python -m data_platform.pipelines.phase1_build --asof YYYY-MM-DD --mode full|incremental`
+- `CLAUDE.md`: development guide, startup, routes, environment and the rules the code enforces
+- `docs/specs/hat/README.md`: the HAT specs, the source of truth for the product
+- `.claude/skills/`: how to run and read each area's verification (`verify-*`) and the trading
+  safety rules
 
 ---
 
-## API Highlights
+## API
 
-- WebSocket: `/api/websocket/connect`, `/api/websocket/subscribe`, `/api/websocket/disconnect`, `/api/websocket/status`, `WS /api/websocket/stream`
-- Terminal: `/api/terminal/chart`, `/api/terminal/paper/order`
-- Data snapshots: `/api/data/snapshot/stock`, `/api/data/snapshot/universe`, `/api/data/snapshot/status`
+- `GET /` and `GET /ping`: liveness
+- The daily Fyers login under `/api/hat/auth/fyers`: `GET /status`, `GET /url`, `POST /token`,
+  `POST /disconnect`
+
+The `/api/hat/*` read routes and the dashboard come with later PRs. The OpenAPI types for the
+frontend are generated (`pnpm gen:api` in `frontend/`).
 
 ---
 
 ## Quality Checks
 
-### Frontend
 ```bash
+# from the repo root
+ruff format --check .
+ruff check .
+
+# frontend
 cd frontend
 pnpm check
 pnpm test
 pnpm build
 ```
 
-### Backend
-```bash
-cd backend
-ruff check .
-pytest
-```
+Backend tests are verification suites (Hypothesis properties, TLA+ models, Postgres and
+conformance checks); see `CLAUDE.md` for the commands and `docs/specs/hat/11-verification.md` for
+the method.
 
 ### SonarQube
 Pass the SonarQube URL at scan time instead of hardcoding it in `sonar-project.properties`.
@@ -89,33 +73,6 @@ Pass the SonarQube URL at scan time instead of hardcoding it in `sonar-project.p
 ```bash
 sonar-scanner -Dsonar.host.url=http://localhost:9000
 ```
-
-For local-only defaults, keep a gitignored override such as `sonar-project.properties.local` or inject the URL in CI pipeline variables.
-
----
-
-## Troubleshooting
-
-### Backend exits immediately
-Run foreground to see exact error:
-
-```bash
-.\venv\Scripts\python.exe backend\start_server.py
-```
-
-Install missing dependencies:
-
-```bash
-python scripts/install_backend_deps.py
-```
-
-Python 3.14 note:
-- Fyers package metadata pins an old `aiohttp` build path on Windows.
-- Use `python scripts/install_backend_deps.py` to install a stable set.
-
-### WebSocket connects post-market
-- Verify `DEV_MODE` is not set to `true`.
-- Default startup now uses `DEV_MODE=false`.
 
 ---
 

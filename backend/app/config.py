@@ -1,6 +1,4 @@
-"""
-Configuration module for loading environment variables and settings
-"""
+"""Configuration read from the environment."""
 
 import os
 
@@ -22,10 +20,6 @@ def parse_origins(raw: str) -> tuple[str, ...]:
 
 
 class Config:
-    # Server settings
-    PORT = int(os.getenv("PORT", 8000))
-    CACHE_TTL = int(os.getenv("CACHE_TTL", 3600))
-    ENV = os.getenv("ENV", "development")
     ALLOWED_ORIGINS = parse_origins(os.getenv("CORS_ORIGINS", DEFAULT_ALLOWED_ORIGINS))
 
 

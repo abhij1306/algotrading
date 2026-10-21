@@ -1,5 +1,4 @@
-"""Cut-down counters and throttled logging for the provider socket (K3; replaces the legacy
-`runtime_metrics` and `log_exception_throttled`, which HAT does not import).
+"""Counters and throttled logging for the provider socket (K3).
 
 Thread-safe: the SDK threads and the event loop both count here.
 """

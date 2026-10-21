@@ -1,7 +1,7 @@
 """CONF checks that HAT stands on its own (K1, the cleanup plan's "Decouple HAT"): nothing under
-`app/hat` or `tests/hat` imports `app.main`, a legacy router, a legacy singleton or a legacy test
-helper, except the modules listed in PENDING, which later cleanup PRs move into HAT; and
-nothing outside HAT imports it except the database upkeep hook."""
+`app/hat` or `tests/hat` imports `app.main`, a router, a test helper outside `tests/hat` or any
+`app` module that is not listed in SHARED; and nothing outside HAT imports it except the database
+upkeep hook and the app wiring."""
 
 import ast
 import json
@@ -16,16 +16,16 @@ BACKEND = REPO_ROOT / "backend"
 HAT_APP = APP_ROOT / "hat"
 HAT_TESTS = BACKEND / "tests" / "hat"
 
-# Imports of the shared base that HAT keeps for good: the declarative base of the models.
-PERMANENT = {"app.base"}
-
-# Legacy modules HAT code or its tests still import, and the cleanup PR that moves them. The set
-# must equal what is imported today: a new entry is a new coupling (refused), and a module that
-# is no longer imported must be removed from here, so the list only shrinks.
-PENDING = {
-    "app.database": "K6",
-    "app.paths": "K6",
-    "app.utils.env_loader": "K6",
+# The `app` modules HAT may import, each with why. After K6 nothing legacy is left: these are
+# shared infrastructure that holds no legacy code and no HAT-specific rule, so HAT depends on them
+# without owning them. The set must equal what is imported today: a new entry is a new coupling
+# (refused unless it is the same kind of module), and a module that is no longer imported must be
+# removed from here.
+SHARED = {
+    "app.base": "the declarative base of the models",
+    "app.database": "the engine, sessions and schema creation (Postgres only)",
+    "app.paths": "the repository roots and `HAT_DATA_ROOT` (HAT-OVR-052)",
+    "app.utils.env_loader": "the `.env` loader and the boolean-flag parser",
 }
 
 # Top-level module names of the legacy test helpers (`tests/fakes`, the parent
@@ -97,22 +97,22 @@ def _legacy_imports() -> dict[str, set[str]]:
 
 
 def _owner(name: str) -> str | None:
-    """The PENDING or PERMANENT module that `name` is, or lives under."""
-    for allowed in (*PERMANENT, *PENDING):
+    """The SHARED module that `name` is, or lives under."""
+    for allowed in SHARED:
         if name == allowed or name.startswith(allowed + "."):
             return allowed
     return None
 
 
 def test_imports__hat_decoupled_from_legacy() -> None:
-    """HAT-OVR-040 (K1): HAT code and HAT tests import no legacy router, `app.main`, legacy model,
-    legacy test helper or any legacy module that is not listed in PENDING; and each PENDING
-    module is still imported (a stale entry hides progress)."""
+    """HAT-OVR-040 (K1): HAT code and HAT tests import no router, `app.main`, test helper outside
+    `tests/hat` or any `app` module that is not listed in SHARED; and each SHARED module is still
+    imported (a stale entry hides a removed coupling)."""
     imports = _legacy_imports()
     unlisted = {name: sorted(files) for name, files in imports.items() if _owner(name) is None}
     assert unlisted == {}, unlisted
     used = {_owner(name) for name in imports}
-    assert used - {None} == set(PERMANENT) | set(PENDING)
+    assert used - {None} == set(SHARED)
 
 
 def test_imports__legacy_does_not_import_hat() -> None:
