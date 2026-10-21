@@ -11,7 +11,7 @@ Checks that HAT does not import or boot the legacy application (K1 of the cleanu
 
 - `PBT metrics.drawdown_bounds` The drawdown of a positive equity curve is in (-1, 0], is exactly 0 at every new running peak, and `max_drawdown` is its minimum. Harm: a backtest reports a loss deeper than the account, or none after a fall.
 - `PBT metrics.trade_stats_partition` Every trade is a win or a loss (exactly 0 is a loss), the counts add up, the win rate is in [0, 1], average win is not negative, average loss is not positive and the profit factor is finite and not negative. Harm: a flat trade is counted as a win and the win rate is overstated.
-- `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12. Harm: an enormous or infinite Sharpe ranks a flat strategy first.
+- `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12 per period (a series with a per-period deviation of 1e-13 is flat too). Harm: an enormous or infinite Sharpe ranks a flat strategy first.
 - `PBT metrics.sharpe_sign_follows_mean` With risk-free 0 the Sharpe has the sign of the mean return and is finite. Harm: a losing strategy is reported as profitable.
 - `PBT metrics.returns_guard_bad_capital` A non-positive initial capital or period count gives 0.0 for total return and CAGR, never a division error or a sign flip. Harm: a bad input prints a large false return.
 - `CONF imports.hat_decoupled_from_legacy` The legacy modules that `app/hat` and `tests/hat` import are exactly the listed pending set (K2 broker and symbols, K3 live feed, K6 database); a new coupling fails, and a module no longer imported must leave the list. Harm: HAT quietly grows back into the code it is meant to replace.
@@ -66,7 +66,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
-Covered digest: `8c4b20be502018e6f39eb6ec2239d2fc88cf2a3d5aed205236f6afa032bc49ef`
+Covered digest: `d3897b99334382c3f8872972b16ed95c4c32d9eb38e8e75bee3f8b4271019562`
 
 ## Scope changes
 
@@ -118,6 +118,15 @@ tests/hat/properties/test_metrics.py:71: in test_sharpe_zero_volatility
 E   assert 7.860675556700752e+16 == 0.0
 E    +  where 7.860675556700752e+16 = <function sharpe_mean_std at 0x7fb2f6bbbb60>(0     1.000000e-12\n1     1.000000e-12\n2     1.000000e-12\n3     1.000000e-12\n4     1.000000e-12\n5     1
 E    +    where <function sharpe_mean_std at 0x7fb2f6bbbb60> = metrics.sharpe_mean_std
+```
+
+Break: in `backend/app/hat/backtest/metrics.py`: the excess-CAGR floor compared on the annualised deviation (a per-period 1e-13 passes it).
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:63: in test_sharpe_zero_volatility
+tests/hat/properties/test_metrics.py:75: in test_sharpe_zero_volatility
+E   assert 31497039417.435608 == 0.0
 ```
 
 ### PBT metrics.sharpe_sign_follows_mean

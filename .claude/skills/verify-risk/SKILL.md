@@ -18,7 +18,7 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 - `TLA KillSwitch!HealthAutoRearm` A health kill clears by itself as soon as the health inputs pass, without a user. Harm: a brief data glitch freezes the bot until someone notices.
 - `TLA KillSwitch!ExitsContinue` Whatever is tripped, paused or failing, a due exit is eventually sent. Harm: a kill or a health failure traps an open position.
 - `PBT sizing.*` On the real `size_position` and the real `evaluate_signal`: the size is exactly the floor of the smallest of the four terms (risk, position share, 20-day volume, cash), in Decimal with no float; the risk taken never exceeds `equity x risk_pct x ladder multiplier`; a wider stop never grows the size and more equity never shrinks it; a zero size is a skip with a named reason; a stop at or above the entry is refused; the regime and health multipliers are applied once (they are already inside the allocation's `risk_pct`); every number comes from the policy version in force at the signal time, so a pending increase never sizes a trade. Harm: a position larger than the owner's risk budget, or one sized with a limit nobody approved.
-- `PBT caps.*` On the real decision: the 3% global open risk, positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
+- `PBT caps.*` On the real decision: the 3% global open risk, positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk channel (drawdown, manual) or of its health channel (data, broker) is a trip, so an automatic health re-arm never hides a tripped drawdown kill; another bot's rows never count. On the real service on SQLite, random trips, health changes, re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 15% and a bot at 10% from the summed and per-bot equity. Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
@@ -96,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
-Covered digest: `7f83597dc5159ed66099df4df48070c3476afa1358f080e81291e215b0397ee5`
+Covered digest: `11c7df6878c8632fbd442c2e3a96ad7b77625d1c694d7bff7932d3ebbc61404e`
 
 ## Scope changes
 
@@ -510,6 +510,22 @@ tests/hat/properties/test_caps.py:505: in test_price_band
 E   AssertionError: assert None == <Reason.PRICE_OUT_OF_BAND: 'price_out_of_band'>
 E    +  where None = RiskDecision(accepted=True, reason=None, quantity=10000, stop=Decimal('1.1979'), risk_amount=Decimal('121.0000'), warn...097cd915f'), binding='liquidity', risk_pct_used=Decimal('0
 E    +  and   <Reason.PRICE_OUT_OF_BAND: 'price_out_of_band'> = Reason.PRICE_OUT_OF_BAND
+```
+
+Break: in `backend/app/hat/risk/service.py` (caps.price_band): an infinite or NaN band width is accepted.
+
+```
+tests/hat/properties/test_caps.py F
+    | AssertionError: assert True is None
+```
+
+Break: in `backend/app/hat/risk/service.py` (caps.market_hours_only): the default policy ignores the calendar's special session.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:417: in test_special_session_follows_calendar
+tests/hat/properties/test_caps.py:432: in test_special_session_follows_calendar
+E   AssertionError: market_closed
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (caps.decision_total): only missing-input errors are caught.
