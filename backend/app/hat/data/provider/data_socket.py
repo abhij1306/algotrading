@@ -1,6 +1,7 @@
 """The provider data socket seam: what ProviderSession needs from the Fyers SDK socket.
 
-`fyers_apiv3.FyersWebsocket.data_ws.FyersDataSocket` satisfies `DataSocket` structurally, and
+The Fyers SDK's data socket class (built only in `fyers_websocket.py`) satisfies `DataSocket`
+structurally, and
 tests use a fake. The SDK takes its callbacks at construction, so a `SocketFactory` builds a
 socket from a token and a `SocketCallbacks`.
 """

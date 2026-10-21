@@ -1,4 +1,11 @@
-"""HAT's live subscriptions: one `SubscriptionRegistry` owner, `"hat"` (HAT-DATA-112).
+"""HAT's live subscriptions: who wants which live symbols (`SubscriptionRegistry`, the single
+source of truth for provider subscriptions, owned by HAT since K3) and the one owner HAT itself
+holds, `"hat"` (HAT-DATA-112).
+
+Each owner (HAT, a legacy websocket client id, or the legacy REST API owner) holds a set of
+symbols. A symbol is needed at the provider while at least one owner holds it. Every mutation
+returns the provider delta, so callers never diff before/after snapshots. The registry is pure,
+synchronous and thread-safe: no I/O, no asyncio, one lock around all state.
 
 The owner's symbol set is always `watchlist | open positions | EP candidates`, in DB symbol
 format. Open positions are part of the set by construction, so no change to the watchlist or the
@@ -8,28 +15,28 @@ about symbols no owner holds any more.
 
 The provider calls are injected as plain synchronous callables. This code runs on worker threads
 (job bodies) as well as on the loop, and a callable bound to the live service hands the call to
-the event loop itself (see `live.threadsafe_provider`).
+the event loop itself (see `live.threadsafe_provider`; `LiveFeed` in `feed.py` is the provider).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Hashable, Iterable
 from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.services.subscription_registry import SubscriptionRegistry
-
 from ..models import HatInstrument, HatPosition, HatWatchlistEntry
 
 __all__ = [
+    "API_OWNER",
     "HAT_OWNER",
     "SYMBOL_LIMIT",
     "LiveSubscriptions",
+    "SubscriptionRegistry",
     "SubscriptionInputs",
     "load_inputs",
 ]
@@ -37,11 +44,105 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 HAT_OWNER = "hat"
+# Owner of symbols subscribed through the legacy POST /api/websocket/subscribe (no client drops
+# them); deleted with that route (K5b).
+API_OWNER = "api"
+Owner = Hashable
 # DS "Live data": under 200 symbols. A set at or above the limit raises a health alert.
 SYMBOL_LIMIT = 200
 
 SymbolCall = Callable[[list[str]], None]
 AlertCall = Callable[[str], None]
+
+
+class SubscriptionRegistry:
+    """Refcount of symbols per owner; symbols are canonicalised to DB format by the injected
+    `canonicalize` (HAT's `symbol_master.to_db`), so the registry knows no symbol master."""
+
+    def __init__(self, canonicalize: Callable[[str], str]) -> None:
+        self._canonicalize = canonicalize
+        self._lock = threading.Lock()
+        self._by_owner: dict[Owner, set[str]] = {}
+        # symbol -> number of owners holding it; a symbol is present only while > 0.
+        self._refcount: dict[str, int] = {}
+
+    def _canonical(self, symbols: Iterable[str]) -> set[str]:
+        canonical = {self._canonicalize(s) for s in symbols if s}
+        canonical.discard("")
+        return canonical
+
+    def canonical_symbols(self, symbols: Iterable[str]) -> set[str]:
+        """`symbols` in the registry's canonical (DB) format, without blanks."""
+        return self._canonical(symbols)
+
+    def add(self, owner: Owner, symbols: Iterable[str]) -> set[str]:
+        """Give `owner` the symbols; return those no owner held before (provider subscribe)."""
+        wanted = self._canonical(symbols)
+        newly_needed: set[str] = set()
+        with self._lock:
+            held = self._by_owner.setdefault(owner, set())
+            for symbol in wanted - held:
+                held.add(symbol)
+                count = self._refcount.get(symbol, 0)
+                if count == 0:
+                    newly_needed.add(symbol)
+                self._refcount[symbol] = count + 1
+        return newly_needed
+
+    def remove(self, owner: Owner, symbols: Iterable[str]) -> set[str]:
+        """Take the symbols from `owner`; return those no owner holds now (provider unsubscribe)."""
+        unwanted = self._canonical(symbols)
+        with self._lock:
+            held = self._by_owner.get(owner)
+            if not held:
+                return set()
+            released = self._release(held & unwanted)
+            held -= unwanted
+            if not held:
+                del self._by_owner[owner]
+        return released
+
+    def drop_owner(self, owner: Owner) -> set[str]:
+        """Forget `owner`; return the symbols no remaining owner holds (provider unsubscribe)."""
+        with self._lock:
+            held = self._by_owner.pop(owner, set())
+            return self._release(held)
+
+    def _release(self, symbols: set[str]) -> set[str]:
+        """Drop one reference to each symbol (lock held); return the symbols now unowned."""
+        no_longer_needed: set[str] = set()
+        for symbol in symbols:
+            count = self._refcount[symbol] - 1
+            if count:
+                self._refcount[symbol] = count
+            else:
+                del self._refcount[symbol]
+                no_longer_needed.add(symbol)
+        return no_longer_needed
+
+    def all_symbols(self) -> set[str]:
+        """Every symbol some owner holds: what the provider should be subscribed to."""
+        with self._lock:
+            return set(self._refcount)
+
+    def owners_of(self, symbol: str) -> set[Owner]:
+        """The owners holding `symbol` (any format)."""
+        canonical = self._canonicalize(symbol) if symbol else ""
+        with self._lock:
+            if canonical not in self._refcount:
+                return set()
+            return {owner for owner, held in self._by_owner.items() if canonical in held}
+
+    def is_held(self, symbol: str) -> bool:
+        """True while some owner holds `symbol` (any format)."""
+        canonical = self._canonicalize(symbol) if symbol else ""
+        with self._lock:
+            return canonical in self._refcount
+
+    def symbols_of(self, owner: Owner) -> frozenset[str]:
+        """The symbols `owner` holds (empty for an unknown owner)."""
+        with self._lock:
+            return frozenset(self._by_owner.get(owner, ()))
 
 
 @dataclass(frozen=True)

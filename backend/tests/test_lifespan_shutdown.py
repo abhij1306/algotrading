@@ -10,11 +10,8 @@ from fastapi import FastAPI
 from app import database
 from app import main as app_main
 from app.services import fyers_client, live_market_service
-from app.services.live.provider_session import SessionState
 from app.utils import ws_manager
 from app.utils.ws_manager import ConnectionManager
-
-from fakes.data_socket import connected_live
 
 
 class FakeLiveMarket:
@@ -123,21 +120,33 @@ async def test_a_failing_hook_does_not_skip_the_others(
 
 
 @pytest.mark.asyncio
-async def test_live_market_shutdown_stops_its_loops_and_closes_the_provider() -> None:
-    service, factory = connected_live()
+async def test_live_market_shutdown_stops_its_loop_and_detaches_from_the_feed() -> None:
+    service = live_market_service.LiveMarketService()
     service.loop = asyncio.get_running_loop()
-    service._ensure_background_tasks()
-    monitor, flush = service.monitor_task, service.broadcast_task
+    service._ensure_flush_task()
+    flush = service.broadcast_task
 
     await service.shutdown()
 
-    assert monitor is not None and monitor.cancelled()
     assert flush is not None and flush.cancelled()
-    assert (service.monitor_task, service.broadcast_task, service.loop) == (None, None, None)
-    assert factory.last.closed is True
-    assert service.session.state is SessionState.IDLE
-    # Not an explicit disconnect: a later startup may connect again.
-    assert service._explicitly_disconnected is False
+    assert (service.broadcast_task, service.loop, service.feed) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_hat_feed_is_stopped_before_the_legacy_service_and_only_when_it_exists() -> None:
+    stopped: list[str] = []
+
+    class Feed:
+        async def stop(self) -> None:
+            stopped.append("feed")
+
+    app = FastAPI()
+    await app_main._stop_hat_feed(app)  # HAT disabled: nothing to stop
+    app.state.hat_feed = Feed()
+    await app_main._stop_hat_feed(app)
+
+    assert stopped == ["feed"]
+    assert not hasattr(app.state, "hat_feed")
 
 
 class FakeClientSocket:

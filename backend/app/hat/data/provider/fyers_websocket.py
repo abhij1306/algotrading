@@ -1,12 +1,12 @@
 """The Fyers side of the live feed: the SDK data socket factory and the token source.
 
-ProviderSession (services/live/provider_session.py) owns the socket's lifecycle; this module
+ProviderSession (provider_session.py) owns the socket's lifecycle; this module
 only builds `fyers_apiv3` sockets and reads the current token.
 """
 
 import logging
 
-from .live.data_socket import DataSocket, SocketCallbacks
+from .data_socket import DataSocket, SocketCallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +25,27 @@ class FyersWebSocketError(RuntimeError):
 
 
 def fyers_token() -> str | None:
-    """The current "client_id:access_token" from the Fyers client, or None if logged out.
+    """The current "client_id:access_token" from HAT's Fyers session, or None if logged out.
 
     Read on every connect, so a re-login reaches the next socket.
     """
-    from .fyers_client import get_fyers_client
+    from app.hat.execution.fyers_session import get_fyers_session
 
-    client = get_fyers_client()
-    client_id = getattr(client, "client_id", None)
-    access_token = getattr(client, "access_token", None)
+    session = get_fyers_session()
+    if session.fyers is None:  # also drops a token past its expiry
+        return None
+    client_id = session.client_id
+    access_token = session.access_token
     if not client_id or not access_token:
         return None
     return f"{client_id}:{access_token}"
+
+
+def session_token_valid() -> bool:
+    """Whether Fyers accepts the session's token (a network call: never on the event loop)."""
+    from app.hat.execution.fyers_session import get_fyers_session
+
+    return bool(get_fyers_session().validate_token())
 
 
 def fyers_socket_factory(token: str, callbacks: SocketCallbacks) -> DataSocket:

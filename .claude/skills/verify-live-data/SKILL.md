@@ -1,11 +1,11 @@
 ---
 name: verify-live-data
-description: How to run, read and update the checks behind Hire a Trader's live data - the tick listener hook on LiveMarketService, 5-minute bars, opening range, volume pace, feed staleness, pre-open gap capture, the 09:16 gap scan, the "hat" subscription owner, bars_5m Parquet and the NSE announcement feeds (Hypothesis properties bars, gapscan, announcements; CONF single-feed import rule). Use before and after any change to backend/app/hat/data/bars.py, live.py, staleness.py, subscriptions.py, preopen.py, gapscan.py, announcements.py, bars_store.py or the add_tick_listener hook in live_market_service.py.
+description: How to run, read and update the checks behind Hire a Trader's live data - the live feed (one provider socket, tick listeners, subscription registry, login hooks), 5-minute bars, opening range, volume pace, feed staleness, pre-open gap capture, the 09:16 gap scan, the "hat" subscription owner, bars_5m Parquet and the NSE announcement feeds (Hypothesis properties feed, bars, gapscan, announcements; CONF single-feed import rule). Use before and after any change to backend/app/hat/data/bars.py, live.py, staleness.py, subscriptions.py, preopen.py, gapscan.py, announcements.py, bars_store.py, feed.py or provider/*.py.
 ---
 
 # verify-live-data
 
-Checks that HAT reads one shared tick feed without ever slowing or breaking it, that 5-minute bars are aligned to 09:15 IST and never change once final, that a silent feed is flagged exactly when the threshold passes, that the 09:16 gap scan selects only candidates that can really gap 10%, and that announcements are stored once and matched by instrument and time only. Specs: `docs/specs/hat/02-data.md` §10-§12 (HAT-DATA-100..104, 110..118, 120..122), `00-overview.md` (HAT-OVR-006), `01-decisions.md` (HAT-DEC-I3, I6, B8..B10), `04-criteria-and-bots.md` (HAT-BOT-052), `06-risk-and-governance.md` (HAT-RISK-063, the health side).
+Checks that HAT owns the one provider socket and feeds every listener without a bad listener breaking it, that the socket follows the Fyers login and market hours, that every wanted symbol reaches the provider, that 5-minute bars are aligned to 09:15 IST and never change once final, that a silent feed is flagged exactly when the threshold passes, that the 09:16 gap scan selects only candidates that can really gap 10%, and that announcements are stored once and matched by instrument and time only. Specs: `docs/specs/hat/02-data.md` §10-§12 (HAT-DATA-100..104, 110..118, 120..127), `00-overview.md` (HAT-OVR-006), `01-decisions.md` (HAT-DEC-I3, I6, B8..B10), `04-criteria-and-bots.md` (HAT-BOT-052), `06-risk-and-governance.md` (HAT-RISK-063, the health side).
 
 No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering promises that involve it are `ExecutionRouter!NoOrderWhenStale` and `JobScheduler!IntradayOrder`, which arrive with PR 15 and PR 17.
 
@@ -23,7 +23,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.staleness_trip` The feed is stale at t exactly when t is in market hours and no tick arrived in (t - 30 s, t]; each transition into stale reaches the health sink once and each recovery once. Harm: orders are placed on a frozen tape, or a transient gap leaves a bot disabled.
 - `PBT bars.staleness_boundary` Silence of exactly 30 s is stale and 30 s minus one microsecond is not. Harm: the threshold is off by one.
 - `PBT bars.staleness_events_recorded` Each transition into stale writes exactly one `feed.stale` event and calls the health kill once; recovery clears the kill and writes nothing. Harm: the owner is never alerted, or is alerted repeatedly.
-- `PBT bars.listener_isolation` With any set of listeners, any subset of which raises, every tick still reaches `latest_values` and the broadcast batch, and every listener that did not raise for a tick got it, in order. Harm: a HAT bug freezes SmartTrader's live quotes.
+- `PBT bars.listener_isolation` With any set of listeners on `LiveFeed`, any subset of which raises, every listener that did not raise for a tick got it, in order, and a removed listener gets none. Harm: one bad listener freezes live quotes for every consumer.
 - `PBT bars.subscription_set` The `"hat"` owner's set equals watchlist, open positions and candidates; positions are always in it; the provider holds exactly the symbols some owner holds, and releasing HAT never unsubscribes a symbol another owner holds; a set at or above the limit alerts. Harm: an open position stops receiving prices so its exits never fire.
 - `PBT bars.subscription_inputs` The inputs are today's watchlist symbols, every open position's symbol (not closed ones, not other days' watchlists) and the candidates. Harm: stale symbols hold feed budget, or an open position is missed.
 - `PBT bars.no_store_keeps_no_bars` Without a bar store, final bars reach the listeners and are then forgotten; nothing accumulates. Harm: the long-running loop grows memory all session.
@@ -41,22 +41,37 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.match_window` An item is attached iff its instrument is the candidate's and t - within_hours <= published_at <= t. Harm: a stale or unrelated headline is shown as the reason to take a trade.
 - `PBT announcements.parse_size_in_bytes` The feed size limit counts encoded bytes: a document is refused exactly when its UTF-8 size is over the limit. Harm: a multibyte feed far over the memory budget passes as fewer characters.
 - `PBT announcements.fetch_bounded` The feed fetcher returns at most the first limit + 1 bytes of a body and stops reading once it has them. Harm: an oversized feed exhausts the process memory before it is refused.
+- `PBT feed.session_one_socket` For every interleaving of start, stop, close and SDK reconnect, the session holds at most one open socket, a replaced socket is closed, and every wanted symbol is replayed on each open. Harm: two sockets break the broker session limit.
+- `PBT feed.session_gives_up` A connect that keeps failing (an error or a timeout) makes exactly the retry budget of attempts and then ends FAILED. Harm: a dead feed retries for ever, or never tries enough.
+- `PBT feed.session_close_stops_a_backing_off_runner` After close or stop a runner that is backing off builds no further socket, however late its retry fires. Harm: a logout is undone by a retry.
+- `PBT feed.tick_normalised` A normalised tick keeps the message fields, is keyed by the database symbol, follows `chp` or derives `change_pct` from the previous close, and gets volume from `volume`, `v` or `vol_traded_today`; the input is never modified. Harm: a mis-parsed price or volume triggers a wrong entry or exit.
+- `PBT feed.tick_flow` Every provider message with a symbol reaches every listener once as a normalised tick on the loop thread, in order; messages with no symbol or after the loop closed are dropped without raising. Harm: ticks are lost, doubled or raise into the SDK thread.
+- `PBT feed.registry_model` The registry's set is the union of the owners' sets, and each delta is exactly the symbols whose owner count went from zero to one or one to zero, in any symbol format. Harm: releasing HAT's symbols unsubscribes one a websocket client still holds.
+- `PBT feed.registry_concurrent` With many threads adding and removing the same symbols, the registry ends empty and every symbol was returned as needed as often as released. Harm: a symbol is stuck subscribed for ever or released while held.
+- `PBT feed.provider_converges` Whatever order subscribe, unsubscribe, connect, disconnect and SDK reconnect run in, including a change that lands while a provider call is in flight, the provider's net subscribed set equals the registry's once the feed is idle and connected. Harm: a held symbol silently stops ticking, or an unwanted one eats the symbol limit.
+- `PBT feed.auth_hooks` For every order of login, logout, token change, monitor reconnect and market-hours change, at most one socket exists, built from the token on file; a login with the market open leaves it connected, a logout closes it and nothing reconnects until the next login, and each hook runs once however often it is registered. Harm: after a re-login the feed streams on a dead token, or after a logout it reconnects on its own.
+- `PBT feed.off_hours_stops_a_backing_off_runner` A health check outside market hours stops a runner that is still connecting or backing off, so no socket appears off-hours. Harm: the feed stays up all night.
+- `PBT feed.monitor_survives_errors` The monitor loop continues after any exception in a check and counts it. Harm: one transient error ends reconnecting for the day.
+- `PBT feed.token_check_off_loop` The Fyers token check of an async connect runs on a worker thread, never the event loop, and an invalid or failing check gives `token_invalid`. Harm: a slow broker call freezes every live quote.
+- `PBT feed.socket_factory` The factory builds the SDK socket with the given token, the SDK auto-reconnect on, no log files and exactly the session's four callbacks, and raises `FyersWebSocketError` without the SDK. Harm: a reconnect storm, files written next to the code, or events that never reach the session.
+- `PBT feed.calendar_closed` With HAT's trading calendar the feed never connects on a day it lists as a holiday and connects on other weekdays only from 09:00 IST to the 15:30 close; with the calendar missing, unreadable or not wired it connects on no day. Harm: the Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day.
+- `PBT feed.token_source` The provider token is `client_id:access_token` exactly when the Fyers session holds a model, a client id and an access token, and None otherwise. Harm: the socket is built with half a token, or an expired token is retried for ever.
+- `PBT feed.traceback_throttle` A failing site writes a full traceback first and then at most once per interval; the other failures are one counted debug line. Harm: a failing tick handler writes a traceback per tick and fills the disk.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
-- `CONF imports.no_second_websocket` No module under `app.hat` imports (statically, or by name through `importlib` or `__import__`) a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
-- `CONF single_feed_import_rule` HAT imports neither the live service module nor the provider session; live data arrives only through the listener hook and the `"hat"` registry owner. Harm: HAT could read or open a feed some other way.
+- `CONF imports.no_second_websocket` Only `app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK or any other WebSocket library (statically, or by name through `importlib` or `__import__`), nothing outside `app/hat` imports `fyers_apiv3`, and `LiveFeed.add_tick_listener` is the only tick input `live.py` uses. Harm: a second socket breaks the broker session and drops the feed.
+- `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and only in the body of `if is_enabled()` (not under a negated or nested `if not is_enabled()`); the only importers of `feed.py` are `main.py` and the legacy read side. Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `LiveMarketService` is the listed legacy copy (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`; a class named `RiskManager` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
 
 ```bash
 cd backend
-CI=1 python -m pytest tests/hat/properties/test_bars.py tests/hat/properties/test_gapscan.py \
+CI=1 python -m pytest tests/hat/properties/test_feed.py tests/hat/properties/test_bars.py tests/hat/properties/test_gapscan.py \
   tests/hat/properties/test_announcements.py -q --no-cov     # about 40 s under the ci profile
 python -m pytest tests/hat/conformance/test_conf_imports.py -q --no-cov
 # the existing live and stream tests must stay green, unmodified:
-python -m pytest tests/test_live_market_characterization.py tests/test_live_market_regressions.py \
-  tests/test_live_ticks.py tests/test_websocket_stream_characterization.py \
-  tests/test_websocket_stream_origin.py tests/test_subscription_registry.py -q --no-cov
+python -m pytest tests/test_live_market_regressions.py tests/test_websocket_stream_characterization.py \
+  tests/test_websocket_stream_origin.py -q --no-cov
 ```
 
 No network, broker or database server is touched: ticks come from generated payloads, MCP rows from `PricedListingServer`, feeds from `rss_item`/`rss_document` and two recorded fixtures (`rss_announcements.xml`, `rss_financial_results.xml`, `mcp_cm_equity_stocks_reli.json`), and the database is in-memory SQLite.
@@ -67,7 +82,7 @@ A failing property prints the falsifying example and a `reproduce_failure` blob.
 
 - Bars: feed the printed ticks to `BarBuilder.on_tick(tick, now)` and `advance(now)`. If the bar the code returns disagrees with the spec rule (bar start by integer arithmetic on seconds of the IST day, open and close by exchange time, a tick arriving at or after end + 2 s is late), it is a bug in `bars.py`. The oracle `expected_bars` is the spec rule, not the code: change it only if the spec changes.
 - Staleness: the rule is the property's, "no tick in (t - 30 s, t]". The statement in 02 §11 says "more than 30 seconds"; the two disagree at exactly 30 s and the acceptance wins (recorded under Scope changes).
-- Listener isolation: a failure means an exception reached the broadcast path or another listener; fix `LiveMarketService._notify_tick_listeners` (legacy until K3 gives HAT its own feed), never the property.
+- Listener isolation and the feed: a failure means an exception reached another listener or the SDK thread, or the socket, replay or hooks disagree with the model. Fix `LiveFeed` (`feed.py`) or `ProviderSession`, never the property. The state-machine properties print the failing rule sequence; replay it against `make_feed` in `tests/hat/fakes/data_socket.py`.
 - Gap scan: the F&O rule is `[OWNER-PENDING]` (a known price-band row with a null `band_pct`). If the owner changes it, change the spec first, then `Gapper` and the property together.
 - Announcements: the feed field names (`symbol`, `isin`, `company`, `category`, the `Company - Subject` title, `pubDate`) and URLs are `[A]`, built from recorded fixtures only. A live poll that shows different names is a model error in the parser and the fixtures, not a failure of these properties.
 - Never weaken a property or shrink a strategy to pass; record a narrowing under "Scope changes".
@@ -92,9 +107,15 @@ Code under check:
 - `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`
 - `backend/app/hat/data/sessions.py`: `MarketHoursPolicy`
 - `backend/app/hat/clock.py`: `FixedClock`, `require_aware`
-- `backend/app/services/live_market_service.py`: `add_tick_listener`, `_notify_tick_listeners`
+- `backend/app/hat/data/feed.py`: `LiveFeed`, `connect_status_message`
+- `backend/app/hat/data/provider/data_socket.py`: `DataSocket`, `SocketCallbacks`
+- `backend/app/hat/data/provider/provider_session.py`: `ProviderSession`, `RetryPolicy`
+- `backend/app/hat/data/provider/ticks.py`: `normalize_tick`
+- `backend/app/hat/data/provider/metrics.py`: `FeedMetrics`, `log_exception_throttled`
+- `backend/app/hat/data/provider/fyers_websocket.py`: `fyers_socket_factory`, `fyers_token`
 
 Checks:
+- `backend/tests/hat/properties/test_feed.py`
 - `backend/tests/hat/properties/test_bars.py`
 - `backend/tests/hat/properties/test_gapscan.py`
 - `backend/tests/hat/properties/test_announcements.py`
@@ -109,8 +130,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `0e4fd97e0e947c65d99dfe5dfab827d4038dd4eb`
-Covered digest: `d6448851ac40e0aed1835c9a6c461e103e5b3c58663ad634de91b13a09cf7472`
+Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
+Covered digest: `ecec00a6db22e6a9f25f926e2902088e6dbf96e21239bb1ba34b2cb912042930`
 
 ## Scope changes
 
@@ -119,10 +140,14 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `bars.staleness_trip` and `bars.staleness_boundary`: HAT-DATA-116's statement said "more than 30 seconds" and its acceptance said no tick in (t - 30 s, t], which disagree at exactly 30 s. The acceptance wins; the statement in `02-data.md` was edited to "30 seconds or more".
 - The session is the half-open interval [09:15, 15:30) IST; a tick at 15:30:00 or later is in no bar.
 - A late tick (at or after its bar's end + 2 s) is left out of bars but still counts in the day volume, so volume pace stays right.
-- `bars.listener_isolation` and `bars.persisted_equals_live` use a reduced `max_examples` and bounded sequences, because each example builds a service or a Parquet directory.
+- `bars.persisted_equals_live` uses a reduced `max_examples` and bounded sequences, because each example builds a Parquet directory.
 - `announcements.text_never_gates` draws text of at most 10 characters, at most 8 stored items, 40 examples and has no shrink phase: a broken variant fails on almost every example and shrinking over arbitrary text grew without bound. The failing example is still printed, unminimised. Database engines are disposed as examples go.
 - Pre-open field names (`indicative_open_price`, `pre_open_price`) and the RSS field names and URLs are `[A]`, built from recorded fixtures only.
 - `bars.history_matches_builder` (HAT-DATA-119) belongs to PR 12 and is not checked here.
+- K3 moved the data socket, the session, the tick normaliser and the subscription registry into HAT (`app/hat/data/feed.py`, `provider/`, `subscriptions.py`) and deleted their legacy tests; each is a `feed.*` property here. The session, registry, convergence and login-hook checks are Hypothesis state machines, not TLA+ models, because the promises are about one process and the fake socket is the whole environment. The fake provider forgets its subscriptions when the SDK reconnects (`FakeDataSocket.sdk_reconnect` clears them), which is the assumption the replay is checked against; a live check that Fyers keeps them would make the replay redundant but harmless.
+- `bars.listener_isolation` moved from `LiveMarketService._notify_tick_listeners` to `LiveFeed._deliver`; it no longer checks the legacy `latest_values` and broadcast batch, which are the legacy read side's own tests in `test_live_market_regressions.py`. `bars.feed_connection_window` moved the same way. `CONF imports.no_second_websocket` now allows the SDK socket in exactly one HAT module instead of none.
+- Review found `main.py` built the feed with no calendar, so weekday exchange holidays were connectable. The feed now takes its hours policy from HAT's trading calendar (`calendar_policy_source`, read at most every 10 minutes) and is closed while the calendar is missing, unreadable or not wired; `bars.feed_connection_window` keeps checking the weekday rule with a fixed empty-holiday policy and `feed.calendar_closed` checks the calendar cases.
+- `feed.registry_concurrent` raises the thread switch frequency for its run so an unguarded update shows; it draws at most 6 examples.
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
 
 ## Scratch breaks
@@ -261,15 +286,23 @@ E    +    where <built-in method count of list object at 0x7ff8da05aa00> = [Fals
 
 ### PBT bars.listener_isolation
 
-Break: in `app/services/live_market_service.py`, replaced `try: listener(tick) except Exception as exc: # isolate: never break the stream for a liste` with `listener(tick)`.
+Break: in `app/hat/data/feed.py`, replaced `try: listener(tick) except Exception as exc: # isolate: never break the stream for a listener's bug feed_metrics.increment("feed.listener.errors") log_exception_thrott...` with `listener(tick)`.
 
 ```
 tests/hat/properties/test_bars.py F
-tests/hat/properties/test_bars.py:454: in test_listener_isolation
-tests/hat/properties/test_bars.py:510: in test_listener_isolation
-tests/hat/properties/test_bars.py:489: in scenario
-tests/hat/properties/test_bars.py:450: in __call__
+tests/hat/properties/test_bars.py:504: in test_listener_isolation
+tests/hat/properties/test_bars.py:531: in test_listener_isolation
+tests/hat/properties/test_bars.py:500: in __call__
 E   RuntimeError: listener bug
+E   Failing test case: test_listener_isolation(
+E       # The test always failed when commented parts were varied together.
+E       symbols=['AAA'],  # or any other generated value
+E       raising=[{0}],
+E       always_raise=False,  # or any other generated value
+E   )
+E   Explanation:
+E       These lines were always and only run by failing test cases:
+E           tests/hat/properties/test_bars.py:500
 ```
 
 ### PBT bars.subscription_set
@@ -456,31 +489,32 @@ E     Omitting 1 identical items, use -vv to show
 
 ### CONF imports.no_second_websocket
 
-Second break (dynamic import): added `_SECOND = __import__("websockets")` to `app/hat/data/live.py`; the output is `AssertionError: assert [('live.py', 'websockets')] == []`.
-
-Break: in `app/hat/data/live.py`, replaced `import asyncio import logging` with `import asyncio import websockets # noqa import logging`.
+Break: in `app/hat/data/live.py`, replaced `import asyncio` with `import asyncio from fyers_apiv3.FyersWebsocket import data_ws # noqa`.
 
 ```
 tests/hat/conformance/test_conf_imports.py F
-tests/hat/conformance/test_conf_imports.py:154: in test_imports__no_second_websocket
-E   AssertionError: assert [('live.py', 'websockets')] == []
+tests/hat/conformance/test_conf_imports.py:179: in test_imports__no_second_websocket
+E   AssertionError: assert [('live.py', ...', 'data_ws')] == []
 E     
-E     Left contains one more item: ('live.py', 'websockets')
-E     
+E     Left contains 3 more items, first extra item: ('live.py', 'fyers_apiv3.FyersWebsocket')
+E     Use -v to get more diff
+FAILED tests/hat/conformance/test_conf_imports.py::test_imports__no_second_websocket
 ```
 
 ### CONF single_feed_import_rule
 
-Break: in `app/hat/data/subscriptions.py`, replaced `import logging import threading` with `import logging import threading from app.services import live_market_service # noqa`.
+Break: in `app/hat/data/subscriptions.py`, replaced `import logging import threading` with `import logging import threading from .provider.provider_session import ProviderSession # noqa`.
 
 ```
 tests/hat/conformance/test_conf_imports.py F
-tests/hat/conformance/test_conf_imports.py:176: in test_single_feed_import_rule
-E   AssertionError: subscriptions.py
+tests/hat/conformance/test_conf_imports.py:250: in test_single_feed_import_rule
+E   AssertionError: hat/data/subscriptions.py
 E   assert not True
-E    +  where True = any(<generator object test_single_feed_import_rule.<locals>.<genexpr> at 0x7f759beea840>)
-FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule - AssertionError: subscriptions.py
+E    +  where True = any(<generator object test_single_feed_import_rule.<locals>.<genexpr> at 0x7f67b304de00>)
+FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule
 ```
+
+Second break (nested negated guard): in `app/main.py`, replaced `if is_enabled(): _start_hat_feed(app)` with `if is_enabled(): if not is_enabled(): _start_hat_feed(app)`; the output is `AssertionError: assert False where False = _guarded_by_hat_enabled(Module(body=[...`.
 
 ### CONF no_duplicate_fakes_or_authorities
 
@@ -550,11 +584,336 @@ E   Failing test case: test_parse_size_in_bytes(words=1, extra=-1)
 
 ### PBT bars.feed_connection_window
 
-Break: in `app/services/live_market_service.py`, the pre-open start `PREOPEN_FROM` moved from 09:00 to 09:15.
+Break: in `app/hat/data/feed.py`, replaced `PREOPEN_FROM = clock_time(9, 0)` with `PREOPEN_FROM = clock_time(9, 15)`.
 
 ```
-tests/hat/properties/test_bars.py:601: in test_feed_connection_window
+tests/hat/properties/test_bars.py F
+tests/hat/properties/test_bars.py:563: in test_feed_connection_window
+tests/hat/properties/test_bars.py:578: in test_feed_connection_window
 E   assert False == True
 E    +  where False = connection_allowed()
-E   Failing test case: test_feed_connection_window(second=32400, ...)
+E    +    where connection_allowed = <app.hat.data.feed.LiveFeed object at 0x7f9a5a116710>.connection_allowed
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_feed_connection_window(
+E       second=32400,
+E       weekend=False,
+E   )
+FAILED tests/hat/properties/test_bars.py::test_feed_connection_window - asser [cut]
+```
+
+### PBT feed.session_one_socket
+
+Break: in `app/hat/data/provider/provider_session.py`, replaced `self._close_quietly(old)` with `pass`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:238: in test_session_one_socket
+tests/hat/properties/test_feed.py:218: in at_most_one_open_socket_and_none_leaked
+E   assert 2 == 1
+E    +  where 2 = len([<hat.fakes.data_socket.FakeDataSocket object at 0x7f2579458cb0>, <hat.fakes.data_socket.FakeDataSocket object at 0x7f25797dd860>])
+E   Failing test case: <state machine>
+E   state = SessionMachine()
+E   state.at_most_one_open_socket_and_none_leaked()
+E   state.state_agrees_with_the_socket()
+E   state.start()
+E   state.at_most_one_open_socket_and_none_leaked()
+E   state.state_agrees_with_the_socket()
+E   state.drop()
+E   state.at_most_one_open_socket_and_none_leaked()
+```
+
+### PBT feed.session_gives_up
+
+Break: in `app/hat/data/provider/provider_session.py`, replaced `if failures >= self.retry.max_attempts:` with `if failures > self.retry.max_attempts:`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:245: in test_session_gives_up
+tests/hat/properties/test_feed.py:273: in test_session_gives_up
+E   assert 2 == 1
+E    +  where 2 = len([1, 1])
+E   Failing test case: test_session_gives_up(
+E       # The test always failed when commented parts were varied together.
+E       mode='never_up',  # or any other generated value
+E       attempts=1,  # or any other generated value
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AEEAQQE=') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_session_gives_up - assert 2 == 1
+```
+
+### PBT feed.session_close_stops_a_backing_off_runner
+
+Break: in `app/hat/data/provider/provider_session.py`, replaced `self._stop.set() self._state = final_state` with `self._state = final_state`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:280: in test_session_close_stops_a_backing_off_runner
+tests/hat/properties/test_feed.py:301: in test_session_close_stops_a_backing_off_runner
+E   assert not True
+E    +  where True = is_alive()
+E    +    where is_alive = <Thread(Thread-6 (<lambda>), started daemon 140689279010496)>.is_alive
+E   Failing test case: test_session_close_stops_a_backing_off_runner(
+E       late_reconnects=0,  # or any other generated value
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AEEA') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_session_close_stops_a_backing_off_runner
+```
+
+### PBT feed.tick_normalised
+
+Break: in `app/hat/data/provider/ticks.py`, replaced `tick_db["change_pct"] = tick_db["chp"]` with `tick_db["change_pct"] = -tick_db["chp"] - 1`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:330: in test_tick_normalised
+tests/hat/properties/test_feed.py:348: in test_tick_normalised
+E   assert -1 == 0
+E   Failing test case: test_tick_normalised(
+E       tick={'symbol': 'NSE:SBIN-EQ', 'chp': 0},
+E   )
+E   Explanation:
+E       These lines were always and only run by failing test cases:
+E           app/hat/data/provider/ticks.py:21
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AAFBAUEAQQAA') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_tick_normalised - assert -1 == 0
+```
+
+### PBT feed.tick_flow
+
+Break: in `app/hat/data/feed.py`, replaced `normalize_tick(message, self._symbols.to_db(provider_symbol))` with `normalize_tick(message, provider_symbol)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:377: in test_tick_flow
+tests/hat/properties/test_feed.py:407: in test_tick_flow
+tests/hat/properties/test_feed.py:403: in scenario
+E   AssertionError: assert [{'symbol': '...seq': 0, ...}] == [{'symbol': '...seq': 0, ...}]
+E     
+E     At index 0 diff: {'symbol': 'NSE:SBIN-EQ', 'ltp': 1.0, 'v': 0, 'seq': 0, 'volume': 0} != {'symbol': 'SBIN', 'ltp': 1.0, 'v': 0, 'seq': 0, 'volume': 0}
+E     Use -v to get more diff
+E   Failing test case: test_tick_flow(
+E       # The test always failed when commented parts were varied together.
+E       messages=[(lambda symbol, ltp, seq: {'symbol': symbol, 'ltp': ltp, 'v': seq, 'seq': seq})(
+E            'NSE:SBIN-EQ',
+E            1.0,  # or any other generated value
+E            0,  # or any other generated value
+```
+
+### PBT feed.registry_model
+
+Break: in `app/hat/data/subscriptions.py`, replaced `if count == 0: newly_needed.add(symbol)` with `if True: newly_needed.add(symbol)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:486: in test_registry_model
+tests/hat/properties/test_feed.py:439: in add
+E   AssertionError: assert {'SBIN'} == set()
+E     
+E     Extra items in the left set:
+E     'SBIN'
+E     Use -v to get more diff
+E   Failing test case: <state machine>
+E   state = RegistryMachine()
+E   state.registry_equals_the_model()
+E   state.add(owner='ws-1', symbols=['SBIN'])
+E   state.registry_equals_the_model()
+E   state.add(owner='ws-2', symbols=['SBIN'])
+```
+
+### PBT feed.registry_concurrent
+
+Break: in `app/hat/data/subscriptions.py`, replaced `self._lock = threading.Lock() self._by_owner` with `self._lock = __import__("contextlib").nullcontext() self._by_owner`.
+
+```
+tests/hat/properties/test_feed.py F
+FAILED tests/hat/properties/test_feed.py::test_registry_concurrent - Exceptio [cut]
+```
+
+### PBT feed.provider_converges
+
+Break: in `app/hat/data/feed.py`, replaced `if regained: await self.subscribe(regained)` with `if regained: pass`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:627: in test_provider_converges
+tests/hat/properties/test_feed.py:618: in the_provider_streams_what_the_registry_holds
+E   AssertionError: assert set() == {'NSE:SBIN-EQ'}
+E     
+E     Extra items in the right set:
+E     'NSE:SBIN-EQ'
+E     Use -v to get more diff
+E   Failing test case: <state machine>
+E   state = ConvergeMachine()
+E   state.the_provider_streams_what_the_registry_holds()
+E   state.add(owner='ws-1', symbols=['SBIN'])
+E   state.the_provider_streams_what_the_registry_holds()
+E   state.arm_race(during='unsubscribe', owner='ws-1', release=False, symbols=['SBIN'])
+```
+
+### PBT feed.auth_hooks
+
+Break: in `app/hat/data/feed.py`, replaced `service.add_hook("disconnect", self.disconnect)` with `pass`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:730: in test_auth_hooks
+tests/hat/properties/test_feed.py:692: in logout
+E   assert False is True
+E    +  where False = <app.hat.data.feed.LiveFeed object at 0x7f7cdb8b4410>.explicitly_disconnected
+E    +    where <app.hat.data.feed.LiveFeed object at 0x7f7cdb8b4410> = AuthMachine({}).feed
+E   Failing test case: <state machine>
+E   state = AuthMachine()
+E   state.one_socket_on_the_current_token_and_none_after_a_logout()
+E   state.logout()
+E   state.teardown()
+E   Explanation:
+E       These lines were always and only run by failing test cases:
+E           app/hat/execution/fyers_auth.py:263
+```
+
+### PBT feed.off_hours_stops_a_backing_off_runner
+
+Break: in `app/hat/data/feed.py`, replaced `if state in (SessionState.CONNECTING, SessionState.CONNECTED, SessionState.DROPPED):` with `if state in (SessionState.CONNECTED, SessionState.DROPPED):`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:733: in test_off_hours_stops_a_backing_off_runner
+tests/hat/properties/test_feed.py:755: in test_off_hours_stops_a_backing_off_runner
+E   assert not True
+E    +  where True = is_alive()
+E    +    where is_alive = <Thread(Thread-5 (<lambda>), started daemon 140422835844800)>.is_alive
+E   Failing test case: test_off_hours_stops_a_backing_off_runner(
+E       late_reconnects=0,  # or any other generated value
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AEEA') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_off_hours_stops_a_backing_off_runner
+```
+
+### PBT feed.monitor_survives_errors
+
+Break: in `app/hat/data/feed.py`, replaced `except Exception: logger.exception("Error in the feed monitor; continuing") feed_metrics.increment("feed.monitor.loop_errors") await asyncio.sleep(LOOP_ERROR_PAUSE_S)` with `except Exception: raise`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:765: in test_monitor_survives_errors
+tests/hat/properties/test_feed.py:800: in test_monitor_survives_errors
+E   assert (False)
+E   Failing test case: test_monitor_survives_errors(
+E       failing={0},
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AAFBAAA=') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_monitor_survives_errors - asse [cut]
+```
+
+### PBT feed.token_check_off_loop
+
+Break: in `app/hat/data/feed.py`, replaced `prevalidated_token = await asyncio.to_thread(self._token_valid)` with `prevalidated_token = self._token_valid()`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:804: in test_token_check_off_loop
+tests/hat/properties/test_feed.py:824: in test_token_check_off_loop
+E   assert ([140042434537344] and {140042434537344} == {140042434537344}
+E     
+E     Use -v to get more diff and 140042434537344 != 140042434537344)
+E   Failing test case: test_token_check_off_loop(
+E       # The test always failed when commented parts were varied together.
+E       valid=False,  # or any other generated value
+E       is_open=False,  # or any other generated value
+E       explicit=False,  # or any other generated value
+E       raises=False,  # or any other generated value
+E   )
+E   
+```
+
+### PBT feed.socket_factory
+
+Break: in `app/hat/data/provider/fyers_websocket.py`, replaced `reconnect=True,` with `reconnect=False,`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:843: in test_socket_factory
+tests/hat/properties/test_feed.py:870: in test_socket_factory
+E   assert (False is True)
+E   Failing test case: test_socket_factory(
+E       token='000:00000',  # or any other generated value
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AXicY2w0YAQjBkYYC8oHAEvQBZE=') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_socket_factory - assert (False [cut]
+```
+
+### PBT feed.token_source
+
+Break: in `app/hat/data/provider/fyers_websocket.py`, replaced `if session.fyers is None: # also drops a token past its expiry return None` with `(nothing)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:886: in test_token_source
+tests/hat/properties/test_feed.py:901: in test_token_source
+E   AssertionError: assert '0:0' == None
+E   Failing test case: test_token_source(
+E       client_id='0',
+E       access_token='0',
+E       has_model=False,
+E   )
+E   Explanation:
+E       These lines were always and only run by failing test cases:
+E           tests/hat/properties/test_feed.py:903
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AEECgTBBAoEwAA==') as a decorator on your test function
+```
+
+### PBT feed.traceback_throttle
+
+Break: in `app/hat/data/provider/metrics.py`, replaced `full = last is None or now - last >= TRACEBACK_INTERVAL_S` with `full = True`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:907: in test_traceback_throttle
+tests/hat/properties/test_feed.py:933: in test_traceback_throttle
+E   assert True == False
+E   Failing test case: test_traceback_throttle(
+E       times=[0.0, 0.0],
+E   )
+E   
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AXicY9RggAJGOIsBAATlAFM=') as a decorator on your test function
+FAILED tests/hat/properties/test_feed.py::test_traceback_throttle - assert Tr [cut]
+```
+
+### PBT feed.calendar_closed
+
+Break: in `app/hat/data/feed.py`, replaced `policy = calendar.policy(clock)` with `policy = MarketHoursPolicy(clock=clock)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:951: in test_calendar_closed
+tests/hat/properties/test_feed.py:1000: in test_calendar_closed
+E   assert True == ((0 < 5 and datetime.date(2026, 10, 19) not in {datetime.date(2026, 10, 19)}))
+E    +  where 0 = <built-in method weekday of datetime.date object at 0x7ff6ab52abd0>()
+E    +    where <built-in method weekday of datetime.date object at 0x7ff6ab52abd0> = datetime.date(2026, 10, 19).weekday
+E   Failing explicit example: test_calendar_closed(
+E       offset=0,
+E       holidays=set(),
+E       today_is_a_holiday=True,
+```
+
+Second break (fail open): Break: in `app/hat/data/feed.py`, replaced `if calendar is None: return None` with `if calendar is None: return MarketHoursPolicy(clock=clock)`.
+
+```
+tests/hat/properties/test_feed.py F
+tests/hat/properties/test_feed.py:951: in test_calendar_closed
+tests/hat/properties/test_feed.py:1002: in test_calendar_closed
+E   assert True is False
+E   Failing explicit example: test_calendar_closed(
+E       offset=1,
+E       holidays=set(),
+E       today_is_a_holiday=False,
+E       second=36000,
+E       calendar='missing',
 ```

@@ -1,5 +1,4 @@
-"""FakeDataSocket: a DataSocket test double driven by the test instead of a network (HAT's copy,
-K1; the legacy suite keeps `tests/fakes/data_socket.py` until it is deleted).
+"""FakeDataSocket: a DataSocket test double driven by the test instead of a network.
 
 The test plays the SDK: `drop()`, `sdk_reconnect()`, `error()` and `emit()` fire the callbacks
 the real SDK would fire. `FakeSocketFactory` records every socket and token it was given.
@@ -7,13 +6,15 @@ the real SDK would fire. `FakeSocketFactory` records every socket and token it w
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
 from app.hat.clock import SYSTEM_CLOCK, Clock
-from app.services.live.data_socket import SYMBOL_UPDATE, SocketCallbacks
-from app.services.live.provider_session import RetryPolicy
-from app.services.live_market_service import LiveMarketService
+from app.hat.data.feed import LiveFeed
+from app.hat.data.provider.data_socket import SYMBOL_UPDATE, SocketCallbacks
+from app.hat.data.provider.provider_session import ProviderSession, RetryPolicy
+from app.hat.data.sessions import MarketHoursPolicy
 
 # Short waits so runner retries and timeouts finish in milliseconds.
 FAST_RETRY = RetryPolicy(
@@ -44,6 +45,12 @@ class FakeDataSocket:
         self.connect_calls = 0
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
+        # Every subscribe (+) and unsubscribe (-) in the order the provider received it.
+        self.events: list[tuple[str, str]] = []
+        # One-shot hooks run before the provider receives the next call: a test plays another
+        # thread whose own call reaches the provider first.
+        self.before_subscribe: Callable[[], None] | None = None
+        self.before_unsubscribe: Callable[[], None] | None = None
 
     # --- DataSocket ---
 
@@ -61,10 +68,25 @@ class FakeDataSocket:
         return self.connected
 
     def subscribe(self, symbols: list[str], data_type: str = SYMBOL_UPDATE) -> None:
+        hook, self.before_subscribe = self.before_subscribe, None
+        if hook is not None:
+            hook()
         self.subscribed.extend(symbols)
+        self.events.extend(("+", s) for s in symbols)
 
     def unsubscribe(self, symbols: list[str], data_type: str = SYMBOL_UPDATE) -> None:
+        hook, self.before_unsubscribe = self.before_unsubscribe, None
+        if hook is not None:
+            hook()
         self.unsubscribed.extend(symbols)
+        self.events.extend(("-", s) for s in symbols)
+
+    def net_subscribed(self) -> set[str]:
+        """The symbols the provider streams now: each symbol's last event was a subscribe."""
+        last: dict[str, str] = {}
+        for op, symbol in self.events:
+            last[symbol] = op
+        return {symbol for symbol, op in last.items() if op == "+"}
 
     # --- the test plays the SDK ---
 
@@ -81,7 +103,9 @@ class FakeDataSocket:
         self.callbacks.on_error({"code": -1, "message": message})
 
     def sdk_reconnect(self) -> None:
-        """The SDK's own auto-reconnect: same socket, on_connect fires again."""
+        """The SDK's own auto-reconnect: same socket, on_connect fires again. The provider forgot
+        the subscriptions of the lost connection (`net_subscribed` starts again from nothing)."""
+        self.events.clear()
         self.connected = True
         self.callbacks.on_connect()
 
@@ -109,19 +133,55 @@ class FakeSocketFactory:
         return self.sockets[-1]
 
 
-def make_live(
+def wait_until_backing_off(factory: FakeSocketFactory, timeout_s: float = 5.0) -> None:
+    """Block until the runner's first attempt failed and released its socket (it then backs
+    off). Fails the test if that does not happen in time."""
+    deadline = time.monotonic() + timeout_s
+    while not (factory.sockets and factory.sockets[0].closed):
+        if time.monotonic() >= deadline:
+            raise AssertionError("the connect runner never failed its first attempt")
+        time.sleep(0.005)
+
+
+def make_session(
+    factory: FakeSocketFactory | None = None,
+    *,
+    desired: Callable[[], list[str]] = list,
+    on_message: Callable[[dict[str, Any]], None] = lambda _m: None,
+    token_source: Callable[[], str | None] = lambda: "CLIENT:tok",
+    spawn: Callable[[Callable[[], None]], None] = run_inline,
+    retry: RetryPolicy = FAST_RETRY,
+) -> tuple[ProviderSession, FakeSocketFactory]:
+    factory = factory or FakeSocketFactory()
+    session = ProviderSession(
+        socket_factory=factory,
+        token_source=token_source,
+        desired_symbols=desired,
+        on_message=on_message,
+        retry=retry,
+        spawn=spawn,
+    )
+    return session, factory
+
+
+def make_feed(
     factory: FakeSocketFactory | None = None,
     *,
     spawn: Callable[[Callable[[], None]], None] = run_inline,
     clock: Clock = SYSTEM_CLOCK,
-) -> tuple[LiveMarketService, FakeSocketFactory]:
-    """A LiveMarketService whose provider sockets are fakes (runner inline by default)."""
+    policy: MarketHoursPolicy | None = None,
+    token_source: Callable[[], str | None] = lambda: "CLIENT:tok",
+    token_valid: Callable[[], bool] = lambda: True,
+) -> tuple[LiveFeed, FakeSocketFactory]:
+    """A LiveFeed whose provider sockets are fakes (runner inline by default) and whose token
+    check never calls Fyers."""
     factory = factory or FakeSocketFactory()
-    live = LiveMarketService(
-        clock,
+    feed = LiveFeed(
+        policy=policy or MarketHoursPolicy(clock=clock),
         socket_factory=factory,
-        token_source=lambda: "CLIENT:tok",
+        token_source=token_source,
+        validate_token=token_valid,
         retry=FAST_RETRY,
         spawn=spawn,
     )
-    return live, factory
+    return feed, factory

@@ -14,6 +14,7 @@ from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 
 HAT_ROOT = APP_ROOT / "hat"
+DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
 BROKER_FORBIDDEN = ("app.brokers", "fyers_apiv3", "app.hat.execution.fyers_adapter")
 
 
@@ -77,6 +78,9 @@ def test_brk__import_boundary() -> None:
     of `app.brokers`, `fyers_apiv3`, an OpenAlgo package or the Fyers adapter, directly or
     transitively; the interface module itself imports none of them either."""
     graph = build_graph()
+    # The one exception (HAT-OVR-006, K3): HAT's data socket module imports the SDK socket and the
+    # Fyers session for its token; `test_imports__no_second_websocket` confines the socket to it.
+    graph[DATA_SOCKET_MODULE] = set()
     prefixes = (
         "app.hat.engine",
         "app.hat.risk",
@@ -97,6 +101,10 @@ def test_brk__import_boundary() -> None:
         "app.hat.engine.x",
         "app.hat.risk.y",
     }
+    # the exception is that one module and nothing else
+    assert set(_violations({"app.hat.data.other": {"fyers_apiv3.FyersWebsocket"}}, prefixes)) == {
+        "app.hat.data.other"
+    }
 
 
 def test_brk__fyers_capabilities() -> None:
@@ -113,7 +121,11 @@ def test_brk__fyers_capabilities() -> None:
 
 # The only HAT modules that may import the Fyers SDK (HAT-DEC-BD2), and the one that may call its
 # GTT endpoints. Every other module reaches Fyers through them.
-SDK_IMPORTERS = {"execution/fyers_session.py", "execution/fyers_auth.py"}
+SDK_IMPORTERS = {
+    "execution/fyers_session.py",
+    "execution/fyers_auth.py",
+    "data/provider/fyers_websocket.py",
+}
 GTT_CALLERS = {"execution/fyers_broker.py"}
 SDK_GTT_CALLS = ("place_gtt_order", "modify_gtt_order", "cancel_gtt_order", "gtt_orderbook")
 
@@ -136,9 +148,10 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
 
 def test_fyers_adapter_wraps_existing() -> None:
     """HAT-DEC-BD2: the adapter reaches the Fyers SDK only through FyersBroker, FyersSession and
-    FyersAuthService (K2: all in `app/hat/execution`); the SDK is imported only by the session and
-    the login service, its GTT calls are made only by the broker, and nothing under app/hat
-    imports the legacy `app.brokers` (the checker is shown to catch offenders)."""
+    FyersAuthService (K2: all in `app/hat/execution`); the SDK is imported only by the session, the
+    login service and the data socket module (K3), its GTT calls are made only by the broker, and
+    nothing under app/hat imports the legacy `app.brokers` (the checker is shown to catch
+    offenders)."""
     adapter = (HAT_ROOT / "execution" / "fyers_adapter.py").read_text(encoding="utf-8")
     for name in ("FyersBroker", "FyersSession", "FyersAuthService"):
         assert re.search(rf"^\s+{name},?$|import .*{name}", adapter, re.MULTILINE), name
@@ -172,11 +185,13 @@ NOT_SECRETS = {("hat_approval", "token_hash"), ("hat_broker_symbol", "broker_tok
 
 
 # The only modules that read a Fyers credential, the token file or an environment variable (K2: the
-# token store, the login service and the session, all in `app/hat/execution`).
+# token store, the login service and the session, all in `app/hat/execution`; K3: the data socket
+# module, which reads the session's token).
 SECRET_MODULES = {
     "execution/fyers_auth.py",
     "execution/fyers_tokens.py",
     "execution/fyers_session.py",
+    "data/provider/fyers_websocket.py",  # builds the data socket from the session's token (K3)
 }
 
 

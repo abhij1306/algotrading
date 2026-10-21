@@ -1,9 +1,7 @@
-"""What is left of the legacy Fyers stack after K2 moved it into HAT (and K4 removed the DEV_MODE
-switch): the legacy client singleton and the hooks that hang the legacy live feed on HAT's Fyers
-login. The login, the token file and the session are HAT's and are verified under `tests/hat`."""
+"""What is left of the legacy Fyers stack after K2 moved it into HAT: the legacy client singleton
+and the hook that resets it on HAT's Fyers login (K4 removed the DEV_MODE switch). The login, the
+token file and the session are HAT's and are verified under `tests/hat`."""
 
-import asyncio
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -14,12 +12,8 @@ from app import config as config_module
 from app.hat.execution.fyers_auth import FyersAuthService, FyersCredentials
 from app.hat.execution.fyers_tokens import StoredToken, TokenStore, TokenStoreError
 from app.services import fyers_client as fyers_client_module
-from app.services import live_market_service as lms
 from app.services.fyers import auth_flow
 from app.services.fyers_client import FyersClient
-from app.services.live.provider_session import SessionState
-
-from fakes.data_socket import connected_live, make_live
 
 REPLY = {"s": "ok", "access_token": "tok-secret-abc", "fy_id": "XA1234", "refresh_token": "r"}
 CREDS = FyersCredentials("CLIENT-100", "app-secret", "https://example.test/callback")
@@ -122,24 +116,6 @@ def test_reset_fyers_client_drops_the_singleton(monkeypatch: pytest.MonkeyPatch)
 # --- the legacy hooks on HAT's login --------------------------------------------------------
 
 
-def test_logout_is_an_explicit_live_feed_disconnect(
-    store: TokenStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    live_market, factory = connected_live()
-    live_market.dev_mode = True
-    monkeypatch.setattr(lms, "live_market", live_market)
-    service = make_service(store)
-    auth_flow.install_legacy_hooks(service)
-
-    service.disconnect()
-
-    assert factory.last.closed is True
-    assert live_market.session.state is SessionState.CLOSED
-    # The feed stays down until an explicit connect, even after a new login.
-    assert live_market._explicitly_disconnected is True
-    assert live_market.connect(prevalidated_token=True) == "disconnected"
-
-
 def test_installing_the_legacy_hooks_twice_registers_them_once(store: TokenStore) -> None:
     service = make_service(store)
 
@@ -147,74 +123,14 @@ def test_installing_the_legacy_hooks_twice_registers_them_once(store: TokenStore
     auth_flow.install_legacy_hooks(service)
 
     assert service._hooks["token_change"][1:] == [auth_flow._reset_fyers_client]
-    assert service._hooks["login"] == [auth_flow._connect_live_feed]
-    assert service._hooks["disconnect"] == [auth_flow._disconnect_live_feed]
+    # The login and logout hooks are HAT's feed's own (`LiveFeed.install_auth_hooks`, K3).
+    assert service._hooks["login"] == []
+    assert service._hooks["disconnect"] == []
 
 
-def test_a_failed_live_feed_reconnect_does_not_fail_the_login(
-    store: TokenStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_failing_login_hook_does_not_fail_the_login(store: TokenStore) -> None:
     service = make_service(store)
     service.add_hook("login", lambda: (_ for _ in ()).throw(RuntimeError("leak-marker socket")))
 
     assert service.exchange("code").connected is True
     assert store.load() is not None
-
-
-@pytest.mark.parametrize(
-    ("socket_open", "expected_disconnects"),
-    [(True, [1]), (False, [])],  # only a socket built with the old token is closed first
-)
-def test_default_login_hook_runs_an_explicit_connect_on_the_app_loop(
-    monkeypatch: pytest.MonkeyPatch, socket_open: bool, expected_disconnects: list[int]
-) -> None:
-    live_market, _factory = connected_live() if socket_open else make_live()
-    assert live_market.has_provider_socket() is socket_open
-    monkeypatch.setattr(lms, "live_market", live_market)
-
-    loop = asyncio.new_event_loop()
-    worker = threading.Thread(target=loop.run_forever, daemon=True)
-    worker.start()
-    calls: list[tuple[asyncio.AbstractEventLoop, bool, asyncio.AbstractEventLoop]] = []
-    done = threading.Event()
-
-    async def fake_connect_async(
-        loop: asyncio.AbstractEventLoop | None = None, explicit: bool = False, **_: object
-    ) -> str:
-        calls.append((loop, explicit, asyncio.get_running_loop()))
-        done.set()
-        return "market_closed"
-
-    disconnects: list[int] = []
-
-    def fake_disconnect() -> None:
-        assert not calls, "the old socket must close before the new connect"
-        disconnects.append(1)
-
-    monkeypatch.setattr(live_market, "loop", loop)
-    monkeypatch.setattr(live_market, "disconnect", fake_disconnect)
-    monkeypatch.setattr(live_market, "connect_async", fake_connect_async)
-    try:
-        auth_flow._connect_live_feed()
-        assert done.wait(timeout=5)
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        worker.join(timeout=5)
-        loop.close()
-
-    assert disconnects == expected_disconnects
-    assert calls == [(loop, True, loop)]
-
-
-def test_default_login_hook_without_an_app_loop_does_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.services.live_market_service import live_market
-
-    def fail(**_: object) -> NoReturn:
-        raise AssertionError("connect must not be scheduled without a loop")
-
-    monkeypatch.setattr(live_market, "loop", None)
-    monkeypatch.setattr(live_market, "connect_async", fail)
-
-    auth_flow._connect_live_feed()  # no loop, no error

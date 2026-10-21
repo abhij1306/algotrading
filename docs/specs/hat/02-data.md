@@ -706,21 +706,21 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 | 09:20–15:20 | Triggers: level breaks, volume pace | Bar builder |
 | 15:20–15:25 | Live price used as close proxy for MA exits | Fyers |
 
-#### HAT-DATA-110: One live feed, shared with SmartTrader
-- **Statement:** HAT reads ticks through a listener hook on SmartTrader's `LiveMarketService` and never opens a second WebSocket to the broker.
+#### HAT-DATA-110: One live feed, owned by HAT
+- **Statement:** HAT's `LiveFeed` owns the single Fyers data socket; SmartTrader's legacy read side attaches as a tick listener and no second WebSocket to the broker exists.
 - **Source:** MA "Boundary rules" ("never a second WebSocket to the same broker"); I3; PLAN C4, PR 14.
 - **PR:** 14
 - **Verification:** CONF `imports.no_second_websocket`
 - **Acceptance:**
-  - Property: no module under `backend/app/hat/` imports or constructs a Fyers data-socket client; all HAT tick input arrives via `LiveMarketService.add_tick_listener`. Harm: a second connection breaks the broker's session limit and disconnects SmartTrader's feed.
+  - Property: no module outside `backend/app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK; all tick consumers attach through `LiveFeed.add_tick_listener`. Harm: a second connection breaks the broker's session limit and disconnects SmartTrader's feed.
 
 #### HAT-DATA-111: A tick listener can never block or break the broadcast
-- **Statement:** Tick listeners run on the loop thread; a listener exception is logged and isolated and never blocks or drops SmartTrader's broadcast.
+- **Statement:** Tick listeners run on the loop thread; a listener exception is logged and isolated and never blocks or drops delivery to the other listeners.
 - **Source:** PLAN PR 14 (listener hook); MA "Reuse vs build" (reuse the real-time feed).
 - **PR:** 14
 - **Verification:** PBT `bars.listener_isolation`
 - **Acceptance:**
-  - Property: for every tick sequence and every set of listeners where any subset raises, every tick still reaches `latest_values` and the batch broadcast, and every non-raising listener receives every tick in order. Harm: a HAT bug freezes SmartTrader's live quotes.
+  - Property: for every tick sequence and every set of listeners where any subset raises, every non-raising listener receives every tick in order, and a removed listener receives none. Harm: one bad listener freezes live quotes for every consumer.
 
 #### HAT-DATA-112: HAT subscriptions are one registry owner
 - **Statement:** HAT registers as `SubscriptionRegistry` owner `"hat"` for watchlist, open positions and EP candidates; open positions are always subscribed.
@@ -821,3 +821,43 @@ EP candidates come from a full-market gap scan just after the open, because the 
 - **Acceptance:**
   - Property: every gap-scan run writes a `hat_job_run` row with `started_at` and `finished_at`, and a run that finishes at or after 09:20:00 raises a health alert. Harm: the EP playbook silently never sees its candidates in time.
 - **[A]** Scan latency under 4 minutes: validated by observing `cm_get_equity_stocks` latency for 2 weeks (DS "Verify").
+
+#### HAT-DATA-123: One provider socket, bounded reconnects
+- **Statement:** `ProviderSession` runs at most one data socket at a time, builds it through the socket factory with the current token, and stops reconnecting after a bounded number of failures.
+- **Source:** MA "Boundary rules"; I3; PLAN PR 14.
+- **PR:** 14
+- **Verification:** PBT `feed.session_one_socket`, PBT `feed.session_gives_up`, PBT `feed.session_close_stops_a_backing_off_runner`, PBT `feed.socket_factory`, PBT `feed.token_source`, PBT `feed.traceback_throttle`
+- **Acceptance:**
+  - Property: for every interleaving of connect, disconnect, close, SDK reconnect and failure, at most one socket is live, a backing-off runner stops on close, the session gives up after its failure budget, the socket factory receives the current token, and a repeating exception site logs a traceback at most once per interval. Harm: two sockets break the broker session limit, or a dead feed retries forever and floods the log.
+
+#### HAT-DATA-124: Ticks are normalised once
+- **Statement:** Every raw provider message becomes a tick with a canonical symbol, price, volume and exchange time, and malformed messages are dropped.
+- **Source:** PLAN PR 14.
+- **PR:** 14
+- **Verification:** PBT `feed.tick_normalised`, PBT `feed.tick_flow`
+- **Acceptance:**
+  - Property: for every raw message, the normaliser returns a tick whose fields equal the message values in canonical form or drops the message, and every accepted message reaches every listener once through `LiveFeed`. Harm: a mis-parsed price triggers a wrong entry or exit.
+
+#### HAT-DATA-125: The subscription registry is reference counted per owner
+- **Statement:** `SubscriptionRegistry` tracks symbols per owner and reports a symbol as wanted while any owner holds it.
+- **Source:** DS "Live data"; PLAN PR 14.
+- **PR:** 14
+- **Verification:** PBT `feed.registry_model`, PBT `feed.registry_concurrent`
+- **Acceptance:**
+  - Property: for every sequence of subscribe and unsubscribe calls by any owners, including concurrent ones, the wanted set equals the union of owner sets and a symbol leaves it only when its last owner releases it. Harm: one owner's unsubscribe silences another owner's open position.
+
+#### HAT-DATA-126: The provider converges on the wanted set
+- **Statement:** `LiveFeed` makes the provider's subscribed set equal the registry's wanted set, even when changes race with calls to the provider and SDK reconnects.
+- **Source:** PLAN PR 14.
+- **PR:** 14
+- **Verification:** PBT `feed.provider_converges`
+- **Acceptance:**
+  - Property: for every sequence of subscribe, unsubscribe, connect, disconnect and SDK reconnect with changes landing during in-flight provider calls, the provider's net subscribed set equals the wanted set once the feed is idle and connected. Harm: a held symbol silently stops ticking, or an unwanted symbol eats the symbol limit.
+
+#### HAT-DATA-127: The feed follows login state and market hours
+- **Statement:** `LiveFeed` connects on login and token change, honours an explicit disconnect, stops outside market hours, and its monitor survives errors without blocking the loop.
+- **Source:** PLAN PR 14.
+- **PR:** 14
+- **Verification:** PBT `feed.auth_hooks`, PBT `feed.off_hours_stops_a_backing_off_runner`, PBT `feed.monitor_survives_errors`, PBT `feed.token_check_off_loop`, PBT `feed.calendar_closed`
+- **Acceptance:**
+  - Property: for every sequence of login, token change, disconnect and expiry, the feed runs only with a valid token and no explicit disconnect, a backing-off runner is stopped outside market hours, the monitor continues after any exception, the token check never runs on the event loop thread, and the feed never connects on a holiday of HAT's trading calendar or while that calendar is unknown. Harm: the feed trades on a dead token, stays connected overnight or on an exchange holiday, or stops forever after one error.

@@ -3,7 +3,6 @@ staleness, persistence, subscriptions and gap capture, all on the real code.
 
 Time is explicit: every property passes the instants it wants, so no test reads a clock."""
 
-import asyncio
 import tempfile
 import threading
 from collections.abc import Iterable
@@ -33,10 +32,10 @@ from app.hat.data.subscriptions import (
     HAT_OWNER,
     LiveSubscriptions,
     SubscriptionInputs,
+    SubscriptionRegistry,
     load_inputs,
 )
 from app.hat.models import HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
-from app.services.subscription_registry import SubscriptionRegistry
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -511,55 +510,28 @@ def test_listener_isolation(
     symbols: list[str], raising: list[set[int]], always_raise: bool
 ) -> None:
     """For every tick sequence and every set of listeners, any subset of which raises, every tick
-    still reaches `latest_values` and the batch broadcast, and every listener that did not raise
-    for a tick received it, in order. Listeners also never run before the tick is buffered."""
-    from hat.fakes.data_socket import make_live
+    still reaches every listener that did not raise for it, in order, and the feed keeps
+    delivering after a listener fails. A listener removed while ticks flow receives no more.
+    Harm: a HAT bug freezes the live feed, or one listener starves another of ticks."""
+    from hat.fakes.data_socket import make_feed
 
-    async def scenario() -> None:
-        live, _ = make_live()
-        live.loop = asyncio.get_running_loop()
-        broadcasts: list[dict[str, Any]] = []
-
-        async def fake_broadcast(message: dict[str, Any]) -> None:
-            broadcasts.append(message)
-
-        listeners = [
-            FlakyListener(set(range(15)) if always_raise and i == 0 else raises)
-            for i, raises in enumerate(raising)
-        ]
-        seen_buffered: list[bool] = []
-
-        def watcher(tick: dict[str, Any]) -> None:
-            seen_buffered.append(live.tick_buffer.get(tick["symbol"]) is tick)
-
-        for listener in listeners:
-            live.add_tick_listener(listener)
-        live.add_tick_listener(watcher)
-        sent = [{"symbol": s, "ltp": float(i + 1), "seq": i} for i, s in enumerate(symbols)]
-        for tick in sent:
-            await live._update_buffer(dict(tick))  # noqa: SLF001 - the loop-thread entry point
-        assert all(seen_buffered)
-        assert len(seen_buffered) == len(sent)
-        last = {t["symbol"]: t for t in sent}
-        assert {s: t["seq"] for s, t in live.latest_values.items()} == {
-            s: t["seq"] for s, t in last.items()
-        }
-        from app.services import live_market_service as lms
-
-        original = lms.manager.broadcast
-        lms.manager.broadcast = fake_broadcast  # type: ignore[method-assign]
-        task = asyncio.create_task(live._flush_loop())  # noqa: SLF001
-        try:
-            await asyncio.sleep(0.25)
-        finally:
-            task.cancel()
-            lms.manager.broadcast = original  # type: ignore[method-assign]
-        flushed = {t["symbol"]: t["seq"] for m in broadcasts for t in m["data"]}
-        assert flushed == {s: t["seq"] for s, t in last.items()}
-        for listener in listeners:
-            assert [t["seq"] for t in listener.received] == [t["seq"] for t in sent]
-
-    asyncio.run(scenario())
+    feed, _ = make_feed()
+    listeners = [
+        FlakyListener(set(range(15)) if always_raise and i == 0 else raises)
+        for i, raises in enumerate(raising)
+    ]
+    removed = FlakyListener(set())
+    for listener in listeners:
+        feed.add_tick_listener(listener)
+    remove = feed.add_tick_listener(removed)
+    sent = [{"symbol": s, "ltp": float(i + 1), "seq": i} for i, s in enumerate(symbols)]
+    for i, tick in enumerate(sent):
+        if i == len(sent) // 2:
+            remove()
+        feed._deliver(dict(tick))  # noqa: SLF001 - the loop-thread entry point
+    for listener in listeners:
+        assert [t["seq"] for t in listener.received] == [t["seq"] for t in sent]
+    assert [t["seq"] for t in removed.received] == [t["seq"] for t in sent[: len(sent) // 2]]
 
 
 # --- subscriptions (HAT-DATA-112) --------------------------------------------------------------
@@ -587,18 +559,23 @@ class _SlowInputs(SubscriptionInputs):
             pause()
 
 
+@example(second=9 * 3600 - 1, weekend=False)
+@example(second=9 * 3600, weekend=False)
+@example(second=9 * 3600 + 8 * 60, weekend=False)
+@example(second=15 * 3600 + 1800, weekend=False)
+@example(second=15 * 3600 + 1801, weekend=False)
 @given(second=st.integers(0, 24 * 3600 - 1), weekend=st.booleans())
 def test_feed_connection_window(second: int, weekend: bool) -> None:
     """The live feed may connect on a trading day from 09:00 IST (the pre-open session, so the
     opening gaps can be captured) to the 15:30 close, and never on a weekend. Harm: the 09:00 to
     09:08 gap capture receives no ticks, or the feed stays up all night."""
-    from app.services.live_market_service import LiveMarketService
+    from hat.fakes.data_socket import make_feed
 
     day = date(2026, 10, 24 if weekend else 21)  # a Saturday or a Wednesday
     when = datetime.combine(day, time(), IST) + timedelta(seconds=second)
-    service = LiveMarketService(FixedClock(when.astimezone(UTC)))
+    feed, _ = make_feed(clock=FixedClock(when.astimezone(UTC)))
     expected = not weekend and 9 * 3600 <= second <= 15 * 3600 + 1800
-    assert service.connection_allowed() == expected
+    assert feed.connection_allowed() == expected
 
 
 @settings(max_examples=8, deadline=None)

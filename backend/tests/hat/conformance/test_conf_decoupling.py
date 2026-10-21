@@ -23,10 +23,6 @@ PERMANENT = {"app.base"}
 # must equal what is imported today: a new entry is a new coupling (refused), and a module that
 # is no longer imported must be removed from here, so the list only shrinks.
 PENDING = {
-    "app.services.live.data_socket": "K3",
-    "app.services.live.provider_session": "K3",
-    "app.services.live_market_service": "K3",
-    "app.services.subscription_registry": "K3",
     "app.database": "K6",
     "app.paths": "K6",
     "app.utils.env_loader": "K6",
@@ -47,6 +43,10 @@ SHIMS = {
     # K4: `fyers_available` reads HAT's token store for the legacy data fetcher (K5b); K6 cuts it.
     "config.py",
     "services/symbol_master.py",
+    # K3: the legacy read side of HAT's live feed (it reads the feed's ticks and shares its
+    # registry with the websocket manager); K5b deletes both with the market and websocket code.
+    "services/live_market_service.py",
+    "utils/ws_manager.py",
 }
 # Legacy modules that import HAT to wire it in: `database.py` (schema upkeep) and `main.py` (it
 # registers HAT's routes and the legacy hooks on HAT's Fyers login).

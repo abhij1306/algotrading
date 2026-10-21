@@ -124,18 +124,14 @@ def test_mcp_endpoints_allowlist() -> None:
 
 # --- one live feed (HAT-DATA-110, HAT-OVR-006, HAT-DEC-I3) ----------------------------------
 
-SOCKET_MODULES = (
-    "fyers_apiv3",
-    "app.services.fyers_websocket",
-    "app.services.live.data_socket",
-    "websocket",
-    "websockets",
-    "socketio",
-    "aiohttp",
-)
+SOCKET_MODULES = ("fyers_apiv3", "websocket", "websockets", "socketio", "aiohttp")
 # The SDK's REST models (orders, reads, login); the session and login modules import it (K2). The
-# sockets live in `fyers_apiv3.FyersWebsocket`, which stays forbidden.
+# sockets live in `fyers_apiv3.FyersWebsocket`, which only the provider module may import (K3).
 REST_MODEL = "fyers_apiv3.fyersModel"
+PROVIDER_SOCKET_FILE = "data/provider/fyers_websocket.py"
+SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
+# Who may import the feed: the app's wiring and the legacy read side of its ticks (K5b deletes it).
+FEED_IMPORTERS = {"main.py", "services/live_market_service.py"}
 
 
 def _only_rest_model(path: Path) -> bool:
@@ -144,34 +140,54 @@ def _only_rest_model(path: Path) -> bool:
     return all(re.fullmatch(r"\s*from fyers_apiv3 import fyersModel\s*", ln) for ln in lines)
 
 
-SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
-
-
-def test_imports__no_second_websocket() -> None:
-    """HAT-DATA-110: no module under `app.hat` imports or constructs a broker data-socket client
-    or any WebSocket library; HAT's one tick input is `LiveMarketService.add_tick_listener`, which
-    `LiveData.attach` calls, and the live service has that hook."""
+def socket_offenders(
+    root: Path, provider_file: Path | None, modules: tuple[str, ...] = SOCKET_MODULES
+) -> list[tuple[str, str]]:
+    """(file, what) for every import, construction or dynamic import of a broker data socket or a
+    WebSocket client library under `root`, except the one provider module `provider_file`."""
     from hat_conf_repo import imports_of
 
-    from app.hat.data import live
-    from app.services.live_market_service import LiveMarketService
-
     offenders = []
-    for path in sorted(HAT_ROOT.rglob("*.py")):
+    for path in sorted(root.rglob("*.py")):
+        if path == provider_file:
+            continue
         for name in imports_of(path):
             if name in {"fyers_apiv3", REST_MODEL} and _only_rest_model(path):
                 continue  # the order and login models, not a socket
-            if any(name == m or name.startswith(m + ".") for m in SOCKET_MODULES):
+            if any(name == m or name.startswith(m + ".") for m in modules):
                 offenders.append((path.name, name))
         text = path.read_text(encoding="utf-8")
         offenders.extend((path.name, n) for n in SOCKET_NAMES if re.search(rf"\b{n}\b", text))
         # a dynamic import (`importlib.import_module("websockets")`, `__import__`) names the
         # library as a string; the AST import scan does not see it
         offenders.extend(
-            (path.name, m) for m in SOCKET_MODULES if re.search(rf"[\"']{re.escape(m)}[\"'.]", text)
+            (path.name, m) for m in modules if re.search(rf"[\"']{re.escape(m)}[\"'.]", text)
         )
-    assert offenders == []
-    assert callable(getattr(LiveMarketService, "add_tick_listener", None))
+    return offenders
+
+
+def test_imports__no_second_websocket() -> None:
+    """HAT-DATA-110: the Fyers data-socket SDK is imported or constructed in exactly one module,
+    `app/hat/data/provider/fyers_websocket.py`, and no module under `app` imports or opens any
+    other broker socket or WebSocket client library; HAT's one tick input is
+    `LiveFeed.add_tick_listener`, which `LiveData.attach` calls."""
+    from app.hat.data import live
+    from app.hat.data.feed import LiveFeed
+
+    provider = HAT_ROOT / PROVIDER_SOCKET_FILE
+    assert provider.is_file()
+    assert socket_offenders(HAT_ROOT, provider) == []
+    # the legacy code outside HAT has no broker socket either (it may use fastapi's server sockets)
+    legacy = [
+        o
+        for path in sorted(APP_ROOT.iterdir())
+        if path.is_dir() and path.name != "hat"
+        for o in socket_offenders(path, None, ("fyers_apiv3",))
+    ]
+    assert legacy == []
+    # the provider module is the one place the SDK socket appears, and it does appear there
+    assert any(n in provider.read_text("utf-8") for n in SOCKET_NAMES)
+    assert callable(getattr(LiveFeed, "add_tick_listener", None))
     assert "add_tick_listener" in inspect.getsource(live.LiveData.attach)
     tree = _hat_sources()["data/live.py"]
     attached = [
@@ -180,19 +196,95 @@ def test_imports__no_second_websocket() -> None:
     assert len(attached) == 1  # the single tick input
 
 
+def _constructs(tree: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == name)
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == name)
+        )
+        for n in ast.walk(tree)
+    )
+
+
+def _calls_named(node: ast.AST, name: str) -> int:
+    return sum(
+        isinstance(n, ast.Call) and getattr(n.func, "id", "") == name for n in ast.walk(node)
+    )
+
+
+def _enabled_calls(stmts: list[ast.stmt], callee: str) -> int:
+    """Calls of `callee` in `stmts` that run only when HAT is enabled: a nested `if` that tests
+    `is_enabled()` negated counts its `else` branch only, any other nested `if` both branches."""
+    total = 0
+    for stmt in stmts:
+        if isinstance(stmt, ast.If):
+            negated = isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)
+            if negated and _calls_named(stmt.test, "is_enabled"):
+                total += _enabled_calls(stmt.orelse, callee)
+            else:
+                total += _enabled_calls(stmt.body, callee) + _enabled_calls(stmt.orelse, callee)
+        else:
+            total += _calls_named(stmt, callee)
+    return total
+
+
+def _guarded_by_hat_enabled(tree: ast.AST, callee: str) -> bool:
+    """Every call of `callee` sits in the body of an `if is_enabled()` (not a negated test, and
+    not under a nested `if not is_enabled()`), so it is reachable only on the enabled branch."""
+    guarded = 0
+    for node in ast.walk(tree):
+        positive = (
+            isinstance(node, ast.If)
+            and _calls_named(node.test, "is_enabled")
+            and not (isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not))
+        )
+        if positive:
+            guarded += _enabled_calls(node.body, callee)
+    calls = _calls_named(tree, callee)
+    return calls > 0 and calls == guarded
+
+
 def test_single_feed_import_rule() -> None:
-    """HAT-OVR-006, HAT-DEC-I3: live data reaches HAT only through the listener hook and the
-    `"hat"` owner of `SubscriptionRegistry`; HAT imports neither the live service module nor the
-    provider session, so it cannot read or open a feed any other way."""
+    """HAT-OVR-006, HAT-DEC-I3: one provider session and one feed per process. Only
+    `app/hat/data/feed.py` builds a `ProviderSession` or imports the provider session module; only
+    `app/main.py` builds a `LiveFeed`, and only inside `if is_enabled()`; no other HAT module
+    imports the feed or the provider (live data reaches `LiveData` through the listener hook and
+    the registry's `"hat"` owner); the feed is imported only by `FEED_IMPORTERS`."""
     from hat_conf_repo import imports_of
 
     from app.hat.data import subscriptions
 
     assert subscriptions.HAT_OWNER == "hat"
-    forbidden = ("app.services.live_market_service", "app.services.live.provider_session")
-    for path in sorted(HAT_ROOT.rglob("*.py")):
+    provider = "app.hat.data.provider"
+    feed = "app.hat.data.feed"
+    session_module = "app.hat.data.provider.provider_session"
+    for path in sorted(APP_ROOT.rglob("*.py")):
+        rel = path.relative_to(APP_ROOT).as_posix()
         names = imports_of(path)
-        assert not any(n == f or n.startswith(f + ".") for n in names for f in forbidden), path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        inside_provider = rel.startswith("hat/data/provider/")
+        if rel != "hat/data/feed.py" and not inside_provider:
+            assert not any(n == session_module for n in names), rel
+            assert not _constructs(tree, "ProviderSession"), rel
+            assert not any(n == provider or n.startswith(provider + ".") for n in names), rel
+        if rel != "main.py":
+            assert not _constructs(tree, "LiveFeed"), rel
+        if any(n == feed for n in names) and rel != "hat/data/feed.py":
+            assert rel in FEED_IMPORTERS, rel
+    main = ast.parse((APP_ROOT / "main.py").read_text(encoding="utf-8"))
+    assert _constructs(main, "LiveFeed")
+    assert _guarded_by_hat_enabled(main, "_start_hat_feed")
+    # the checker can fail: an unguarded call, a call under a negated guard, and one under a nested
+    # `if not is_enabled()` are all refused; the plain guard passes
+    for source, expected in (
+        ("if is_enabled():\n    _start_hat_feed()\n", True),
+        ("_start_hat_feed()\n", False),
+        ("if not is_enabled():\n    _start_hat_feed()\n", False),
+        ("if is_enabled():\n    if not is_enabled():\n        _start_hat_feed()\n", False),
+        ("if is_enabled():\n    if ready:\n        _start_hat_feed()\n", True),
+    ):
+        assert _guarded_by_hat_enabled(ast.parse(source), "_start_hat_feed") is expected, source
     owners = {
         node.value
         for node in ast.walk(_hat_sources()["data/subscriptions.py"])

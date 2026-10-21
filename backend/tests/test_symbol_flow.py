@@ -4,11 +4,8 @@ End-to-End Symbol Flow Test
 Tests symbol format conversions through entire stack.
 """
 
-import asyncio
-
 import pytest
 
-from app.services.live_market_service import LiveMarketService
 from app.services.symbol_master import symbol_master
 
 
@@ -70,30 +67,3 @@ def test_invalid_symbol_rejection() -> None:
         symbol_master.to_fyers("INVALID#SYMBOL")
 
     # `to_db` is intentionally lenient, so this test covers only the strict `to_fyers` path.
-
-
-@pytest.mark.asyncio
-async def test_websocket_symbol_mapping() -> None:
-    """Test that LiveMarketService correctly maps symbols in ticks"""
-    # Create service
-    service = LiveMarketService()
-    service.loop = asyncio.get_running_loop()
-
-    # Mock tick from Fyers
-    fyers_tick = {
-        "symbol": "NSE:SBIN-EQ",
-        "ltp": 500.50,
-        "v": 1000,
-    }
-
-    # Directly call handle_tick_incoming (it's synchronous but calls run_coroutine_threadsafe)
-    # We need to wait for the buffer to be updated
-    service.handle_tick_incoming(fyers_tick)
-
-    # Give it a tiny bit of time to process in the loop
-    await asyncio.sleep(0.1)
-
-    # Check latest_values (not tick_buffer)
-    assert "SBIN" in service.latest_values
-    assert service.latest_values["SBIN"]["symbol"] == "SBIN"
-    assert service.latest_values["SBIN"]["ltp"] == pytest.approx(500.50, abs=0.001)
