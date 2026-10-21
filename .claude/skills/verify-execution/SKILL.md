@@ -47,7 +47,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_session.model_only_for_usable_token` At startup the session holds an SDK model exactly when the file holds a token with a client id that has not expired, and makes no network call. Harm: an expired or client-less token is installed and used.
 - `PBT fyers_session.expiry_while_running` A caller that never validates still gets no model once the clock passes the expiry, and the credentials go with it. Harm: orders go out all day on yesterday's token.
 - `PBT fyers_session.bad_file_drops_model` After the token file is removed, corrupted, expired or client-less, `validate_token` is false, makes no profile call and leaves no model. Harm: a logout does not log out, and old credentials stay in use.
-- `PBT fyers_session.relogin_picked_up` A new token written while the app runs is used by the next validation and the old token is never used again. Harm: the owner logs in and the process keeps failing with the dead token.
+- `PBT fyers_session.relogin_picked_up` A new token written while the app runs is used by the next validation and the old token is never used again; a reset (logout) that lands while the process-wide session is being built discards that session. Harm: the owner logs in and the process keeps failing with the dead token.
 - `PBT fyers_session.expired_validation_no_call` Once the stored expiry passed, `validate_token` is false without any profile call. Harm: a known-dead token is sent to Fyers on every check.
 - `PBT fyers_session.validation_retry_bound` A profile call is retried only after a re-login is found on disk and only once: at most two calls, and the last answer decides. Harm: validation hammers Fyers or loops.
 - `PBT fyers_session.nested_validation` A validation started from inside a validation returns at once with whether a model exists and makes no call. Harm: a recursive validation loop.
@@ -152,8 +152,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `7a831d057921b1ca935a020a2ab5dc633ac55d2f`
-Covered digest: `77e3b52b9be8b5f8d369dc48cc06181be940fecbf3d8757af6aa7b386ef99814`
+Sync commit: `ddae500467150a6b8d8f5007b3ffc7df58a64fe7`
+Covered digest: `ded95bd98eb5674b02424982a56e0256424f44b8d0b1b1292c3525fcf0b4535a`
 
 ## Scope changes
 
@@ -560,6 +560,12 @@ E   AssertionError: assert 'tok-A' == 'tok-B'
 E     
 E     - tok-B
 E     ?     ^
+```
+
+Second break (`test_a_reset_during_construction_never_installs_the_old_session`): `get_fyers_session` installs the built session without comparing the reset generation.
+
+```
+FAILED tests/hat/properties/test_fyers_session.py::test_a_reset_during_construction_never_installs_the_old_session - AssertionError
 ```
 
 ### PBT fyers_session.expired_validation_no_call

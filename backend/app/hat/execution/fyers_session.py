@@ -15,6 +15,7 @@ Logs name the token's expiry and the file, never the token.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import ModuleType
@@ -240,17 +241,32 @@ class FyersSession:
 
 
 _session: FyersSession | None = None
+_generation = 0
+_session_lock = threading.Lock()
 
 
 def get_fyers_session() -> FyersSession:
-    """The process-wide session over the default token file, built on first use."""
+    """The process-wide session over the default token file, built on first use.
+
+    A reset that happens while a session is being built (a logout or a re-login) discards that
+    session: it may hold the token read before the reset, so it is never installed."""
     global _session
-    if _session is None:
-        _session = FyersSession()
-    return _session
+    for _ in range(3):
+        with _session_lock:
+            if _session is not None:
+                return _session
+            generation = _generation
+        built = FyersSession()
+        with _session_lock:
+            if generation == _generation:
+                _session = built
+                return built
+    return FyersSession()
 
 
 def reset_fyers_session() -> None:
     """Drop the process-wide session so fresh credentials load on the next `get_fyers_session`."""
-    global _session
-    _session = None
+    global _session, _generation
+    with _session_lock:
+        _session = None
+        _generation += 1

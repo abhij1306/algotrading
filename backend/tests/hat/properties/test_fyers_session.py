@@ -208,3 +208,35 @@ def test_nested_validation_does_not_recurse(state: str) -> None:
         session._validating_token = True  # as if inside `validate_token`
         assert session.validate_token() is (state == "valid")
         assert sum(m.profile_calls for m in factory.models) == 0
+
+
+@given(resets=st.integers(0, 4))
+def test_a_reset_during_construction_never_installs_the_old_session(resets: int) -> None:
+    """A logout or re-login (a reset) while the process-wide session is being built discards that
+    session: whatever is installed afterwards was built after the last reset, and a session built
+    before it is never returned from a later `get_fyers_session()`."""
+    from unittest import mock
+
+    from app.hat.execution import fyers_session as module
+
+    built: list[object] = []
+    pending = [resets]
+
+    class Slow:
+        def __init__(self) -> None:
+            self.generation = module._generation  # the reset count this build began under
+            built.append(self)
+            if pending[0] > 0:
+                pending[0] -= 1
+                module.reset_fyers_session()  # a logout lands while this one is being built
+
+    module.reset_fyers_session()
+    with mock.patch.object(module, "FyersSession", Slow):
+        got = module.get_fyers_session()
+        assert got is built[-1]
+        assert module._session in (None, got)
+        if module._session is got:
+            assert got.generation == module._generation  # never one built before a reset
+        if resets < 3:
+            assert module._session is got  # installed once no reset interrupted the build
+    module.reset_fyers_session()
