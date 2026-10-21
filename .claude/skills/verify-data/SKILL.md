@@ -29,6 +29,7 @@ Checks that the 2010-to-today build writes each trading day once, in the right f
 - `PBT bhavcopy.traded_value_kept` Each parsed row keeps the file's traded value. Harm: turnover history is lost.
 - `PBT bhavcopy.validation_flags_mismatch` The build fails iff a sampled close differs from the MCP close (exact), and lists the row. Harm: a wrong parse passes validation.
 - `PBT history_build.offline_end_to_end` The offline build over generated files in both formats writes exactly the file rows, with no duplicate (instrument, date), reports missing days, and a repeated or resumed run changes nothing. Harm: a rerun duplicates or loses days.
+- `PBT history_build.job_fails_on_any_gap_or_failed_download` The job body succeeds only when every weekday is stored or an explained holiday: a failed download, a missing file that is no holiday or a file with no usable rows raises `history_incomplete`. Harm: a scheduled build reports success with holes in history.
 - `PBT history_build.mcp_index_source_chains` Chained `get_index_history` chunks yield every present day in range exactly once and nothing outside. Harm: index history with holes or repeats.
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
@@ -99,7 +100,7 @@ Covered digest: `7d0cb56cde34c3f849a1572fdb5115d98ad5924620e9e37c3d18d36dc9e48ac
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - A cumulative factor outside [1e-9, 100) is refused with `store_factor_range` (the view holds factors as decimal(20,18)); `adjusted_view_idempotent` skips such worlds, and `test_cumulative_factor_out_of_range_is_refused` pins the refusal. Several compounded reverse splits could reach it: a follow-up if real data does.
-- The adjusted-view exactness properties draw factors with finite decimal reciprocals: factors are stored to 18 places and their reciprocals (for volume) to 12, so an arbitrary rational factor is exact for prices but not for volume. Real factors (splits, bonuses) are ratios of small integers.
+- The adjusted-view exactness properties draw factors with finite decimal reciprocals and at most 18 places (factors are stored to 18 places and their reciprocals, for volume, to 12), so an arbitrary rational factor such as 2/3 is rounded in the view, for prices and volume alike; real factors (splits, bonuses) are ratios of small integers. A bar volume of 10^14 or more is refused (`store_bad_volume`).
 - The old CM (`cmDDMMMYYYYbhav.csv`) and UDiFF column lists are `[A]`, written from the published layouts and shared fixtures, not from a real download; the first real run validates them.
 - The MCP normaliser for nightly bars is PR 7's; `ingest.sources_same_schema` covers the shared writer that both sources use.
 - `bulk_quotes` and its date check do not apply to history: validation compares against the `date` field of `get_stock_history` rows.
@@ -431,6 +432,20 @@ E   AssertionError: assert ([] == []
 E     
 E     Full diff:
 E       [] and {'build/state...b868a2e38afa'} == {'build/state...51a0527c1759'}
+```
+
+### PBT history_build.job_fails_on_any_gap_or_failed_download
+
+Break: the job ignores days with no file that are no holiday and failed downloads.
+
+```
+tests/hat/properties/test_history_build.py F
+tests/hat/properties/test_history_build.py:175: in test_job_fails_on_any_gap_or_failed_download
+tests/hat/properties/test_history_build.py:206: in test_job_fails_on_any_gap_or_failed_download
+E   Failed: DID NOT RAISE JobError
+E   Failing test case: test_job_fails_on_any_gap_or_failed_download(
+E       # The test sometimes passed when commented parts were varied together.
+E       world={datetime.date(2024, 6, 24): None,
 ```
 
 ### PBT history_build.mcp_index_source_chains

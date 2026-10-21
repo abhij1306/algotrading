@@ -25,7 +25,7 @@ from typing import Literal, Protocol
 
 from ..errors import HatError
 from .reference import EQUITY_SERIES, ISIN_RE
-from .store import BarRow, DataStore, atomic_replace
+from .store import MAX_VOLUME, BarRow, DataStore, atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +264,7 @@ def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow 
         or close is None
         or prev is None
         or volume is None
+        or volume >= MAX_VOLUME
         or not row[layout.symbol]
     ):
         return None, "invalid"

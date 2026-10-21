@@ -22,6 +22,7 @@ Nothing here opens a network connection.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import uuid
 from collections import defaultdict
@@ -76,6 +77,7 @@ INDEX_SCHEMA = pa.schema(
 DATASET_SCHEMAS = {DATASET_BARS: BAR_SCHEMA, DATASET_INDEX: INDEX_SCHEMA}
 
 PART_GLOB = "part-*.parquet"
+MAX_VOLUME = 10**14  # the adjusted volume column is decimal(14, 0) x decimal(24, 12)
 FACTOR_PLACES = 18  # cumulative factors are stored as decimal(20, 18)
 INVERSE_PLACES = 12  # and their reciprocals, for volume, as decimal(24, 12)
 FACTOR_MIN = Decimal("1e-9")  # a cumulative factor outside [1e-9, 100) cannot be held exactly
@@ -163,7 +165,7 @@ def bars_table(rows: Sequence[BarRow]) -> pa.Table:
         raise StoreError("store_mixed_run")
     for r in rows:
         _check_source(r.source)
-        if r.volume < 0:
+        if not 0 <= r.volume < MAX_VOLUME:
             raise StoreError("store_bad_volume")
     columns = {
         "instrument_id": [r.key for r in rows],
@@ -239,7 +241,7 @@ SELECT r.instrument_id, r.date, r.isin, r.symbol, r.series,
        r.low * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS low,
        r.close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS close,
        r.prev_close * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
-       CAST(r.volume AS DECIMAL(12,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
+       CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
        r.traded_value, r.source, r.ingest_run_id
 FROM bars_daily_raw r
 LEFT JOIN ca_segment c ON c.instrument_id = r.instrument_id
@@ -332,10 +334,13 @@ class DataStore:
         incoming = {r.index_name: r for r in rows}
         if len(incoming) != len(rows):
             raise StoreError("store_duplicate_key")
-        merged = {r.index_name: r for r in self.read_index(day)}
-        merged.update(incoming)
         path = self.partition_dir(DATASET_INDEX, day) / "part-index.parquet"
-        self._write(path, index_table([merged[k] for k in sorted(merged)]))
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".index.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # read-merge-write must not interleave
+            merged = {r.index_name: r for r in self.read_index(day)}
+            merged.update(incoming)
+            self._write(path, index_table([merged[k] for k in sorted(merged)]))
         return len(merged)
 
     def store_raw(self, name: str, data: bytes) -> bool:

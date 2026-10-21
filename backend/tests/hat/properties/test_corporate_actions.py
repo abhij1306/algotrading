@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from hat_support import memory_engine
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,6 +30,8 @@ from app.hat.data.corporate_actions import (
     stored_factors,
 )
 from app.hat.data.store import (
+    FACTOR_MAX,
+    FACTOR_MIN,
     ActionFactor,
     BarRow,
     DataStore,
@@ -38,6 +40,7 @@ from app.hat.data.store import (
 )
 from app.hat.ids import uuid7
 from app.hat.models import HatCorporateAction, HatInstrument, HatMarket
+from app.services.bhavcopy_text import split_pair_ints
 
 START = date(2024, 1, 1)
 DAYS = weekdays(START, START + timedelta(days=30))[:14]
@@ -66,9 +69,14 @@ def worlds(draw: st.DrawFn) -> tuple[dict, list[ActionFactor]]:
             for d in DAYS
             if draw(st.integers(0, 5)) > 0
         }
+        product = Decimal(1)
         for _ in range(draw(st.integers(0, 3))):
+            factor = draw(st.sampled_from(FACTORS))
+            if not FACTOR_MIN <= product * factor < FACTOR_MAX:
+                continue  # the view refuses a cumulative factor outside the stored range
+            product *= factor
             ex = START + timedelta(days=draw(st.integers(-3, 34)))
-            actions.append(ActionFactor(iid, ex, draw(st.sampled_from(FACTORS))))
+            actions.append(ActionFactor(iid, ex, factor))
     return bars, actions
 
 
@@ -181,19 +189,29 @@ def test_adjusted_volume(world: tuple) -> None:
 @given(world=worlds())
 @settings(max_examples=40)
 def test_adjusted_view_idempotent(world: tuple) -> None:
-    """Building the view twice, or from the same actions listed twice in another order, gives
+    """Building the view twice, or from the same actions listed in another order, gives
     one result: there is no second adjustment because nothing is written back."""
     bars, actions = world
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
         _write(store, bars)
         sql = "SELECT * FROM bars_daily_adj ORDER BY instrument_id, date"
-        try:
-            one = store.connect(actions).execute(sql).fetchall()
-        except StoreError:
-            assume(False)  # a cumulative factor beyond the stored range is refused, not wrapped
+        one = store.connect(actions).execute(sql).fetchall()
         two = store.connect(actions).execute(sql).fetchall()
+        reordered = store.connect(list(reversed(actions))).execute(sql).fetchall()
     assert one == two
+    assert one == reordered
+
+
+@given(a=st.integers(2, 50), b_tenths=st.integers(1, 99))
+def test_split_pair_decimal_face_value(a: int, b_tenths: int) -> None:
+    """A face-value text with a decimal new value ("from Rs a to Rs b.t") reads as the number
+    it says, not as separate integers (HAT and phase-1 parse the same text)."""
+    new = f"{b_tenths // 10}.{b_tenths % 10}"
+    assert split_pair_ints(f"face value split from rs {a} to rs {new}") == (
+        Fraction(a),
+        Fraction(new),
+    )
 
 
 @given(n=st.integers(2, 6), reverse=st.integers(10, 60))

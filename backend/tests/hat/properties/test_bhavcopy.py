@@ -114,10 +114,10 @@ class CrashError(Exception):
     """An interruption injected into a fetch."""
 
 
-@given(data=outcomes(), crash_after=st.integers(0, 30), resume=st.booleans())
+@given(data=outcomes(), crash_after=st.integers(0, 30))
 @settings(max_examples=60)
 def test_resume_skips_done(
-    data: tuple[list[date], dict[date, str], set[date]], crash_after: int, resume: bool
+    data: tuple[list[date], dict[date, str], set[date]], crash_after: int
 ) -> None:
     """After a run interrupted at any request, `--resume` never requests a day already
     downloaded (or known to have no file) and requests every other day exactly once."""

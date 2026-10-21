@@ -937,7 +937,7 @@ class Phase1Builder:
         if "split" in text and "fv" in text:
             pair = split_pair_ints(text)
             if pair:
-                return "split", pair[0] / pair[1]
+                return "split", float(pair[0] / pair[1])
         ratio = find_bonus_ratio(text)
         if ratio:
             a, b = ratio

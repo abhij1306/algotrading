@@ -30,6 +30,7 @@ from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Protocol
 
 from sqlalchemy import select
@@ -386,7 +387,7 @@ def run_history_build(
     end: date,
     holidays: Collection[date] = (),
     resume: bool = True,
-    pacing: Pacing = Pacing(),  # noqa: B008 - frozen, shared by design
+    pacing: Pacing | None = None,
     actions: ActionHooks | None = None,
     index_source: IndexSource | None = None,
     index_starts: dict[str, date] | None = None,
@@ -400,6 +401,7 @@ def run_history_build(
     if state.run_id is None:
         state.run_id = str(uuid7())
         state.save()
+    pacing = pacing or Pacing()
     downloader = Downloader(
         store, fetch, state, interval=pacing.interval, clock=pacing.clock, sleep=pacing.sleep
     )
@@ -409,7 +411,9 @@ def run_history_build(
         _write_day(store, catalog, state.run_id, day, resume, report)
     have = set(store.days(DATASET_BARS))
     report.days = reconcile_days(days, have, state.candidates, holidays)
-    report.partitions = partition_report(store, DATASET_BARS, [d for d in days if d in have])
+    # every weekday that is not an explained holiday should have rows, so gaps show as missing
+    trading_days = [d for d in days if d not in report.days.holidays]
+    report.partitions = partition_report(store, DATASET_BARS, trading_days)
     if actions is not None:
         records, failed = actions.loader()
         report.actions = actions.sink(records)
@@ -417,7 +421,7 @@ def run_history_build(
     if index_source is not None:
         report.index = load_index_history(store, index_source, start, end)
         starts = index_starts or {n: max(start, DEFAULT_INDEX_START) for n in INDEX_NAMES}
-        report.index_missing = index_coverage(store, have, starts)
+        report.index_missing = index_coverage(store, trading_days, starts)
     if validation is not None:
         report.validation = validate_build(
             store, validation.close_source, sample_size=validation.sample_size, seed=validation.seed
@@ -473,8 +477,10 @@ def history_build_job(**kwargs: object) -> Callable[[], JobResult]:
         report = run_history_build(**kwargs)  # type: ignore[arg-type]
         if report.validation is not None and report.validation.failed:
             raise JobError("history_validation_failed")
-        if report.unresolved or report.problems:
+        if report.unresolved or report.problems or report.days.gaps or report.days.unaccounted:
             raise JobError("history_incomplete")
+        if report.action_symbols_failed:
+            raise JobError("history_actions_incomplete")
         return JobResult(calls=len(report.download.requested), rows=report.rows_written)
 
     return body
@@ -490,6 +496,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--resume", action="store_true", help="skip days already downloaded or empty")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between requests")
     p.add_argument("--seed", type=int, default=0, help="seed of the validation sample")
+    p.add_argument(
+        "--actions-archive", help="an NSE corporate-action CSV (SYMBOL, PURPOSE, EX-DATE)"
+    )
     p.add_argument("--skip-actions", action="store_true")
     p.add_argument("--skip-index", action="store_true")
     p.add_argument("--skip-validation", action="store_true")
@@ -515,11 +524,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
             return 2
         calendar = hat_calendar.load_calendar(session)
         holidays = calendar.holidays if calendar else frozenset()
-        instruments = [
-            (r.id, r.symbol)
-            for r in session.execute(select(HatInstrument.id, HatInstrument.symbol))
-        ]
     client = client_from_env(process_env())
+
+    def instruments() -> list[tuple[object, str]]:
+        # read when the actions are loaded, so securities registered by the build are included
+        with SessionLocal() as session:
+            return [
+                (r.id, r.symbol)
+                for r in session.execute(select(HatInstrument.id, HatInstrument.symbol))
+            ]
 
     def sink(records: Sequence[ActionRecord]) -> LoadReport:
         with SessionLocal() as session:
@@ -527,6 +540,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
             session.commit()
             return result
 
+    hooks = None
+    if not args.skip_actions and (client is not None or args.actions_archive):
+        hooks = _action_hooks(client, instruments, args.actions_archive, args.start, end, sink)
     report = run_history_build(
         store=store,
         fetch=http_fetcher(),
@@ -536,9 +552,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
         holidays=holidays,
         resume=args.resume,
         pacing=Pacing(interval=args.interval),
-        actions=_mcp_actions(client, instruments, args.start, end, sink)
-        if client is not None and not args.skip_actions
-        else None,
+        actions=hooks,
         index_source=mcp_index_source(client)
         if client is not None and not args.skip_index
         else None,
@@ -547,30 +561,45 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
         else None,
     )
     sys.stdout.write(_summary(report))
+    return _exit_code(report)
+
+
+def _exit_code(report: BuildReport) -> int:
+    """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
+    file, a day with no file that is not a holiday, or an action lookup that failed."""
     failed = report.validation is not None and report.validation.failed
-    return 1 if failed or report.unresolved or report.problems or report.days.gaps else 0
+    incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
+    return 1 if failed or incomplete or report.action_symbols_failed else 0
 
 
-def _mcp_actions(
-    client: McpClient,
-    instruments: Sequence[tuple[object, str]],
+def _action_hooks(
+    client: McpClient | None,
+    instruments: Callable[[], list[tuple[object, str]]],
+    archive: str | None,
     start: date,
     end: date,
     sink: Callable[[Sequence[ActionRecord]], LoadReport],
 ) -> ActionHooks:
-    """Fetch each instrument's actions from the MCP (a failed lookup is counted, not fatal)."""
+    """Actions from the MCP (first) and an operator-supplied NSE archive CSV (fallback); the
+    loader keeps the first value per key. A failed or partial (warned) MCP lookup is counted."""
     from . import corporate_actions as ca
 
     def loader() -> tuple[list[ActionRecord], int]:
+        known = instruments()
         records: list[ActionRecord] = []
         failed = 0
-        for instrument_id, symbol in instruments:
+        for instrument_id, symbol in known if client is not None else []:
             try:
                 page = client.corporate_actions(symbol, start, end)
             except McpError:
                 failed += 1
                 continue
+            failed += page.incomplete
             records.extend(ca.from_mcp(instrument_id, page.actions).records)  # type: ignore[arg-type]
+        if archive:
+            by_symbol = {symbol: instrument_id for instrument_id, symbol in known}
+            text = Path(archive).read_text(encoding="utf-8")
+            records.extend(ca.from_archive_csv(text, lambda sym, _d: by_symbol.get(sym)).records)
         return records, failed
 
     return ActionHooks(loader, sink)
@@ -584,7 +613,8 @@ def _summary(report: BuildReport) -> str:
         f"rows written {report.rows_written} in {report.files_written} files",
         f"holiday candidates explained {len(report.days.holidays)}, "
         f"gaps (not on the holiday list) {len(report.days.gaps)}",
-        f"unaccounted days {len(report.days.unaccounted)}",
+        f"unaccounted days {len(report.days.unaccounted)}, "
+        f"action lookups failed or partial {report.action_symbols_failed}",
         f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
         f"left out {dict(report.left_out)}",
     ]

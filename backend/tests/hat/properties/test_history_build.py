@@ -28,6 +28,7 @@ from app.hat.data.history_build import (
 )
 from app.hat.data.mcp_client import McpClient, McpError
 from app.hat.data.store import DATASET_BARS, DataStore
+from app.hat.ops.jobs import JobError
 
 WINDOW = weekdays(date(2024, 6, 24), date(2024, 7, 19))
 POOL = [(f"INE00000000{i}", "EQ" if i < 4 else "BE") for i in range(6)]
@@ -116,6 +117,7 @@ def test_build_offline_end_to_end(
         assert set(report.days.holidays) == missing & holiday_pick
         assert set(report.days.gaps) == missing - holiday_pick
         assert report.days.unaccounted == []
+        assert set(report.partitions.missing) == missing - holiday_pick  # only gaps are missing
         con = store.connect()
         got = con.execute(
             "SELECT date, isin, series, symbol, open, high, low, close, prev_close, volume, "
@@ -160,9 +162,51 @@ def test_build_offline_end_to_end(
         assert _files(store.root) == snapshot
 
         body = history_build_job(fetch=_fetcher(world, []), resume=True, **args)
-        first = body()
-        assert body() == first
+        if missing - holiday_pick or any(r == [] for r in world.values()):
+            with pytest.raises(JobError):
+                body()  # gaps and empty files are failures (checked in full below)
+        else:
+            first = body()
+            assert body() == first
         assert _files(store.root) == snapshot
+
+
+@given(
+    world=eras(),
+    holiday_pick=st.sets(st.sampled_from(WINDOW)),
+    error_pick=st.sets(st.sampled_from(WINDOW), max_size=2),
+)
+@settings(max_examples=40)
+def test_job_fails_on_any_gap_or_failed_download(
+    world: dict[date, list[BhavRow] | None], holiday_pick: set[date], error_pick: set[date]
+) -> None:
+    """The job body succeeds only when every weekday is either stored or an explained holiday:
+    a failed download (left unaccounted), a missing file that is no holiday, or a file with no
+    usable rows raises `history_incomplete`."""
+    by_url = {archive_url(d): d for d in world}
+    base = _fetcher(world, [])
+
+    def fetch(url: str) -> FetchResult:
+        return FetchResult("error") if by_url[url] in error_pick else base(url)
+
+    missing = {d for d, rows in world.items() if rows is None} - error_pick
+    empty = {d for d, rows in world.items() if rows == [] and d not in error_pick}
+    must_fail = bool(error_pick or empty or missing - holiday_pick)
+    with tempfile.TemporaryDirectory() as tmp:
+        body = history_build_job(
+            store=DataStore(Path(tmp)),
+            fetch=fetch,
+            catalog=DictCatalog(auto=True),
+            start=WINDOW[0],
+            end=WINDOW[-1],
+            holidays=holiday_pick,
+            pacing=Pacing(interval=0),
+        )
+        if must_fail:
+            with pytest.raises(JobError):
+                body()
+        else:
+            assert body().rows >= 0
 
 
 def test_build_offline_unresolved_security_is_reported() -> None:
