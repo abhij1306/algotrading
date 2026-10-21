@@ -29,6 +29,7 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
         )
         session.add(market)
         session.flush()
+    held = session.scalar(select(func.count()).select_from(HatInstrument))
     day = date(2026, 1, 5)
     first = [security("INE000000001", "EQ", "AAA"), security("INE000000002", "EQ", "BBB")]
     inst.upsert_instruments(session, market.id, first, today=day)
@@ -45,7 +46,10 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
         today=date(2026, 1, 19),
     )
     inst.refresh_fyers_symbols(session, symbol_master, market.id)
-    assert session.scalar(select(func.count()).select_from(HatInstrument)) == 3
-    rows = session.scalars(select(HatBrokerSymbol)).all()
+    assert session.scalar(select(func.count()).select_from(HatInstrument)) - held == 3
+    mine = select(HatInstrument.id).where(HatInstrument.isin.like("INE00000000%"))
+    rows = session.scalars(
+        select(HatBrokerSymbol).where(HatBrokerSymbol.instrument_id.in_(mine))
+    ).all()
     assert sorted(r.broker_symbol for r in rows) == ["NSE:AAA-EQ", "NSE:CCC-EQ"]
     session.rollback()
