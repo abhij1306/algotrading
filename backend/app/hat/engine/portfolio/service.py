@@ -131,11 +131,11 @@ def seed_universe_version(
     as_of: date,
 ) -> HatUniverseVersion:
     """A new draft version of the MVP universe: the index constituents plus the includes minus
-    the excludes as of `as_of` (HAT-PORT-022), with its members written point in time. Each
-    edit of the lists is a new version (HAT-PORT-020)."""
+    the excludes as of `as_of` (HAT-PORT-022). The draft only records its member list: the
+    universe's membership intervals change when the version is published, so a draft is never
+    seen by `members_of`. Each edit of the lists is a new version (HAT-PORT-020)."""
     target = universe.effective_members(constituents, include, exclude)
-    reasons = {i: "include" for i in include if i not in set(constituents)}
-    apply_membership(session, universe_id, target, as_of, reasons=reasons)
+    reasons = sorted(str(i) for i in include if i not in set(constituents))
     previous = session.scalars(
         select(HatUniverseVersion.version).where(HatUniverseVersion.universe_id == universe_id)
     ).all()
@@ -146,6 +146,8 @@ def seed_universe_version(
         "include": sorted(str(i) for i in include),
         "exclude": sorted(str(i) for i in exclude),
         "members": len(target),
+        "member_ids": sorted(str(i) for i in target),
+        "included_by_owner": reasons,
     }
     row = HatUniverseVersion(
         universe_id=universe_id,
@@ -161,7 +163,9 @@ def seed_universe_version(
 
 def publish_version(session: Session, version_id: uuid.UUID, now: datetime) -> HatUniverseVersion:
     """Make a universe version live and retire the one that was (one live version per universe,
-    HAT-PORT-020). The old one is retired first, so the partial unique index never sees two."""
+    HAT-PORT-020). The old one is retired first, so the partial unique index never sees two. The
+    version's member list becomes the universe's membership from its `as_of` date (history before
+    it is never touched)."""
     version = session.get(HatUniverseVersion, version_id)
     if version is None:
         raise PortfolioError("universe_version_unknown")
@@ -174,6 +178,16 @@ def publish_version(session: Session, version_id: uuid.UUID, now: datetime) -> H
     ):
         other.status = "retired"
     session.flush()
+    definition = version.definition
+    if "member_ids" in definition:
+        owner_included = set(definition.get("included_by_owner", ()))
+        apply_membership(
+            session,
+            version.universe_id,
+            [uuid.UUID(i) for i in definition["member_ids"]],
+            date.fromisoformat(definition["as_of"]),
+            reasons={uuid.UUID(i): "include" for i in owner_included},
+        )
     version.status = "live"
     version.promoted_at = now
     session.flush()
@@ -329,9 +343,16 @@ def stage_entered_on(session: Session, bot_id: uuid.UUID, stage: str) -> date | 
 
 
 def trade_results(
-    session: Session, bot_id: uuid.UUID, *, virtual: bool, since: datetime | None = None
+    session: Session,
+    bot_id: uuid.UUID,
+    *,
+    virtual: bool,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> tuple[Decimal, ...]:
-    """The R multiples of the sleeve's closed real (or shadow) trades, oldest first."""
+    """The R multiples of the sleeve's closed real (or shadow) trades closed from `since` to
+    `until` (both inclusive, either open), oldest first. A replay of an earlier trade date passes
+    its own close as `until`, so later trades never change an earlier decision."""
     query = (
         select(HatTradeResult.r_multiple, HatPosition.closed_at)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
@@ -342,7 +363,8 @@ def trade_results(
     return tuple(
         Decimal(r)
         for r, closed in rows
-        if since is None or (closed is not None and as_utc(closed) >= as_utc(since))
+        if (since is None or (closed is not None and as_utc(closed) >= as_utc(since)))
+        and (until is None or (closed is not None and as_utc(closed) <= as_utc(until)))
     )
 
 
@@ -399,13 +421,14 @@ def load_evidence(
         sessions=trading_sessions(session),
         shadow_started_on=stage_entered_on(session, bot.id, lifecycle.SHADOW),
         health_zero=health_zero,
-        live_r=trade_results(session, bot.id, virtual=False),
+        live_r=trade_results(session, bot.id, virtual=False, until=_close_of(trade_date)),
         probation_entered_on=entered,
         probation_shadow_r=trade_results(
             session,
             bot.id,
             virtual=True,
             since=None if entered is None else _close_of(entered),
+            until=_close_of(trade_date),
         ),
         backtest_expectancy=expectancy,
     )

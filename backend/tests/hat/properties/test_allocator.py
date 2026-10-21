@@ -90,7 +90,8 @@ def test_formula_and_bounds(
         live = s.lifecycle_state == "live" and not s.health.probation
         assert (r.health_mult == 0) or live
         if not live:
-            assert r.health_mult == 0 and r.final_weight == 0
+            assert r.health_mult == 0
+            assert r.final_weight == 0
         assert 0 <= r.final_weight <= product_of(r)
         if hi <= 1:
             assert r.final_weight <= r.base_weight
@@ -208,7 +209,8 @@ def test_sleeve_count_agnostic(
     rng.shuffle(shuffled)  # type: ignore[attr-defined]
     first = {r.bot_id: r for r in allocate(sleeves, policy, equity)}
     second = {r.bot_id: r for r in allocate(shuffled, policy, equity)}
-    assert len(first) == len(sleeves) and set(first) == set(second)
+    assert len(first) == len(sleeves)
+    assert set(first) == set(second)
     # the cap scaling is order independent up to the rounding of the last digit
     for bot_id, row in first.items():
         other = second[bot_id]
@@ -226,8 +228,9 @@ def test_allocation_refuses_a_bad_total(equity: object) -> None:
     """A float, an integer, a negative or a non-finite total equity fails the allocation."""
     if isinstance(equity, Decimal) and equity.is_finite() and equity >= 0:
         return
+    policy = seed_policy()
     with pytest.raises(allocator.AllocationError):
-        allocate([], seed_policy(), equity)  # type: ignore[arg-type]
+        allocate([], policy, equity)  # type: ignore[arg-type]
 
 
 # --- through the database ---------------------------------------------------------------------
@@ -287,26 +290,28 @@ def test_allocation_needs_a_regime_row(bots: list[tuple[str, str, str]]) -> None
     engine = memory_engine()
     with Session(engine) as session:
         seed_world(session, bots)
+        thousand = D(1000)
         with pytest.raises(service.PortfolioError) as caught:
-            service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(1000))
+            service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=thousand)
         assert caught.value.code == "allocate_no_regime"
         assert session.scalar(select(func.count()).select_from(HatAllocationDaily)) == 0
         from app.hat.engine.portfolio import jobs
 
         with pytest.raises(JobError) as job:
-            jobs.allocate_job(session, TRADE_DAY, user_id=USER, total_equity=lambda: D(1000))
+            jobs.allocate_job(session, TRADE_DAY, user_id=USER, total_equity=lambda: thousand)
         assert job.value.code == "allocate_no_regime"
 
 
-@settings(max_examples=20)
+@settings(max_examples=30)
 @given(
     st.integers(5, 40).map(lambda n: D(n) / 100),
     st.integers(50, 100).map(lambda n: D(n) / 100),
-    st.integers(1, 20),
+    st.integers(-20, 20),
 )
-def test_bounds_from_the_policy_in_force(lo: Decimal, hi: Decimal, days_before: int) -> None:
+def test_bounds_from_the_policy_in_force(lo: Decimal, hi: Decimal, offset: int) -> None:
     """The bounds the allocation uses are those of the policy version in force at the close of
-    the trade date: a version that takes effect later is not used."""
+    the trade date: a version that took effect by then is used, one that takes effect later
+    (offset after the trade date) is not."""
     engine = memory_engine()
     with Session(engine) as session:
         seed_world(session, [("momentum-breakout-ep", "live", "c1")])
@@ -323,20 +328,17 @@ def test_bounds_from_the_policy_in_force(lo: Decimal, hi: Decimal, days_before: 
                 direction="decrease",
                 requested_at=datetime(2026, 1, 2, tzinfo=UTC),
                 effective_from=datetime.combine(
-                    TRADE_DAY - timedelta(days=days_before - 1), time(0), tzinfo=IST
+                    TRADE_DAY + timedelta(days=offset), time(0), tzinfo=IST
                 ),
             )
         )
         session.flush()
+        used = (lo, hi) if offset <= 0 else (D("0.25"), D(1))
         in_force = service.policy_at(session, USER, TRADE_DAY)
-        assert in_force.multiplier_lo == lo
-        before = service.policy_at(session, USER, TRADE_DAY - timedelta(days=days_before + 1))
-        assert before.multiplier_lo == D("0.25")
+        assert (in_force.multiplier_lo, in_force.multiplier_hi) == used
         service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(1000))
         row = session.scalars(select(HatAllocationDaily)).one()
-        assert D(row.regime_mult) == allocator.clamp(
-            regime.DEFAULT_MULTIPLIERS[regime.BEAR], lo, hi
-        )
+        assert D(row.regime_mult) == allocator.clamp(regime.DEFAULT_MULTIPLIERS[regime.BEAR], *used)
 
 
 @settings(max_examples=15)

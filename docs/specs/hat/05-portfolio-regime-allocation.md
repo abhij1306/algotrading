@@ -49,6 +49,7 @@ A universe is a versioned, point-in-time list of stocks; each sleeve pins one un
 - **Acceptance:**
   - Property: for every non-draft universe version, an UPDATE of `definition` is rejected by the database. Harm: a backtest's universe changes after the fact, so its evidence no longer matches what runs live.
   - Property: for every attempt to set a second version of the same universe to `live`, the database rejects it. Harm: two universes compete and the sleeve trades an unapproved list.
+- A seeded draft records its member list and changes no membership interval; publishing it applies the list from its `as_of` date and retires the previously live version (PBT `universe.seeded_version_is_seen_only_once_published`).
 
 #### HAT-PORT-021: Membership is point-in-time
 - **Statement:** The member set of a universe on date d is exactly the instruments whose `hat_universe_member` row has effective_from <= d and (effective_to is null or effective_to > d), delisted instruments included for past dates.

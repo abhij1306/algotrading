@@ -9,7 +9,7 @@ cannot change a lifecycle state (HAT-PORT-034). The model is `verification/tla/S
 from __future__ import annotations
 
 import calendar
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, localcontext
@@ -189,35 +189,52 @@ def _benchmark(ev: Evidence) -> Decimal | None:
     return discounted_benchmark(ev.backtest_expectancy, ev.discount)
 
 
+def _gate(ok: bool, reason: str) -> Verdict:
+    return Verdict(ok, "ok" if ok else reason)
+
+
+def _backtest_edge(ev: Evidence) -> Verdict:
+    return _gate(backtest_gate(ev.dsr_prob, ev.backtest_trades), "backtest_gate")
+
+
+def _shadow_edge(ev: Evidence) -> Verdict:
+    return _gate(shadow_gate(ev.sessions, ev.shadow_started_on, ev.today), "shadow_days")
+
+
+def _probation_edge(ev: Evidence) -> Verdict:
+    return _gate(probation_trigger(ev.health_zero, ev.live_r), "no_probation_trigger")
+
+
+def _retire_edge(ev: Evidence) -> Verdict:
+    failing = still_failing(ev.probation_shadow_r, _benchmark(ev))
+    ok = retire_gate(ev.probation_entered_on, ev.today, len(ev.probation_shadow_r), failing)
+    return _gate(ok, "retire_gate")
+
+
+_EDGE_GUARDS: dict[tuple[str, str], Callable[[Evidence], Verdict]] = {
+    (RESEARCH, BACKTESTED): _backtest_edge,
+    (SHADOW, LIVE): _shadow_edge,
+    (LIVE, PROBATION): _probation_edge,
+    (PROBATION, RETIRED): _retire_edge,
+}
+
+
 def guard(current: str, target: str, ev: Evidence, *, by_owner: bool = False) -> Verdict:
     """Whether a sleeve in `current` may move to `target` on the evidence. An edge outside
     `EDGES` is never allowed; Probation -> Live needs `by_owner` and a recovered sleeve."""
     if current not in STATES or target not in STATES:
         return Verdict(False, "unknown_state")
-    if (current, target) not in EDGES:
-        return Verdict(False, "no_such_edge")
     edge = (current, target)
-    if edge == (RESEARCH, BACKTESTED):
-        ok = backtest_gate(ev.dsr_prob, ev.backtest_trades)
-        return Verdict(ok, "ok" if ok else "backtest_gate")
-    if edge == (SHADOW, LIVE):
-        ok = shadow_gate(ev.sessions, ev.shadow_started_on, ev.today)
-        return Verdict(ok, "ok" if ok else "shadow_days")
-    if edge == (LIVE, PROBATION):
-        ok = probation_trigger(ev.health_zero, ev.live_r)
-        return Verdict(ok, "ok" if ok else "no_probation_trigger")
+    if edge not in EDGES:
+        return Verdict(False, "no_such_edge")
     if edge == (PROBATION, LIVE):
         if not by_owner:
             return Verdict(False, "owner_promotion_only")
-        ok = not still_failing(ev.probation_shadow_r, _benchmark(ev))
-        return Verdict(ok, "ok" if ok else "still_failing")
-    if edge == (PROBATION, RETIRED):
-        failing = still_failing(ev.probation_shadow_r, _benchmark(ev))
-        ok = retire_gate(ev.probation_entered_on, ev.today, len(ev.probation_shadow_r), failing)
-        return Verdict(ok, "ok" if ok else "retire_gate")
+        return _gate(not still_failing(ev.probation_shadow_r, _benchmark(ev)), "still_failing")
+    check = _EDGE_GUARDS.get(edge)
     # Backtested -> Shadow starts the paper trading and Retired -> Research restarts the gate:
     # neither has a condition beyond being on the edge.
-    return Verdict(True, "ok")
+    return Verdict(True, "ok") if check is None else check(ev)
 
 
 def routes_as_shadow(state: str) -> bool:

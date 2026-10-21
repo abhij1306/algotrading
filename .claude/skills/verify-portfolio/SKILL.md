@@ -14,12 +14,12 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `TLA SleeveLifecycle!NoLiveWithoutEvidence` A Live sleeve has been through Backtested and Shadow since it last left Research. Harm: a retired or unproven sleeve returns to money without the full gate.
 - `TLA SleeveLifecycle!RegimeNeverChangesLifecycle` A regime change never changes a sleeve's lifecycle state. Harm: a bear market retires a sound sleeve, or a bull market promotes an unproven one.
 - `TLA SleeveLifecycle!ProbationOnHealthZero` After an allocation no Live sleeve has health 0, and every sleeve out of Live has weight 0. Harm: a broken sleeve keeps trading real money.
-- `PBT universe.*` On the real membership rules: the members on a date are exactly the instruments with an interval holding it (delisted ones included for the dates they were in); an edit never changes the membership of an earlier date; the universe is (constituents plus includes) minus excludes; intervals stay ordered, non empty and non overlapping; leaving the universe blocks entries and never forces an exit. Harm: a backtest sees today's survivors, an edit rewrites history, or a universe change sells positions the strategy did not call for.
+- `PBT universe.*` On the real membership rules: the members on a date are exactly the instruments with an interval holding it (delisted ones included for the dates they were in); an edit never changes the membership of an earlier date; the universe is (constituents plus includes) minus excludes; intervals stay ordered, non empty and non overlapping; leaving the universe blocks entries and never forces an exit; a seeded version is a draft that changes no membership until it is published. Harm: a backtest sees today's survivors, an edit rewrites history, or a universe change sells positions the strategy did not call for.
 - `PBT regime.*` The confirmation matches an independent model for any length; the inputs read nothing dated after the day, the VIX percentile is in [0, 100) and monotone, a missing or unusable input fails with a stable code; the classification is total, follows the precedence Bear, Correction, Bull volatile, Bull quiet and never moves to a safer state when conditions worsen; the multiplier table never rises toward Bear and a replacement table is held within the policy bounds; the `regime` job stores one row per day with the raw state, the confirmed state and one event. Harm: the regime reads the future, overlapping rows give different states by code order, or worse conditions raise exposure.
 - `PBT health.*` The multiplier is the full value under the first band, the half value from it to the second band and 0 (Probation) from the second band on, compared exactly at the edges, never rises with a deeper drawdown, and an unreadable equity pair fails instead of reading as healthy. Harm: a sleeve in a deep drawdown keeps full capital.
 - `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
-- `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
-- `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state`; the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
+- `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
+- `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
 
 ## Run
 
@@ -83,8 +83,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `37d7f5f20bcd6b81b0ff041ae4932704c89c00960c74bae19ffd96b7e29f6652`
+Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
+Covered digest: `60bacf556e579484d721d8a1c87741c1211bb42f51925d0a118f88525d886efd`
 
 ## Scope changes
 
@@ -175,6 +175,9 @@ State 4: <ToShadow line 116>
 State 5: <TickShadow line 208>
 State 6: <TickShadow line 208>
 State 7: <ToLive line 121>
+State 8: <EnvStep line 224>
+State 9: <Allocate line 163>
+State 10: <Retire line 142>
 ```
 
 Break: `verification/tla/broken/SleeveLifecycle__retired_to_live.cfg` selects the variant where a Retired sleeve returns straight to Live.
@@ -188,6 +191,12 @@ State 4: <ToShadow line 116>
 State 5: <TickShadow line 208>
 State 6: <TickShadow line 208>
 State 7: <ToLive line 121>
+State 8: <EnvStep line 224>
+State 9: <Allocate line 163>
+State 10: <TickProbation line 216>
+State 11: <TickProbation line 216>
+State 12: <Retire line 142>
+State 13: <RetiredToLive line 155>
 ```
 
 Break: `verification/tla/broken/SleeveLifecycle__promote_while_failing.cfg` selects the variant where Probation returns to Live while the failure condition still holds.
@@ -201,6 +210,9 @@ State 4: <ToBacktested line 110>
 State 5: <ToShadow line 116>
 State 6: <TickShadow line 208>
 State 7: <TickShadow line 208>
+State 8: <ToLive line 121>
+State 9: <Allocate line 163>
+State 10: <Promote line 135>
 ```
 
 Break: `verification/tla/broken/SleeveLifecycle__auto_promote.cfg` selects the variant where the engine promotes a Probation sleeve without the owner.
@@ -214,6 +226,10 @@ State 4: <EnvStep line 236>
 State 5: <ToBacktested line 110>
 State 6: <ToShadow line 116>
 State 7: <TickShadow line 208>
+State 8: <TickShadow line 208>
+State 9: <ToLive line 121>
+State 10: <Allocate line 163>
+State 11: <Promote line 135>
 ```
 
 Break: `verification/tla/broken/SleeveLifecycle__no_event.cfg` selects the variant where a transition writes no `sleeve.lifecycle_changed` event.
@@ -250,6 +266,7 @@ State 4: <ToShadow line 116>
 State 5: <TickShadow line 208>
 State 6: <TickShadow line 208>
 State 7: <ToLive line 121>
+State 8: <RegimeChange line 183>
 ```
 
 ### TLA SleeveLifecycle!ProbationOnHealthZero
@@ -265,6 +282,8 @@ State 4: <ToShadow line 116>
 State 5: <TickShadow line 208>
 State 6: <TickShadow line 208>
 State 7: <EnvStep line 224>
+State 8: <ToLive line 121>
+State 9: <Allocate line 163>
 ```
 
 ### PBT universe.*
@@ -344,6 +363,12 @@ E            UUID('00000000-0000-0000-0000-000000000001'),
 E            START + timedelta(days=1)),
 E        ('add',
 FAILED tests/hat/properties/test_universe.py::test_membership_intervals - Ass [cut]
+```
+
+Break: in `backend/app/hat/engine/portfolio/service.py`: publishing a version does not apply its members. Check run: `test_universe.py::test_seeded_version_is_seen_only_once_published`.
+
+```
+FAILED tests/hat/properties/test_universe.py::test_seeded_version_is_seen_only_once_published
 ```
 
 ### PBT regime.*
@@ -877,6 +902,21 @@ E   Explanation:
 FAILED tests/hat/properties/test_lifecycle.py::test_allocation_moves_a_health_zero_sleeve_to_probation
 ```
 
+Break: in `backend/app/hat/engine/portfolio/service.py`: a replay reads trades closed later. Check run: `test_lifecycle.py::test_trade_results_ignore_later_trades`.
+
+```
+E   AssertionError: assert [Decimal('0E-10')] == []
+E     
+E     Left contains one more item: Decimal('0E-10')
+E     Use -v to get more diff
+E   Failing test case: test_trade_results_ignore_later_trades(
+E       trades=[(
+E            1,
+E            D(0) / 100,  # or any other generated value
+E        )],
+FAILED tests/hat/properties/test_lifecycle.py::test_trade_results_ignore_later_trades
+```
+
 ### CONF portfolio.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -922,4 +962,25 @@ E
 E     Left contains one more item: 'capital_pct'
 E     Use -v to get more diff
 FAILED tests/hat/conformance/test_conf_portfolio.py::test_bot_sleeve_columns
+```
+
+Break: in `backend/app/hat/engine/portfolio/jobs.py`: a setattr writer of lifecycle_state. Check run: `test_conf_portfolio.py::test_lifecycle_single_writer`.
+
+```
+E   AssertionError: assert [('hat/engine...'service.py')] == [('hat/engine...'service.py')]
+E     
+E     At index 0 diff: ('hat/engine/portfolio/jobs.py', 'jobs.py') != ('hat/engine/portfolio/service.py', 'service.py')
+E     Left contains one more item: ('hat/engine/portfolio/service.py', 'service.py')
+E     Use -v to get more diff
+FAILED tests/hat/conformance/test_conf_portfolio.py::test_lifecycle_single_writer
+```
+
+Break: in `backend/app/hat/engine/portfolio/allocator.py`: a rule module imports the service by absolute path. Check run: `test_conf_portfolio.py::test_portfolio_rules_are_pure`.
+
+```
+E   AssertionError: allocator
+E   assert not [('from', 'app.hat.engine.portfolio.service', 'service')]
+E    +  where [('from', 'app.hat.engine.portfolio.service', 'service')] = <built-in method findall of re.Pattern object at 0x186c2d10>('"""The nightly allocator (05 §5, HAT-PORT-050..056) as a pure fu
+E    +    where <built-in method findall of re.Pattern object at 0x186c2d10> = re.compile('^\\s*(from|import)\\s+(sqlalchemy|app\\.brokers|app\\.database|app\\.hat\\.models|app\\.hat\\.execution|app\\
+FAILED tests/hat/conformance/test_conf_portfolio.py::test_portfolio_rules_are_pure
 ```

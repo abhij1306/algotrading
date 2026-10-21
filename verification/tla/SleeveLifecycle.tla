@@ -162,7 +162,7 @@ RetiredToLive ==
 Allocate ==
     /\ events < MaxEvents
     /\ LET moves == /\ state = "live"
-                    /\ healthZero \/ ciFail
+                    /\ (healthZero \/ ciFail)
                     /\ BrokenMode # "no_probation_move"
            new == IF moves THEN "probation" ELSE state
        IN /\ state' = new

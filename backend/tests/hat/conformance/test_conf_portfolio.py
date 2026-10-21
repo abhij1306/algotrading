@@ -9,6 +9,12 @@ from sqlalchemy import CheckConstraint
 PORTFOLIO = APP_ROOT / "hat" / "engine" / "portfolio"
 PURE = ("regime", "health", "allocator", "lifecycle", "universe")
 
+# An attribute assignment, `setattr(..., "lifecycle_state", ...)`, or a bulk UPDATE through
+# `.values(lifecycle_state=...)`.
+WRITES = re.compile(
+    r"\.lifecycle_state\s*(=(?!=)|\+=)|setattr\([^)]*lifecycle_state|\.values\([^)]*lifecycle_state"
+)
+
 
 def _python_files() -> list[Path]:
     return sorted(p for p in (APP_ROOT / "hat").rglob("*.py"))
@@ -21,7 +27,7 @@ def test_lifecycle_single_writer() -> None:
     offenders = []
     for path in _python_files():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"\.lifecycle_state\s*(=(?!=)|\+=)", line.split("#", 1)[0]):
+            if WRITES.search(line.split("#", 1)[0]):
                 offenders.append((str(path.relative_to(APP_ROOT)), path.name, number))
     assert [(file, name) for file, name, _ in offenders] == [
         ("hat/engine/portfolio/service.py", "service.py")
@@ -34,7 +40,7 @@ def test_portfolio_rules_are_pure() -> None:
     HAT-DEC-PL1)."""
     forbidden = re.compile(
         r"^\s*(from|import)\s+(sqlalchemy|app\.brokers|app\.database|app\.hat\.models"
-        r"|app\.hat\.execution|app\.hat\.data|\.service|\.jobs)\b",
+        r"|app\.hat\.execution|app\.hat\.data|\.service|\.jobs|app\.hat\.engine\.portfolio\.(service|jobs))\b",
         re.MULTILINE,
     )
     for name in PURE:

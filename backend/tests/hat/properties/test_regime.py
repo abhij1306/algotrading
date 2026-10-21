@@ -121,21 +121,20 @@ def test_inputs(pair: tuple, breadth: Decimal, back: int, data: st.DataObject) -
     assert 0 <= got.vix_pct < 100
     assert got.breadth_pct == breadth
     # failures
+    no_close_today = {d: v for d, v in upto_c.items() if d != day}
+    no_vix_today = {d: v for d, v in upto_v.items() if d != day}
     with pytest.raises(RegimeError):
-        regime.compute_inputs(day, {d: v for d, v in upto_c.items() if d != day}, upto_v, breadth)
+        regime.compute_inputs(day, no_close_today, upto_v, breadth)
     with pytest.raises(RegimeError):
-        regime.compute_inputs(day, upto_c, {d: v for d, v in upto_v.items() if d != day}, breadth)
+        regime.compute_inputs(day, upto_c, no_vix_today, breadth)
     bad = data.draw(st.sampled_from((None, D(-1), D("100.01"), D("NaN"))))
     with pytest.raises(RegimeError):
         regime.compute_inputs(day, upto_c, upto_v, bad)  # type: ignore[arg-type]
     short = day - timedelta(days=SERIES_LEN - 1 - back - 100)
+    short_closes = {d: v for d, v in closes.items() if d <= short}
+    short_vix = {d: v for d, v in vix.items() if d <= short}
     with pytest.raises(RegimeError):
-        regime.compute_inputs(
-            short,
-            {d: v for d, v in closes.items() if d <= short},
-            {d: v for d, v in vix.items() if d <= short},
-            breadth,
-        )
+        regime.compute_inputs(short, short_closes, short_vix, breadth)
 
 
 @given(st.lists(LEVEL, min_size=252, max_size=252), LEVEL, LEVEL)
@@ -144,7 +143,8 @@ def test_vix_percentile_is_monotone(values: list[Decimal], low: Decimal, high: D
     low, high = min(low, high), max(low, high)
     p_low = regime.vix_percentile([*values[:-1], low])
     p_high = regime.vix_percentile([*values[:-1], high])
-    assert p_low is not None and p_high is not None
+    assert p_low is not None
+    assert p_high is not None
     assert 0 <= p_low <= p_high < 100
 
 
@@ -220,8 +220,9 @@ def test_multiplier_derivation(estimates: dict, shrink: Decimal, lo: Decimal, hi
     assert regime.derive_multipliers(estimates, D(1), lo, hi) == dict.fromkeys(
         regime.STATES, min(max(D(1), lo), hi)
     )
+    too_much = D(2)
     with pytest.raises(RegimeError):
-        regime.derive_multipliers(estimates, D(2), lo, hi)
+        regime.derive_multipliers(estimates, too_much, lo, hi)
 
 
 HISTORY = 252

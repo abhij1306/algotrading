@@ -19,7 +19,14 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine.portfolio import lifecycle, service
 from app.hat.engine.portfolio.lifecycle import Evidence, LifecycleError
-from app.hat.models import HatAllocationDaily, HatBot, HatDailyBotSnapshot, HatEvent
+from app.hat.models import (
+    HatAllocationDaily,
+    HatBot,
+    HatDailyBotSnapshot,
+    HatEvent,
+    HatPosition,
+    HatTradeResult,
+)
 
 D = Decimal
 START = date(2026, 3, 2)  # a Monday
@@ -46,7 +53,8 @@ def test_shadow_days(offsets: set[int], start_offset: int, length: int) -> None:
     """Shadow to Live needs at least 20 trading sessions after the day the sleeve entered
     Shadow, up to and including today. Days that are not sessions (weekends, holidays) and the
     start day itself do not count; no start day fails."""
-    sessions = {START + timedelta(days=n) for n in offsets}
+    # trading sessions are weekdays: weekends are never in the set the gate counts
+    sessions = {d for n in offsets if (d := START + timedelta(days=n)).weekday() < 5}
     started = START + timedelta(days=start_offset)
     today = started + timedelta(days=length)
     counted = sum(1 for d in sessions if started < d <= today)
@@ -290,7 +298,8 @@ def test_transition_records_its_event(current: str, target: str, ev: Evidence, o
         rows = session.scalars(select(HatEvent)).all()
         assert len(rows) == 1
         assert rows[0].event_type == "sleeve.lifecycle_changed"
-        assert rows[0].payload["from"] == current and rows[0].payload["to"] == target
+        assert rows[0].payload["from"] == current
+        assert rows[0].payload["to"] == target
         assert rows[0].aggregate_id == bot_id
 
 
@@ -333,7 +342,8 @@ def test_allocation_moves_a_health_zero_sleeve_to_probation(peak_cents: int, dro
             assert [(m.payload["from"], m.payload["to"]) for m in moves] == [("live", "probation")]
         else:
             assert bot.lifecycle_state == "live"
-            assert first.moved == () and moves == []
+            assert first.moved == ()
+            assert moves == []
             assert D(row.health_mult) > 0
 
 
@@ -378,3 +388,51 @@ def test_probation_promotion_is_owner_only(expectancy: Decimal, extra: list, own
     assert verdict.allowed is owner
     failing = replace(ev, probation_shadow_r=tuple(benchmark - x - D("0.01") for x in extra))
     assert not lifecycle.guard("probation", "live", failing, by_owner=owner).allowed
+
+
+@settings(max_examples=30)
+@given(st.lists(st.tuples(st.integers(0, 40), R), min_size=1, max_size=15), st.integers(0, 40))
+def test_trade_results_ignore_later_trades(trades: list, cutoff: int) -> None:
+    """The results a lifecycle decision reads are those closed up to the trade date's close: a
+    replay of an earlier date never sees a later trade."""
+    engine = memory_engine()
+    base = datetime(2026, 3, 1, 10, tzinfo=UTC)
+    with Session(engine) as session:
+        bot_id = make_bot(session, "live")
+        for offset, r in trades:
+            position = HatPosition(
+                id=uuid.uuid4(),
+                bot_id=bot_id,
+                signal_id=uuid.uuid4(),
+                instrument_id=uuid.uuid4(),
+                is_virtual=False,
+                qty_open=0,
+                avg_entry=D(100),
+                initial_stop=D(95),
+                current_stop=D(95),
+                currency="INR",
+                opened_at=base - timedelta(days=1),
+                closed_at=base + timedelta(days=offset),
+                state="closed",
+                rules_fired={},
+            )
+            session.add(position)
+            session.flush()
+            session.add(
+                HatTradeResult(
+                    position_id=position.id,
+                    realized_pnl=r,
+                    fees=D(0),
+                    currency="INR",
+                    r_multiple=r,
+                    holding_days=1,
+                    exit_reason="stop",
+                    mfe_r=D(0),
+                    mae_r=D(0),
+                )
+            )
+        session.flush()
+        until = base + timedelta(days=cutoff)
+        got = service.trade_results(session, bot_id, virtual=False, until=until)
+        expected = [r for offset, r in sorted(trades, key=lambda t: t[0]) if offset <= cutoff]
+        assert sorted(got) == sorted(expected)
