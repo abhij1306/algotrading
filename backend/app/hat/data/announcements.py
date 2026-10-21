@@ -19,7 +19,7 @@ import logging
 import re
 import uuid
 import xml.etree.ElementTree as ET  # noqa: S405 - doctype and entities are refused first
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parsedate_to_datetime
@@ -366,14 +366,31 @@ class HttpFeedFetcher:
 
             get = requests.get
         try:
-            response = get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=self._timeout)
+            response = get(
+                url, headers={"User-Agent": "Mozilla/5.0"}, timeout=self._timeout, stream=True
+            )
             if int(response.status_code) >= 400:  # type: ignore[attr-defined]
                 raise FeedError("feed_http")
-            return str(response.text)  # type: ignore[attr-defined]
+            # Read at most one byte past the limit, so an oversized feed is refused by
+            # `parse_feed` without the whole body ever being held in memory.
+            body = b"".join(
+                _take(response.iter_content(chunk_size=65536), MAX_FEED_BYTES + 1)  # type: ignore[attr-defined]
+            )
+            return body.decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
         except FeedError:
             raise
         except Exception as exc:  # network text is dropped
             raise FeedError("feed_fetch") from exc
+
+
+def _take(chunks: Iterable[bytes], limit: int) -> Iterator[bytes]:
+    """The chunks of a body up to `limit` bytes in all, then stop."""
+    remaining = limit
+    for chunk in chunks:
+        yield chunk[:remaining]
+        remaining -= len(chunk)
+        if remaining <= 0:
+            return
 
 
 def poll_feed(

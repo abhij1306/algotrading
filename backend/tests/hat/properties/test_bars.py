@@ -5,12 +5,14 @@ Time is explicit: every property passes the instants it wants, so no test reads 
 
 import asyncio
 import tempfile
+import threading
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pyarrow.parquet as pq
@@ -518,6 +520,59 @@ def test_listener_isolation(
 
 symbol_sets = st.frozensets(st.sampled_from([f"S{i}" for i in range(12)]), max_size=8)
 sub_inputs = st.builds(SubscriptionInputs, symbol_sets, symbol_sets, symbol_sets)
+
+
+class _SlowInputs(SubscriptionInputs):
+    """Inputs whose construction pauses once, so a refresh can arrive between a candidate add
+    reading the current inputs and writing the new ones."""
+
+    pause: Any = None
+
+    def __init__(
+        self,
+        watchlist: frozenset[str] = frozenset(),
+        positions: frozenset[str] = frozenset(),
+        candidates: frozenset[str] = frozenset(),
+    ) -> None:
+        super().__init__(watchlist, positions, candidates)
+        pause = type(self).pause
+        if pause is not None:
+            type(self).pause = None
+            pause()
+
+
+@settings(max_examples=8, deadline=None)
+@given(
+    old=symbol_sets,
+    fresh=symbol_sets.filter(bool),
+    candidates=symbol_sets.filter(bool),
+)
+def test_candidates_never_overwrite_refresh(
+    old: frozenset[str], fresh: frozenset[str], candidates: frozenset[str]
+) -> None:
+    """A watchlist refresh that arrives while a candidate add is in progress is not lost: after
+    both finish the `"hat"` set holds the refreshed watchlist. Harm: a
+    refreshed watchlist symbol or an open position stops receiving prices."""
+    registry = SubscriptionRegistry(str.upper)
+    subs = LiveSubscriptions(registry, lambda _s: None, lambda _s: None, limit=1000)
+    subs.sync(SubscriptionInputs(old))
+    read_done, release = threading.Event(), threading.Event()
+    refresh = threading.Thread(
+        target=lambda: (read_done.wait(5), subs.sync(SubscriptionInputs(fresh)))
+    )
+
+    def pause() -> None:
+        read_done.set()
+        release.wait(0.2)  # the refresh runs now if nothing stops it
+
+    _SlowInputs.pause = pause
+    refresh.start()
+    with patch("app.hat.data.subscriptions.SubscriptionInputs", _SlowInputs):
+        subs.add_candidates(candidates)
+    release.set()
+    refresh.join(5)
+    held = set(registry.symbols_of(HAT_OWNER))
+    assert {x.upper() for x in fresh} <= held
 
 
 @given(

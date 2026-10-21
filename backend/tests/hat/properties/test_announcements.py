@@ -3,7 +3,9 @@ dedupe, unmatched items, the 24-hour match window and the rule that text never g
 parser and store with RSS fixtures. No network."""
 
 from collections import deque
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import UUID
 
 from hat_live_support import (
@@ -18,9 +20,11 @@ from hypothesis import strategies as st
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from app.hat.data import announcements
 from app.hat.data.announcements import (
     FEED_ANNOUNCEMENTS,
     FEED_RESULTS,
+    HttpFeedFetcher,
     attached_announcements,
     catalyst_attached,
     next_poll_at,
@@ -51,6 +55,39 @@ def test_poll_schedule(instant: datetime) -> None:
     seconds = local.hour * 3600 + local.minute * 60 + local.second
     inside = 7 * 3600 + 30 * 60 <= seconds < 15 * 3600 + 30 * 60
     assert next_poll_at(instant) - instant == timedelta(minutes=2 if inside else 15)
+
+
+class _StreamedBody:
+    """A response that hands out its body in chunks and records how much was read."""
+
+    status_code = 200
+    encoding = "utf-8"
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.read = 0
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+        for chunk in self._chunks:
+            self.read += len(chunk)
+            yield chunk
+
+
+ascii_chunks = st.binary(min_size=1, max_size=40).map(lambda b: bytes(32 + x % 90 for x in b))
+
+
+@settings(max_examples=60)
+@given(chunks=st.lists(ascii_chunks, max_size=30), cap=st.integers(1, 200))
+def test_fetch_bounded(chunks: list[bytes], cap: int) -> None:
+    """With a size limit of `cap`, the fetcher returns the first `cap + 1` bytes of the body at
+    most, and stops reading once it has them, however large the feed. Harm: an oversized feed
+    exhausts the process memory before it is refused."""
+    whole = b"".join(chunks)
+    body = _StreamedBody(chunks)
+    with patch.object(announcements, "MAX_FEED_BYTES", cap):
+        text = HttpFeedFetcher(get=lambda *_a, **_k: body)(FEED_ANNOUNCEMENTS)
+    assert text.encode() == whole[: cap + 1]
+    assert body.read <= cap + 1 + 40 or body.read == len(whole)
 
 
 def test_poll_schedule_edges() -> None:

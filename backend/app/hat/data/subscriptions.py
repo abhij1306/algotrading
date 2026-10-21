@@ -87,6 +87,7 @@ class LiveSubscriptions:
         self._alert = alert
         self._limit = limit
         self._lock = threading.Lock()
+        self._update = threading.RLock()  # one refresh or candidate add at a time
         self._inputs = SubscriptionInputs()
 
     @property
@@ -100,27 +101,29 @@ class LiveSubscriptions:
     def sync(self, inputs: SubscriptionInputs) -> None:
         """Make the owner's set `watchlist | positions | candidates` and tell the provider about
         the symbols no owner held before (subscribe) or holds now (unsubscribe)."""
-        with self._lock:
-            self._inputs = inputs
-            wanted = self._registry.canonical_symbols(self.desired())
-            held = set(self._registry.symbols_of(HAT_OWNER))
-            added = self._registry.add(HAT_OWNER, wanted - held)
-            released = self._registry.remove(HAT_OWNER, held - wanted)
-        if added:
-            self._call(self._subscribe, added)
-        if released:
-            self._call(self._unsubscribe, released)
-        if len(wanted) >= self._limit and self._alert is not None:
-            self._raise("subscription_limit")
+        with self._update:
+            with self._lock:
+                self._inputs = inputs
+                wanted = self._registry.canonical_symbols(self.desired())
+                held = set(self._registry.symbols_of(HAT_OWNER))
+                added = self._registry.add(HAT_OWNER, wanted - held)
+                released = self._registry.remove(HAT_OWNER, held - wanted)
+            if added:
+                self._call(self._subscribe, added)
+            if released:
+                self._call(self._unsubscribe, released)
+            if len(wanted) >= self._limit and self._alert is not None:
+                self._raise("subscription_limit")
 
     def add_candidates(self, symbols: Collection[str]) -> None:
         """Add EP candidates to the current inputs (the 09:17 gap-scan subscribe)."""
-        inputs = self._inputs
-        self.sync(
-            SubscriptionInputs(
-                inputs.watchlist, inputs.positions, inputs.candidates | frozenset(symbols)
+        with self._update:  # read and write under one lock so a refresh is never overwritten
+            inputs = self._inputs
+            self.sync(
+                SubscriptionInputs(
+                    inputs.watchlist, inputs.positions, inputs.candidates | frozenset(symbols)
+                )
             )
-        )
 
     def release_all(self) -> None:
         """HAT stops: drop the owner; the provider unsubscribes only unheld symbols."""

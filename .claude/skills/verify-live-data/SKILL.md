@@ -26,6 +26,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.subscription_inputs` The inputs are today's watchlist symbols, every open position's symbol (not closed ones, not other days' watchlists) and the candidates. Harm: stale symbols hold feed budget, or an open position is missed.
 - `PBT bars.persisted_equals_live` The `bars_5m` rows equal the final bars the bar listener saw, one row per (instrument, bar_start), exactly the spec's columns, however writes failed and re-ran. Harm: replays and audits cannot reproduce a live decision.
 - `PBT bars.gap_pct` The recorded gap is 100 x (o / c - 1), from the indicative price inside 09:00-09:08 else the first tick's open, and the record names its source; a later first tick never replaces a record. Harm: EP gap filters use a wrong gap.
+- `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed. Harm: impossible gaps are chased or valid EP candidates never watched.
 - `PBT gapscan.timing_recorded` Every gap-scan run, successful or failed, has a `hat_job_run` row with start and finish, and a run finishing at or after 09:20:00 IST raises an alert. Harm: the EP playbook silently never sees its candidates in time.
@@ -35,8 +36,9 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.dedupe_recorded_fixtures` The recorded feeds: a GUID listed twice stores once, repeated polls add nothing, and an item with no GUID gets a stable derived one. Harm: the real feed shape breaks the dedupe.
 - `PBT announcements.unmatched_kept` Every polled item has a row, `raw` equals the item as received, an unmatched item has a null instrument until a later poll finds it. Harm: a catalyst for a renamed stock is lost.
 - `PBT announcements.match_window` An item is attached iff its instrument is the candidate's and t - within_hours <= published_at <= t. Harm: a stale or unrelated headline is shown as the reason to take a trade.
+- `PBT announcements.fetch_bounded` The feed fetcher returns at most the first limit + 1 bytes of a body and stops reading once it has them. Harm: an oversized feed exhausts the process memory before it is refused.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
-- `CONF imports.no_second_websocket` No module under `app.hat` imports a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
+- `CONF imports.no_second_websocket` No module under `app.hat` imports (statically, or by name through `importlib` or `__import__`) a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
 - `CONF single_feed_import_rule` HAT imports neither the live service module nor the provider session; live data arrives only through the listener hook and the `"hat"` registry owner. Harm: HAT could read or open a feed some other way.
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` there is one `FakeBroker`, one `RiskManager` and one `LiveMarketService`, and no other class named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
@@ -101,7 +103,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `cc7ec57cf0ba97fd82724de3e0ecc74fa96c0ae6`
-Covered digest: `f6292db2d39ff10a3329aed9b4d7a43a2042785c912353d537b5f62899a06c29`
+Covered digest: `68fe9f3813fd2c6eb2232249fb821ba0107f234c17c421a02ed8c374ae696cc6`
 
 ## Scope changes
 
@@ -446,6 +448,8 @@ E     Omitting 1 identical items, use -vv to show
 
 ### CONF imports.no_second_websocket
 
+Second break (dynamic import): added `_SECOND = __import__("websockets")` to `app/hat/data/live.py`; the output is `AssertionError: assert [('live.py', 'websockets')] == []`.
+
 Break: in `app/hat/data/live.py`, replaced `import asyncio import logging` with `import asyncio import websockets # noqa import logging`.
 
 ```
@@ -478,4 +482,24 @@ Break: appended `class HatRiskManager: pass` to `app/services/risk_manager.py`.
 E   AssertionError: [('HatRiskManager', 'app/services/risk_manager.py')]
 E   assert [('HatRiskMan..._manager.py')] == []
 E     Left contains one more item: ('HatRiskManager', 'app/services/risk_manager.py')
+```
+
+### PBT bars.candidates_never_overwrite_refresh
+
+Break: in `app/hat/data/subscriptions.py`, `add_candidates` reads the current inputs without the update lock.
+
+```
+tests/hat/properties/test_bars.py:575: in test_candidates_never_overwrite_refresh
+E   AssertionError: assert {'S0', 'S1'} <= {'S0'}
+E     Extra items in the left set:
+E     'S1'
+```
+
+### PBT announcements.fetch_bounded
+
+Break: in `app/hat/data/announcements.py`, the loop in `_take` no longer stops once the limit is reached.
+
+```
+tests/hat/properties/test_announcements.py:89: in test_fetch_bounded
+E   AssertionError: assert b'   ' == b'  '
 ```

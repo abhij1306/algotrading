@@ -151,6 +151,11 @@ def test_imports__no_second_websocket() -> None:
                 offenders.append((path.name, name))
         text = path.read_text(encoding="utf-8")
         offenders.extend((path.name, n) for n in SOCKET_NAMES if re.search(rf"\b{n}\b", text))
+        # a dynamic import (`importlib.import_module("websockets")`, `__import__`) names the
+        # library as a string; the AST import scan does not see it
+        offenders.extend(
+            (path.name, m) for m in SOCKET_MODULES if re.search(rf"[\"']{re.escape(m)}[\"'.]", text)
+        )
     assert offenders == []
     assert callable(getattr(LiveMarketService, "add_tick_listener", None))
     assert "add_tick_listener" in inspect.getsource(live.LiveData.attach)
