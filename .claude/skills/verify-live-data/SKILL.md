@@ -136,8 +136,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `2fcbf091fc1ba3a6c3fec00880141f62350a14fe32115d2bbc7e7f3f8fe6b3c8`
+Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
+Covered digest: `50f65f31a18c01d3865ec3d9417c9d7c02b41b7bf5c584859b85dc184be4f712`
 
 ## Scope changes
 
@@ -158,6 +158,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Review found `main.py` built the feed with no calendar, so weekday exchange holidays were connectable. The feed now takes its hours policy from HAT's trading calendar (`calendar_policy_source`, read at most every 10 minutes) and is closed while the calendar is missing, unreadable or not wired; `bars.feed_connection_window` keeps checking the weekday rule with a fixed empty-holiday policy and `feed.calendar_closed` checks the calendar cases.
 - `feed.registry_concurrent` raises the thread switch frequency for its run so an unguarded update shows; it draws at most 6 examples.
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
+- PR 15b widened the live trigger path (`engine/live_entry.py`): `watchlist_candidates` and `ep_bot_candidates` take every active bot with a live version and its effective mode (with an optional `calendar`), and `submit_trigger` and `TriggerService` take a `route`. The bar and trigger properties pass unchanged; none was narrowed.
 
 ## Scratch breaks
 

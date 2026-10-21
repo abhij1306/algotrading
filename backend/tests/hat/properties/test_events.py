@@ -19,7 +19,7 @@ from app.hat.events import (
     EventError,
     record,
 )
-from app.hat.models import HatEvent, HatPosition
+from app.hat.models import HatEvent, HatOrder, HatPosition
 from app.hat.ops.partitions import (
     month_of,
     month_start,
@@ -30,7 +30,7 @@ from app.hat.ops.partitions import (
     partition_name,
 )
 
-ENGINE = event_engine(HatPosition)
+ENGINE = event_engine(HatPosition, HatOrder)
 TYPES = sorted(EVENT_TYPES)
 AGGREGATES = sorted(AGGREGATE_TYPES)
 ACTOR_CHOICES = ("engine", "broker", "scheduler")
@@ -52,14 +52,14 @@ def stored_stop(position_id: uuid.UUID) -> Decimal:
         return session.scalar(select(HatPosition.current_stop).where(HatPosition.id == position_id))
 
 
-def new_position(stop: Decimal) -> uuid.UUID:
+def new_position(stop: Decimal, signal_id: uuid.UUID) -> uuid.UUID:
     position_id = uuid.uuid4()
     with Session(ENGINE) as session:
         session.execute(
             insert(HatPosition).values(
                 id=position_id,
                 bot_id=uuid.uuid4(),
-                signal_id=uuid.uuid4(),
+                signal_id=signal_id,
                 instrument_id=uuid.uuid4(),
                 is_virtual=True,
                 qty_open=1,
@@ -92,8 +92,8 @@ failure = st.sampled_from(["none", "before_state", "between", "before_commit", "
 def test_atomic_with_state(start: Decimal, steps: list[tuple[Decimal, str, bool]]) -> None:
     """For every sequence of stop moves, each failing at any point before the commit (or rolled
     back by its caller), a move and its `stop.moved` event are both stored or both absent."""
-    position_id = new_position(start)
     signal_id = uuid.uuid4()
+    position_id = new_position(start, signal_id)
     expected_stop, expected_events = start, 0
     for new_stop, fail_at, commit in steps:
         session = Session(ENGINE)
@@ -242,6 +242,76 @@ def test_correlation(items: list[tuple]) -> None:
                     .where(HatEvent.id == row.causation_id)
                 )
             assert earlier == 1
+
+
+LINKED_TYPES = sorted(
+    t for t in TRADE_EVENT_TYPES if t.startswith(("order.", "position.", "exit.", "stop."))
+)
+
+
+def _linked_row(kind: str, signal_id: uuid.UUID) -> uuid.UUID:
+    """An order or a position row of `signal_id`."""
+    row_id = uuid.uuid4()
+    with Session(ENGINE) as session:
+        if kind == "order":
+            session.add(
+                HatOrder(
+                    id=row_id,
+                    signal_id=signal_id,
+                    broker_account_id=uuid.uuid4(),
+                    purpose="entry",
+                    side="buy",
+                    qty=1,
+                    order_type="market",
+                    tag=f"T{row_id.hex[:19]}",
+                    status="pending",
+                    is_virtual=True,
+                    currency="INR",
+                )
+            )
+            session.commit()
+            return row_id
+    return new_position(Decimal(100), signal_id)
+
+
+@given(
+    items=st.lists(
+        st.tuples(
+            st.sampled_from(["order", "position"]),
+            st.sampled_from(LINKED_TYPES),
+            st.sampled_from(["own", "other", "unknown_row"]),
+        ),
+        min_size=1,
+        max_size=6,
+    )
+)
+def test_correlation_links_the_signal(items: list[tuple[str, str, str]]) -> None:
+    """HAT-SCH-064 for orders and positions: an Orders or Positions event about an order or a
+    position is stored only when its correlation id is the id of the signal that row belongs to;
+    another signal's id, or a row that does not exist, is refused and writes nothing."""
+    for kind, event_type, correlation in items:
+        signal_id = uuid.uuid4()
+        row_id = _linked_row(kind, signal_id)
+        aggregate_id = uuid.uuid4() if correlation == "unknown_row" else row_id
+        given_id = uuid.uuid4() if correlation == "other" else signal_id
+        with Session(ENGINE) as session:
+            try:
+                record(
+                    session,
+                    aggregate_type=kind,
+                    aggregate_id=aggregate_id,
+                    event_type=event_type,
+                    actor="engine",
+                    payload={},
+                    correlation_id=given_id,
+                )
+                session.commit()
+                stored = True
+            except EventError:
+                session.rollback()
+                stored = False
+        assert stored == (correlation == "own"), (kind, event_type, correlation)
+        assert count_events(aggregate_id) == (1 if stored else 0)
 
 
 @given(bogus=st.integers(min_value=10**12, max_value=10**15))

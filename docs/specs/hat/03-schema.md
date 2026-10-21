@@ -811,9 +811,10 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **Statement:** `aggregate_type ∈ {signal, order, position, strategy_version, risk_policy, bot, regime, session, ingest}`; trade-related events carry the signal ID as `correlation_id`; `causation_id` names the causing event when there is one.
 - **Source:** SCH "Event log" (DDL comments).
 - **PR:** 3, 9
-- **Verification:** PBT `events.correlation`
+- **Verification:** PBT `events.correlation`, PBT `events.correlation_links_the_signal`
 - **Acceptance:**
   - Property: for every recorded event, `aggregate_type` is in the set, every event of the Signals, Orders and Positions groups has `correlation_id` equal to its signal's id, and every non-null `causation_id` refers to an earlier event. Harm: a trade's history cannot be reassembled from the log.
+  - Property: `record()` refuses an Orders or Positions event whose `correlation_id` is not the `signal_id` of the `hat_order` or `hat_position` row it is about (or names no such row), and writes nothing. Harm: an order's events are filed under another trade.
 
 #### HAT-SCH-065: User actions are attributable
 - **Statement:** Every user-initiated event has `actor = user` and the Telegram chat ID in its payload.

@@ -19,6 +19,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT exits.never_lowers_stop` Over any run of evaluations the stop never goes down, a new stop is always above the current one and a result carrying a lower stop changes nothing. Harm: a lower stop widens the risk the position was sized for.
 - `DB governance.stop_only_rises` The database refuses an UPDATE that lowers `hat_position.current_stop` (alone or with other columns, one row or all) and refuses to DELETE a position; equal or higher stops and other columns move freely. Harm: a lowered stop, or a delete and re-insert, widens the risk behind the owner's back.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
+- `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
 
 ## Run
 
@@ -63,13 +64,14 @@ Checks:
 - `backend/tests/hat/db/hat_db_runtime.py`
 - `backend/tests/hat/db/test_db_runtime.py`
 - `backend/tests/hat/db/test_db_broken_variants.py`
+- `backend/app/hat/engine/approvals.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
-Covered digest: `eb3275791cde5c6990bac91b68f76d33285c1191a21ed988cae7f7fa5b00b84d`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `ab78f972d605c05cd00f2d2f909c4722fbf734468c3ee4a6c2bfb894e11bf4ac`
 
 ## Scope changes
 
@@ -80,6 +82,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `exits.veto_score` (HAT-EXEC-130) is not built: the veto score belongs to PRs 15 and 16.
 - Exits of a real position are the router's (PR 15); `evaluate_position` refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
+- PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
 
 ## Scratch breaks
 
@@ -190,4 +193,17 @@ E    +      where <built-in method scaleb of decimal.Decimal object at 0x7fbedb0
 E    +        where Decimal('25000') = Decimal(25000)
 E    +  and   Decimal('0.05') = oracle_tick(25000)
 E   Failing explicit example: test_tick_size_slabs(
+```
+
+### PBT exits.veto_score
+
+Break: `veto_score` adds the negative R instead of subtracting it (avoided R comes out negative).
+
+```
+E   AssertionError: assert Fraction(-1, 10000) == -Fraction(-1, 10000)
+E    +  where Fraction(-1, 10000) = Fraction(Decimal('-0.0001'))
+E    +    where Decimal('-0.0001') = VetoScore(avoided_r=Decimal('-0.0001'), missed_r=Decimal('0'), trades=1).avoided_r
+E    +  and   Fraction(-1, 10000) = sum([Fraction(-1, 10000)], Fraction(0, 1))
+E    +    where Fraction(0, 1) = Fraction(0)
+E   Failing test case: test_veto_score(
 ```

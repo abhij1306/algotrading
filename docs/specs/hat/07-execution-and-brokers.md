@@ -29,9 +29,10 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 - **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.
 - **Source:** BL "Stop placement at the broker (B17)" step 4; DS "Broker matrix"; MA "Risks" (GTT support).
 - **PR:** 13, 15
-- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`
+- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`
 - **Acceptance:**
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode auto, and an auto request for it is refused. Harm: an auto position is left without an overnight stop.
+  - Property: a Take whose account no longer reports GTT for delivery (or is no longer active) when the user decides places no order and ends the signal Rejected (`no_gtt_delivery`). Harm: a card sent before a capability change still buys without an overnight stop.
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode confirm either, so it places no real order. Harm: a confirmed entry fills and then goes overnight with no resting stop, breaking "protective stops sit at the broker on every real fill" (MA "Execution modes").
 - **[OWNER-PENDING]** Fyers GTT for CNC: until verified on a live account, the Fyers adapter reports `gtt_delivery = false`, so the MVP runs shadow only until then (PLAN Q8 extended to confirm, which also places real orders); owner to confirm after verification.
 
@@ -47,13 +48,17 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 
 The router receives a signal only after `evaluate_signal` returned ACCEPT (06 §10) and routes it by the bot's effective mode.
 
+Implementation (`app/hat/execution/router.py`, PR 15): the effective mode is the queued mode in force at the open of the trigger's session (`execution/modes.py:bot_mode`, HAT-GOV-084), gated by the account's GTT capability (HAT-EXEC-012). `engine/trades.py:open_entry` runs the risk check under the bot's lock and, in one transaction, opens the virtual position (shadow), writes the approval card (confirm, `hat_approval`, the signal moves to AwaitingApproval) or leaves the accepted signal in Triggered (auto). The router then places an auto entry, or a passed Take, as a LIMIT BUY CNC at the entry price the engine fixed at the trigger, through `submit.reserve_order` and `submit.send_order` only. Before the session's first order the broker book is reconciled (HAT-BRK-110). The signal commits (releasing the bot's lock) before the order is sent, so a placement first re-reads the live conditions at placement time, from the caller (`route` and `take` take `now` and a `PlacementCheck` read then, never the trigger's snapshot): the calendar session, the feed, the quality gate, the regime gate (HAT-EXEC-022), the kill switches and pause (06 §6) and the account's GTT capability (HAT-EXEC-012). On a refusal nothing is sent: a reserved entry that never reached the broker is cancelled and one that may have is left to reconciliation, never placed again. An entry that cannot be placed (a refusal on the order path, an unreachable broker, a second rejection, a refused live condition) ends the signal Rejected with a fixed reason and raises the `entry.not_placed` health alert; an order whose outcome is unknown is left to the tag lookup and reconciliation.
+
 #### HAT-EXEC-020: One risk check, three routes
 - **Statement:** The router routes an accepted signal to the virtual fill engine (shadow), an approval (confirm) or a real order (auto), and nothing else.
 - **Source:** MA "Execution modes"; BL "Configuration model" stage 9.
 - **PR:** 15
-- **Verification:** TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`
+- **Verification:** TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent`
 - **Acceptance:**
   - Property: in every reachable state, every routed signal has an ACCEPT risk decision and exactly one route matching its bot's effective mode. Harm: a signal is double-routed or routed under the wrong mode.
+  - Property: for every mode and GTT capability, one accepted trigger routed through the real router against `FakeBroker` gives exactly: a virtual position and zero broker calls (shadow), an approval card expiring 5 minutes later and zero broker calls (confirm), or one HT-tagged LIMIT BUY CNC order for the risk-sized quantity at the entry price, after the session's reconciliation, when the live conditions read at placement allow it, and otherwise none and the signal Rejected with the reason (auto). A routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+  - Property: an auto entry whose bot became manage-only (a kill switch or a pause) between the signal's commit and the placement sends nothing; a reserved order that never reached the broker is cancelled and the signal ends Rejected with the kill or pause reason, and one that may have reached it is left to reconciliation and neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
 
 #### HAT-EXEC-021: Duplicate triggers are refused
 - **Statement:** One signal per (bot, playbook, instrument, trade_date); the signal id is the idempotency key, and a second trigger never creates a second order.
@@ -68,17 +73,19 @@ The router receives a signal only after `evaluate_signal` returned ACCEPT (06 §
 - **Statement:** The router places no entry while the feed is stale or the day's data failed the gate, and no order outside market hours.
 - **Source:** BL "Invariants" 4, 5; DS "Bar builder rules".
 - **PR:** 15
-- **Verification:** TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`
+- **Verification:** TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase`
 - **Acceptance:**
   - Property: in every reachable state where the feed is stale, the gate failed, or the clock is outside the session, no entry order is sent (real or virtual). Harm: orders on a frozen or closed market.
+  - Property: a Take re-reads the conditions when the user decides: outside the calendar session, on a stale or unknown feed, on a failed quality gate or with the regime gate off it places nothing and ends the signal Rejected with the risk check's reason code. Harm: a card taken after the close or after the feed froze buys blind.
 
 #### HAT-EXEC-023: Order rejection retried at most once
 - **Statement:** A broker-rejected order is logged, alerted, and retried at most once.
 - **Source:** MA "Failure handling" (Order rejected).
 - **PR:** 15
-- **Verification:** TLA `OrderReconciliation!RetryAtMostOnce`
+- **Verification:** TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once`
 - **Acceptance:**
   - Property: in every behaviour, for each (signal, purpose) the number of broker place attempts after a rejection is ≤ 1, and every rejection appends `order.rejected` and raises a health alert. Harm: a retry storm or a silent rejection.
+  - Property: for every sequence of broker replies, a rejected entry raises the `order.rejected` alert and is sent once more under the next tag; a second rejection ends the signal Rejected (`order_rejected`) with one `entry.not_placed` alert, and no third order is sent. Harm: a rejected order is re-sent without limit, or a failure is silent.
 
 ## §3 Confirm mode, approval, expiry and max-chase re-check
 
@@ -91,22 +98,26 @@ Confirm mode sends a Telegram approval card with Take/Skip buttons; price, size 
 - **Verification:** TLA `ApprovalToken!NoTakeAfterExpiry`
 - **Acceptance:**
   - Property: in every behaviour, no Take decided at or after `expires_at = sent_at + 5 min` produces an order, and every undecided approval reaches decision `expired` with `signal.expired`. Harm: a stale approval opens a position at a price the user never saw.
+- **Implementation:** a Take or Skip at or after `expires_at` is refused and expires the approval in that transaction; the expiry sweep (`router.expire`, wired by PR 17) expires every other undecided approval past its window.
 
 #### HAT-EXEC-031: Max-chase re-check on take
 - **Statement:** On Take, the price is re-checked; if it has run more than the bot's max-chase % past the trigger, the order is refused.
 - **Source:** MA "Execution modes"; BL "Criteria library" (`max_chase` M 5, Q 2); B25.
 - **PR:** 15
-- **Verification:** TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`
+- **Verification:** TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase`
 - **Acceptance:**
   - Property: in every behaviour, a Take produces an order only if price_at_decision ≤ trigger_level × (1 + max_chase_pct/100) and the instrument is not locked at upper circuit; otherwise the decision is recorded and the order refused. Harm: the user approves an entry that has already run away.
+- **Implementation:** `max_chase_pct` is the bot's effective percentage, fixed at the trigger in the `signal.triggered` payload; the re-check runs the same `max_chase` criterion as the entry filter (`LiveContext.for_entry`, HAT-CRIT-122). A refused Take ends the signal Rejected (`signal.rejected`, reason `max_chase`, stage `approval`).
 
 #### HAT-EXEC-032: Skips continue as shadow trades
 - **Statement:** A skipped or expired confirm signal continues as a virtual (shadow) trade for veto scoring.
 - **Source:** BL "Your vetoes are measured"; SCH `hat_approval` notes.
 - **PR:** 15
-- **Verification:** TLA `ExecutionRouter!SkipBecomesShadow`
+- **Verification:** TLA `ExecutionRouter!SkipBecomesShadow`, PBT `router.skip_and_expiry_become_one_veto_trade`
 - **Acceptance:**
   - Property: in every behaviour, every approval decided skip or expired is followed by exactly one virtual position for that signal and no real order. Harm: veto scoring is biased by missing skipped trades.
+  - Property: the veto trade holds none of the bot's slots, its stop-out is not one of the bot's, and it is in neither the sleeve's real nor its shadow trade results; it feeds the veto score only. Harm: a skip blocks or shrinks the bot's next real entries, or bends its health and promotion evidence.
+- **Implementation:** the veto trade is opened in the transaction that records the skip or the expiry, at the card's entry price, quantity and stop. Its events carry `veto: true` and move only the position; its replay starts at Triggered (`trades.replay_veto_state`).
 
 #### HAT-EXEC-033: Exits never ask
 - **Statement:** Exits, stop moves and partials are automatic in confirm and auto and virtual in shadow; no exit waits for the user.
@@ -147,15 +158,15 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 | (none) | Watchlisted | `watchlist.published` | nightly scan row (EP: pre-open scan) |
 | Watchlisted | Triggered | `signal.triggered` | trigger criteria pass live |
 | Watchlisted | Expired | (session end, no event) | the trade date's session ended and the signal never triggered; the watchlist row's status becomes Expired |
-| Triggered | Rejected | `signal.rejected` | risk decision REJECT or entry filter fails |
-| Triggered | AwaitingApproval | (approval sent) | mode confirm |
+| Triggered | Rejected | `signal.rejected` | risk decision REJECT or entry filter fails; or (auto) the router could not place the entry: a refusal on the order path, an unreachable broker, a second broker rejection, a refused live condition (reason fixed, stage `route`) |
+| Triggered | AwaitingApproval | (approval sent) | mode confirm; the `hat_approval` row, written in the same transaction, stands for this step on replay |
 | Triggered | EntryPlaced | `order.placed` | mode auto, or shadow (virtual order) |
 | AwaitingApproval | EntryPlaced | `signal.approved`, then `order.placed` | Take within expiry and chase re-check passes |
 | AwaitingApproval | Expired | `signal.expired` | no decision within 5 minutes |
 | AwaitingApproval | Cancelled | `signal.skipped` or `kill.tripped` | Skip (reason skipped) or `/kill`. On skip (and likewise on expiry, HAT-EXEC-032) the engine opens a separate virtual trade for the same signal, starting at EntryPlaced with a virtual order, which then follows this table to its own ending (HAT-EXEC-032) |
-| AwaitingApproval | Rejected | `signal.rejected` | chase re-check fails on Take |
+| AwaitingApproval | Rejected | `signal.rejected` | chase re-check or a live condition fails on Take, or the passed Take could not be placed |
 | EntryPlaced | Open | `order.filled`, `position.opened` | entry fill |
-| EntryPlaced | Rejected | `order.rejected` | broker rejection after the single retry |
+| EntryPlaced | Rejected | `order.rejected` | broker rejection after the single retry: only an `order.rejected` whose payload has `final: true` drives this step; one a retry may still follow carries none |
 | EntryPlaced | Cancelled | `order.cancelled` | entry order unfilled at session end |
 | Open | PartiallyExited | `exit.partial` | a partial exit fills |
 | Open, PartiallyExited | ExitPending | (exit order placed) | full exit rule fires or stop triggers |
@@ -489,9 +500,11 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 - **Statement:** On startup and before the first order of each session, broker orders and positions are matched to `hat_order`/`hat_position` by tag; no order is placed until reconciliation succeeds.
 - **Source:** MA "Runtime" (Live service reconciles before its first order); MA "Failure handling" (Machine down).
 - **PR:** 13, 15
-- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`
+- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order`
 - **Acceptance:**
   - Property: in every behaviour, no place call happens in a session before a successful reconciliation of that session. Harm: after a crash the engine re-enters a position it already holds or loses track of an open stop.
+  - Property: the router's first real entry of a session runs the reconciliation first; a broker that cannot be read, or a book holding an HT order HAT does not know, places nothing and ends the entry Rejected with an `entry.not_placed` alert. Harm: an order goes out on top of a book HAT has not matched.
+- **Implementation:** mismatch alerts reach the user through the `Notifier` (`reconcile.notifier_sink`: one `reconcile.mismatch` health alert per new mismatch, carrying its kind, its tag or symbol and the bot, or `account` when the bot cannot be told; Telegram from PR 16, the log until then).
 
 #### HAT-BRK-111: Reconciliation fails closed
 - **Statement:** A mismatch (broker position without a HAT row, HAT open position missing at the broker, quantity difference, or an unknown HT-tagged order) blocks new entries for the affected bot and raises an alert; it never auto-closes or auto-adopts a position.
@@ -546,6 +559,7 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
 - **Verification:** PBT `exits.veto_score`
 - **Acceptance:**
   - Property: for every set of skipped-trade results, avoided R = −Σ(r for r < 0) and missed R = Σ(r for r > 0) over the week's closed virtual trades from skips, and the digest totals equal these sums. Harm: the user cannot tell whether their vetoes add value.
+- **Implementation:** `engine/approvals.py:veto_score` (exact Decimal sums) over `skipped_results`, the R multiples of the veto trades of skipped or expired approvals closed in the week (PR 15); the weekly digest that reports them is PR 16.
 
 #### HAT-EXEC-131: Veto verdict after 50 decisions
 - **Statement:** After 50 confirm decisions (take or skip), the digest states whether skips beat takes on R, as evidence for moving to auto.

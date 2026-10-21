@@ -402,9 +402,10 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **Statement:** Execution-mode changes are accepted only outside market hours and take effect at the next session open from `hat_trading_calendar`.
 - **Source:** BL "Governance"; SCH "Mode changes take effect next session"; `hat_mode_change`.
 - **PR:** 10
-- **Verification:** TLA `ExecutionRouter!ModeChangeNextSession`
+- **Verification:** TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session`
 - **Acceptance:**
   - Property: in every behaviour, a bot's effective mode during a session equals the mode in effect at that session's open, and every accepted change has `effective_from` = the next session open. Harm: a mode flips mid-session and routes an entry differently from what was approved.
+- **Implementation:** `execution/modes.py` (PR 15): `request_mode_change` refuses a confirm or auto request the account cannot run (HAT-EXEC-012) and queues the rest; `bot_mode` reads the mode in force at the open of the entry's session; `apply_mode_changes` writes it to `hat_bot.execution_mode` at the open (wired by PR 17).
 
 ## §9 Risk-policy change rules
 

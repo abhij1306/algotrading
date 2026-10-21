@@ -17,6 +17,7 @@ from app.hat.execution.accounts import (
     MODES,
     ModeRefusedError,
     OnboardingError,
+    UnknownModeError,
     effective_mode,
     onboard_account,
     request_mode,
@@ -31,17 +32,22 @@ from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
 
 
 @given(
-    st.sampled_from(MODES),
+    st.one_of(st.sampled_from(MODES), st.sampled_from(["live", "", "AUTO", "Shadow"])),
     st.sampled_from(["active", "pending", "failed", "", "ACTIVE"]),
     st.fixed_dictionaries({"gtt_delivery": st.sampled_from([True, False, None, "true", 1])}),
 )
 def test_confirm_and_auto_need_gtt(mode: str, status: str, capabilities: dict) -> None:
     """HAT-EXEC-012 / HAT-DEC-I9: a bot never runs confirm or auto unless its account is active and
-    reports `gtt_delivery = true`, and such a request is refused."""
+    reports `gtt_delivery = true`, and such a request is refused; a mode outside the three runs
+    as shadow and is refused as unknown, whatever the account."""
     effective = effective_mode(mode, account_status=status, capabilities=capabilities)
     ready = status == "active" and capabilities["gtt_delivery"] is True
-    assert effective == (mode if mode == "shadow" or ready else "shadow")
-    if mode != "shadow" and not ready:
+    known = mode in MODES
+    assert effective == (mode if known and (mode == "shadow" or ready) else "shadow")
+    if not known:
+        with pytest.raises(UnknownModeError):
+            request_mode(mode, account_status=status, capabilities=capabilities)
+    elif mode != "shadow" and not ready:
         with pytest.raises(ModeRefusedError):
             request_mode(mode, account_status=status, capabilities=capabilities)
     else:

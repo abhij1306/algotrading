@@ -6,7 +6,8 @@ the spec's table, and its state is the fold of its events over that table: the s
 same table; only the fills are virtual (HAT-EXEC-044).
 
 Events become steps through `step_of`: most event types are a step of their own, `order.placed`
-is an entry or an exit order by its `purpose`, and the events that carry no transition
+is an entry or an exit order by its `purpose`, `order.rejected` is a step only when it is final
+(the rejection after the single retry, HAT-EXEC-023), and the events that carry no transition
 (`order.filled`, `signal.approved`, `stop.moved`, `gtt.*` and so on) have no step. CONF
 `lifecycle_transitions_match_spec` compares this table with the spec's.
 """
@@ -106,7 +107,10 @@ class LifecycleStateError(HatError):
 def step_of(event_type: str, payload: Mapping[str, Any] | None = None) -> str | None:
     """The lifecycle step an event drives, or None when it carries no transition. An
     `order.placed` is an entry order or an exit order by its `purpose`; a partial exit order
-    (`exit_partial`) does not move the state, its fill (`exit.partial`) does."""
+    (`exit_partial`) does not move the state, its fill (`exit.partial`) does. An
+    `order.rejected` that a retry may still follow carries no step; only a `final` one does."""
+    if event_type == "order.rejected":
+        return event_type if (payload or {}).get("final") is True else None
     if event_type == "order.placed":
         purpose = (payload or {}).get("purpose")
         if purpose == "entry":

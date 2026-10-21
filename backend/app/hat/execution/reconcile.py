@@ -21,11 +21,14 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..notify import Notifier
+from ..time import trade_date_of, utc_now
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
 from .submit import adopt_broker_order
@@ -38,6 +41,7 @@ __all__ = [
     "ReconciliationService",
     "broker_quantities",
     "find_mismatches",
+    "notifier_sink",
 ]
 
 logger = logging.getLogger(__name__)
@@ -134,6 +138,28 @@ AlertSink = Callable[[Mismatch], None]
 
 def _log_alert(mismatch: Mismatch) -> None:
     logger.error("reconcile mismatch kind=%s", mismatch.kind)
+
+
+MISMATCH_ALERT = "reconcile.mismatch"
+
+
+def _today() -> date:
+    return trade_date_of(utc_now())
+
+
+def notifier_sink(notifier: Notifier, today: Callable[[], date] = _today) -> AlertSink:
+    """The reconciliation's alert sink over a `Notifier` (Telegram from PR 16, the log until
+    then): one `reconcile.mismatch` health alert per new mismatch, carrying its kind, the tag or
+    symbol it is about and the bot (`account` when the bot cannot be told). Fixed words only,
+    never broker text."""
+
+    def alert(mismatch: Mismatch) -> None:
+        bot = str(mismatch.bot_id) if mismatch.bot_id is not None else "account"
+        notifier.alert(
+            MISMATCH_ALERT, today(), {"kind": mismatch.kind, "key": mismatch.key, "bot_id": bot}
+        )
+
+    return alert
 
 
 class ReconciliationService:

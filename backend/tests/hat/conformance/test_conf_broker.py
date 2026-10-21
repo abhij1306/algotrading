@@ -1,17 +1,25 @@
-"""CONF checks of the broker interface, the Fyers adapter and its secrets (HAT-BRK-080, -091,
-HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-051)."""
+"""CONF checks of the broker interface, the Fyers adapter and its secrets, and the default
+execution mode (HAT-BRK-080, -091, HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-051,
+HAT-EXEC-011)."""
 
 import inspect
 import re
+import uuid
 from pathlib import Path
 
+import pytest
+import yaml
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 from hat_conf_spec import SPEC_DIR
 
-from app.hat.execution import accounts
+from app.hat.engine import trades
+from app.hat.engine.strategy.config import StrategyConfig
+from app.hat.engine.strategy.versions import VersionError, create_bot
+from app.hat.execution import accounts, modes
 from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
@@ -313,3 +321,57 @@ def test_mvp_seed_scope() -> None:
     assert set(accounts.ADAPTER_FACTORIES) == {"fyers"}
     _seed_scope_strategies_and_owner()
     assert Path(accounts.__file__).exists()
+
+
+SEEDS_DIR = HAT_ROOT / "engine" / "strategy" / "seeds"
+
+
+class _NoSession:
+    """Takes whatever a bot creation writes, so a creation that is not refused shows up as a
+    missing refusal rather than a database error."""
+
+    def add(self, row: object) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+
+def test_exec__default_mode_shadow() -> None:
+    """HAT-EXEC-011, HAT-BOT-061: everything that gives a bot its mode starts at shadow. Every
+    seed YAML declares shadow, the strategy config defaults to it, the bot row defaults to it in
+    the model and in the database, a new bot cannot be created in another mode, the entry path
+    routes shadow unless told otherwise, and a mode outside the three reads as shadow."""
+    seeds = sorted(SEEDS_DIR.glob("*.yaml"))
+    assert seeds
+    for path in seeds:
+        assert yaml.safe_load(path.read_text(encoding="utf-8"))["execution_mode"] == "shadow", path
+    assert StrategyConfig.model_fields["execution_mode"].default == "shadow"
+    column = HatBot.__table__.c.execution_mode
+    assert column.default is not None
+    assert column.default.arg == "shadow"
+    assert column.server_default is not None
+    assert column.server_default.arg == "shadow"
+    for mode in ("confirm", "auto"):
+        no_session, user_id, strategy_id, account_id = (
+            _NoSession(),
+            uuid.uuid4(),
+            uuid.uuid4(),
+            uuid.uuid4(),
+        )
+        with pytest.raises(VersionError):
+            create_bot(
+                no_session,  # type: ignore[arg-type] - refused before the session is touched
+                user_id=user_id,
+                strategy_id=strategy_id,
+                broker_account_id=account_id,
+                execution_mode=mode,
+            )
+    assert inspect.signature(trades.open_entry).parameters["mode"].default == modes.SHADOW
+    for unknown in ("", "live", "AUTO"):
+        assert (
+            modes.effective_mode(
+                unknown, account_status="active", capabilities={"gtt_delivery": True}
+            )
+            == modes.SHADOW
+        )

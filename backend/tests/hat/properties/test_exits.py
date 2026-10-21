@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine.approvals import veto_score
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.strategy.config import (
     ExitBreakeven,
@@ -499,3 +500,28 @@ def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None
         with pytest.raises(lifecycle.LifecycleStateError):
             lifecycle.next_state(signal.state, "signal.triggered")
         assert trades.replay_state(session, signal.id) == signal.state
+
+
+R_MULTIPLES = st.decimals(
+    min_value=-50, max_value=50, places=4, allow_nan=False, allow_infinity=False
+)
+
+
+@settings(max_examples=100)
+@given(st.lists(R_MULTIPLES, max_size=30))
+@example([])
+@example([Decimal(0)])
+def test_veto_score(results: list[Decimal]) -> None:
+    """HAT-EXEC-130: the veto score over the R multiples of the closed veto trades is
+    avoided = -sum(R < 0) and missed = sum(R > 0), exactly, with a zero R counted as a trade in
+    neither sum; both are non-negative and missed - avoided is the plain sum. Harm: the weekly
+    digest tells the user their skips saved money they in fact cost."""
+    score = veto_score(results)
+    losses = [Fraction(r) for r in results if r < 0]
+    gains = [Fraction(r) for r in results if r > 0]
+    assert Fraction(score.avoided_r) == -sum(losses, Fraction(0))
+    assert Fraction(score.missed_r) == sum(gains, Fraction(0))
+    assert score.trades == len(results)
+    assert score.avoided_r >= 0
+    assert score.missed_r >= 0
+    assert Fraction(score.missed_r - score.avoided_r) == sum(map(Fraction, results), Fraction(0))
