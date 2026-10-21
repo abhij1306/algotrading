@@ -2,7 +2,7 @@
 source of truth for provider subscriptions, owned by HAT since K3) and the one owner HAT itself
 holds, `"hat"` (HAT-DATA-112).
 
-Each owner (HAT, a legacy websocket client id, or the legacy REST API owner) holds a set of
+Each owner (HAT, or any other client id) holds a set of
 symbols. A symbol is needed at the provider while at least one owner holds it. Every mutation
 returns the provider delta, so callers never diff before/after snapshots. The registry is pure,
 synchronous and thread-safe: no I/O, no asyncio, one lock around all state.
@@ -10,7 +10,7 @@ synchronous and thread-safe: no I/O, no asyncio, one lock around all state.
 The owner's symbol set is always `watchlist | open positions | EP candidates`, in DB symbol
 format. Open positions are part of the set by construction, so no change to the watchlist or the
 candidates can drop one. The registry is a refcount over owners, so releasing HAT's symbols never
-unsubscribes a symbol a websocket client or the HTTP API still holds: the provider is told only
+unsubscribes a symbol another owner still holds: the provider is told only
 about symbols no owner holds any more.
 
 The provider calls are injected as plain synchronous callables. This code runs on worker threads
@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session
 from ..models import HatInstrument, HatPosition, HatWatchlistEntry
 
 __all__ = [
-    "API_OWNER",
     "HAT_OWNER",
     "SYMBOL_LIMIT",
     "LiveSubscriptions",
@@ -44,9 +43,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 HAT_OWNER = "hat"
-# Owner of symbols subscribed through the legacy POST /api/websocket/subscribe (no client drops
-# them); deleted with that route (K5b).
-API_OWNER = "api"
 Owner = Hashable
 # DS "Live data": under 200 symbols. A set at or above the limit raises a health alert.
 SYMBOL_LIMIT = 200

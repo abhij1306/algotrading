@@ -1,4 +1,4 @@
-"""CORS uses the same frontend-origin rule as the /stream Origin check (utils/origins.py)."""
+"""CORS allows the configured frontend origins and loopback pages only (utils/origins.py)."""
 
 import pytest
 from fastapi import FastAPI

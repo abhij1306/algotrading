@@ -8,18 +8,11 @@ numpy==2.5.4
 pyarrow==26.0.0
 polars==2.0.0  # HAT data layer (docs/specs/hat/02-data.md §7, §8)
 duckdb==1.5.6  # HAT Parquet views (docs/specs/hat/02-data.md §8)
-pypdf==6.21.1
-python-dotenv==1.2.4
 pydantic==2.14.1
 sqlalchemy==2.1.5
 psycopg2-binary==2.9.13
-python-multipart==0.0.32
 pyyaml==6.0.3
 httpx2==2.15.1  # starlette.testclient (httpx is deprecated there since starlette 1.x)
-
-# Market data and analysis
-yfinance==1.7.0
-beautifulsoup4==4.15.0
 
 # fyers-apiv3 runtime deps. fyers-apiv3 itself is installed with --no-deps
 # (see scripts/install_backend_deps.py) because it pins aiohttp==3.9.3, which
@@ -32,5 +25,4 @@ protobuf==7.36.2  # fyers 3.2.0 imports google.protobuf without declaring it
 
 # Code quality tools
 ruff==0.17.1
-pre-commit==4.7.0
 hypothesis==6.170.5

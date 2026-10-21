@@ -51,7 +51,7 @@ BarListener = Callable[[Bar], None]
 
 
 class TickFeed(Protocol):
-    """The listener hook on SmartTrader's `LiveMarketService`."""
+    """The listener hook of `LiveFeed`."""
 
     def add_tick_listener(
         self, listener: Callable[[dict[str, Any]], None]

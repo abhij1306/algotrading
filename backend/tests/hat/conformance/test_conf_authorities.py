@@ -14,13 +14,10 @@ AUTHORITIES = {
 FUNCTION_AUTHORITIES = {
     "evaluate_signal": "app/hat/risk/service.py",
 }
-# Legacy classes that still exist beside HAT's: name -> the one file that may define them. The
-# legacy `LiveMarketService` (now only the read side of HAT's feed) stays until K5b. (K4 deleted the
-# legacy `RiskManager`, so `evaluate_signal` is the only risk authority left, and the legacy copy
-# of `FakeBroker`.) Each entry goes with its file; the list only shrinks.
-LEGACY_COPIES = {
-    "LiveMarketService": "app/services/live_market_service.py",
-}
+# Legacy classes that still exist beside HAT's: name -> the one file that may define them. None
+# are left: K4 deleted the legacy `RiskManager` and `FakeBroker`, K5b the legacy
+# `LiveMarketService`. The entry point stays so the lookalike check below still refuses them.
+LEGACY_COPIES: dict[str, str] = {}
 
 
 def _definitions(kinds: tuple[type, ...]) -> list[tuple[str, str]]:

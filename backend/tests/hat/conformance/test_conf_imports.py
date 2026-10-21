@@ -130,8 +130,8 @@ SOCKET_MODULES = ("fyers_apiv3", "websocket", "websockets", "socketio", "aiohttp
 REST_MODEL = "fyers_apiv3.fyersModel"
 PROVIDER_SOCKET_FILE = "data/provider/fyers_websocket.py"
 SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
-# Who may import the feed: the app's wiring and the legacy read side of its ticks (K5b deletes it).
-FEED_IMPORTERS = {"main.py", "services/live_market_service.py"}
+# Who may import the feed: the app's wiring (K5b deleted the legacy read side of its ticks).
+FEED_IMPORTERS = {"main.py"}
 
 
 def _only_rest_model(path: Path) -> bool:

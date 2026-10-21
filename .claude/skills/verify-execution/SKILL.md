@@ -152,13 +152,14 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
-Covered digest: `fb68525955c6a839d499573ed9c1022af530b1aba4bdfec22d0d83c3913b0dfe`
+Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
+Covered digest: `d038efbdc7d08c48d2c70a02c56afc94659db4b4a3aa9319cfecdf1c3d1fddd0`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
 - K4 deleted the legacy `FyersBroker` plugin and `app/brokers`, the `services/fyers/token_store.py` re-export and the DEV_MODE switch (HAT never honoured it), and trimmed `FakeBroker` to the methods the adapter calls (the lenient reads, the tag lookup, `ltp` and `working` state went). `ops.one_login_one_token_store` now asserts the deleted modules stay deleted.
 - K2 moved the Fyers broker, session, login and token store into `app/hat/execution` and replaced the legacy suites that tested them (`test_fyers_token_store`, `test_fyers_auth_flow`, `test_fyers_client_validate_token`, `test_auth_status_cache`) with the properties above. `fyers_adapter_wraps_existing` and `ops__single_fyers_secret_store` were rewritten for the new files (the SDK only in `fyers_session.py` and `fyers_auth.py`; credential words only in `fyers_auth.py`, `fyers_tokens.py`, `fyers_session.py`) and keep their synthetic-offender checks.
 - An order reply that is neither ok nor an explicit error is now `SUBMIT_UNCONFIRMED` (the legacy order path read it as a rejection): a tightening, as is refusing NaN and infinite prices.
@@ -831,4 +832,13 @@ E    +    where <function search at 0x7fad557d8670> = re.search
 E    +    and   '"""\nLegacy Fyers client: the process singleton over HAT\'s `FyersSession`.\n\nHAT owns the session (credentials from... are loaded on next access."""\n    global _fyers_client\n    _fyers_client = None\
 E    +    and   re.MULTILINE = re.M
 FAILED tests/hat/conformance/test_conf_broker.py::test_ops__one_login_one_token_store
+```
+
+Break (K5b, the legacy client files must stay deleted): recreated `app/services/fyers_client.py`.
+
+```
+tests/hat/conformance/test_conf_broker.py F
+E   AssertionError: assert not True
+E    +  where True = exists()
+E    +    where exists = ((PosixPath('.../backend/app') / 'services') / 'fyers_client.py').exists
 ```

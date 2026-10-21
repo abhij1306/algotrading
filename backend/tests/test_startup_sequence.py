@@ -46,14 +46,14 @@ class TestStartupSequenceIntegrity:
 
         # Execute steps in order
         await sequence.execute_step(StartupStep.SET_EVENT_LOOP, step1, required=True)
-        await sequence.execute_step(StartupStep.VALIDATE_SYMBOL_MASTER, step2, required=True)
+        await sequence.execute_step(StartupStep.VALIDATE_FYERS_TOKEN, step2, required=True)
         await sequence.execute_step(StartupStep.VALIDATE_DATABASE, step3, required=True)
 
         # Verify execution order
         assert execution_order == ["step1", "step2", "step3"]
         assert len(sequence.completed_steps) == 3
         assert sequence.completed_steps[0] == StartupStep.SET_EVENT_LOOP
-        assert sequence.completed_steps[1] == StartupStep.VALIDATE_SYMBOL_MASTER
+        assert sequence.completed_steps[1] == StartupStep.VALIDATE_FYERS_TOKEN
         assert sequence.completed_steps[2] == StartupStep.VALIDATE_DATABASE
 
     @pytest.mark.asyncio
@@ -87,7 +87,7 @@ class TestStartupSequenceIntegrity:
         # Execute step 2 which fails
         with pytest.raises(ValueError, match="Step 2 failed"):
             await sequence.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
+                StartupStep.VALIDATE_FYERS_TOKEN, step2_fails, required=True
             )
 
         # Execute step 3 - should be skipped
@@ -101,7 +101,7 @@ class TestStartupSequenceIntegrity:
 
         # Verify sequence state
         assert len(sequence.completed_steps) == 1
-        assert sequence.failed_step == StartupStep.VALIDATE_SYMBOL_MASTER
+        assert sequence.failed_step == StartupStep.VALIDATE_FYERS_TOKEN
         assert not sequence.is_complete()
 
     @pytest.mark.asyncio
@@ -184,22 +184,22 @@ class TestStartupSequenceIntegrity:
         async def db_down_step() -> Never:
             raise DatabaseUnavailableError()
 
-        async def live_market_step() -> None:
-            ran.append("connect_live_market")
+        async def hat_feed_step() -> None:
+            ran.append("start_hat_feed")
             await asyncio.sleep(0)
 
         with caplog.at_level(logging.INFO):
             deferred = await sequence.execute_step(StartupStep.VALIDATE_DATABASE, db_down_step)
             connected = await sequence.execute_step(
-                StartupStep.CONNECT_LIVE_MARKET, live_market_step, required=False
+                StartupStep.START_HAT_FEED, hat_feed_step, required=False
             )
 
         assert (deferred, connected) == (False, True)
-        assert ran == ["connect_live_market"]
+        assert ran == ["start_hat_feed"]
         assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
         assert [r.exc_info for r in caplog.records if r.levelno == logging.WARNING] == [None]
         assert sequence.get_status() == {
-            "completed_steps": ["connect_live_market"],
+            "completed_steps": ["start_hat_feed"],
             "failed_step": None,
             "optional_failed_steps": [],
             "deferred_steps": ["validate_database"],
@@ -261,7 +261,7 @@ class TestStartupSequenceIntegrity:
         assert status["total_completed"] == 1
 
         # After second step
-        await sequence.execute_step(StartupStep.VALIDATE_SYMBOL_MASTER, step2, required=True)
+        await sequence.execute_step(StartupStep.VALIDATE_FYERS_TOKEN, step2, required=True)
         status = sequence.get_status()
         assert len(status["completed_steps"]) == 2
         assert status["total_completed"] == 2
@@ -293,7 +293,7 @@ class TestStartupSequenceIntegrity:
         # Execute first failing step
         with pytest.raises(ValueError, match="First failure"):
             await sequence.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
+                StartupStep.VALIDATE_FYERS_TOKEN, step2_fails, required=True
             )
 
         # Try to execute second failing step (should be skipped)
@@ -302,7 +302,7 @@ class TestStartupSequenceIntegrity:
         )
 
         # Verify first failure is tracked
-        assert sequence.failed_step == StartupStep.VALIDATE_SYMBOL_MASTER
+        assert sequence.failed_step == StartupStep.VALIDATE_FYERS_TOKEN
         assert result is False
 
     @pytest.mark.asyncio
@@ -315,11 +315,9 @@ class TestStartupSequenceIntegrity:
         """
         required_steps = [
             "SET_EVENT_LOOP",
-            "VALIDATE_SYMBOL_MASTER",
             "VALIDATE_DATABASE",
             "VALIDATE_FYERS_TOKEN",
-            "LOAD_INDEX_UNIVERSE",
-            "CONNECT_LIVE_MARKET",
+            "START_HAT_FEED",
         ]
 
         enum_steps = [step.name for step in StartupStep]
@@ -355,12 +353,12 @@ class TestStartupSequenceIntegrity:
 
         with pytest.raises(ValueError):
             await sequence2.execute_step(
-                StartupStep.VALIDATE_SYMBOL_MASTER, step2_fails, required=True
+                StartupStep.VALIDATE_FYERS_TOKEN, step2_fails, required=True
             )
 
         sequence2.log_summary()  # Should log failure
         assert not sequence2.is_complete()
-        assert sequence2.failed_step == StartupStep.VALIDATE_SYMBOL_MASTER
+        assert sequence2.failed_step == StartupStep.VALIDATE_FYERS_TOKEN
 
 
 # Property-Based Test Marker

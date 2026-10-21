@@ -39,7 +39,7 @@ from app.hat.clock import FixedClock
 from app.hat.data.provider.provider_session import RetryPolicy, SessionState
 from app.hat.data.provider.ticks import normalize_tick
 from app.hat.data.sessions import IST
-from app.hat.data.subscriptions import API_OWNER, HAT_OWNER, SubscriptionRegistry
+from app.hat.data.subscriptions import HAT_OWNER, SubscriptionRegistry
 from app.hat.data.symbols import symbol_master
 from app.hat.execution.fyers_auth import FyersAuthService, FyersCredentials
 
@@ -411,7 +411,7 @@ def test_tick_flow(messages: list[dict[str, Any]], with_loop: bool) -> None:
 
 # --- the registry (HAT-DATA-112, HAT-DATA-125) ---
 
-OWNERS = ["ws-1", "ws-2", API_OWNER, HAT_OWNER]
+OWNERS = ["ws-1", "ws-2", "ws-3", HAT_OWNER]
 REGISTRY_SYMBOLS = ["SBIN", "TCS", "INFY", "nse:sbin-eq", "NSE:TCS-EQ", "", "reliance"]
 
 

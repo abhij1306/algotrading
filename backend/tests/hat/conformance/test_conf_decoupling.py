@@ -32,24 +32,9 @@ PENDING = {
 # `tests/conftest.py`) and of the `tests` package itself.
 LEGACY_TEST_HELPERS = {"fakes", "conftest", "tests"}
 
-# Legacy modules that only re-export a helper HAT owns (one implementation, no copy); each is
-# deleted with the legacy code that uses it (K5b; K4 deleted `paper_book`, the broker package and
-# the token-store re-export with the manual-trading code).
-SHIMS = {
-    "utils/clock.py",
-    # K2: the Fyers stack. Each inherits or re-exports HAT's version and adds only legacy-only code.
-    "services/fyers/auth_flow.py",
-    "services/fyers_client.py",
-    # K4: `fyers_available` reads HAT's token store for the legacy data fetcher (K5b); K6 cuts it.
-    "config.py",
-    "services/symbol_master.py",
-    # K3: the legacy read side of HAT's live feed (it reads the feed's ticks and shares its
-    # registry with the websocket manager); K5b deletes both with the market and websocket code.
-    "services/live_market_service.py",
-    "utils/ws_manager.py",
-}
 # Legacy modules that import HAT to wire it in: `database.py` (schema upkeep) and `main.py` (it
-# registers HAT's routes and the legacy hooks on HAT's Fyers login).
+# registers HAT's routes and starts its feed). There are no re-export shims left (K5b deleted the
+# last ones with the legacy features that used them).
 WIRING = {"database.py", "main.py"}
 
 # Modules a HAT suite must never load, however it reaches them: the app and the routers. (The
@@ -132,12 +117,11 @@ def test_imports__hat_decoupled_from_legacy() -> None:
 
 def test_imports__legacy_does_not_import_hat() -> None:
     """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep),
-    `app.main` (wiring) and the re-export shims of the helpers HAT now owns (SHIMS, each deleted
-    with the legacy code) import HAT. The legacy risk manager, routers and services do not."""
+    `app.main` (wiring) import HAT. No other legacy module does: there are no re-export shims."""
     offenders = []
     for path in sorted(APP_ROOT.rglob("*.py")):
         rel = path.relative_to(APP_ROOT).as_posix()
-        if rel.startswith("hat/") or rel in WIRING or rel in SHIMS:
+        if rel.startswith("hat/") or rel in WIRING:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []

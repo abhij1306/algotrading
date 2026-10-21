@@ -7,8 +7,7 @@ process-wide installed calendar: a `MarketHoursPolicy` is built from the calenda
 sessions (a trading day with its own open and close, such as Muhurat or a Saturday session) are
 `sessions`.
 
-This is HAT's copy (K1, backend review C1); the legacy `app.utils.market_hours` keeps its own
-until it is deleted.
+HAT's own module since K1 (backend review C1); the legacy `app.utils.market_hours` is deleted.
 """
 
 from __future__ import annotations

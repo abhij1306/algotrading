@@ -9,8 +9,9 @@ from typing import NoReturn
 
 import psycopg2
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -19,12 +20,13 @@ from app import main as app_main
 from app.database import get_db
 from app.exceptions import DatabaseUnavailableError
 from app.main import app
-from app.services import fyers_client
 from app.utils.db_errors import is_db_unavailable
 from app.utils.logger import DatabaseUnavailableLogFilter
 
 SECRET = "hunter2-secret"
 DOWN_BODY = {"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}
+PROBE_PATH = "/__test/db-probe"
+DB_DEPENDENCY = Depends(get_db)
 DOWN_DB_URL = f"postgresql+psycopg2://postgres:{SECRET}@db.invalid:5432/algotrading"
 
 
@@ -36,6 +38,20 @@ def _refuse_connection() -> NoReturn:
 
 def _connection_refused() -> OperationalError:
     return OperationalError("SELECT 1", {}, Exception(f"connection refused {SECRET}"))
+
+
+@pytest.fixture(autouse=True)
+def db_probe_route() -> Generator[None, None, None]:
+    """A route that queries the database through `get_db`: the app has no DB route of its own
+    to probe, and the handlers under test are the app's, not a route's."""
+
+    def probe(db: Session = DB_DEPENDENCY) -> dict[str, int]:
+        return {"rows": db.execute(text("SELECT count(*) FROM hat_market")).scalar_one()}
+
+    count = len(app.router.routes)
+    app.add_api_route(PROBE_PATH, probe, methods=["GET"], include_in_schema=False)
+    yield
+    del app.router.routes[count:]
 
 
 @pytest.fixture
@@ -65,35 +81,20 @@ def down_client(down_engine: Engine) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
-def test_health_with_db_down_reports_down_without_driver_text(
+def test_a_request_with_the_db_down_answers_503_without_driver_text(
     down_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
-
-    response = down_client.get("/api/system/health")
+    response = down_client.get(PROBE_PATH)
 
     assert response.status_code == 503
-    assert response.json() == {
-        "status": "DOWN",
-        "postgresql": "DOWN",
-        "fyers": "DOWN",
-        "last_update": None,
-        "total_symbols": 0,
-        "recommendations": [
-            "PostgreSQL database is unavailable. Start it: net start postgresql-x64-18",
-            "Fyers API unavailable. Screener will use cached data only.",
-        ],
-        "startup": "COMPLETE",
-        **DOWN_BODY,
-    }
+    assert response.json() == DOWN_BODY
     assert SECRET not in response.text
 
 
 @pytest.fixture
 def schemaless_client() -> Generator[TestClient, None, None]:
     """The database answers, but has none of the app's tables (schema drift)."""
-    engine = create_engine("sqlite://")
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
     empty_session = sessionmaker(bind=engine, autoflush=False)
 
     def override_get_db() -> Generator[Session, None, None]:
@@ -109,26 +110,13 @@ def schemaless_client() -> Generator[TestClient, None, None]:
     engine.dispose()
 
 
-def test_health_with_schema_bug_is_degraded_not_an_outage(
-    schemaless_client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_a_schema_bug_is_a_500_with_a_fixed_body_not_an_outage(
+    schemaless_client: TestClient,
 ) -> None:
-    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
+    response = schemaless_client.get(PROBE_PATH)
 
-    response = schemaless_client.get("/api/system/health")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "DEGRADED",
-        "postgresql": "ERROR",
-        "fyers": "DOWN",
-        "last_update": None,
-        "total_symbols": 0,
-        "recommendations": [
-            "PostgreSQL query failed (schema out of date?). Check the server log.",
-            "Fyers API unavailable. Screener will use cached data only.",
-        ],
-        "startup": "COMPLETE",
-    }
+    assert response.status_code == 500
+    assert response.json() == {"error": {"code": "INTERNAL_ERROR", "message": "Server error"}}
     assert "no such table" not in response.text
 
 

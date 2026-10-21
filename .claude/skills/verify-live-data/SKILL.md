@@ -59,8 +59,8 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT feed.traceback_throttle` A failing site writes a full traceback first and then at most once per interval; the other failures are one counted debug line. Harm: a failing tick handler writes a traceback per tick and fills the disk.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` Only `app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK or any other WebSocket library (statically, or by name through `importlib` or `__import__`), nothing outside `app/hat` imports `fyers_apiv3`, and `LiveFeed.add_tick_listener` is the only tick input `live.py` uses. Harm: a second socket breaks the broker session and drops the feed.
-- `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and only in the body of `if is_enabled()` (not under a negated or nested `if not is_enabled()`); the only importers of `feed.py` are `main.py` and the legacy read side. Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
-- `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `LiveMarketService` is the listed legacy copy (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`; a class named `RiskManager` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+- `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and only in the body of `if is_enabled()` (not under a negated or nested `if not is_enabled()`); the only importer of `feed.py` is `main.py` (K5b deleted the legacy read side). Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
+- `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); no legacy copy is left (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`, K5b the legacy `LiveMarketService`; a class named `RiskManager` or `LiveMarketService` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
 
@@ -69,9 +69,6 @@ cd backend
 CI=1 python -m pytest tests/hat/properties/test_feed.py tests/hat/properties/test_bars.py tests/hat/properties/test_gapscan.py \
   tests/hat/properties/test_announcements.py -q --no-cov     # about 40 s under the ci profile
 python -m pytest tests/hat/conformance/test_conf_imports.py -q --no-cov
-# the existing live and stream tests must stay green, unmodified:
-python -m pytest tests/test_live_market_regressions.py tests/test_websocket_stream_characterization.py \
-  tests/test_websocket_stream_origin.py -q --no-cov
 ```
 
 No network, broker or database server is touched: ticks come from generated payloads, MCP rows from `PricedListingServer`, feeds from `rss_item`/`rss_document` and two recorded fixtures (`rss_announcements.xml`, `rss_financial_results.xml`, `mcp_cm_equity_stocks_reli.json`), and the database is in-memory SQLite.
@@ -130,8 +127,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
-Covered digest: `ecec00a6db22e6a9f25f926e2902088e6dbf96e21239bb1ba34b2cb912042930`
+Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
+Covered digest: `90caa652e4c634cb23d545934419cd698849505fee0df86de07a89e8423296dd`
 
 ## Scope changes
 
@@ -146,6 +143,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `bars.history_matches_builder` (HAT-DATA-119) belongs to PR 12 and is not checked here.
 - K3 moved the data socket, the session, the tick normaliser and the subscription registry into HAT (`app/hat/data/feed.py`, `provider/`, `subscriptions.py`) and deleted their legacy tests; each is a `feed.*` property here. The session, registry, convergence and login-hook checks are Hypothesis state machines, not TLA+ models, because the promises are about one process and the fake socket is the whole environment. The fake provider forgets its subscriptions when the SDK reconnects (`FakeDataSocket.sdk_reconnect` clears them), which is the assumption the replay is checked against; a live check that Fyers keeps them would make the replay redundant but harmless.
 - `bars.listener_isolation` moved from `LiveMarketService._notify_tick_listeners` to `LiveFeed._deliver`; it no longer checks the legacy `latest_values` and broadcast batch, which are the legacy read side's own tests in `test_live_market_regressions.py`. `bars.feed_connection_window` moved the same way. `CONF imports.no_second_websocket` now allows the SDK socket in exactly one HAT module instead of none.
+- K5b deleted the legacy `LiveMarketService`, `ws_manager`, the websocket and market routes and their tests (`test_live_market_regressions.py` and the stream tests). `CONF no_duplicate_fakes_or_authorities` lost its only `LEGACY_COPIES` entry (`LiveMarketService`; the list is empty and the lookalike check still refuses a class by that name) and `CONF single_feed_import_rule` lost `services/live_market_service.py` from `FEED_IMPORTERS`. Both are stricter, not narrower. `subscriptions.API_OWNER` (the legacy REST owner) was deleted; the registry property now draws a third client owner instead.
 - Review found `main.py` built the feed with no calendar, so weekday exchange holidays were connectable. The feed now takes its hours policy from HAT's trading calendar (`calendar_policy_source`, read at most every 10 minutes) and is closed while the calendar is missing, unreadable or not wired; `bars.feed_connection_window` keeps checking the weekday rule with a fixed empty-holiday policy and `feed.calendar_closed` checks the calendar cases.
 - `feed.registry_concurrent` raises the thread switch frequency for its run so an unguarded update shows; it draws at most 6 examples.
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
@@ -516,6 +514,16 @@ FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule
 
 Second break (nested negated guard): in `app/main.py`, replaced `if is_enabled(): _start_hat_feed(app)` with `if is_enabled(): if not is_enabled(): _start_hat_feed(app)`; the output is `AssertionError: assert False where False = _guarded_by_hat_enabled(Module(body=[...`.
 
+Break (K5b, `FEED_IMPORTERS` is `main.py` only): recreated `app/services/live_market_service.py` containing `from app.hat.data import feed`.
+
+
+```
+tests/hat/conformance/test_conf_imports.py:274: in test_single_feed_import_rule
+E   AssertionError: services/live_market_service.py
+E   assert 'services/live_market_service.py' in {'main.py'}
+FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule
+```
+
 ### CONF no_duplicate_fakes_or_authorities
 
 Break: appended `class FakeBroker: pass` to `tests/hat/fakes/fyers_sdk.py`.
@@ -529,6 +537,15 @@ E
 E     Left contains one more item: 'tests/hat/fakes/fyers_sdk.py'
 E     Use -v to get more diff
 FAILED tests/hat/conformance/test_conf_authorities.py::test_no_duplicate_fakes_or_authorities
+```
+
+Break (K5b, `LEGACY_COPIES` emptied): recreated `app/services/live_market_service.py` with `class LiveMarketService: pass`.
+
+
+```
+tests/hat/conformance/test_conf_authorities.py F
+E   AssertionError: [('LiveMarketService', 'app/services/live_market_service.py')]
+E   assert [('LiveMarket..._service.py')] == []
 ```
 
 ### PBT bars.candidates_never_overwrite_refresh

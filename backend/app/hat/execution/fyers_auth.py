@@ -8,7 +8,7 @@ injected hooks, so this module imports no feed and no HTTP layer:
 - `token_change` runs after a token was saved or removed (the default drops the process-wide
   `FyersSession`, so the next call loads the new token);
 - `login` runs after a successful login and `disconnect` before a logout removes the token (K3's
-  live feed, and the legacy feed until it is deleted, register here).
+  live feed registers here).
 
 A hook that raises is logged by its type and never blocks the login or the logout.
 

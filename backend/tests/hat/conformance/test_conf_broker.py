@@ -248,27 +248,20 @@ def test_ops__single_fyers_secret_store() -> None:
 
 def test_ops__one_login_one_token_store() -> None:
     """HAT-OPS-051, HAT-DEC-BD2: one Fyers login and one token store. The login service and the
-    session use HAT's `token_store`; the legacy client and symbol master inherit from HAT's classes
-    (no second implementation); the legacy token-store re-export, broker package and login router
-    are gone; the HAT router has exactly the four login routes."""
+    session use HAT's `token_store`; the legacy client, symbol master, login hooks, token-store
+    re-export, broker package and login router are gone (no second implementation); the HAT
+    router has exactly the four login routes."""
     from app.hat.api import fyers_auth as routes
     from app.hat.execution import fyers_auth, fyers_session, fyers_tokens
-
-    def source(relative: str) -> str:
-        return (APP_ROOT / relative).read_text(encoding="utf-8")
 
     assert fyers_auth.fyers_auth.store is fyers_tokens.token_store
     assert fyers_session.FyersSession.__init__.__kwdefaults__ is not None
     assert "token_store" in inspect.getsource(fyers_session.FyersSession.__init__)
-    # The legacy classes are subclasses or re-exports of HAT's (read as text: HAT tests never
-    # import legacy modules).
-    assert re.search(
-        r"^class FyersClient\(FyersSession\)", source("services/fyers_client.py"), re.M
-    )
-    assert re.search(
-        r"^class SymbolMaster\(HatSymbolMaster\)", source("services/symbol_master.py"), re.M
-    )
-    assert not (APP_ROOT / "services" / "fyers" / "token_store.py").exists()
+    # No second implementation: the legacy client, symbol master and login hooks are deleted
+    # (K5b; K4 deleted the token-store re-export, the broker package and the login router).
+    assert not (APP_ROOT / "services" / "fyers_client.py").exists()
+    assert not (APP_ROOT / "services" / "symbol_master.py").exists()
+    assert not (APP_ROOT / "services" / "fyers").exists()
     assert not (APP_ROOT / "brokers").exists()
     assert not (APP_ROOT / "routers" / "auth.py").exists()
     found = {(m, r.path) for r in routes.router.routes for m in getattr(r, "methods", set())}

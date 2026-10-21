@@ -25,11 +25,9 @@ class StartupStep(Enum):
     """Enumeration of startup steps in the correct execution order."""
 
     SET_EVENT_LOOP = "set_event_loop"
-    VALIDATE_SYMBOL_MASTER = "validate_symbol_master"
     VALIDATE_DATABASE = "validate_database"
     VALIDATE_FYERS_TOKEN = "validate_fyers_token"  # noqa: S105 - step name and not a secret
-    LOAD_INDEX_UNIVERSE = "load_index_universe"
-    CONNECT_LIVE_MARKET = "connect_live_market"
+    START_HAT_FEED = "start_hat_feed"
 
 
 class StartupSequence:

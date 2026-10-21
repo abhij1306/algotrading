@@ -1,9 +1,8 @@
 """Which browser origins count as the SmartTrader frontend.
 
-One rule, shared by the CORS middleware and the Origin check on WS /api/websocket/stream:
-an origin in config.ALLOWED_ORIGINS (CORS_ORIGINS), or any http loopback origin on any port,
-so a frontend that start_dev moved off port 3000 keeps working. A loopback page is already
-local; the rule exists to keep pages on other sites out.
+One rule for the CORS middleware: an origin in config.ALLOWED_ORIGINS (CORS_ORIGINS), or any
+http loopback origin on any port, so a frontend that start_dev moved off port 3000 keeps working.
+A loopback page is already local; the rule exists to keep pages on other sites out.
 """
 
 from urllib.parse import urlsplit
