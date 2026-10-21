@@ -274,7 +274,8 @@ def test_session_gives_up(mode: str, attempts: int) -> None:
     assert len(calls) == attempts
     assert len(factory.sockets) == (attempts if mode == "never_up" else 0)
     assert all(s.closed for s in factory.sockets)
-    assert session.busy is False and session.has_socket is False
+    assert session.busy is False
+    assert session.has_socket is False
 
 
 @settings(max_examples=8, deadline=None)
@@ -682,7 +683,8 @@ class AuthMachine(RuleBasedStateMachine):
         assert self.feed.explicitly_disconnected is False
         if self.feed.connection_allowed():
             socket = _current(self.factory)
-            assert socket is not None and socket.token == f"APP-100:{token}"
+            assert socket is not None
+            assert socket.token == f"APP-100:{token}"
             assert self.feed.state is SessionState.CONNECTED
 
     @rule()
@@ -803,7 +805,8 @@ def test_monitor_survives_errors(failing: set[int]) -> None:
         patch.object(feed_module, "LOOP_ERROR_PAUSE_S", 0.001),
     ):
         alive = asyncio.run(scenario())
-    assert alive and len(calls) >= 10
+    assert alive
+    assert len(calls) >= 10
 
 
 @settings(max_examples=20, deadline=None)
@@ -827,7 +830,9 @@ def test_token_check_off_loop(valid: bool, is_open: bool, explicit: bool, raises
         return await feed.connect_async(explicit=explicit), threading.get_ident()
 
     status, loop_thread = asyncio.run(scenario())
-    assert seen and set(seen) == {seen[0]} and seen[0] != loop_thread
+    assert seen
+    assert set(seen) == {seen[0]}
+    assert seen[0] != loop_thread
     if raises or not valid:
         assert status == "token_invalid"
     else:
@@ -867,7 +872,8 @@ def test_socket_factory(token: str) -> None:
         fyers_websocket.fyers_socket_factory(token, callbacks)
     (kwargs,) = built
     assert kwargs["access_token"] == token
-    assert kwargs["reconnect"] is True and kwargs["write_to_file"] is False
+    assert kwargs["reconnect"] is True
+    assert kwargs["write_to_file"] is False
     assert kwargs["log_path"] == ""
     assert kwargs["on_message"] is callbacks.on_message
     assert kwargs["on_connect"] is callbacks.on_connect

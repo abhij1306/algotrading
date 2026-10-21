@@ -171,7 +171,6 @@ class LiveMarketService:
         self,
         loop: asyncio.AbstractEventLoop | None = None,
         prevalidated_token: bool | None = None,
-        explicit: bool = False,
     ) -> str:
         """`connect()` for async callers: HAT's blocking token check runs off the event loop."""
         self._capture_loop(loop)
@@ -184,10 +183,9 @@ class LiveMarketService:
         self,
         loop: asyncio.AbstractEventLoop | None = None,
         prevalidated_token: bool | None = None,
-        explicit: bool = False,
     ) -> str:
         """Start the broadcast loop on `loop` and ask HAT's feed to connect when the market is
-        open. `explicit` no longer lifts a disconnect: only a Fyers login does that."""
+        open. Only a Fyers login lifts an explicit disconnect."""
         self._capture_loop(loop)
         self._ensure_flush_task()
         if self.feed is None:

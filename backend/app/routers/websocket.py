@@ -41,9 +41,7 @@ async def connect_websocket() -> dict[str, Any]:
         from ..services.live_market_service import connect_status_message, live_market
 
         # Ensure live_market captures the running loop for thread-safe broadcasting.
-        connect_status = await live_market.connect_async(
-            loop=asyncio.get_running_loop(), explicit=True
-        )
+        connect_status = await live_market.connect_async(loop=asyncio.get_running_loop())
         return {"status": connect_status, "message": connect_status_message(connect_status)}
     except Exception as e:
         raise handle_api_error(e, "Failed to initialize WebSocket") from e

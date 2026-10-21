@@ -158,7 +158,7 @@ def test_without_hat_the_legacy_feed_is_degraded_not_broken() -> None:
     live = lms.LiveMarketService()
 
     assert live.connect(prevalidated_token=True) == "hat_disabled"
-    assert asyncio.run(live.connect_async(explicit=True)) == "hat_disabled"
+    assert asyncio.run(live.connect_async()) == "hat_disabled"
     asyncio.run(live.subscribe(["SBIN"]))  # nothing to subscribe at
     asyncio.run(live.unsubscribe(["SBIN"]))
     live.disconnect()  # the socket is HAT's: nothing to close
