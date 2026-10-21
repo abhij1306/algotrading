@@ -62,14 +62,15 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
-Covered digest: `e36eb296546f47fcdbf4158653baf90ba84876b6b3487afc8a62c54a18ec4b2e`
+Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
+Covered digest: `a222db8dc871784e64b57e93f60a16df1788b95dbc57aedeba819efe87e9d76b`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
+- PR 12 rewrote `backtest/metrics.py` on polars (`pl.Series` in, the arithmetic unchanged; the population deviation is `std(ddof=0)`). The five `metrics.*` properties were moved to polars series with the same strategies and bounds, and each was shown failing again on the polars code (the `PR 12` breaks below). No property was narrowed.
 - `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
 - K6 emptied `PENDING` in `test_conf_decoupling.py` and replaced it, with `PERMANENT`, by one `SHARED` set holding `app.base`, `app.database`, `app.paths` and `app.utils.env_loader`. They are kept as HAT-neutral shared infrastructure rather than moved into HAT: after K6 they hold no legacy code (`database.py` creates only HAT tables and Postgres only, `paths.py` has the roots and `HAT_DATA_ROOT`, `env_loader.py` parses `.env`), and moving them would duplicate the engine and the one `.env` loader. No check was narrowed: a new coupling is still refused.
 
@@ -95,6 +96,18 @@ E    +  where np.False_ = all()
 E    +    where all = (0    0.0\n1    1.0\ndtype: float64 <= 0 & 0    0.0\n1    1.0\ndtype: float64 > -1).all
 ```
 
+Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: drawdown measured from the first value.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:33: in test_drawdown_bounds
+    def test_drawdown_bounds(equity: pl.Series) -> None:
+                   ^^^
+tests/hat/properties/test_metrics.py:39: in test_drawdown_bounds
+    assert ((dd <= 0) & (dd > -1)).all()
+E   AssertionError: assert False
+```
+
 ### PBT metrics.trade_stats_partition
 
 Break: in `backend/app/hat/backtest/metrics.py`: a trade of exactly 0 is neither a win nor a loss.
@@ -106,6 +119,18 @@ tests/hat/properties/test_metrics.py:53: in test_trade_stats_partition
 E   assert (0 + 0) == 1
 E    +  where 0 = TradeStats(total=1, wins=0, losses=0, win_rate=0.0, avg_win=0.0, avg_loss=0.0, profit_factor=0.0).wins
 E    +  and   0 = TradeStats(total=1, wins=0, losses=0, win_rate=0.0, avg_win=0.0, avg_loss=0.0, profit_factor=0.0).losses
+```
+
+Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: a trade of exactly 0 is neither win nor loss.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:47: in test_trade_stats_partition
+    def test_trade_stats_partition(values: list[float]) -> None:
+                   ^^^
+tests/hat/properties/test_metrics.py:53: in test_trade_stats_partition
+    assert stats.wins + stats.losses == stats.total
+E   assert (0 + 0) == 1
 ```
 
 ### PBT metrics.sharpe_zero_volatility
@@ -130,6 +155,18 @@ tests/hat/properties/test_metrics.py:75: in test_sharpe_zero_volatility
 E   assert 31497039417.435608 == 0.0
 ```
 
+Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the volatility floor replaced by `std > 0`.
+
+```
+tests/hat/properties/test_metrics.py F
+  + Exception Group Traceback (most recent call last):
+  |   File "/tmp/claude-1000/-data-workspace-wt-hat-pr12-backtest/b5cc6546-d93d-4f00-8bcc-c5ce687ba958/scratchpad/pr12/root4/backend/tests/hat/properties/test_metrics.py", line 63, in test_sharpe_zero_volatility
+  |     st.floats(min_value=-0.2, max_value=0.2, allow_nan=False),
+  |                ^^^
+  |   File "/data/workspace/algotrading/venv/lib/python3.14/site-packages/hypothesis/core.py", line 2299, in wrapped_test
+  |     raise the_error_hypothesis_found
+```
+
 ### PBT metrics.sharpe_sign_follows_mean
 
 Break: in `backend/app/hat/backtest/metrics.py`: the mean taken as an absolute value.
@@ -143,12 +180,36 @@ E   Failing test case: test_sharpe_sign_follows_mean(
 E       series=Series([0.0, -0.5]),
 ```
 
+Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the mean of absolute returns.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:79: in test_sharpe_sign_follows_mean
+    def test_sharpe_sign_follows_mean(series: pl.Series) -> None:
+                   ^^^
+tests/hat/properties/test_metrics.py:86: in test_sharpe_sign_follows_mean
+    assert mean > 0
+E   assert -0.25 > 0
+```
+
 ### PBT metrics.returns_guard_bad_capital
 
 Break: in `backend/app/hat/backtest/metrics.py`: the capital guard removed from `total_return`.
 
 ```
 tests/hat/properties/test_metrics.py F
+```
+
+Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the capital guard lets a negative capital through.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:92: in test_returns_guard_bad_capital
+    st.floats(min_value=-1e6, max_value=1e7, allow_nan=False),
+               ^^^
+tests/hat/properties/test_metrics.py:101: in test_returns_guard_bad_capital
+    assert metrics.total_return(final, initial) == 0.0
+E   assert -1.0 == 0.0
 ```
 
 ### CONF imports.hat_decoupled_from_legacy

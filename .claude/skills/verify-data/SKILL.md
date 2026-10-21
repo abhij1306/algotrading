@@ -67,7 +67,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
 - `PBT features.pandas_equivalence` SMA50/150/200 equal the frozen `stage2_metrics` averages (`backend/tests/hat/fixtures/rs_oracle.json`) and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
 - `CONF features.schema` Every written features partition has exactly the §7 columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
-- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters (only `backtest/metrics.py`, moved unchanged by K1). Harm: two indicator implementations diverge.
+- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters; none is left since PR 12 moved `backtest/metrics.py` to polars. Harm: two indicator implementations diverge.
 
 ## Run
 
@@ -141,8 +141,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `ab83547d0ab97c578d47cf813f62328f55c352de`
-Covered digest: `542d1d76d7247b3dd06927b3351ab2407b37ae38a873d06b14485f47c13dbdba`
+Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
+Covered digest: `ee81431f4bb07b7a720cee90542fb8b6f3546a2a77e560aafb6655eb90cf10f4`
 
 ## Scope changes
 
@@ -840,6 +840,18 @@ E   AssertionError: assert {'data/features.py': 'pandas'} == {}
 E     Left contains 1 more item:
 E     {'data/features.py': 'pandas'}
 E     Full diff:
+```
+
+Break (PR 12, the adapter list emptied): in `backend/app/hat/backtest/metrics.py`: `backtest/metrics.py` imports pandas again.
+
+```
+tests/hat/conformance/test_conf_imports.py F
+tests/hat/conformance/test_conf_imports.py:320: in test_imports__hat_polars_only
+    assert offenders == {}
+E   AssertionError: assert {'backtest/me...py': 'pandas'} == {}
+E
+E     Left contains 1 more item:
+E     {'backtest/metrics.py': 'pandas'}
 ```
 
 ### PBT ingest.probe_schedule

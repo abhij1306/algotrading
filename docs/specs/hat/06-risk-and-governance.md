@@ -419,13 +419,15 @@ The invariants live in the risk manager, outside every config, so no edit can re
 #### HAT-GOV-091: Increase waits 7 days and passes the evidence gate
 - **Statement:** An increase takes effect no earlier than `requested_at + 7 days` [A] and only with gate evidence of ≥ 50 live trades with expectancy within tolerance.
 - **Source:** BL "Governance"; SCH CHECK `direction <> 'increase' or effective_from >= requested_at + interval '7 days'`.
-- **PR:** 2, 10
-- **Verification:** DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`
+- **PR:** 2, 10, 12
+- **Verification:** DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`
 - **Acceptance:**
   - Property: the database rejects every insert with direction = increase and effective_from < requested_at + 7 days. Harm: risk rises on impulse.
   - Property: for every evidence set, an increase is accepted only when it records ≥ 50 live (non-virtual) closed trades and expectancy within tolerance in `gate_evidence`. Harm: risk rises without evidence.
+  - Property: for every set of sleeves with completed backtest runs and closed trades, `runs.gate_evidence` equals `build_gate_evidence` over the user's closed trades (closing order, shadow ones ignored) against the discounted, trade-weighted mean expectancy of each sleeve's newest completed run of its live version; with no such run it is none. Harm: an increase is checked against a benchmark from a stale or foreign backtest.
 - **[A]** cooling-off 7 days: validated by review after the first increase.
 - **[OWNER-PENDING]** "expectancy within tolerance": the docs give no number; default = live expectancy (R) ≥ 0 and its 90% confidence interval overlapping the discounted backtest expectancy; owner to confirm.
+- **Design (PR 12):** the evidence source is `app.hat.backtest.runs.gate_evidence` (09 HAT-BT-060); the discount is the lifecycle's (05 HAT-PORT-065).
 
 #### HAT-GOV-092: Policy versions are immutable
 - **Statement:** A published risk-policy version can never be updated or deleted except to set `superseded_at`.

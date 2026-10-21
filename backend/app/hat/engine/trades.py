@@ -25,6 +25,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -59,14 +60,18 @@ from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
 __all__ = [
+    "SHADOW_FILLS",
     "EntryOutcome",
     "EntryRequest",
+    "FillModel",
     "TradeError",
     "bot_snapshot",
+    "close_position",
     "evaluate_position",
     "expire_watchlist",
     "lock_bot",
     "open_entry",
+    "position_state",
     "replay_state",
     "risk_inputs",
     "trade_r",
@@ -106,6 +111,25 @@ ENTRY_SKIP_REASONS = frozenset(
 )
 _ZERO = Decimal(0)
 _RATIO_PLACES = Decimal("0.000001")
+
+
+class FillModel(Protocol):
+    """How a virtual fill is priced: (fill price, fees) for `qty` shares at the reference
+    `price` on `side` ("buy" or "sell")."""
+
+    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]: ...
+
+
+class _ShadowFills:
+    """Shadow trading's fills: at the reference price, with no fees (PR 11)."""
+
+    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]:
+        return price, _ZERO
+
+
+# The backtest passes its own model (slippage and charges, `app.hat.backtest.costs`); the shadow
+# engine and the backtest otherwise fill through the same functions (HAT-BT-010).
+SHADOW_FILLS: FillModel = _ShadowFills()
 
 
 class TradeError(HatError):
@@ -346,7 +370,11 @@ def _entry_policy(session: Session, bot: HatBot, request: EntryRequest) -> Polic
 
 
 def open_entry(
-    session: Session, request: EntryRequest, *, decide: DECIDE = evaluate_signal
+    session: Session,
+    request: EntryRequest,
+    *,
+    decide: DECIDE = evaluate_signal,
+    fills: FillModel = SHADOW_FILLS,
 ) -> EntryOutcome:
     """Evaluate one trigger and, when accepted, open the virtual position, in one transaction
     holding the bot's lock (HAT-EXEC-021, HAT-RISK-100).
@@ -430,7 +458,8 @@ def open_entry(
             now=now,
         )
         return EntryOutcome(signal.id, signal.state, decision, None)
-    position = _virtual_entry(session, signal, bot, decision, entry, now)
+    qty = int(decision.quantity or 0)
+    position = _virtual_entry(session, signal, bot, decision, fills.fill("buy", qty, entry), now)
     return EntryOutcome(signal.id, signal.state, decision, position.id)
 
 
@@ -457,10 +486,11 @@ def _virtual_order(
     purpose: str,
     side: str,
     qty: int,
-    price: Decimal,
+    fill: tuple[Decimal, Decimal],
     now: datetime,
 ) -> tuple[HatOrder, HatFill]:
-    """A virtual order and its fill at `price`: no broker id, no broker trade id, no fees."""
+    """A virtual order and its fill at `fill` (price, fees): no broker id, no broker trade id."""
+    price, fees = fill
     order = HatOrder(
         id=uuid7(),
         signal_id=signal.id,
@@ -484,7 +514,7 @@ def _virtual_order(
         order_id=order.id,
         qty=qty,
         price=price,
-        fees=_ZERO,
+        fees=fees,
         currency="INR",
         filled_at=now,
         broker_trade_id=None,
@@ -500,13 +530,14 @@ def _virtual_entry(
     signal: HatSignal,
     bot: HatBot,
     decision: RiskDecision,
-    entry: Decimal,
+    fill: tuple[Decimal, Decimal],
     now: datetime,
 ) -> HatPosition:
     qty = int(decision.quantity or 0)
     stop = decision.stop or _ZERO
+    entry = fill[0]
     order, _ = _virtual_order(
-        session, signal, bot, None, purpose="entry", side="buy", qty=qty, price=entry, now=now
+        session, signal, bot, None, purpose="entry", side="buy", qty=qty, fill=fill, now=now
     )
     _emit(
         session,
@@ -620,6 +651,31 @@ def _raise_stop(
     position.current_stop = new
 
 
+def _signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, HatBot]:
+    signal = session.get(HatSignal, position.signal_id)
+    bot = session.get(HatBot, position.bot_id)
+    if signal is None or bot is None:
+        raise TradeError("unknown_signal")
+    return signal, bot
+
+
+def position_state(
+    session: Session, position: HatPosition
+) -> tuple[list[ExitRule], exits.PositionState]:
+    """The pinned exit stack of a position and the position as the exit rules read it: what
+    `evaluate_position` hands to `exits.evaluate`."""
+    signal, _ = _signal_and_bot(session, position)
+    state = exits.PositionState(
+        qty_original=_entry_qty(session, signal),
+        qty_open=position.qty_open,
+        avg_entry=Decimal(position.avg_entry),
+        initial_stop=Decimal(position.initial_stop),
+        current_stop=Decimal(position.current_stop),
+        fired=frozenset(position.rules_fired or []),
+    )
+    return exit_rules_of(session, signal), state
+
+
 def evaluate_position(
     session: Session,
     position_id: uuid.UUID,
@@ -629,27 +685,18 @@ def evaluate_position(
     *,
     high: Decimal | None = None,
     low: Decimal | None = None,
+    fills: FillModel = SHADOW_FILLS,
 ) -> exits.Evaluation:
     """Run the pinned exit stack on one virtual position and carry out what it says: raise the
     stop, sell partials, or close the position and write its trade result (HAT-EXEC-070..073).
 
-    `high` and `low` are the extremes the price made since entry, for the result's MFE and MAE."""
+    `high` and `low` are the extremes the price made since entry, for the result's MFE and MAE.
+    A sale fills at `view.price` through `fills`."""
     position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return exits.Evaluation()
-    signal = session.get(HatSignal, position.signal_id)
-    bot = session.get(HatBot, position.bot_id)
-    if signal is None or bot is None:
-        raise TradeError("unknown_signal")
-    rules = exit_rules_of(session, signal)
-    state = exits.PositionState(
-        qty_original=_entry_qty(session, signal),
-        qty_open=position.qty_open,
-        avg_entry=Decimal(position.avg_entry),
-        initial_stop=Decimal(position.initial_stop),
-        current_stop=Decimal(position.current_stop),
-        fired=frozenset(position.rules_fired or []),
-    )
+    signal, bot = _signal_and_bot(session, position)
+    rules, state = position_state(session, position)
     result = exits.evaluate(rules, state, view, phase)
     price = view.price
     if result.actions and price is None:
@@ -661,14 +708,56 @@ def evaluate_position(
         _log_ignored(rule_id, reason)
     position.rules_fired = sorted({*(position.rules_fired or []), *result.fired})
     if price is not None:
+        marks = _Marks(fills, high, low)
         for action in result.actions:
-            _virtual_exit(session, signal, bot, position, action, price, now, high=high, low=low)
+            sale = _Sale(action.kind == "full", action.qty, action.rule_ids[0].split(":", 1)[1])
+            _virtual_exit(session, signal, bot, position, sale, price, now, marks)
     session.flush()
     return result
 
 
+def close_position(
+    session: Session,
+    position_id: uuid.UUID,
+    price: Decimal,
+    reason: str,
+    now: datetime,
+    *,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
+    fills: FillModel = SHADOW_FILLS,
+) -> bool:
+    """Sell the whole open quantity of a virtual position at `price` for a `reason` outside the
+    exit stack (the backtest's period end, an instrument's last traded day) and write its trade
+    result. False when the position was already closed."""
+    position = _locked_virtual_position(session, position_id)
+    if position.closed_at is not None or position.qty_open <= 0:
+        return False
+    signal, bot = _signal_and_bot(session, position)
+    sale = _Sale(True, position.qty_open, reason)
+    _virtual_exit(session, signal, bot, position, sale, price, now, _Marks(fills, high, low))
+    session.flush()
+    return True
+
+
 def _log_ignored(rule_id: str, reason: str) -> None:
     logger.info("exit rule %s ignored: %s", rule_id, reason)
+
+
+@dataclass(frozen=True)
+class _Sale:
+    full: bool
+    qty: int
+    rule: str
+
+
+@dataclass(frozen=True)
+class _Marks:
+    """How a sale fills, and the extremes since entry for the trade result."""
+
+    fills: FillModel
+    high: Decimal | None
+    low: Decimal | None
 
 
 def _virtual_exit(
@@ -676,15 +765,15 @@ def _virtual_exit(
     signal: HatSignal,
     bot: HatBot,
     position: HatPosition,
-    action: exits.ExitAction,
+    sale: _Sale,
     price: Decimal,
     now: datetime,
-    *,
-    high: Decimal | None,
-    low: Decimal | None,
+    marks: _Marks,
 ) -> None:
-    full = action.kind == "full"
+    full = sale.full
     purpose = "exit_full" if full else "exit_partial"
+    fill = marks.fills.fill("sell", sale.qty, price)
+    filled = fill[0]
     order, _ = _virtual_order(
         session,
         signal,
@@ -692,18 +781,18 @@ def _virtual_exit(
         position,
         purpose=purpose,
         side="sell",
-        qty=action.qty,
-        price=price,
+        qty=sale.qty,
+        fill=fill,
         now=now,
     )
-    rule = action.rule_ids[0].split(":", 1)[1]
+    rule = sale.rule
     _emit(
         session,
         signal,
         "order.placed",
         aggregate_type="order",
         aggregate_id=order.id,
-        payload={"purpose": purpose, "qty": action.qty, "is_virtual": True, "rule": rule},
+        payload={"purpose": purpose, "qty": sale.qty, "is_virtual": True, "rule": rule},
         now=now,
         position=position,
     )
@@ -713,10 +802,10 @@ def _virtual_exit(
         "order.filled",
         aggregate_type="order",
         aggregate_id=order.id,
-        payload={"qty": action.qty, "price": str(price), "is_virtual": True},
+        payload={"qty": sale.qty, "price": str(filled), "is_virtual": True},
         now=now,
     )
-    position.qty_open -= action.qty
+    position.qty_open -= sale.qty
     if not full:
         _emit(
             session,
@@ -724,7 +813,7 @@ def _virtual_exit(
             "exit.partial",
             aggregate_type="position",
             aggregate_id=position.id,
-            payload={"qty": action.qty, "price": str(price), "rule": rule},
+            payload={"qty": sale.qty, "price": str(filled), "rule": rule},
             now=now,
             position=position,
         )
@@ -736,11 +825,11 @@ def _virtual_exit(
         "position.closed",
         aggregate_type="position",
         aggregate_id=position.id,
-        payload={"price": str(price), "rule": rule},
+        payload={"price": str(filled), "rule": rule},
         now=now,
         position=position,
     )
-    _write_result(session, signal, position, rule, now, high=high, low=low)
+    _write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
 
 
 def _write_result(

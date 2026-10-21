@@ -4,7 +4,7 @@ the HAT backtest reuses, on the real functions of `app.hat.backtest.metrics`. Se
 
 import math
 
-import pandas as pd
+import polars as pl
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -14,12 +14,12 @@ equity_curves = st.lists(
     st.floats(min_value=1.0, max_value=1e7, allow_nan=False, allow_infinity=False),
     min_size=1,
     max_size=60,
-).map(pd.Series)
+).map(lambda xs: pl.Series(xs, dtype=pl.Float64))
 returns = st.lists(
     st.floats(min_value=-0.5, max_value=0.5, allow_nan=False, allow_infinity=False),
     min_size=1,
     max_size=60,
-).map(pd.Series)
+).map(lambda xs: pl.Series(xs, dtype=pl.Float64))
 pnl = st.lists(
     st.one_of(
         st.just(0.0),
@@ -30,15 +30,15 @@ pnl = st.lists(
 
 
 @given(equity_curves)
-def test_drawdown_bounds(equity: pd.Series) -> None:
+def test_drawdown_bounds(equity: pl.Series) -> None:
     """The drawdown of a positive equity curve is in (-1, 0], is exactly 0 at every new running
     peak, and `max_drawdown` is its minimum. Harm: a backtest reports a loss deeper than
     the account, or none after a fall."""
     dd = metrics.drawdown_series(equity)
     assert len(dd) == len(equity)
     assert ((dd <= 0) & (dd > -1)).all()
-    at_peak = equity == equity.cummax()
-    assert (dd[at_peak] == 0).all()
+    at_peak = equity == equity.cum_max()
+    assert (dd.filter(at_peak) == 0).all()
     assert metrics.max_drawdown(dd) == dd.min()
     assert metrics.max_drawdown(dd) <= 0
 
@@ -67,16 +67,16 @@ def test_sharpe_zero_volatility(level: float, n: int) -> None:
     """Returns that never vary have no volatility, so both Sharpe conventions are exactly 0.0
     rather than a division by zero or an infinity. Harm: an infinite Sharpe ranks a flat
     strategy first."""
-    flat = pd.Series([level] * n)
+    flat = pl.Series([level] * n, dtype=pl.Float64)
     assert metrics.sharpe_mean_std(flat) == 0.0
     assert metrics.sharpe_excess_cagr(0.1, flat, 0.05) == 0.0
-    tiny = pd.Series([0.0, 2e-13] * 5)  # a per-period volatility of 1e-13 is still no volatility
+    tiny = pl.Series([0.0, 2e-13] * 5)  # a per-period volatility of 1e-13 is still no volatility
     assert metrics.sharpe_mean_std(tiny) == 0.0
     assert metrics.sharpe_excess_cagr(0.1, tiny, 0.05) == 0.0
 
 
 @given(returns)
-def test_sharpe_sign_follows_mean(series: pd.Series) -> None:
+def test_sharpe_sign_follows_mean(series: pl.Series) -> None:
     """With risk-free 0 the Sharpe has the sign of the mean return (zero when there is no
     volatility), and is finite. Harm: a losing strategy is reported as profitable."""
     value = metrics.sharpe_mean_std(series)

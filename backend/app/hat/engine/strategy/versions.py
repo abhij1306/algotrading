@@ -153,8 +153,9 @@ def save_draft(
 def publish_version(
     session: Session, version_id: uuid.UUID, *, backtest_run_id: uuid.UUID
 ) -> HatStrategyVersion:
-    """Freeze a draft: it becomes `backtested` against the run that evidences it, and its config
-    can no longer change. Any other starting status is refused."""
+    """Freeze a draft: it becomes `backtested` against a completed run of that version, which
+    evidences it (HAT-BT-061), and its config can no longer change. Any other starting status, or
+    a run of another version or one not completed, is refused."""
     row = session.get(HatStrategyVersion, version_id)
     if row is None:
         raise VersionError("unknown_version")
@@ -165,6 +166,8 @@ def publish_version(
         raise VersionError("unknown_run")
     if run.strategy_version_id != version_id:
         raise VersionError("run_not_for_version")
+    if run.status != "completed":
+        raise VersionError("run_not_completed")
     row.status = "backtested"
     row.backtest_run_id = backtest_run_id
     session.flush()
