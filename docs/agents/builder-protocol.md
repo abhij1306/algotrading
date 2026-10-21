@@ -11,7 +11,8 @@ execution.
 - Never push to or rebase `main`, never merge, never touch another builder's branch.
 - Never call real Fyers, NSE or Telegram endpoints, never place orders, never read `.env` or
   credential files.
-- Never ask CodeAnt to re-review, in any form. Ignore CodeAnt Nitpicks.
+- Never ask CodeAnt to re-review, in any form. CodeAnt Nitpicks need no reply, but a real bug is
+  fixed in this PR wherever it was spotted (a Nitpick, your own review, a test); never defer one.
 - No example-based unit tests for HAT code (see Verification).
 - **Legacy is debt.** Where pre-HAT code or tests conflict with the specs, change or delete them;
   no shims. List it under "Legacy changes" in the PR.
@@ -24,8 +25,9 @@ execution.
 
 1. The PR does what its plan section and spec IDs say, verified as below.
 2. Every CI check passes and the SonarCloud quality gate is OK.
-3. Every real bug found by you, Sonar or CodeAnt (inline comments and PR Risk) is fixed, or
-   answered on the PR with a reason. Cosmetic findings don't block.
+3. Every real bug found by you, Sonar or CodeAnt is fixed. A Sonar or CodeAnt finding (inline
+   comment or PR Risk) you judge not to be a real bug gets a reply saying why. Cosmetic findings
+   don't block.
 
 If you can't get there, end with `BLOCKED #<n>: <reason and what you tried>`.
 
