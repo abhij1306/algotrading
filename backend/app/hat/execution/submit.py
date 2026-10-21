@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 ACCOUNT_ACTIVE = "active"
 ENTRY = "entry"
 GTT_PURPOSE = "stop_gtt"
+EVENT_ORDER_REJECTED = "order.rejected"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
 
@@ -183,7 +184,7 @@ def adopt_broker_order(
     if first_knowledge and found.status in _PLACED_STATES:
         _event(session, row, bot_id, _placed_event(row))
     elif first_knowledge and found.status == "rejected":
-        _event(session, row, bot_id, "order.rejected")
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED)
     elif first_knowledge and found.status == "cancelled":
         _event(session, row, bot_id, "order.cancelled")
 
@@ -205,7 +206,7 @@ def record_broker_status(
     if found.status in ("cancelled", "expired"):
         _event(session, row, bot_id, "order.cancelled")
     elif found.status == "rejected":
-        _event(session, row, bot_id, "order.rejected", code="exchange_rejected", final=True)
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
     return True
 
 
@@ -385,7 +386,7 @@ def send_order(
         _event(session, row, bot_id, _placed_event(row), rule=rule)
     elif status == "rejected":
         row.status = "rejected"
-        _event(session, row, bot_id, "order.rejected", code)
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code)
     else:
         row.status, code = "unconfirmed", CODE_UNCONFIRMED
     session.commit()

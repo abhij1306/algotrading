@@ -73,6 +73,7 @@ STEP_EXIT_PLACED = "order.placed.exit"
 
 # (from, step) -> to. Steps are named by the event that drives them, with `order.placed` split by
 # purpose and `approval.sent` standing for the approval card (it has no event of its own).
+ORDER_CANCELLED = "order.cancelled"
 TRANSITIONS: dict[tuple[str, str], str] = {
     (WATCHLISTED, "signal.triggered"): TRIGGERED,
     (WATCHLISTED, "watchlist.expired"): EXPIRED,
@@ -86,7 +87,7 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     (AWAITING_APPROVAL, "signal.rejected"): REJECTED,
     (ENTRY_PLACED, "position.opened"): OPEN,
     (ENTRY_PLACED, "order.rejected"): REJECTED,
-    (ENTRY_PLACED, "order.cancelled"): CANCELLED,
+    (ENTRY_PLACED, ORDER_CANCELLED): CANCELLED,
     (OPEN, "exit.partial"): PARTIALLY_EXITED,
     (PARTIALLY_EXITED, "exit.partial"): PARTIALLY_EXITED,
     (OPEN, STEP_EXIT_PLACED): EXIT_PENDING,
@@ -103,7 +104,7 @@ EXIT_TRIGGERED = "exit_triggered"
 _PLAIN_STEPS = frozenset(
     key[1]
     for key in TRANSITIONS
-    if key[1] not in {STEP_ENTRY_PLACED, STEP_EXIT_PLACED, "order.cancelled"}
+    if key[1] not in {STEP_ENTRY_PLACED, STEP_EXIT_PLACED, ORDER_CANCELLED}
 )
 
 
@@ -126,18 +127,22 @@ def step_of(event_type: str, payload: Mapping[str, Any] | None = None) -> str | 
     data = payload or {}
     if event_type == "order.rejected":
         return event_type if data.get("final") is True else None
-    if event_type == "order.cancelled":
+    if event_type == ORDER_CANCELLED:
         return event_type if data.get("purpose", "entry") == "entry" else None
     if event_type == "order.filled":
         return STEP_EXIT_PLACED if data.get(EXIT_TRIGGERED) is True else None
     if event_type == "order.placed":
-        purpose = data.get("purpose")
-        if purpose == "entry":
-            return STEP_ENTRY_PLACED
-        if purpose in _EXIT_PURPOSES and purpose != "exit_partial":
-            return STEP_EXIT_PLACED
-        return None
+        return _placed_step(data.get("purpose"))
     return event_type if event_type in _PLAIN_STEPS else None
+
+
+def _placed_step(purpose: object) -> str | None:
+    """The step of an `order.placed`: an entry, or an exit order other than a partial one."""
+    if purpose == "entry":
+        return STEP_ENTRY_PLACED
+    if purpose in _EXIT_PURPOSES and purpose != "exit_partial":
+        return STEP_EXIT_PLACED
+    return None
 
 
 def next_state(state: str, step: str) -> str:

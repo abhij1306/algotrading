@@ -80,6 +80,7 @@ logger = logging.getLogger(__name__)
 STOP_DAY = "stop_day"
 STOP_GTT = "stop_gtt"
 EXIT_SALES = ("exit_partial", "exit_full", "flatten")
+EVENT_GTT_REFRESHED = "gtt.refreshed"
 WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 LIVE = ("placed", "partially_filled")
 UNSURE = ("pending", "unconfirmed")
@@ -341,11 +342,7 @@ class StopDesk:
             # The GTT triggered and its sale is part filled: the rest may still sell. The sync
             # protects what is left once that order ends (`FillSync._gtt_unfilled`).
             return PROTECTED
-        live = [row for row in working if row.status in LIVE and row.broker_order_id]
-        if live:
-            for row in live:
-                if row.qty != position.qty_open:
-                    self._resize(session, target, row, now)
+        if self._cover_live(session, target, working, now):
             return PROTECTED
         unsure = [row for row in working if row.status in UNSURE]
         if any(self._resend(session, target, row) for row in unsure):
@@ -356,6 +353,16 @@ class StopDesk:
             return FAILED
         purpose = STOP_DAY if self._day_stop_time(now) else STOP_GTT
         return PLACED if self._place(session, target, purpose, now) else FAILED
+
+    def _cover_live(
+        self, session: Session, target: _Target, working: list[HatOrder], now: datetime
+    ) -> bool:
+        """Resize every live broker stop to the open quantity; False when none is live."""
+        live = [row for row in working if row.status in LIVE and row.broker_order_id]
+        for row in live:
+            if row.qty != target.position.qty_open:
+                self._resize(session, target, row, now)
+        return bool(live)
 
     def _resize(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> None:
         self._resize_to(session, target, row, target.position.qty_open, now)
@@ -383,7 +390,7 @@ class StopDesk:
             return False
         row.qty = qty
         if row.purpose == STOP_GTT:
-            self._order_event(session, row, target, "gtt.refreshed", now)
+            self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True
 
@@ -486,7 +493,7 @@ class StopDesk:
         if limit is not None:
             row.price = limit
             row.qty = target.position.qty_open
-            self._order_event(session, row, target, "gtt.refreshed", now)
+            self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True
 
@@ -515,14 +522,14 @@ class StopDesk:
                 return FAILED
         if not has_gtt and not self._place(session, target, STOP_GTT, now, ALERT_GTT_SWAP_FAILED):
             return FAILED  # the intraday stop keeps working; alerted
-        cancelled = [
-            self._cancel(session, target, row, now)
-            for row in self.stops_of(session, position.id)
-            if row.purpose == STOP_DAY
-        ]
-        # A day stop not cancelled (refused, or its outcome unknown) would sell the same shares
-        # as the GTT: the job fails and tries the cancel again.
-        return SWAPPED if all(cancelled) else FAILED
+        # Every day stop is cancelled, even after one fails. A day stop not cancelled (refused,
+        # or its outcome unknown) would sell the same shares as the GTT: the job fails and tries
+        # the cancel again.
+        cancelled = True
+        for row in self.stops_of(session, position.id):
+            if row.purpose == STOP_DAY and not self._cancel(session, target, row, now):
+                cancelled = False
+        return SWAPPED if cancelled else FAILED
 
     # --- the nightly verify -------------------------------------------------------------------
 
@@ -549,7 +556,7 @@ class StopDesk:
             ack = self._broker.modify_gtt(GttModify(gtt_id, position.qty_open, goal, limit))
             if ack.ok:
                 row.qty, row.trigger_price, row.price = position.qty_open, goal, limit
-                self._order_event(session, row, target, "gtt.refreshed", now)
+                self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
                 session.commit()
                 return VERIFIED
             if ack.code == BROKER_UNAVAILABLE or not self._cancel(session, target, row, now):

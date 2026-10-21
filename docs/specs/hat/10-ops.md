@@ -115,7 +115,7 @@ Jobs (PLAN §4.3):
 | `live.prepare` (subscribe watchlist + positions) | 08:45 | 14 | 17 |
 | `preopen.gaps` / `gapscan` | 09:00–09:08 / 09:16 | 14 | 17 |
 | `announcements.poll` | every 2 min 07:30–15:30, else 15 min | 14 | 17 |
-| `exits.close` (MA / partial-after-days / time stops on live price; never started from 15:25, retried each minute) | 15:20–15:25 | 15 | 17 |
+| `exits.close` (MA / partial-after-days / time stops on live price; never started from 15:25, retried each minute inside the window: a run that fails at 15:24 is not retried after 15:25 and stays a failed run) | 15:20–15:25 | 15 | 17 |
 | `gtt.swap` (intraday stop → GTT; retried each minute until it succeeds) | 15:25 | 15 | 17 |
 | `digest.rejections` 15:35, `pnl.daily` 15:40 | — | 16 | 17 |
 | `gtt.verify` (GTT exists for every open position) | nightly, 23:00 | 15 | 17 |
