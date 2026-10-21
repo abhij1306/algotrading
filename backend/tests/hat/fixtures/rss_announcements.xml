@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>NSE Announcements (recorded fixture)</title>
+    <item>
+      <title>RELIANCE - Outcome of Board Meeting</title>
+      <description>Outcome of Board Meeting held on 21 Oct 2026</description>
+      <link>https://nsearchives.example/corporate/RELIANCE_21102026.pdf</link>
+      <pubDate>Wed, 21 Oct 2026 08:45:10 +0530</pubDate>
+      <guid isPermaLink="false">ann-reliance-0001</guid>
+      <symbol>RELIANCE</symbol>
+      <isin>INE002A01018</isin>
+      <category>Outcome of Board Meeting</category>
+    </item>
+    <item>
+      <title>Renamed Holdings Limited - Acquisition</title>
+      <description>Company whose symbol is not in the instrument master</description>
+      <link>https://nsearchives.example/corporate/RENAMED_21102026.pdf</link>
+      <pubDate>Wed, 21 Oct 2026 08:50:00 +0530</pubDate>
+      <guid isPermaLink="false">ann-renamed-0002</guid>
+    </item>
+    <item>
+      <title>RELIANCE - Outcome of Board Meeting</title>
+      <description>The same item, listed again by the feed</description>
+      <link>https://nsearchives.example/corporate/RELIANCE_21102026.pdf</link>
+      <pubDate>Wed, 21 Oct 2026 08:45:10 +0530</pubDate>
+      <guid isPermaLink="false">ann-reliance-0001</guid>
+      <symbol>RELIANCE</symbol>
+      <isin>INE002A01018</isin>
+      <category>Outcome of Board Meeting</category>
+    </item>
+  </channel>
+</rss>

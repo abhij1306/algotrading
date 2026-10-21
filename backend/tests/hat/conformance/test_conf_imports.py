@@ -119,3 +119,65 @@ def test_mcp_endpoints_allowlist() -> None:
         client.call("tapetide", "search", {})
     assert calls == []
     assert mcp_client.ALLOWED_SERVERS == ALLOWED_SERVERS
+
+
+# --- one live feed (HAT-DATA-110, HAT-OVR-006, HAT-DEC-I3) ----------------------------------
+
+SOCKET_MODULES = (
+    "fyers_apiv3",
+    "app.services.fyers_websocket",
+    "app.services.live.data_socket",
+    "websocket",
+    "websockets",
+    "socketio",
+    "aiohttp",
+)
+SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
+
+
+def test_imports__no_second_websocket() -> None:
+    """HAT-DATA-110: no module under `app.hat` imports or constructs a broker data-socket client
+    or any WebSocket library; HAT's one tick input is `LiveMarketService.add_tick_listener`, which
+    `LiveData.attach` calls, and the live service has that hook."""
+    from hat_conf_repo import imports_of
+
+    from app.hat.data import live
+    from app.services.live_market_service import LiveMarketService
+
+    offenders = []
+    for path in sorted(HAT_ROOT.rglob("*.py")):
+        for name in imports_of(path):
+            if any(name == m or name.startswith(m + ".") for m in SOCKET_MODULES):
+                offenders.append((path.name, name))
+        text = path.read_text(encoding="utf-8")
+        offenders.extend((path.name, n) for n in SOCKET_NAMES if re.search(rf"\b{n}\b", text))
+    assert offenders == []
+    assert callable(getattr(LiveMarketService, "add_tick_listener", None))
+    assert "add_tick_listener" in inspect.getsource(live.LiveData.attach)
+    tree = _hat_sources()["data/live.py"]
+    attached = [
+        n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "add_tick_listener"
+    ]
+    assert len(attached) == 1  # the single tick input
+
+
+def test_single_feed_import_rule() -> None:
+    """HAT-OVR-006, HAT-DEC-I3: live data reaches HAT only through the listener hook and the
+    `"hat"` owner of `SubscriptionRegistry`; HAT imports neither the live service module nor the
+    provider session, so it cannot read or open a feed any other way."""
+    from hat_conf_repo import imports_of
+
+    from app.hat.data import subscriptions
+
+    assert subscriptions.HAT_OWNER == "hat"
+    forbidden = ("app.services.live_market_service", "app.services.live.provider_session")
+    for path in sorted(HAT_ROOT.rglob("*.py")):
+        names = imports_of(path)
+        assert not any(n == f or n.startswith(f + ".") for n in names for f in forbidden), path.name
+    owners = {
+        node.value
+        for node in ast.walk(_hat_sources()["data/subscriptions.py"])
+        if isinstance(node, ast.Constant) and node.value == "hat"
+    }
+    assert owners == {"hat"}
+    assert "SubscriptionRegistry" in inspect.getsource(subscriptions.LiveSubscriptions)

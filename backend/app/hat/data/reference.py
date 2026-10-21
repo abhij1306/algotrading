@@ -59,23 +59,24 @@ class ListingBuild:
 
 
 def _keep_page(
-    found: dict[tuple[str, str], ListedSymbol], prefix: str, rows: list[dict[str, object]]
+    found: dict[tuple[str, str], dict[str, object]], prefix: str, rows: list[dict[str, object]]
 ) -> None:
     for row in rows:
         symbol = str(row["symbol"]).strip().upper()
         if symbol.startswith(prefix):
             series = str(row.get("series") or "").strip().upper()
-            found[(symbol, series)] = ListedSymbol(symbol, series)
+            found[(symbol, series)] = row
 
 
-def page_listing(client: McpClient, *, cap: int = PAGE_CAP) -> list[ListedSymbol]:
-    """Every equity symbol, prefix-paged: a page that reaches `cap` is never accepted as
-    complete; its prefix is split by one more character until each page is under the cap.
+def page_equity_rows(client: McpClient, *, cap: int = PAGE_CAP) -> dict[tuple[str, str], dict]:
+    """Every equity row the listing returns, keyed by (symbol, series), prefix-paged: a page that
+    reaches `cap` is never accepted as complete; its prefix is split by one more character until
+    each page is under the cap. The 09:16 gap scan reads the prices off the same rows.
 
     The rows of a capped page are kept too, so a symbol equal to the prefix itself (which a
     deeper prefix cannot return) is not lost when the server lists it first.
     """
-    found: dict[tuple[str, str], ListedSymbol] = {}
+    found: dict[tuple[str, str], dict[str, object]] = {}
     level = list(PREFIX_ALPHABET)
     depth = 1
     while level:
@@ -87,7 +88,13 @@ def page_listing(client: McpClient, *, cap: int = PAGE_CAP) -> list[ListedSymbol
             raise McpError(CODE_LISTING_TRUNCATED, attempts=0)
         level = [prefix + c for prefix in capped for c in PREFIX_ALPHABET]
         depth += 1
-    return sorted(found.values(), key=lambda s: (s.symbol, s.series))
+    return found
+
+
+def page_listing(client: McpClient, *, cap: int = PAGE_CAP) -> list[ListedSymbol]:
+    """Every equity symbol and series, prefix-paged (see `page_equity_rows`)."""
+    found = page_equity_rows(client, cap=cap)
+    return [ListedSymbol(symbol, series) for symbol, series in sorted(found)]
 
 
 def _parse_listing_date(raw: str) -> date | None:

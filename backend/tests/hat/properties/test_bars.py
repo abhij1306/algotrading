@@ -1,0 +1,806 @@
+"""PBT bars.* (HAT-DATA-111..118): the tick hook, 5-minute bars, the opening range, volume pace,
+staleness, persistence, subscriptions and gap capture, all on the real code.
+
+Time is explicit: every property passes the instants it wants, so no test reads a clock."""
+
+import asyncio
+import tempfile
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import pyarrow.parquet as pq
+from hat_support import event_engine
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
+from app.hat.data.bars_store import SCHEMA, BarStore
+from app.hat.data.live import EventFeedHealth, LiveData, tick_from_payload
+from app.hat.data.preopen import GapSource, PreopenGaps
+from app.hat.data.staleness import STALE_AFTER, StalenessMonitor
+from app.hat.data.subscriptions import (
+    HAT_OWNER,
+    LiveSubscriptions,
+    SubscriptionInputs,
+    load_inputs,
+)
+from app.hat.models import HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
+from app.services.subscription_registry import SubscriptionRegistry
+from app.utils.clock import FixedClock
+from app.utils.market_hours import IST
+
+DAY = date(2026, 10, 21)
+MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
+US = 1_000_000
+OPEN_SOD, CLOSE_SOD = 9 * 3600 + 15 * 60, 15 * 3600 + 30 * 60  # seconds of the IST day
+SYMBOLS = ["AAA", "BBB", "CCC"]
+
+
+def at_us(offset_us: int) -> datetime:
+    """The IST instant `offset_us` microseconds after midnight of DAY."""
+    return MIDNIGHT + timedelta(microseconds=offset_us)
+
+
+prices = st.integers(1, 10**7).map(lambda cents: Decimal(cents).scaleb(-4))
+quantities = st.integers(0, 10**6)
+EDGES = [
+    OPEN_SOD * US - 1,
+    OPEN_SOD * US,
+    (OPEN_SOD + 300) * US - 1,
+    (OPEN_SOD + 300) * US,
+    CLOSE_SOD * US - 1,
+    CLOSE_SOD * US,
+    CLOSE_SOD * US + 1,
+]
+tick_offsets = st.one_of(
+    st.integers(9 * 3600 * US, 15 * 3600 * US + 45 * 60 * US), st.sampled_from(EDGES)
+)
+ticks = st.builds(
+    lambda s, o, p, q: Tick(s, at_us(o), p, q),
+    st.sampled_from(SYMBOLS),
+    tick_offsets,
+    prices,
+    quantities,
+)
+
+
+def expected_start(tick: Tick) -> datetime | None:
+    """The spec's bar rule, by integer arithmetic on seconds of the IST day."""
+    local = tick.at.astimezone(IST)
+    seconds = local.hour * 3600 + local.minute * 60 + local.second
+    if not OPEN_SOD <= seconds < CLOSE_SOD:
+        return None
+    return MIDNIGHT + timedelta(seconds=OPEN_SOD + 300 * ((seconds - OPEN_SOD) // 300))
+
+
+def expected_bars(arrivals: Iterable[tuple[int, Tick]]) -> dict[tuple[str, datetime], Bar]:
+    """Bars of the given (arrival index, tick) pairs: open and close by exchange time, with the
+    arrival index breaking ties; high and low by price; volume by sum."""
+    groups: dict[tuple[str, datetime], list[tuple[int, Tick]]] = {}
+    for index, tick in arrivals:
+        start = expected_start(tick)
+        if start is not None:
+            groups.setdefault((tick.symbol, start), []).append((index, tick))
+    out = {}
+    for (symbol, start), members in groups.items():
+        ordered = sorted(members, key=lambda m: (m[1].at, m[0]))
+        out[(symbol, start)] = Bar(
+            symbol,
+            start,
+            ordered[0][1].price,
+            max(t.price for _, t in members),
+            min(t.price for _, t in members),
+            ordered[-1][1].price,
+            sum(t.qty for _, t in members),
+        )
+    return out
+
+
+def by_key(bars: Iterable[Bar]) -> dict[tuple[str, datetime], Bar]:
+    out: dict[tuple[str, datetime], Bar] = {}
+    for bar in bars:
+        assert (bar.symbol, bar.start) not in out, "a bar was reported twice"
+        out[(bar.symbol, bar.start)] = bar
+    return out
+
+
+# --- alignment and aggregation (HAT-DATA-113) --------------------------------------------------
+
+
+@given(data=st.data(), sequence=st.lists(ticks, max_size=60))
+def test_alignment(data: st.DataObject, sequence: list[Tick]) -> None:
+    """For every tick sequence, in any arrival order, each in-session tick is in exactly the bar
+    that starts at 09:15 plus 5 minutes times floor((t - 09:15) / 5 min), IST, and each bar's
+    OHLCV is the open, max, min, last price and summed volume of its ticks (open and close by
+    exchange time). A tick outside [09:15, 15:30) belongs to no bar."""
+    ordered = data.draw(st.permutations(sequence))
+    arrival_order = list(enumerate(ordered))  # (arrival index, tick)
+    builder = BarBuilder()
+    for _index, tick in arrival_order:
+        outcome = builder.on_tick(tick, tick.at)  # arrives on time: never late
+        in_session = expected_start(tick) is not None
+        assert (outcome is TickOutcome.ACCEPTED) == in_session
+    finals = by_key(builder.advance(MIDNIGHT + timedelta(days=2)))
+    assert finals == expected_bars(arrival_order)
+    for (_, start), bar in finals.items():
+        assert (start - MIDNIGHT - timedelta(seconds=OPEN_SOD)) % timedelta(minutes=5) == timedelta(
+            0
+        )
+        assert bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high
+    assert builder.open_bar_count() == 0
+
+
+@st.composite
+def arrival_scripts(draw: st.DrawFn) -> list[tuple[str, int, Tick | None, int]]:
+    """Events in non-decreasing arrival time: ticks (with a delay between their exchange time
+    and their arrival, so some are late) and advance calls. (kind, now_us, tick, index)."""
+    now = 9 * 3600 * US + 10 * 60 * US
+    script: list[tuple[str, int, Tick | None, int]] = []
+    for index in range(draw(st.integers(0, 50))):
+        now += draw(st.integers(0, 150 * US))
+        if draw(st.integers(0, 3)) == 0:
+            script.append(("advance", now, None, index))
+            continue
+        delay = draw(st.one_of(st.integers(0, 3 * US), st.integers(0, 900 * US)))
+        tick = Tick(
+            draw(st.sampled_from(SYMBOLS)),
+            at_us(max(now - delay, 0)),
+            draw(prices),
+            draw(quantities),
+        )
+        script.append(("tick", now, tick, index))
+    return script
+
+
+@given(script=arrival_scripts())
+def test_alignment_finality(script: list[tuple[str, int, Tick | None, int]]) -> None:
+    """No bar is reported before its end plus 2 seconds, each bar is reported once, and a final
+    bar never changes: a tick that arrives at or after the bar's final instant is dropped, so
+    the reported bars equal the bars of the on-time ticks only."""
+    builder = BarBuilder()
+    on_time: list[tuple[int, Tick]] = []
+    late = 0
+    reported: list[Bar] = []
+    for kind, now_us, tick, index in script:
+        now = at_us(now_us)
+        if kind == "advance":
+            for bar in builder.advance(now):
+                assert now >= bar.end + timedelta(seconds=2)  # not final one instant earlier
+                reported.append(bar)
+            continue
+        assert tick is not None
+        start = expected_start(tick)
+        outcome = builder.on_tick(tick, now)
+        if start is None:
+            assert outcome is TickOutcome.OUTSIDE_SESSION
+        elif now >= start + timedelta(minutes=5, seconds=2):
+            assert outcome is TickOutcome.LATE
+            late += 1
+        else:
+            assert outcome is TickOutcome.ACCEPTED
+            on_time.append((index, tick))
+    end = MIDNIGHT + timedelta(days=2)
+    reported.extend(builder.advance(end))
+    assert by_key(reported) == expected_bars(on_time)
+    assert builder.late_ticks == late
+    assert builder.advance(end) == []  # nothing is reported twice
+
+
+@given(
+    seconds=st.integers(OPEN_SOD, CLOSE_SOD - 1),
+    millis=st.integers(0, 999),
+    before=st.integers(0, 10**6 * 400),
+)
+def test_alignment_boundary_instants(seconds: int, millis: int, before: int) -> None:
+    """A bar is not final one microsecond before its end plus 2 s and is final at that instant."""
+    builder = BarBuilder()
+    tick = Tick("AAA", at_us(seconds * US + millis * 1000), Decimal("10"), 1)
+    builder.on_tick(tick, tick.at)
+    start = expected_start(tick)
+    assert start is not None
+    final_at = start + timedelta(minutes=5, seconds=2)
+    assert builder.advance(final_at - timedelta(microseconds=1 + before % 1000)) == []
+    assert len(builder.advance(final_at)) == 1
+
+
+# --- opening range (HAT-DATA-114) --------------------------------------------------------------
+
+
+@given(
+    first=st.lists(
+        st.tuples(st.integers(OPEN_SOD * US, (OPEN_SOD + 300) * US - 1), prices, quantities),
+        max_size=12,
+    ),
+    later=st.lists(
+        st.tuples(st.integers((OPEN_SOD + 300) * US, CLOSE_SOD * US - 1), prices, quantities),
+        max_size=12,
+    ),
+    stragglers=st.lists(
+        st.tuples(st.integers(OPEN_SOD * US, (OPEN_SOD + 300) * US - 1), prices, quantities),
+        max_size=6,
+    ),
+)
+def test_opening_range_fixed(
+    first: list[tuple[int, Decimal, int]],
+    later: list[tuple[int, Decimal, int]],
+    stragglers: list[tuple[int, Decimal, int]],
+) -> None:
+    """For every tick sequence, from 09:20:02 on the opening range equals the high and low of the
+    first bar and never changes for the rest of the day, even when ticks of the first bar arrive
+    afterwards. Before 09:20:02 there is no opening range."""
+    builder = BarBuilder()
+    for offset, price, qty in first:
+        builder.on_tick(Tick("AAA", at_us(offset), price, qty), at_us(offset))
+    assert builder.opening_range("AAA", DAY) is None
+    assert builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US - 1)) == []
+    assert builder.opening_range("AAA", DAY) is None
+    builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US))
+    fixed = builder.opening_range("AAA", DAY)
+    if first:
+        assert fixed == (max(p for _, p, _ in first), min(p for _, p, _ in first))
+    else:
+        assert fixed is None
+    now = (OPEN_SOD + 300) * US + 3 * US
+    for offset, price, qty in sorted(later, key=lambda row: row[0]):
+        now = max(now, offset)
+        builder.on_tick(Tick("AAA", at_us(offset), price, qty), at_us(now))
+        builder.advance(at_us(now))
+        assert builder.opening_range("AAA", DAY) == fixed
+    for offset, price, qty in stragglers:  # late ticks of the first bar
+        outcome = builder.on_tick(Tick("AAA", at_us(offset), price, qty), at_us(now))
+        assert outcome is TickOutcome.LATE
+        builder.advance(at_us(now + 400 * US))
+        assert builder.opening_range("AAA", DAY) == fixed
+
+
+# --- volume pace (HAT-DATA-115) ----------------------------------------------------------------
+
+
+@given(volume=st.integers(0, 10**9), offset=st.integers(0, 24 * 3600 * US))
+def test_volume_pace(volume: int, offset: int) -> None:
+    """For every instant t in (09:15, 15:30] and cumulative volume V, pace(t) projects V to the
+    whole session: pace * (elapsed / 375 min) == V exactly. Outside (09:15, 15:30] there is no
+    pace."""
+    when = at_us(offset)
+    pace = volume_pace(volume, when)
+    inside = OPEN_SOD * US < offset <= CLOSE_SOD * US
+    assert (pace is not None) == inside
+    if pace is not None:
+        assert pace * Fraction(offset - OPEN_SOD * US, 375 * 60 * US) == volume
+        assert volume_pace(volume + 1, when) > pace  # more volume, more pace
+
+
+@given(
+    sequence=st.lists(
+        st.tuples(st.integers(OPEN_SOD * US, CLOSE_SOD * US - 1), quantities), max_size=30
+    ),
+    probe=st.integers(0, 24 * 3600 * US),
+)
+def test_volume_pace_builder(sequence: list[tuple[int, int]], probe: int) -> None:
+    """The builder never gives a pace before the symbol's first tick of the session, and after it
+    the pace is that of the volume of every in-session tick so far (late ticks included)."""
+    builder = BarBuilder()
+    assert builder.volume_pace("AAA", at_us(probe)) is None
+    total = 0
+    for offset, qty in sequence:
+        builder.on_tick(Tick("AAA", at_us(offset), Decimal(1), qty), at_us(offset))
+        total += qty
+    assert builder.day_volume("AAA", DAY) == total
+    if sequence:
+        assert builder.volume_pace("AAA", at_us(probe)) == volume_pace(total, at_us(probe))
+    else:
+        assert builder.volume_pace("AAA", at_us(probe)) is None
+
+
+@given(
+    start=st.integers(0, 10**6),
+    steps=st.lists(st.integers(0, 10**5), min_size=1, max_size=25),
+    first_qty=st.integers(0, 5000),
+)
+def test_tick_volume_delta(start: int, steps: list[int], first_qty: int) -> None:
+    """A tick's volume is the change in the cumulative day volume, never negative: over a run of
+    ticks the volumes after the first sum to the rise in cumulative volume, and the first tick
+    contributes only its own print, not the volume traded before HAT subscribed."""
+    last: dict[str, int] = {}
+    arrival = at_us(OPEN_SOD * US)
+    cumulative = [start]
+    for step in steps:
+        cumulative.append(cumulative[-1] + step)
+    quantities_out = []
+    for index, total in enumerate(cumulative):
+        payload = {"symbol": "AAA", "ltp": 10.5, "volume": total}
+        if index == 0:
+            payload["last_traded_qty"] = first_qty
+        tick = tick_from_payload(payload, arrival, last)
+        assert tick is not None
+        assert tick.qty >= 0
+        quantities_out.append(tick.qty)
+    assert quantities_out[0] == first_qty
+    assert sum(quantities_out[1:]) == cumulative[-1] - cumulative[0]
+
+
+# --- staleness (HAT-DATA-116) ------------------------------------------------------------------
+
+
+def is_open(when: datetime) -> bool:
+    return OPEN_SOD * US <= (when - MIDNIGHT) // timedelta(microseconds=1) <= CLOSE_SOD * US
+
+
+class Sink:
+    def __init__(self) -> None:
+        self.stale: list[datetime] = []
+        self.recovered: list[datetime] = []
+
+    def feed_stale(self, now: datetime, silent_for: timedelta | None) -> None:
+        self.stale.append(now)
+
+    def feed_recovered(self, now: datetime) -> None:
+        self.recovered.append(now)
+
+
+@given(
+    steps=st.lists(
+        st.tuples(st.sampled_from(["tick", "check"]), st.integers(0, 45 * US)),
+        max_size=40,
+    ),
+    start=st.integers(8 * 3600 * US, 15 * 3600 * US + 29 * 60 * US),
+)
+def test_staleness_trip(steps: list[tuple[str, int]], start: int) -> None:
+    """For every timeline, the feed is stale at t exactly when t is inside market hours and no
+    tick arrived in (t - 30 s, t]; each transition into stale reaches the health sink once and
+    each recovery once, and the stale flag always equals that rule at the last instant seen."""
+    sink = Sink()
+    monitor = StalenessMonitor(sink, is_open)
+    now = start
+    tick_times: list[int] = []
+    samples: list[bool] = []
+    for kind, gap in steps:
+        now += gap
+        when = at_us(now)
+        if kind == "tick":
+            samples.append(rule(now, tick_times))  # the check made before the tick is applied
+            monitor.on_tick(when)
+            tick_times.append(now)
+            samples.append(rule(now, tick_times))
+        else:
+            monitor.check(when)
+            samples.append(rule(now, tick_times))
+        assert monitor.stale == samples[-1]
+        assert monitor.is_stale(when) == rule(now, tick_times)
+    transitions = list(zip([False, *samples], samples, strict=False))
+    assert len(sink.stale) == sum(1 for a, b in transitions if not a and b)
+    assert len(sink.recovered) == sum(1 for a, b in transitions if a and not b)
+
+
+def rule(now_us: int, tick_times: list[int]) -> bool:
+    """The spec's rule: inside market hours, no tick in (now - 30 s, now]."""
+    if not is_open(at_us(now_us)):
+        return False
+    return not any(now_us - 30 * US < t <= now_us for t in tick_times)
+
+
+@example(silence=30 * US)
+@example(silence=30 * US - 1)
+@example(silence=30 * US + 1)
+@given(silence=st.integers(0, 120 * US))
+def test_staleness_boundary(silence: int) -> None:
+    """A tick followed by `silence` microseconds of nothing is stale once the silence reaches
+    exactly 30 seconds and not one microsecond sooner."""
+    sink = Sink()
+    monitor = StalenessMonitor(sink, is_open)
+    first = at_us(10 * 3600 * US)
+    monitor.on_tick(first)
+    assert monitor.is_stale(first + timedelta(microseconds=silence)) == (silence >= 30 * US)
+    assert STALE_AFTER == timedelta(seconds=30)
+
+
+@settings(max_examples=60)
+@given(
+    steps=st.lists(
+        st.tuples(st.sampled_from(["tick", "check"]), st.integers(0, 45 * US)), max_size=25
+    ),
+)
+def test_staleness_events_recorded(steps: list[tuple[str, int]]) -> None:
+    """Each transition into stale records exactly one `feed.stale` event in the event log and
+    calls the health kill once; a recovery clears the kill and records nothing."""
+    engine = event_engine()
+    changes: list[bool] = []
+    health = EventFeedHealth(lambda: Session(engine), changes.append)
+    monitor = StalenessMonitor(health, is_open)
+    now = 9 * 3600 * US + 15 * 60 * US
+    samples: list[bool] = []
+    tick_times: list[int] = []
+    for kind, gap in steps:
+        now += gap
+        if kind == "tick":
+            samples.append(rule(now, tick_times))
+            monitor.on_tick(at_us(now))
+            tick_times.append(now)
+            samples.append(rule(now, tick_times))
+        else:
+            monitor.check(at_us(now))
+            samples.append(rule(now, tick_times))
+    transitions = list(zip([False, *samples], samples, strict=False))
+    trips = sum(1 for a, b in transitions if not a and b)
+    with Session(engine) as session:
+        stored = session.scalar(
+            select(func.count()).select_from(HatEvent).where(HatEvent.event_type == "feed.stale")
+        )
+    assert stored == trips
+    assert changes.count(True) == trips
+    assert changes.count(False) == sum(1 for a, b in transitions if a and not b)
+
+
+# --- listener hook (HAT-DATA-111) --------------------------------------------------------------
+
+
+class FlakyListener:
+    def __init__(self, raises_on: set[int]) -> None:
+        self.raises_on = raises_on
+        self.received: list[dict[str, Any]] = []
+
+    def __call__(self, tick: dict[str, Any]) -> None:
+        index = len(self.received)
+        self.received.append(tick)
+        if index in self.raises_on:
+            raise RuntimeError("listener bug")
+
+
+@settings(max_examples=25)
+@given(
+    symbols=st.lists(st.sampled_from(SYMBOLS), min_size=1, max_size=15),
+    raising=st.lists(st.sets(st.integers(0, 14), max_size=15), min_size=1, max_size=4),
+    always_raise=st.booleans(),
+)
+def test_listener_isolation(
+    symbols: list[str], raising: list[set[int]], always_raise: bool
+) -> None:
+    """For every tick sequence and every set of listeners, any subset of which raises, every tick
+    still reaches `latest_values` and the batch broadcast, and every listener that did not raise
+    for a tick received it, in order. Listeners also never run before the tick is buffered."""
+    from fakes.data_socket import make_live
+
+    async def scenario() -> None:
+        live, _ = make_live()
+        live.loop = asyncio.get_running_loop()
+        broadcasts: list[dict[str, Any]] = []
+
+        async def fake_broadcast(message: dict[str, Any]) -> None:
+            broadcasts.append(message)
+
+        listeners = [
+            FlakyListener(set(range(15)) if always_raise and i == 0 else raises)
+            for i, raises in enumerate(raising)
+        ]
+        seen_buffered: list[bool] = []
+
+        def watcher(tick: dict[str, Any]) -> None:
+            seen_buffered.append(live.tick_buffer.get(tick["symbol"]) is tick)
+
+        for listener in listeners:
+            live.add_tick_listener(listener)
+        live.add_tick_listener(watcher)
+        sent = [{"symbol": s, "ltp": float(i + 1), "seq": i} for i, s in enumerate(symbols)]
+        for tick in sent:
+            await live._update_buffer(dict(tick))  # noqa: SLF001 - the loop-thread entry point
+        assert all(seen_buffered) and len(seen_buffered) == len(sent)
+        last = {t["symbol"]: t for t in sent}
+        assert {s: t["seq"] for s, t in live.latest_values.items()} == {
+            s: t["seq"] for s, t in last.items()
+        }
+        from app.services import live_market_service as lms
+
+        original = lms.manager.broadcast
+        lms.manager.broadcast = fake_broadcast  # type: ignore[method-assign]
+        task = asyncio.create_task(live._flush_loop())  # noqa: SLF001
+        try:
+            await asyncio.sleep(0.25)
+        finally:
+            task.cancel()
+            lms.manager.broadcast = original  # type: ignore[method-assign]
+        flushed = {t["symbol"]: t["seq"] for m in broadcasts for t in m["data"]}
+        assert flushed == {s: t["seq"] for s, t in last.items()}
+        for listener in listeners:
+            assert [t["seq"] for t in listener.received] == [t["seq"] for t in sent]
+
+    asyncio.run(scenario())
+
+
+# --- subscriptions (HAT-DATA-112) --------------------------------------------------------------
+
+symbol_sets = st.frozensets(st.sampled_from([f"S{i}" for i in range(12)]), max_size=8)
+sub_inputs = st.builds(SubscriptionInputs, symbol_sets, symbol_sets, symbol_sets)
+
+
+@given(
+    ops=st.lists(
+        st.one_of(
+            st.tuples(st.just("hat"), sub_inputs),
+            st.tuples(st.just("add"), st.sampled_from(["client-1", "api"]), symbol_sets),
+            st.tuples(st.just("remove"), st.sampled_from(["client-1", "api"]), symbol_sets),
+            st.tuples(st.just("release")),
+            st.tuples(st.just("candidates"), symbol_sets),
+        ),
+        max_size=30,
+    )
+)
+def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
+    """For every state of watchlists, positions and candidates, the `"hat"` owner's set equals
+    watchlist | positions | candidates, open positions are always in it, the provider is
+    subscribed to exactly the symbols some owner holds, and releasing HAT's symbols never
+    unsubscribes a symbol another owner holds. A set at or above the limit raises an alert."""
+    registry = SubscriptionRegistry(str.upper)
+    provider: set[str] = set()
+    alerts: list[str] = []
+    wrong: list[str] = []
+
+    def subscribe(symbols: list[str]) -> None:
+        provider.update(symbols)
+
+    def unsubscribe(symbols: list[str]) -> None:
+        for symbol in symbols:
+            if registry.is_held(symbol):
+                wrong.append(symbol)
+        provider.difference_update(symbols)
+
+    subs = LiveSubscriptions(registry, subscribe, unsubscribe, alerts.append, limit=7)
+    inputs = SubscriptionInputs()
+    for op in ops:
+        alerts_before = len(alerts)
+        if op[0] == "hat":
+            inputs = op[1]
+            subs.sync(inputs)
+        elif op[0] == "candidates":
+            inputs = SubscriptionInputs(
+                inputs.watchlist, inputs.positions, inputs.candidates | op[1]
+            )
+            subs.add_candidates(op[1])
+        elif op[0] == "add":
+            subscribe(sorted(registry.add(op[1], op[2])))
+        elif op[0] == "remove":
+            unsubscribe(sorted(registry.remove(op[1], op[2])))
+        else:
+            inputs = SubscriptionInputs()
+            subs.release_all()
+        wanted = {s.upper() for s in inputs.watchlist | inputs.positions | inputs.candidates}
+        assert set(registry.symbols_of(HAT_OWNER)) == wanted
+        assert {s.upper() for s in inputs.positions} <= set(registry.symbols_of(HAT_OWNER))
+        assert provider == registry.all_symbols()
+        if op[0] in ("hat", "candidates"):
+            assert (len(alerts) > alerts_before) == (len(wanted) >= 7)
+        else:
+            assert len(alerts) == alerts_before
+    assert wrong == []
+
+
+@settings(max_examples=40)
+@given(
+    watch=st.sets(st.integers(0, 9), max_size=10),
+    held=st.sets(st.integers(0, 9), max_size=10),
+    closed=st.sets(st.integers(0, 9), max_size=10),
+    other_day=st.sets(st.integers(0, 9), max_size=10),
+    candidates=symbol_sets,
+)
+def test_subscription_inputs_from_database(
+    watch: set[int],
+    held: set[int],
+    closed: set[int],
+    other_day: set[int],
+    candidates: frozenset[str],
+) -> None:
+    """The inputs are today's watchlist symbols, every open position's symbol (closed positions
+    and other days' watchlists excluded) and the candidates given, in DB symbol format."""
+    from hat_support import memory_engine
+
+    from app.hat.models import HatPosition as Position
+
+    engine = memory_engine(HatInstrument, HatWatchlistEntry, Position)
+    session = Session(engine)
+    instruments: list[HatInstrument] = []
+    for i in range(10):
+        row = HatInstrument(
+            id=uuid4(),
+            market_id=uuid4(),
+            isin=f"INE{i:09d}",
+            series="EQ",
+            symbol=f"SYM{i}",
+            name="n",
+            face_value=Decimal(10),
+            active=True,
+        )
+        session.add(row)
+        instruments.append(row)
+    session.flush()
+    now = datetime(2026, 10, 21, 4, tzinfo=UTC)
+    for i in watch | other_day:
+        session.add(
+            HatWatchlistEntry(
+                id=uuid4(),
+                bot_id=uuid4(),
+                strategy_version_id=uuid4(),
+                playbook="default",
+                instrument_id=instruments[i].id,
+                trade_date=DAY if i in watch else DAY - timedelta(days=1),
+                score=Decimal("0.5"),
+                criteria_results={},
+                status="listed",
+            )
+        )
+    for i in held | closed:
+        session.add(
+            HatPosition(
+                id=uuid4(),
+                bot_id=uuid4(),
+                signal_id=uuid4(),
+                instrument_id=instruments[i].id,
+                is_virtual=False,
+                qty_open=1,
+                avg_entry=Decimal(1),
+                initial_stop=Decimal(1),
+                current_stop=Decimal(1),
+                currency="INR",
+                opened_at=now,
+                closed_at=None if i in held else now,
+                state="open",
+                rules_fired={},
+            )
+        )
+    session.flush()
+    loaded = load_inputs(session, DAY, candidates)
+    session.close()
+    assert loaded.watchlist == {f"SYM{i}" for i in watch}
+    assert loaded.positions == {f"SYM{i}" for i in held}
+    assert loaded.candidates == candidates
+
+
+# --- persistence (HAT-DATA-117) ----------------------------------------------------------------
+
+
+class FlakyStore(BarStore):
+    """A store whose write fails on chosen calls, as a full disk would."""
+
+    def __init__(self, root: Path, failures: set[int]) -> None:
+        super().__init__(root)
+        self.calls = 0
+        self.failures = failures
+
+    def write(self, bars: Iterable[Bar], instrument_ids: Any) -> int:  # noqa: ANN401
+        self.calls += 1
+        if self.calls in self.failures:
+            raise OSError("disk full")
+        return super().write(bars, instrument_ids)
+
+
+class QuietHealth:
+    def feed_stale(self, now: datetime, silent_for: timedelta | None) -> None:
+        pass
+
+    def feed_recovered(self, now: datetime) -> None:
+        pass
+
+
+@settings(max_examples=60)
+@given(
+    sequence=st.lists(
+        st.tuples(
+            st.sampled_from(SYMBOLS),
+            st.integers(OPEN_SOD * US, CLOSE_SOD * US + 30 * 60 * US),
+            prices,
+            st.integers(0, 10**6),
+        ),
+        max_size=50,
+    ),
+    failures=st.sets(st.integers(1, 6), max_size=3),
+    flush_every=st.integers(1, 10),
+)
+def test_persisted_equals_live(
+    sequence: list[tuple[str, int, Decimal, int]], failures: set[int], flush_every: int
+) -> None:
+    """For every session, the bars in `bars_5m` equal the final bars the bar listener saw: one row
+    per (instrument, bar_start), exactly the spec's columns, whatever writes failed on the way
+    and however often the writer re-ran."""
+    ids = {s: uuid4() for s in SYMBOLS}
+    clock = FixedClock(at_us(9 * 3600 * US))
+    with tempfile.TemporaryDirectory() as tmp:
+        store = FlakyStore(Path(tmp), failures)
+        live = LiveData(
+            health=QuietHealth(),
+            is_open=lambda _t: False,
+            clock=clock,
+            store=store,
+            instrument_ids=lambda: ids,
+        )
+        seen: list[Bar] = []
+        live.add_bar_listener(seen.append)
+        cumulative = dict.fromkeys(SYMBOLS, 0)
+        for index, (symbol, offset, price, qty) in enumerate(sorted(sequence, key=lambda r: r[1])):
+            clock.set(at_us(offset))
+            cumulative[symbol] += qty
+            live.on_tick(
+                {
+                    "symbol": symbol,
+                    "ltp": float(price),
+                    "volume": cumulative[symbol],
+                    "exch_feed_time": clock.now().timestamp(),
+                }
+            )
+            if index % flush_every == 0:
+                live.step()
+                live.persist()
+        clock.set(at_us(23 * 3600 * US))
+        live.step()
+        for _ in range(8):
+            live.persist()
+        stored = store.read(DAY)
+        assert len({(r.instrument_id, r.bar_start) for r in stored}) == len(stored)
+        expected = {
+            (str(ids[b.symbol]), b.start.astimezone(UTC)): (
+                b.open,
+                b.high,
+                b.low,
+                b.close,
+                b.volume,
+            )
+            for b in seen
+        }
+        assert {
+            (r.instrument_id, r.bar_start): (r.open, r.high, r.low, r.close, r.volume)
+            for r in stored
+        } == expected
+        assert len(seen) == len(expected)
+        if stored:
+            assert pq.read_schema(store.path(DAY)).names == SCHEMA.names
+            assert not list(Path(tmp).rglob("*.tmp"))
+        else:
+            assert not store.path(DAY).exists()
+
+
+# --- gap capture (HAT-DATA-118) ----------------------------------------------------------------
+
+
+@given(
+    prev_close=prices,
+    indicative=st.one_of(st.none(), prices),
+    opened=st.one_of(st.none(), prices),
+    minute=st.integers(0, 24 * 60 - 1),
+)
+def test_gap_pct(
+    prev_close: Decimal, indicative: Decimal | None, opened: Decimal | None, minute: int
+) -> None:
+    """For every symbol with previous close c and indicative (or first-tick) open o, the recorded
+    gap is 100 * (o / c - 1) and the record says which source supplied o: the indicative price
+    inside 09:00-09:08, else the open of the first tick."""
+    gaps = PreopenGaps()
+    when = at_us(minute * 60 * US)
+    payload: dict[str, Any] = {"symbol": "AAA", "prev_close_price": float(prev_close)}
+    if indicative is not None:
+        payload["indicative_open_price"] = float(indicative)
+    if opened is not None:
+        payload["open_price"] = float(opened)
+    record = gaps.observe(payload, when)
+    in_window = time(9, 0) <= when.time() <= time(9, 8)
+    if indicative is not None and in_window:
+        source, price = GapSource.PREOPEN, indicative
+    elif opened is not None:
+        source, price = GapSource.FIRST_TICK, opened
+    else:
+        assert record is None
+        return
+    assert record is not None
+    assert record.source is source
+    sent = Decimal(str(float(price)))  # a float round trip, as a feed payload carries it
+    assert record.open == sent
+    exact = 100 * (Fraction(record.open) / Fraction(Decimal(str(float(prev_close)))) - 1)
+    assert abs(Fraction(record.gap_pct) - exact) < Fraction(1, 10**20)
+    # a later first tick never replaces a record already made
+    later = {k: v for k, v in payload.items() if k != "indicative_open_price"}
+    again = gaps.observe({**later, "open_price": float(prev_close * 2)}, when)
+    assert again is None
+    assert gaps.records()["AAA"] == record
