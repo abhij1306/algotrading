@@ -65,6 +65,7 @@ from ..backtest.costs import BacktestFills
 from ..backtest.dsr import ReturnStats, return_stats
 from ..backtest.fills import entry_fill, stop_fill
 from ..data.sessions import IST
+from ..data.ticks import tick_for_date
 from ..errors import HatError
 from ..models import (
     HatBot,
@@ -92,7 +93,7 @@ from . import exits, lifecycle, trades, watchlist
 from .portfolio.universe import Interval
 from .regime_gate import regime_allows_longs
 from .scan import EP_PLAYBOOK, ScanInputs
-from .stops import DEFAULT_TICK, StopInputs, check_width, plan_stop
+from .stops import SKIP_BAD_INPUT, StopInputs, check_width, plan_stop
 from .strategy.config import (
     ExitCloseBelowSma,
     ExitTrailingSwingLow,
@@ -139,6 +140,7 @@ SKIP_NO_LEVEL = "no_trigger_level"
 _SANDBOX_USER = uuid.UUID(int=1)
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
+_FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab
 # The instants of a simulated day (IST): a later step of the day has a later instant.
 _AT_NIGHT = time(16, 0)
 _AT_OPEN = time(9, 15)
@@ -491,6 +493,13 @@ class _Run:
         end = bisect_right(dates, day) if inclusive else bisect_left(dates, day)
         return bars[:end]
 
+    def _tick(self, instrument_id: str, day: date) -> Decimal | None:
+        """The instrument's NSE tick on `day` (HAT-EXEC-053), from its closes before `day`, as
+        the live trigger prices it; None without an earlier close."""
+        bars = self._bars_through(instrument_id, day, inclusive=False)
+        dates = self.history.get(instrument_id, ([], []))[0][: len(bars)]
+        return tick_for_date(dates, [b.close for b in bars], day)
+
     def _sma(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         bars = self._bars_through(instrument_id, day)
         if len(bars) < length:
@@ -594,11 +603,14 @@ class _Run:
         `exits.evaluate` acts, as many times as the stack keeps acting. A position closed on
         the way up never saw the rest of the rise, so its excursion stops at the fill."""
         held = self.held[position.id]
+        # A held instrument always has the closes before its entry; the finest NSE tick stands
+        # in only if it did not, which keeps the search exact on a finer grid.
+        tick = self._tick(held.instrument_id, day) or _FINEST_TICK
         for step in range(len(self.config.exits) + 2):
             if position.closed_at is not None:
                 return
             rules, state = trades.position_state(self.session, position)
-            price = first_trigger(rules, state, low, high)
+            price = first_trigger(rules, state, low, high, tick)
             if price is None:
                 break
             held.high = max(held.high, price)
@@ -646,22 +658,27 @@ class _Run:
         what is known when the trigger fires: `low` is the day's low before the entry."""
         rule = playbook.stop
         instrument_id = str(row.instrument_id)
+        tick = self._tick(instrument_id, row.trade_date)
+        if tick is None:
+            return None, SKIP_BAD_INPUT
         if isinstance(rule, StopBelowFinalContractionLow):
             # The contraction stop does not move with the entry; only its width is checked again.
             if row.planned_stop is None:
-                return None, "stop_input_missing"
+                return None, SKIP_BAD_INPUT
             plan = check_width(entry, Decimal(row.planned_stop), Decimal(repr(rule.max_pct)))
             return plan.stop, plan.skip
-        inputs = StopInputs(entry=entry, tick=DEFAULT_TICK)
+        inputs = StopInputs(entry=entry, tick=tick)
         if isinstance(rule, StopLowOfDay):
-            inputs = StopInputs(entry=entry, day_lows=[low])
+            inputs = StopInputs(entry=entry, tick=tick, day_lows=[low])
         elif isinstance(rule, StopAtrMultiple):
-            inputs = StopInputs(entry=entry, atr=self._atr(instrument_id, prev, rule.days))
+            inputs = StopInputs(
+                entry=entry, tick=tick, atr=self._atr(instrument_id, prev, rule.days)
+            )
         elif isinstance(rule, StopSwingLow):
             older = self._bars_through(instrument_id, prev)
             lows = [b.low for b in older[-rule.lookback_days :]]
             inputs = StopInputs(
-                entry=entry, swing_lows=lows if len(lows) == rule.lookback_days else []
+                entry=entry, tick=tick, swing_lows=lows if len(lows) == rule.lookback_days else []
             )
         plan = plan_stop(rule, inputs)
         return plan.stop, plan.skip
@@ -734,7 +751,7 @@ class _Run:
             playbook = self.config.playbook(row.playbook)
             stop, skip = self._stop(playbook, row, price, before, prev)
             if stop is None:
-                self._skip(skip or "stop_input_missing")
+                self._skip(skip or SKIP_BAD_INPUT)
                 continue
             self._enter(row, bar, price, stop, prev, _at(day, _AT_ENTRY, n), gapped=gapped)
 
@@ -1024,7 +1041,7 @@ def first_trigger(
     state: exits.PositionState,
     low: Decimal,
     high: Decimal,
-    tick: Decimal = DEFAULT_TICK,
+    tick: Decimal,
 ) -> Decimal | None:
     """The lowest price in [low, high] (`low`, `high` or a tick price between) at which the live
     rules of the stack act, or None when they do not act even at `high`.

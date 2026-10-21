@@ -31,6 +31,7 @@ from app.hat.data.store import (
     DataStore,
     IndexRow,
 )
+from app.hat.data.ticks import tick_for_date
 from app.hat.engine.backtest import (
     KNOWN_GAPS,
     BacktestResult,
@@ -42,6 +43,7 @@ from app.hat.engine.backtest import (
     trades_parquet,
 )
 from app.hat.engine.portfolio.universe import Interval
+from app.hat.engine.stops import floor_to_tick
 from app.hat.engine.strategy.versions import VersionError, publish_version, seed_default_strategies
 from app.hat.models import (
     HatBacktestRun,
@@ -191,20 +193,52 @@ def test_entry_fill_proxy(open_: D, high: D, level: D) -> None:
 @given(s.paths(SESSIONS), st.sampled_from([D("0.5"), D(1), D(5)]))
 @RUNS
 def test_entry_fill_proxy_chase(paths: dict, chase: D) -> None:
-    """In a run, every opened entry filled at the proxy price of its watchlist level and within
-    max chase of it: a gap-over beyond level x (1 + pct/100) is never bought. The generated
-    opens gap up by at most 3%, so the chase is drawn below that too."""
+    """In a run, every opened entry records its watchlist level as the trigger price
+    (HAT-CRIT-119) and filled at the proxy price of that level, within max chase of it: a
+    gap-over beyond level x (1 + pct/100) is never bought. The generated opens gap up by at
+    most 3%, so the chase is drawn below that too."""
     data = s.market(paths, DAYS)
     cfg = s.config(chase=float(chase))
     result = run_backtest(s.spec(cfg, DAYS, fills=s.zero_fills()), data)
     levels = {(w.trade_date, w.instrument_id): w.pivot for w in result.watchlists}
+    bought = {(f.day, f.instrument_id): f.price for f in result.fills if f.purpose == "entry"}
     for signal in result.signals:
         if signal.state != "Open":
             continue
         level = levels[(signal.trade_date, signal.instrument_id)]
+        assert signal.trigger_price == level  # the signal records the level it broke
         open_, high, _, _ = _bar(data, signal.instrument_id, signal.trade_date)
-        assert signal.trigger_price == entry_fill(open_, high, level)
-        assert signal.trigger_price <= level * (1 + chase / 100)
+        price = bought[(signal.trade_date, signal.instrument_id)]
+        assert price == entry_fill(open_, high, level)
+        assert price <= level * (1 + chase / 100)
+
+
+@given(s.paths(SESSIONS), st.sampled_from([1, 30]))
+@RUNS
+def test_stop_on_instrument_tick(paths: dict, scale: int) -> None:
+    """Every opened entry's stop is the live plan on the instrument's NSE tick of the trade date
+    (HAT-EXEC-053): entry x 0.95 rounded down to the tick set by the closes before that date.
+    Prices are scaled into the 0.01 and the 0.10 slab. Harm: backtest stops sit on a grid the
+    live trigger never uses, so backtest and live risk differ."""
+    scaled = {
+        i: [tuple(round(v * scale, 2) for v in bar) for bar in path] for i, path in paths.items()
+    }
+    data = s.market(scaled, DAYS)
+    result = run_backtest(s.spec(s.config(), DAYS, fills=s.zero_fills()), data)
+    for signal in result.signals:
+        if signal.state != "Open":
+            continue
+        prior = data.bars.filter(
+            (data.bars["instrument_id"] == signal.instrument_id)
+            & (data.bars["date"] < signal.trade_date)
+        ).sort("date")
+        closes = [D(repr(c)).quantize(D("0.0001")) for c in prior["close"].to_list()]
+        tick = tick_for_date(prior["date"].to_list(), closes, signal.trade_date)
+        assert tick is not None
+        open_, high, _, _ = _bar(data, signal.instrument_id, signal.trade_date)
+        entry = entry_fill(open_, high, signal.trigger_price)  # the trigger price is the level
+        assert entry is not None
+        assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
 
 
 @given(PRICE, PRICE, PRICE)

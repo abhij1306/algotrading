@@ -52,11 +52,12 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 - **Statement:** On daily bars, an entry fills at the trigger level when the day's high reaches it, or at the open when the day opens above the trigger level (gap over); otherwise no entry.
 - **Source:** PLAN Q4; BL "Criteria library" (`price_breaks_level`, `max_chase`).
 - **PR:** 12
-- **Verification:** PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`
+- **Verification:** PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick`
 - **Acceptance:**
   - Property: for every (open, high, level), the entry price is level if open <= level <= high, open if open > level, and there is no entry if high < level; the entry is still subject to max-chase, so a gap-over open above level × (1 + pct/100) is skipped. Harm: the backtest buys at prices the live engine would refuse, inflating results.
 - **[OWNER-PENDING]** daily-bar trigger proxy: default as stated (PLAN Q4); episodic-pivot (opening-range) backtests need the Fyers minute history the optional loader writes to `bars_5m` (HAT-DATA-119, I4); the discrepancy is measured in shadow; owner to confirm.
 - **Deviation (PR 12):** the trigger is the break of the level alone. `volume_pace`, `adtr_filter` and the opening range need intraday bars and are not modelled, and the episodic-pivot playbook, built live from the pre-open gap scan, is not backtested (its rows are skipped): the PR 12 loop runs on daily bars only, and the minute-history loader exists for a later EP backtest. Both are listed in `metrics.known_gaps`.
+- **Design (PR 12):** the initial stop is planned with the instrument's NSE tick on the trade date (`data.ticks.tick_for_date`, HAT-EXEC-053), as the live trigger plans it; an instrument with no close before the trade date is skipped (`stop_input_missing`). The backtest reads the tick from the adjusted closes it runs on, while live reads the unadjusted ones: across a corporate action the two can sit in different price slabs, which moves a stop by less than the larger of the two ticks. Property `backtest.stop_on_instrument_tick`: every opened entry's stop is the live plan on the instrument's tick of the trade date, with prices in more than one slab. Harm: backtest stops sit on a grid the live trigger never uses.
 
 #### HAT-BT-021: Stop and close-based exit fills
 - **Statement:** A stop fills at the stop price, or at the open when the day opens below the stop; close-based exits (`close_below_sma`, `time_stop`, `partial_after_days`, `trailing_swing_low`) fill at the day's official close.

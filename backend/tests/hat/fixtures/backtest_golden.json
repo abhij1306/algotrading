@@ -100,15 +100,15 @@
   "metrics": {
    "avg_loss_r": null,
    "avg_mae_r": "0.000000",
-   "avg_mfe_r": "10.002514",
-   "avg_win_r": "8.006953",
+   "avg_mfe_r": "9.997681",
+   "avg_win_r": "8.003568",
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
-   "expectancy_r": "8.006953",
+   "expectancy_r": "8.003568",
    "fees": "74.2300",
-   "final_equity": "1009937.9100",
+   "final_equity": "1009938.5100",
    "initial_equity": "1000000",
    "known_gaps": [
     "trigger_is_level_break_only",
@@ -116,26 +116,26 @@
     "close_exits_at_official_close",
     "kill_switches_not_simulated"
    ],
-   "max_drawdown": 0.0033513742009935177,
-   "net_pnl": "9937.9100",
+   "max_drawdown": 0.0033513722050979577,
+   "net_pnl": "9938.5100",
    "rejections": {
     "position_exists": 1
    },
    "returns": {
-    "kurtosis": 5.617090968452445,
-    "skew": 0.06222992998665804,
-    "sr": 0.2885420205903848,
+    "kurtosis": 5.6167920971226595,
+    "skew": 0.06221532842068056,
+    "sr": 0.28855509703089655,
     "t": 100
    },
    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
    "sessions": 100,
-   "sharpe_annual": 4.580462575645421,
+   "sharpe_annual": 4.580670157703189,
    "signals": 2,
    "skips": {},
    "slippage_bps": "0",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
-   "sum_r": "8.006953",
-   "total_return": 0.009937910000000105,
+   "sum_r": "8.003568",
+   "total_return": 0.009938510000000012,
    "trades": 1,
    "win_rate": 1.0
   },
@@ -148,14 +148,14 @@
     "exit_reason": "end_of_period",
     "fees": "74.2300",
     "holding_days": "73",
-    "initial_stop": "2290.5500",
+    "initial_stop": "2290.5000",
     "instrument_id": "00000000-0000-0000-0000-000000002001",
     "mae_r": "0E-10",
-    "mfe_r": "10.0025140000",
+    "mfe_r": "9.9976810000",
     "playbook": "default",
     "qty": "12",
-    "r_multiple": "8.0069530000",
-    "realized_pnl": "9937.9100",
+    "r_multiple": "8.0035680000",
+    "realized_pnl": "9938.5100",
     "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
    }
   ],

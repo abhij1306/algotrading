@@ -16,7 +16,8 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.market_point_in_time` `load_market` reads bars and index closes up to the period's end only; an instrument delisted by the end has its last bar on or before its delisting as its last traded session, one delisted later has none; industry classifications come with their effective dates and `industry_on` gives the one in force on each day (HAT-BT-011, HAT-BT-012). Harm: a run closes a live stock as delisted, or a later reclassification changes an earlier industry-cap decision.
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
 - `PBT backtest.entry_fill_proxy` An entry fills at the level when the open is at or below it and the high reaches it, at the open on a gap over, and not at all when the high stays below (HAT-BT-020). Harm: the backtest buys a gap at the level, a price the market never offered.
-- `PBT backtest.entry_fill_proxy_chase` In a run, every opened entry filled at the proxy price of its level and within max chase of it, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses.
+- `PBT backtest.entry_fill_proxy_chase` In a run, every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at the proxy price of that level and within max chase of it, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses.
+- `PBT backtest.stop_on_instrument_tick` Every opened entry's stop is entry x 0.95 rounded down to the instrument's NSE tick of the trade date (`data.ticks.tick_for_date` on the closes before it), with prices scaled into the 0.01 and the 0.10 slab (HAT-BT-020 design, HAT-EXEC-053). Harm: backtest stops sit on a grid the live trigger never uses, so backtest and live risk differ.
 - `PBT backtest.exit_fill_proxy` A stop fills at min(open, stop) when the day reaches it and is never better than the stop; a day above it does not fill (HAT-BT-021). Harm: gap-down losses are understated.
 - `PBT backtest.exit_fill_proxy_close` A trade closed by a close-based rule sold at that day's official close, and `close_exits_at_official_close` is a recorded known gap. Harm: close exits are priced at a better point of the day than the rule could see.
 - `PBT backtest.decimal_money` Quantities are whole and at least 1, money is Decimal, and the trades' net P&L sums exactly to the change in equity (HAT-BT-024). Harm: float drift makes equity and the trades disagree.
@@ -102,10 +103,12 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `24ddd418037cbf1d40abaf0bbba537851f51daea26f420bb496090d8fa309db2`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `7d074f11a1266f1a32e3d1e2076fd4e4989b308819ac4bd4181c53c986be6a18`
 
 ## Scope changes
+
+- Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
 
 - MFE and MAE stop at a fill: a position the stop closes on the way down, or a profit exit closes on the way up, never saw the rest of that bar (CodeAnt review of PR 12). No property isolates the excursions; the golden replay pins them (the fix moved one trade's `mae_r` and `avg_mae_r` only).
 
@@ -242,12 +245,29 @@ Break: in `backend/app/hat/engine/backtest.py`: the risk decision gets the fill 
 
 ```
 tests/hat/properties/test_backtest.py F
-tests/hat/properties/test_backtest.py:174: in test_entry_fill_proxy_chase
-    @RUNS
-tests/hat/properties/test_backtest.py:189: in test_entry_fill_proxy_chase
-    assert signal.trigger_price <= level * (1 + chase / 100)
-E   AssertionError: assert Decimal('81.2800') <= (Decimal('80.0000') * (1 + (Decimal('0.5') / 100)))
-E    +  where Decimal('81.2800') = SignalRow(trade_date=datetime.date(2025, 2, 20), playbook='default', instrument_id='00000000-0000-0000-0000-0000000010...n_id=UUID('00000000-0000-7000-8000-0000000000b1'), risk_policy_version_id=UUID('00000000-0000-7000-8000-0000000000b2')).trigger_price
+tests/hat/properties/test_backtest.py:209: in test_entry_fill_proxy_chase
+    assert signal.trigger_price == level  # the signal records the level it broke
+E   AssertionError: assert Decimal('175.3800') == Decimal('172.9800')
+```
+
+### PBT backtest.stop_on_instrument_tick
+
+Break: in `backend/app/hat/engine/backtest.py`: the stop planned on the old fixed 0.05 tick instead of the instrument's NSE slab tick.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:241: in test_stop_on_instrument_tick
+    assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
+E   AssertionError: assert Decimal('76.0500') == Decimal('76.07')
+```
+
+Break: in `backend/app/hat/engine/backtest.py`: the stop always planned on the finest tick (0.01), whatever the price slab.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:241: in test_stop_on_instrument_tick
+    assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
+E   AssertionError: assert Decimal('2282.2800') == Decimal('2282.20')
 ```
 
 ### PBT backtest.exit_fill_proxy
