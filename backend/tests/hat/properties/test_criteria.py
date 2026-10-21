@@ -905,7 +905,14 @@ def test_inclusive_edges_contract(k: int, pct: int) -> None:
 PAISE = st.integers(1, 5_000_000)  # ₹0.01 .. ₹50,000.00
 MAYBE_PAISE = st.one_of(st.none(), st.integers(-100, 0), PAISE)
 SESSION_BARS = 75  # 09:15 .. 15:30 in five-minute bars
-TRIGGER_TYPES = ("gap_up", "volume_pace", "early_volume", "catalyst_attached", "price_breaks_level")
+TRIGGER_TYPES = (
+    "gap_up",
+    "volume_pace",
+    "early_volume",
+    "catalyst_attached",
+    "price_breaks_level",
+    "neglect",
+)
 
 
 def maybe(value: int | None) -> Decimal | None:
@@ -1218,19 +1225,45 @@ def live_contexts(draw: st.DrawFn) -> LiveContext:
     )
 
 
-@given(items=trigger_sets(), ctx=live_contexts(), mode=st.sampled_from(MODES))
-def test_trigger_conjunction(items: list[dict], ctx: LiveContext, mode: str) -> None:
+@example(
+    items=[{"type": "neglect", "params": {}, "enabled": True}],
+    ctx=LiveContext(at=AT),
+    mode="shadow",
+    daily=True,
+)  # a playbook triggered by its daily-bar criterion alone
+@given(
+    items=trigger_sets(),
+    ctx=live_contexts(),
+    mode=st.sampled_from(MODES),
+    daily=st.one_of(st.none(), st.booleans()),
+)
+def test_trigger_conjunction(
+    items: list[dict], ctx: LiveContext, mode: str, daily: bool | None
+) -> None:
     """HAT-EXEC-121, HAT-CRIT-118: a playbook triggers iff it has at least one blocking enabled
     trigger criterion and every blocking one passes on the same bar; a disabled criterion is not
     evaluated, and `catalyst_attached` blocks only in a mode listed in its `required_in` (its
-    result is recorded either way). Harm: one passing criterion fires an entry the others
-    reject, or a playbook with every criterion disabled buys every bar."""
+    result is recorded either way). A daily-bar trigger (`neglect`) counts with the result the
+    candidate was built with (`daily`) and fails closed without one. Harm: one passing
+    criterion fires an entry the others reject, a playbook with every criterion disabled buys
+    every bar, or a playbook holding `neglect` never fires."""
     book = playbook(trigger=items)
-    evaluation = evaluate_trigger(book, ctx, mode)
+    results = {
+        i.order: CriterionResult(daily, 1.0 if daily else 0.0, None, "ok" if daily else "x")
+        for i in book.trigger
+        if i.type == "neglect" and daily is not None
+    }
+    evaluation = evaluate_trigger(book, ctx, mode, results)
     enabled = [i for i in items if i["enabled"]]
     assert [o.type for o in evaluation.outcomes] == [i["type"] for i in enabled]
+
+    def passed(n: int, item: dict) -> bool:
+        if item["type"] == "neglect":
+            return bool(daily)
+        return evaluate_live(item["type"], book.trigger[n].params, ctx).passed
+
     blocking = [
-        evaluate_live(i["type"], book.trigger[n].params, ctx).passed
+        passed(n, i)
         for n, i in enumerate(items)
         if i["enabled"] and (i["type"] != "catalyst_attached" or mode in i["params"]["required_in"])
     ]

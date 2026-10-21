@@ -12,6 +12,9 @@ Rules:
   and only when that instant lies in [09:20, 15:20] IST; the trigger's time is the bar's final
   instant (HAT-EXEC-120).
 - A playbook triggers when every enabled trigger criterion passes on the same bar (HAT-EXEC-121).
+  A trigger type over daily bars (`neglect`) is evaluated once, on the bars before the trade
+  date, when the candidate is built (`daily_trigger_results`); without that result it fails
+  closed.
   `catalyst_attached` is the one exception: its result is recorded, but it blocks only when the
   bot's mode is in its `required_in` list (HAT-CRIT-118, HAT-EXEC-034). A playbook with no
   enabled trigger criterion never triggers.
@@ -40,7 +43,7 @@ import polars as pl
 from ..data.bars import Bar
 from ..data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
 from ..risk.caps import effective_max_chase_pct
-from .criteria import CriterionResult, evaluate_live
+from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
 from .stops import StopInputs, floor_to_tick, plan_stop
 from .strategy.config import Instance, Playbook, StrategyConfig
@@ -56,6 +59,7 @@ __all__ = [
     "TriggerEvaluation",
     "TriggerMonitor",
     "daily_inputs",
+    "daily_trigger_results",
     "elapsed_fraction",
     "entry_filter_instances",
     "evaluate_trigger",
@@ -155,7 +159,8 @@ class Candidate:
     `levels` holds the watchlist's `pivot` and `consolidation_high`; `open_price` is the day's
     open from the pre-open capture (EP); `announcements` are the `published_at` instants matched
     to the instrument. `configured_max_chase_pct` is the playbook's last configured max-chase
-    percentage across the bot's versions (None when it never had one)."""
+    percentage across the bot's versions (None when it never had one). `daily_results` holds the
+    results of the playbook's daily-bar trigger criteria by instance order."""
 
     bot_id: uuid.UUID
     strategy_key: str
@@ -170,6 +175,7 @@ class Candidate:
     open_price: Decimal | None = None
     announcements: tuple[datetime, ...] = ()
     configured_max_chase_pct: Decimal | None = None
+    daily_results: Mapping[int, CriterionResult] = field(default_factory=dict)
 
     @property
     def key(self) -> tuple[uuid.UUID, str, uuid.UUID, date]:
@@ -294,15 +300,45 @@ def entry_filter_instances(
     return [*enabled, forced]
 
 
-def evaluate_trigger(playbook: Playbook, ctx: LiveContext, mode: str) -> TriggerEvaluation:
+def is_daily_trigger(code: str) -> bool:
+    """A trigger type evaluated over daily bars (no live evaluator), such as `neglect`."""
+    return get_type(code).evaluate_live is None
+
+
+def daily_trigger_results(
+    playbook: Playbook, bars: pl.DataFrame, trade_date: date
+) -> dict[int, CriterionResult]:
+    """The playbook's enabled daily-bar trigger criteria evaluated on the bars before
+    `trade_date` (the trade date's own bar does not exist yet), keyed by instance order."""
+    ctx = EvalContext(
+        as_of=trade_date, instrument_id="", bars=bars.filter(pl.col("date") < trade_date)
+    )
+    return {
+        i.order: evaluate(i.type, i.params, ctx)
+        for i in playbook.trigger
+        if i.enabled and is_daily_trigger(i.type)
+    }
+
+
+def evaluate_trigger(
+    playbook: Playbook,
+    ctx: LiveContext,
+    mode: str,
+    daily_results: Mapping[int, CriterionResult] | None = None,
+) -> TriggerEvaluation:
     """Every enabled trigger criterion, in order, on one bar; fired iff each blocking one passed
-    (and there is at least one). The level is the `price_breaks_level` level, when there is one."""
+    (and there is at least one). A daily-bar criterion takes its result from `daily_results`
+    and fails closed without one. The level is the `price_breaks_level` level, when there is
+    one."""
+    daily = daily_results or {}
     outcomes: list[CriterionOutcome] = []
     level: Decimal | None = None
     for instance in playbook.trigger:
         if not instance.enabled:
             continue
-        result = evaluate_live(instance.type, instance.params, ctx)
+        result = daily.get(instance.order) if is_daily_trigger(instance.type) else None
+        if result is None:
+            result = evaluate_live(instance.type, instance.params, ctx)
         blocking = instance.type != CATALYST or mode in instance.params.get("required_in", ())
         outcomes.append(CriterionOutcome(instance.type, instance.order, blocking, result))
         if instance.type == PRICE_BREAKS_LEVEL and result.passed:
@@ -409,7 +445,7 @@ class TriggerMonitor:
             bar_high=bar.high,
             levels=levels,
             cum_volume=self._view.day_volume(candidate.symbol, day),
-            elapsed=elapsed_fraction(bar.end),
+            elapsed=elapsed_fraction(bar.final_at),  # the instant the day volume is read
             avg50_volume=daily.avg50_volume,
             adv20=daily.adv20,
             open_price=candidate.open_price,
@@ -431,7 +467,9 @@ class TriggerMonitor:
             if key in self._fired or candidate.trade_date != day:
                 continue
             ctx = self.context(candidate, bar)
-            evaluation = evaluate_trigger(candidate.playbook, ctx, candidate.mode)
+            evaluation = evaluate_trigger(
+                candidate.playbook, ctx, candidate.mode, candidate.daily_results
+            )
             if not evaluation.fired:
                 continue
             self._fired.add(key)

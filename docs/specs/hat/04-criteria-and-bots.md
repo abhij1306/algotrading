@@ -305,7 +305,7 @@ Common properties for every catalogue type (apply to each requirement below; ver
   - Property: for every (open, prev_close > 0), `passed` iff (open / prev_close − 1) × 100 >= min_pct, with prev_close taken from the adjusted daily bars of the previous session. Harm: small gaps trigger the episodic-pivot playbook, or a split makes a fake gap.
 
 #### HAT-CRIT-116: `volume_pace`
-- **Statement:** `volume_pace` passes iff the day's volume projected to a full session is at least 1.5 × the 50-day average volume.
+- **Statement:** `volume_pace` passes iff the day's volume projected to a full session is at least 1.5 × the 50-day average volume. At a trigger the volume and the elapsed fraction are both read at the bar's final instant (end + 2 s).
 - **Source:** BL "Criteria library" (`× 50-day avg, projected to full day (1.5)`); BL bot configs (`vs_avg50: 1.5`); DS "Bar builder rules"; B8.
 - **PR:** 8, 15
 - **Verification:** PBT `criteria.volume_pace_contract`

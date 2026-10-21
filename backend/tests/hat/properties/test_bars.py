@@ -571,6 +571,27 @@ def test_stale_feed_trips_health_kill(steps: list[tuple[str, int]]) -> None:
         assert opened == 1
 
 
+@given(changes=st.lists(st.booleans(), min_size=1, max_size=8), data=st.data())
+@settings(max_examples=60, deadline=None)
+def test_health_kill_writes_out_of_order(changes: list[bool], data: st.DataObject) -> None:
+    """HAT-DATA-116, HAT-RISK-063 (part of `stale_feed_trips_health_kill`): the kill writes run
+    on worker threads and may run in any order; whatever the order, the account's health kill
+    ends in the state of the latest change. Harm: a trip that reaches the database after its
+    recovery leaves every bot manage-only on a healthy feed, or a recovery written after a
+    newer trip lets entries through on a stale feed."""
+    engine = memory_engine()
+    jobs: list[object] = []
+    clock = [at_us(10 * 3600 * US)]
+    hook = DataHealthKill(lambda: Session(engine), lambda: clock[0], submit=jobs.append)
+    for stale in changes:
+        clock[0] += timedelta(seconds=1)
+        hook(stale)
+    for job in data.draw(st.permutations(jobs)):
+        job()
+    with Session(engine) as session:
+        assert controls.kill_state(session, uuid4()).health_tripped == changes[-1]
+
+
 # --- triggers on final bars (HAT-EXEC-120) -----------------------------------------------------
 
 
@@ -637,6 +658,12 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
         return
     ((handed_at, trigger),) = fired
     assert trigger.at == expected.final_at <= handed_at
+    # volume pace reads the day volume at the trigger instant, so the elapsed share is taken there
+    micro = timedelta(microseconds=1)
+    session_length = timedelta(hours=6, minutes=15)
+    assert trigger.context.elapsed == Fraction(
+        (expected.final_at - opens) // micro, session_length // micro
+    )
     assert trigger.context.bar_high == expected.high
     assert trigger.context.price == expected.close
 

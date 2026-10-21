@@ -522,7 +522,7 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
   - Property: for every tick stream, `signal.triggered` timestamps lie in [09:20, 15:20] IST and each is derived from a bar marked final (close + 2 s). Harm: triggers fire on half-built bars or in the auction.
 
 #### HAT-EXEC-121: All trigger criteria must pass
-- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules). `catalyst_attached` counts only in the modes its `required_in` lists (HAT-CRIT-118); a playbook with no enabled trigger criterion never triggers.
+- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules). `catalyst_attached` counts only in the modes its `required_in` lists (HAT-CRIT-118); a playbook with no enabled trigger criterion never triggers. A trigger criterion over daily bars (`neglect`) is evaluated once on the bars before the trade date when the candidate is built, and fails closed without them.
 - **Source:** BL "Configuration model" stage 4; BL default configs.
 - **PR:** 15
 - **Verification:** PBT `criteria.trigger_conjunction`

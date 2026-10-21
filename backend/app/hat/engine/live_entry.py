@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -42,11 +43,18 @@ from ..risk import controls
 from ..risk.decision import SignalContext
 from ..time import utc_now
 from . import lifecycle, trades
-from .criteria import EvalContext, evaluate
+from .criteria import CriterionResult, EvalContext, evaluate
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
 from .scan import EP_PLAYBOOK
 from .strategy.config import Playbook, StrategyConfig, parse_config
-from .trigger import Candidate, DailyInputs, Trigger, TriggerMonitor, last_configured_chase
+from .trigger import (
+    Candidate,
+    DailyInputs,
+    Trigger,
+    TriggerMonitor,
+    daily_trigger_results,
+    last_configured_chase,
+)
 
 __all__ = [
     "ContextSource",
@@ -66,6 +74,17 @@ DATA_HEALTH = "data_health"
 _INSTANT = timedelta(microseconds=1)
 
 DailySource = Callable[[uuid.UUID], DailyInputs]
+BarsSource = Callable[[uuid.UUID], pl.DataFrame]  # adjusted daily bars of one instrument
+
+
+def _daily_results(
+    playbook: Playbook, bars: BarsSource | None, instrument_id: uuid.UUID, trade_date: date
+) -> dict[int, CriterionResult]:
+    """The daily-bar trigger results of one candidate; none without a bars source, so such a
+    trigger fails closed."""
+    if bars is None:
+        return {}
+    return daily_trigger_results(playbook, bars(instrument_id), trade_date)
 
 
 def _decimal(raw: object) -> Decimal | None:
@@ -110,9 +129,12 @@ def _symbols(session: Session, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]
     )
 
 
-def watchlist_candidates(session: Session, trade_date: date, daily: DailySource) -> list[Candidate]:
+def watchlist_candidates(
+    session: Session, trade_date: date, daily: DailySource, bars: BarsSource | None = None
+) -> list[Candidate]:
     """One candidate per Watchlisted row of `trade_date` of an active shadow bot, judged by the
-    playbook of the strategy version the row was scanned under."""
+    playbook of the strategy version the row was scanned under. `bars` feeds the playbook's
+    daily-bar trigger criteria."""
     out: list[Candidate] = []
     for bot in _shadow_bots(session):
         configs = _versions_newest_first(session, bot.strategy_id)
@@ -152,6 +174,7 @@ def watchlist_candidates(session: Session, trade_date: date, daily: DailySource)
                     },
                     final_contraction_low=_decimal(levels.get("final_contraction_low")),
                     configured_max_chase_pct=last_configured_chase(configs, playbook.name),
+                    daily_results=_daily_results(playbook, bars, row.instrument_id, trade_date),
                 )
             )
     return out
@@ -197,9 +220,11 @@ def ep_bot_candidates(
     trade_date: date,
     instruments: Sequence[EpInputs],
     daily: DailySource,
+    bars: BarsSource | None = None,
 ) -> list[Candidate]:
     """The EP candidates of every active shadow bot with an `episodic_pivot` playbook, for the
-    instruments the gap scan selected (already filtered by `ep_candidates`)."""
+    instruments the gap scan selected (already filtered by `ep_candidates`). `bars` feeds the
+    playbook's daily-bar trigger criteria."""
     out: list[Candidate] = []
     for bot in _shadow_bots(session):
         version = session.get(HatStrategyVersion, bot.live_version_id)
@@ -223,6 +248,7 @@ def ep_bot_candidates(
                 open_price=item.open_price,
                 announcements=item.announcements,
                 configured_max_chase_pct=last_configured_chase(configs, playbook.name),
+                daily_results=_daily_results(playbook, bars, item.instrument_id, trade_date),
             )
             for item in instruments
         )
@@ -333,16 +359,23 @@ class TriggerService:
 class DataHealthKill:
     """`EventFeedHealth`'s `on_change`: a stale feed trips the account's data-health kill (every
     bot manage-only, exits untouched); recovery clears it by itself (HAT-RISK-063). The write
-    runs on a worker thread when called from the loop."""
+    runs on a worker thread when called from the loop. Changes are numbered when they happen
+    and written one at a time; a change that reaches the database after a newer one is dropped,
+    so the kill always ends in the state of the latest change, whatever order the workers run."""
 
     def __init__(
         self,
         session_factory: Callable[[], Session],
         now: Callable[[], datetime] = utc_now,
+        submit: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._now = now
+        self._submit = submit or TriggerService._submit
         self._last: datetime | None = None
+        self._seq = 0
+        self._written = 0
+        self._lock = threading.Lock()
 
     def __call__(self, stale: bool) -> None:
         # Each change gets an instant after the previous one: a trip and a recovery at the same
@@ -351,9 +384,18 @@ class DataHealthKill:
         if self._last is not None and at <= self._last:
             at = self._last + _INSTANT
         self._last = at
-        TriggerService._submit(lambda: self.write(stale, at))
+        self._seq += 1
+        seq = self._seq
+        self._submit(lambda: self.write(stale, at, seq))
 
-    def write(self, stale: bool, at: datetime) -> None:
+    def write(self, stale: bool, at: datetime, seq: int) -> None:
+        with self._lock:
+            if seq <= self._written:
+                return  # a newer change is already written
+            self._written = seq
+            self._write(stale, at)
+
+    def _write(self, stale: bool, at: datetime) -> None:
         try:
             with self._session_factory() as session:
                 controls.sync_health(

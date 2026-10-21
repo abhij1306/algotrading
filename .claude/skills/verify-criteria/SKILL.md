@@ -62,7 +62,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level, at that bar's final instant, with the level as the trigger price and the bar's close as the live price; the opening range level does not exist before its bar is final. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20.
 - `PBT criteria.adtr_filter_contract` `adtr_filter` passes exactly when entry - stop is at most `max_multiple` x ADTR(20); a stop at or above the entry, or a missing input, fails closed. Harm: an entry whose stop is wider than the stock's daily range is stopped out by noise.
 - `PBT criteria.max_chase_contract` `max_chase` passes exactly when price <= level x (1 + pct/100) and the stock is not locked at its upper circuit (unknown circuit state fails closed), and (`test_max_chase_always_applied`) the filters evaluated at a trigger always hold exactly one `max_chase`: an enabled one in place, a disabled or deleted one last with the last configured percentage, else the strategy default (S1 5, S2 2, else 2). Harm: deleting max_chase lets a bot buy any distance above the breakout, or into a locked circuit it cannot exit.
-- `PBT criteria.trigger_conjunction` A playbook triggers exactly when it has at least one blocking enabled trigger criterion and every blocking one passes on the same bar; disabled criteria are not evaluated and `catalyst_attached` blocks only in a mode in its `required_in`. Harm: one passing criterion fires an entry the others reject, or an all-disabled playbook buys every bar.
+- `PBT criteria.trigger_conjunction` A playbook triggers exactly when it has at least one blocking enabled trigger criterion and every blocking one passes on the same bar; disabled criteria are not evaluated, `catalyst_attached` blocks only in a mode in its `required_in`, and a daily-bar trigger (`neglect`) counts with the result the candidate was built with and fails closed without one. Harm: one passing criterion fires an entry the others reject, or an all-disabled playbook buys every bar.
 - `PBT criteria.entry_filters_skip` On SQLite with the real `open_entry`: the stop is planned first, then the entry filters in order with max_chase always present; the first failure is stored as a Rejected signal with that reason and stage `entry_filter`, no position, and no risk call; with no failure the signal goes to the risk check. Harm: a trade the filters reject is opened, or a skip leaves no reason.
 - `PBT criteria.level_expression` `pivot` and `opening_range_high` name one level each and `max(consolidation_high, opening_range_high)` the larger of two that must both exist; a missing or non-positive level, or any other expression, has no level (`level_undefined`), and the config refuses an unknown expression. Harm: a zero level, or the consolidation high alone before the opening range exists, fires at the open.
 - `PBT criteria.ep_candidate_bands` The EP candidates of a gap scan are, in scan order, exactly the gappers with a gap of at least 10% (exact), in the universe, with a known 10% or 20% band or no band (F&O), whose EP setup passes. Harm: a 2% or 5% band stock that can lock at its circuit after the entry becomes an EP trade.
@@ -136,8 +136,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `782a7cf4dc4bebfaf253ee94485d05e4da7f21bef257b766a483b1db9861b081`
+Sync commit: `0c49ef5fcd529a6517a352aa1b98dba21b081a7f`
+Covered digest: `08878487bd70ad0481364935653adb120e958de3708297eb66654734721b712b`
 
 ## Scope changes
 
@@ -955,6 +955,14 @@ Break: in `backend/app/hat/engine/trigger.py`: `fired = bool(blocking_results) a
 E   assert True == ((False))
 E    +  where True = TriggerEvaluation(fired=True, outcomes=(), level=None).fired
 E    +  and   False = bool([])
+```
+
+Break: in `backend/app/hat/engine/trigger.py`: `evaluate_trigger` ignores the candidate's daily-bar results (`result = None`), so `neglect` is evaluated live and never passes.
+
+```
+E   AssertionError: assert False == ((True and True))
+E    +  where False = TriggerEvaluation(fired=False, outcomes=(CriterionOutcome(type='neglect', order=0, blocking=True, result=CriterionResult(passed=False, sco [cut]
+E   Failing explicit example: test_trigger_conjunction(
 ```
 
 ### PBT criteria.entry_filters_skip
