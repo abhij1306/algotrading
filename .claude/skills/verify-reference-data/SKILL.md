@@ -88,6 +88,9 @@ Covered digest: `01990e36d91a2ea0e92feb4b795d7576cc7238a5783869a532465bdbc87666a
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+
+- `McpClient` gained `corporate_actions`, `stock_history` and `index_history` (PR 5, HAT-DATA-094..096). Their checks live in `verify-data` (`history_build.mcp_*`, the history CONF fixtures test); the unwrapping and error rules shared with the other client methods are still checked here.
+
 - `reference.prefix_paging_complete` models the server as returning rows sorted by symbol and cut at the limit, so a symbol equal to a capped prefix comes first. The real server's order is unverified (the recorded sample is not sorted); a symbol that a capped page omits and no deeper prefix can return would be missed. The weekly job cross-checks against the equity list CSV, which reports a listed symbol with no CSV row as unresolved.
 - `reference.symbol_history_resolves` draws symbols distinct within one listing and steps seven days apart; the resolver prefers the active instrument, then series EQ, when two series of one ISIN share a symbol.
 - `reference.fyers_symbol_roundtrip` does not assert that every symbol gets a row: a symbol that does not round-trip (an alias such as LTIM) is reported, which is the property.
