@@ -79,8 +79,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2f91028fdc534579dab4d3ec6956eb102a913090`
-Covered digest: `a58c83c7acc14186d2bceb12fdb4ad73ff23d007a01e42bce2cbe85191a04b6b`
+Sync commit: `1ece2f2ae66b7c5170710676833cd4a1c526bb84`
+Covered digest: `3a17f93c631706ba7d93199bb24e3192ddbc37361a171fd7e448ef9e14e143ac`
 
 ## Scope changes
 
@@ -90,6 +90,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `JobScheduler` models one key (job, trade_date) because keys are independent rows under one unique index; two callers and three calls each stand for "any number" of racers (bounds in the model header).
 - The model counts recorded successes, not body executions: a crash between the body and its recording is the `Restart` action and re-runs the body (see "Bug or model error", known window).
 - `TypeOK` has no broken variant: it is a type-correctness invariant, not a promise.
+- PR 3 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` now includes 3; `KNOWN_GAPS` gained two TLA names that belong to PR 13 and PR 15 (see `verify-events`); the DB-check coverage test accepts `events.partitions_ahead` through its own broken-ensure variants; the catalog comparison orders by name and definition.
 
 ## Scratch breaks
 
