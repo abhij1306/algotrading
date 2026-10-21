@@ -40,7 +40,6 @@ LEGACY_TEST_HELPERS = {"fakes", "conftest", "tests"}
 # deleted with the legacy code that uses it (K4/K5).
 SHIMS = {
     "utils/clock.py",
-    "services/bhavcopy_text.py",
     "services/execution/paper_book.py",
     # K2: the Fyers stack. Each inherits or re-exports HAT's version and adds only legacy-only code.
     "brokers/base.py",

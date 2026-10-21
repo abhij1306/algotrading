@@ -1,5 +1,5 @@
 # Root ruff config: applies the backend rules (backend/pyproject.toml) to the
-# Python outside backend/ (start_dev.py, scripts/, data_platform/).
+# Python outside backend/ (scripts/).
 # Files under backend/ keep using backend/pyproject.toml directly.
 extend = "backend/pyproject.toml"
 extend-exclude = ["frontend", "archive"]
@@ -8,4 +8,3 @@ extend-exclude = ["frontend", "archive"]
 # Developer CLIs: stdout is their interface (T20), and they run fixed local
 # commands (venv python, pip, pnpm, taskkill) found on PATH (S603/S607).
 "scripts/*" = ["T20", "S603"]
-"start_dev.py" = ["T20", "S603", "S607"]
