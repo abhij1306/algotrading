@@ -21,7 +21,8 @@
 Every active bot is watched, whatever its mode. A bot's effective mode is the one in force at the
 session open, gated by its account's GTT capability (`execution/modes.py:bot_mode`), so with the
 Fyers adapter (no GTT for delivery) every bot runs shadow. An auto entry needs the router to
-place its order: the default route refuses one (`auto_needs_router`) rather than leave it unplaced.
+place its order and a confirm entry needs it to sign its card: the default route refuses both
+(`auto_needs_router`, `confirm_needs_router`) rather than leave one unplaced or unanswerable.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
-from ..execution.modes import AUTO, bot_mode
+from ..execution.modes import AUTO, CONFIRM, bot_mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..risk import controls
 from ..risk.decision import SignalContext
@@ -339,14 +340,17 @@ def route_by_mode(
     decide: trades.DECIDE = trades.evaluate_signal,
 ) -> trades.EntryOutcome:
     """The route without a broker: `open_entry` under the bot's effective mode, in the caller's
-    transaction (no commit). An auto bot needs the execution router to place its order, so it is
-    refused here (`auto_needs_router`) and nothing is written."""
+    transaction (no commit). An auto bot needs the execution router to place its order, and a
+    confirm bot needs it to sign its approval card's token (PR 16), so each is refused here
+    (`auto_needs_router`, `confirm_needs_router`) and nothing is written: only shadow is routed."""
     bot = session.get(HatBot, request.bot_id)
     if bot is None:
         raise trades.TradeError("unknown_bot")
     mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
     if mode == AUTO:
         raise trades.TradeError("auto_needs_router")
+    if mode == CONFIRM:
+        raise trades.TradeError("confirm_needs_router")
     return trades.open_entry(session, request, decide=decide, mode=mode)
 
 

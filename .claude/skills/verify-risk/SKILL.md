@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `cb25339f88c0eda95035bf86700dfdd71aad193ab6d5a1100d5a425511af31d4`
+Covered digest: `d6f3a6b19eec6cf8c5fb28b94a86f78655c3ccb771acd623a7e4ab24c4debd09`
 
 ## Scope changes
 
@@ -110,6 +110,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - This PR refreshed the digest of `verify-governance` (it covers `risk/policy.py`, which gained the policy record, with the cooling-off functions untouched) and of `verify-scheduler` (it covers `test_conf_verification.py`, where `MERGED_PRS` gained 10 and `KNOWN_GAPS` two ExecutionRouter names).
 
 - K4 deleted the legacy manual-trading code and the digest pin of its risk tests (`test_risk__existing_suite_green`, HAT-RISK-103). `risk.hat_safety_properties_pinned` pins HAT's own safety properties in its place, `risk.manager_reads_no_hat_state` goes with the legacy risk manager, and `risk.no_manual_trading_path` checks that the deleted modules stay deleted. The spec row of HAT-RISK-103 was rewritten to match.
+- PR 16 added `RequestFlatten` and `ConfirmFlatten` to `KillSwitch` with `FlattenNeedsConfirm` and `FlattenExitOnly` (code: `telegram/commands.py:_flatten`, `execution/manage.py:flatten`); their breaks are recorded in `verify-telegram`. The bullet above about their absence is superseded.
 
 ## Scratch breaks
 

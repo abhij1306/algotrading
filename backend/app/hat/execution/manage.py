@@ -29,8 +29,9 @@ keeps protecting the position. Nothing is sent before the session's reconciliati
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from time import monotonic
@@ -63,7 +64,9 @@ __all__ = [
     "EXITS_CLOSE_FROM",
     "EXITS_CLOSE_UNTIL",
     "ORDERS_UNTIL",
+    "FLATTEN",
     "CloseReport",
+    "FlattenReport",
     "StopsReport",
     "TradeManager",
     "ViewSource",
@@ -84,6 +87,7 @@ MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 ALERT_SALE_REJECTED = "order.rejected"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ENTRY_NOT_FOUND = "entry_not_found"
+FLATTEN = "flatten"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -102,6 +106,16 @@ class CloseReport:
     recorded: int = 0
     failed: int = 0
     refused: str | None = None
+
+
+@dataclass
+class FlattenReport:
+    """What a flatten did: the open real positions it found, the sales it sent and the
+    positions whose sale failed with an error (each logged; the others are still sold)."""
+
+    positions: int = 0
+    sent: int = 0
+    failed: int = 0
 
 
 @dataclass
@@ -138,6 +152,16 @@ class TradeManager:
         # the run has taken so far (`ticker`, monotonic seconds).
         self._clock = clock
         self._ticker = ticker
+        # One sale of a position at a time across threads: the live tick path, the close job
+        # and the Telegram flatten all sell through `_sell_qty`, whose "nothing else is selling"
+        # check and reservation must not interleave (each sale holds its position's lock from
+        # that check until the order is sent).
+        self._sale_locks: dict[uuid.UUID, threading.Lock] = {}
+        self._sale_locks_guard = threading.Lock()
+
+    def _sale_lock(self, position_id: uuid.UUID) -> threading.Lock:
+        with self._sale_locks_guard:
+            return self._sale_locks.setdefault(position_id, threading.Lock())
 
     # --- reading ------------------------------------------------------------------------------
 
@@ -160,8 +184,11 @@ class TradeManager:
             query = query.where(HatPosition.is_virtual.is_(False))
         return list(session.scalars(query.order_by(HatPosition.opened_at, HatPosition.id)))
 
-    def _orders_allowed(self, now: datetime) -> bool:
+    def orders_allowed(self, now: datetime) -> bool:
         """A sale goes out only inside the calendar session and before 15:30 IST."""
+        return self._orders_allowed(now)
+
+    def _orders_allowed(self, now: datetime) -> bool:
         open_now = self._calendar is not None and self._calendar.state(now) is SessionState.OPEN
         return open_now and now.astimezone(IST).time() < ORDERS_UNTIL
 
@@ -208,6 +235,32 @@ class TradeManager:
             self._sell(session, position_id, action, now, sending)
         return result
 
+    # --- flatten (HAT-TG-035, HAT-GOV-082) ----------------------------------------------------
+
+    def flatten(self, session: Session, account_id: uuid.UUID, now: datetime) -> FlattenReport:
+        """Sell every open real position of the account at market (`purpose = flatten`, side
+        sell, the position's whole `qty_open`), through the exit path: the same session,
+        reconciliation and stop checks as any exit, never a kill or pause check. It can only
+        reduce exposure. A position already being sold is left to that sale. Virtual positions
+        are measurements, not exposure, and are left alone. The confirmation and the
+        `flatten.executed` event are the caller's (the Telegram edge)."""
+        report = FlattenReport()
+        sending = self._sending_clock(now)
+        for position in self.open_positions(session, account_id):
+            report.positions += 1
+            try:
+                sent = self._sell_qty(
+                    session, position, FLATTEN, position.qty_open, FLATTEN, (), now, sending
+                )
+            except Exception:  # one position's failure must not stop the others being sold
+                session.rollback()
+                logger.exception("flatten of position %s failed", position.id)
+                report.failed += 1
+                continue
+            if sent is not None and sent.status != "rejected":
+                report.sent += 1
+        return report
+
     # --- sales --------------------------------------------------------------------------------
 
     def _sell(
@@ -227,6 +280,44 @@ class TradeManager:
             # The stop resting at the broker is the hard stop (one whose answer was lost may
             # rest there too); HAT sells at market only when no stop may be working.
             return None
+        purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
+        qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
+        return self._sell_qty(session, position, purpose, qty, rule, action.rule_ids, now, sending)
+
+    def _sell_qty(
+        self,
+        session: Session,
+        position: HatPosition,
+        purpose: str,
+        qty: int,
+        rule: str,
+        rule_ids: Sequence[str],
+        now: datetime,
+        sending: Callable[[], datetime],
+    ) -> SendOutcome | None:
+        """Sell `qty` of a real position at market under `purpose` (an exit or a flatten), when
+        nothing else is selling it, the session allows it and the stop made room. Every refusal
+        is alerted; `rule_ids` are marked fired once the sale is out. Sales of one position are
+        serialised (`_sale_lock`); the position is re-read under the lock and `qty` capped at
+        what is still open."""
+        with self._sale_lock(position.id):
+            session.refresh(position)
+            qty = min(qty, position.qty_open)
+            if qty <= 0:
+                return None
+            return self._sell_locked(session, position, purpose, qty, rule, rule_ids, now, sending)
+
+    def _sell_locked(
+        self,
+        session: Session,
+        position: HatPosition,
+        purpose: str,
+        qty: int,
+        rule: str,
+        rule_ids: Sequence[str],
+        now: datetime,
+        sending: Callable[[], datetime],
+    ) -> SendOutcome | None:
         if position.closed_at is not None or self._desk.exit_working(session, position.id):
             return None  # one sale at a time; the next evaluation sees what it left
         signal = session.get(HatSignal, position.signal_id)
@@ -236,8 +327,6 @@ class TradeManager:
         )
         if signal is None or bot is None or symbol is None:
             return None
-        purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
-        qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
         # Checked at the moment of sending: a close job that started at 15:24 still sends
         # nothing from 15:30 on (HAT-EXEC-074).
         if not self._orders_allowed(sending()):
@@ -262,7 +351,7 @@ class TradeManager:
             symbol=symbol,
             position_id=position.id,
         )
-        return self._send_sale(session, signal, position, request, action, rule, now)
+        return self._send_sale(session, signal, position, request, rule_ids, rule, now)
 
     @staticmethod
     def _rejections(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
@@ -287,7 +376,7 @@ class TradeManager:
         signal: HatSignal,
         position: HatPosition,
         request: OrderRequest,
-        action: exits.ExitAction,
+        rule_ids: Sequence[str],
         rule: str,
         now: datetime,
     ) -> SendOutcome | None:
@@ -316,7 +405,8 @@ class TradeManager:
                 return sent
             if sent.status != "rejected":
                 # Placed, or unknown (looked up by tag before any retry): the rule has fired.
-                live_trades.mark_fired(session, position.id, action.rule_ids)
+                if rule_ids:
+                    live_trades.mark_fired(session, position.id, rule_ids)
                 session.commit()
                 return sent
             self._notifier.alert(

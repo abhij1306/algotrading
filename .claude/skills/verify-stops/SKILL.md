@@ -27,6 +27,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `TLA StopPlacement!StopOnlyTightens` The prices a position's broker stops are set to never go down. Harm: a loosened broker stop widens the risk the position was sized for.
 - `TLA StopPlacement!GttUnfilledAlerted` A GTT that triggered without a fill under a held position is eventually alerted, by the sync in the session or by the nightly verify. Harm: the owner believes a position is protected after its stop failed to fill.
 - `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
+- `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact (HAT-EXEC-131).
 
 ## Run
 
@@ -95,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `7fa388b6612fe41bab638e0a47404c5e4e8c678fac426da403f960b6df5e9633`
+Covered digest: `e7d158df5d8504cd6ebdf8aa1e4c26b69ff8712e212f993b87073eb8bd62cfd0`
 
 ## Scope changes
 
@@ -106,6 +107,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
+- PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 
 ## Scratch breaks
 
@@ -323,4 +325,14 @@ State 4: <RaiseStop ...>
 State 5: <Clock ...>
 State 6: <RaiseStop ...>
 State 7: <EntryFill ...>
+```
+
+### PBT exits.veto_verdict_threshold
+
+Break: in `backend/app/hat/engine/approvals.py`, `veto_verdict` compares the two means rounded to one decimal.
+
+```
+E   AssertionError: assert 'skips do not beat takes' == 'skips beat takes'
+E     - skips beat takes
+E     + skips do not beat takes
 ```

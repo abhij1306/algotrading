@@ -169,7 +169,7 @@ the resolution says how it lands in this repo.
 | C5 | OpenAlgo behind the broker interface; keys in OpenAlgo | Fyers creds in `.env` + `fyers/config/access_token.json` | Direct Fyers adapter. Fyers secrets stay where they are. `hat_broker_account.openalgo_ref` kept as a nullable column. |
 | C6 | Regime + allocator set sizing; risk 0.25% | VCP module: NIFTY50 200DMA BULL/BEAR → 1%/0.5%, own halt flag and positions | VCP module left intact during the MVP; S1 supersedes it. Retirement of `services/vcp*` is a follow-up. Kill-switch interplay per Q6. |
 | C7 | `hat_trading_calendar` drives sessions | `MarketHoursPolicy.holidays` empty | PR 4 loads NSE holidays into `hat_trading_calendar`. Since K1 HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) is built from the loaded calendar (`MarketCalendar.policy`) and passed to its users; nothing is installed into the legacy `market_hours`, which no longer sees holidays. |
-| C8 | 41 tables, uuid v7 PKs, JSONB, triggers, partitioned event log, `revoke` | `create_all` + `ensure_*`; integer PKs; SQLite tests | Follow the repo mechanism (03 §10). |
+| C8 | 42 tables, uuid v7 PKs, JSONB, triggers, partitioned event log, `revoke` | `create_all` + `ensure_*`; integer PKs; SQLite tests | Follow the repo mechanism (03 §10). |
 | C9 | Data root for 2010+ history | `data_system/` "2025+ active scope" | `HAT_DATA_ROOT = DATA_ROOT / "hat"` in `app/paths.py`, env-overridable, gitignored. |
 | C10 | Telegram `/mode [bot] signal\|confirm\|auto` | — | Superseded by B1 (revised): `shadow\|confirm\|auto`. |
 | C11 | `hat_event` append-only via trigger and `revoke update, delete` | One DB user | Trigger only in the MVP; role split per Q7. |

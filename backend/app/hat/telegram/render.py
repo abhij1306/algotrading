@@ -1,0 +1,357 @@
+"""Message text (08 §2, §3). Pure functions from plain views to plain text, no Markdown, so no
+value can change how a message is read. Numbers are the engine's own Decimals, printed exactly
+to two places; nothing here computes a size, a stop or a price (HAT-TG-023).
+
+Alert details are fixed codes and ids by the `Notifier` contract; a value that is not such a
+token is printed as `?`, so free text from a broker or a server can never reach the chat
+(HAT-TG-014).
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
+
+from ..time import IST
+
+__all__ = [
+    "URGENT_ALERTS",
+    "BotDay",
+    "CardView",
+    "CloseGapRow",
+    "GttNight",
+    "PositionEventView",
+    "PositionView",
+    "RejectionRow",
+    "StatusView",
+    "VetoVerdictView",
+    "WatchlistDigest",
+    "alert_text",
+    "card_text",
+    "confirm_text",
+    "daily_report_text",
+    "login_text",
+    "money",
+    "position_event_text",
+    "positions_text",
+    "rejection_digest_text",
+    "shadow_text",
+    "status_text",
+    "veto_digest_text",
+    "watchlist_digest_text",
+    "watchlist_text",
+]
+
+# 15c: a GTT the nightly check could not confirm, or a triggered GTT that left shares unsold,
+# may need the owner before the next open.
+URGENT_ALERTS = frozenset({"gtt.unverified", "gtt.unfilled"})
+_SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
+_DIGEST_LIMIT = 40
+
+
+def money(value: Decimal | None) -> str:
+    return "n/a" if value is None else f"{Decimal(value):.2f}"
+
+
+def _r(value: Decimal | None) -> str:
+    return "n/a" if value is None else f"{Decimal(value):+.2f}R"
+
+
+def _ist(at: datetime) -> str:
+    return at.astimezone(IST).strftime("%H:%M IST")
+
+
+def _safe(value: object) -> str:
+    text = str(value)
+    return text if _SAFE.match(text) else "?"
+
+
+# --- trade cards -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CardView:
+    """A signal as the engine fixed it: entry, stop, qty and risk come from `hat_signal`."""
+
+    signal_id: uuid.UUID
+    symbol: str
+    playbook: str
+    entry: Decimal
+    stop: Decimal
+    qty: int
+    risk: Decimal
+    max_chase: Decimal | None = None
+    expires_at: datetime | None = None
+    headline: str | None = None
+    pdf_url: str | None = None
+
+
+def _trade_lines(card: CardView) -> list[str]:
+    per_share = card.entry - card.stop
+    return [
+        f"{card.symbol} ({card.playbook})",
+        f"Entry {money(card.entry)}  Stop {money(card.stop)}  Qty {card.qty}",
+        f"Risk {money(card.risk)}  1R/share {money(per_share)}  "
+        f"2R target {money(card.entry + 2 * per_share)}",
+    ]
+
+
+def card_text(card: CardView) -> str:
+    """The confirm-mode approval card. Size, stop and price are fixed; the only controls are
+    the Take and Skip buttons."""
+    lines = ["Approval needed", *_trade_lines(card)]
+    if card.max_chase is not None:
+        lines.append(f"Max chase {money(card.max_chase)}")
+    if card.headline:
+        lines.append(f"Catalyst: {card.headline[:200]}")
+    if card.pdf_url:
+        lines.append(card.pdf_url[:300])
+    if card.expires_at is not None:
+        lines.append(f"Expires {_ist(card.expires_at)}")
+    return "\n".join(lines)
+
+
+def shadow_text(card: CardView) -> str:
+    """The shadow-mode trade message: what the bot would have bought."""
+    return "\n".join(["Shadow trade", *_trade_lines(card)])
+
+
+@dataclass(frozen=True)
+class PositionEventView:
+    symbol: str
+    qty: int | None
+    price: Decimal | None
+    r_so_far: Decimal | None
+
+
+_EVENT_TITLES = {
+    "order.filled": "Filled",
+    "exit.partial": "Partial exit",
+    "position.closed": "Position closed",
+    "stop.moved": "Stop moved",
+}
+
+
+def position_event_text(event_type: str, view: PositionEventView) -> str:
+    """A fill, exit or stop move on a real position: price, qty and R so far."""
+    title = _EVENT_TITLES.get(event_type, event_type)
+    qty = "n/a" if view.qty is None else str(view.qty)
+    return (
+        f"{title}: {view.symbol}\n"
+        f"Price {money(view.price)}  Qty {qty}  R so far {_r(view.r_so_far)}"
+    )
+
+
+# --- alerts ------------------------------------------------------------------------------------
+
+
+def alert_text(code: str, trade_date: date, detail: Mapping[str, object]) -> str:
+    """A health alert: its code, the trade date and the detail's fixed codes and ids."""
+    head = "URGENT: " if code in URGENT_ALERTS else "Alert: "
+    lines = [f"{head}{_safe(code)} ({trade_date.isoformat()})"]
+    lines += [
+        f"{_safe(k)}: {_safe(v)}" for k, v in sorted(detail.items(), key=lambda kv: str(kv[0]))
+    ]
+    return "\n".join(lines)
+
+
+# --- digests and reports -----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RejectionRow:
+    bot: str
+    symbol: str
+    reason: str
+
+
+def rejection_digest_text(trade_date: date, rows: Sequence[RejectionRow]) -> str:
+    lines = [f"Rejected signals {trade_date.isoformat()}: {len(rows)}"]
+    lines += [f"{r.bot} {r.symbol}: {_safe(r.reason)}" for r in rows[:_DIGEST_LIMIT]]
+    if len(rows) > _DIGEST_LIMIT:
+        lines.append(f"... and {len(rows) - _DIGEST_LIMIT} more")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class BotDay:
+    bot: str
+    trade_date: date | None
+    open_risk: Decimal | None
+    realized_r: Decimal | None
+    equity: Decimal | None
+    equity_peak: Decimal | None
+
+
+@dataclass(frozen=True)
+class GttNight:
+    """The last night's `gtt.verify` runs: how many accounts ran and failed, the positions
+    whose GTT was confirmed, and the GTTs refreshed or re-placed."""
+
+    runs: int = 0
+    failed: int = 0
+    verified: int = 0
+    refreshed: int = 0
+
+
+@dataclass(frozen=True)
+class CloseGapRow:
+    symbol: str
+    live_price: str
+    official_close: str
+    gap_pct: str
+
+
+def daily_report_text(
+    trade_date: date, bots: Sequence[BotDay], gtt: GttNight, gaps: Sequence[CloseGapRow]
+) -> str:
+    lines = [f"Daily P&L {trade_date.isoformat()}"]
+    for b in bots:
+        as_of = b.trade_date.isoformat() if b.trade_date else "no snapshot"
+        lines.append(
+            f"{b.bot} ({as_of}): open risk {money(b.open_risk)}, realised {_r(b.realized_r)}, "
+            f"equity {money(b.equity)} vs peak {money(b.equity_peak)}"
+        )
+    lines.append(
+        f"GTT check: {gtt.runs} run(s), {gtt.failed} failed, {gtt.verified} verified, "
+        f"{gtt.refreshed} refreshed"
+    )
+    if gaps:
+        lines.append("Close gaps (live vs official close):")
+        lines += [
+            f"{g.symbol}: {_safe(g.live_price)} vs {_safe(g.official_close)} ({_safe(g.gap_pct)}%)"
+            for g in gaps[:_DIGEST_LIMIT]
+        ]
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class VetoVerdictView:
+    decisions: int
+    skipped_mean: Decimal | None
+    taken_mean: Decimal | None
+    verdict: str
+
+
+def veto_digest_text(
+    start: date,
+    end: date,
+    avoided: Decimal,
+    missed: Decimal,
+    trades: int,
+    verdict: VetoVerdictView | None,
+) -> str:
+    lines = [
+        f"Veto digest {start.isoformat()} to {end.isoformat()}",
+        f"Skips closed: {trades}  avoided {_r(avoided)}  missed {_r(missed)}",
+    ]
+    if verdict is not None:
+        lines.append(
+            f"After {verdict.decisions} decisions: skipped mean {_r(verdict.skipped_mean)}, "
+            f"taken mean {_r(verdict.taken_mean)}: {verdict.verdict}"
+        )
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class WatchlistDigest:
+    bot: str
+    trade_date: date
+    regime: str | None
+    new: tuple[str, ...]
+    dropped: tuple[str, ...]
+    top: tuple[tuple[str, Decimal], ...]
+
+
+def watchlist_digest_text(digest: WatchlistDigest) -> str:
+    lines = [
+        f"Watchlist {digest.bot} {digest.trade_date.isoformat()} (regime {digest.regime or 'n/a'})",
+        f"New: {', '.join(digest.new) or '-'}",
+        f"Dropped: {', '.join(digest.dropped) or '-'}",
+        "Top:",
+    ]
+    lines += [f"{i}. {symbol} {score:.3f}" for i, (symbol, score) in enumerate(digest.top, start=1)]
+    return "\n".join(lines)
+
+
+def login_text(links: Iterable[tuple[str, str | None]], *, repeat: bool) -> str:
+    head = "Still not logged in:" if repeat else "Log in to your broker for today:"
+    lines = [head]
+    for label, link in links:
+        lines.append(f"{label}: {link or 'login link unavailable'}")
+    return "\n".join(lines)
+
+
+# --- command replies ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StatusView:
+    sessions: tuple[tuple[str, str], ...]
+    feed: str
+    kill_account: bool
+    bots: tuple[tuple[str, str, str, str], ...] = field(default=())  # name, mode, state, regime
+
+
+def status_text(view: StatusView) -> str:
+    lines = ["Status"]
+    lines += [f"Broker {label}: {state}" for label, state in view.sessions] or ["Broker: none"]
+    lines.append(f"Feed: {view.feed}")
+    lines.append(f"Account kill: {'TRIPPED' if view.kill_account else 'armed'}")
+    lines += [
+        f"{name}: {mode}, {state}, regime {regime}" for name, mode, state, regime in view.bots
+    ]
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class PositionView:
+    bot: str
+    symbol: str
+    qty: int
+    entry: Decimal
+    stop: Decimal
+    r_so_far: Decimal | None
+    days_held: int | None
+    virtual: bool
+
+
+def positions_text(rows: Sequence[PositionView]) -> str:
+    if not rows:
+        return "No open positions"
+    lines = [f"Open positions: {len(rows)}"]
+    for p in rows[:_DIGEST_LIMIT]:
+        days = "n/a" if p.days_held is None else str(p.days_held)
+        tag = " (shadow)" if p.virtual else ""
+        lines.append(
+            f"{p.bot} {p.symbol}{tag}: qty {p.qty}, entry {money(p.entry)}, stop {money(p.stop)}, "
+            f"{_r(p.r_so_far)}, {days} day(s)"
+        )
+    return "\n".join(lines)
+
+
+def watchlist_text(bot: str, trade_date: date | None, rows: Sequence[tuple[str, Decimal]]) -> str:
+    if trade_date is None:
+        return f"{bot}: no watchlist"
+    lines = [f"Watchlist {bot} {trade_date.isoformat()}: {len(rows)}"]
+    lines += [f"{symbol} {score:.3f}" for symbol, score in rows[:_DIGEST_LIMIT]]
+    return "\n".join(lines)
+
+
+_CONFIRM_TEXT = {
+    "flatten": (
+        "Flatten closes every open real position at market. This is logged as a discipline breach."
+    ),
+    "arm": "Re-arm the tripped kill switches?",
+    "mode_auto": (
+        "Switch to auto mode from the next session? Real orders will go out without a card."
+    ),
+}
+
+
+def confirm_text(action: str, expires_at: datetime) -> str:
+    return f"{_CONFIRM_TEXT.get(action, action)}\nConfirm before {_ist(expires_at)}."

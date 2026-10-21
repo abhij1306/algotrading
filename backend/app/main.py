@@ -4,7 +4,7 @@ Hire a Trader API: the FastAPI app, its routes and its startup.
 Startup (the lifespan): connect the event loop, create the database schema, then, only when
 `HAT_ENABLED` is true, start HAT's scheduler and its live feed (the one Fyers data socket,
 HAT-OVR-006). With HAT disabled nothing of HAT runs, and the app serves only the Fyers login
-routes. HAT's Telegram bot (PR 16) has nothing to start yet.
+routes. HAT's Telegram bot (`app/hat/telegram`, PR 16) is started here by PR 17.
 """
 
 import asyncio

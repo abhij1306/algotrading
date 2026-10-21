@@ -63,6 +63,7 @@ GROUPS = {
         "hat_quality_check",
         "hat_telegram_message",
         "hat_command_log",
+        "hat_telegram_cursor",
         "hat_daily_bot_snapshot",
     ],
 }
@@ -271,6 +272,7 @@ CHAIN_EXEMPT = {
     # chain can reach a user_id (a finding in the PR; the single-user MVP is unaffected).
     "hat_telegram_message": "keyed by chat_id; the spec lists no FK",
     "hat_command_log": "keyed by chat_id; the spec lists no FK",
+    "hat_telegram_cursor": "service state of the one allowlisted chat (PR 16), keyed by name",
 }
 
 
@@ -426,7 +428,7 @@ def test_schema__sqlite_create_all() -> None:
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 41
+    assert len(MODEL) == 42
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}

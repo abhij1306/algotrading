@@ -12,6 +12,7 @@ from .ops import (
     HatDailyBotSnapshot,
     HatJobRun,
     HatQualityCheck,
+    HatTelegramCursor,
     HatTelegramMessage,
 )
 from .portfolio import (
@@ -67,6 +68,7 @@ __all__ = [
     "HatPosition",
     "HatSignal",
     "HatSignalAnnouncement",
+    "HatTelegramCursor",
     "HatTelegramMessage",
     "HatTradeResult",
     "HatWatchlistEntry",

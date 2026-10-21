@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
-from app.hat.engine.approvals import veto_score
+from app.hat.engine.approvals import veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.strategy.config import (
     ExitBreakeven,
@@ -525,3 +525,39 @@ def test_veto_score(results: list[Decimal]) -> None:
     assert score.avoided_r >= 0
     assert score.missed_r >= 0
     assert Fraction(score.missed_r - score.avoided_r) == sum(map(Fraction, results), Fraction(0))
+
+
+@settings(max_examples=200)
+@given(
+    st.integers(min_value=0, max_value=120),
+    st.lists(R_MULTIPLES, max_size=20),
+    st.lists(R_MULTIPLES, max_size=20),
+)
+@example(49, [Decimal(1)], [Decimal(2)])
+@example(50, [], [Decimal(1)])
+@example(50, [Decimal("0.1"), Decimal("0.2")], [Decimal("0.15")])
+def test_veto_verdict_threshold(
+    decisions: int, skipped: list[Decimal], taken: list[Decimal]
+) -> None:
+    """HAT-EXEC-131: the verdict exists iff there are at least 50 decisions; it compares the
+    mean R of the skipped trades with the mean R of the taken ones, exactly, and says the skips
+    beat the takes iff the skipped trades did worse; a group with no closed trade has no mean
+    and the verdict is insufficient data. Harm: a verdict drawn from too few decisions, a
+    division by zero, or a rounding that turns the verdict around."""
+    verdict = veto_verdict(decisions, skipped, taken)
+    if decisions < 50:
+        assert verdict is None
+        return
+    assert verdict is not None
+    assert verdict.decisions == decisions
+    if not skipped or not taken:
+        assert verdict.verdict == "insufficient data"
+        assert (verdict.skipped_mean is None) == (not skipped)
+        assert (verdict.taken_mean is None) == (not taken)
+        return
+    skipped_mean = sum(map(Fraction, skipped), Fraction(0)) / len(skipped)
+    taken_mean = sum(map(Fraction, taken), Fraction(0)) / len(taken)
+    assert abs(Fraction(verdict.skipped_mean) - skipped_mean) < Fraction(1, 10**20)
+    assert abs(Fraction(verdict.taken_mean) - taken_mean) < Fraction(1, 10**20)
+    expected = "skips beat takes" if skipped_mean < taken_mean else "skips do not beat takes"
+    assert verdict.verdict == expected

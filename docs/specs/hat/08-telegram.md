@@ -14,6 +14,15 @@ persisted so a restart neither replays nor drops updates. Exactly one chat is al
 (`HAT_TELEGRAM_CHAT_ID`); every inbound command, accepted or not, is a `hat_command_log` row
 (`id, chat_id, command, args, accepted, reason, received_at`).
 
+Implementation (PR 16, `app/hat/telegram/`): the client posts to the Bot API with `requests`
+(`aiohttp` does not build on Python 3.14, see CLAUDE.md) and calls only `getUpdates`,
+`sendMessage`, `answerCallbackQuery` and `editMessageReplyMarkup`; any other method is refused
+before a request is made. The offset is the `updates` row of `hat_telegram_cursor` (03 §4.8). For
+each update in id order the service first commits the offset past it and then handles it, so a
+crash between the two drops that one update and never replays it (HAT-TG-011 asks for at most
+once). An update from another chat is logged as `unknown_chat` with no reply and no answer to its
+button. Errors carry fixed codes; no message text, token or HTTP text is logged.
+
 #### HAT-TG-005: Messages from other chats are ignored and logged
 - **Statement:** Any inbound message or callback from a chat ID other than the allowlisted one has no effect and is logged with `accepted = false`.
 - **Source:** DS "Telegram / Security"; SCH "Backtest and ops tables" (`hat_command_log` includes rejected commands from unknown chats); I12, I13.
@@ -76,11 +85,18 @@ measured".
 | Fill / exit / stop moved | On event | Price, qty, R so far |
 | Rejection digest | 15:35 | Signals rejected by risk, with reasons |
 | Health alert | On failure | Data gate, feed stale, broker session, order rejected |
-| Daily P&L | 15:40 | Per bot: open risk, realised R, equity vs peak |
+| Daily P&L | 15:40 | Per bot: open risk, realised R, equity vs peak (latest `hat_daily_bot_snapshot`); last night's GTT check; close gaps |
 | Weekly veto digest | Weekly | R the user's skips avoided and R they missed (skips tracked as shadow trades) |
 
 Every sent message is a `hat_telegram_message` row (`id, chat_id, kind, ref_id, sent_at,
 message_id`) linking the card to its signal or other subject.
+
+Implementation (PR 16): the jobs run once per trade date and only on a trading day. The 09:05
+reprompt goes out for the accounts still logged out even if the 08:30 prompt was missed. The
+daily report reads each bot's latest snapshot on or before the day (and says so when there is
+none). Fills, exits, stop moves, cards and health alerts come from the event relay
+(`hat_telegram_cursor` `events`), which reads `hat_event` in id order and sends nothing for a
+virtual position.
 
 #### HAT-TG-020: Outbound messages go only to the allowlisted chat
 - **Statement:** HAT sends every message to the single allowlisted chat and to no other chat.
@@ -120,11 +136,13 @@ message_id`) linking the card to its signal or other subject.
 - **Statement:** Fill, exit and stop-moved messages are sent on their events; the rejection digest at 15:35; the daily P&L at 15:40; health alerts on data gate failure, feed stale, broker session lost and order rejected; the weekly veto digest weekly.
 - **Source:** DS "Outbound messages"; BL "Your vetoes are measured"; MA "Failure handling"; T15.
 - **PR:** 16
-- **Verification:** TLA `JobScheduler!ReportsAfterClose`, PBT `telegram.report_content`
+- **Verification:** TLA `JobScheduler!ReportsAfterClose`, PBT `telegram.report_content`, PBT `telegram.relay_late_commit`, PBT `telegram.veto_digest_on_week_end`
 - **Acceptance:**
   - Property: every `order.filled`, `exit.partial`, `position.closed` and `stop.moved` event for a non-virtual position produces exactly one message, and every `quality.failed`, `feed.stale`, `broker.session_lost` and `order.rejected` event produces a health alert. Harm: the user does not learn that money moved or protection failed.
   - Property: the 15:35 rejection digest lists exactly the day's `signal.rejected` events with their reason codes, and the 15:40 P&L shows per bot open risk, realised R and equity vs peak from `hat_daily_bot_snapshot`. Harm: rejected signals and drawdowns go unseen.
   - Property: the weekly veto digest's avoided R equals the sum of negative R and its missed R the sum of positive R over the week's skipped signals' shadow results. Harm: the user misjudges whether vetoes add value and picks the wrong mode.
+  - Property: an event whose transaction commits after the relay passed its id is still relayed, once, if it commits within an hour. Harm: a health alert or approval card held by a slow transaction is lost.
+  - Property: the weekly veto digest goes out on a trading day exactly when no later weekday of its week may still trade (a calendar holiday does not; a day the calendar lacks may). Harm: the digest arrives daily once the calendar runs out, or never in a holiday week.
 
 ## §3 Commands
 
@@ -142,6 +160,14 @@ From PLAN §4.4 and DS "Telegram / Commands", with PLAN C10 applied (`signal` is
 | `/flatten` | Closes everything; logged as a discipline breach | Second confirm |
 | `/arm` | Re-arm after a kill switch | Second confirm |
 | `/login [broker]` | Fresh login link | Any time |
+
+Implementation (PR 16): a command with no bot (`/pause`, `/resume`, `/mode`) applies to every bot,
+all or none. `/arm` re-arms every tripped kill switch. The second confirmation is a Confirm button
+whose callback is a random 128-bit nonce held in memory for 5 minutes (the same window as
+approvals); it is consumed by its first press, and a restart drops it, so the command has to be
+sent again. `/flatten` sells every open real position (a virtual trade has nothing at the broker).
+`/mode auto` and its Confirm are refused (`auto_not_owner`) unless every account of the bots
+named belongs to `HAT_USER_ID` (HAT-OVR-061).
 
 #### HAT-TG-030: Command set is closed
 - **Statement:** The bot accepts exactly the ten commands above; anything else is rejected and logged.
@@ -220,6 +246,16 @@ In confirm mode each triggered signal gets one approval card with Take / Skip bu
 carries a token that is HMAC-signed with `HAT_APPROVAL_SECRET`, bound to the signal ID and the
 expiry, single-use, and stored only as `hat_approval.token_hash`. Default window 5 minutes; on
 Take the price is re-checked against the bot's max-chase %.
+
+Token format (PR 16, `telegram/tokens.py`): the card token is the URL-safe base64 of the signal
+uuid (16 bytes), the expiry in Unix seconds (8 bytes, big-endian) and the first 16 bytes of
+HMAC-SHA256 under `HAT_APPROVAL_SECRET` over a card tag, the uuid and the expiry. Each button is
+its action letter (`t` Take, `s` Skip) and the same layout MACed under a button tag that names the
+action, so a button cannot be turned into the other. `hat_approval.token_hash` is the sha256 of the
+card token. A press is accepted only if its MAC verifies, it names the stored approval's expiry
+and the stored hash is the hash of the card token the service would issue for that signal; the
+single use is the approval's one decision (HAT-TG-041). The card shows the 2R target, the
+max-chase level, and the catalyst headline and PDF link when there are; there is no chart link.
 
 #### HAT-TG-040: Tokens are signed and bound to signal and expiry
 - **Statement:** A button token is valid only if its HMAC verifies under `HAT_APPROVAL_SECRET` and it names the card's signal ID and expiry.

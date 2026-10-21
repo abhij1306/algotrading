@@ -34,7 +34,8 @@ configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`
    app keeps serving (requests answer 503) unless `HAT_ENABLED` is true, which refuses to start.
 3. Only when `HAT_ENABLED` is true: start the HAT scheduler (`app/hat/ops/scheduler.py`), check
    the Fyers token (warn only), then start the live feed (`app/hat/data/feed.py`, the one Fyers
-   data socket). HAT's Telegram bot (PR 16) is not built yet, so nothing starts for it.
+   data socket). HAT's Telegram bot (`app/hat/telegram/`, PR 16) is built but not wired into
+   startup yet; PR 17 starts its poller, relay and jobs.
 
 With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
 below. Shutdown stops the feed, the scheduler and the database engine, each even if another failed.
