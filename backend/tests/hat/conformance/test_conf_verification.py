@@ -26,7 +26,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2, 3, 4}
+MERGED_PRS = {1, 2, 3, 4, 13}
 
 
 def _models() -> list[Path]:
@@ -381,13 +381,17 @@ README_ROW = re.compile(
 KNOWN_GAPS = {
     "PBT criteria.fundamentals_point_in_time",  # HAT-DEC-I5: needs the criteria engine (PR 8)
     "CONF old_docs_removed",  # HAT-DEC-BD4: a PR 1 documentation check nobody built
-    # PR 3 (HAT-SCH-051, HAT-SCH-081): the rows name TLA properties of models that 11 §3 assigns
-    # to PR 13 and PR 15. Their actions map to code that does not exist yet (the order router and
-    # the stop mover), so the models arrive with that code; the database checks
-    # `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises
-    # at the database in the meantime.
-    "TLA OrderReconciliation!AtMostOneEntryPerSignal",
+    # PR 3 (HAT-SCH-081): the row names a TLA property of a model that 11 §3 assigns to PR 15
+    # (the stop mover). Its actions map to code that does not exist yet, so the model arrives
+    # with that code; the database check `governance.stop_only_rises` covers the same promise at
+    # the database in the meantime. (PR 13 built OrderReconciliation, which closed
+    # `OrderReconciliation!AtMostOneEntryPerSignal` of HAT-SCH-051.)
     "TLA StopPlacement!StopOnlyTightens",
+    # PR 13 (HAT-DEC-I9): the README row gives PR 13 alone, but 11 §3 assigns the
+    # `ExecutionRouter` model to PR 15 (its actions are the router's). PR 13 proves the same
+    # promise on the real code with PBT `broker.confirm_and_auto_need_gtt`
+    # (`accounts.effective_mode` / `request_mode`); the model arrives with the router.
+    "TLA ExecutionRouter!AutoNeedsGtt",
 }
 
 

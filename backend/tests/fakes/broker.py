@@ -16,7 +16,15 @@ Configure it in three ways (attributes can also be passed to the constructor):
   when set). Any accepted place (SUBMITTED with an id) is added to `working`.
 - `script(method, *outcomes)` queues one outcome per call, ahead of everything above:
   each is returned, or raised when it is an exception. Build them with `accepted`,
-  `rejected` and `unconfirmed` (the reply of a timeout or a lost answer).
+  `rejected` and `unconfirmed` (the reply of a timeout or a lost answer). `unconfirmed(landed=True)`
+  is a lost answer for an order that did reach the broker.
+
+Tags and GTT (the HAT adapter's needs): every accepted or landed place that carries an
+`order_tag` is kept in `book` as a Fyers orderbook row, and `find_order_by_tag` and
+`fetch_orderbook` read it (`tagged_order`, when set, still wins). `fetch_*` are the fail-closed
+reads (they raise `BrokerUnavailableError` on `circuit_open` or when their state is an exception,
+as `FyersBroker.fetch_*` do). `place_gtt`, `modify_gtt` and `cancel_gtt` record into `gtts`;
+`place_gtt_reply` scripts the GTT place reply like `place_reply` does for orders.
 
 `circuit_open = True` answers as `FyersBroker` does while its circuit breaker is open:
 places are rejected without being sent, modify and cancel return the timeout fallback,
@@ -32,6 +40,7 @@ from app.brokers.base import BrokerUnavailableError
 from app.brokers.plugins.fyers import (
     BROKER_CIRCUIT_OPEN,
     BROKER_ORDER_UNCONFIRMED,
+    FYERS_ORDER_STATUSES,
     SUBMIT_UNCONFIRMED,
 )
 
@@ -52,14 +61,20 @@ def rejected(message: str) -> dict[str, Any]:
     return {"order_id": "", "status": "REJECTED", "message": message, "details": None}
 
 
-def unconfirmed() -> dict[str, Any]:
-    """A place_order reply when the answer was lost (timeout, error mid-request)."""
-    return {
+class _Landed(dict[str, Any]):
+    """A lost-answer reply for an order that did reach the broker."""
+
+
+def unconfirmed(landed: bool = False) -> dict[str, Any]:
+    """A place_order reply when the answer was lost (timeout, error mid-request). With
+    `landed=True` the order did reach the broker: it shows up in `book` and by tag."""
+    reply = {
         "order_id": "",
         "status": SUBMIT_UNCONFIRMED,
         "message": BROKER_ORDER_UNCONFIRMED,
         "details": None,
     }
+    return _Landed(reply) if landed else reply
 
 
 def broker_position(symbol: str, net_qty: int, product: str = "INTRADAY") -> dict[str, Any]:
@@ -94,6 +109,10 @@ class FakeBroker:
         self.tradebook: list[dict[str, Any]] | BaseException = []
         self.orders: list[dict[str, Any]] | BaseException = []
         self.tagged_order: dict[str, Any] | BaseException | None = None
+        self.holdings: list[dict[str, Any]] | BaseException = []
+        self.book: list[dict[str, Any]] = []
+        self.gtts: list[dict[str, Any]] = []
+        self.place_gtt_reply: object = None
         self.place_reply: object = None
         self.place_message: str | None = None
         self.modify_reply: object = {"s": "ok", "message": "Modified"}
@@ -135,6 +154,11 @@ class FakeBroker:
             reply = _settle(self.place_reply)
         else:
             reply = accepted(f"B-{self.count('place_order')}", self.place_message)
+        landed = isinstance(reply, _Landed) or (
+            isinstance(reply, dict) and reply.get("status") == "SUBMITTED" and reply.get("order_id")
+        )
+        if landed and order.get("order_tag"):
+            self.book.append(self._book_row(order, reply))
         if (
             isinstance(reply, dict)
             and reply.get("status") == "SUBMITTED"
@@ -151,6 +175,20 @@ class FakeBroker:
                 }
             )
         return reply
+
+    def _book_row(self, order: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
+        """The Fyers orderbook row of a placed order (pending, nothing filled)."""
+        return {
+            "id": reply.get("order_id") or f"L-{len(self.book) + 1}",
+            "orderTag": order["order_tag"],
+            "symbol": order["symbol"],
+            "side": 1 if order["side"] == "BUY" else -1,
+            "qty": order["quantity"],
+            "filledQty": 0,
+            "status": 6,
+            "productType": order["product"],
+            "type": order["type"],
+        }
 
     def modify_order(self, order_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
         queue = self._call("modify_order", (order_id, params))
@@ -179,7 +217,77 @@ class FakeBroker:
         return _settle(state)
 
     def find_order_by_tag(self, order_tag: str) -> dict[str, Any] | None:
-        return self._read("find_order_by_tag", order_tag, self.tagged_order, fail_closed=True)
+        found = self.tagged_order
+        if found is None:
+            found = next(
+                (
+                    {"order_id": row["id"], "status": FYERS_ORDER_STATUSES[row["status"]]}
+                    for row in self.book
+                    if row["orderTag"] == order_tag
+                ),
+                None,
+            )
+        return self._read("find_order_by_tag", order_tag, found, fail_closed=True)
+
+    def get_holdings(self) -> list[dict[str, Any]]:
+        return self._read(
+            "get_holdings", None, [] if self.circuit_open else self.holdings, fail_closed=False
+        )
+
+    # --- fail-closed reads (FyersBroker.fetch_*) ----------------------------------------
+
+    def fetch_orderbook(self) -> list[dict[str, Any]]:
+        rows = self._read("fetch_orderbook", None, self.orders, fail_closed=True)
+        return [*rows, *self.book]
+
+    def fetch_tradebook(self) -> list[dict[str, Any]]:
+        return self._read("fetch_tradebook", None, self.tradebook, fail_closed=True)
+
+    def fetch_holdings(self) -> list[dict[str, Any]]:
+        return self._read("fetch_holdings", None, self.holdings, fail_closed=True)
+
+    def fetch_funds(self) -> dict[str, float]:
+        available = self._read("fetch_funds", None, self.available, fail_closed=True)
+        if isinstance(available, dict):  # a scripted funds reply
+            return available
+        return {"available": available, "used": 0.0, "total": available}
+
+    def fetch_gtt_orders(self) -> list[dict[str, Any]]:
+        return self._read("fetch_gtt_orders", None, self.gtts, fail_closed=True)
+
+    # --- GTT writes ---------------------------------------------------------------------
+
+    def place_gtt(self, gtt: dict[str, Any]) -> Any:  # noqa: ANN401 - see place_gtt_reply
+        queue = self._call("place_gtt", gtt)
+        if queue:
+            reply = _settle(queue.popleft())
+        elif self.circuit_open:
+            reply = rejected(BROKER_CIRCUIT_OPEN)
+        elif self.place_gtt_reply is not None:
+            reply = _settle(self.place_gtt_reply)
+        else:
+            reply = accepted(f"G-{self.count('place_gtt')}")
+        if isinstance(reply, _Landed) or (
+            isinstance(reply, dict) and reply.get("status") == "SUBMITTED" and reply.get("order_id")
+        ):
+            self.gtts.append({**gtt, "id": reply.get("order_id") or f"GL-{len(self.gtts) + 1}"})
+        return reply
+
+    def modify_gtt(self, gtt_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
+        queue = self._call("modify_gtt", (gtt_id, params))
+        if queue:
+            return _settle(queue.popleft())
+        if self.circuit_open:
+            return {"s": "error", "message": "Fyers modify timeout/unavailable"}
+        return {"s": "ok", "message": "Modified"}
+
+    def cancel_gtt(self, gtt_id: str) -> Any:  # noqa: ANN401
+        queue = self._call("cancel_gtt", gtt_id)
+        if queue:
+            return _settle(queue.popleft())
+        if self.circuit_open:
+            return {"s": "error", "message": "Fyers cancel timeout/unavailable"}
+        return {"s": "ok"}
 
     def get_positions(self) -> list[dict[str, Any]]:
         return self._read("get_positions", None, self.positions, fail_closed=True)
