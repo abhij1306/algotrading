@@ -115,87 +115,31 @@ describe("useCommandPalette keyboard shortcut", () => {
   });
 });
 
-describe("CommandPalette symbol search", () => {
-  it("searches the market endpoint and lists results without prices", async () => {
-    fetchMock.mockResolvedValue(
-      Response.json([
-        { symbol: "RELIANCE", name: "Reliance Industries", sector: "Energy", type: "EQUITY" },
-        { symbol: "RELINFRA", name: "Reliance Infrastructure", sector: "Power", type: "EQUITY" },
-      ]),
-    );
+describe("CommandPalette commands", () => {
+  it("lists the navigation commands and no symbol search", () => {
     renderWithProviders(<CommandPalette isOpen onClose={vi.fn()} />);
 
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Relia" } });
-
-    expect(await screen.findByText("Reliance Industries")).toBeInTheDocument();
-    expect(screen.getByText("Reliance Infrastructure")).toBeInTheDocument();
-    const requested = new URL(fetchMock.mock.calls[0][0].url);
-    expect(requested.pathname).toBe("/api/market/search");
-    expect(Object.fromEntries(requested.searchParams)).toEqual({
-      query: "Relia",
-      exclude_indices: "true",
-    });
-    expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
-  });
-
-  it("drops the previous query's results while the new one is pending", async () => {
-    fetchMock.mockImplementation(async (request) => {
-      const query = new URL(request.url).searchParams.get("query");
-      return query === "TCS"
-        ? Response.json([{ symbol: "TCS", name: "Tata Consultancy Services", type: "EQUITY" }])
-        : Response.json([{ symbol: "INFY", name: "Infosys", type: "EQUITY" }]);
-    });
-    const onClose = vi.fn();
-    renderWithProviders(<CommandPalette isOpen onClose={onClose} />);
-    const input = screen.getByRole("textbox");
-
-    fireEvent.change(input, { target: { value: "TCS" } });
-    await screen.findByText("Tata Consultancy Services");
-    fireEvent.change(input, { target: { value: "INF" } });
-
-    expect(screen.queryByText("Tata Consultancy Services")).not.toBeInTheDocument();
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByLabelText("location")).not.toHaveTextContent("symbol=TCS");
-    expect(await screen.findByText("Infosys")).toBeInTheDocument();
-  });
-
-  it("does not search for a single character", async () => {
-    renderWithProviders(<CommandPalette isOpen onClose={vi.fn()} />);
-
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "R" } });
-
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByText("Dashboard")).toBeInTheDocument();
+    expect(screen.queryByText(/terminal/i)).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("opens the chosen symbol in the terminal", async () => {
-    fetchMock.mockResolvedValue(
-      Response.json([{ symbol: "SBIN", name: "State Bank of India", type: "EQUITY" }]),
-    );
+  it("runs the highlighted command on Enter", async () => {
     const onClose = vi.fn();
     renderWithProviders(<CommandPalette isOpen onClose={onClose} />);
 
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "SBI" } });
-    fireEvent.click(await screen.findByText("State Bank of India"));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
-    expect(screen.getByLabelText("location")).toHaveTextContent("/terminal?symbol=SBIN");
+    await waitFor(() => expect(screen.getByLabelText("location")).toHaveTextContent("/dashboard"));
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens the highlighted symbol on Enter", async () => {
-    fetchMock.mockResolvedValue(
-      Response.json([{ symbol: "TCS", name: "Tata Consultancy Services", type: "EQUITY" }]),
-    );
+  it("filters the commands as you type and says so when nothing matches", () => {
     renderWithProviders(<CommandPalette isOpen onClose={vi.fn()} />);
 
-    const input = screen.getByRole("textbox");
-    fireEvent.change(input, { target: { value: "TCS" } });
-    await screen.findByText("Tata Consultancy Services");
-    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "zzzz" } });
 
-    await waitFor(() =>
-      expect(screen.getByLabelText("location")).toHaveTextContent("/terminal?symbol=TCS"),
-    );
+    expect(screen.getByText(/No results found for/)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -232,10 +232,10 @@ def test_ops__single_fyers_secret_store() -> None:
 
 
 def test_ops__one_login_one_token_store() -> None:
-    """HAT-OPS-051, HAT-DEC-BD2: one Fyers login and one token store. The login service, the
-    session and the legacy store re-export all use HAT's `token_store`; the legacy client, store and
-    broker inherit from HAT's classes (no second implementation); the legacy login router is gone;
-    the HAT router has exactly the four login routes."""
+    """HAT-OPS-051, HAT-DEC-BD2: one Fyers login and one token store. The login service and the
+    session use HAT's `token_store`; the legacy client and symbol master inherit from HAT's classes
+    (no second implementation); the legacy token-store re-export, broker package and login router
+    are gone; the HAT router has exactly the four login routes."""
     from app.hat.api import fyers_auth as routes
     from app.hat.execution import fyers_auth, fyers_session, fyers_tokens
 
@@ -251,14 +251,10 @@ def test_ops__one_login_one_token_store() -> None:
         r"^class FyersClient\(FyersSession\)", source("services/fyers_client.py"), re.M
     )
     assert re.search(
-        r"^class FyersBroker\(HatFyersBroker", source("brokers/plugins/fyers.py"), re.M
-    )
-    assert re.search(
         r"^class SymbolMaster\(HatSymbolMaster\)", source("services/symbol_master.py"), re.M
     )
-    legacy_store = source("services/fyers/token_store.py")
-    assert "from app.hat.execution.fyers_tokens import" in legacy_store
-    assert "class TokenStore" not in legacy_store
+    assert not (APP_ROOT / "services" / "fyers" / "token_store.py").exists()
+    assert not (APP_ROOT / "brokers").exists()
     assert not (APP_ROOT / "routers" / "auth.py").exists()
     found = {(m, r.path) for r in routes.router.routes for m in getattr(r, "methods", set())}
     base = "/api/hat/auth/fyers"

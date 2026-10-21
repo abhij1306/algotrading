@@ -21,14 +21,6 @@ const marketStatusSchema = z.object({
   current_time_ist: optionalString,
 });
 
-const portfolioStatsSchema = z.object({
-  totalValue: z.number().catch(0),
-  dayChange: z.number().catch(0),
-  dayChangePercent: z.number().catch(0),
-  totalReturn: z.number().catch(0),
-  totalReturnPercent: z.number().catch(0),
-});
-
 const watchlistRowSchema = z.object({
   symbol: z.string().catch(""),
   price: optionalNumber,
@@ -100,8 +92,6 @@ const sectorSchema = z.object({
   value: z.number().catch(0),
   changePercent: z.number().catch(0),
 });
-
-export type PortfolioStats = z.output<typeof portfolioStatsSchema>;
 
 export interface MarketIndex {
   name: string;
@@ -255,16 +245,6 @@ export function useMarketStatus() {
   return useQuery({
     queryKey: queryKeys.dashboard.marketStatus(),
     queryFn: fetchMarketStatus,
-    ...POLL_OPTIONS,
-  });
-}
-
-/** Fails on a backend error so the last good stats stay on screen. */
-export function usePortfolioStats() {
-  return useQuery({
-    queryKey: queryKeys.dashboard.portfolioStats(),
-    queryFn: async () =>
-      parseResponse(portfolioStatsSchema, await unwrap(api.GET("/api/portfolio/stats"))),
     ...POLL_OPTIONS,
   });
 }

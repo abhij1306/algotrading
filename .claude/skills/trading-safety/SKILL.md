@@ -1,39 +1,41 @@
 ---
 name: trading-safety
-description: Rules for any change that can place, modify, cancel or account for an order. Load before editing order execution, risk, position sync, the Fyers broker plugin, the trading or terminal routers, or the frontend order ticket, and before writing tests for them. PAPER never touches the broker, live orders are idempotent and persisted first, and money math is exact.
+description: Rules for any change that can place, modify, cancel or account for an order in Hire a Trader. Load before editing app/hat/execution (order tags, the Fyers adapter, submit, reconcile), app/hat/risk (evaluate_signal, kill switches, modes), or the tests and fakes for them. HAT is the only trading path; every order carries an HT tag, goes through evaluate_signal and the adapter, fails closed, and money math is exact.
 user-invocable: false
 ---
 
 # Trading safety
 
-SmartTrader can place real orders through Fyers. A bug here loses money, so these rules hold even when a change looks unrelated.
+Hire a Trader can place real orders through Fyers. A bug here loses money, so these rules hold even when a change looks unrelated. The owner decided there is no manual trading: no terminal, no order ticket and no order route exist, and none may be added. The only way to an order is a HAT signal.
 
 ## Code in scope
 
-- `backend/app/services/order_execution_service.py`, `risk_manager.py`, `position_sync_service.py`
-- `backend/app/brokers/**`, especially `brokers/plugins/fyers.py`
-- `backend/app/routers/trading.py`, `terminal.py`, `unified.py`
-- `frontend/app/terminal/**` (order ticket, trading mode)
+- `backend/app/hat/execution/`: `tags.py` (order tags), `submit.py` (`reserve_order`, `send_order`), `fyers_adapter.py` (`FyersHatBroker`, the only `HatBroker` implementation), `fyers_broker.py` (payloads, circuit breaker), `fyers_session.py`, `fyers_auth.py`, `fyers_tokens.py`, `reconcile.py`, `guard.py`, `session.py`, `gtt.py`, `broker.py` (the contract engine and risk code depend on)
+- `backend/app/hat/risk/`: `service.py` (`evaluate_signal`), `decision.py` (`decide`), `caps.py`, `sizing.py`, `kill.py`, `controls.py` (kill switches, pause), `modes.py` (shadow, confirm, auto), `policy.py`
+- `backend/app/hat/money.py`
+- `backend/tests/hat/fakes/broker.py` (`FakeBroker`), `backend/tests/hat/fakes/fyers_sdk.py`, `backend/tests/hat/properties/`, `backend/tests/hat/conformance/test_conf_risk.py` (the pinned safety properties)
+- `verification/tla/OrderReconciliation.tla` and `verification/tla/KillSwitch.tla`
 
 ## Rules
 
-1. **PAPER never reaches the broker.** A PAPER code path must not construct, import-call or reach a live broker client. Branch on mode in one place, the execution venue, not in routers. When you touch a mode branch, add a test that fails if PAPER calls the broker.
-2. **PAPER is the default.** Both the backend and the frontend default to PAPER. The UI never persists LIVE across reloads. Switching to LIVE needs an explicit confirmation that shows mode, symbol, side, quantity, order type and price.
-3. **Live orders are idempotent.** Each live order gets a `client_order_id`. Persist the order as PENDING before calling the broker, then update it from the broker response. A retry with the same id returns the existing row and never places a second order.
-4. **Every order field reaches the broker.** When mapping an order to Fyers, forward `trigger_price` for SL and SL-M orders, plus product type, validity and quantity. Add a test that asserts the exact payload sent for each order type.
-5. **Risk checks run on every live path.** That covers place, modify, exit, square-off and options orders. Return warnings to the caller as well as failures. Never fall back to a hard-coded price; if no price is available, fail the check.
-6. **Read quotes through one parser.** Fyers returns quote fields under `v` (`v.lp` and similar). Use the shared quote parser or `Quote` type, not ad hoc dict lookups.
-7. **Fail closed when the broker is unavailable.** If the broker client is missing or a broker call fails, raise an error. Never return an empty list or zero that a caller could read as "no positions" or "order placed".
-8. **Money math is exact.** Use `Decimal`, or integer paise, for prices, notional, P&L and charges. Round only at display or when building the broker payload, to the instrument's tick size.
-9. **Live endpoints require identity.** Every route that can reach the live broker resolves the user from one dependency and checks ownership before cancel or modify. Never trust a raw `x-user-id` header alone.
-10. **Never leak broker errors.** Log the full error server-side. Return a typed error code and message to the client, not `str(e)`.
+1. **One path to an order.** A signal is judged by `evaluate_signal` (`app/hat/risk/service.py`), recorded by `reserve_order`, and sent by `send_order`, which is the only code that calls the broker. Add no order route, no manual ticket and no second risk or sizing function. `size_position` is called from `decide` only. CONF `risk.single_sizing_path` and `risk.no_manual_trading_path` fail otherwise.
+2. **Shadow is the default and shadow never reaches the broker.** Account modes are `shadow`, `confirm` and `auto`. A bot runs confirm or auto only when its account is active and reports GTT delivery; the Fyers adapter does not report it yet, so only shadow is effective. A virtual (shadow) order must not call a broker. A mode change is queued and takes effect at the next session open, never inside market hours (`risk/modes.py`). When you touch a mode branch, keep a property that fails if a virtual order reaches `FakeBroker`.
+3. **Orders are idempotent and tagged.** Every order has an `HT` tag (`TAG_PATTERN` in `execution/tags.py`: `HT`, a purpose letter, a sequence character, 16 characters of the signal id). Insert the `hat_order` row as `pending` with its tag and commit before the broker is called (`reserve_order`). A retry of the same logical order reuses the tag, a new logical order gets the next sequence, and the 37th order of one signal and purpose is refused. An order of unknown outcome is looked up by tag before any retry. A GTT carries no tag, so a lost GTT answer is never retried. Orders with a foreign tag or none are out of scope for HAT.
+4. **Every order field reaches the broker, exactly.** `FyersHatBroker` turns each `OrderIntent` into one Fyers payload (product CNC, a finite positive price, the stored broker symbol) and raises `InvalidIntentError` before any SDK call for anything else. Assert the exact payload per order type and per GTT in `tests/hat/properties/test_tags.py` and `test_fyers_broker.py`.
+5. **Risk runs on every entry, and exits are never blocked.** `evaluate_signal` never raises: a missing or unreadable input is a REJECT with a reason from the enumerated set, and it never falls back to a hard-coded price. An exit or a protective-stop move is accepted in every state. No risk function takes an override, bypass or force switch (CONF `risk.no_gate_override_path`). There is no `DEV_MODE`: an entry needs an OPEN session from the trading calendar.
+6. **Kill switches halt entries only, and only HAT's own switches do.** Account kill, bot kill, health kill and pause make a bot manage-only (no new entries; stops and exits keep running). A drawdown or manual kill re-arms by hand with a second confirmation; a health kill clears itself when the checks are healthy. The legacy VCP halt flag is not read. Change `risk/kill.py`, `risk/controls.py` and `KillSwitch.tla` together.
+7. **Fail closed when the broker is unavailable.** A missing client, an open circuit (`BROKER_CIRCUIT_OPEN`, `PROCESS_BREAKER`) or a failed read raises `BrokerUnavailableError`; it never returns an empty list or a zero that reads as "no positions" or "order placed". A write with an unknown outcome is `unconfirmed`, never a rejection. Nothing is placed until a reconciliation has succeeded this session (`ExecutionGuard.reconciled`); a mismatch blocks entries for the bot or account and never auto-closes or auto-adopts a position.
+8. **Money math is exact.** Use `Decimal` (`app/hat/money.py`: `to_decimal`, `to_money`), never float, for prices, notional, P&L and sizes. A float or a non-finite number in a risk or broker input is refused. Round only when building the broker payload, to the instrument's tick size.
+9. **One session owner and one token store.** Each broker account has one session owner that serialises its broker calls (`SessionRegistry.acquire`). The Fyers token lives only in `fyers_tokens.token_store`; no other module reads or writes a token file or the Fyers credential variables.
+10. **Never leak broker errors or secrets.** Results carry fixed codes (`CODE_*`), not broker text. Log the full error server-side if needed, but never log or return a token, a secret or the raw text of a broker error.
 
 ## Testing
 
-- Never call the real Fyers API from tests. Use a fake broker that records every call. If none exists yet, add one under `backend/tests/` and reuse it.
-- Assert literal expected values, for example the exact payload, the stored order row, or the computed P&L. Do not assert only that a function was called.
-- Run only the tests for the files you changed. CI runs the full suite.
+- Never call the real Fyers, NSE or Telegram endpoints. Use `FakeBroker` (`tests/hat/fakes/broker.py`: it has the adapter's methods, records every call in `calls`, scripts outcomes with `script(...)` and `accepted`, `rejected`, `unconfirmed`, and can open the circuit) or `RecordingSdk` over the real `FyersBroker`. `FakeBroker` is the only fake broker; CONF `no_duplicate_fakes_or_authorities` refuses a second one.
+- Prove properties, not examples (Hypothesis, TLA+, DB and CONF checks). A fixed example is allowed only as an `@example` on a property. Show each new check failing on a deliberate break and record it under "Scratch breaks" of the matching `verify-*` skill.
+- HAT's safety properties are pinned by CONF `risk.hat_safety_properties_pinned` (digest and run). If one fails, the code is wrong or the change is a deliberate, reviewed one; never weaken the property to pass.
+- Run only the tests for the files you changed plus `tests/hat/conformance`. CI runs the full suite.
 
 ## Before you finish
 
-Check the diff against each rule above. List any rule a change could not meet and explain why in the PR description.
+Check the diff against each rule above. List any rule a change could not meet and explain why in the PR description. If you changed a covered file, refresh the digest of the `verify-*` skill that covers it.

@@ -1,19 +1,15 @@
 import { memo } from "react";
-import { useNavigate } from "react-router";
 import { Activity, Globe } from "lucide-react";
 import { formatNumber, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { MarketIndex } from "@/lib/queries/dashboard";
-import { getMarketSectionMeta, terminalPath } from "./model";
+import { getMarketSectionMeta } from "./model";
 import { PanelBody, TradingViewButton } from "./PanelStates";
 import type { PanelData } from "./useDashboardData";
 
-const IndexRow = memo(function IndexRow({
-  idx,
-  onClick,
-}: Readonly<{ idx: MarketIndex; onClick: () => void }>) {
+const IndexRow = memo(function IndexRow({ idx }: Readonly<{ idx: MarketIndex }>) {
   const isUp = !roundsNegative(idx.changePercent);
   return (
-    <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
+    <tr className="hover:bg-surface transition-colors">
       <td className="py-2 pl-4">
         <div className="flex items-center gap-2">
           <span className="font-medium">{idx.name}</span>
@@ -34,7 +30,6 @@ export function IndicesPanel(
   props: Readonly<{ data: PanelData<MarketIndex>; marketOpen: boolean; isConnected: boolean }>,
 ) {
   const { data, marketOpen, isConnected } = props;
-  const navigate = useNavigate();
   const meta = getMarketSectionMeta({ marketOpen, isConnected });
   return (
     <div className="lg:col-span-3 border-r border-border">
@@ -66,11 +61,7 @@ export function IndicesPanel(
           </thead>
           <tbody className="text-sm">
             {data.rows.map((idx) => (
-              <IndexRow
-                key={idx.name}
-                idx={idx}
-                onClick={() => void navigate(terminalPath(idx.symbol))}
-              />
+              <IndexRow key={idx.name} idx={idx} />
             ))}
           </tbody>
         </table>

@@ -10,13 +10,6 @@ const { default: DashboardPage } = await import("../page");
 
 const RESPONSES: Record<string, unknown> = {
   "/api/market/status": { is_open: false, message: "Market closed" },
-  "/api/portfolio/stats": {
-    totalValue: 100000,
-    dayChange: 1500,
-    dayChangePercent: 1.5,
-    totalReturn: -2000,
-    totalReturnPercent: -2,
-  },
   "/api/market/watchlist": [
     // `change` is the absolute price difference; no `changePercent` was sent for SBIN.
     { symbol: "SBIN", price: 812.5, change: 5.5 },
@@ -96,14 +89,6 @@ describe("dashboard change columns", () => {
     expect(within(nifty).getByText("+0.50%")).toBeInTheDocument();
     expect(within(nifty).queryByText("+112.25%")).not.toBeInTheDocument();
   });
-
-  it("prints a single sign before the portfolio percentages", async () => {
-    renderDashboard();
-
-    expect(await screen.findByText("+1.50%")).toBeInTheDocument();
-    expect(screen.getByText("-2.00%")).toBeInTheDocument();
-    expect(screen.queryByText("++1.50%")).not.toBeInTheDocument();
-  });
 });
 
 describe("dashboard data loading", () => {
@@ -113,12 +98,7 @@ describe("dashboard data loading", () => {
 
     expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
     expect(new Set(requestedPaths(fetchMock))).toEqual(
-      new Set([
-        "/api/market/overview",
-        "/api/market/status",
-        "/api/market/watchlist",
-        "/api/portfolio/stats",
-      ]),
+      new Set(["/api/market/overview", "/api/market/status", "/api/market/watchlist"]),
     );
   });
 
@@ -181,10 +161,9 @@ describe("dashboard during market hours", () => {
 });
 
 describe("dashboard empty state", () => {
-  it("keeps the panels while the watchlist still loads after the stats failed", async () => {
+  it("keeps the panels while the watchlist still loads after the overview failed", async () => {
     stubBackend({
-      "/api/portfolio/stats": databaseDown,
-      "/api/market/overview": () => new Promise<Response>(() => {}),
+      "/api/market/overview": databaseDown,
       "/api/market/watchlist": () => new Promise<Response>(() => {}),
     });
     renderDashboard();
@@ -195,9 +174,8 @@ describe("dashboard empty state", () => {
 
   it("shows the load failure once every panel has settled empty", async () => {
     stubBackend({
-      "/api/portfolio/stats": databaseDown,
       "/api/market/overview": () => Response.json({ indices: [] }),
-      "/api/market/watchlist": () => Response.json([]),
+      "/api/market/watchlist": databaseDown,
     });
     renderDashboard();
 

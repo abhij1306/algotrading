@@ -1,14 +1,9 @@
-import { useCallback, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router";
-import { Search, TrendingUp, Settings, Home, LineChart } from "lucide-react";
-import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
+import { Search, Settings, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { debounce } from "@/lib/debounce";
 import { focusOnMount } from "@/lib/focus";
 import { formatShortcut, isModifierShortcut } from "@/lib/platform";
-import { useSymbolSearch, type SearchResultItem } from "@/lib/queries/terminal";
-import { useKnownQuotes } from "@/lib/realtime/hooks";
-import type { Quote } from "@/lib/realtime/quote-store";
 
 interface Command {
   id: string;
@@ -25,74 +20,6 @@ interface CommandPaletteProps {
   onClose: () => void;
 }
 
-const MAX_SYMBOL_RESULTS = 5;
-const MIN_SEARCH_LENGTH = 2;
-const SEARCH_DEBOUNCE_MS = 250;
-const NO_SYMBOLS: readonly SearchResultItem[] = [];
-
-function terminalPath(symbol: string): string {
-  return `/terminal?symbol=${encodeURIComponent(symbol)}`;
-}
-
-/** Debounced symbol search against the backend; results show from two typed characters. */
-function usePaletteSymbolSearch() {
-  const [text, setText] = useState("");
-  const [term, setTerm] = useState("");
-  const debouncedSetTerm = useMemo(
-    () =>
-      debounce(
-        (value: unknown) => setTerm(typeof value === "string" ? value : ""),
-        SEARCH_DEBOUNCE_MS,
-      ),
-    [],
-  );
-  // Ref callback on the search input: focus it on mount and drop a pending search on unmount.
-  const inputRef = useCallback(
-    (element: HTMLInputElement | null) => {
-      focusOnMount(element);
-      return () => debouncedSetTerm.cancel();
-    },
-    [debouncedSetTerm],
-  );
-  const active = text.trim().length >= MIN_SEARCH_LENGTH;
-  const search = useSymbolSearch(term);
-  // Only list results for the text as typed now: never a previous query's (pending debounce or
-  // placeholder data), so Enter cannot open a symbol unrelated to the current input.
-  const current = active && term === text.trim() && !search.isPlaceholderData;
-  const symbols = current ? (search.data ?? NO_SYMBOLS).slice(0, MAX_SYMBOL_RESULTS) : NO_SYMBOLS;
-  return {
-    text,
-    symbols,
-    searching: active && (!current || search.isFetching),
-    inputRef,
-    onTextChange: (value: string) => {
-      setText(value);
-      debouncedSetTerm(value.trim());
-    },
-  };
-}
-
-/** Live price and day change, shown only when the quote store already has them. */
-function LiveQuote({ quote }: Readonly<{ quote: Quote | undefined }>) {
-  if (quote?.ltp === undefined) return null;
-  const { ltp, changePct } = quote;
-  return (
-    <div className="text-right">
-      <div className="font-medium tabular-nums">{formatInr(ltp)}</div>
-      {changePct === undefined ? null : (
-        <div
-          className={cn(
-            "text-xs tabular-nums",
-            roundsNegative(changePct) ? "text-loss" : "text-profit",
-          )}
-        >
-          {formatSignedPercent(changePct)}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Mounts the dialog only while open, so its search state starts fresh on every open. */
 export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps>) {
   if (!isOpen) return null;
@@ -102,8 +29,7 @@ export function CommandPalette({ isOpen, onClose }: Readonly<CommandPaletteProps
 function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "onClose">>) {
   const navigate = useNavigate();
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const { text: query, symbols, searching, inputRef, onTextChange } = usePaletteSymbolSearch();
-  const quotes = useKnownQuotes();
+  const [query, setQuery] = useState("");
 
   const commands = useMemo((): Command[] => {
     const all: Command[] = [
@@ -115,18 +41,6 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         icon: <Home className="w-4 h-4" />,
         action: () => {
           void navigate("/dashboard");
-          onClose();
-        },
-        category: "Navigation",
-      },
-      {
-        id: "nav-terminal",
-        title: "Market Terminal",
-        subtitle: "Advanced charts and trading",
-        shortcut: formatShortcut("2"),
-        icon: <LineChart className="w-4 h-4" />,
-        action: () => {
-          void navigate("/terminal");
           onClose();
         },
         category: "Navigation",
@@ -155,13 +69,8 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
     );
   }, [query, navigate, onClose]);
 
-  const totalItems = symbols.length + commands.length;
+  const totalItems = commands.length;
   const activeIndex = totalItems === 0 ? -1 : Math.min(selectedIndex, totalItems - 1);
-
-  const selectSymbol = (symbol: string) => {
-    void navigate(terminalPath(symbol));
-    onClose();
-  };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     switch (event.key) {
@@ -173,13 +82,10 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         event.preventDefault();
         if (totalItems > 0) setSelectedIndex((activeIndex - 1 + totalItems) % totalItems);
         break;
-      case "Enter": {
+      case "Enter":
         event.preventDefault();
-        const symbol = activeIndex >= 0 ? symbols.at(activeIndex) : undefined;
-        if (symbol) selectSymbol(symbol.symbol);
-        else if (activeIndex >= 0) commands.at(activeIndex - symbols.length)?.action();
+        if (activeIndex >= 0) commands.at(activeIndex)?.action();
         break;
-      }
       case "Escape":
         onClose();
         break;
@@ -188,7 +94,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
     }
   };
 
-  const hasResults = commands.length > 0 || symbols.length > 0;
+  const hasResults = commands.length > 0;
 
   return (
     <>
@@ -211,12 +117,12 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
             type="text"
             value={query}
             onChange={(e) => {
-              onTextChange(e.target.value);
+              setQuery(e.target.value);
               setSelectedIndex(0);
             }}
             onKeyDown={handleKeyDown}
-            ref={inputRef}
-            placeholder="Search for apps, symbols, or commands..."
+            ref={focusOnMount}
+            placeholder="Search for apps or commands..."
             className="flex-1 bg-transparent border-none outline-none text-lg py-4 text-foreground"
           />
         </div>
@@ -225,34 +131,6 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
         <div className="max-h-[400px] overflow-y-auto py-2">
           {hasResults ? (
             <>
-              {/* Symbols Section */}
-              {symbols.length > 0 ? (
-                <div className="mb-2">
-                  <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-foreground-tertiary">
-                    Symbols
-                  </div>
-                  {symbols.map((symbol, index) => (
-                    <button
-                      key={`${symbol.symbol}-${symbol.type ?? ""}`}
-                      onClick={() => selectSymbol(symbol.symbol)}
-                      className={cn(
-                        "w-full flex items-center gap-3 px-4 py-3 cursor-pointer transition-all",
-                        activeIndex === index && "bg-background-tertiary",
-                      )}
-                    >
-                      <div className="w-8 h-8 flex items-center justify-center rounded-sm bg-background-tertiary">
-                        <TrendingUp className="w-4 h-4 text-primary" />
-                      </div>
-                      <div className="flex-1 text-left">
-                        <div className="font-medium">{symbol.symbol}</div>
-                        <div className="text-xs text-foreground-secondary">{symbol.name}</div>
-                      </div>
-                      <LiveQuote quote={quotes[symbol.symbol]} />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-
               {/* Commands by Category */}
               {["Navigation", "Actions", "Preferences"].map((category) => {
                 const categoryCommands = commands.filter((c) => c.category === category);
@@ -264,7 +142,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
                       {category}
                     </div>
                     {categoryCommands.map((command) => {
-                      const actualIndex = symbols.length + commands.indexOf(command);
+                      const actualIndex = commands.indexOf(command);
                       return (
                         <button
                           key={command.id}
@@ -297,7 +175,7 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
             </>
           ) : (
             <div className="px-4 py-8 text-center text-foreground-tertiary">
-              {searching ? "Searching..." : <>No results found for &quot;{query}&quot;</>}
+              No results found for &quot;{query}&quot;
             </div>
           )}
         </div>

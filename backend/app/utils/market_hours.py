@@ -208,12 +208,3 @@ def require_market_open() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             return sync_wrapper
 
     return decorator
-
-
-def is_market_hours() -> bool:
-    """
-    Simple check if market is currently open.
-    Returns True if market is open, False otherwise.
-    """
-    is_open, _ = is_market_open()
-    return is_open

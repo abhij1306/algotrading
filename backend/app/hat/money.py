@@ -1,8 +1,7 @@
 """Money helpers: Decimal only, never float (HAT-SCH-014).
 
-HAT owns its exact-arithmetic helpers (K1, backend review C1); the legacy paper book re-exports
-them until it is deleted. `to_money` rounds to paise (INR); the column type is
-`numeric(18, 4)`, so storage keeps a little more.
+HAT owns its exact-arithmetic helpers (K1, backend review C1). `to_money` rounds to paise (INR);
+the column type is `numeric(18, 4)`, so storage keeps a little more.
 """
 
 from __future__ import annotations

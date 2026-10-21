@@ -5,10 +5,8 @@ import {
   useDashboardWatchlist,
   useMarketIndices,
   useMarketStatus,
-  usePortfolioStats,
   type DashboardWatchlistItem,
   type MarketIndex,
-  type PortfolioStats,
 } from "@/lib/queries/dashboard";
 import { useConnectionStatus, useQuotes } from "@/lib/realtime/hooks";
 import { applyIndexQuotes, applyWatchlistQuotes } from "./model";
@@ -32,7 +30,6 @@ export interface DashboardData {
   /** True only while the market is open and the quote socket is connected. */
   isConnected: boolean;
   istTime: string;
-  portfolio: { stats: PortfolioStats | null; loading: boolean };
   indices: PanelData<MarketIndex>;
   watchlist: PanelData<DashboardWatchlistItem>;
   /** The first failure among the panels, for the page-wide empty state. */
@@ -45,7 +42,6 @@ export interface DashboardData {
  */
 export function useDashboardData(): DashboardData {
   const statusQuery = useMarketStatus();
-  const statsQuery = usePortfolioStats();
   const watchlistQuery = useDashboardWatchlist();
   const marketStatus = statusQuery.data?.status ?? INITIAL_MARKET_STATUS;
   const indicesQuery = useMarketIndices({
@@ -77,7 +73,6 @@ export function useDashboardData(): DashboardData {
     marketStatusLoaded: statusQuery.data !== undefined,
     isConnected: marketStatus.isOpen && connection === "connected",
     istTime: statusQuery.data?.istTime ?? initialIstTime,
-    portfolio: { stats: statsQuery.data ?? null, loading: statsQuery.isPending },
     indices: {
       rows: applyIndexQuotes(fetchedIndices, quotes),
       loading: indicesQuery.isPending,
@@ -88,6 +83,6 @@ export function useDashboardData(): DashboardData {
       loading: watchlistQuery.isPending,
       error: watchlistQuery.error,
     },
-    loadError: statsQuery.error ?? watchlistQuery.error ?? indicesQuery.error,
+    loadError: watchlistQuery.error ?? indicesQuery.error,
   };
 }

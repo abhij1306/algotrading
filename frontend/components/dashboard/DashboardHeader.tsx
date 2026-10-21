@@ -1,11 +1,6 @@
-import { useNavigate } from "react-router";
-import { Zap } from "lucide-react";
-import { Button } from "@/components/ui";
 import { formatNumber, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { MarketIndex } from "@/lib/queries/dashboard";
 import { getCompactIndexLabel, getStatusBadge, HEADER_INDEX_SYMBOLS } from "./model";
-
-const QUICK_ACTIONS = [{ icon: Zap, label: "Trade", path: "/terminal" }];
 
 function HeaderIndex({ idx }: Readonly<{ idx: MarketIndex }>) {
   const isUp = !roundsNegative(idx.changePercent);
@@ -23,7 +18,7 @@ function HeaderIndex({ idx }: Readonly<{ idx: MarketIndex }>) {
   );
 }
 
-/** Title, connection badge, the NIFTY/BANK/IT ticker, the IST clock and quick links. */
+/** Title, connection badge, the NIFTY/BANK/IT ticker, and the IST clock. */
 export function DashboardHeader(
   props: Readonly<{
     marketOpen: boolean;
@@ -33,7 +28,6 @@ export function DashboardHeader(
   }>,
 ) {
   const { marketOpen, isConnected, indices, istTime } = props;
-  const navigate = useNavigate();
   const statusBadge = getStatusBadge({ marketOpen, isConnected });
   const StatusIcon = statusBadge.icon;
   return (
@@ -57,20 +51,6 @@ export function DashboardHeader(
       </div>
       <div className="flex items-center gap-4">
         <span className="text-xs text-foreground-muted">{istTime}</span>
-        <div className="flex items-center gap-1">
-          {QUICK_ACTIONS.map((action) => (
-            <Button
-              key={action.label}
-              onClick={() => void navigate(action.path)}
-              variant="ghost"
-              size="sm"
-              className="h-8"
-            >
-              <action.icon className="w-4 h-4 mr-1" />
-              {action.label}
-            </Button>
-          ))}
-        </div>
       </div>
     </header>
   );

@@ -14,10 +14,7 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
   const navigate = useNavigate();
   const { isDark, toggleTheme } = useTheme();
 
-  const navItems = [
-    { id: "dashboard", label: "Dashboard", path: "/dashboard" },
-    { id: "terminal", label: "Terminal", path: "/terminal" },
-  ];
+  const navItems = [{ id: "dashboard", label: "Dashboard", path: "/dashboard" }];
 
   const headerClasses =
     "h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle";
@@ -97,10 +94,7 @@ export function MobileNav() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("dashboard");
 
-  const tabs = [
-    { id: "dashboard", label: "Home", icon: Command, path: "/dashboard" },
-    { id: "terminal", label: "Market", icon: Search, path: "/terminal" },
-  ];
+  const tabs = [{ id: "dashboard", label: "Home", icon: Command, path: "/dashboard" }];
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 flex items-center justify-around px-4 z-50 bg-background border-t border-border-subtle">

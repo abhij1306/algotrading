@@ -202,7 +202,7 @@ def _calls_and_imports(path: Path) -> set[str]:
 def test_risk__single_sizing_path() -> None:
     """HAT-RISK-100: `size_position` is called in one place, the decision behind `evaluate_signal`;
     no other module of the application sizes a position or imports the sizing module, and
-    `evaluate_signal` lives in HAT's `risk/service.py`, not in the legacy risk manager."""
+    `evaluate_signal` lives in HAT's `risk/service.py` and no legacy risk manager exists."""
     users = []
     for path in APP_ROOT.rglob("*.py"):
         if path.name == "sizing.py" and path.parent.name == "risk":
@@ -214,9 +214,7 @@ def test_risk__single_sizing_path() -> None:
     service = (APP_ROOT / "hat" / "risk" / "service.py").read_text(encoding="utf-8")
     assert re.search(r"^def evaluate_signal\(", service, re.MULTILINE)
     assert "decide(" in service
-    manager = (APP_ROOT / "services" / "risk_manager.py").read_text(encoding="utf-8")
-    assert "evaluate_signal" not in manager
-    assert "size_position" not in manager
+    assert not (APP_ROOT / "services" / "risk_manager.py").exists()
 
 
 OVERRIDE_WORDS = re.compile(
@@ -240,37 +238,133 @@ def test_risk__no_gate_override_path() -> None:
                 assert not OVERRIDE_WORDS.search(node.name), (path.name, node.name)
 
 
-# SHA-256 of the existing risk test files as they were before the HAT risk code was added; the
-# characterisation of the SmartTrader risk behaviour must not be edited to fit a change.
-EXISTING_RISK_TESTS = {
-    "tests/test_risk_fixes.py": "782f47a584847ea4aef1c9831b04d2a9a61c945e5d386e6a31103154feb3ebe9",
-    "tests/test_live_trading_safety.py": (
-        "65ab84202d6eafaab41efc493da7c5d9e96b7f913cfa1ea815db75f3d4179d96"
+# HAT's own safety properties: the Hypothesis properties whose failure would let an order past a
+# kill, a stop, a cap, the session or the broker's fail-closed rules. file (relative to
+# `backend/tests/hat`) -> property names. K4 replaced the digest pin of the legacy risk tests
+# (deleted with the manual-trading code) with this pin.
+SAFETY_PROPERTIES = {
+    "properties/test_caps.py": (
+        "test_exits_never_blocked",
+        "test_regime_gate_blocks_entries",
+        "test_entry_requires_stop",
+        "test_stale_blocks_entry",
+        "test_market_hours_only",
+        "test_hat_kill_is_authority",
+        "test_decision_total_on_garbage",
+        "test_global_open_risk",
+        "test_max_chase_always",
+        "test_kill_thresholds",
     ),
-    "tests/test_market_hours_policy.py": (
-        "518d543f103ad823479353ca1d82e9d9ac78ed380d69aa27a3dc5dc5a4404ef4"
+    "properties/test_tags.py": (
+        "test_a_37th_order_is_refused",
+        "test_decode_refuses_what_is_not_a_hat_tag",
+        "test_invalid_intents_raise_before_any_sdk_call",
+        "test_broker_errors_fail_closed",
+        "test_refusals_happen_before_the_broker",
+        "test_a_timeout_is_looked_up_before_any_retry",
     ),
+    "properties/test_fyers_broker.py": (
+        "test_nothing_is_sent_while_the_circuit_is_open",
+        "test_only_an_explicit_error_is_a_rejection",
+    ),
+    "properties/test_kill.py": ("test_kill_service_matches_model",),
+    "properties/test_sizing.py": ("test_risk_bounded",),
 }
-RUN_UNMODIFIED = (*EXISTING_RISK_TESTS, "tests/test_order_execution_characterization.py")
+# SHA-256 of `ast.dump` of each pinned property (decorators, strategies and body). Weakening one
+# to fit a change fails here: stop and explain, then re-pin it with the reason in the PR.
+SAFETY_DIGESTS = {
+    "test_global_open_risk": ("92fe9c3555f8047e1ecf28e164591133e5468756482aa6d7ff6487cd41dbe1b3"),
+    "test_exits_never_blocked": (
+        "8274671f6c65ec6b48cb77db76a0aa5282381752bbfaf64b6be93aa0f4609e7b"
+    ),
+    "test_regime_gate_blocks_entries": (
+        "0c707221de86b481e12f5a96d3317ec48b42c26131c08d61f7b355597be01988"
+    ),
+    "test_kill_thresholds": ("92ffcad86db6452ffb72a80ec5f9de4ae9c856233f3e0283041ecaa0faab3116"),
+    "test_entry_requires_stop": (
+        "82c6b69044d9b2c49bb8924cce9b62a3bf12162706983342467a10d11e3068c6"
+    ),
+    "test_stale_blocks_entry": ("941c3b48c6e9faf4eb5cfe1e7db5b2f65602e8d7ed5cf5370fb347e738ebbb2a"),
+    "test_market_hours_only": ("ac1870bff30c18760974d6b40183b6629e2f7e73178c21bde2a69b64311382f5"),
+    "test_max_chase_always": ("9bc34825f7d88f17b57dacc5e8bedba2733967f06509e39547ec303651e10c1f"),
+    "test_hat_kill_is_authority": (
+        "6879437c7689ac2c5df662afee6e0936010ad411afd9a327f93da4aa84817a2f"
+    ),
+    "test_decision_total_on_garbage": (
+        "b60f5ce9e55ee26e6ff95ed9f5363805289d9e3328441567b3e9dc327b9c02c1"
+    ),
+    "test_decode_refuses_what_is_not_a_hat_tag": (
+        "9ea35cd14baca091876c2ce8755b5397caf21f9a7e26b98f946b57225d3287f3"
+    ),
+    "test_a_37th_order_is_refused": (
+        "b29b72acbe5d4bff7a8b950323017e3863ef712866d8f872583a024cb955f9ec"
+    ),
+    "test_invalid_intents_raise_before_any_sdk_call": (
+        "b794ceb67d07b8b3881e61633cdd1efa235f20ca9c8677ddbce614183f832532"
+    ),
+    "test_broker_errors_fail_closed": (
+        "d9c116d96a4842f25e19a8a9b6ab348acb32b6f08dff6eda2722bcfc4070dc37"
+    ),
+    "test_a_timeout_is_looked_up_before_any_retry": (
+        "4b50acb1d6e3570be4df3eeee09e32b431a950f8cd0acbfd6f8dafa536d0d8bd"
+    ),
+    "test_refusals_happen_before_the_broker": (
+        "8cfe106ff44db97239b37b2c032f969ddde05a564415422f43fc7296763e9b8a"
+    ),
+    "test_nothing_is_sent_while_the_circuit_is_open": (
+        "56c22d14f1156f34bf3893a3d34265da99af6a590d6c4eab9dab33635e00b300"
+    ),
+    "test_only_an_explicit_error_is_a_rejection": (
+        "930aab8d75d7762a6a2accc373f9526881a90bb4b67b8c68d51cbdddb31e25d2"
+    ),
+    "test_kill_service_matches_model": (
+        "10bee712f18c3fcabc98f4e7054736301de710af7199266409d60f69dd9c2da9"
+    ),
+    "test_risk_bounded": ("ee5c00eacc3a558352a78b9ae96ded119423710cae4aed194e7ac76b62dca76b"),
+}
+HAT_TESTS = BACKEND / "tests" / "hat"
 
 
-def test_risk__existing_suite_green() -> None:
-    """HAT-RISK-103: the existing risk and execution tests are byte-for-byte what they were and
-    pass against the changed `RiskManager`, so no SmartTrader caller's risk behaviour moved."""
-    for name, expected in EXISTING_RISK_TESTS.items():
-        digest = hashlib.sha256((BACKEND / name).read_bytes()).hexdigest()
-        assert digest == expected, f"{name} was edited: stop and explain, never adapt the test"
+def _pinned_properties() -> dict[tuple[str, str], ast.FunctionDef]:
+    found = {}
+    for rel, names in SAFETY_PROPERTIES.items():
+        tree = ast.parse((HAT_TESTS / rel).read_text(encoding="utf-8"))
+        defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+        for name in names:
+            if name in defs:
+                found[(rel, name)] = defs[name]
+    return found
+
+
+def _is_hypothesis_property(node: ast.FunctionDef) -> bool:
+    return any(
+        (d.func if isinstance(d, ast.Call) else d).id == "given"
+        for d in node.decorator_list
+        if isinstance(d.func if isinstance(d, ast.Call) else d, ast.Name)
+    )
+
+
+def _property_digest(node: ast.FunctionDef) -> str:
+    return hashlib.sha256(ast.dump(node).encode()).hexdigest()
+
+
+def test_risk__hat_safety_properties_pinned() -> None:
+    """HAT-RISK-103: HAT's safety properties (the exits, regime gate, stop, staleness, session,
+    kill, cap and fail-closed broker rules) all exist, are still Hypothesis properties (not
+    examples) and are byte-for-byte what they were when pinned, and they pass against the real
+    `evaluate_signal` and adapter. Editing one to fit a change is refused."""
+    pinned = _pinned_properties()
+    expected = {(rel, name) for rel, names in SAFETY_PROPERTIES.items() for name in names}
+    assert set(pinned) == expected, sorted(expected - set(pinned))
+    for (rel, name), node in pinned.items():
+        assert _is_hypothesis_property(node), f"{rel}::{name} is no longer a @given property"
+        assert _property_digest(node) == SAFETY_DIGESTS[name], (
+            f"{rel}::{name} was edited: stop and explain, never weaken the property to fit a change"
+        )
+    assert set(SAFETY_DIGESTS) == {name for _, name in expected}
+    ids = [f"tests/hat/{rel}::{name}" for rel, name in sorted(expected)]
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--no-cov",
-            "-p",
-            "no:cacheprovider",
-            *RUN_UNMODIFIED,
-        ],
+        [sys.executable, "-m", "pytest", "-q", "--no-cov", "-p", "no:cacheprovider", *ids],
         cwd=BACKEND,
         capture_output=True,
         text=True,
@@ -279,43 +373,37 @@ def test_risk__existing_suite_green() -> None:
     assert result.returncode == 0, result.stdout[-2000:]
 
 
-def test_risk__manager_reads_no_hat_state() -> None:
-    """HAT-RISK-103: the SmartTrader checks of `RiskManager` do not depend on HAT at all: the
-    manager imports nothing from `app.hat` (the risk inversion of K1), and the existing exit checks
-    name no HAT object."""
-    path = APP_ROOT / "services" / "risk_manager.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    hat_imports = (
-        {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module
-            and re.match(
-                r"(app\.|\.+)?hat(\.|$)", node.module
-            )  # absolute or relative (`..hat.risk`)
-        }
-        | {
-            f"{node.module or ''}.{alias.name}"  # `from app import hat`, `from .. import hat`
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-            if alias.name == "hat"
-        }
-        | {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-            if re.match(r"(app\.)?hat(\.|$)", alias.name)
-        }
-    )
-    assert hat_imports == set()
-    existing = {"pre_trade_check", "pre_exit_check", "exit_order_check", "_check_market_hours"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in existing:
-            source = ast.unparse(node)
-            assert not re.search(r"\bhat\b|kill|HAT", source), node.name
+MANUAL_TRADING_GONE = (
+    "services/risk_manager.py",
+    "services/order_execution_service.py",
+    "services/position_sync_service.py",
+    "services/live_exit_service.py",
+    "services/execution",
+    "brokers",
+    "routers/trading.py",
+    "routers/terminal.py",
+    "routers/unified.py",
+    "routers/portfolio.py",
+    "routers/activity.py",
+    "models/order.py",
+    "models/live_position.py",
+    "models/live_trade.py",
+)
+
+
+def test_risk__no_manual_trading_path() -> None:
+    """HAT-RISK-103 (K4, owner: no manual trading): the legacy manual-trading modules (risk
+    manager, order execution, position sync, live exit, the order routes and the brokers package)
+    are gone, so the only way to an order is HAT's `evaluate_signal` and adapter; no class named
+    as a risk manager or an order-execution service exists."""
+    assert [rel for rel in MANUAL_TRADING_GONE if (APP_ROOT / rel).exists()] == []
+    lookalike = re.compile(r"class \w*(RiskManager|OrderExecutionService|PositionSyncService)\b")
+    offenders = [
+        path.relative_to(APP_ROOT).as_posix()
+        for path in sorted(APP_ROOT.rglob("*.py"))
+        if lookalike.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
 
 
 def test_risk__no_legacy_halt_read() -> None:

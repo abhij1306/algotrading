@@ -157,22 +157,6 @@ class DatabaseUnavailableError(SmartTraderError):
         )
 
 
-class BrokerUnavailableApiError(SmartTraderError):
-    """API-facing error when the broker client is missing, not logged in, or a broker call
-    fails (the broker layer's own signal is `app.brokers.base.BrokerUnavailableError`).
-
-    Fails closed: callers get a 503 instead of an empty list or zero that reads as real
-    data. The broker's own error text is only logged server-side.
-    """
-
-    def __init__(self, message: str = "Broker unavailable") -> None:
-        super().__init__(
-            code="BROKER_UNAVAILABLE",
-            message=message,
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-
-
 class DataUnavailableError(SmartTraderError):
     """Raised when a local dataset the request needs (index history files) is missing."""
 
