@@ -289,6 +289,8 @@ class McpClient:
             with self._slots:
                 try:
                     data = self._transport.call(server, tool, arguments)
+                except McpConfigError:
+                    raise  # not a transient failure: never retried, never renamed
                 except McpTransportError as exc:
                     code = exc.code
                 except Exception:  # a transport bug is still a failed attempt, never raw text

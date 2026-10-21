@@ -26,20 +26,36 @@ SESSION_OPEN = time(9, 15)
 SESSION_CLOSE = time(15, 30)
 
 
-# The calendar loaded from `hat_trading_calendar` (HAT-DATA-027, C7). Replaced as a whole, so a
-# reader sees either the old or the new calendar, never a mix.
-_INSTALLED: tuple[frozenset[date], Mapping[date, tuple[time, time]]] = (frozenset(), {})
+@dataclass(frozen=True)
+class InstalledCalendar:
+    """The calendar loaded from `hat_trading_calendar` (HAT-DATA-027, C7): holidays, special
+    sessions and the market's default session."""
+
+    holidays: frozenset[date] = frozenset()
+    sessions: Mapping[date, tuple[time, time]] = field(default_factory=dict)
+    session_open: time = SESSION_OPEN
+    session_close: time = SESSION_CLOSE
+
+
+# Replaced as a whole, so a reader sees either the old or the new calendar, never a mix.
+_INSTALLED = InstalledCalendar()
 
 
 def install_calendar(
-    holidays: frozenset[date], sessions: Mapping[date, tuple[time, time]] | None = None
+    holidays: frozenset[date],
+    sessions: Mapping[date, tuple[time, time]] | None = None,
+    session_open: time = SESSION_OPEN,
+    session_close: time = SESSION_CLOSE,
 ) -> None:
-    """Register the exchange holidays and special sessions every policy then honours."""
-    global _INSTALLED  # noqa: PLW0603 - one process-wide calendar, swapped atomically
-    _INSTALLED = (frozenset(holidays), dict(sessions or {}))
+    """Register the exchange holidays, special sessions and default session every policy
+    then honours."""
+    global _INSTALLED  # noqa: PLW0603
+    _INSTALLED = InstalledCalendar(
+        frozenset(holidays), dict(sessions or {}), session_open, session_close
+    )
 
 
-def installed_calendar() -> tuple[frozenset[date], Mapping[date, tuple[time, time]]]:
+def installed_calendar() -> InstalledCalendar:
     return _INSTALLED
 
 
@@ -74,8 +90,8 @@ class MarketHoursPolicy:
     clock: Clock = SYSTEM_CLOCK
     holidays: frozenset[date] = field(default_factory=frozenset)
     sessions: Mapping[date, tuple[time, time]] = field(default_factory=dict)
-    session_open: time = SESSION_OPEN  # the market's default session (`hat_market`)
-    session_close: time = SESSION_CLOSE
+    session_open: time | None = None  # default session; None = the installed one (`hat_market`)
+    session_close: time | None = None
 
     def now_ist(self) -> datetime:
         return self.clock.now().astimezone(IST)
@@ -91,14 +107,17 @@ class MarketHoursPolicy:
         if dev_mode:
             return MarketPhase.DEV
         now = self.now_ist() if at is None else require_aware(at).astimezone(IST)
-        installed_holidays, installed_sessions = _INSTALLED
+        installed = _INSTALLED
         day = now.date()
-        special = self.sessions.get(day) or installed_sessions.get(day)
-        opens, closes = special or (self.session_open, self.session_close)
+        special = self.sessions.get(day) or installed.sessions.get(day)
+        opens, closes = special or (
+            self.session_open or installed.session_open,
+            self.session_close or installed.session_close,
+        )
         if special is None:
             if now.weekday() >= 5:  # Saturday or Sunday
                 return MarketPhase.WEEKEND
-            if day in self.holidays or day in installed_holidays:
+            if day in self.holidays or day in installed.holidays:
                 return MarketPhase.HOLIDAY
         current = now.time()
         if current < opens:

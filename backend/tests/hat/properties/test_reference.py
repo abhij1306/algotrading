@@ -147,9 +147,11 @@ def test_delisted_never_deleted(steps: list[list[Security]]) -> None:
         for key in seen - listed:
             assert key in rows
             assert rows[key].active is False
-            assert rows[key].delisted_on is not None and rows[key].delisted_on <= today
+            assert rows[key].delisted_on is not None
+            assert rows[key].delisted_on <= today
         for key in listed:
-            assert rows[key].active is True and rows[key].delisted_on is None
+            assert rows[key].active is True
+            assert rows[key].delisted_on is None
         seen |= listed
 
 
@@ -167,10 +169,12 @@ def test_symbol_history_resolves(steps: list[list[Security]]) -> None:
         for sec in listing:
             held.setdefault(sec.key, set()).add(sec.symbol)
             found = inst.resolve_symbol(session, market_id, sec.symbol, today)
-            assert found is not None and found.id == by_key[sec.isin + sec.series].id
+            assert found is not None
+            assert found.id == by_key[sec.isin + sec.series].id
         for sec in previous:  # yesterday, the symbol a rename replaced still means that stock
             found = inst.resolve_symbol(session, market_id, sec.symbol, today - timedelta(days=1))
-            assert found is not None and found.id == by_key[sec.isin + sec.series].id
+            assert found is not None
+            assert found.id == by_key[sec.isin + sec.series].id
         previous = listing
     for key, symbols in held.items():
         row = session.scalar(
@@ -231,8 +235,10 @@ def test_symbol_history_resolves_seed_idempotent(
     for old, new, effective in changes:
         before = inst.resolve_symbol(session, market_id, old, effective - timedelta(days=1))
         after = inst.resolve_symbol(session, market_id, new, effective)
-        assert after is not None and after.id == instrument.id
-        assert before is None or before.id == instrument.id
+        assert after is not None
+        assert after.id == instrument.id
+        assert before is not None  # the old symbol held until the change
+        assert before.id == instrument.id
 
 
 # --- prefix paging (HAT-DATA-023) -------------------------------------------------------------
@@ -337,7 +343,8 @@ def test_listing_resolves_3121_symbols() -> None:
     client = McpClient(server, sleep=lambda _s: None)
     paged = page_listing(client)
     build = build_listing_from_mcp(paged, parse_equity_list_csv(equity_list_csv(listing)))
-    assert len(paged) == 3121 and build.unresolved == []
+    assert len(paged) == 3121
+    assert build.unresolved == []
     session, market_id = new_db()
     report = inst.upsert_instruments(session, market_id, build.securities, today=date(2026, 10, 19))
     assert report.created == 3121
@@ -384,6 +391,15 @@ def test_fyers_symbol_roundtrip(entries: list[tuple[str, str, bool]]) -> None:
         assert symbol_master.to_db(row.broker_symbol) == instrument.symbol
     active = [i for i in instruments.values() if i.active]
     assert len(rows) + len(report.skipped) == len(active)
+
+    def converts(symbol: str) -> bool:  # an oracle independent of `fyers_symbol`
+        try:
+            fyers = symbol_master.to_fyers(symbol)
+            return fyers.endswith("-EQ") and symbol_master.to_db(fyers) == symbol
+        except ValueError:
+            return False
+
+    assert sorted(report.skipped) == sorted(i.symbol for i in active if not converts(i.symbol))
     again = inst.refresh_fyers_symbols(session, symbol_master, market_id)
     assert (again.written, again.removed) == (0, 0)
     assert len(session.scalars(select(HatBrokerSymbol)).all()) == len(rows)
@@ -432,11 +448,25 @@ def test_current_band(plan: list[tuple[int, list[Decimal | str | None]]]) -> Non
                 assert band is None or band in {Decimal(b) for b in BAND_VALUES}
 
 
-@given(raw=st.text(max_size=12))
+BAND_TEXT = st.one_of(
+    st.sampled_from(["2", "5%", " 10 ", "20", "No Band", "nil", "NA", "-", "", "15", "abc", "7.5"]),
+    st.text(max_size=12),
+)
+
+
+@given(raw=BAND_TEXT)
 def test_current_band_values_are_valid(raw: str) -> None:
-    """Whatever the file says, a parsed band is 2/5/10/20 or no band; anything else is rejected."""
+    """Whatever the file says, 2/5/10/20 (with or without %) parse as that band, no-band words
+    parse as no band, and anything else is rejected: nothing else is ever stored."""
     ok, band = parse_band_value(raw)
-    assert band is None or (ok and band in {Decimal(b) for b in BAND_VALUES})
+    text = raw.strip().upper().rstrip("%").strip()
+    if text in {"NO BAND", "NONE", "NIL", "NA", "-", ""}:
+        assert (ok, band) == (True, None)
+    elif text in {"2", "5", "10", "20"}:
+        assert (ok, band) == (True, Decimal(text))
+    else:
+        assert ok is False or band in {Decimal(b) for b in BAND_VALUES}
+        assert band is None or ok
 
 
 @given(
@@ -494,3 +524,40 @@ def test_current_industry(plan: list[tuple[int, list[str | None]]]) -> None:
         query = START + timedelta(days=offset)
         expected = sorted(s for s in symbols if not [1 for d, _ in applied[s] if d <= query])
         assert inst.instruments_without_industry(session, market_id, query) == expected
+
+
+@given(
+    prev=st.decimals(min_value="1", max_value="100000", places=2),
+    band=st.sampled_from([Decimal(b) for b in BAND_VALUES]),
+)
+def test_current_band_circuit_fallback_exact(prev: Decimal, band: Decimal) -> None:
+    """Circuit limits at exactly a supported band of the previous close give that band."""
+    assert band_from_circuit_limits(prev, prev * (1 + band / 100), prev * (1 - band / 100)) == band
+
+
+@given(steps=refresh_steps(), data=st.data())
+def test_delisted_never_deleted_listed_without_csv_row(
+    steps: list[list[Security]], data: st.DataObject
+) -> None:
+    """A symbol the MCP lists but the CSV has no row for is reported, and an instrument already
+    holding it is not delisted by that refresh."""
+    session, market_id = new_db()
+    for _today, _listing in run_steps(session, market_id, steps):
+        pass
+    active = [i for i in session.scalars(select(HatInstrument)) if i.active]
+    held_back = (
+        data.draw(st.lists(st.sampled_from(active), unique=True, max_size=len(active)))
+        if active
+        else []
+    )
+    keep = [a for a in active if a not in held_back]
+    inst.upsert_instruments(
+        session,
+        market_id,
+        [security(a.isin, a.series, a.symbol) for a in keep],
+        today=START + timedelta(days=400),
+        still_listed={(a.symbol, a.series) for a in held_back},
+    )
+    for instrument in held_back:
+        assert instrument.active is True
+        assert instrument.delisted_on is None

@@ -91,12 +91,34 @@ def _to_instant(day: date, wall: time) -> datetime:
     return as_utc(datetime.combine(day, wall, tzinfo=IST))
 
 
-def upsert_calendar(session: Session, market_id: uuid.UUID, days: Iterable[CalendarDay]) -> int:
-    """Insert or update calendar rows; returns how many changed. Idempotent."""
+def _same_row(
+    row: HatTradingCalendar, item: CalendarDay, window: tuple[datetime | None, datetime | None]
+) -> bool:
+    return (
+        row.is_trading,
+        None if row.open_at is None else as_utc(row.open_at),
+        None if row.close_at is None else as_utc(row.close_at),
+        row.note,
+    ) == (item.is_trading, window[0], window[1], item.note)
+
+
+def upsert_calendar(
+    session: Session,
+    market_id: uuid.UUID,
+    days: Iterable[CalendarDay],
+    *,
+    replace_span: bool = False,
+) -> int:
+    """Insert or update calendar rows; returns how many changed. Idempotent. With
+    `replace_span`, `days` is a full snapshot: stored rows inside its date span that it no
+    longer lists are removed, so a withdrawn holiday or session stops applying."""
+    snapshot = list(days)
     changed = 0
-    for item in days:
-        open_at = _to_instant(item.day, item.open_at) if item.open_at else None
-        close_at = _to_instant(item.day, item.close_at) if item.close_at else None
+    for item in snapshot:
+        window = (
+            _to_instant(item.day, item.open_at) if item.open_at else None,
+            _to_instant(item.day, item.close_at) if item.close_at else None,
+        )
         row = session.get(HatTradingCalendar, (market_id, item.day))
         if row is None:
             session.add(
@@ -104,27 +126,33 @@ def upsert_calendar(session: Session, market_id: uuid.UUID, days: Iterable[Calen
                     market_id=market_id,
                     day=item.day,
                     is_trading=item.is_trading,
-                    open_at=open_at,
-                    close_at=close_at,
+                    open_at=window[0],
+                    close_at=window[1],
                     note=item.note,
                 )
             )
             changed += 1
-            continue
-        current = (
-            row.is_trading,
-            None if row.open_at is None else as_utc(row.open_at),
-            None if row.close_at is None else as_utc(row.close_at),
-            row.note,
-        )
-        if current != (item.is_trading, open_at, close_at, item.note):
+        elif not _same_row(row, item, window):
             row.is_trading, row.open_at, row.close_at, row.note = (
                 item.is_trading,
-                open_at,
-                close_at,
+                window[0],
+                window[1],
                 item.note,
             )
             changed += 1
+    if replace_span and snapshot:
+        listed = {item.day for item in snapshot}
+        first, last = min(listed), max(listed)
+        for row in session.scalars(
+            select(HatTradingCalendar).where(
+                HatTradingCalendar.market_id == market_id,
+                HatTradingCalendar.day >= first,
+                HatTradingCalendar.day <= last,
+            )
+        ):
+            if row.day not in listed:
+                session.delete(row)
+                changed += 1
     session.flush()
     return changed
 
@@ -199,7 +227,9 @@ def install_from_session(session: Session, market_code: str = "NSE") -> int:
     calendar = load_calendar(session, market_code)
     if calendar is None:
         return 0
-    install_calendar(calendar.holidays(), calendar.sessions())
+    install_calendar(
+        calendar.holidays(), calendar.sessions(), calendar.session_open, calendar.session_close
+    )
     return len(calendar.holidays())
 
 

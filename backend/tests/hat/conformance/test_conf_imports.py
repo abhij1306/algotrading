@@ -114,7 +114,8 @@ def test_mcp_endpoints_allowlist() -> None:
             calls.append(server)
             return {}
 
+    client = McpClient(Spy())
     with pytest.raises(McpConfigError):
-        McpClient(Spy()).call("tapetide", "search", {})
+        client.call("tapetide", "search", {})
     assert calls == []
     assert mcp_client.ALLOWED_SERVERS == ALLOWED_SERVERS

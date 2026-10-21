@@ -58,6 +58,16 @@ class ListingBuild:
     source: str = "mcp"
 
 
+def _keep_page(
+    found: dict[tuple[str, str], ListedSymbol], prefix: str, rows: list[dict[str, object]]
+) -> None:
+    for row in rows:
+        symbol = str(row["symbol"]).strip().upper()
+        if symbol.startswith(prefix):
+            series = str(row.get("series") or "").strip().upper()
+            found[(symbol, series)] = ListedSymbol(symbol, series)
+
+
 def page_listing(client: McpClient, *, cap: int = PAGE_CAP) -> list[ListedSymbol]:
     """Every equity symbol, prefix-paged: a page that reaches `cap` is never accepted as
     complete; its prefix is split by one more character until each page is under the cap.
@@ -70,18 +80,12 @@ def page_listing(client: McpClient, *, cap: int = PAGE_CAP) -> list[ListedSymbol
     depth = 1
     while level:
         pages = client.map_calls([(lambda p=p: client.equity_stocks(p, cap)) for p in level])
-        nxt: list[str] = []
+        capped = [p for p, rows in zip(level, pages, strict=True) if len(rows) >= cap]
         for prefix, rows in zip(level, pages, strict=True):
-            for row in rows:
-                symbol = str(row["symbol"]).strip().upper()
-                if symbol.startswith(prefix):
-                    series = str(row.get("series") or "").strip().upper()
-                    found[(symbol, series)] = ListedSymbol(symbol, series)
-            if len(rows) >= cap:
-                if depth >= MAX_PREFIX_DEPTH:
-                    raise McpError(CODE_LISTING_TRUNCATED, attempts=0)
-                nxt.extend(prefix + c for c in PREFIX_ALPHABET)
-        level = nxt
+            _keep_page(found, prefix, rows)
+        if capped and depth >= MAX_PREFIX_DEPTH:
+            raise McpError(CODE_LISTING_TRUNCATED, attempts=0)
+        level = [prefix + c for prefix in capped for c in PREFIX_ALPHABET]
         depth += 1
     return sorted(found.values(), key=lambda s: (s.symbol, s.series))
 

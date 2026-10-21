@@ -112,9 +112,17 @@ def test_holiday_closed_installed_calendar(spec: CalSpec) -> None:
     without any holidays of its own, the way live_market_service builds its policy."""
     open_default, close_default, rows = spec
     loaded = through_database(open_default, close_default, rows)
-    market_hours.install_calendar(loaded.holidays(), loaded.sessions())
+    market_hours.install_calendar(
+        loaded.holidays(), loaded.sessions(), loaded.session_open, loaded.session_close
+    )
     try:
         bare = MarketHoursPolicy(clock=FixedClock(instant(WINDOW_START, time(0, 0))))
+        for offset in range(DAYS):  # ordinary weekdays use the market's default hours
+            day = WINDOW_START + timedelta(days=offset)
+            if day not in rows and day.weekday() < 5:
+                for wall in GRID:
+                    expected = open_default <= wall <= close_default
+                    assert bare.is_open(instant(day, wall), dev_mode=False) == expected
         for day, row in rows.items():
             if not row.is_trading:
                 for wall in GRID:
@@ -163,3 +171,35 @@ def test_session_from_reference_data(spec: CalSpec) -> None:
         for wall in GRID:
             is_open = policy.is_open(instant(day, wall), dev_mode=False)
             assert is_open == (expected is not None and expected[0] <= wall <= expected[1])
+
+
+@settings(max_examples=40)
+@given(first=calendars(), second=calendars())
+def test_holiday_closed_withdrawn(first: CalSpec, second: CalSpec) -> None:
+    """A refreshed snapshot replaces the stored calendar inside its span: a holiday or session
+    it no longer lists stops applying, and a repeat of the same snapshot changes nothing."""
+    engine = reference_engine()
+    with Session(engine) as session:
+        market = HatMarket(
+            code="NSE",
+            timezone="Asia/Kolkata",
+            currency="INR",
+            session_open=time(9, 15),
+            session_close=time(15, 30),
+        )
+        session.add(market)
+        session.flush()
+        cal.upsert_calendar(session, market.id, first[2].values(), replace_span=True)
+        cal.upsert_calendar(session, market.id, second[2].values(), replace_span=True)
+        loaded = cal.load_calendar(session)
+        assert loaded is not None
+        if second[2]:
+            low, high = min(second[2]), max(second[2])
+            stored = {d: r for d, r in loaded.rows.items() if low <= d <= high}
+            assert set(stored) == set(second[2])
+            assert {d for d, r in stored.items() if not r.is_trading} == {
+                d for d, r in second[2].items() if not r.is_trading
+            }
+            assert (
+                cal.upsert_calendar(session, market.id, second[2].values(), replace_span=True) == 0
+            )

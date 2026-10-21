@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -76,6 +76,44 @@ def _new_interval(
     )
 
 
+def _place_symbol(
+    session: Session,
+    rows: list[HatInstrumentSymbolHistory],
+    instrument_id: uuid.UUID,
+    new_symbol: str,
+    effective: date,
+    old_symbol: str | None,
+) -> bool:
+    """Make `new_symbol` hold from `effective` among the instrument's `rows`."""
+    exact = next((r for r in rows if r.valid_from == effective), None)
+    if exact is not None:
+        changed = exact.symbol != new_symbol
+        exact.symbol = new_symbol
+        return changed
+    covering = next(
+        (
+            r
+            for r in reversed(rows)
+            if r.valid_from < effective and (r.valid_to is None or r.valid_to > effective)
+        ),
+        None,
+    )
+    if covering is None:
+        # No row covers `effective` (before the first row, or in a gap after a delisting): the
+        # new symbol holds until the next row begins.
+        following = next((r for r in rows if r.valid_from > effective), None)
+        end = following.valid_from if following is not None else None
+        session.add(_new_interval(instrument_id, new_symbol, effective, end))
+        return True
+    if old_symbol is not None and covering.symbol == new_symbol:
+        covering.symbol = old_symbol  # the legacy record says what it was before
+    if covering.symbol == new_symbol:
+        return False
+    session.add(_new_interval(instrument_id, new_symbol, effective, covering.valid_to))
+    covering.valid_to = effective
+    return True
+
+
 def apply_symbol_change(
     session: Session,
     instrument_id: uuid.UUID,
@@ -88,35 +126,9 @@ def apply_symbol_change(
     intervals of its rows disjoint. `old_symbol`, when known (the legacy history), labels the
     interval before `effective`. Returns True when any row changed.
     """
-    rows = _history(session, instrument_id)
-    changed = False
-    exact = next((r for r in rows if r.valid_from == effective), None)
-    covering = next(
-        (
-            r
-            for r in reversed(rows)
-            if r.valid_from < effective and (r.valid_to is None or r.valid_to > effective)
-        ),
-        None,
+    changed = _place_symbol(
+        session, _history(session, instrument_id), instrument_id, new_symbol, effective, old_symbol
     )
-    if exact is not None:
-        if exact.symbol != new_symbol:
-            exact.symbol = new_symbol
-            changed = True
-    elif covering is not None:
-        if old_symbol is not None and covering.symbol == new_symbol:
-            covering.symbol = old_symbol  # the legacy record says what it was before
-        if covering.symbol != new_symbol:
-            session.add(_new_interval(instrument_id, new_symbol, effective, covering.valid_to))
-            covering.valid_to = effective
-            changed = True
-    else:
-        # No row covers `effective` (before the first row, or in a gap after a delisting): the
-        # new symbol holds until the next row begins.
-        following = next((r for r in rows if r.valid_from > effective), None)
-        end = following.valid_from if following is not None else None
-        session.add(_new_interval(instrument_id, new_symbol, effective, end))
-        changed = True
     session.flush()
     if old_symbol is not None and not any(
         r.valid_from < effective for r in _history(session, instrument_id)
@@ -156,13 +168,15 @@ def seed_symbol_history(session: Session, market_id: uuid.UUID) -> int:
 
     Each name or symbol change whose new symbol is a current instrument (matched by ISIN when
     the legacy row has one, else by the new symbol) becomes a change at its effective date.
+    Changes are applied latest first: each one labels the interval before it, which the next
+    (earlier) change then splits.
     Idempotent. Returns how many legacy renames matched no instrument.
     """
     renames = {SymbolChangeType.NAME_CHANGE, SymbolChangeType.SYMBOL_CHANGE}
     legacy = session.scalars(
         select(SymbolHistory)
         .where(SymbolHistory.change_type.in_(renames), SymbolHistory.new_symbol.is_not(None))
-        .order_by(SymbolHistory.effective_from, SymbolHistory.id)
+        .order_by(SymbolHistory.effective_from.desc(), SymbolHistory.id)
     ).all()
     unmatched = 0
     for record in legacy:
@@ -212,6 +226,52 @@ def _reopen_history(session: Session, instrument_id: uuid.UUID, symbol: str, tod
         session.add(_new_interval(instrument_id, symbol, today, None))
 
 
+def _create_instrument(
+    session: Session, market_id: uuid.UUID, security: Security, today: date
+) -> None:
+    new_id = uuid7()
+    session.add(
+        HatInstrument(
+            id=new_id,
+            market_id=market_id,
+            isin=security.isin,
+            series=security.series,
+            symbol=security.symbol,
+            name=security.name,
+            face_value=security.face_value,
+            listed_on=security.listed_on,
+            delisted_on=None,
+            active=True,
+        )
+    )
+    session.flush()
+    session.add(_new_interval(new_id, security.symbol, security.listed_on or today, None))
+
+
+def _refresh_instrument(
+    session: Session, row: HatInstrument, security: Security, today: date, report: UpsertReport
+) -> bool:
+    """Bring one existing instrument in line with the listing; True when anything changed."""
+    touched = False
+    if row.symbol != security.symbol:
+        apply_symbol_change(session, row.id, security.symbol, today)
+        row.symbol = security.symbol
+        report.renamed += 1
+        touched = True
+    for attr in ("name", "face_value", "listed_on"):
+        value = getattr(security, attr)
+        if (attr != "listed_on" or value is not None) and getattr(row, attr) != value:
+            setattr(row, attr, value)
+            touched = True
+    if not row.active:
+        row.active = True
+        row.delisted_on = None
+        _reopen_history(session, row.id, security.symbol, today)
+        report.reactivated += 1
+        touched = True
+    return touched
+
+
 def upsert_instruments(
     session: Session,
     market_id: uuid.UUID,
@@ -219,10 +279,12 @@ def upsert_instruments(
     *,
     today: date,
     complete: bool = True,
+    still_listed: Collection[tuple[str, str]] = (),
 ) -> UpsertReport:
     """Bring `hat_instrument` in line with a listing. Instruments are keyed by (market, isin,
     series), so a rename keeps the id and records a history row; an instrument missing from a
-    `complete` listing is marked delisted, never deleted."""
+    `complete` listing is marked delisted, never deleted. `still_listed` holds (symbol, series)
+    pairs the source lists but this listing has no ISIN row for: they are not delisted."""
     listing = {s.key: s for s in securities}
     existing = {
         (i.isin, i.series): i
@@ -236,52 +298,19 @@ def upsert_instruments(
     for key, security in listing.items():
         row = existing.get(key)
         if row is None:
-            new_id = uuid7()
-            session.add(
-                HatInstrument(
-                    id=new_id,
-                    market_id=market_id,
-                    isin=security.isin,
-                    series=security.series,
-                    symbol=security.symbol,
-                    name=security.name,
-                    face_value=security.face_value,
-                    listed_on=security.listed_on,
-                    delisted_on=None,
-                    active=True,
-                )
-            )
-            session.flush()
-            session.add(_new_interval(new_id, security.symbol, security.listed_on or today, None))
+            _create_instrument(session, market_id, security, today)
             report.created += 1
-            continue
-        touched = False
-        if row.symbol != security.symbol:
-            apply_symbol_change(session, row.id, security.symbol, today)
-            row.symbol = security.symbol
-            report.renamed += 1
-            touched = True
-        for attr in ("name", "face_value", "listed_on"):
-            value = getattr(security, attr)
-            if attr == "listed_on" and value is None:
-                continue
-            if getattr(row, attr) != value:
-                setattr(row, attr, value)
-                touched = True
-        if not row.active:
-            row.active = True
-            row.delisted_on = None
-            _reopen_history(session, row.id, security.symbol, today)
-            report.reactivated += 1
-            touched = True
-        report.updated += touched
+        elif _refresh_instrument(session, row, security, today, report):
+            report.updated += 1
     if complete:
+        kept = set(still_listed)
         for key, row in existing.items():
-            if key not in listing and row.active:
-                row.active = False
-                row.delisted_on = today
-                _close_history(session, row.id, today)
-                report.delisted += 1
+            if key in listing or not row.active or (row.symbol, row.series) in kept:
+                continue
+            row.active = False
+            row.delisted_on = today
+            _close_history(session, row.id, today)
+            report.delisted += 1
     session.flush()
     return report
 
@@ -299,11 +328,13 @@ class BrokerSymbolReport:
 def fyers_symbol(master: SymbolMaster, instrument: HatInstrument) -> str | None:
     """The Fyers symbol via `SymbolMaster.to_fyers`, or None when it does not map back to the
     instrument's NSE symbol (never write a mapping that could route an order to another stock).
-    BE series use the `-BE` suffix Fyers expects (`to_fyers` always emits `-EQ`)."""
+    BE series use the `-BE` suffix Fyers expects (`to_fyers` emits `-EQ` for equities)."""
     try:
         symbol = master.to_fyers(instrument.symbol)
     except ValueError:
         return None
+    if not symbol.endswith("-EQ"):
+        return None  # an index or other non-equity symbol must never stand for a stock
     if instrument.series == "BE":
         symbol = symbol.removesuffix("-EQ") + "-BE"
     if master.to_db(symbol) != instrument.symbol:

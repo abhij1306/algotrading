@@ -15,6 +15,7 @@ from app.hat.data.mcp_client import (
     CallLog,
     HttpTransport,
     McpClient,
+    McpConfigError,
     McpError,
     McpTransportError,
     backoff_delay,
@@ -60,7 +61,8 @@ def test_retry_bounded(script: list[Any], base: float) -> None:
         assert len(transport.calls) == MAX_ATTEMPTS
         assert exc.code in STABLE_TEXT
     else:
-        assert first_ok is not None and first_ok < MAX_ATTEMPTS
+        assert first_ok is not None
+        assert first_ok < MAX_ATTEMPTS
         assert data == GOOD  # never an empty stand-in for a failure
         assert len(transport.calls) == first_ok + 1
     assert len(transport.calls) <= MAX_ATTEMPTS
@@ -110,7 +112,7 @@ def test_call_logged(script: list[Any], symbols: int) -> None:
         if record.failure is None:
             assert record.returned_date == date(2026, 10, 19)
         else:
-            assert record.failure in STABLE_TEXT or record.failure
+            assert record.failure in STABLE_TEXT
             assert record.returned_date is None
 
 
@@ -167,7 +169,8 @@ def test_no_raw_error_text(payload: str, kind: str) -> None:
             client.call("nse-bhavcopy", "get_bulk_quote", {"symbols": ["TCS"]})
         except McpError as exc:
             texts = [str(exc), repr(exc), exc.code, *map(str, exc.args)]
-            assert exc.__cause__ is None and exc.__context__ is None
+            assert exc.__cause__ is None
+            assert exc.__context__ is None
             assert not leaks(payload, *texts)
             assert exc.code in STABLE_TEXT
         else:
@@ -178,3 +181,19 @@ def test_no_raw_error_text(payload: str, kind: str) -> None:
     assert records, "the call must have logged something for this check to mean anything"
     logged = [r.getMessage() + repr(r.__dict__) for r in records]
     assert not leaks(payload, *logged)
+
+
+@given(failures=st.integers(0, 3))
+def test_retry_bounded_config_error_not_retried(failures: int) -> None:
+    """A configuration error is not transient: it is raised at once, never retried, and keeps
+    its own code instead of becoming a transport failure."""
+    sleeps: list[float] = []
+    transport = ScriptedTransport([McpTransportError()] * failures + [McpConfigError()])
+    client = McpClient(transport, sleep=sleeps.append)
+    try:
+        client.call("nse-bhavcopy", "get_bulk_quote", {"symbols": ["TCS"]})
+    except McpConfigError as exc:
+        assert exc.code == mcp_client.CODE_CONFIG
+    else:
+        raise AssertionError("a configuration error must raise")
+    assert len(transport.calls) == failures + 1

@@ -101,7 +101,11 @@ def reference_weekly(
         with session_factory() as session:
             market_id = _market_id(session)
             report = instruments.upsert_instruments(
-                session, market_id, build.securities, today=today
+                session,
+                market_id,
+                build.securities,
+                today=today,
+                still_listed={(u.symbol, u.series) for u in build.unresolved},
             )
             instruments.seed_symbol_history(session, market_id)
             brokers = instruments.refresh_fyers_symbols(session, master, market_id)
@@ -164,7 +168,9 @@ def calendar_refresh(
         if not days:
             raise JobError("calendar_empty")
         with session_factory() as session:
-            changed = hat_calendar.upsert_calendar(session, _market_id(session), days)
+            changed = hat_calendar.upsert_calendar(
+                session, _market_id(session), days, replace_span=True
+            )
             session.commit()
             hat_calendar.install_from_session(session)
         return JobResult(rows=changed)

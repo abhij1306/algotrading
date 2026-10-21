@@ -28,7 +28,8 @@ def test_fixtures_equity_list_and_listing() -> None:
         ("RELINFRA", "BE"),
     }  # the SME row and the bad-ISIN row are skipped
     reliance = next(r for r in rows if r.symbol == "RELIANCE")
-    assert reliance.isin == "INE002A01018" and reliance.listed_on == date(1995, 11, 29)
+    assert reliance.isin == "INE002A01018"
+    assert reliance.listed_on == date(1995, 11, 29)
     assert reliance.face_value == Decimal(10)
     payload = fixture_json("mcp_cm_equity_stocks_reli.json")
     transport = ScriptedTransport([payload])
@@ -37,7 +38,8 @@ def test_fixtures_equity_list_and_listing() -> None:
     build = build_listing_from_mcp(
         [ListedSymbol(str(s["symbol"]), str(s["series"])) for s in listed], rows
     )
-    assert build.unresolved == [] and len(build.securities) == 3
+    assert build.unresolved == []
+    assert len(build.securities) == 3
 
 
 def test_fixtures_bands_industry_holidays() -> None:
@@ -69,11 +71,14 @@ def test_fixtures_mcp_envelopes_and_bulk_quote() -> None:
     try:
         unwrap_result(fixture_json("mcp_envelope_error.json"))
     except McpTransportError as exc:
-        assert exc.code == "mcp_tool_error" and "internal.example" not in str(exc)
+        assert exc.code == "mcp_tool_error"
+        assert "internal.example" not in str(exc)
     else:
         raise AssertionError("an isError envelope must raise")
     client = McpClient(ScriptedTransport([fixture_json("mcp_bulk_quote.json")]))
     ok = client.bulk_quote(["RELIANCE", "TCS"], TRADE_DATE)
-    assert [r["symbol"] for r in ok.rows] == ["RELIANCE", "TCS"] and not ok.mismatched
+    assert [r["symbol"] for r in ok.rows] == ["RELIANCE", "TCS"]
+    assert not ok.mismatched
     stale = client.bulk_quote(["RELIANCE", "TCS"], date(2026, 10, 20))
-    assert stale.rows == [] and len(stale.mismatched) == 2
+    assert stale.rows == []
+    assert len(stale.mismatched) == 2
