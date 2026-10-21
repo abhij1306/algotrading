@@ -121,7 +121,7 @@ to an artefact that exists.
 | HAT-DEC-B14 | [01](01-decisions.md) | 10 | CONF `initial_risk_policy_seed` |
 | HAT-DEC-B15 | [01](01-decisions.md) | 10 | PBT `caps.global_open_risk` |
 | HAT-DEC-B16 | [01](01-decisions.md) | 10 | PBT `exposure.ladder_transitions` |
-| HAT-DEC-B17 | [01](01-decisions.md) | 13, 15 | TLA `StopPlacement!AlwaysProtected` |
+| HAT-DEC-B17 | [01](01-decisions.md) | 13, 15 | TLA `StopPlacement!AlwaysProtected`, PBT `manage.real_fill_protected` |
 | HAT-DEC-B18 | [01](01-decisions.md) | 11, 15 | TLA `JobScheduler!ExitsCloseInWindow` |
 | HAT-DEC-B19 | [01](01-decisions.md) | 11 | PBT `exits.full_beats_partial` |
 | HAT-DEC-B20 | [01](01-decisions.md) | 10 | TLA `ExecutionRouter!NoAddToOpenPosition` |
@@ -442,7 +442,7 @@ to an artefact that exists.
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |
 | HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec` |
-| HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds` |
+| HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`, PBT `manage.entry_ended_by_broker` |
 | HAT-EXEC-042 | [07](07-execution-and-brokers.md) | 3, 11 | TLA `TradeLifecycle!StateMatchesLog`, PBT `exits.replay_reproduces_state` |
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
@@ -451,16 +451,16 @@ to an artefact that exists.
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
 | HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs` |
-| HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill` |
-| HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap` |
-| HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset` |
-| HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers` |
-| HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens` |
+| HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected` |
+| HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap` |
+| HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
+| HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
+| HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens` |
 | HAT-EXEC-070 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.full_beats_partial` |
 | HAT-EXEC-071 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fire_once` |
 | HAT-EXEC-072 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fraction_arithmetic` |
 | HAT-EXEC-073 | [07](07-execution-and-brokers.md) | 11, 15 | PBT `exits.rule_semantics` |
-| HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15 | TLA `JobScheduler!ExitsCloseInWindow` |
+| HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15 | TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close` |
 | HAT-BRK-080 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.interface_methods`, CONF `brk.import_boundary` |
 | HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.broker_errors_fail_closed` |
 | HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16 | TLA `ExecutionRouter!NoEntryWithoutSession` |

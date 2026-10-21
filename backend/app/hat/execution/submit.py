@@ -30,10 +30,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..engine import lifecycle
+from ..engine import lifecycle, trades
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount, HatOrder, HatSignal
+from ..models import HatBrokerAccount, HatOrder, HatPosition, HatSignal
 from ..time import utc_now
 from .broker import (
     CODE_OK,
@@ -59,6 +59,7 @@ __all__ = [
     "SendOutcome",
     "UnresolvedOrderError",
     "adopt_broker_order",
+    "record_broker_status",
     "reserve_order",
     "resolve_by_tag",
     "send_order",
@@ -69,8 +70,12 @@ logger = logging.getLogger(__name__)
 ACCOUNT_ACTIVE = "active"
 ENTRY = "entry"
 GTT_PURPOSE = "stop_gtt"
+EVENT_ORDER_REJECTED = "order.rejected"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
+_ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
+# The reason a signal ends Rejected when its entry is first found already ended, unfilled.
+ENTRY_NOT_FILLED = "entry_not_filled"
 
 
 class OrderRefusedError(HatError):
@@ -173,18 +178,67 @@ def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:
 def adopt_broker_order(
     session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
 ) -> None:
-    """Record a broker order found by tag on its row (no commit)."""
+    """Record a broker order found by tag on its row (no commit). An entry first found already
+    ended with nothing filled ends its signal at once (07 §4)."""
     first_knowledge = row.status in ("pending", "unconfirmed")
     row.broker_order_id = found.order_id
     row.status = found.status
     if row.placed_at is None:
         row.placed_at = utc_now()
-    if first_knowledge and found.status in _PLACED_STATES:
+    if not first_knowledge:
+        return
+    if found.status in _PLACED_STATES or (row.purpose == ENTRY and found.filled_qty > 0):
+        # An entry that filled in part before it ended was placed: its fills open the position.
         _event(session, row, bot_id, _placed_event(row))
-    elif first_knowledge and found.status == "rejected":
-        _event(session, row, bot_id, "order.rejected")
-    elif first_knowledge and found.status == "cancelled":
+    elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
+        _end_adopted_entry(session, row, found, bot_id)
+    elif found.status == "rejected":
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED)
+    elif found.status == "cancelled":
         _event(session, row, bot_id, "order.cancelled")
+
+
+def _end_adopted_entry(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """An entry first found already cancelled, expired or rejected, nothing filled. In
+    EntryPlaced its signal ends as a broker update would end it; before that (the send's answer
+    was lost, so the signal is still Triggered) the order records a non-final rejection carrying
+    the broker status (no lifecycle step) and the signal ends Rejected `entry_not_filled`."""
+    signal = session.get(HatSignal, row.signal_id)
+    if signal is not None and signal.state == lifecycle.ENTRY_PLACED:
+        _entry_ended(session, row, found, bot_id)
+        return
+    _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
+    if row.signal_id is not None:
+        trades.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now())
+
+
+def _entry_ended(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled."""
+    if found.status in ("cancelled", "expired"):
+        _event(session, row, bot_id, "order.cancelled")
+    elif found.status == "rejected":
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
+
+
+def record_broker_status(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> bool:
+    """Move a placed order to the status the broker now shows (no commit); False when unchanged.
+    An entry that ended with nothing filled records `order.cancelled` when it was cancelled or a
+    DAY limit expired at the close (its signal ends Cancelled), and a final `order.rejected` when
+    the exchange rejected it after the broker took it (its signal ends Rejected); any other
+    change is the order's own bookkeeping (fills are recorded from the trade book, stops have no
+    lifecycle step)."""
+    if found.status == row.status:
+        return False
+    row.status = found.status
+    if row.purpose == ENTRY and found.filled_qty == 0:
+        _entry_ended(session, row, found, bot_id)
+    return True
 
 
 def _placed_event(row: HatOrder) -> str:
@@ -197,13 +251,19 @@ def _event(
     bot_id: uuid.UUID | None,
     event_type: str,
     code: str = CODE_OK,
+    rule: str | None = None,
+    final: bool = False,
 ) -> None:
-    payload = {
+    payload: dict[str, object] = {
         "tag": row.tag,
         "purpose": row.purpose,
         "broker_order_id": row.broker_order_id,
         "code": code,
     }
+    if final:
+        payload["final"] = True  # no retry follows: the lifecycle step to Rejected (07 §4)
+    if rule is not None:
+        payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
     record(
         session,
         aggregate_type="order",
@@ -220,7 +280,8 @@ def _event(
 def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str, object]) -> None:
     """Move the order's signal along the lifecycle step its event drives, in the same commit
     (HAT-EXEC-042): an entry `order.placed` takes a Triggered or AwaitingApproval signal to
-    EntryPlaced. An order event the table does not allow from the signal's state is logged and
+    EntryPlaced, and a full exit order's takes an open trade (signal and position) to
+    ExitPending. An order event the table does not allow from the signal's state is logged and
     leaves the state: the order's own bookkeeping must never fail after a broker call."""
     step = lifecycle.step_of(event_type, payload)
     if step is None:
@@ -232,6 +293,10 @@ def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str
         signal.state = lifecycle.next_state(signal.state, step)
     except lifecycle.LifecycleStateError:
         logger.error("order event %s does not move a signal in %s", event_type, signal.state)
+        return
+    position = session.get(HatPosition, row.position_id) if row.position_id else None
+    if position is not None and signal.state in lifecycle.POSITION_STATES:
+        position.state = signal.state
 
 
 def _check_allowed(
@@ -315,8 +380,10 @@ def send_order(
     symbol: str,
     bot_id: uuid.UUID,
     tick_size: Decimal | None = None,
+    rule: str | None = None,
 ) -> SendOutcome:
-    """Send the reserved order `tag` to the broker, at most once per tag. Safe to call again."""
+    """Send the reserved order `tag` to the broker, at most once per tag. Safe to call again.
+    `rule` names the exit rule of a sale; it is kept on the order's `order.placed` event."""
     row = _row(session, tag)
     if row.status in _ENDED:
         return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
@@ -347,10 +414,10 @@ def send_order(
         raise BrokerUnavailableError(code)
     if status == "placed":
         row.status, row.broker_order_id = "placed", broker_id
-        _event(session, row, bot_id, _placed_event(row))
+        _event(session, row, bot_id, _placed_event(row), rule=rule)
     elif status == "rejected":
         row.status = "rejected"
-        _event(session, row, bot_id, "order.rejected", code)
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code)
     else:
         row.status, code = "unconfirmed", CODE_UNCONFIRMED
     session.commit()

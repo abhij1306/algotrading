@@ -1,12 +1,16 @@
-"""PBT for the job framework and the HAT-off gate (HAT-OPS-010, -011, -013, -070)."""
+"""PBT for the job framework, the HAT-off gate and the close-gap log (HAT-OPS-010, -011, -013,
+-034, -070)."""
 
 import asyncio
 import json
 import logging
 import re
-from datetime import UTC, date, datetime, timedelta
+import uuid
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 
 import pytest
+from hat_engine_support import TRADE_DAY, exit_stack, open_trade, seed_engine_world
 from hat_support import memory_engine
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -19,10 +23,11 @@ from hypothesis.stateful import (
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.hat.engine import exits, live_trades, trades
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import BACKOFF_CAP_SECONDS, SessionWatch, backoff_delay
 from app.hat.logs import CONTEXT_KEYS, JsonFormatter
-from app.hat.models import HatJobRun
+from app.hat.models import HatEvent, HatJobRun
 from app.hat.ops.jobs import (
     DEFAULT_ERROR_CODE,
     JobError,
@@ -34,6 +39,7 @@ from app.hat.ops.jobs import (
 )
 from app.hat.ops.scheduler import start_scheduler
 from app.hat.settings import load_settings
+from app.hat.time import IST
 from app.utils.env_loader import TRUE_VALUES
 
 JOBS = ("ingest.nightly", "scan")
@@ -310,3 +316,75 @@ def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
 def test_backoff_delay_is_monotone_and_capped(attempt: int) -> None:
     assert 1 <= backoff_delay(attempt) <= 30
     assert backoff_delay(attempt) <= backoff_delay(attempt + 1)
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-OPS-034: the 15:25 live price and the official close of each MA exit evaluation
+# ---------------------------------------------------------------------------------------
+
+prices = st.decimals(min_value=50, max_value=150, places=2)
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    marks=st.lists(st.tuples(prices, prices, st.one_of(st.none(), prices)), min_size=1, max_size=3),
+    late=st.booleans(),
+)
+def test_close_gap_recorded(
+    marks: list[tuple[Decimal, Decimal, Decimal | None]], late: bool
+) -> None:
+    """HAT-OPS-034: every `close_below_sma` evaluation in the close window records the live
+    price it used, fired or not; once the nightly ingest has the official close, exactly one
+    `exit.close_gap` per position records that close and its gap to the live price, against the
+    same position. A close the ingest does not have yet is recorded by a later run, and a run
+    repeated changes nothing. Harm: the backtest/live gap of MA exits cannot be measured."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        world = seed_engine_world(session, exits=exit_stack("trend"), instruments=len(marks))
+        at = datetime.combine(TRADE_DAY, time(15, 22), tzinfo=IST)
+        used: dict[uuid.UUID, tuple[uuid.UUID, Decimal]] = {}
+        for (live, sma, _), instrument in zip(marks, world.instruments, strict=True):
+            position_id = open_trade(session, world, instrument).outcome.position_id
+            assert position_id is not None
+            view = exits.ExitView(price=live, days_held=1, sma={10: sma})
+            result = trades.evaluate_position(session, position_id, view, "close", at)
+            assert live_trades.record_close_evaluation(
+                session, position_id, view, result, TRADE_DAY, at
+            )
+            session.commit()
+            used[position_id] = (instrument, live)
+        evaluated = {
+            event.aggregate_id: Decimal(event.payload["live_price"])
+            for event in _events(session, live_trades.CLOSE_EVALUATED)
+        }
+        assert evaluated == {pid: live for pid, (_, live) in used.items()}
+
+        closes = {world.instruments[n]: close for n, (_, _, close) in enumerate(marks) if close}
+        night = datetime.combine(TRADE_DAY, time(21, 0), tzinfo=IST)
+        first = live_trades.record_close_gaps(session, TRADE_DAY, closes, night)
+        session.commit()
+        assert first == len(closes)
+        if late:  # the ingest has every close the next night
+            every = {
+                world.instruments[n]: close or live for n, (live, _, close) in enumerate(marks)
+            }
+            live_trades.record_close_gaps(session, TRADE_DAY, every, night + timedelta(hours=20))
+            closes = every
+        again = live_trades.record_close_gaps(session, TRADE_DAY, closes, night)
+        session.commit()
+        assert again == 0
+
+        gaps = _events(session, live_trades.CLOSE_GAP)
+        assert sorted(str(e.aggregate_id) for e in gaps) == sorted(
+            str(pid) for pid, (instrument, _) in used.items() if instrument in closes
+        )
+        for event in gaps:
+            instrument, live = used[event.aggregate_id]
+            official = closes[instrument]
+            assert Decimal(event.payload["live_price"]) == live
+            assert Decimal(event.payload["official_close"]) == official
+            assert Decimal(event.payload["gap"]) == official - live
+
+
+def _events(session: Session, kind: str) -> list[HatEvent]:
+    return list(session.scalars(select(HatEvent).where(HatEvent.event_type == kind)))
