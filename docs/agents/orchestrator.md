@@ -125,6 +125,14 @@ that PR. Look at:
 - review rounds: CodeAnt or Sonar findings that a brief, a protocol rule or a skill could have
   prevented.
 
+**Repeated failures become guidelines.** Any failure seen a second time, whether a bug class, a
+review finding, or an agent mistake, gets a written rule in the PR that fixes it:
+- code and engineering patterns go to "Engineering guidelines" in `CLAUDE.md`;
+- agent-process mistakes go to `builder-protocol.md` (builders) or this file (orchestrator);
+- verification gaps go to the relevant `verify-*` skill.
+
+Builders follow these from their next run on, so the same failure doesn't cost a second round.
+
 Record the root cause and the fix as a docs PR to `docs/agents/` (and to the skills or CI where
 the fix lives there), and tell the owner in one or two lines.
 
