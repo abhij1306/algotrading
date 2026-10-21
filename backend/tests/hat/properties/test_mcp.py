@@ -32,6 +32,14 @@ CODES = [
     mcp_client.CODE_BAD_RESPONSE,
 ]
 STABLE_TEXT = {*CODES, mcp_client.CODE_CONFIG}
+LOG_FIELD_TEXT = (
+    "returned_date",
+    "symbol_count",
+    "mcp call",
+    "mcp_transport",
+    "asctime",
+    "levelname",
+)
 
 payloads = st.text(
     alphabet=st.characters(min_codepoint=33, max_codepoint=0x2FF), min_size=9, max_size=60
@@ -129,6 +137,9 @@ def test_no_raw_error_text(payload: str, kind: str) -> None:
     """For every error payload the transport produces, no user-facing text (the error's message
     and repr, its chain, the log lines) holds any substring of it longer than 8 characters."""
     assume(not any(payload[i : i + 9] in c for c in STABLE_TEXT for i in range(len(payload) - 8)))
+    # fixed log field names and messages are not leaks (Hypothesis draws them from the code's
+    # own string constants, so a payload can equal one by construction)
+    assume(not leaks(payload, *LOG_FIELD_TEXT))
     envelope = {
         "jsonrpc": "2.0",
         "id": 1,
