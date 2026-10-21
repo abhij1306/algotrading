@@ -1,8 +1,8 @@
 """Postgres-only DDL for HAT and the reference seed (03-schema §8, §10).
 
 `ensure_hat_schema(bind)` runs from `init_db()` after `create_all`. It is idempotent
-(`CREATE OR REPLACE`, guarded constraints) and issues nothing on SQLite, where the rules the
-app can enforce are enforced in the app. Every statement names only `hat_*` objects
+(`CREATE OR REPLACE`, `IF NOT EXISTS`, guarded constraints) and issues nothing on SQLite, where
+the rules the app can enforce are enforced in the app. Every statement names only `hat_*` objects
 (HAT-SCH-106); `PG_DDL` is the complete list so a check can read it.
 """
 
@@ -18,6 +18,8 @@ from sqlalchemy.schema import CreateColumn
 
 from ..base import Base
 from .models import HatMarket
+from .ops.partitions import ensure_event_partitions
+from .time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,26 @@ BEGIN
 END $$
 """
 
+# Invariant 1 (HAT-SCH-081, HAT-RISK-070): a long position's stop can only rise.
+_STOP_ONLY_TIGHTENS_FN = """
+CREATE OR REPLACE FUNCTION hat_stop_only_tightens() RETURNS trigger AS $$
+BEGIN
+  IF NEW.current_stop < OLD.current_stop THEN
+    RAISE EXCEPTION 'stop for position % cannot move from % to %',
+      OLD.id, OLD.current_stop, NEW.current_stop;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql
+"""
+
+# The event log is append-only (HAT-SCH-061, HAT-DEC-I15).
+_EVENT_APPEND_ONLY_FN = """
+CREATE OR REPLACE FUNCTION hat_event_is_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'hat_event is append-only';
+END $$ LANGUAGE plpgsql
+"""
+
 PG_DDL: tuple[str, ...] = (
     _VERSION_IMMUTABLE_FN,
     """
@@ -114,6 +136,22 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
   FOR EACH ROW EXECUTE FUNCTION hat_risk_policy_version_immutable()
 """,
     _COOLING_OFF_CHECK,
+    _STOP_ONLY_TIGHTENS_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_position_stop_guard
+  BEFORE UPDATE OF current_stop ON hat_position
+  FOR EACH ROW EXECUTE FUNCTION hat_stop_only_tightens()
+""",
+    """
+CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
+  ON hat_announcement (instrument_id, published_at DESC)
+""",
+    _EVENT_APPEND_ONLY_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_event_no_update
+  BEFORE UPDATE OR DELETE ON hat_event
+  FOR EACH ROW EXECUTE FUNCTION hat_event_is_append_only()
+""",
 )
 
 NSE_MARKET = {
@@ -156,7 +194,8 @@ def ensure_hat_columns(bind: Engine) -> None:
 
 
 def ensure_hat_schema(bind: Engine | Connection) -> None:
-    """Create or replace the Postgres-only triggers and CHECKs. No-op on other dialects."""
+    """Create or replace the Postgres-only triggers and CHECKs and create the `hat_event`
+    partitions for the current month and the next two (HAT-SCH-066). No-op on other dialects."""
     if bind.dialect.name != "postgresql":
         return
     if isinstance(bind, Engine):
@@ -170,6 +209,7 @@ def _run_ddl(connection: Connection) -> None:
     connection.execute(text(_LOCK_SQL))
     for statement in PG_DDL:
         connection.execute(text(statement))
+    ensure_event_partitions(connection, utc_now().date())
 
 
 def seed_hat_reference(bind: Engine) -> None:

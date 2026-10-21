@@ -47,6 +47,11 @@ def _table_constraints(text: str) -> tuple[tuple[str, ...], list[tuple[str, ...]
     uniques = []
     for match in re.finditer(r"\bPK \(([^)]*)\)", text):
         pk = _split_cols(match.group(1))
+    if not pk:
+        # "PK signal_id" (a single column, no parentheses) on the table's heading line
+        bare = re.match(r"[^\n]*?\bPK (\w+)", text)
+        if bare:
+            pk = (bare.group(1),)
     for match in re.finditer(r"\bunique \(([^)]*)\)", text):
         uniques.append(_split_cols(match.group(1)))
     return pk, uniques
@@ -170,3 +175,78 @@ def requirements() -> list[Requirement]:
                 )
             )
     return found
+
+
+@dataclass
+class EventDdl:
+    """The `hat_event` DDL of 03-schema.md §6: the table plus the facts its text states."""
+
+    table: SpecTable
+    actors: tuple[str, ...]
+    partition_by: str
+
+
+def parse_event_ddl() -> EventDdl:
+    """The `create table hat_event (...) partition by ...` statement, read from the spec."""
+    text = (SPEC_DIR / "03-schema.md").read_text(encoding="utf-8")
+    match = re.search(r"create table hat_event \((.*?)\n\) partition by (.*?);", text, re.DOTALL)
+    assert match, "03-schema.md has no hat_event DDL"
+    table = SpecTable("hat_event")
+    actors: tuple[str, ...] = ()
+    for raw in match.group(1).splitlines():
+        line = raw.split("--")[0].strip().rstrip(",")
+        if not line:
+            continue
+        if line.startswith("primary key"):
+            table.pk = _split_cols(re.search(r"\(([^)]*)\)", line).group(1))
+            continue
+        name, logical, *rest = line.split()
+        rest_text = " ".join(rest).lower()
+        table.columns.append(
+            SpecColumn(name, logical.lower(), nullable="not null" not in rest_text)
+        )
+        check = re.search(r"check \(\w+ in \(([^)]*)\)\)", rest_text)
+        if check:
+            actors = tuple(v.strip().strip("'") for v in check.group(1).split(","))
+    return EventDdl(table, actors, match.group(2).strip())
+
+
+@dataclass
+class SpecIndex:
+    table: str
+    columns: tuple[str, ...]  # a trailing " desc" is kept on the column
+    unique: bool = False
+    partial: str | None = None
+
+
+def parse_indexes() -> list[SpecIndex]:
+    """The index bullets of 03-schema.md §9."""
+    text = (SPEC_DIR / "03-schema.md").read_text(encoding="utf-8")
+    start = text.index("Indexes (SCH")
+    block = text[start : text.index("Retention (SCH", start)]
+    found = []
+    for match in re.finditer(
+        r"(unique )?`(hat_\w+) \(([^)]*)\)(?: where ([^`]+))?`", block, re.IGNORECASE
+    ):
+        found.append(
+            SpecIndex(
+                match.group(2),
+                _split_cols(match.group(3)),
+                unique=bool(match.group(1)),
+                partial=match.group(4),
+            )
+        )
+    return found
+
+
+def parse_event_types() -> dict[str, tuple[str, ...]]:
+    """The "Event types (MVP), verbatim" table: group -> event types."""
+    text = (SPEC_DIR / "03-schema.md").read_text(encoding="utf-8")
+    start = text.index("### Event types (MVP), verbatim")
+    block = text[start : text.index("\n\n", text.index("| Sessions |", start))]
+    groups: dict[str, tuple[str, ...]] = {}
+    for line in block.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 2 and cells[0] not in ("Group", "---"):
+            groups[cells[0]] = tuple(re.findall(r"`([\w.]+)`", cells[1]))
+    return groups

@@ -19,3 +19,10 @@ def memory_engine(*models: type[DeclarativeBase] | type) -> Engine:
     tables = [m.__table__ for m in models] if models else None  # type: ignore[attr-defined]
     Base.metadata.create_all(engine, tables=tables)
     return engine
+
+
+def event_engine(*models: type) -> Engine:
+    """An in-memory SQLite database with `hat_event` and the tables of `models`."""
+    from app.hat.models import HatEvent
+
+    return memory_engine(HatEvent, *models)

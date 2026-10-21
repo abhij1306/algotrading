@@ -6,6 +6,7 @@ from sqlalchemy import (
     Column,
     Date,
     ForeignKey,
+    Index,
     Text,
     Time,
     UniqueConstraint,
@@ -134,3 +135,12 @@ class HatAnnouncement(Base):
     url = Column(Text, nullable=False)
     published_at = Column(Timestamptz, nullable=False)
     raw = Column(JsonB, nullable=False)
+
+
+# Announcements of one instrument, newest first (03-schema §9). An existing database that predates
+# this index gets it from `PG_DDL` (`create_all` does not add indexes to existing tables).
+Index(
+    "hat_announcement_instrument_published",
+    HatAnnouncement.instrument_id,
+    HatAnnouncement.published_at.desc(),
+)

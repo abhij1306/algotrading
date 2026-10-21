@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 
-from sqlalchemy import Connection, insert
+from sqlalchemy import Connection, Uuid, insert
 
 from app.hat import models as m
 from app.hat.ids import uuid7
@@ -15,7 +16,7 @@ USER_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
 def add(conn: Connection, model: type, **values: object) -> uuid.UUID | None:
     """Insert one row of `model` (`id` generated when the table has one) and return its id."""
     table = model.__table__  # type: ignore[attr-defined]
-    if "id" in table.c and "id" not in values:
+    if "id" in table.c and "id" not in values and isinstance(table.c.id.type, Uuid):
         values["id"] = uuid7()
     conn.execute(insert(table).values(**values))
     return values.get("id")  # type: ignore[return-value]
@@ -152,3 +153,149 @@ def universe_version(
 
 def later(days: float) -> datetime:
     return NOW + timedelta(days=days)
+
+
+TRADE_DAY = date(2026, 10, 20)
+
+
+def world(conn: Connection) -> dict[str, uuid.UUID]:
+    """The parents every runtime row needs: market, instrument, strategy version, risk policy,
+    broker account and bot (one fresh set per call, unique within the transaction)."""
+    market_id = market(conn)
+    strategy_id = strategy(conn, market_id)
+    account_id = broker_account(conn)
+    return {
+        "market": market_id,
+        "instrument": instrument(conn, market_id),
+        "version": strategy_version(conn, strategy_id),
+        "policy": risk_policy(conn, version=int(uuid.uuid4().int % 10**9) + 100),
+        "account": account_id,
+        "bot": bot(conn, strategy_id, account_id),
+    }
+
+
+def signal(conn: Connection, w: dict[str, uuid.UUID], **overrides: object) -> uuid.UUID:
+    values: dict[str, object] = {
+        "bot_id": w["bot"],
+        "strategy_version_id": w["version"],
+        "risk_policy_version_id": w["policy"],
+        "playbook": "default",
+        "instrument_id": w["instrument"],
+        "trade_date": TRADE_DAY,
+        "triggered_at": NOW,
+        "trigger_price": Decimal("100"),
+        "stop_price": Decimal("95"),
+        "qty": 10,
+        "risk_amount": Decimal("50"),
+        "currency": "INR",
+        "mode": "shadow",
+        "state": "triggered",
+        "risk_decision": {},
+    }
+    values.update(overrides)
+    return add(conn, m.HatSignal, **values)  # type: ignore[return-value]
+
+
+def order(
+    conn: Connection, w: dict[str, uuid.UUID], signal_id: uuid.UUID, **overrides: object
+) -> uuid.UUID:
+    values: dict[str, object] = {
+        "signal_id": signal_id,
+        "broker_account_id": w["account"],
+        "purpose": "entry",
+        "side": "buy",
+        "qty": 10,
+        "order_type": "limit",
+        "tag": "HT" + uuid.uuid4().hex[:18],
+        "status": "pending",
+        "is_virtual": True,
+        "currency": "INR",
+    }
+    values.update(overrides)
+    return add(conn, m.HatOrder, **values)  # type: ignore[return-value]
+
+
+def fill(conn: Connection, order_id: uuid.UUID, **overrides: object) -> uuid.UUID:
+    values: dict[str, object] = {
+        "order_id": order_id,
+        "qty": 10,
+        "price": Decimal("100"),
+        "fees": Decimal("1"),
+        "currency": "INR",
+        "filled_at": NOW,
+        "broker_trade_id": None,
+        "is_virtual": True,
+    }
+    values.update(overrides)
+    return add(conn, m.HatFill, **values)  # type: ignore[return-value]
+
+
+def position(
+    conn: Connection, w: dict[str, uuid.UUID], signal_id: uuid.UUID, **overrides: object
+) -> uuid.UUID:
+    values: dict[str, object] = {
+        "bot_id": w["bot"],
+        "signal_id": signal_id,
+        "instrument_id": w["instrument"],
+        "is_virtual": True,
+        "qty_open": 10,
+        "avg_entry": Decimal("100"),
+        "initial_stop": Decimal("95"),
+        "current_stop": Decimal("95"),
+        "currency": "INR",
+        "opened_at": NOW,
+        "state": "open",
+        "rules_fired": {},
+    }
+    values.update(overrides)
+    return add(conn, m.HatPosition, **values)  # type: ignore[return-value]
+
+
+def trade_result(conn: Connection, position_id: uuid.UUID, **overrides: object) -> None:
+    values: dict[str, object] = {
+        "position_id": position_id,
+        "realized_pnl": Decimal("50"),
+        "fees": Decimal("2"),
+        "currency": "INR",
+        "r_multiple": Decimal("1"),
+        "holding_days": 3,
+        "exit_reason": "target",
+        "mfe_r": Decimal("1.5"),
+        "mae_r": Decimal("-0.2"),
+    }
+    values.update(overrides)
+    add(conn, m.HatTradeResult, **values)
+
+
+def snapshot(conn: Connection, bot_id: uuid.UUID, day: date, **overrides: object) -> None:
+    values: dict[str, object] = {
+        "bot_id": bot_id,
+        "trade_date": day,
+        "equity": Decimal("100000"),
+        "equity_peak": Decimal("100000"),
+        "open_risk": Decimal("0"),
+        "realized_r": Decimal("0"),
+        "exposure_level": "L1",
+        "currency": "INR",
+    }
+    values.update(overrides)
+    add(conn, m.HatDailyBotSnapshot, **values)
+
+
+def event(conn: Connection, recorded_at: datetime | None = None, **overrides: object) -> int:
+    """Insert one hat_event row and return its identity id."""
+    aggregate = uuid7()
+    values: dict[str, object] = {
+        "occurred_at": NOW,
+        "user_id": USER_ID,
+        "aggregate_type": "bot",
+        "aggregate_id": aggregate,
+        "event_type": "bot.paused",
+        "actor": "engine",
+        "payload": {"k": 1},
+    }
+    if recorded_at is not None:
+        values["recorded_at"] = recorded_at
+    values.update(overrides)
+    table = m.HatEvent.__table__
+    return conn.execute(insert(table).values(**values).returning(table.c.id)).scalar_one()

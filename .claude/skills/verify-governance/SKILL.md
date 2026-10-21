@@ -17,7 +17,7 @@ Checks that the HAT database enforces its own rules (so no bug or manual edit ca
 - `PBT time.trade_date_ist` For every UTC instant, `trade_date_of` is the Asia/Kolkata calendar date; naive instants are rejected. Harm: an evening job writes rows under tomorrow's or yesterday's date.
 - `PBT config.hash_canonical` The config hash is a sha256 of canonical JSON: key order and spacing never change it, any value change does, equal hashes mean equal configs, and 0.0 and -0.0 hash the same. Harm: a strategy looks unchanged when it changed, or changed when it did not, so version immutability is meaningless.
 - `PBT risk_policy.cooling_off` For every request and effective time, an increase is allowed only at 7 days (168 hours) or more, decreases at any time, and the app-level guard rejects the write the database would. Harm: risk is raised without the cooling-off gate.
-- `CONF schema.*` The models equal the spec tables: columns, types, nullability, keys, foreign keys and unique sets read from `03-schema.md`; hat_ prefix and only hat_ targets; uuid keys; user_id and market_id columns; Numeric(18,4) money and no Float; timezone-aware timestamps; portable types only; `create_all` builds all 28 tables on SQLite. Harm: the code and the spec drift and a column the engine relies on is missing or of the wrong type.
+- `CONF schema.*` The models equal the spec tables: columns, types, nullability, keys, foreign keys and unique sets read from `03-schema.md`; hat_ prefix and only hat_ targets; uuid keys; user_id and market_id columns; Numeric(18,4) money and no Float; timezone-aware timestamps; portable types only; `create_all` builds all 41 tables on SQLite. Harm: the code and the spec drift and a column the engine relies on is missing or of the wrong type.
 - `CONF boundaries` The import graph keeps criteria free of broker, DB and UI modules and keeps engine, data and risk away from the broker layer; HAT code lives under `backend/app/hat`; data paths come from `HAT_DATA_ROOT`; no OpenAlgo; HAT refuses non-Postgres; the NSE market row is seeded once with the right values; no secret is committed and `.env.example` lists every HAT variable empty. Harm: a code path can place an order without the risk check, or a secret is pushed.
 
 ## Run
@@ -91,8 +91,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2f91028fdc534579dab4d3ec6956eb102a913090`
-Covered digest: `0b2f2b71c11171868df04a152f03faa22cc01f9942d79fbab610c11c9860a23f`
+Sync commit: `aad2b5f7d0dd84e27d36b27b930d86dc323980fe`
+Covered digest: `730b82ef7b42e199bb104e1d545ef8043935a26505373f731344d8e519badfe2`
 
 ## Scope changes
 
@@ -101,7 +101,9 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The cooling-off CHECK in the database uses `interval '168 hours'` instead of `'7 days'`: a day interval depends on the session time zone around daylight-saving changes, 168 hours does not. The property is unchanged (seven days).
 - The strategy and universe version triggers also forbid moving a published version back to `draft`, and forbid changing `config_hash` or `definition`: without this, config immutability could be bypassed by flipping status first. This widens the check.
 - `CONF schema.user_id_columns` exempts `hat_kill_switch` from the "non-null FK chain to a user_id root" rule: an account-scope kill-switch row has no bot, so its `bot_id` is null, which contradicts the spec wording of HAT-SCH-012 (an `OWNER-PENDING` item). Recorded as a finding in the PR.
-- `CONF schema.*` covers the 28 tables built in this change; the 12 runtime tables the spec lists (signals, orders, fills and so on) are named in `LATER` in `test_conf_schema.py` and are built by later PRs, which must move them out of that set.
+- `CONF schema.*` covered 28 tables in PR 2; PR 3 built the last 13 (the runtime tables, `hat_event` and the four ops tables), so `LATER` in `test_conf_schema.py` is now empty and the checks cover all 41. The runtime and event checks live in `verify-events`.
+- `PG_DDL` gained the `hat_position_stop_guard` and `hat_event_no_update` triggers and the announcement index in PR 3; their checks are in `verify-events`. The catalog comparison in `check_migration__ensure_idempotent` now orders by name and definition (identical trigger names on event partitions made the old ordering unstable).
+- `KNOWN_GAPS` gained two TLA names in PR 3 (`OrderReconciliation!AtMostOneEntryPerSignal`, `StopPlacement!StopOnlyTightens`): their models belong to PR 13 and PR 15. The list may still only shrink afterwards.
 - `HAT-VER-011` (`traceability_points_to_methods`) lists the README rows whose method does not exist yet in `KNOWN_GAPS` instead of failing: `PBT criteria.fundamentals_point_in_time` (needs the criteria engine) and `CONF old_docs_removed` (a PR 1 item). The list may only shrink.
 - `conflict_resolutions_traced` accepts C6 as untraced (`UNTRACED_RESOLUTIONS = {6}`): no requirement in files 01 to 10 cites `PLAN C6`, which is a spec gap, not a code gap.
 - `PBT config.no_risk_keys`, `calendar.session_from_reference_data` and the other PBT names on PR 2 rows that need later features are not built here (their code does not exist yet).

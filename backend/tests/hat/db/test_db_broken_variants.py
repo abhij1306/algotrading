@@ -6,12 +6,15 @@ AssertionError. A check that still passes is vacuous.
 """
 
 from collections.abc import Callable
+from datetime import date, timedelta
 
 import hat_db_rules as rules
+import hat_db_runtime as runtime_rules
 import pytest
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import DBAPIError
 
+from app.hat.ops.partitions import months_to_cover, partition_bounds, partition_name
 from app.hat.schema import PG_DDL
 
 pytestmark = pytest.mark.postgres
@@ -227,6 +230,154 @@ VARIANTS: dict[str, list[tuple[str, Break]]] = {
     ],
 }
 
+
+def runtime_domain_variants() -> list[tuple[str, Break]]:
+    return [
+        (f"{name} dropped", sql(drop_constraint(table, name)))
+        for table, name in (
+            ("hat_order", "ck_hat_order_purpose"),
+            ("hat_order", "ck_hat_order_side"),
+            ("hat_order", "ck_hat_order_qty"),
+            ("hat_approval", "ck_hat_approval_decision"),
+            ("hat_signal", "ck_hat_signal_mode"),
+            ("hat_signal", "ck_hat_signal_qty"),
+            ("hat_fill", "ck_hat_fill_qty"),
+            ("hat_position", "ck_hat_position_qty_open"),
+            ("hat_fill", "ck_hat_fill_broker_trade_id"),
+            ("hat_position", "ck_hat_position_stop_tightens"),
+        )
+    ]
+
+
+def stop_function(condition: str) -> Break:
+    """Replace the invariant-1 function with one that refuses on `condition`."""
+    return sql(
+        "CREATE OR REPLACE FUNCTION hat_stop_only_tightens() RETURNS trigger AS $$ BEGIN"
+        f" IF {condition} THEN RAISE EXCEPTION 'stop cannot move'; END IF; RETURN NEW;"
+        " END $$ LANGUAGE plpgsql"
+    )
+
+
+def event_function(body: str) -> Break:
+    return sql(
+        "CREATE OR REPLACE FUNCTION hat_event_is_append_only() RETURNS trigger AS $$ BEGIN"
+        f" {body} END $$ LANGUAGE plpgsql"
+    )
+
+
+def plain_event_table() -> Break:
+    """Replace the partitioned `hat_event` with an unpartitioned table of the same columns."""
+    return sql(
+        "CREATE TABLE hat_event_plain (LIKE hat_event INCLUDING ALL)",
+        "DROP TABLE hat_event CASCADE",
+        "ALTER TABLE hat_event_plain RENAME TO hat_event",
+    )
+
+
+VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
+    "runtime.signal_unique_per_day": [
+        (
+            "unique (bot, playbook, instrument, trade_date) dropped",
+            drop_keyed("hat_signal", "u", ("bot_id", "playbook", "instrument_id", "trade_date")),
+        )
+    ],
+    "runtime.signal_versions_not_null": [
+        (
+            "strategy_version_id made nullable",
+            sql("ALTER TABLE hat_signal ALTER COLUMN strategy_version_id DROP NOT NULL"),
+        ),
+        (
+            "risk_policy_version_id made nullable",
+            sql("ALTER TABLE hat_signal ALTER COLUMN risk_policy_version_id DROP NOT NULL"),
+        ),
+        (
+            "strategy version foreign key dropped",
+            sql(drop_constraint("hat_signal", "hat_signal_strategy_version_id_fkey")),
+        ),
+        (
+            "risk policy version foreign key dropped",
+            sql(drop_constraint("hat_signal", "hat_signal_risk_policy_version_id_fkey")),
+        ),
+    ],
+    "runtime.domain_checks": [*runtime_domain_variants()],
+    "runtime.order_status_check": [
+        ("status CHECK dropped", sql(drop_constraint("hat_order", "ck_hat_order_status")))
+    ],
+    "runtime.order_tag_unique": [("unique (tag) dropped", drop_keyed("hat_order", "u", ("tag",)))],
+    "runtime.fill_unique": [
+        (
+            "unique (order_id, broker_trade_id) dropped",
+            drop_keyed("hat_fill", "u", ("order_id", "broker_trade_id")),
+        )
+    ],
+    "runtime.trade_result_once": [
+        (
+            "primary key (position_id) dropped",
+            drop_keyed("hat_trade_result", "p", ("position_id",)),
+        )
+    ],
+    "ops.snapshot_unique": [
+        (
+            "primary key (bot_id, trade_date) dropped",
+            drop_keyed("hat_daily_bot_snapshot", "p", ("bot_id", "trade_date")),
+        ),
+        (
+            "exposure level CHECK dropped",
+            sql(
+                drop_constraint(
+                    "hat_daily_bot_snapshot", "ck_hat_daily_bot_snapshot_exposure_level"
+                )
+            ),
+        ),
+    ],
+    "governance.stop_only_rises": [
+        ("trigger dropped", sql("DROP TRIGGER hat_position_stop_guard ON hat_position")),
+        (
+            "trigger fires only on other columns",
+            sql(
+                "DROP TRIGGER hat_position_stop_guard ON hat_position",
+                "CREATE TRIGGER hat_position_stop_guard BEFORE UPDATE OF state ON hat_position"
+                " FOR EACH ROW EXECUTE FUNCTION hat_stop_only_tightens()",
+            ),
+        ),
+        ("equal stop refused (< became <=)", stop_function("NEW.current_stop <= OLD.current_stop")),
+        (
+            "a drop of up to 1 allowed",
+            stop_function("NEW.current_stop < OLD.current_stop - 1"),
+        ),
+        ("function allows every move", stop_function("false")),
+    ],
+    "events.append_only": [
+        ("trigger dropped", sql("DROP TRIGGER hat_event_no_update ON hat_event")),
+        (
+            "trigger no longer blocks DELETE",
+            sql(
+                "DROP TRIGGER hat_event_no_update ON hat_event",
+                "CREATE TRIGGER hat_event_no_update BEFORE UPDATE ON hat_event"
+                " FOR EACH ROW EXECUTE FUNCTION hat_event_is_append_only()",
+            ),
+        ),
+        (
+            "trigger no longer blocks UPDATE",
+            sql(
+                "DROP TRIGGER hat_event_no_update ON hat_event",
+                "CREATE TRIGGER hat_event_no_update BEFORE DELETE ON hat_event"
+                " FOR EACH ROW EXECUTE FUNCTION hat_event_is_append_only()",
+            ),
+        ),
+        ("function does not raise", event_function("RETURN NEW;")),
+        (
+            "function raises a different message",
+            event_function("RAISE EXCEPTION 'nope';"),
+        ),
+    ],
+    "events.partitioned": [
+        ("hat_event is a plain table", plain_event_table()),
+        ("actor CHECK dropped", sql(drop_constraint("hat_event", "ck_hat_event_actor"))),
+    ],
+}
+VARIANTS.update(VARIANTS_RUNTIME)
+
 CASES = [(rule, label, apply) for rule, items in VARIANTS.items() for label, apply in items]
 
 
@@ -235,7 +386,8 @@ CASES = [(rule, label, apply) for rule, items in VARIANTS.items() for label, app
 def test_check_fails_when_rule_is_broken(
     conn: Connection, rule: str, label: str, apply: Break
 ) -> None:
-    check = getattr(rules, "check_" + rule.replace(".", "__"))
+    name = "check_" + rule.replace(".", "__")
+    check = getattr(rules, name, None) or getattr(runtime_rules, name)
     apply(conn)
     with pytest.raises(AssertionError):
         check(conn)
@@ -256,7 +408,82 @@ def test_migration_check_fails_when_ensure_is_not_idempotent(pg_engine: Engine) 
 
 @pytest.mark.postgres
 def test_every_check_has_a_broken_variant() -> None:
-    names = {n for n in dir(rules) if n.startswith("check_") and "concurrent" not in n}
+    names = {
+        n
+        for module in (rules, runtime_rules)
+        for n in dir(module)
+        if n.startswith("check_") and "concurrent" not in n
+    }
     expected = {"check_" + rule.replace(".", "__") for rule in VARIANTS}
-    assert names - expected == {"check_migration__ensure_idempotent"}
+    # The ensure-step checks take the step as an argument: their broken variants are the
+    # `test_*_check_fails_*` tests below.
+    assert names - expected == {
+        "check_migration__ensure_idempotent",
+        "check_events__partitions_ahead",
+    }
     assert not any(isinstance(item, DBAPIError) for item in names)
+
+
+def ensure_with(statements_for: Callable[[date], list[str]]) -> Callable[[Connection, date], None]:
+    def ensure(conn: Connection, day: date) -> None:
+        for statement in statements_for(day):
+            conn.execute(text(statement))
+
+    return ensure
+
+
+def partition_statement(first: date, lower: str | None = None, upper: str | None = None) -> str:
+    low, high = partition_bounds(first)
+    return (
+        f"CREATE TABLE IF NOT EXISTS {partition_name(first)} PARTITION OF hat_event"
+        f" FOR VALUES FROM ('{lower or low.isoformat()}') TO ('{upper or high.isoformat()}')"
+    )
+
+
+PARTITION_ENSURE_VARIANTS: dict[str, Callable[[date], list[str]]] = {
+    "only the current month": lambda day: [partition_statement(months_to_cover(day, 0)[0])],
+    "only the next month, not the one after": lambda day: [
+        partition_statement(first) for first in months_to_cover(day, 1)
+    ],
+    "the month ahead skipped": lambda day: [
+        partition_statement(first) for index, first in enumerate(months_to_cover(day)) if index != 1
+    ],
+    "month boundaries in IST instead of UTC": lambda day: [
+        partition_statement(
+            first,
+            lower=(partition_bounds(first)[0] - timedelta(hours=5, minutes=30)).isoformat(),
+            upper=(partition_bounds(first)[1] - timedelta(hours=5, minutes=30)).isoformat(),
+        )
+        for first in months_to_cover(day)
+    ],
+}
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("label", sorted(PARTITION_ENSURE_VARIANTS))
+def test_partitions_check_fails_when_ensure_is_broken(conn: Connection, label: str) -> None:
+    broken = ensure_with(PARTITION_ENSURE_VARIANTS[label])
+    with pytest.raises(AssertionError):
+        runtime_rules.check_events__partitions_ahead(conn, broken)
+
+
+@pytest.mark.postgres
+def test_concurrent_signal_check_fails_without_the_unique_key(pg_engine: Engine) -> None:
+    """The race check commits for real, so its break is undone by hand in `finally`."""
+    columns = "bot_id, playbook, instrument_id, trade_date"
+    with pg_engine.begin() as connection:
+        name = connection.execute(
+            text(
+                "SELECT conname FROM pg_constraint WHERE conrelid = to_regclass('hat_signal')"
+                " AND contype = 'u'"
+            )
+        ).scalar_one()
+        connection.execute(text(drop_constraint("hat_signal", name)))
+    try:
+        with pytest.raises(AssertionError):
+            runtime_rules.check_runtime__signal_unique_concurrent(pg_engine)
+    finally:
+        with pg_engine.begin() as connection:
+            connection.execute(
+                text(f"ALTER TABLE hat_signal ADD CONSTRAINT {name} UNIQUE ({columns})")
+            )

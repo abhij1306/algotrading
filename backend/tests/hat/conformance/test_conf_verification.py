@@ -26,7 +26,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2}
+MERGED_PRS = {1, 2, 3}
 
 
 def _models() -> list[Path]:
@@ -318,6 +318,9 @@ def test_db_checks_match_governance_table() -> None:
             assert tests[function][0][1], f"{function} is not marked postgres"
 
 
+ENSURE_STEP_CHECKS = {"migration.ensure_idempotent", "events.partitions_ahead"}
+
+
 def test_verification_db_rules_covered() -> None:
     """HAT-SCH-102: every DB check of a merged PR is in the postgres suite and has a broken
     variant that the check must fail (test_db_broken_variants.py, run by backend-postgres)."""
@@ -325,8 +328,12 @@ def test_verification_db_rules_covered() -> None:
     variants = set(re.findall(r'^    "([\w.]+)": \[', broken, re.MULTILINE))
     for name, prs in _db_names().items():
         if min(prs) in MERGED_PRS:
-            assert name in variants or name == "migration.ensure_idempotent", name
+            # The two ensure-step checks take the step as an argument; their broken variants
+            # are separate tests (a faulty ensure step substituted for the real one).
+            assert name in variants or name in ENSURE_STEP_CHECKS, name
     assert "test_migration_check_fails_when_ensure_is_not_idempotent" in broken
+    assert "test_partitions_check_fails_when_ensure_is_broken" in broken
+    assert "test_concurrent_signal_check_fails_without_the_unique_key" in broken
 
 
 # --- the spec's own rules -------------------------------------------------------------------
@@ -374,6 +381,13 @@ README_ROW = re.compile(
 KNOWN_GAPS = {
     "PBT criteria.fundamentals_point_in_time",  # HAT-DEC-I5: needs the criteria engine (PR 8)
     "CONF old_docs_removed",  # HAT-DEC-BD4: a PR 1 documentation check nobody built
+    # PR 3 (HAT-SCH-051, HAT-SCH-081): the rows name TLA properties of models that 11 §3 assigns
+    # to PR 13 and PR 15. Their actions map to code that does not exist yet (the order router and
+    # the stop mover), so the models arrive with that code; the database checks
+    # `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises
+    # at the database in the meantime.
+    "TLA OrderReconciliation!AtMostOneEntryPerSignal",
+    "TLA StopPlacement!StopOnlyTightens",
 }
 
 

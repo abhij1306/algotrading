@@ -20,7 +20,13 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
     # restored catalog is what proves the step ran).
     before = rules.catalog(pg_engine)
     with pg_engine.begin() as connection:
-        for table in ("hat_strategy_version", "hat_universe_version", "hat_risk_policy_version"):
+        for table in (
+            "hat_strategy_version",
+            "hat_universe_version",
+            "hat_risk_policy_version",
+            "hat_position",
+            "hat_event",
+        ):
             names = connection.execute(
                 text(
                     "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal"
@@ -32,6 +38,8 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
                 connection.execute(text(f"DROP TRIGGER {name} ON {table}"))
         connection.execute(text("DROP FUNCTION IF EXISTS hat_strategy_version_immutable CASCADE"))
         connection.execute(text("DROP FUNCTION IF EXISTS hat_universe_version_immutable CASCADE"))
+        connection.execute(text("DROP FUNCTION IF EXISTS hat_stop_only_tightens CASCADE"))
+        connection.execute(text("DROP FUNCTION IF EXISTS hat_event_is_append_only CASCADE"))
         connection.execute(
             text("DROP FUNCTION IF EXISTS hat_risk_policy_version_immutable CASCADE")
         )
