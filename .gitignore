@@ -34,6 +34,10 @@ verification/tla/.tlc.out
 *.sql
 *.dump
 
+# HAT code and recorded fixtures live under paths the data rules above would hide
+!backend/app/hat/data/
+!backend/tests/hat/fixtures/*.csv
+
 # Compressed Archives
 *.zip
 *.tar.gz

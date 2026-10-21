@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Internal error at https://internal.example/v1 token=abc123secret"}],"isError":true}}
