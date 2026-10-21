@@ -90,8 +90,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
-Covered digest: `cc6f446f958bd1a4b47a52b8f0576a36bc06b610bebf5999ff2a09bff7a8b114`
+Sync commit: `e77406c04ed1057979bffe9b39429d9bdd1a24e6`
+Covered digest: `9bc101367e5e9f4241c7c14f5e6b2927e290d9d03eed1c89a38e3b981cab207e`
 
 ## Scope changes
 
@@ -109,6 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `mcp.no_raw_error_text` checks substrings of 9 or more characters; payloads that are substrings of the stable codes themselves are excluded (`assume`).
 - `mcp.no_raw_error_text` leaves out the log record's own source location (`pathname`, `filename`, `module`) when comparing, and has an `@example` of the checkout directory: on a CI runner the path holds "algotrading", which a generated payload matched once a new module shifted Hypothesis's string pool (PR 14 finding).
 - Postgres is checked by `refresh_on_postgres` only for the unique keys; the property tests use SQLite, where the keys are the same constraints.
+- K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten socket and single-feed checks): the reference-data checks are unchanged and still pass.
 
 ## Scratch breaks
 

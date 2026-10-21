@@ -14,7 +14,7 @@ Checks that HAT does not import or boot the legacy application (K1 of the cleanu
 - `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12 per period (a series with a per-period deviation of 1e-13 is flat too). Harm: an enormous or infinite Sharpe ranks a flat strategy first.
 - `PBT metrics.sharpe_sign_follows_mean` With risk-free 0 the Sharpe has the sign of the mean return and is finite. Harm: a losing strategy is reported as profitable.
 - `PBT metrics.returns_guard_bad_capital` A non-positive initial capital or period count gives 0.0 for total return and CAGR, never a division error or a sign flip. Harm: a bad input prints a large false return.
-- `CONF imports.hat_decoupled_from_legacy` The legacy modules that `app/hat` and `tests/hat` import are exactly the listed pending set (K2 broker and symbols, K3 live feed, K6 database); a new coupling fails, and a module no longer imported must leave the list. Harm: HAT quietly grows back into the code it is meant to replace.
+- `CONF imports.hat_decoupled_from_legacy` The legacy modules that `app/hat` and `tests/hat` import are exactly the listed pending set (K2 broker and symbols, K6 database); a new coupling fails, and a module no longer imported must leave the list. Harm: HAT quietly grows back into the code it is meant to replace.
 - `CONF imports.hat_suites_boot_no_legacy_app` Collecting `tests/hat` in a fresh interpreter loads neither `app.main` nor `app.routers` (the manual-trading singletons they once also listed were deleted in K4; `risk.no_manual_trading_path` keeps them deleted). Harm: HAT suites depend on booting the whole legacy app.
 - `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry) imports `app.hat` from legacy code. Harm: deleting HAT or legacy code in a later PR breaks the other side.
 - `CONF fixtures.vcp_oracle_frozen` The frozen legacy VCP outputs in `tests/hat/fixtures/vcp_oracle.json` match their recorded hash, case list and internal consistency. Harm: PR 6's characterization test compares against a drifting oracle.
@@ -62,8 +62,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `0e4fd97e0e947c65d99dfe5dfab827d4038dd4eb`
-Covered digest: `949111b3c56fb8317208eb68eb7c456d02c664c53e8961b366dc809ff096e286`
+Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
+Covered digest: `58a7d2d5d75610ebeaecdb3a67226d222af3986ccab267da0bd75075d84f9927`
 
 ## Scope changes
 
@@ -76,6 +76,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - K4 removed `services/execution/paper_book.py`, `brokers/*` and `services/fyers/token_store.py` from `SHIMS` (deleted), added `config.py` (it imports HAT's token store for the legacy data fetcher) and shortened `NEVER_LOADED` to the app and the routers. No check was narrowed: the deleted modules cannot be imported and `risk.no_manual_trading_path` asserts they stay gone.
 - K2 moved the six Fyers and symbol modules out of `PENDING` in `test_conf_decoupling.py`, added the six legacy re-export modules to `SHIMS` (they may import HAT; HAT may not import them), and added `database.py` and `main.py` to the wiring files the legacy-does-not-import-HAT check allows. The decoupling check is stricter for HAT (no `app.brokers`, `app.services` or `app.routers` import) and no check was narrowed.
+- K3 removed the four live-feed entries from `PENDING` in `test_conf_decoupling.py` (the data socket, the provider session, the live market service and the subscription registry moved into HAT or no longer touch it); `PENDING` now holds the K6 database modules only. `SHIMS` lists the legacy `live_market_service.py` and `ws_manager.py`, which import HAT.
 
 ## Scratch breaks
 

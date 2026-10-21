@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
-from ..services.subscription_registry import SubscriptionRegistry
+from ..hat.data.subscriptions import SubscriptionRegistry
 from ..services.symbol_master import symbol_master
 from .runtime_metrics import runtime_metrics
 

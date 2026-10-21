@@ -13,7 +13,8 @@ One session owns at most one `DataSocket` at a time. It
 - shields itself from its callbacks: an exception in the message sink or in the replay is
   logged and the session carries on.
 
-Market-hours policy and the explicit-disconnect rule stay with LiveMarketService.
+Market-hours policy and the explicit-disconnect rule stay with `LiveFeed` (`app.hat.data.feed`), the
+only place a session is built (HAT-OVR-006).
 """
 
 from __future__ import annotations
@@ -25,8 +26,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ...utils.logger import log_exception_throttled
-from ...utils.runtime_metrics import runtime_metrics
 from .data_socket import (
     SYMBOL_UPDATE,
     DataSocket,
@@ -35,6 +34,7 @@ from .data_socket import (
     SocketFactory,
     TokenSource,
 )
+from .metrics import feed_metrics, log_exception_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class ProviderSession:
         *,
         retry: RetryPolicy | None = None,
         spawn: Spawn = spawn_daemon_thread,
-        metrics_prefix: str = "live_market.provider",
+        metrics_prefix: str = "feed.provider",
     ) -> None:
         self._socket_factory = socket_factory
         self._token_source = token_source
@@ -407,4 +407,4 @@ class ProviderSession:
             logger.debug("[WS] Closing the provider socket failed: %s", exc)
 
     def _count(self, name: str) -> None:
-        runtime_metrics.increment(f"{self._metrics_prefix}.{name}")
+        feed_metrics.increment(f"{self._metrics_prefix}.{name}")

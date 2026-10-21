@@ -104,12 +104,12 @@ The MA names the Telegram module `hat/notify`; this spec uses `hat/telegram` (pl
   - Property: every SQLAlchemy table defined under `app.hat.models` has a name starting `hat_`, and every foreign key on those tables targets a `hat_` table. Harm: the module cannot be extracted later without untangling shared tables.
 
 #### HAT-OVR-006: One live feed
-- **Statement:** HAT reads live market data through SmartTrader's `LiveMarketService` and `SubscriptionRegistry` (owner `"hat"`), never through a second WebSocket to the broker.
+- **Statement:** HAT owns the one Fyers data socket through `LiveFeed` and `ProviderSession`; HAT subscribes through its `SubscriptionRegistry` (owner `"hat"`), and no other socket to the broker exists anywhere.
 - **Source:** MA "Boundary rules"; I3; PLAN C4.
 - **PR:** 14
 - **Verification:** CONF `single_feed_import_rule`
 - **Acceptance:**
-  - Property: no module under `app.hat` imports the Fyers data-socket SDK or opens a WebSocket; live data arrives only through `LiveMarketService.add_tick_listener` and `SubscriptionRegistry`. Harm: a second socket to the same broker breaks the session or doubles the symbol limit use.
+  - Property: only `app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK, and only `LiveFeed` builds a `ProviderSession`; live data reaches consumers only through `LiveFeed.add_tick_listener`. Harm: a second socket to the same broker breaks the session or doubles the symbol limit use.
 
 #### HAT-OVR-007: HAT is off unless enabled
 - **Statement:** HAT's runtime tasks start only when `HAT_ENABLED` is true (default false), so existing SmartTrader behaviour and tests are unchanged.
@@ -126,7 +126,7 @@ condensed; PR numbers refer to the plan's PR list.
 
 | Capability | Status | SmartTrader code | PR |
 | --- | --- | --- | --- |
-| Live ticks and subscriptions | R + M (tick-listener hook) | `services/live_market_service.py`, `services/subscription_registry.py` | 14 |
+| Live ticks and subscriptions | N (HAT-owned since K3: `LiveFeed` owns the one Fyers socket; the legacy `LiveMarketService` is a read side that listens to it) | `app/hat/data/feed.py`, `app/hat/data/provider/`, `app/hat/data/subscriptions.py` | 14, K3 |
 | Market hours, clock | N (HAT-owned copies since K1; the holiday calendar from `hat_trading_calendar` builds the policy, nothing is installed process-wide, no `DEV_MODE`) | `app/hat/data/sessions.py`, `app/hat/clock.py` (copied from `utils/market_hours.py`, `utils/clock.py`) | 4, K1 |
 | Symbols | N (HAT-owned conversion since K2; the legacy `SymbolMaster` inherits it and keeps only options, futures and metadata) | `app/hat/data/symbols.py` | 4, K2 |
 | Risk authority | N (`evaluate_signal` in HAT since K1; the legacy `RiskManager` no longer imports HAT) | `app/hat/risk/service.py` | 10, K1 |

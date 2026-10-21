@@ -173,9 +173,26 @@ def _log_live_market_status(connect_status: str) -> None:
         logger.warning(f"[WARN] {message}")
 
 
-async def _step_connect_live_market(app: FastAPI) -> None:
+def _start_hat_feed(app: FastAPI) -> None:
+    """HAT_ENABLED only: build HAT's live feed (the one Fyers data socket, HAT-OVR-006), hang its
+    login hooks on the Fyers auth service, let the legacy readers read its ticks, and start it."""
+    from .hat.data.feed import LiveFeed
+    from .hat.execution.fyers_auth import get_fyers_auth
     from .services.live_market_service import live_market
 
+    feed = LiveFeed()
+    feed.install_auth_hooks(get_fyers_auth())
+    live_market.bind_feed(feed)
+    app.state.hat_feed = feed
+    feed.start(app.state.loop, prevalidated_token=app.state.fyers_token_valid)
+
+
+async def _step_connect_live_market(app: FastAPI) -> None:
+    from .hat.settings import is_enabled
+    from .services.live_market_service import live_market
+
+    if is_enabled():
+        _start_hat_feed(app)
     connect_status = live_market.connect(
         loop=app.state.loop,
         prevalidated_token=app.state.fyers_token_valid,
@@ -261,6 +278,14 @@ async def _stop_deferred_startup(app: FastAPI) -> None:
     await deferred_startup.stop()
 
 
+async def _stop_hat_feed(app: FastAPI) -> None:
+    feed = getattr(app.state, "hat_feed", None)
+    if feed is None:
+        return
+    del app.state.hat_feed
+    await feed.stop()
+
+
 async def _stop_live_market() -> None:
     from .services import live_market_service
 
@@ -295,6 +320,7 @@ async def _shutdown(app: FastAPI) -> None:
     an earlier one failed."""
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
         ("deferred_startup", lambda: _stop_deferred_startup(app)),
+        ("hat_feed", lambda: _stop_hat_feed(app)),
         ("live_market", _stop_live_market),
         ("websocket_clients", _close_websocket_clients),
         ("database_engine", _dispose_engine),

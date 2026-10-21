@@ -1,18 +1,15 @@
 """MarketHoursPolicy: the NSE session window in IST, weekends, holidays and DEV_MODE."""
 
-import asyncio
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
 
 from app.services import live_market_service as lms
-from app.services.live.provider_session import SessionState
 from app.utils import market_hours
 from app.utils.clock import FixedClock
 from app.utils.market_hours import IST, MarketHoursPolicy, MarketPhase
 
-from fakes.data_socket import connected_live
 from fakes.market import FreezeMarket
 
 # IST is UTC+05:30, so 09:15 IST is 03:45 UTC and 15:30 IST is 10:00 UTC.
@@ -190,18 +187,6 @@ def test_live_service_dev_mode_overrides_the_clock() -> None:
 
     assert live.is_market_open() is True
     assert live._market_status == "OPEN (DEV)"
-
-
-def test_monitor_check_disconnects_when_the_clock_passes_the_close() -> None:
-    clock = FixedClock(utc(*MONDAY, 9, 59))
-    live, factory = connected_live(clock=clock)
-    live.dev_mode = False
-
-    clock.set(utc(*MONDAY, 10, 0, 1))  # 15:30:01 IST
-    asyncio.run(live._check_connection_health())
-
-    assert factory.last.closed is True
-    assert live.session.state is SessionState.IDLE
 
 
 def test_freeze_market_drives_the_module_helpers(freeze_market: FreezeMarket) -> None:

@@ -378,12 +378,12 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: for every security-day present in both an old-format and a UDiFF fixture, both parsers produce identical normalised rows. Harm: backtests see a price discontinuity on 8 Jul 2024. Detail: 02 §9.
 
 #### HAT-DEC-I3: Fyers WebSocket as the single live source
-- **Statement:** All live ticks come from the Fyers WebSocket through SmartTrader's feed layer.
+- **Statement:** All live ticks come from the one Fyers WebSocket that HAT's `LiveFeed` owns.
 - **Source:** MA (I3).
 - **PR:** 14
 - **Verification:** CONF `single_feed_import_rule`
 - **Acceptance:**
-  - Property: HAT has no live-data source other than `LiveMarketService` tick listeners. Harm: a second source disagrees on prices and triggers fire twice or not at all. Detail: 00 HAT-OVR-006.
+  - Property: no live-data source exists other than `LiveFeed` tick listeners. Harm: a second source disagrees on prices and triggers fire twice or not at all. Detail: 00 HAT-OVR-006.
 
 #### HAT-DEC-I4: Broker minute history for EP backtests
 - **Statement:** EP backtests may use Fyers historical minute data through an optional loader; without it, EP is not backtested on intraday data.

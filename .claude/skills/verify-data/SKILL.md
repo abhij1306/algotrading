@@ -121,8 +121,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
-Covered digest: `c8ce1b1b298e49fc833215c1b911b06262ef2f76e84212c2ebd9da0dfca55198`
+Sync commit: `d6d642d3f9327bee4db9ee140577bd89554e4480`
+Covered digest: `931de602bc225ca0e414e2a6deb3375c919e20bc0d796fd7508f84e81dd99d5c`
 
 ## Scope changes
 
@@ -144,6 +144,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The advance/decline ratio of HAT-DATA-076 comes from `get_market_breadth` in the nightly ingest (PR 7), not from the features job.
 - A correction of bars of an already featured date is not detected: the caller runs with `full`.
 - Runs are serialised with a file lock (`.features.lock` under the data root); two concurrent rebuilds are not tested, the lock is `fcntl.flock` as the index upsert uses.
+- K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten `no_second_websocket` and `single_feed_import_rule`): the checks here (`imports.hat_polars_only` and the rest) are unchanged and still pass.
 
 ## Scratch breaks
 

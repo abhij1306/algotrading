@@ -15,9 +15,9 @@ FUNCTION_AUTHORITIES = {
     "evaluate_signal": "app/hat/risk/service.py",
 }
 # Legacy classes that still exist beside HAT's: name -> the one file that may define them. The
-# legacy `LiveMarketService` stays until K3/K5b. (K4 deleted the legacy `RiskManager`, so
-# `evaluate_signal` is the only risk authority left, and the legacy copy of `FakeBroker`.) Each
-# entry goes with its file; the list only shrinks.
+# legacy `LiveMarketService` (now only the read side of HAT's feed) stays until K5b. (K4 deleted the
+# legacy `RiskManager`, so `evaluate_signal` is the only risk authority left, and the legacy copy
+# of `FakeBroker`.) Each entry goes with its file; the list only shrinks.
 LEGACY_COPIES = {
     "LiveMarketService": "app/services/live_market_service.py",
 }
