@@ -28,7 +28,7 @@ jobs:
       - uses: ./.github/actions/setup-backend
 
       # Run from the repo root: backend/ uses backend/pyproject.toml, and the root
-      # ruff.toml applies the same rules to start_dev.py, scripts/ and data_platform/.
+      # ruff.toml applies the same rules to scripts/.
       - name: ruff format
         working-directory: .
         run: ruff format --check .

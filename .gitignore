@@ -291,9 +291,12 @@ settings.local.json
 temp_*.py
 debug_*.py
 # test_*.py - REMOVED to allow tests
-!backend/tests/test_*.py  # Allow test files in tests directory
-!backend/scripts/*.py      # Allow all scripts
-!backend/utils/*.py        # Allow utils
+# Allow test files in tests directory
+!backend/tests/test_*.py
+# Allow all scripts
+!backend/scripts/*.py
+# Allow utils
+!backend/utils/*.py
 
 # SonarQube scanner temp output
 .scannerwork/

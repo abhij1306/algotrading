@@ -1,7 +1,6 @@
 """Corporate-action text helpers: the bonus ratio and split numbers of an NSE purpose text.
 
-Pure functions, no I/O and no imports from the app. HAT owns this copy (K1, backend review C1);
-the legacy `app.services.bhavcopy_text` keeps its own until the phase-1 pipeline is deleted. HAT's
+Pure functions, no I/O and no imports from the app. HAT owns this copy. HAT's
 adjustment-factor convention is to multiply older prices by a factor in (0, 1].
 """
 
