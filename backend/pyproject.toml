@@ -36,6 +36,7 @@ select = [
     "A",    # flake8-builtins
     "C4",   # flake8-comprehensions
     "T20",  # flake8-print
+    "PT018", # one condition per assert (Sonar S9073)
 ]
 
 # Ignore specific rules

@@ -135,9 +135,9 @@ cd ..
 verification/tla/run.sh
 ```
 
-Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything. Put long
-test runs under a memory cap, for example
-`systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet <command>`.
+Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything.
+`python backend/tests/hat/conformance/hat_conf_skills.py --stale` lists `verify-*` skills whose
+covered files changed; `--refresh` rewrites their digests.
 
 ### CI
 `.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and

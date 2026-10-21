@@ -79,6 +79,42 @@ def break_ids(breaks: str) -> list[str]:
     return re.findall(r"^### (.+?)\s*$", breaks, re.MULTILINE)
 
 
-if __name__ == "__main__":
-    skill = parse_skill(SKILLS_DIR / sys.argv[1] / "SKILL.md")
+DIGEST_LINE = re.compile(r"Covered digest: `([0-9a-f]{64})`")
+
+
+def stale_skills() -> list[tuple[Path, str, str]]:
+    """(SKILL.md, recorded digest, current digest) for every skill whose covered files changed."""
+    stale = []
+    for path in skill_files():
+        skill = parse_skill(path)
+        match = DIGEST_LINE.search(skill["sections"].get("Sync commit", ""))
+        if not match:
+            continue
+        current = digest(covered_files(skill["sections"].get("Coverage", "")))
+        if match.group(1) != current:
+            stale.append((path, match.group(1), current))
+    return stale
+
+
+def main(args: list[str]) -> int:
+    """`<skill>` prints its digest; `--stale` lists stale skills (exit 1 if any); `--refresh`
+    rewrites their recorded digests and names them. Refresh only after rerunning each stale
+    skill's checks and confirming its text still matches the code (builder-protocol.md)."""
+    if args and args[0] in ("--stale", "--refresh"):
+        stale = stale_skills()
+        for path, old, new in stale:
+            if args[0] == "--refresh":
+                text = path.read_text(encoding="utf-8")
+                path.write_text(
+                    text.replace(f"Covered digest: `{old}`", f"Covered digest: `{new}`"),
+                    encoding="utf-8",
+                )
+            sys.stdout.write(f"{path.parent.name}\n")
+        return 1 if stale and args[0] == "--stale" else 0
+    skill = parse_skill(SKILLS_DIR / args[0] / "SKILL.md")
     sys.stdout.write(digest(covered_files(skill["sections"]["Coverage"])) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

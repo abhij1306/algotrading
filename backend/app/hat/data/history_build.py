@@ -167,7 +167,10 @@ def index_point_from_mcp(name: str, row: dict) -> IndexPoint | None:
     if day is None or any(v is None for v in values):
         return None
     o, h, low, c = values
-    assert o is not None and h is not None and low is not None and c is not None
+    assert o is not None
+    assert h is not None
+    assert low is not None
+    assert c is not None
     return IndexPoint(day, IndexRow(name.upper(), o, h, low, c))
 
 
@@ -212,7 +215,10 @@ def parse_index_archive_csv(
         if any(v is None for v in values):
             continue
         o, h, low, c = values
-        assert o is not None and h is not None and low is not None and c is not None
+        assert o is not None
+        assert h is not None
+        assert low is not None
+        assert c is not None
         points.append(IndexPoint(day, IndexRow(name, o, h, low, c)))
     return points
 
