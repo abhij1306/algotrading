@@ -186,3 +186,36 @@ def test_single_feed_import_rule() -> None:
     }
     assert owners == {"hat"}
     assert "SubscriptionRegistry" in inspect.getsource(subscriptions.LiveSubscriptions)
+
+
+# Modules under app/hat that may import pandas, because they adapt to an existing pandas module.
+# backtest/metrics.py is the legacy metrics helper K1 moved into HAT unchanged; it still takes
+# pandas and is rewritten on polars with the backtest engine. Features and criteria take
+# polars frames, and any other adapter would be listed here.
+PANDAS_BOUNDARY_ADAPTERS: set[str] = {"backtest/metrics.py"}
+
+
+def test_imports__hat_polars_only() -> None:
+    """HAT-DATA-078: no module under app/hat imports pandas (or numpy-backed pandas aliases)
+    except the listed boundary adapters. Legacy pandas modules are not pinned (owner rule D59)."""
+    offenders = {}
+    for name, tree in _hat_sources().items():
+        found = {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module and not node.level
+        }
+        if "pandas" in found and name not in PANDAS_BOUNDARY_ADAPTERS:
+            offenders[name] = "pandas"
+    assert offenders == {}
+    assert "polars" in {
+        alias.name
+        for node in ast.walk(_hat_sources()["data/features.py"])
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }

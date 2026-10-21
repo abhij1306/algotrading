@@ -409,7 +409,15 @@ Features are computed with polars (T11, PLAN C1) on adjusted bars (§5) and writ
 | `rs_pct` | universe percentile (0–100) of 0.4·r₃ + 0.2·r₆ + 0.2·r₉ + 0.2·r₁₂, r_m = return over m months (63/126/189/252 days) |
 | `mom_rank` | max over windows {21, 63, 126} of the universe percentile of ret_N *[OWNER-PENDING]* |
 
-"Universe percentile" ranks among all instruments with a value on date d in the active universe; ties take the average rank.
+"Universe percentile" ranks among all instruments with a value on date d in the active universe; ties take the average rank: percentile = 100 × average rank / n, where n counts the instruments with a value on d, so the best instrument has 100 and the percentile of the worst is 100 / n. An instrument outside the universe, or without the history a value needs, gets null.
+
+Implementation rules the table leaves open (PR 6; they follow the definitions above and are what the properties check):
+- **Types.** `instrument_id` is text; every other column is a 64-bit float, null where undefined. Float formulas hold within 1e-9 relative; a rolling mean is a running sum whose last bits depend on where the computation's frame starts (about 1e-14 relative).
+- **Windows are over the instrument's own bars.** "Last N days" is the last N rows of that instrument's adjusted bars ending d; a day on which an instrument has no bar is not a row. A window is null unless it is full. A bar whose low is not positive makes `adr20` null for the 20 windows containing it; a return whose base close is not positive is null.
+- **`adtr20` and a missing previous close.** `prev_close` is the bar's own (adjusted) `prev_close`. A bar with a previous close of zero or less (a first listing day) uses its own range, high − low.
+- **`mom_rank`** is the maximum over the windows that have a value; null when none has.
+- **Breadth** is stored in `breadth_daily/date=…` (one row: `universe_size`, `with_sma50`, `above_sma50`, `breadth_pct`). A close is above its SMA50 only when it exceeds it by more than a relative 1e-12, so float noise in the mean never flips a flat price.
+- **Incremental runs.** A run computes the dates that have no partition; a change in the stored corporate actions (adjusted history moves) or in the universe (the percentiles and breadth move) makes the run a full rebuild, and so does the `full` flag; the change is recorded only once every date is rebuilt, so a run limited to earlier dates leaves the next run to finish it. Runs are serialised by a lock. A correction of bars of an already featured date needs the `full` flag.
 
 #### HAT-DATA-070: Feature dataset has exactly the specified columns
 - **Statement:** `features_daily/date=…` has exactly the columns in the §7 table, one row per instrument per date.
@@ -463,12 +471,12 @@ Features are computed with polars (T11, PLAN C1) on adjusted bars (§5) and writ
 - **[OWNER-PENDING]** Single `mom_rank` column definition: default max of per-window percentiles (supports `match: any`; `match: all` reads the `ret*` columns); owner to confirm.
 
 #### HAT-DATA-076: Breadth inputs for the regime
-- **Statement:** The features job computes, per date, the % of universe members above their 50-day SMA, alongside the advance/decline ratio from `get_market_breadth`.
+- **Statement:** The features job computes, per date, the % of universe members above their 50-day SMA and stores it in `breadth_daily/date=…` (universe size, members with an SMA50, members above it, the percentage). The advance/decline ratio from `get_market_breadth` is not part of that dataset; the nightly ingest stores it (PR 7).
 - **Source:** BL "Regime engine v1" (Breadth input); PLAN PR 6.
 - **PR:** 6
 - **Verification:** PBT `features.breadth`
 - **Acceptance:**
-  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i}| / |{i : sma50_i not null}|, in [0, 100], when the denominator is > 0; when no member has a 50-day SMA yet (the first 49 sessions of history), breadth is null and the regime engine stores no state for that date. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
+  - Property: for every universe on date d, breadth% = 100 × |{i : adj_close_i > sma50_i, by more than a relative 1e-12}| / |{i : sma50_i not null}|, in [0, 100], when the denominator is > 0; when no member has a 50-day SMA yet (the first 49 sessions of history), breadth is null and the regime engine stores no state for that date. Harm: the regime engine misreads breadth and moves sleeves between states wrongly.
 
 #### HAT-DATA-077: Incremental features equal a full rebuild
 - **Statement:** The `features` job runs incrementally by date with a full-rebuild flag; both give identical results.
@@ -496,6 +504,7 @@ Root: `HAT_DATA_ROOT = DATA_ROOT / "hat"` (env-overridable, gitignored; PLAN C9)
 | `features_daily/` | `date=` | §7 columns | Nightly features job |
 | `bars_5m/` | `date=` | instrument_id, bar_start, open, high, low, close, volume | Live bar builder, Fyers history |
 | `index_daily/` | `date=` | index_name, open, high, low, close | Nightly ingest |
+| `breadth_daily/` | `date=` | universe_size, with_sma50, above_sma50, breadth_pct | Nightly features job |
 | `raw/` | by file | raw bhavcopy zips, untouched | Historical build, fallback |
 | `backtests/run_id=…/trades.parquet` | run | backtest trades (09) | Backtest |
 

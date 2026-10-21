@@ -44,6 +44,8 @@ from ..errors import HatError
 
 DATASET_BARS = "bars_daily_raw"
 DATASET_INDEX = "index_daily"
+DATASET_FEATURES = "features_daily"  # written by data/features.py (HAT-DATA-070)
+DATASET_BREADTH = "breadth_daily"  # one row per day (HAT-DATA-076)
 RAW_DIR = "raw"
 SOURCES = frozenset({"bhavcopy", "mcp"})  # adjusted values have no source: they are never stored
 
@@ -74,7 +76,43 @@ INDEX_SCHEMA = pa.schema(
         ("close", PRICE_TYPE),
     ]
 )
-DATASET_SCHEMAS = {DATASET_BARS: BAR_SCHEMA, DATASET_INDEX: INDEX_SCHEMA}
+# The §7 columns, in the spec's order: the instrument, then one float64 per feature.
+FEATURE_NAMES = (
+    "sma10",
+    "sma20",
+    "sma50",
+    "sma150",
+    "sma200",
+    "high_52w",
+    "low_52w",
+    "adr20",
+    "adtr20",
+    "adv20",
+    "turnover20",
+    "ret21",
+    "ret63",
+    "ret126",
+    "ret252",
+    "rs_pct",
+    "mom_rank",
+)
+FEATURES_SCHEMA = pa.schema(
+    [("instrument_id", pa.string()), *[(name, pa.float64()) for name in FEATURE_NAMES]]
+)
+BREADTH_SCHEMA = pa.schema(
+    [
+        ("universe_size", pa.int64()),
+        ("with_sma50", pa.int64()),
+        ("above_sma50", pa.int64()),
+        ("breadth_pct", pa.float64()),
+    ]
+)
+DATASET_SCHEMAS = {
+    DATASET_BARS: BAR_SCHEMA,
+    DATASET_INDEX: INDEX_SCHEMA,
+    DATASET_FEATURES: FEATURES_SCHEMA,
+    DATASET_BREADTH: BREADTH_SCHEMA,
+}
 
 PART_GLOB = "part-*.parquet"
 MAX_VOLUME = 10**14  # the adjusted volume column is decimal(14, 0) x decimal(24, 12)
@@ -342,6 +380,28 @@ class DataStore:
             merged.update(incoming)
             self._write(path, index_table([merged[k] for k in sorted(merged)]))
         return len(merged)
+
+    def write_partition(self, dataset: str, day: date, name: str, table: pa.Table) -> Path:
+        """Replace the day's `part-<name>.parquet` of a derived dataset (features, breadth) by
+        `table`, which must have exactly the dataset's schema. Writing the same table again
+        rewrites the same file (HAT-DATA-082)."""
+        if (
+            dataset not in (DATASET_FEATURES, DATASET_BREADTH)
+            or table.schema != DATASET_SCHEMAS[dataset]
+        ):
+            raise StoreError("store_bad_schema")
+        if not name.isalnum():
+            raise StoreError("store_bad_raw_name")
+        path = self.partition_dir(dataset, day) / f"part-{name}.parquet"
+        self._write(path, table)
+        return path
+
+    def read_partition(self, dataset: str, day: date) -> pl.DataFrame:
+        """The day's rows of a dataset across its files; an absent day is empty."""
+        files = self.partition_files(dataset, day)
+        if not files:
+            return pl.DataFrame(schema=pl.from_arrow(DATASET_SCHEMAS[dataset].empty_table()).schema)  # type: ignore[union-attr]
+        return pl.concat([pl.read_parquet(f) for f in files])
 
     def store_raw(self, name: str, data: bytes) -> bool:
         """Keep a raw bhavcopy zip untouched forever (HAT-DATA-083). True when written, False when
