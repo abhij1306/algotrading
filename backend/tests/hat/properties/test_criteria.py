@@ -1185,7 +1185,8 @@ def test_max_chase_always_applied(
     if state == "enabled":
         assert instances == enabled
         return
-    assert instances[:-1] == enabled and instances[-1].type == "max_chase"
+    assert instances[:-1] == enabled
+    assert instances[-1].type == "max_chase"
     want = Fraction(configured) if configured is not None else DOCUMENTED_CHASE.get(strategy, 2)
     assert oracle_pct(chases[0].params["pct"]) == want
 
@@ -1480,7 +1481,8 @@ def test_entry_filters_skip(
             assert signal.state == "Rejected"
             assert signal.risk_decision["reason"] == want
             assert signal.risk_decision["stage"] == "entry_filter"
-            assert outcome.position_id is None and decided == []
+            assert outcome.position_id is None
+            assert decided == []
         else:
             assert "stage" not in signal.risk_decision
             assert len(decided) == 1

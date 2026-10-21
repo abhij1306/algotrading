@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -380,8 +380,7 @@ def plan_entry(
             ),
         )
         stop, skip = planned.stop, planned.skip
-    filter_ctx = replace(
-        ctx,
+    filter_ctx = ctx.for_entry(
         entry=entry,
         stop=stop,
         adtr20=daily.adtr20,

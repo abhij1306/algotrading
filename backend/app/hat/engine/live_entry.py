@@ -258,9 +258,12 @@ def ep_bot_candidates(
 # --- from trigger to signal -------------------------------------------------------------------
 
 
-def entry_request(trigger: Trigger, base: SignalContext) -> trades.EntryRequest:
+def entry_request(
+    trigger: Trigger, base: SignalContext, *, feed_stale: bool | None = None
+) -> trades.EntryRequest:
     """The `EntryRequest` of a fired trigger: the market-side context `base` with the trigger's
-    prices, stop, level and circuit state, and the skip reason when its stop or a filter failed."""
+    prices, stop, level and circuit state, and the skip reason when its stop or a filter failed.
+    `feed_stale`, when given, is the live feed state at the trigger and replaces `base`'s."""
     candidate, plan = trigger.candidate, trigger.plan
     context = replace(
         base,
@@ -272,6 +275,7 @@ def entry_request(trigger: Trigger, base: SignalContext) -> trades.EntryRequest:
         locked_upper_circuit=plan.locked_upper_circuit,
         configured_max_chase_pct=candidate.configured_max_chase_pct,
         adv20=candidate.daily.adv20,
+        feed_stale=base.feed_stale if feed_stale is None else feed_stale,
     )
     criteria = tuple(
         {"stage": stage, **outcome.to_json()}
@@ -298,10 +302,12 @@ def submit_trigger(
     trigger: Trigger,
     base: SignalContext,
     *,
+    feed_stale: bool | None = None,
     decide: trades.DECIDE = trades.evaluate_signal,
 ) -> trades.EntryOutcome:
     """Write the signal of a fired trigger in the caller's transaction (no commit)."""
-    return trades.open_entry(session, entry_request(trigger, base), decide=decide)
+    request = entry_request(trigger, base, feed_stale=feed_stale)
+    return trades.open_entry(session, request, decide=decide)
 
 
 class ContextSource(Protocol):
@@ -348,7 +354,7 @@ class TriggerService:
         try:
             with self._session_factory() as session:
                 base = self._contexts.entry_context(session, trigger.candidate.bot_id, trigger.at)
-                outcome = submit_trigger(session, trigger, replace(base, feed_stale=stale))
+                outcome = submit_trigger(session, trigger, base, feed_stale=stale)
                 session.commit()
                 return outcome
         except Exception:
