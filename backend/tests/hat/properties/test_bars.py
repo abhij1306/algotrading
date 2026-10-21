@@ -743,7 +743,7 @@ def test_subscription_inputs_from_database(
                 currency="INR",
                 opened_at=now,
                 closed_at=None if i in held else now,
-                state="open",
+                state="Open",
                 rules_fired={},
             )
         )

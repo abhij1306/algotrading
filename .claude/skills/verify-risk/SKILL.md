@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `20e07afbe0e69fba882129c3fb87b2ad8545cc8871cd7d4d0b7908d3ec3d4a72`
+Covered digest: `cb25339f88c0eda95035bf86700dfdd71aad193ab6d5a1100d5a425511af31d4`
 
 ## Scope changes
 
@@ -741,6 +741,12 @@ E   You can reproduce this test case by temporarily adding @reproduce_failure('6
 FAILED tests/hat/properties/test_kill.py::test_reallocation_does_not_hide_a_loss
 ```
 
+Break: in `backend/app/hat/risk/controls.py` (kill.trip_cancels_approvals, state): a cancelled approval's signal stays `AwaitingApproval`.
+
+```
+E       # The test always failed when commented parts were varied together. [cut]
+```
+
 ### PBT calendar.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -943,4 +949,3 @@ E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2
 E sqlalchemy.exc.IntegrityError: (psycopg2.errors.CheckViolation) new row for relation "hat_kill_switch" violates check constraint "ck_hat_kill_switch_scope_bot"
 E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2f9e1eba-3061-4ad8-99af-0532002ae618, tripped, 2026-10-20 09:00:00+00, manual, null).
 ```
-

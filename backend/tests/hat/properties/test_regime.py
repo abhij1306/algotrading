@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.data.store import BREADTH_SCHEMA, DATASET_BREADTH, DataStore, IndexRow
+from app.hat.engine import regime_gate
 from app.hat.engine.portfolio import jobs, regime, service
 from app.hat.engine.portfolio.regime import RegimeError
 from app.hat.models import HatEvent, HatMarket, HatRegimeState
@@ -316,3 +317,34 @@ def test_regime_job(closes: list[int], fear: list[int], breadth: list[int]) -> N
                 jobs.regime_job(session, store, missing)
             assert caught.value.code == "regime_no_breadth"
             assert session.scalar(select(func.count()).select_from(HatRegimeState)) == JOB_DAYS
+
+
+# few distinct values, so a close equal to its average (the edge of `>`) is common
+CLOSES = st.lists(st.integers(1, 6).map(D), min_size=0, max_size=30)
+
+
+def sma(closes: list[Decimal], n: int, back: int = 0) -> Decimal | None:
+    end = len(closes) - back
+    if end < n:
+        return None
+    return sum(closes[end - n : end], D(0)) / n
+
+
+@given(CLOSES, st.integers(1, 10), st.integers(1, 5))
+def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None:
+    """HAT-BOT-053: close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
+    SMA_{t-rising}; sma_fast_above_slow_both_rising is true iff SMA_fast > SMA_slow and both are
+    above their value one session earlier; a series too short for the lookback is false. Harm:
+    the gate lets entries through in a falling market or blocks them in a rising one."""
+    now, before = sma(closes, window), sma(closes, window, rising)
+    want = now is not None and before is not None and closes[-1] > now and now > before
+    assert regime_gate.close_above_sma_and_rising(closes, window, rising) is want
+    fast, slow = window, window + 5
+    f0, f1, s0, s1 = (
+        sma(closes, fast),
+        sma(closes, fast, 1),
+        sma(closes, slow),
+        sma(closes, slow, 1),
+    )
+    want2 = None not in (f0, f1, s0, s1) and f0 > s0 and f0 > f1 and s0 > s1  # type: ignore[operator]
+    assert regime_gate.sma_fast_above_slow_both_rising(closes, fast, slow) is want2

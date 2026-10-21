@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.hat.models import HatApproval, HatDailyBotSnapshot, HatEvent, HatKillSwitch
+from app.hat.models import HatApproval, HatDailyBotSnapshot, HatEvent, HatKillSwitch, HatSignal
 from app.hat.risk import kill
 from app.hat.risk.controls import (
     ControlError,
@@ -247,6 +247,10 @@ def test_trip_cancels_pending_approvals(scope: str, reason: str) -> None:
         assert decisions[sb] == ("expired" if scope == "account" else None)
         expired = [e for e in session.scalars(select(HatEvent)) if e.event_type == "signal.expired"]
         assert len(expired) == (2 if scope == "account" else 1)
+        # The state follows the event (HAT-EXEC-042): cancelled ones are Expired, others wait.
+        states = {s.id: s.state for s in session.scalars(select(HatSignal))}
+        assert states[sa] == "Expired"
+        assert states[sb] == ("Expired" if scope == "account" else "AwaitingApproval")
     with Session(memory_engine()) as session:
         a = seed_bot(session)
         s = seed_pending_approval(session, a)
@@ -416,7 +420,7 @@ def test_reallocation_does_not_hide_a_loss(
             currency="INR",
             opened_at=datetime(2026, 3, 1, tzinfo=IST),
             closed_at=datetime.combine(second, time(10, 0), tzinfo=IST),
-            state="closed",
+            state="Closed",
             rules_fired={},
         )
         session.add(position)

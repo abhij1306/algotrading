@@ -137,7 +137,7 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
         sig,
         is_virtual=False,
         qty_open=0,
-        state="closed",
+        state="Closed",
         closed_at=datetime.combine(day + timedelta(days=2), time(10, 0), tzinfo=IST),
     )
     b.trade_result(conn, pos, realized_pnl=Decimal("-9000"), r_multiple=Decimal("-1"))

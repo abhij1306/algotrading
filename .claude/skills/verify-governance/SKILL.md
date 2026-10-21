@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `6721a84079abc4caa892f04f6b10d8a8b635142c9760f29e7854ee4cd049a496`
+Covered digest: `1d0ccaf1c924e7d908d5481d690e72b9a7c850b39706497ca989283910b09d67`
 
 ## Scope changes
 
@@ -153,6 +153,12 @@ Break: the first trigger in `PG_DDL` created with `CREATE TRIGGER` instead of `C
 tests/hat/db/test_db_migration.py
 E   psycopg2.errors.DuplicateObject: trigger "hat_strategy_version_immutable_guard" for relation "hat_strategy_version" already exists
 tests/hat/db/hat_db_rules.py:858: in check_migration__ensure_idempotent
+```
+
+Break: in `backend/app/hat/schema.py`: `PG_DDL` no longer adds `hat_signal_state_check` and `hat_position_state_check` to an existing table.
+
+```
+FAILED tests/hat/db/test_db_migration.py::test_migration__ensure_idempotent
 ```
 
 ### PBT ids.uuid7_ordered

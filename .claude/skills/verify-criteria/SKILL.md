@@ -51,13 +51,17 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `CONF risk_policy_seed_bot_limits` The seed risk policy holds p_max 0.20 for S1, 0.25 for S2 and 6 open positions. Harm: the bots size against limits that differ from the approved design.
 - `CONF import_graph_boundaries` The `app.hat.engine.criteria` package exists in the import graph (the rule is not vacuous) and reaches no broker, execution, database, ORM, router, Telegram or web module, directly or transitively. Harm: a criterion starts to depend on I/O and stops being a pure function of its data.
 - `CONF mvp_seed_scope` The seeds create exactly S1 and S2 on NSE, and every strategy and bot row they create is owned by the one user (the broker half of this check is in verify-execution). Harm: a stray strategy or a row owned by nobody ships with the MVP.
+- `PBT scan.watchlist_gates` A watchlist row exists exactly for the members that traded on the scan date (a member whose last bar is older is not evaluated) and pass the universe stage, the regime gate and the setup, in that order, with those three stages recorded as passed; a closed gate gives no rows; rows are best score first; bars after the scan date change nothing; a playbook scanned live only (episodic pivot) never produces a nightly row. Harm: a symbol shown that failed a stage proposes a trade the strategy would never take.
+- `PBT scan.no_row_for_removed` An instrument removed from the universe produces no watchlist row and the rows of the others are unchanged; `scan_and_publish` uses the bot's own universe on the scan date and publishes once per bot and day. Harm: a removed stock keeps being proposed for entry.
+- `PBT scan.rank_within_members` A universe rank (`momentum_rank`) is taken among the bot's members only: feature rows of instruments outside the universe change no row. Harm: another universe's leaders push this bot's stocks out of its top band.
+- `PBT scan.no_universe_publishes_nothing` A bot with no universe publishes and records nothing, so the same day's run after a universe is assigned still publishes. Harm: an empty "published" watchlist blocks that day's real one.
 
 ## Run
 
 ```bash
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_criteria.py tests/hat/properties/test_scoring.py \
-  tests/hat/properties/test_config.py -q --no-cov
+  tests/hat/properties/test_config.py tests/hat/properties/test_scan.py -q --no-cov
 python -m pytest tests/hat/conformance/test_conf_criteria.py tests/hat/conformance/test_conf_boundaries.py \
   tests/hat/conformance/test_conf_broker.py -q --no-cov
 ```
@@ -108,13 +112,17 @@ Checks:
 - `backend/tests/hat/properties/test_scoring.py`
 - `backend/tests/hat/conformance/test_conf_criteria.py`
 - `backend/tests/hat/fixtures/vcp_oracle.json`
+- `backend/app/hat/engine/scan.py`
+- `backend/app/hat/engine/watchlist.py`
+- `backend/app/hat/engine/regime_gate.py`
+- `backend/tests/hat/properties/test_scan.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `fd9b49567b35b0644a758bf2cf03421b65566eb7bf20a34c13abc79268f55471`
+Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
+Covered digest: `faaa1e4b7fd96c93e7545bb5021789cdf932fd656ab87df2277310b6e0134c88`
 
 ## Scope changes
 
@@ -125,10 +133,11 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The seven live criteria are registered with schemas and answer `not_evaluable` (no data); their contracts, and `max_chase` always applying (HAT-CRIT-122), are PR 15.
 - `neglect` is a trigger type that the Q-EP setup also holds, so it is evaluated here and allowed in a setup list (`extra_stages`).
 - `PBT criteria.fundamentals_point_in_time` (HAT-DEC-I5) is not built: it needs the fundamentals feed (Phase 2). `earnings_growth_contract` covers the point-in-time rule on the criterion itself.
-- `PBT regime.strategy_rules` (HAT-BOT-053) and the shared per-bot cap property of HAT-BOT-050 belong to PR 11 and PR 10; the config model only stores the regime rule.
+- `PBT regime.strategy_rules` (HAT-BOT-053) and the shared per-bot cap property of HAT-BOT-050 were built in PR 11 (`verify-portfolio`, `verify-execution`); the config model only stores the regime rule.
 - The config does not store `version`; the version number lives on the row. The YAML shape of the seeds (implicit stage and order, one inline playbook named `default`) is accepted and stored in the canonical form (explicit stage and order, `playbooks` list).
 - `create_bot` always starts shadow. A config's own `execution_mode` is accepted (the seeds declare shadow) but a mode change goes through the mode-change service of a later PR.
 - `docs/specs/hat/04-criteria-and-bots.md` quotes `level: "max(consolidation_high, opening_range_high)"` in the S2 YAML: unquoted, the comma ends the flow mapping and the block does not parse.
+- PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
 
 ## Scratch breaks
 
@@ -782,3 +791,44 @@ E     UUID('931739cb-92c8-4e63-81e1-b9af3f65ae0e')
 E     Use -v to get more diff
 ```
 
+### PBT scan.watchlist_gates
+
+Break: in `backend/app/hat/engine/scan.py`: a closed regime gate no longer stops the scan.
+
+```
+FAILED tests/hat/properties/test_scan.py::test_watchlist_gates - ExceptionGro [cut]
+============================== 1 failed in 1.64s ===============================
+```
+
+Break: in `backend/app/hat/engine/scan.py`: a member whose last bar is before the scan date is evaluated.
+
+```
+FAILED tests/hat/properties/test_scan.py::test_watchlist_gates - AssertionErr [cut]
+```
+
+### PBT scan.no_row_for_removed
+
+Break: in `backend/app/hat/engine/scan.py`: every instrument with bars is scanned, whether or not it is in the universe.
+
+```
+E   AssertionError: assert not ({'00000000-0000-0000-0000-000000000004'} & {'00000000-0000-0000-0000-000000000004'})
+FAILED tests/hat/properties/test_scan.py::test_no_row_for_removed - Assertion [cut]
+============================== 1 failed in 1.82s ===============================
+```
+
+### PBT scan.rank_within_members
+
+Break: in `backend/app/hat/engine/scan.py`: the features are not restricted to the members before the rank.
+
+```
+E       rows: () != (WatchRow(playbook='default', ... [cut]
+```
+
+
+### PBT scan.no_universe_publishes_nothing
+
+Break: in `backend/app/hat/engine/watchlist.py`: a bot without a universe publishes an empty watchlist and its event.
+
+```
+FAILED tests/hat/properties/test_scan.py::test_no_universe_publishes_nothing
+```

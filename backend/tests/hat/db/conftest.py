@@ -40,6 +40,7 @@ def drop_hat_objects(engine: Engine) -> None:
             connection.execute(text(f'DROP TABLE IF EXISTS "{name}" CASCADE'))
         for function in (
             "hat_stop_only_tightens",
+            "hat_position_never_deleted",
             "hat_event_is_append_only",
             "hat_strategy_version_immutable",
             "hat_universe_version_immutable",

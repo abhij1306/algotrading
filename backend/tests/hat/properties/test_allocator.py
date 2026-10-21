@@ -365,7 +365,7 @@ def test_no_effect_on_open_positions(
                 current_stop=D(96),
                 currency="INR",
                 opened_at=datetime(2026, 10, 1, tzinfo=UTC),
-                state="open",
+                state="Open",
                 rules_fired={},
             )
             for bot_id in ids

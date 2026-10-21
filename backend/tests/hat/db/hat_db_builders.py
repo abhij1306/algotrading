@@ -189,7 +189,7 @@ def signal(conn: Connection, w: dict[str, uuid.UUID], **overrides: object) -> uu
         "risk_amount": Decimal("50"),
         "currency": "INR",
         "mode": "shadow",
-        "state": "triggered",
+        "state": "Triggered",
         "risk_decision": {},
     }
     values.update(overrides)
@@ -244,7 +244,7 @@ def position(
         "current_stop": Decimal("95"),
         "currency": "INR",
         "opened_at": NOW,
-        "state": "open",
+        "state": "Open",
         "rules_fired": {},
     }
     values.update(overrides)

@@ -26,6 +26,8 @@ from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, u
 
 __all__ = [
     "APPROVAL_DECISIONS",
+    "POSITION_STATES",
+    "TRADE_STATES",
     "ORDER_PURPOSES",
     "ORDER_SIDES",
     "ORDER_STATUSES",
@@ -48,6 +50,23 @@ SIGNAL_MODES = ("shadow", "confirm", "auto")
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
 ORDER_SIDES = ("buy", "sell")
 APPROVAL_DECISIONS = ("take", "skip", "expired")
+# The 11 trade-lifecycle states of 07 §4 (D18, Q16) in table order; a position holds the last four
+# active ones and Closed. `app.hat.engine.lifecycle` owns the transitions (CONF
+# `lifecycle_transitions_match_spec` compares them).
+TRADE_STATES = (
+    "Watchlisted",
+    "Triggered",
+    "AwaitingApproval",
+    "EntryPlaced",
+    "Open",
+    "PartiallyExited",
+    "ExitPending",
+    "Closed",
+    "Rejected",
+    "Expired",
+    "Cancelled",
+)
+POSITION_STATES = ("Open", "PartiallyExited", "ExitPending", "Closed")
 # Owner-pending default (HAT-SCH-058): derived from the event catalogue and SUBMIT_UNCONFIRMED.
 ORDER_STATUSES = (
     "pending",
@@ -88,6 +107,7 @@ class HatSignal(Base):
         UniqueConstraint("bot_id", "playbook", "instrument_id", "trade_date"),
         CheckConstraint("qty >= 0", name="ck_hat_signal_qty"),
         CheckConstraint(in_values("mode", SIGNAL_MODES), name="ck_hat_signal_mode"),
+        CheckConstraint(in_values("state", TRADE_STATES), name="hat_signal_state_check"),
         Index("hat_signal_bot_date", "bot_id", "trade_date"),
     )
 
@@ -106,7 +126,7 @@ class HatSignal(Base):
     currency = Column(Currency, nullable=False)
     # The mode in force when the signal triggered.
     mode = Column(Text, nullable=False)
-    # Trade lifecycle state (07 §4); the transition table arrives with the lifecycle (PR 11).
+    # Trade lifecycle state (07 §4); `app.hat.engine.lifecycle` moves it with its event.
     state = Column(Text, nullable=False)
     risk_decision = Column(JsonB, nullable=False)
 
@@ -202,6 +222,7 @@ class HatPosition(Base):
     __tablename__ = "hat_position"
     __table_args__ = (
         CheckConstraint("qty_open >= 0", name="ck_hat_position_qty_open"),
+        CheckConstraint(in_values("state", POSITION_STATES), name="hat_position_state_check"),
         # The update trigger cannot see an INSERT: a position starts with its initial stop.
         CheckConstraint("current_stop >= initial_stop", name="ck_hat_position_stop_tightens"),
         Index(

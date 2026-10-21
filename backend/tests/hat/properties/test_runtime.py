@@ -51,7 +51,7 @@ def write_trade(mode: str, decision: str, purposes: list[str], fills: int) -> uu
                 risk_amount=Decimal("5"),
                 currency="INR",
                 mode=mode,
-                state="open",
+                state="Open",
                 risk_decision={},
             )
         )
@@ -79,7 +79,7 @@ def write_trade(mode: str, decision: str, purposes: list[str], fills: int) -> uu
                 current_stop=Decimal("95"),
                 currency="INR",
                 opened_at=NOW,
-                state="open",
+                state="Open",
                 rules_fired={},
             )
         )

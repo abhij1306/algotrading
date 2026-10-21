@@ -26,10 +26,12 @@ A bot version is nine stages evaluated in a fixed order (BL "Configuration model
 - **Statement:** The engine evaluates a bot version's stages in the order universe, regime gate, setup, trigger, entry filters, sizing, stop, exit stack, execution mode, and a symbol reaches a later stage only after passing every earlier one.
 - **Source:** BL "Configuration model"; B3, B4, T12.
 - **PR:** 8, 11
-- **Verification:** PBT `scoring.stage_order`
+- **Verification:** PBT `scoring.stage_order`, PBT `scan.watchlist_gates`, PBT `scan.no_universe_publishes_nothing`, DB `runtime.publish_serialised`
 - **Acceptance:**
   - Property: for every bot config and every generated feature frame, no symbol has a setup result unless it passed the universe stage and the regime gate allowed longs, and no trigger is evaluated for a symbol absent from that day's watchlist (except the episodic-pivot playbook, HAT-BOT-052). Harm: a stock that fails liquidity or regime rules could still become a trade.
   - Property: for every symbol, the stage outputs recorded in `criteria_results` appear in stage order and stop at the first failing stage. Harm: rejection reasons point at the wrong stage and the digest misleads the owner.
+  - Property: the nightly scan evaluates only members that have a bar on the scan date; a member whose last bar is older (suspended, no data) is not evaluated on stale bars. Harm: a stock that did not trade is proposed from old prices.
+  - Property: a bot with no universe publishes nothing and records no `watchlist.published`, so a run on the same day after a universe is assigned still publishes; two concurrent publishes of one bot and day write one event (the bot's lock serialises them). Harm: an empty or duplicate watchlist blocks or doubles the day's real one.
 
 #### HAT-CRIT-011: Only stages 1, 3, 4 and 5 hold library criteria
 - **Statement:** Stages 1, 3, 4 and 5 hold criteria from the library; stages 2, 6, 7, 8 and 9 hold rules with parameters, and stage 6 holds no bot-level values at all.
@@ -252,10 +254,11 @@ Common properties for every catalogue type (apply to each requirement below; ver
 #### HAT-CRIT-110: `momentum_rank`
 - **Statement:** `momentum_rank` passes iff the instrument's return is in the top 2% of the universe over any (default) or all of the 21, 63 and 126-day windows.
 - **Source:** BL "Criteria library"; BL "Qullamaggie-style bot".
-- **PR:** 8
-- **Verification:** PBT `criteria.momentum_rank_contract`
+- **PR:** 8, 11
+- **Verification:** PBT `criteria.momentum_rank_contract`, PBT `scan.rank_within_members`
 - **Acceptance:**
   - Property: for every universe return matrix, with `match: any` `passed` iff some window w has the instrument within the top `top_pct`% by `ret_w`, and with `match: all` iff every window does; the passing count per window is at most ceil(top_pct/100 × universe size) plus ties. Harm: the breakout playbook trades stocks that are not the market's strongest movers.
+  - Property: in the nightly scan the universe is the bot's members on the scan date: feature rows of instruments outside it never move the cutoff. Harm: another universe's leaders push this bot's stocks out of its top band.
 
 #### HAT-CRIT-111: `consolidation`
 - **Statement:** `consolidation` passes iff the most recent 5 to 15 sessions form a range no wider than 15% with higher lows (when on).
@@ -371,8 +374,8 @@ A **playbook** is a named set of setup, trigger, entry filters and stop; a bot c
 #### HAT-BOT-050: A playbook bundles setup, trigger, entry filters and stop
 - **Statement:** A bot holds one or more named playbooks, each with its own setup, trigger, entry filters and stop rule, while regime gate, sizing (risk policy) and exit stack are bot-level and shared.
 - **Source:** BL "Configuration model" (stages 3-5 and 7 repeat as playbooks); BL "Qullamaggie-style bot".
-- **PR:** 8
-- **Verification:** PBT `config.playbook_shape`
+- **PR:** 8, 11
+- **Verification:** PBT `config.playbook_shape`, PBT `trades.shared_bot_cap`
 - **Acceptance:**
   - Property: for every valid config, each playbook has a unique name within the bot and exactly one stop rule, and no playbook carries a regime rule, sizing value or exit stack. Harm: playbooks drift into separate risk or exit behaviour the owner did not approve.
   - Property: for every bot, signals from all playbooks count against the same per-bot caps and capital (06 §3). Harm: two playbooks double the bot's risk budget.

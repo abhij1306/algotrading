@@ -58,10 +58,11 @@ The router receives a signal only after `evaluate_signal` returned ACCEPT (06 §
 #### HAT-EXEC-021: Duplicate triggers are refused
 - **Statement:** One signal per (bot, playbook, instrument, trade_date); the signal id is the idempotency key, and a second trigger never creates a second order.
 - **Source:** MA "Failure handling" (Duplicate trigger); SCH `hat_signal` unique key.
-- **PR:** 3, 15
-- **Verification:** TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`
+- **PR:** 3, 11, 15
+- **Verification:** TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal`
 - **Acceptance:**
   - Property: in every behaviour, including concurrent and repeated triggers, at most one entry order exists per signal key. Harm: a double position at double risk.
+  - Property: a repeated trigger returns the existing signal before any entry rule is re-checked, so a retry after a mode or universe change finds the trade it already made and writes nothing. Harm: a retried job fails and its caller cannot tell the trade was taken.
 
 #### HAT-EXEC-022: Router honours invariants 4 and 5
 - **Statement:** The router places no entry while the feed is stale or the day's data failed the gate, and no order outside market hours.
@@ -145,6 +146,7 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 | --- | --- | --- | --- |
 | (none) | Watchlisted | `watchlist.published` | nightly scan row (EP: pre-open scan) |
 | Watchlisted | Triggered | `signal.triggered` | trigger criteria pass live |
+| Watchlisted | Expired | (session end, no event) | the trade date's session ended and the signal never triggered; the watchlist row's status becomes Expired |
 | Triggered | Rejected | `signal.rejected` | risk decision REJECT or entry filter fails |
 | Triggered | AwaitingApproval | (approval sent) | mode confirm |
 | Triggered | EntryPlaced | `order.placed` | mode auto, or shadow (virtual order) |
@@ -164,9 +166,10 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 - **Statement:** A trade's state is one of the 11 states above and changes only along the transition table.
 - **Source:** BL "Trade lifecycle"; SCH "Event types (MVP)".
 - **PR:** 11
-- **Verification:** TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`
+- **Verification:** TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec`
 - **Acceptance:**
   - Property: in every reachable state, every trade is in exactly one of the 11 states, and every step changes it only along a row of the transition table. Harm: a trade reaches an impossible state (for example Open without an entry fill) and is mismanaged.
+  - Property: the states and transitions the code holds equal the table above, row for row. Harm: the machine that runs is not the machine the owner approved.
 
 #### HAT-EXEC-041: Endings are terminal and every trade ends
 - **Statement:** Closed, Rejected, Expired and Cancelled are terminal; every trade that has not opened (Watchlisted, Triggered, AwaitingApproval, EntryPlaced) eventually reaches an ending or Open. An open trade has no deadline: it ends only when an exit rule or the stop fires.
@@ -203,6 +206,16 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 - **Acceptance:**
   - Property: the transition relation for virtual trades is identical to the one for real trades, with broker actions replaced by the virtual fill engine. Harm: shadow evidence does not predict live behaviour.
 
+#### HAT-EXEC-045: One bot's entries are evaluated and written one at a time
+- **Statement:** A bot's risk evaluation, its signal and its entry order are written in one transaction that holds a per-bot lock, so two concurrent triggers can never both take the last position slot; every bot's signals, from every playbook, count against the same caps.
+- **Source:** CodeAnt review of the risk PR (#88); HAT-RISK-031, HAT-RISK-100; HAT-BOT-050; BL "Trade lifecycle".
+- **PR:** 11
+- **Verification:** TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap`
+- **Acceptance:**
+  - Property: in every reachable state, the number of one bot's trades that hold a slot (EntryPlaced, Open, PartiallyExited, ExitPending) is at most the position cap. Harm: two simultaneous triggers each see one free slot and the bot holds more positions than its cap, and so more open risk than its budget.
+  - Property: for two concurrent evaluations of one bot with one slot left, exactly one is accepted and the other rejected with `max_positions`; with the lock removed (broken variant) both are accepted. Harm: as above.
+  - Property: for every sequence of triggers across a bot's playbooks, the accepted entries never exceed the cap, whichever playbook they come from. Harm: two playbooks double the bot's risk budget.
+
 ## §5 Stop rules
 
 | Rule | Parameters | Used by |
@@ -224,7 +237,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
   - Property: for every final contraction low L > 0, entry P > 0 and buffer b, the stop equals L × (1 − b/100) rounded down to the tick, and the result is SKIP exactly when (P − stop)/P > max_pct/100. Harm: stops wider than the playbook allows are accepted, or valid trades are dropped.
 
 #### HAT-EXEC-051: low_of_day
-- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1).
+- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid.
 - **Source:** BL "Stop rules"; BL "Qullamaggie-style bot" (`stop: {rule: low_of_day}`).
 - **PR:** 11
 - **Verification:** PBT `stops.low_of_day`

@@ -15,6 +15,7 @@ from decimal import ROUND_CEILING, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..engine.lifecycle import AWAITING_APPROVAL, next_state
 from ..errors import HatError
 from ..events import record
 from ..models import (
@@ -84,6 +85,8 @@ def cancel_pending_approvals(
     for approval, signal in session.execute(query).all():
         approval.decision = "expired"
         approval.decided_at = now
+        if signal.state == AWAITING_APPROVAL:  # the state follows its event (HAT-EXEC-042)
+            signal.state = next_state(signal.state, "signal.expired")
         record(
             session,
             aggregate_type="signal",
