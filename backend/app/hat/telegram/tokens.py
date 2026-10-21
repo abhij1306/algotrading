@@ -23,7 +23,6 @@ Nothing here touches the database or logs; the raw tokens exist only in the butt
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import hmac
 import uuid
@@ -84,7 +83,7 @@ def _encode(raw: bytes) -> str:
 def _decode(text: str) -> bytes | None:
     try:
         return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
-    except (binascii.Error, ValueError):
+    except ValueError:  # binascii.Error is a ValueError
         return None
 
 

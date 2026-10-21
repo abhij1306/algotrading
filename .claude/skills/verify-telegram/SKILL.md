@@ -115,7 +115,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `aae769819750f1c99f4da6039172a6cca4306f6e5853144219f8b58c83421f54`
+Covered digest: `5fd3a7c3dd10a5e1792c8c570601818749888829bc8be128c31200360de245fd`
 
 ## Scope changes
 
@@ -129,6 +129,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `TLA ApprovalToken!SecondConfirmRequired` models the confirmation of a lever (auto, re-arm, flatten), not the approval card; the card's signature and single use are checked on the real code (`telegram.token_forgery_rejected`, `telegram.expiry_window`).
 - Review round (before the first push): sales of one position are now serialised in `TradeManager` (`_sale_lock`, held from the "nothing else is selling" check until the order is sent), because the Telegram flatten runs on its own thread beside the tick path; `ManagerFlattener` must be given the same `TradeManager` instances the live exits use (PR 17 wiring). A flatten confirmed outside the session is refused (`market_closed`) with nothing recorded, and one position or account that fails no longer stops the others (`FlattenReport.failed`); `telegram.flatten_logged` now asserts the refusal after 15:30. The poller survives any error, a refused button answer no longer loses the reply, an unrenderable event is skipped instead of holding back the relay, a Take whose placement was refused says so, `route_by_mode` refuses confirm bots (their cards need the router's signer), and `/mode` on a day the calendar lacks says `no_calendar`. `telegram.relay_late_commit` and `telegram.veto_digest_on_week_end` were added for the relay gaps and the week-end rule, which had no check.
 - `TgRig` uses `OpenFlattener` (no positions, session open) instead of an empty `ManagerFlattener`; the real `ManagerFlattener` over `TradeManager` runs in `telegram.flatten_logged`.
+- Sonar round (PR #113): `COMMANDS` is now `tuple(_ARITY)`, so the command set is written once; the token decoder catches `ValueError` alone (`binascii.Error` is one). Behaviour is unchanged and every check here passed again. The `logging.exception` suggestions were declined: a traceback can carry broker or database text, so failures log only the exception type (HAT-TG-014).
 
 ## Scratch breaks
 

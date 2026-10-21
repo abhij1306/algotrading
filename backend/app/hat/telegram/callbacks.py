@@ -160,7 +160,7 @@ class ButtonContext:
 
 
 def _approval_button(ctx: ButtonContext, session: Session, data: str) -> tuple[str, str, Reply]:
-    command = "take" if data[:1] == TAKE else "skip"
+    command = "take" if data.startswith(TAKE) else "skip"
     claim = ctx.signer.verify(data)
     if claim is None:
         return command, "", refused("bad_token")

@@ -658,8 +658,9 @@ def test_no_secret_in_output(secret: bytes, bot_token: str, broker_text: str) ->
                 "R", (), {"status_code": 401, "json": lambda _s: {"description": bot_token}}
             )(),
         ):
+            client = BotClient(HttpsTransport(bot_token, post=post), CHAT)
             with pytest.raises(TelegramError) as raised:
-                BotClient(HttpsTransport(bot_token, post=post), CHAT).send("x")
+                client.send("x")
             assert raised.value.__cause__ is None
             assert raised.value.__context__ is None or raised.value.__suppress_context__
             failures.append(f"{raised.value} {raised.value!r} {raised.value.code}")

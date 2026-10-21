@@ -49,19 +49,7 @@ __all__ = [
     "run_command",
 ]
 
-COMMANDS = (
-    "/status",
-    "/positions",
-    "/watchlist",
-    "/pause",
-    "/resume",
-    "/mode",
-    "/kill",
-    "/flatten",
-    "/arm",
-    "/login",
-)
-# (fewest, most) arguments of each command.
+# (fewest, most) arguments of each command; its keys are the command set, in spec order.
 _ARITY = {
     "/status": (0, 0),
     "/positions": (0, 0),
@@ -74,6 +62,7 @@ _ARITY = {
     "/arm": (0, 0),
     "/login": (0, 1),
 }
+COMMANDS = tuple(_ARITY)
 _MAX_ARG = 64
 
 

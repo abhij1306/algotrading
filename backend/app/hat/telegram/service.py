@@ -207,7 +207,10 @@ class TelegramService:
     ) -> Handled:
         """HAT-TG-005: one refused row, nothing else, and no reply."""
         head = (text or "").strip().split(maxsplit=1)
-        command = "callback" if data is not None else (head[0][:64] if head else "text")
+        if data is not None:
+            command = "callback"
+        else:
+            command = head[0][:64] if head else "text"
         with self._factory() as session:
             store.log_command(
                 session,
