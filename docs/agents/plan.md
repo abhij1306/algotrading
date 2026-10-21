@@ -48,7 +48,7 @@ W8  PR16 Telegram (10,15)
 W9  PR17 daily-cycle wiring, HAT API + dashboard, Compose, runbook (7,12,16)
 ```
 
-That is 17 PRs: 1 docs plus 16 code. Up to 4 can be built in parallel (W3).
+That is 17 PRs: 1 docs plus 16 code. A wave lists what *could* run in parallel; at most two builders run at once.
 
 ---
 

@@ -50,7 +50,7 @@ git worktree created for your PR by the orchestrator (see `orchestrator.md`). Wo
   - Existing repo unit tests stay unless they test legacy behaviour that conflicts with the specs; then change or delete them and say so. Reuse `FakeBroker`, `freeze_market`, `FixedClock` where a property test needs them. Never call real Fyers, NSE or Telegram; fake HTTP with recorded fixtures.
 - Java 17+ for TLC and the TLC jar version pinned in `verification/`.
 - Zero new ruff errors and zero new warnings. Route or response-model changes need `pnpm gen:api` and the regenerated `frontend/lib/api/schema.d.ts` committed.
-- Before pushing, run locally from the worktree root: `ruff format --check .`, `ruff check .`, the tests your diff touches plus `tests/hat/conformance` (HARD RULE 1), `python -m pytest -m postgres --no-cov -q <your db test files>` when you touch schema, and `pnpm check` when you touch the frontend.
+- Before pushing, run locally: from the worktree root, `ruff format --check .` and `ruff check .`; from `backend/`, the tests your diff touches plus `tests/hat/conformance` (HARD RULE 1), `python -m pytest -m postgres --no-cov -q <your db test files>` when you touch schema, and `pnpm check` when you touch the frontend.
 - Commits: conventional style like the existing history (`feat(hat): ...`, `docs(hat): ...`). End every commit message with:
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
 

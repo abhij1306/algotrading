@@ -60,7 +60,9 @@ def vitest_view(lines: list[str]) -> list[str] | None:
             in_fail = True
         if in_fail or VITEST_FAIL.search(line) or VITEST_SUMMARY.match(line):
             out.append(line)
-    return out
+    # Keep output from commands chained after the test run, as pytest_view does.
+    last = max(i for i, line in enumerate(lines) if VITEST_SUMMARY.match(line))
+    return out + [line for line in lines[last + 1 :] if line not in out][-TAIL_UNKNOWN:]
 
 
 def main() -> None:
