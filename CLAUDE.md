@@ -169,3 +169,12 @@ an `aiohttp` that does not build on Python 3.14.
 3. Run the quality checks above.
 4. Update `docs/specs/hat/` for any HAT behaviour or interface change.
 5. Submit.
+
+---
+
+## Agent Workflow
+
+The HAT MVP is built by an orchestrator agent and up to two builder agents in herdr tabs. On a new
+machine: `scripts/agents/bootstrap.sh`, then `/hat-orchestrator`. Orchestrator guide:
+`docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`. Roadmap and
+status: `docs/agents/plan.md`.
