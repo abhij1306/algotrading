@@ -177,6 +177,7 @@ How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `
 
 - The entry's first fill moves EntryPlaced to Open; a later fill of the same order adds to the position at the weighted average price. The entry is a DAY limit order: a remainder still unfilled at the close expires at the broker and the filled part is kept as the position. Only an entry order that ended with nothing filled drives EntryPlaced → Cancelled; an `order.cancelled` of a stop or a sale moves no state. **[OWNER-PENDING]** (partial-entry policy; this is the default).
 - No sale is placed for a broker stop: the first fill of a stop (or any fill that empties a position no full exit order was placed for) carries `exit_triggered: true` on its `order.filled`, which stands for the "exit order placed" step (ExitPending) on replay.
+- An entry the exchange rejects after the broker took it (nothing filled) records a final `order.rejected` and ends its signal Rejected.
 - An entry HAT may have sent (pending or unconfirmed) that the broker's book does not hold at the session end, after a good reconciliation, ends its signal Rejected with reason `entry_not_found`.
 
 #### HAT-EXEC-040: Lifecycle states and transitions
@@ -191,8 +192,8 @@ How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `
 #### HAT-EXEC-041: Endings are terminal and every trade ends
 - **Statement:** Closed, Rejected, Expired and Cancelled are terminal; every trade that has not opened (Watchlisted, Triggered, AwaitingApproval, EntryPlaced) eventually reaches an ending or Open. An open trade has no deadline: it ends only when an exit rule or the stop fires.
 - **Source:** BL "Trade lifecycle".
-- **PR:** 11
-- **Verification:** TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`
+- **PR:** 11, 15
+- **Verification:** TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`, PBT `manage.entry_ended_by_broker`
 - **Acceptance:**
   - Property: no step leaves an ending state. Harm: a closed or rejected trade re-opens and holds risk budget.
   - Property: under weak fairness of the expiry, session-end and broker-update actions, every trade in Watchlisted, Triggered, AwaitingApproval or EntryPlaced eventually reaches Open or an ending (Watchlisted ends at the session end of its trade date). Harm: pending signals and entry orders linger and block the one-signal-per-day key or fill later at a stale price.
@@ -289,10 +290,11 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
 
 - The fill sync reads the broker's order and trade books (fail closed) and protects a position right after recording each of its fills, before any other action on it. With no working stop it places an intraday SL-M SELL CNC stop in the session before 15:25 and a GTT from 15:25 on and after the close (a day stop placed after the swap would expire with no GTT behind it); a working stop for another quantity is resized. A stop the broker refuses after the one retry is alerted (`stop.not_placed`) and placed again by the next sync, which protects every open real position HAT's book shows without a working stop.
 - A broker stop's trigger is `current_stop` rounded down to the instrument's tick, so it is never above `current_stop`; `follow` modifies it up and never down, and a refused modify is alerted (`stop.not_moved`).
-- `gtt.swap` (15:25, retried every minute until it succeeds) places the GTT first and cancels the intraday stop only once the GTT is confirmed; a failure leaves the intraday stop working and is alerted (`gtt.swap_failed`). A position with a sale still working is swapped on the retry.
-- `gtt.verify` (23:00) reads the fills first, then refreshes each open real position's GTT to the current stop (`gtt.refreshed`); a GTT the broker does not confirm is alerted (`gtt.missing`), ended in HAT's book and placed again; when the broker cannot be reached, or no tick is known, the position is alerted (`gtt.unverified`) and nothing is placed.
+- `gtt.swap` (15:25, retried every minute until it succeeds) places the GTT first and cancels the intraday stop only once the GTT is confirmed; a failure leaves the intraday stop working and is alerted (`gtt.swap_failed`). An intraday stop the broker did not confirm cancelled fails the run, so the cancel is tried again (two resting stops would sell the same shares twice). A position with a sale still working is swapped on the retry.
+- `gtt.verify` (23:00) reads the fills first, then refreshes each open real position's GTT to the current stop (`gtt.refreshed`). A GTT whose refresh the broker refuses is cancelled, then alerted (`gtt.missing`) and placed again; a position with no GTT in HAT's book is alerted and gets one. A GTT is never placed on top of one that may still rest at the broker: when the broker cannot be reached, the refused GTT cannot be cancelled, a GTT's placement answer was lost (GTTs carry no tag to look up), or no tick is known, the position is alerted (`gtt.unverified`) and nothing is placed. The broker interface has no GTT book read (§8); with one, the verify could settle these cases itself. **[OWNER-PENDING]**
 - Fyers GTTs carry no order tag, so an untagged SELL trade on the symbol of the one open real position with a working GTT is attributed to that GTT, and an untagged SELL order on it that ended short of its quantity is the GTT triggering without a fill (`gtt.unfilled`, then protected again). A symbol two open positions share is not attributed. **[verify on a live account]**
-- `hard_stop` is never sold by HAT while a broker stop rests: the broker stop is the hard stop. A position whose stop the broker keeps refusing is alerted, not sold at market. **[OWNER-PENDING]** (whether to flatten such a position instead).
+- An exit sale first shrinks the position's resting stops to the shares that stay (cancels them for a full exit), since a broker holds the shares a resting CNC sell covers; a stop that cannot be changed holds the sale back (`exit.not_placed`, reason `stop_not_moved`), and a sale that is refused or rejected twice has the position protected again at once. A sale rejected twice in a session is not tried again that session.
+- `hard_stop` is never sold by HAT while a broker stop may rest (placed, or sent with its answer lost): the broker stop is the hard stop; with none, HAT sells at market. A position whose stop the broker keeps refusing is alerted, not sold at market. **[OWNER-PENDING]** (whether to flatten such a position instead).
 - Nothing in stop placement checks a kill switch or pause (06 §6).
 
 #### HAT-EXEC-060: Stop at the broker on every real fill
@@ -315,7 +317,7 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
 - **Statement:** The GTT limit price is set 1% [A] below its trigger price.
 - **Source:** BL "Stop placement" step 3; BL "Defaults that are assumptions" (GTT limit offset).
 - **PR:** 13, 15
-- **Verification:** PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`
+- **Verification:** PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled`
 - **Acceptance:**
   - Property: for every trigger price T > 0 and tick size, the GTT limit equals T × (1 − 0.01) rounded down to the tick and is < T. Harm: a gap-down skips past the limit and the stop never fills.
   - Property: in every behaviour where a GTT triggers and is not filled, a health alert is raised for that position. Harm: the owner believes the position is protected after the stop failed to fill.

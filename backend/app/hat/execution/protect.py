@@ -64,12 +64,14 @@ __all__ = [
     "ALERT_GTT_UNVERIFIED",
     "ALERT_STOP_NOT_MOVED",
     "ALERT_STOP_NOT_PLACED",
+    "LIVE",
     "STOP_DAY",
     "STOP_GTT",
     "SWAP_AT",
     "WORKING",
     "StopDesk",
     "TickSource",
+    "UNSURE",
     "broker_trigger",
 ]
 
@@ -79,8 +81,8 @@ STOP_DAY = "stop_day"
 STOP_GTT = "stop_gtt"
 EXIT_SALES = ("exit_partial", "exit_full", "flatten")
 WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
-_LIVE = ("placed", "partially_filled")
-_UNSURE = ("pending", "unconfirmed")
+LIVE = ("placed", "partially_filled")
+UNSURE = ("pending", "unconfirmed")
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 
@@ -310,7 +312,7 @@ class StopDesk:
             if isinstance(sent, str):
                 self._alert(alert, target, now, sent)
                 return False
-            if sent.status in _LIVE:
+            if sent.status in LIVE:
                 return True
             if sent.status != "rejected":
                 self._alert(alert, target, now, sent.code)  # unconfirmed: told, left to sync
@@ -322,7 +324,7 @@ class StopDesk:
     def _resend(self, session: Session, target: _Target, row: HatOrder) -> bool:
         """Send a stop reserved earlier whose outcome is not known yet (by its own tag)."""
         sent = self._send(session, target, row.tag, self._tick_for(session, target.position))
-        return not isinstance(sent, str) and sent.status in _LIVE
+        return not isinstance(sent, str) and sent.status in LIVE
 
     # --- protect, resize, cancel --------------------------------------------------------------
 
@@ -335,13 +337,17 @@ class StopDesk:
             self.cancel_all(session, position_id, now)
             return CLOSED
         working = self.stops_of(session, position.id)
-        live = [row for row in working if row.status in _LIVE and row.broker_order_id]
+        if any(row.purpose == STOP_GTT and row.status == "partially_filled" for row in working):
+            # The GTT triggered and its sale is part filled: the rest may still sell. The sync
+            # protects what is left once that order ends (`FillSync._gtt_unfilled`).
+            return PROTECTED
+        live = [row for row in working if row.status in LIVE and row.broker_order_id]
         if live:
             for row in live:
                 if row.qty != position.qty_open:
                     self._resize(session, target, row, now)
             return PROTECTED
-        unsure = [row for row in working if row.status in _UNSURE]
+        unsure = [row for row in working if row.status in UNSURE]
         if any(self._resend(session, target, row) for row in unsure):
             return PROTECTED
         if any(row.status == "unconfirmed" and row.purpose == STOP_GTT for row in unsure):
@@ -352,10 +358,14 @@ class StopDesk:
         return PLACED if self._place(session, target, purpose, now) else FAILED
 
     def _resize(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> None:
-        qty = target.position.qty_open
+        self._resize_to(session, target, row, target.position.qty_open, now)
+
+    def _resize_to(
+        self, session: Session, target: _Target, row: HatOrder, qty: int, now: datetime
+    ) -> bool:
         trigger = Decimal(row.trigger_price) if row.trigger_price is not None else None
         if trigger is None or row.broker_order_id is None:
-            return
+            return False
         if row.purpose == STOP_DAY:
             ack = self._broker.modify_order(
                 row.broker_order_id, order_type=OrderType.SL_M, qty=qty, trigger_price=trigger
@@ -364,17 +374,18 @@ class StopDesk:
             tick = self._tick_for(session, target.position)
             if tick is None:
                 self._alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
-                return
+                return False
             ack = self._broker.modify_gtt(
                 GttModify(row.broker_order_id, qty, trigger, gtt_limit_price(trigger, tick))
             )
         if not ack.ok:
             self._alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
-            return
+            return False
         row.qty = qty
         if row.purpose == STOP_GTT:
             self._order_event(session, row, target, "gtt.refreshed", now)
         session.commit()
+        return True
 
     def cancel_all(self, session: Session, position_id: uuid.UUID, now: datetime) -> int:
         """Cancel the working stops of a position that has nothing left to protect (a stop
@@ -406,6 +417,23 @@ class StopDesk:
         session.commit()
         return True
 
+    def make_room(self, session: Session, position_id: uuid.UUID, keep: int, now: datetime) -> bool:
+        """Before a sale: shrink the position's resting stops to the `keep` shares that stay
+        (cancel them when none stay), since a broker holds the shares a resting CNC sell covers
+        and would refuse the sale. True when no stop covers more than `keep` shares; a stop that
+        could not be changed is alerted and the sale waits. A failed sale is protected again by
+        the next sync."""
+        target = self._target(session, position_id)
+        done = True
+        for row in self.stops_of(session, position_id):
+            if row.qty <= keep:
+                continue
+            if keep <= 0 or row.status not in LIVE:
+                done = self._cancel(session, target, row, now) and done
+            else:
+                done = self._resize_to(session, target, row, keep, now) and done
+        return done
+
     # --- follow the stop up -------------------------------------------------------------------
 
     def follow(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
@@ -418,7 +446,7 @@ class StopDesk:
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
         done = True
-        for row in self.stops_of(session, position.id, *_LIVE):
+        for row in self.stops_of(session, position.id, *LIVE):
             current = Decimal(row.trigger_price) if row.trigger_price is not None else None
             if current is not None and goal <= current:
                 if goal < current:
@@ -473,12 +501,12 @@ class StopDesk:
             return CLOSED
         if self.exit_working(session, position.id):
             return EXIT_WORKING  # the sale comes first; the job tries the swap again
-        gtts = self.stops_of(session, position.id, *_LIVE)
+        gtts = self.stops_of(session, position.id, *LIVE)
         has_gtt = any(row.purpose == STOP_GTT and row.broker_order_id for row in gtts)
         if not has_gtt:
             unsure = [
                 row
-                for row in self.stops_of(session, position.id, *_UNSURE)
+                for row in self.stops_of(session, position.id, *UNSURE)
                 if row.purpose == STOP_GTT
             ]
             has_gtt = any(self._resend(session, target, row) for row in unsure)
@@ -487,10 +515,14 @@ class StopDesk:
                 return FAILED
         if not has_gtt and not self._place(session, target, STOP_GTT, now, ALERT_GTT_SWAP_FAILED):
             return FAILED  # the intraday stop keeps working; alerted
-        for row in self.stops_of(session, position.id):
-            if row.purpose == STOP_DAY:
-                self._cancel(session, target, row, now)
-        return SWAPPED
+        cancelled = [
+            self._cancel(session, target, row, now)
+            for row in self.stops_of(session, position.id)
+            if row.purpose == STOP_DAY
+        ]
+        # A day stop not cancelled (refused, or its outcome unknown) would sell the same shares
+        # as the GTT: the job fails and tries the cancel again.
+        return SWAPPED if all(cancelled) else FAILED
 
     # --- the nightly verify -------------------------------------------------------------------
 
@@ -505,9 +537,7 @@ class StopDesk:
         goal = broker_trigger(Decimal(position.current_stop), tick)
         gtts = [row for row in self.stops_of(session, position.id) if row.purpose == STOP_GTT]
         live = [
-            (row, row.broker_order_id)
-            for row in gtts
-            if row.status in _LIVE and row.broker_order_id
+            (row, row.broker_order_id) for row in gtts if row.status in LIVE and row.broker_order_id
         ]
         if tick is None:
             # No GTT price can be set without the tick: told, and nothing is ended or placed.
@@ -522,13 +552,21 @@ class StopDesk:
                 self._order_event(session, row, target, "gtt.refreshed", now)
                 session.commit()
                 return VERIFIED
-            if ack.code == BROKER_UNAVAILABLE:
+            if ack.code == BROKER_UNAVAILABLE or not self._cancel(session, target, row, now):
+                # The old GTT may still rest at the broker: a second one could sell the same
+                # shares twice. Told, and nothing is placed.
                 self._alert(ALERT_GTT_UNVERIFIED, target, now, ack.code)
                 return UNVERIFIED
-        # No GTT the broker confirms (none, refused, triggered or never confirmed): alert and
-        # place a new one. A row left open is ended first so it is never sent again.
+        elif any(row.status == "unconfirmed" for row in gtts):
+            # A GTT whose answer was lost has no tag to look it up by and may rest at the
+            # broker: told every night until the owner settles it; nothing is placed.
+            self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
+            return UNVERIFIED
+        # No GTT rests at the broker (none, cancelled above, triggered or ended): alert and place
+        # a new one. A row left open is ended first so it is never sent again.
         self._alert(ALERT_GTT_MISSING, target, now, "no_active_gtt")
         for row in gtts:
-            row.status = "expired"
+            if row.status in WORKING:
+                row.status = "expired"
         session.commit()
         return REPLACED if self._place(session, target, STOP_GTT, now) else FAILED

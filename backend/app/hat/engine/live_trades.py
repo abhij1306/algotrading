@@ -385,7 +385,8 @@ def record_close_evaluation(
 ) -> bool:
     """Record the live price a 15:20-15:25 evaluation used for the position's `close_below_sma`
     rules (`exit.close_evaluated`), whether or not one fired. False, writing nothing, when the
-    position has no enabled `close_below_sma` rule or the view has no price."""
+    position has no enabled `close_below_sma` rule, the view has no price, or the trade date's
+    evaluation is already recorded (a retried job)."""
     position = session.get(HatPosition, position_id)
     if position is None:
         raise TradeError("unknown_position")
@@ -396,7 +397,7 @@ def record_close_evaluation(
         for index, rule in enumerate(rules)
         if rule.enabled and rule.rule == CLOSE_RULE
     ]
-    if not close_rules or view.price is None:
+    if not close_rules or view.price is None or _close_recorded(session, position.id, trade_date):
         return False
     ids = [rid for rid, _ in close_rules]
     levels = {
@@ -422,6 +423,16 @@ def record_close_evaluation(
         veto=_is_veto(signal, position),
     )
     return True
+
+
+def _close_recorded(session: Session, position_id: uuid.UUID, trade_date: date) -> bool:
+    payloads = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.event_type == CLOSE_EVALUATED, HatEvent.aggregate_id == position_id
+        )
+    )
+    day = trade_date.isoformat()
+    return any((payload or {}).get("trade_date") == day for payload in payloads)
 
 
 def _gap_pct(gap: Decimal, live: Decimal) -> Decimal:

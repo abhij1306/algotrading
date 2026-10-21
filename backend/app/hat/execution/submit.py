@@ -192,15 +192,20 @@ def record_broker_status(
     session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
 ) -> bool:
     """Move a placed order to the status the broker now shows (no commit); False when unchanged.
-    An entry that ended with nothing filled (cancelled, or a DAY limit expired at the close)
-    records `order.cancelled`, which ends its signal Cancelled; any other change is the order's
-    own bookkeeping (fills are recorded from the trade book, stops have no lifecycle step)."""
+    An entry that ended with nothing filled records `order.cancelled` when it was cancelled or a
+    DAY limit expired at the close (its signal ends Cancelled), and a final `order.rejected` when
+    the exchange rejected it after the broker took it (its signal ends Rejected); any other
+    change is the order's own bookkeeping (fills are recorded from the trade book, stops have no
+    lifecycle step)."""
     if found.status == row.status:
         return False
-    unfilled_end = found.status in ("cancelled", "expired") and found.filled_qty == 0
     row.status = found.status
-    if unfilled_end and row.purpose == ENTRY:
+    if row.purpose != ENTRY or found.filled_qty != 0:
+        return True
+    if found.status in ("cancelled", "expired"):
         _event(session, row, bot_id, "order.cancelled")
+    elif found.status == "rejected":
+        _event(session, row, bot_id, "order.rejected", code="exchange_rejected", final=True)
     return True
 
 
@@ -215,13 +220,16 @@ def _event(
     event_type: str,
     code: str = CODE_OK,
     rule: str | None = None,
+    final: bool = False,
 ) -> None:
-    payload = {
+    payload: dict[str, object] = {
         "tag": row.tag,
         "purpose": row.purpose,
         "broker_order_id": row.broker_order_id,
         "code": code,
     }
+    if final:
+        payload["final"] = True  # no retry follows: the lifecycle step to Rejected (07 §4)
     if rule is not None:
         payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
     record(

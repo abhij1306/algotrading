@@ -442,7 +442,7 @@ to an artefact that exists.
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |
 | HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec` |
-| HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds` |
+| HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`, PBT `manage.entry_ended_by_broker` |
 | HAT-EXEC-042 | [07](07-execution-and-brokers.md) | 3, 11 | TLA `TradeLifecycle!StateMatchesLog`, PBT `exits.replay_reproduces_state` |
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
@@ -453,7 +453,7 @@ to an artefact that exists.
 | HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs` |
 | HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected` |
 | HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap` |
-| HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted` |
+| HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
 | HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
 | HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens` |
 | HAT-EXEC-070 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.full_beats_partial` |

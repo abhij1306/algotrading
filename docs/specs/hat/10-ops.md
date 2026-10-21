@@ -165,7 +165,7 @@ Jobs (PLAN §4.3):
 - **Verification:** TLA `StopPlacement!NightlyVerifyCovers`
 - **Acceptance:**
   - Property: after every `gtt.verify` run, every open non-virtual position either has a matching active GTT at the broker or a health alert naming it has been sent. Harm: a position sits overnight without a protective stop and nobody knows.
-- **Implementation (PR 15c):** `ops/trade_jobs.py` builds the `exits.close`, `gtt.swap` and `gtt.verify` jobs of one broker account (bodies `TradeManager.close_exits`, `swap_stops`, `verify_stops`; an incomplete run fails with a fixed code and is retried); PR 17 registers them. 07 §6 describes what each does.
+- **Implementation (PR 15c):** `ops/trade_jobs.py` builds the `exits.close`, `gtt.swap` and `gtt.verify` jobs of one broker account (bodies `TradeManager.close_exits`, `swap_stops`, `verify_stops`; an incomplete run fails with a fixed code and is retried; a position whose close-phase evaluation raises leaves the others evaluated and fails the run). Each job's name carries its broker account (`exits.close:<account id>`), since a run is kept once per (name, trade date). PR 17 registers them. 07 §6 describes what each does.
 
 ## §4 Failure handling
 

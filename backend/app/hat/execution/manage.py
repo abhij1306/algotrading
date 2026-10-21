@@ -44,7 +44,7 @@ from ..time import IST, trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import FillSync, SyncReport
 from .guard import ExecutionGuard
-from .protect import CLOSED, FAILED, REPLACED, SWAPPED, VERIFIED, StopDesk
+from .protect import CLOSED, FAILED, REPLACED, SWAPPED, UNSURE, VERIFIED, StopDesk
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -82,8 +82,6 @@ MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 ALERT_SALE_REJECTED = "order.rejected"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ENTRY_NOT_FOUND = "entry_not_found"
-_WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
-_UNSURE = ("pending", "unconfirmed")
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -100,6 +98,7 @@ class CloseReport:
     evaluated: int = 0
     sales: int = 0
     recorded: int = 0
+    failed: int = 0
     refused: str | None = None
 
 
@@ -204,10 +203,10 @@ class TradeManager:
             return None
         session.refresh(position)
         rule = action.rule_ids[0].split(":", 1)[1]
-        if rule == live_trades.HARD_STOP and self._desk.stops_of(
-            session, position.id, "placed", "partially_filled"
-        ):
-            return None  # the stop resting at the broker is the hard stop
+        if rule == live_trades.HARD_STOP and self._desk.stops_of(session, position.id):
+            # The stop resting at the broker is the hard stop (one whose answer was lost may
+            # rest there too); HAT sells at market only when no stop may be working.
+            return None
         if position.closed_at is not None or self._desk.exit_working(session, position.id):
             return None  # one sale at a time; the next evaluation sees what it left
         signal = session.get(HatSignal, position.signal_id)
@@ -227,6 +226,11 @@ class TradeManager:
         if not self._reconciled(session, bot.broker_account_id):
             self._not_placed(signal, position, "not_reconciled", now)
             return None
+        if self._rejections(session, signal.id, purpose, now) >= MAX_SALE_REJECTIONS:
+            return None  # refused twice today and alerted then; tried again the next session
+        if not self._desk.make_room(session, position.id, position.qty_open - qty, now):
+            self._not_placed(signal, position, "stop_not_moved", now)
+            return None
         request = OrderRequest(
             bot_id=signal.bot_id,
             signal_id=signal.id,
@@ -240,7 +244,10 @@ class TradeManager:
         )
         return self._send_sale(session, signal, position, request, action, rule, now)
 
-    def _rejections(self, session: Session, signal_id: uuid.UUID, purpose: str) -> int:
+    @staticmethod
+    def _rejections(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
+        """Sales of `purpose` the broker rejected today for the signal."""
+        start, end = trades._day_bounds(trade_date_of(now))
         count = session.scalar(
             select(func.count())
             .select_from(HatOrder)
@@ -248,6 +255,8 @@ class TradeManager:
                 HatOrder.signal_id == signal_id,
                 HatOrder.purpose == purpose,
                 HatOrder.status == "rejected",
+                HatOrder.placed_at >= start,
+                HatOrder.placed_at < end,
             )
         )
         return int(count or 0)
@@ -263,7 +272,8 @@ class TradeManager:
         now: datetime,
     ) -> SendOutcome | None:
         sent: SendOutcome | None = None
-        while self._rejections(session, signal.id, request.purpose) < MAX_SALE_REJECTIONS:
+        left = MAX_SALE_REJECTIONS - self._rejections(session, signal.id, request.purpose, now)
+        for _ in range(left):
             try:
                 tag = reserve_order(session, request)
                 sent = send_order(
@@ -280,6 +290,7 @@ class TradeManager:
                 code = getattr(exc, "code", "broker_unavailable")
                 self._release(session, signal.id, request.purpose)
                 self._not_placed(signal, position, code, now)
+                self._desk.protect(session, position.id, now)  # the stop made room for it
                 return sent
             except UnresolvedOrderError:
                 return sent
@@ -294,6 +305,7 @@ class TradeManager:
                 {"signal_id": str(signal.id), "tag": tag, "code": sent.code},
             )
         self._not_placed(signal, position, "order_rejected", now)
+        self._desk.protect(session, position.id, now)
         return sent
 
     @staticmethod
@@ -336,22 +348,39 @@ class TradeManager:
         if not in_close_window(now) or not self._orders_allowed(now):
             report.refused = "outside_close_window"
             return report
-        day = trade_date_of(now)
         for position in self.open_positions(session, account_id, real_only=False):
-            view = views(session, position)
-            if view is None or view.price is None:
-                continue  # no live price: nothing fires (missing data never fires a rule)
-            if position.is_virtual:
-                result = trades.evaluate_position(session, position.id, view, "close", now)
-                session.commit()
-            else:
-                result = self._evaluate(session, position.id, view, "close", now)
-                report.sales += len(result.actions)
-            report.evaluated += 1
-            if live_trades.record_close_evaluation(session, position.id, view, result, day, now):
-                report.recorded += 1
-            session.commit()
+            try:
+                self._close_one(session, position, views, now, report)
+            except Exception:
+                # One position's failure leaves the others evaluated; the job fails and its
+                # retry runs again (fired rules and the evaluation record are not repeated).
+                session.rollback()
+                logger.exception("close-phase exits of position %s failed", position.id)
+                report.failed += 1
         return report
+
+    def _close_one(
+        self,
+        session: Session,
+        position: HatPosition,
+        views: ViewSource,
+        now: datetime,
+        report: CloseReport,
+    ) -> None:
+        view = views(session, position)
+        if view is None or view.price is None:
+            return  # no live price: nothing fires (missing data never fires a rule)
+        if position.is_virtual:
+            result = trades.evaluate_position(session, position.id, view, "close", now)
+            session.commit()
+        else:
+            result = self._evaluate(session, position.id, view, "close", now)
+            report.sales += len(result.actions)
+        report.evaluated += 1
+        day = trade_date_of(now)
+        if live_trades.record_close_evaluation(session, position.id, view, result, day, now):
+            report.recorded += 1
+        session.commit()
 
     # --- gtt.swap (~15:25) and gtt.verify (nightly) -------------------------------------------
 
@@ -404,7 +433,7 @@ class TradeManager:
                     HatOrder.broker_account_id == account_id,
                     HatOrder.purpose == ENTRY,
                     HatOrder.is_virtual.is_(False),
-                    HatOrder.status.in_(_UNSURE),
+                    HatOrder.status.in_(UNSURE),
                 )
             )
         )

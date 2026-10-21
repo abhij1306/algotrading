@@ -43,7 +43,7 @@ from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosi
 from ..notify import LogNotifier, Notifier
 from ..time import trade_date_of
 from .broker import BrokerOrder, BrokerTrade, HatBroker, Side
-from .protect import ALERT_GTT_UNFILLED, STOP_DAY, STOP_GTT, WORKING, StopDesk
+from .protect import ALERT_GTT_UNFILLED, LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, StopDesk
 from .submit import adopt_broker_order, record_broker_status
 from .tags import is_hat_tag
 
@@ -53,8 +53,6 @@ logger = logging.getLogger(__name__)
 
 ENTRY = "entry"
 ALERT_FILL_REFUSED = "fill.refused"
-_UNSURE = ("pending", "unconfirmed")
-_LIVE = ("placed", "partially_filled")
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
@@ -77,6 +75,7 @@ class FillSync:
         self._broker = broker
         self._desk = desk
         self._notifier = notifier or LogNotifier()
+        self._refused_trades: set[str] = set()
 
     def run(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport:
         """One pass over the broker's books. Raises BrokerUnavailableError when either book
@@ -126,7 +125,7 @@ class FillSync:
         report: SyncReport,
     ) -> None:
         for tag, row in rows.items():
-            if row.status in _UNSURE and tag in by_tag:
+            if row.status in UNSURE and tag in by_tag:
                 adopt_broker_order(session, row, by_tag[tag], self._bot_of(session, row))
                 session.commit()
                 report.adopted += 1
@@ -141,6 +140,22 @@ class FillSync:
         now: datetime,
         report: SyncReport,
     ) -> None:
+        position_id = self._record(session, row, trade, now, report)
+        if position_id is not None:
+            # HAT-EXEC-060: the stop comes before any other action on the position.
+            self._desk.protect(session, position_id, now)
+            report.protected.add(position_id)
+
+    def _record(
+        self,
+        session: Session,
+        row: HatOrder,
+        trade: BrokerTrade,
+        now: datetime,
+        report: SyncReport,
+    ) -> uuid.UUID | None:
+        """Record one broker trade as a fill of `row` (committed); the position it moved, or
+        None when the trade was recorded before or refused."""
         fill = live_trades.BrokerFill(
             trade.qty, trade.price, trade.trade_id, trade.traded_at or now
         )
@@ -151,19 +166,22 @@ class FillSync:
                 position = live_trades.apply_exit_fill(session, row.id, fill)
         except TradeError as exc:
             session.rollback()
-            self._refused(row, exc.code, now, report)
-            return
+            self._refused(row, trade.trade_id, exc.code, now, report)
+            return None
         if position is None:
             session.rollback()  # this broker trade is already recorded
-            return
+            return None
         session.commit()
         report.fills += 1
-        # HAT-EXEC-060: the stop comes before any other action on the position.
-        self._desk.protect(session, position.id, now)
-        report.protected.add(position.id)
+        return position.id
 
-    def _refused(self, row: HatOrder, code: str, now: datetime, report: SyncReport) -> None:
+    def _refused(
+        self, row: HatOrder, trade_id: str, code: str, now: datetime, report: SyncReport
+    ) -> None:
         report.refused += 1
+        if trade_id in self._refused_trades:
+            return  # told once; the trade stays in the broker's book all day
+        self._refused_trades.add(trade_id)
         logger.error("fill for order %s refused (%s)", row.tag, code)
         self._notifier.alert(ALERT_FILL_REFUSED, trade_date_of(now), {"tag": row.tag, "code": code})
 
@@ -180,7 +198,7 @@ class FillSync:
                 HatOrder.broker_account_id == account_id,
                 HatOrder.purpose == STOP_GTT,
                 HatOrder.is_virtual.is_(False),
-                HatOrder.status.in_(_LIVE),
+                HatOrder.status.in_(LIVE),
                 HatPosition.closed_at.is_(None),
             )
         ).all()
@@ -199,12 +217,18 @@ class FillSync:
         seen = session.scalar(select(HatFill.id).where(HatFill.broker_trade_id == trade.trade_id))
         if seen is not None:
             return  # recorded before, on this or an older GTT
-        self._apply(session, gtt, trade, now, report)
+        position_id = self._record(session, gtt, trade, now, report)
+        if position_id is None:
+            return
         filled = sum(session.scalars(select(HatFill.qty).where(HatFill.order_id == gtt.id)).all())
         session.refresh(gtt)
-        if gtt.status in _LIVE:
+        if gtt.status in LIVE:
+            # The GTT triggered: it no longer rests as a stop, so it is marked before the
+            # position is protected (a part-filled sale may still sell the rest).
             gtt.status = "filled" if filled >= gtt.qty else "partially_filled"
             session.commit()
+        self._desk.protect(session, position_id, now)
+        report.protected.add(position_id)
 
     # --- 4. statuses ----------------------------------------------------------------------------
 
@@ -219,7 +243,7 @@ class FillSync:
         touched: set[uuid.UUID] = set()
         for tag, found in by_tag.items():
             row = rows.get(tag) if tag else None
-            if row is None or row.status in _UNSURE:
+            if row is None or row.status in UNSURE:
                 continue
             session.refresh(row)
             if record_broker_status(session, row, found, self._bot_of(session, row)):
