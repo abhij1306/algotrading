@@ -90,8 +90,8 @@ def test_formula_and_bounds(
         live = s.lifecycle_state == "live" and not s.health.probation
         assert (r.health_mult == 0) or live
         if not live:
-            assert not r.health_mult
-            assert not r.final_weight
+            assert r.health_mult == 0
+            assert r.final_weight == 0
         assert 0 <= r.final_weight <= product_of(r)
         if hi <= 1:
             assert r.final_weight <= r.base_weight
@@ -335,7 +335,8 @@ def test_bounds_from_the_policy_in_force(lo: Decimal, hi: Decimal, offset: int) 
         session.flush()
         used = (lo, hi) if offset <= 0 else (D("0.25"), D(1))
         in_force = service.policy_at(session, USER, TRADE_DAY)
-        assert (in_force.multiplier_lo, in_force.multiplier_hi) == used
+        got = (in_force.multiplier_lo, in_force.multiplier_hi)
+        assert got == used
         service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(1000))
         row = session.scalars(select(HatAllocationDaily)).one()
         assert D(row.regime_mult) == allocator.clamp(regime.DEFAULT_MULTIPLIERS[regime.BEAR], *used)
