@@ -1,45 +1,23 @@
-"""Starting with the database down still runs the non-DB startup steps (live market connect
+"""Starting with the database down still runs the non-DB startup steps (the HAT feed start
 included) and finishes the skipped database work once, in the background, when it is back."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from app import main as app_main
-from app.database import get_db
 from app.exceptions import DatabaseUnavailableError
-from app.main import app
-from app.services import fyers_client, live_market_service
+from app.hat.execution import fyers_session
 from app.services.deferred_startup import (
     RECOVERED_MESSAGE,
     DeferredStartup,
     DeferredStartupStatus,
     startup_status,
 )
-
-
-class FakeLiveMarket:
-    def __init__(self) -> None:
-        self.connect_calls: list[dict[str, Any]] = []
-
-    def connect(
-        self, loop: asyncio.AbstractEventLoop | None = None, prevalidated_token: bool | None = None
-    ) -> str:
-        self.connect_calls.append({"loop": loop, "prevalidated_token": prevalidated_token})
-        return "market_closed"
-
-    async def get_status(self) -> dict[str, Any]:
-        await asyncio.sleep(0)
-        return {"market_status": "CLOSED", "fyers_connected": False}
-
-    async def shutdown(self) -> None:
-        await asyncio.sleep(0)
 
 
 def schema_work_down_for(failures: int) -> tuple[Callable[[], None], list[str]]:
@@ -66,12 +44,14 @@ def recovery_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.getMessage() == RECOVERED_MESSAGE]
 
 
-@pytest.fixture
-def fake_live_market(monkeypatch: pytest.MonkeyPatch) -> FakeLiveMarket:
-    fake = FakeLiveMarket()
-    monkeypatch.setattr(live_market_service, "live_market", fake)
-    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
-    return fake
+class NoToken:
+    def validate_token(self) -> bool:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def no_fyers_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fyers_session, "get_fyers_session", lambda: NoToken())
 
 
 @pytest.mark.asyncio
@@ -130,10 +110,9 @@ async def test_start_twice_runs_the_work_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_db_down_startup_connects_live_market_and_recovers_once(
+async def test_db_down_startup_runs_the_other_steps_and_recovers_once(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    fake_live_market: FakeLiveMarket,
 ) -> None:
     # Startup finds the DB down, so do the first two background retries; the third succeeds.
     work, calls = schema_work_down_for(3)
@@ -144,9 +123,7 @@ async def test_db_down_startup_connects_live_market_and_recovers_once(
 
     with caplog.at_level(logging.INFO):
         async with app_main.lifespan(test_app):
-            assert fake_live_market.connect_calls == [
-                {"loop": asyncio.get_running_loop(), "prevalidated_token": False}
-            ]
+            assert test_app.state.loop is asyncio.get_running_loop()
             assert test_app.state.fyers_token_valid is False
             deferred = test_app.state.deferred_startup
             await asyncio.wait_for(deferred.task, 1.0)
@@ -155,15 +132,12 @@ async def test_db_down_startup_connects_live_market_and_recovers_once(
             assert calls == ["down", "down", "down", "ok"]
 
     messages = [r.getMessage() for r in caplog.records]
-    assert "[Startup] Completed: connect_live_market" in messages
-    assert "[Startup] Completed: load_index_universe" in messages
+    assert "[Startup] Completed: start_hat_feed" in messages
     assert recovery_lines(caplog) == [RECOVERED_MESSAGE]
 
 
 @pytest.mark.asyncio
-async def test_db_up_startup_starts_no_retry_task(
-    monkeypatch: pytest.MonkeyPatch, fake_live_market: FakeLiveMarket
-) -> None:
+async def test_db_up_startup_starts_no_retry_task(monkeypatch: pytest.MonkeyPatch) -> None:
     work, calls = schema_work_down_for(0)
     monkeypatch.setattr(app_main, "_ensure_database_schema", work)
     test_app = FastAPI()
@@ -174,13 +148,10 @@ async def test_db_up_startup_starts_no_retry_task(
         assert startup_status(test_app.state) is DeferredStartupStatus.COMPLETE
 
     assert calls == ["ok"]
-    assert len(fake_live_market.connect_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancels_the_pending_retry_task(
-    monkeypatch: pytest.MonkeyPatch, fake_live_market: FakeLiveMarket
-) -> None:
+async def test_shutdown_cancels_the_pending_retry_task(monkeypatch: pytest.MonkeyPatch) -> None:
     work, calls = schema_work_down_for(100)
     monkeypatch.setattr(app_main, "_ensure_database_schema", work)
     monkeypatch.setattr(app_main, "DB_RETRY_INITIAL_DELAY_S", 30.0)
@@ -195,51 +166,3 @@ async def test_shutdown_cancels_the_pending_retry_task(
     assert calls == ["down"]
     assert deferred.status is DeferredStartupStatus.DEFERRED
     assert not hasattr(test_app.state, "deferred_startup")
-
-
-@pytest.fixture
-def no_lifespan_client(db_session: Session) -> Generator[TestClient, None, None]:
-    """A client on the test database that does not run the real lifespan."""
-
-    def override_get_db() -> Generator[Session, None, None]:
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-    yield TestClient(app)
-    app.dependency_overrides.clear()
-
-
-def test_status_endpoints_report_deferred_startup(
-    no_lifespan_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    fake_live_market: FakeLiveMarket,
-) -> None:
-    client = no_lifespan_client
-    deferred = DeferredStartup(lambda: None)
-    deferred.status = DeferredStartupStatus.DEFERRED
-    monkeypatch.setattr(app.state, "deferred_startup", deferred, raising=False)
-
-    health = client.get("/api/system/health")
-    ws_status = client.get("/api/websocket/status")
-
-    assert health.status_code == 200
-    # The shared test database may hold rows from other tests, so check only what startup sets.
-    report = health.json()
-    assert (report["status"], report["postgresql"], report["startup"]) == (
-        "DEGRADED",
-        "OK",
-        "DEFERRED",
-    )
-    assert report["recommendations"][-1] == (
-        "Database setup deferred at startup (database was down); it completes automatically."
-    )
-    assert ws_status.json() == {
-        "market_status": "CLOSED",
-        "fyers_connected": False,
-        "startup": "DEFERRED",
-    }
-
-    deferred.status = DeferredStartupStatus.COMPLETE
-
-    assert client.get("/api/system/health").json()["startup"] == "COMPLETE"
-    assert client.get("/api/websocket/status").json()["startup"] == "COMPLETE"

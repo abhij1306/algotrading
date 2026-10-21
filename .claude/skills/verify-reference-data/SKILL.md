@@ -42,7 +42,6 @@ cd backend
 CI=1 python -m pytest tests/hat/properties/test_mcp.py tests/hat/properties/test_ingest_mcp.py \
   tests/hat/properties/test_reference.py tests/hat/properties/test_calendar.py -q --no-cov
 python -m pytest tests/hat/conformance -q --no-cov          # imports, allowlist, skill digests
-python -m pytest tests/test_market_hours_policy.py -q --no-cov   # existing market-hours tests
 # the Postgres refresh check (a throwaway database whose name ends in _test):
 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTRADER_PG_TESTS=1 \
   python -m pytest -m postgres tests/hat/db -q --no-cov
@@ -90,8 +89,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `e77406c04ed1057979bffe9b39429d9bdd1a24e6`
-Covered digest: `72b6e20836a8ae4dde9a1bedd9175201f1fe48ca03e36c61180e73f92a0465d0`
+Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
+Covered digest: `33deff1a6c644b6b488bf6975427f25fab6fccf3eae8187fd320847f9811bd96`
 
 ## Scope changes
 

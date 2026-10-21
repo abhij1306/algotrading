@@ -29,16 +29,6 @@ load_dotenv()
 from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
-from .routers import (  # noqa: E402
-    data_snapshot,
-    market,
-    market_dashboard,
-    system_health,
-    universe,
-    upload,
-    websocket,
-)
-from .services.fyers.auth_flow import install_legacy_hooks  # noqa: E402
 from .utils.origins import FrontendCORSMiddleware  # noqa: E402
 
 
@@ -82,18 +72,6 @@ async def _step_get_event_loop(app: FastAPI) -> None:
     await asyncio.sleep(0)
 
 
-async def _step_validate_symbol_master() -> None:
-    from .services.symbol_master import symbol_master
-
-    test_symbol = "SBIN"
-    fyers_format = symbol_master.to_fyers(test_symbol)
-    db_format = symbol_master.to_db(fyers_format)
-    if db_format != test_symbol:
-        raise ValueError(f"Symbol master validation failed: {test_symbol} != {db_format}")
-    logger.info("[OK] Symbol master validated")
-    await asyncio.sleep(0)
-
-
 def _ensure_database_schema() -> None:
     """Create/upgrade the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
     from sqlalchemy import text
@@ -127,17 +105,16 @@ async def _step_validate_database() -> None:
 
 
 async def _step_validate_fyers_token(app: FastAPI) -> None:
-    from .services.fyers_client import get_fyers_client
+    from .hat.execution.fyers_session import get_fyers_session
 
-    fyers = get_fyers_client()
     is_valid = False
-    if fyers:
-        try:
-            is_valid = await asyncio.wait_for(asyncio.to_thread(fyers.validate_token), timeout=5.0)
-        except TimeoutError:
-            logger.warning("[WARN] Fyers token validation timed out after 5s")
-        except Exception as exc:
-            logger.warning(f"[WARN] Fyers token validation errored: {exc}")
+    try:
+        fyers = get_fyers_session()
+        is_valid = await asyncio.wait_for(asyncio.to_thread(fyers.validate_token), timeout=5.0)
+    except TimeoutError:
+        logger.warning("[WARN] Fyers token validation timed out after 5s")
+    except Exception as exc:
+        logger.warning(f"[WARN] Fyers token validation errored: {exc}")
 
     app.state.fyers_token_valid = bool(is_valid)
     if app.state.fyers_token_valid:
@@ -148,57 +125,24 @@ async def _step_validate_fyers_token(app: FastAPI) -> None:
         )
 
 
-async def _step_load_index_universe() -> None:
-    from .services.index_universe_loader import index_universe_loader
-
-    if index_universe_loader.data_path.exists():
-        logger.info("[OK] Index universe data path available; loading deferred until first use")
-    else:
-        logger.warning(
-            "[WARN] Index universe data path missing; "
-            "universe features will degrade until data is provided"
-        )
-    await asyncio.sleep(0)
-
-
-def _log_live_market_status(connect_status: str) -> None:
-    from .services.live_market_service import connect_status_message
-
-    message = f"Live market: {connect_status_message(connect_status)} ({connect_status})"
-    if connect_status in {"started", "already_connected"}:
-        logger.info(f"[OK] {message}")
-    elif connect_status == "market_closed":
-        logger.info(f"[INFO] {message}")
-    else:
-        logger.warning(f"[WARN] {message}")
-
-
 def _start_hat_feed(app: FastAPI) -> None:
     """HAT_ENABLED only: build HAT's live feed (the one Fyers data socket, HAT-OVR-006), hang its
-    login hooks on the Fyers auth service, let the legacy readers read its ticks, and start it."""
+    login hooks on the Fyers auth service, and start it."""
     from .database import SessionLocal
     from .hat.data.feed import LiveFeed, calendar_policy_source
     from .hat.execution.fyers_auth import get_fyers_auth
-    from .services.live_market_service import live_market
 
     feed = LiveFeed(policy_source=calendar_policy_source(SessionLocal))
     feed.install_auth_hooks(get_fyers_auth())
-    live_market.bind_feed(feed)
     app.state.hat_feed = feed
     feed.start(app.state.loop, prevalidated_token=app.state.fyers_token_valid)
 
 
-async def _step_connect_live_market(app: FastAPI) -> None:
+async def _step_start_hat_feed(app: FastAPI) -> None:
     from .hat.settings import is_enabled
-    from .services.live_market_service import live_market
 
     if is_enabled():
         _start_hat_feed(app)
-    connect_status = live_market.connect(
-        loop=app.state.loop,
-        prevalidated_token=app.state.fyers_token_valid,
-    )
-    _log_live_market_status(connect_status)
     await asyncio.sleep(0)
 
 
@@ -209,13 +153,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Startup sequence:
     1. Get event loop
-    2. Validate symbol_master
-    3. Validate database (deferred, not fatal, when the DB is down)
-    4. Validate Fyers token (warn-only)
-    5. Load index universe (warn-only)
-    6. Connect live_market with event loop
+    2. Validate database (deferred, not fatal, when the DB is down)
+    3. Validate Fyers token (warn-only)
+    4. Start HAT's live feed when HAT_ENABLED
 
-    Steps 4-6 do not use the database, so they run even when step 3 finds it down. The
+    Steps 3-4 do not use the database, so they run even when step 2 finds it down. The
     deferred schema work is retried in the background until the database answers.
     """
     from .services.deferred_startup import DeferredStartup
@@ -236,9 +178,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             required=True,
         )
         await sequence.execute_step(
-            StartupStep.VALIDATE_SYMBOL_MASTER, _step_validate_symbol_master, required=True
-        )
-        await sequence.execute_step(
             StartupStep.VALIDATE_DATABASE, _step_validate_database, required=True
         )
         await sequence.execute_step(
@@ -247,13 +186,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             required=False,
         )
         await sequence.execute_step(
-            StartupStep.LOAD_INDEX_UNIVERSE,
-            _step_load_index_universe,
-            required=False,
-        )
-        await sequence.execute_step(
-            StartupStep.CONNECT_LIVE_MARKET,
-            lambda: _step_connect_live_market(app),
+            StartupStep.START_HAT_FEED,
+            lambda: _step_start_hat_feed(app),
             required=False,
         )
         if StartupStep.VALIDATE_DATABASE in sequence.deferred_steps:
@@ -261,7 +195,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             deferred_startup.start()
         sequence.log_summary()
         if sequence.is_complete():
-            logger.info("[OK] WebSocket services initialized successfully")
+            logger.info("[OK] Startup sequence complete")
 
     except Exception as e:
         logger.exception(f"[ERROR] Startup sequence failed: {e}")
@@ -287,18 +221,6 @@ async def _stop_hat_feed(app: FastAPI) -> None:
     await feed.stop()
 
 
-async def _stop_live_market() -> None:
-    from .services import live_market_service
-
-    await live_market_service.live_market.shutdown()
-
-
-async def _close_websocket_clients() -> None:
-    from .utils import ws_manager
-
-    await ws_manager.manager.close_all()
-
-
 async def _dispose_engine() -> None:
     from . import database
 
@@ -322,8 +244,6 @@ async def _shutdown(app: FastAPI) -> None:
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
         ("deferred_startup", lambda: _stop_deferred_startup(app)),
         ("hat_feed", lambda: _stop_hat_feed(app)),
-        ("live_market", _stop_live_market),
-        ("websocket_clients", _close_websocket_clients),
         ("database_engine", _dispose_engine),
     ]
     results = [await _run_shutdown_step(name, step) for name, step in steps]
@@ -406,8 +326,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
 
-# CORS: the configured origins plus any http loopback origin (utils/origins.py), the same
-# rule as the Origin check on WS /stream.
+# CORS: the configured origins plus any http loopback origin (utils/origins.py).
 app.add_middleware(
     FrontendCORSMiddleware,
     allow_origins=list(config.ALLOWED_ORIGINS),
@@ -417,15 +336,7 @@ app.add_middleware(
 )
 
 # Register routers
-app.include_router(system_health.router)
-app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
-app.include_router(market_dashboard.router, prefix="/api")
 app.include_router(hat_fyers_auth.router)
-install_legacy_hooks()
-app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"])
-app.include_router(universe.router, prefix="/api/universe", tags=["Universe"])
-app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
-app.include_router(data_snapshot.router)
 
 logger.info("[OK] All routers registered")
 

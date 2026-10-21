@@ -1,55 +1,9 @@
 """
 Models Package
 ==============
-Re-export all models for convenient importing.
+Legacy models. Only `LiveOrder` is left (K6 removes it); HAT's models live in `app.hat.models`.
 """
 
-from .company import Company
-from .data_snapshot import DatasetArtifact, DatasetRun, SnapshotIndexStock, SnapshotIndexUniverse
-from .fundamental import FinancialStatement, QuarterlyResult
 from .live_order import LiveOrder
-from .log import AllocatorDecision, DataUpdateLog
-from .market import MarketNews, StockUniverse, Watchlist
-from .price import HistoricalPrice, IntradayCandle
-from .symbol_history import SymbolChangeType, SymbolHistory
-from .universe import (
-    CustomUniverse,
-    CustomUniverseMember,
-    IndexConstituentHistory,
-    IndexUniverseDefinition,
-    IndexWeightageChange,
-    UniverseSnapshot,
-)
 
-__all__ = [
-    # Company & Fundamentals
-    "Company",
-    "FinancialStatement",
-    "QuarterlyResult",
-    # Price Data
-    "HistoricalPrice",
-    "IntradayCandle",
-    # Live Trading
-    "LiveOrder",
-    # Market Data
-    "MarketNews",
-    "Watchlist",
-    "StockUniverse",
-    # Logging
-    "DataUpdateLog",
-    "AllocatorDecision",
-    # Phase-1 Data Snapshot
-    "DatasetRun",
-    "DatasetArtifact",
-    "SnapshotIndexStock",
-    "SnapshotIndexUniverse",
-    # Symbol & Universe
-    "SymbolHistory",
-    "SymbolChangeType",
-    "IndexUniverseDefinition",
-    "IndexConstituentHistory",
-    "IndexWeightageChange",
-    "CustomUniverse",
-    "CustomUniverseMember",
-    "UniverseSnapshot",
-]
+__all__ = ["LiveOrder"]

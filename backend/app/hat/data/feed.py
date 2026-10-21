@@ -147,7 +147,7 @@ class LiveFeed:
         # feed is closed: an unknown day is never taken for a trading day.
         self._policy = policy
         self._policy_source = policy_source
-        # Who wants which symbols: HAT's own owner and, until K5b, the legacy websocket clients.
+        # Who wants which symbols: HAT's own owner (the registry keeps a refcount per owner).
         self.registry = registry or SubscriptionRegistry(symbols.to_db)
         self.session = ProviderSession(
             socket_factory=socket_factory,
