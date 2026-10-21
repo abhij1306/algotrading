@@ -31,7 +31,7 @@ $CAP python -m pytest tests/hat/conformance/test_conf_decoupling.py tests/hat/co
 $CAP python -m pytest tests/test_hat_oracle_copies.py -q --no-cov
 ```
 
-No check touches the network, a database or the legacy app: the decoupling checks read source files, plus one subprocess that collects `tests/hat` and lists loaded modules.
+No check touches the network or a database. The decoupling checks read source files, plus one subprocess that collects `tests/hat` and lists loaded modules; only `tests/test_hat_oracle_copies.py` (legacy side) imports the legacy VCP detector, to compare it with the frozen oracle.
 
 ## Bug or model error
 

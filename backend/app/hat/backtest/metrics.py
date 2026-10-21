@@ -85,8 +85,10 @@ def sharpe_excess_cagr(
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
     """``(cagr - risk_free) / annualised std``; 0.0 when volatility is zero."""
-    ann_std = float(returns.std(ddof=0) * np.sqrt(periods_per_year)) if len(returns) else 0.0
-    return float((cagr - risk_free) / ann_std) if ann_std > VOLATILITY_FLOOR else 0.0
+    std = float(returns.std(ddof=0)) if len(returns) else 0.0
+    if std <= VOLATILITY_FLOOR:  # the floor is per period, like the series
+        return 0.0
+    return float((cagr - risk_free) / (std * np.sqrt(periods_per_year)))
 
 
 def trade_stats(values: Sequence[float]) -> TradeStats:

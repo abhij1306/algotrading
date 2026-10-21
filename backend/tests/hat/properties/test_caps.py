@@ -59,7 +59,7 @@ from app.hat.risk.policy_service import (
     request_policy_change,
     seed_initial_policy,
 )
-from app.hat.risk.service import evaluate_signal
+from app.hat.risk.service import evaluate_signal, price_band_ok
 from app.hat.risk.sessions import SessionDay
 from app.hat.settings import load_settings
 
@@ -413,6 +413,27 @@ def test_market_hours_only(drawn: tuple, holiday_offsets: set) -> None:
         assert decision.reason == Reason.MARKET_CLOSED
 
 
+@given(
+    st.integers(min_value=0, max_value=3),
+    st.integers(min_value=-90, max_value=90),
+)
+def test_special_session_follows_calendar(weeks: int, minutes: int) -> None:
+    """A special session the calendar holds (a Saturday evening, as on Muhurat day) is open from
+    its own open to its own close with the default policy, and closed a minute outside it; the
+    weekday session does not leak onto it. Harm: a calendar-approved session is refused."""
+    saturday = TRADE_DAY + timedelta(days=(5 - TRADE_DAY.weekday()) % 7 + 7 * weeks)
+    opens = datetime.combine(saturday, time(18, 15), tzinfo=IST)
+    closes = datetime.combine(saturday, time(19, 15), tzinfo=IST)
+    days = {**CALENDAR.days, saturday: SessionDay(True, opens, closes)}
+    calendar = type(CALENDAR)(days)
+    at = opens + timedelta(minutes=minutes)
+    decision = decide(valid_ctx(at=at, calendar=calendar))
+    if opens <= at <= closes:
+        assert decision.accepted, decision.reason
+    else:
+        assert decision.reason == Reason.MARKET_CLOSED
+
+
 @given(st.integers(min_value=40, max_value=400))
 def test_market_hours_unknown_date_fails_closed(days_out: int) -> None:
     """A trade date the calendar does not hold is not guessed open: the entry is rejected."""
@@ -506,6 +527,14 @@ def test_price_band(ltp: Decimal, ratio: Decimal) -> None:
     else:
         assert decision.accepted, decision.reason
     assert decide(valid_ctx(ltp=D(0))).reason == Reason.MISSING_INPUT
+
+
+@given(st.sampled_from([D("NaN"), D("Infinity"), D("-1"), D("-Infinity")]))
+def test_price_band_width_fails_closed(band: Decimal) -> None:
+    """A band width that is not a finite number of at least zero cannot be evaluated: the entry is
+    `missing_input`, never an exception and never an unlimited band."""
+    assert price_band_ok(D(100), D(100), band) is None
+    assert evaluate_signal(valid_ctx(), band_pct=band).reason == Reason.MISSING_INPUT
 
 
 # --- HAT-RISK-101/102: total, typed, fail closed ---

@@ -285,19 +285,31 @@ def test_risk__manager_reads_no_hat_state() -> None:
     name no HAT object."""
     path = APP_ROOT / "services" / "risk_manager.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    hat_imports = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module
-        and re.match(r"(app\.|\.+)?hat(\.|$)", node.module)  # absolute or relative (`..hat.risk`)
-    } | {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if re.match(r"(app\.)?hat(\.|$)", alias.name)
-    }
+    hat_imports = (
+        {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+            and re.match(
+                r"(app\.|\.+)?hat(\.|$)", node.module
+            )  # absolute or relative (`..hat.risk`)
+        }
+        | {
+            f"{node.module or ''}.{alias.name}"  # `from app import hat`, `from .. import hat`
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name == "hat"
+        }
+        | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if re.match(r"(app\.)?hat(\.|$)", alias.name)
+        }
+    )
     assert hat_imports == set()
     existing = {"pre_trade_check", "pre_exit_check", "exit_order_check", "_check_market_hours"}
     for node in ast.walk(tree):

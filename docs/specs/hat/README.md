@@ -418,7 +418,7 @@ to an artefact that exists.
 | HAT-RISK-101 | [06](06-risk-and-governance.md) | 10 | PBT `caps.decision_total` |
 | HAT-RISK-102 | [06](06-risk-and-governance.md) | 10 | PBT `caps.fail_closed` |
 | HAT-RISK-103 | [06](06-risk-and-governance.md) | 10 | CONF `risk.existing_suite_green` |
-| HAT-RISK-104 | [06](06-risk-and-governance.md) | 10 | PBT `caps.hat_kill_is_authority` |
+| HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
 | HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
 | HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `ExecutionRouter!AutoNeedsGtt` |

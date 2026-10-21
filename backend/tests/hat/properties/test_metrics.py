@@ -70,6 +70,9 @@ def test_sharpe_zero_volatility(level: float, n: int) -> None:
     flat = pd.Series([level] * n)
     assert metrics.sharpe_mean_std(flat) == 0.0
     assert metrics.sharpe_excess_cagr(0.1, flat, 0.05) == 0.0
+    tiny = pd.Series([0.0, 2e-13] * 5)  # a per-period volatility of 1e-13 is still no volatility
+    assert metrics.sharpe_mean_std(tiny) == 0.0
+    assert metrics.sharpe_excess_cagr(0.1, tiny, 0.05) == 0.0
 
 
 @given(returns)

@@ -20,8 +20,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal, localcontext
 
-from ..data.sessions import MarketHoursPolicy
+from ..data.sessions import IST, MarketHoursPolicy
+from ..time import trade_date_of
 from .decision import EXIT_ACTIONS, EntryChecks, RiskDecision, SignalContext, decide
+from .sessions import SessionCalendar
 
 # A limit entry further than this percent from the last traded price is out of band. It is the
 # value the legacy risk manager used (`max_price_deviation_pct`); it is a constant, not a policy
@@ -37,6 +39,20 @@ def market_open_at(at: object, hours: MarketHoursPolicy) -> bool | None:
     return None
 
 
+def _policy_for(ctx: SignalContext) -> MarketHoursPolicy:
+    """The default policy: the weekday session, plus the calendar's session of the signal's day."""
+    sessions = {}
+    calendar, at = ctx.calendar, ctx.at
+    if isinstance(calendar, SessionCalendar) and isinstance(at, datetime) and at.tzinfo:
+        day = calendar.days.get(trade_date_of(at))
+        if day is not None and day.is_trading and day.open_at and day.close_at:
+            sessions[trade_date_of(at)] = (
+                day.open_at.astimezone(IST).time(),
+                day.close_at.astimezone(IST).time(),
+            )
+    return MarketHoursPolicy(sessions=sessions)
+
+
 def price_band_ok(
     entry: object, ltp: object, band_pct: Decimal = MAX_PRICE_DEVIATION_PCT
 ) -> bool | None:
@@ -45,6 +61,8 @@ def price_band_ok(
     None when it cannot be evaluated: either price is not an exact finite Decimal, or there is no
     live price (`ltp` not above zero), so the decision fails closed."""
     if not (isinstance(entry, Decimal) and isinstance(ltp, Decimal)):
+        return None
+    if not (isinstance(band_pct, Decimal) and band_pct.is_finite() and band_pct >= 0):
         return None
     if not (entry.is_finite() and ltp.is_finite()) or ltp <= 0:
         return None
@@ -60,15 +78,17 @@ def evaluate_signal(
 ) -> RiskDecision:
     """ACCEPT with a quantity or REJECT with a typed reason for one signal (HAT-RISK-100).
 
-    `hours` is the market-hours policy to apply (default: the NSE weekday session); holidays and
-    special sessions come from `ctx.calendar`, which the decision requires to say OPEN as well.
+    `hours` is the market-hours policy to apply. By default it is the NSE weekday session plus the
+    calendar's own session for the signal's trade date, so a special session (Muhurat, a Saturday
+    session) is open when `ctx.calendar` says so; the decision requires the calendar to say OPEN
+    as well, so a holiday or a closed day stays closed either way.
     """
     if ctx.action in EXIT_ACTIONS:
         return decide(ctx, EntryChecks(market_open=None, price_band_ok=None))
     return decide(
         ctx,
         EntryChecks(
-            market_open=market_open_at(ctx.at, hours or MarketHoursPolicy()),
+            market_open=market_open_at(ctx.at, hours or _policy_for(ctx)),
             price_band_ok=price_band_ok(ctx.entry_price, ctx.ltp, band_pct),
         ),
     )

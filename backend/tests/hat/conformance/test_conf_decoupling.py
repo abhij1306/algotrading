@@ -69,6 +69,15 @@ def _module_exists(name: str) -> bool:
     return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
 
 
+def _absolute(path: Path, node: ast.ImportFrom) -> str:
+    """The absolute module an `ImportFrom` names, resolving a relative import against `path`."""
+    if node.level == 0:
+        return node.module or ""
+    package = path.relative_to(BACKEND).with_suffix("").parts[:-1]
+    base = package[: len(package) - (node.level - 1)]
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
 def _imported_modules(path: Path) -> set[str]:
     """Absolute module names `path` imports; `from pkg import sub` counts as `pkg.sub` when
     `sub` is a module."""
@@ -76,15 +85,16 @@ def _imported_modules(path: Path) -> set[str]:
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+        elif isinstance(node, ast.ImportFrom) and (node.module or node.level):
+            module = _absolute(path, node)
             submodules = {
-                f"{node.module}.{alias.name}"
+                f"{module}.{alias.name}"
                 for alias in node.names
-                if _module_exists(f"{node.module}.{alias.name}")
+                if _module_exists(f"{module}.{alias.name}")
             }
             found.update(submodules)
             if len(submodules) < len(node.names):  # a name that is not a module
-                found.add(node.module)
+                found.add(module)
     return found
 
 

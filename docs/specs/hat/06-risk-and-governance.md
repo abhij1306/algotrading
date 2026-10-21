@@ -485,5 +485,5 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **PR:** 10, K1
 - **Verification:** PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read`
 - **Acceptance:**
-  - Property: for every combination of the account kill, bot kill, health kill and pause, an entry is REJECT with the first tripped switch's reason, and ACCEPT when none is tripped. Harm: a HAT kill is ignored, or an entry is halted by state HAT does not own.
+  - Property: for every combination of the account kill, bot kill, health kill and pause, an entry that passes every other check is REJECT with the first tripped switch's reason, and ACCEPT when none is tripped. Harm: a HAT kill is ignored, or an entry is halted by state HAT does not own.
   - Property: no module of `app/hat` names `TRADING_HALTED`, `smarttrader_halt*` or the legacy `system_config` table. Harm: HAT silently depends on a legacy flag that is deleted with the VCP module.
