@@ -2,13 +2,14 @@
 
 No look-ahead, the formulas against a direct Fraction evaluation, the RS and momentum percentiles,
 breadth, split invariance, incremental equals full rebuild, the job's idempotence, and the
-equivalence with the pandas `compute_rs_map` and stage-2 averages. The real `compute_features`,
+X The real `compute_features`,
 store, adjusted view and `run_features` run; no network. Frames are a few hundred rows; failures
 compare digests and short summaries, never whole frames.
 """
 
 import contextlib
 import hashlib
+import json
 import math
 import tempfile
 from collections import defaultdict
@@ -18,8 +19,8 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
-import pandas as pd
 import polars as pl
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -42,7 +43,6 @@ from app.hat.data.store import (
     DataStore,
 )
 from app.hat.ids import uuid7
-from app.services.vcp.pattern import compute_rs_map, stage2_metrics
 
 EPOCH = date(2020, 1, 6)
 
@@ -868,43 +868,45 @@ def test_job_idempotent(world: list[Series], rng: Lcg, crash_at: int) -> None:
             assert digest(sa) == digest(clean.read_partition(DATASET_BREADTH, day))
 
 
-# --- equivalence with the pandas implementation ----------------------------------------------
+# --- equivalence with the legacy pandas implementation (frozen oracle) -----------------------
 
-
-@given(
-    rng=RNG,
-    n_inst=st.integers(2, 6),
-    length=st.integers(LONG, LONG + 20),
-    narrow=st.booleans(),
+RS_ORACLE = json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures" / "rs_oracle.json").read_text(
+        encoding="utf-8"
+    )
 )
-@settings(max_examples=20, deadline=None)
-def test_pandas_equivalence(rng: Lcg, n_inst: int, length: int, narrow: bool) -> None:
-    """Where the definitions match the features equal the pandas code: SMA 50/150/200 equal
-    `stage2_metrics`' averages, and round(0.99 x rs_pct / 100) equals `compute_rs_map`'s 0-99
-    rating (same weights, same 63/126/189/252-row horizons, same average-rank percentile, same
-    omission below 253 bars; at an exact .5 the integer may differ by one, see below).
-    They differ in two documented ways: rs_pct is 0-100 (the pandas rating is that, scaled to
-    integers 0-99), and high_52w is the highest *high* where pandas
-    takes the highest close, so ours is never below it."""
+
+
+@pytest.mark.parametrize("case", RS_ORACLE["cases"], ids=lambda c: f"seed{c['seed']}")
+def test_pandas_equivalence(case: dict) -> None:
+    """Where the definitions match the features equal the frozen outputs of the legacy pandas
+    code (`stage2_metrics`, `compute_rs_map`, recorded in fixtures/rs_oracle.json): SMA 50/150/200
+    equal its averages, and round(0.99 x rs_pct / 100) equals its 0-99 rating (same weights, same
+    63/126/189/252-row horizons, same average-rank percentile, same omission below 253 bars; at an
+    exact .5 the integer may differ by one). They differ in two documented ways: rs_pct is 0-100
+    (the pandas rating is that, scaled to integers 0-99), and high_52w is the highest *high*
+    where pandas takes the highest close, so ours is never below it."""
+    rng = Lcg(case["seed"])
     world = [
-        _make_series(rng, f"i{k}", length, 0, narrow=narrow, gaps=False) for k in range(n_inst)
+        _make_series(rng, f"i{k}", case["length"], 0, narrow=case["narrow"], gaps=False)
+        for k in range(case["n_inst"])
     ]
     got = feature_rows(world)
-    frames = {
-        s.iid: pd.DataFrame({"close_ref": [float(r["close"]) for r in s.rows]}) for s in world
-    }
-    ratings = compute_rs_map(frames)
     for s in world:
+        want = case["instruments"][s.iid]
+        assert str(s.rows[-1]["close"]) == want["last_close"], "the seeded world drifted"
         last = got[(s.iid, s.rows[-1]["date"])]
-        metrics = stage2_metrics(frames[s.iid])
-        assert math.isclose(last["sma50"], metrics.ma_50, rel_tol=1e-9)
-        assert math.isclose(last["sma150"], metrics.ma_150, rel_tol=1e-9)
-        assert math.isclose(last["sma200"], metrics.ma_200, rel_tol=1e-9)
-        assert last["high_52w"] >= metrics.high_52 - 1e-9
-        want = ratings[s.iid]
+        assert math.isclose(last["sma50"], want["ma_50"], rel_tol=1e-9)
+        assert math.isclose(last["sma150"], want["ma_150"], rel_tol=1e-9)
+        assert math.isclose(last["sma200"], want["ma_200"], rel_tol=1e-9)
+        assert last["high_52w"] >= want["high_52"] - 1e-9
         scaled = last["rs_pct"] * 99 / 100
         mine = min(99, max(0, round(scaled)))
         # At an exact half (a rating of k + 0.5) the two float evaluations of the same ratio can
         # land either side of it, so the two integer ratings may differ by one there and only there.
         on_half = abs(scaled - math.floor(scaled) - 0.5) < 1e-9
-        assert mine == want or (on_half and abs(mine - want) == 1), (s.iid, mine, want)
+        assert mine == want["rating"] or (on_half and abs(mine - want["rating"]) == 1), (
+            s.iid,
+            mine,
+            want["rating"],
+        )

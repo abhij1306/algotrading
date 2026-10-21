@@ -50,9 +50,9 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT features.incremental_equals_full` Runs through successive cut dates, with a corporate action arriving part-way and any chunk size, leave the same features and breadth for every date as one full rebuild. Harm: live features drift from backtest features.
 - `PBT features.changed_inputs_rebuild_everything` After a full run, a new corporate action or a new universe, even when the next run stops at an earlier date, leaves no stale date once a later run without a limit follows: every date equals a fresh full rebuild. Harm: part of history keeps the old split adjustment or the old universe's percentiles.
 - `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
-- `PBT features.pandas_equivalence` SMA50/150/200 equal `stage2_metrics`' averages and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
+- `PBT features.pandas_equivalence` SMA50/150/200 equal the frozen `stage2_metrics` averages (`backend/tests/hat/fixtures/rs_oracle.json`) and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
 - `CONF features.schema` Every written features partition has exactly the §7 columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
-- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters (none). Harm: two indicator implementations diverge.
+- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters (only `backtest/metrics.py`, moved unchanged by K1). Harm: two indicator implementations diverge.
 
 ## Run
 
@@ -113,6 +113,7 @@ Checks:
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
 - `backend/tests/hat/properties/test_features.py`
 - `backend/tests/hat/conformance/test_conf_features.py`
+- `backend/tests/hat/fixtures/rs_oracle.json`
 - `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/db/test_db_corporate_actions.py`
 

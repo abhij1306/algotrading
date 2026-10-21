@@ -189,8 +189,10 @@ def test_single_feed_import_rule() -> None:
 
 
 # Modules under app/hat that may import pandas, because they adapt to an existing pandas module.
-# None yet: HAT features and criteria take polars frames, and an adapter would be listed here.
-PANDAS_BOUNDARY_ADAPTERS: set[str] = set()
+# backtest/metrics.py is the legacy metrics helper K1 moved into HAT unchanged; it still takes
+# pandas and is rewritten on polars with the backtest engine. Features and criteria take
+# polars frames, and any other adapter would be listed here.
+PANDAS_BOUNDARY_ADAPTERS: set[str] = {"backtest/metrics.py"}
 
 
 def test_imports__hat_polars_only() -> None:
