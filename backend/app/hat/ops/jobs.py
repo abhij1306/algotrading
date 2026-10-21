@@ -28,6 +28,10 @@ from ..time import as_utc, utc_now
 logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], Session]
+# Runs inside the transaction that records a run's final status, before it commits, so an effect
+# it writes (an event, a kill state) commits or rolls back together with the status
+# (HAT-DATA-045). It is called only when this call is the one recording the final status.
+OnFinish = Callable[[Session, HatJobRun], None]
 
 DEFAULT_ERROR_CODE = "job_failed"
 INTERRUPTED_ERROR_CODE = "interrupted"
@@ -140,6 +144,7 @@ def _finish(
     result: JobResult,
     error: str | None,
     now: datetime,
+    on_finish: OnFinish | None = None,
 ) -> JobOutcome:
     """Record the end of a run this call owns (only while it is still `running`)."""
     with session_factory() as session:
@@ -155,6 +160,9 @@ def _finish(
         row.rows = result.rows
         row.error = error
         row.finished_at = max(as_utc(now), as_utc(row.started_at))
+        if on_finish is not None:
+            session.flush()
+            on_finish(session, row)
         session.commit()
         return _outcome(row, executed=True)
 
@@ -165,13 +173,15 @@ def run_job(
     fn: Callable[[], JobResult | None],
     *,
     session_factory: SessionFactory | None = None,
+    on_finish: OnFinish | None = None,
 ) -> JobOutcome:
     """Run `fn` for (name, trade_date) at most once to success.
 
     After a success, later calls return the stored outcome without running `fn`. After a
     failure or an interruption, a call runs `fn` again. While another call holds the run, this
     call returns `RunStatus.RUNNING` without running `fn`. A body that raises is recorded as
-    failed with an error code; the exception text goes to the server log only.
+    failed with an error code; the exception text goes to the server log only. `on_finish`, when
+    given, runs in the transaction that records the final status (see `OnFinish`).
     """
     factory = session_factory or _default_session_factory()
     run_id, stored = _claim(factory, name, trade_date, utc_now())
@@ -189,8 +199,17 @@ def run_job(
             result=JobResult(),
             error=error_code(exc),
             now=utc_now(),
+            on_finish=on_finish,
         )
-    return _finish(factory, run_id, status="succeeded", result=result, error=None, now=utc_now())
+    return _finish(
+        factory,
+        run_id,
+        status="succeeded",
+        result=result,
+        error=None,
+        now=utc_now(),
+        on_finish=on_finish,
+    )
 
 
 def recover_interrupted(session_factory: SessionFactory | None = None) -> int:

@@ -132,7 +132,7 @@ to an artefact that exists.
 | HAT-DEC-B25 | [01](01-decisions.md) | 8, 15 | PBT `criteria.max_chase_contract` |
 | HAT-DEC-B26 | [01](01-decisions.md) | 10 | TLA `KillSwitch!TripOnDrawdown`, PBT `caps.kill_thresholds` |
 | HAT-DEC-B27 | [01](01-decisions.md) | 5, 7 | PBT `corporate_actions.adjusted_view` |
-| HAT-DEC-I1 | [01](01-decisions.md) | 4, 7 | TLA `JobScheduler!FallbackAt2200`, PBT `ingest.batches_of_50` |
+| HAT-DEC-I1 | [01](01-decisions.md) | 4, 7 | TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.batches_of_50` |
 | HAT-DEC-I2 | [01](01-decisions.md) | 5 | PBT `bhavcopy.parsers_agree` |
 | HAT-DEC-I3 | [01](01-decisions.md) | 14 | CONF `single_feed_import_rule` |
 | HAT-DEC-I4 | [01](01-decisions.md) | 12 | PBT `bars.minute_history_aggregates_to_5m` |
@@ -145,7 +145,7 @@ to an artefact that exists.
 | HAT-DEC-I11 | [01](01-decisions.md) | 16 | CONF `telegram_command_set` |
 | HAT-DEC-I12 | [01](01-decisions.md) | 2, 16 | CONF `user_id_on_owned_tables` |
 | HAT-DEC-I13 | [01](01-decisions.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
-| HAT-DEC-I14 | [01](01-decisions.md) | 7 | TLA `JobScheduler!NoScanAfterGateFail` |
+| HAT-DEC-I14 | [01](01-decisions.md) | 7 | TLA `NightlyPipeline!NoScanAfterGateFail` |
 | HAT-DEC-I15 | [01](01-decisions.md) | 3 | DB `events.append_only`, PBT `ingest.event_and_state_atomic` |
 | HAT-DEC-I16 | [01](01-decisions.md) | 4 | CONF `mcp_endpoints_allowlist` |
 | HAT-DEC-I17 | [01](01-decisions.md) | P2 | CONF `mvp_seed_scope` |
@@ -175,15 +175,16 @@ to an artefact that exists.
 | HAT-DATA-034 | [02](02-data.md) | 4 | PBT `mcp.call_logged` |
 | HAT-DATA-035 | [02](02-data.md) | 4 | PBT `mcp.no_raw_error_text` |
 | HAT-DATA-036 | [02](02-data.md) | 4, 7 | PBT `ingest.date_mismatch_rejected` |
-| HAT-DATA-040 | [02](02-data.md) | 7 | TLA `JobScheduler!FallbackAt2200`, PBT `ingest.probe_schedule` |
+| HAT-DATA-040 | [02](02-data.md) | 7 | TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.probe_schedule` |
 | HAT-DATA-041 | [02](02-data.md) | 7 | PBT `ingest.fetch_covers_universe` |
 | HAT-DATA-042 | [02](02-data.md) | 7 | PBT `ingest.row_checks` |
 | HAT-DATA-043 | [02](02-data.md) | 7 | PBT `ingest.raw_write_once`, TLA `JobScheduler!AtMostOnceSuccess` |
-| HAT-DATA-044 | [02](02-data.md) | 7 | PBT `ingest.index_snapshot_stored` |
+| HAT-DATA-044 | [02](02-data.md) | 7 | PBT `ingest.index_snapshot_stored`, PBT `ingest.nightly_index_breadth` |
 | HAT-DATA-045 | [02](02-data.md) | 7 | PBT `ingest.outcome_event` |
-| HAT-DATA-046 | [02](02-data.md) | 7, 17 | TLA `JobScheduler!NightlyPipelineOrder` |
-| HAT-DATA-047 | [02](02-data.md) | 7 | TLA `JobScheduler!NoDataNoScan`, TLA `KillSwitch!ExitsContinue` |
+| HAT-DATA-046 | [02](02-data.md) | 7, 17 | TLA `NightlyPipeline!NightlyPipelineOrder` |
+| HAT-DATA-047 | [02](02-data.md) | 7 | TLA `NightlyPipeline!NoDataNoScan`, TLA `KillSwitch!ExitsContinue` |
 | HAT-DATA-048 | [02](02-data.md) | 7 | PBT `ingest.call_budget` |
+| HAT-DATA-049 | [02](02-data.md) | 7 | PBT `ingest.renames_from_nse_data` |
 | HAT-DATA-050 | [02](02-data.md) | 7 | PBT `corporate_actions.flag_rule` |
 | HAT-DATA-051 | [02](02-data.md) | 7 | PBT `corporate_actions.lookup_only_flagged` |
 | HAT-DATA-052 | [02](02-data.md) | 5, 7 | PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique` |
@@ -195,7 +196,7 @@ to an artefact that exists.
 | HAT-DATA-062 | [02](02-data.md) | 7 | PBT `quality_gate.big_moves_explained` |
 | HAT-DATA-063 | [02](02-data.md) | 7 | PBT `quality_gate.index_snapshot_present` |
 | HAT-DATA-064 | [02](02-data.md) | 7 | PBT `quality_gate.rows_written` |
-| HAT-DATA-065 | [02](02-data.md) | 7, 10 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `JobScheduler!NoScanAfterGateFail` |
+| HAT-DATA-065 | [02](02-data.md) | 7, 10 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail` |
 | HAT-DATA-070 | [02](02-data.md) | 6 | CONF `features.schema` |
 | HAT-DATA-071 | [02](02-data.md) | 6 | PBT `features.no_lookahead` |
 | HAT-DATA-072 | [02](02-data.md) | 6 | PBT `features.formulas` |
@@ -522,17 +523,17 @@ to an artefact that exists.
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
 | HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder` |
-| HAT-OPS-004 | [10](10-ops.md) | 17 | TLA `JobScheduler!ExitsIndependentOfPipeline` |
+| HAT-OPS-004 | [10](10-ops.md) | 17 | TLA `NightlyPipeline!ExitsIndependentOfPipeline` |
 | HAT-OPS-010 | [10](10-ops.md) | 2 | TLA `JobScheduler!AtMostOnceSuccess`, DB `ops.job_run_unique` |
 | HAT-OPS-011 | [10](10-ops.md) | 2 | TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording` |
 | HAT-OPS-012 | [10](10-ops.md) | 17 | PBT `ops.calendar_skip` |
 | HAT-OPS-013 | [10](10-ops.md) | 2 | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-020 | [10](10-ops.md) | 17 | CONF `ops.job_registry` |
-| HAT-OPS-021 | [10](10-ops.md) | 17 | TLA `JobScheduler!NightlyPipelineOrder` |
-| HAT-OPS-022 | [10](10-ops.md) | 7 (logic), 17 (wiring) | TLA `JobScheduler!FallbackAt2200` |
+| HAT-OPS-021 | [10](10-ops.md) | 17 | TLA `NightlyPipeline!NightlyPipelineOrder` |
+| HAT-OPS-022 | [10](10-ops.md) | 7 (logic), 17 (wiring) | TLA `NightlyPipeline!FallbackAt2200` |
 | HAT-OPS-023 | [10](10-ops.md) | 14, 15 (logic), 17 (wiring) | TLA `JobScheduler!IntradayOrder` |
 | HAT-OPS-024 | [10](10-ops.md) | 15 (logic), 17 (wiring) | TLA `StopPlacement!NightlyVerifyCovers` |
-| HAT-OPS-030 | [10](10-ops.md) | 7, 10 | TLA `KillSwitch!DataHealthManageOnly`, TLA `JobScheduler!ExitsIndependentOfPipeline` |
+| HAT-OPS-030 | [10](10-ops.md) | 7, 10 | TLA `KillSwitch!DataHealthManageOnly`, TLA `NightlyPipeline!ExitsIndependentOfPipeline` |
 | HAT-OPS-031 | [10](10-ops.md) | 13 (session), 16 (alert) | TLA `KillSwitch!DataHealthManageOnly`, PBT `ops.session_backoff_alert` |
 | HAT-OPS-032 | [10](10-ops.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce` |
 | HAT-OPS-033 | [10](10-ops.md) | 3 (constraint), 15 (router) | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day` |

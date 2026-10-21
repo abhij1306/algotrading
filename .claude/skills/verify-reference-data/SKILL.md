@@ -39,7 +39,7 @@ Checks that the instrument master keeps one stable identity per stock through re
 
 ```bash
 cd backend
-CI=1 python -m pytest tests/hat/properties/test_mcp.py tests/hat/properties/test_ingest_mcp.py \
+CI=1 python -m pytest tests/hat/properties/test_mcp.py tests/hat/properties/test_ingest.py \
   tests/hat/properties/test_reference.py tests/hat/properties/test_calendar.py -q --no-cov
 python -m pytest tests/hat/conformance -q --no-cov          # imports, allowlist, skill digests
 # the Postgres refresh check (a throwaway database whose name ends in _test):
@@ -76,7 +76,7 @@ Code under check:
 
 Checks:
 - `backend/tests/hat/properties/test_mcp.py`
-- `backend/tests/hat/properties/test_ingest_mcp.py`
+- `backend/tests/hat/properties/test_ingest.py`
 - `backend/tests/hat/properties/test_reference.py`
 - `backend/tests/hat/properties/test_calendar.py`
 - `backend/tests/hat/db/test_db_reference_upsert.py`
@@ -89,8 +89,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
-Covered digest: `33deff1a6c644b6b488bf6975427f25fab6fccf3eae8187fd320847f9811bd96`
+Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
+Covered digest: `3a477a1b38717d029b5bd472b2da8b918c859a366eb8ff2e95ec44e668a53f72`
 
 ## Scope changes
 
@@ -109,6 +109,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `mcp.no_raw_error_text` leaves out the log record's own source location (`pathname`, `filename`, `module`) when comparing, and has an `@example` of the checkout directory: on a CI runner the path holds "algotrading", which a generated payload matched once a new module shifted Hypothesis's string pool (PR 14 finding).
 - Postgres is checked by `refresh_on_postgres` only for the unique keys; the property tests use SQLite, where the keys are the same constraints.
 - K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten socket and single-feed checks): the reference-data checks are unchanged and still pass.
+
+- PR 7 moved the three MCP ingest properties (`batches_le_50`, `concurrency_bounded`, `date_mismatch_rejected`) from `test_ingest_mcp.py` into `test_ingest.py`, unchanged, so that every `ingest.*` check lives in one file; `McpClient` gained `probe`, `index_snapshot` and `market_breadth` (see `verify-data`).
 
 ## Scratch breaks
 
@@ -180,9 +182,9 @@ E assert not True
 Break: batch size 51.
 
 ```
-tests/hat/properties/test_ingest_mcp.py F
-tests/hat/properties/test_ingest_mcp.py:21: in test_batches_le_50
-tests/hat/properties/test_ingest_mcp.py:28: in test_batches_le_50
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:21: in test_batches_le_50
+tests/hat/properties/test_ingest.py:28: in test_batches_le_50
 E assert False
 E Failing explicit example: test_batches_le_50(
 E n=3121,
@@ -193,9 +195,9 @@ E n=3121,
 Break: the semaphore is not taken around a transport call.
 
 ```
-tests/hat/properties/test_ingest_mcp.py F
-tests/hat/properties/test_ingest_mcp.py:87: in test_concurrency_bounded
-tests/hat/properties/test_ingest_mcp.py:102: in test_concurrency_bounded
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:87: in test_concurrency_bounded
+tests/hat/properties/test_ingest.py:102: in test_concurrency_bounded
 E assert 2 <= 1
 E Failing test case: test_concurrency_bounded(
 E n=51,
@@ -206,9 +208,9 @@ E n=51,
 Break: every row is kept whatever its date.
 
 ```
-tests/hat/properties/test_ingest_mcp.py F
-tests/hat/properties/test_ingest_mcp.py:46: in test_date_mismatch_rejected
-tests/hat/properties/test_ingest_mcp.py:79: in test_date_mismatch_rejected
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:46: in test_date_mismatch_rejected
+tests/hat/properties/test_ingest.py:79: in test_date_mismatch_rejected
 E assert False
 E Failing test case: test_date_mismatch_rejected(
 E symbols=['A'],

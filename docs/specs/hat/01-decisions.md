@@ -365,7 +365,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Statement:** Nightly prices come from the NSE MCP (`get_bulk_quote`, 50 symbols per call), polled from 18:00 until the returned date equals the trade date, with bhavcopy download as fallback at 22:00.
 - **Source:** MA "Your overrides" (I1); DS "Nightly ingest from NSE MCP".
 - **PR:** 4, 7
-- **Verification:** TLA `JobScheduler!FallbackAt2200`, PBT `ingest.batches_of_50`
+- **Verification:** TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.batches_of_50`
 - **Acceptance:**
   - Property: in every simulated evening, either the MCP data for the trade date is ingested before 22:00 or the bhavcopy fallback runs at 22:00, and never both write the same date. Harm: a night's scan is silently skipped or written twice. Detail: 02 §4.
 
@@ -470,7 +470,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Statement:** A quality gate runs after every ingest and blocks scans when it fails.
 - **Source:** MA (I14); DS "Nightly ingest" step 7.
 - **PR:** 7
-- **Verification:** TLA `JobScheduler!NoScanAfterGateFail`
+- **Verification:** TLA `NightlyPipeline!NoScanAfterGateFail`
 - **Acceptance:**
   - Property: for every ingest result, scans for that trade date run iff every gate check passes. Harm: watchlists are built from bad data. Detail: 02 §6.
 

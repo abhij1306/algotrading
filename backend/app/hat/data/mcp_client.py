@@ -41,6 +41,7 @@ MAX_ATTEMPTS = MAX_RETRIES + 1
 MAX_CONCURRENCY = 4
 POOL_THREADS = 8  # worker threads; never the concurrency limit (the semaphore is)
 BATCH_SIZE = 50
+PROBE_SYMBOL = "RELIANCE"  # HAT-DATA-040: the one symbol the readiness probe asks for
 BACKOFF_BASE_SECONDS = 1.0
 HTTP_TIMEOUT_SECONDS = 30.0
 
@@ -384,6 +385,50 @@ class McpClient:
             [a for a in actions if isinstance(a, dict)], incomplete="warning" in data
         )
 
+    def probe(self, trade_date: date, symbol: str = PROBE_SYMBOL) -> date | None:
+        """The data date `get_bulk_quote([symbol])` answers with, or None when it answers with
+        no readable date (HAT-DATA-040). One call; the caller compares it with `trade_date`."""
+        batch = self.bulk_quote([symbol], trade_date)
+        for quote in [*batch.rows, *batch.mismatched]:
+            found = parse_data_date(quote.get("date"))
+            if found is not None:
+                return found
+        return None
+
+    def index_snapshot(self, trade_date: date) -> IndexSnapshot:
+        """`get_index_snapshot` for `trade_date`. The server answers with the nearest earlier
+        trading day on a holiday, so a different `date` is reported, never stored (HAT-DATA-036,
+        044). [A] the answer is `{"date": ..., "indices": [{indexName, open, ..., close}]}`."""
+        data = self.call(
+            SERVER_BHAVCOPY,
+            "get_index_snapshot",
+            {"date": trade_date.isoformat(), "filter": ""},
+            symbol_count=0,
+            date_of=lambda d: parse_data_date(d.get("date")) if isinstance(d, dict) else None,
+        )
+        if not isinstance(data, dict):
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        rows = data.get("indices", data.get("data"))
+        if not isinstance(rows, list):
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        return IndexSnapshot(
+            parse_data_date(data.get("date")), [r for r in rows if isinstance(r, dict)]
+        )
+
+    def market_breadth(self, trade_date: date) -> BreadthSnapshot:
+        """`get_market_breadth` for `trade_date` (HAT-DATA-044). [A] the answer carries
+        `date`, `totalStocks`, `advances`, `declines`, `unchanged`, `adRatio`, `totalVolume`."""
+        data = self.call(
+            SERVER_BHAVCOPY,
+            "get_market_breadth",
+            {"date": trade_date.isoformat()},
+            symbol_count=0,
+            date_of=lambda d: parse_data_date(d.get("date")) if isinstance(d, dict) else None,
+        )
+        if not isinstance(data, dict) or "error" in data:
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        return BreadthSnapshot(parse_data_date(data.get("date")), data)
+
     def stock_history(self, symbol: str, end_date: date, months: int = 1) -> list[dict[str, Any]]:
         """`get_stock_history` rows (raw, unadjusted) for the window ending at `end_date`; used
         by the build's validation sample (HAT-DATA-096)."""
@@ -415,6 +460,22 @@ class McpClient:
             [r for r in rows if isinstance(r, dict)],
             parse_data_date(data.get("next_end_date")),
         )
+
+
+@dataclass(frozen=True)
+class IndexSnapshot:
+    """`get_index_snapshot` rows and the data date the server answered with."""
+
+    data_date: date | None
+    rows: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class BreadthSnapshot:
+    """`get_market_breadth` fields and the data date the server answered with."""
+
+    data_date: date | None
+    fields: dict[str, Any]
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,21 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT ingest.parquet_roundtrip` Every bar written to Parquet reads back with identical prices, volumes, traded value and source, exactly. Harm: float rounding in stored prices.
 - `PBT ingest.sources_same_schema` Bars from the bhavcopy and MCP sources go through one writer with one schema, so each source's file has the same Parquet schema. Harm: mixed schemas break the DuckDB views.
 - `PBT ingest.index_snapshot_stored` Index history loaded in chunks, repeated, or one index at a time is stored as one row per index per day with the loaded values; coverage names exactly the days with no row; a repeated load is byte-identical. Harm: the regime and breadth inputs have holes or lose indices.
+- `PBT ingest.probe_schedule` The nightly ingest probes from the later of its start and 18:00, every 10 minutes, never at or after 22:00, stops at the first probe that matches the trade date, and is ready exactly when one matched. Harm: the fallback runs early, or never, or the MCP is hammered.
+- `PBT ingest.fetch_covers_universe` The symbols fetched are exactly the active instruments with series EQ or BE, each once; an empty universe fails before any fetch. Harm: part of the market has no bar for the day.
+- `PBT ingest.row_checks` A fetched row is accepted iff its date is the trade date, prices are above zero, low <= open <= high, low <= close <= high, prev_close is null or above zero and volume is a whole number of at least zero. Harm: a corrupt row becomes a stored bar.
+- `PBT ingest.raw_write_once` For any sequence of attempts at one date (MCP or fallback, failing or not) exactly one raw partition exists, its bytes never change after the first, and the fallback runs at most once. Harm: a re-run rewrites history or splits one day across sources.
+- `PBT ingest.outcome_event` Each ingest run that reaches a final status leaves exactly one `ingest.completed` or `ingest.failed` event in the same transaction, a crash leaves none, and the data-health kill is tripped iff some run failed. Harm: a night with no data scans as if healthy.
+- `PBT ingest.call_budget` A run makes at most ceil(N/50) bulk calls, its probes, one index call, one breadth call and one lookup per flagged symbol. Harm: the nightly job exhausts the MCP quota.
+- `PBT ingest.nightly_index_breadth` The run succeeds iff the trade date's index rows with NIFTY 500 and India VIX are stored, one row per index; the day's breadth row is the server's, or counted from our bars when the server has none. Harm: the regime engine runs on a day with no index or breadth.
+- `PBT ingest.renames_from_nse_data` Seeding the renames derived from stored bars makes every (symbol, day) of the bars resolve to the instrument that traded it, with disjoint intervals, and is idempotent. Harm: a renamed stock splits into two histories.
+- `PBT corporate_actions.flag_rule` A symbol is flagged iff prev_close differs from our stored close, or the move exceeds 20% (exact fractions), or the RSS names it. Harm: a split goes unnoticed and prices break.
+- `PBT corporate_actions.lookup_only_flagged` The nightly ingest looks corporate actions up for exactly the flagged symbols, once each. Harm: thousands of needless calls, or a split missed.
+- `PBT quality_gate.coverage_threshold` Coverage passes iff stored/universe >= 0.99 by exact arithmetic (an empty universe never passes). Harm: a night with a hole in the market is scanned.
+- `PBT quality_gate.ohlc_zero_tolerance` One fetched row that broke a row check fails the ohlc check. Harm: bad prices reach the scans.
+- `PBT quality_gate.big_moves_explained` The big-moves check fails iff a mover over 20% has neither a corporate action on the day nor a place on the exclusion list; scans never see an excluded instrument. Harm: an unadjusted split triggers signals.
+- `PBT quality_gate.index_snapshot_present` The index check passes iff NIFTY 500 and India VIX are both stored. Harm: the regime runs without its inputs.
+- `PBT quality_gate.rows_written` The gate writes exactly four check rows, PASS iff all pass; a FAIL writes one `quality.failed`, one alert, fails the job and leaves the data-health kill tripped; only a passing gate clears it. Harm: bots trade on a bad day, or stay blocked after a good one.
 - `PBT bhavcopy.format_by_date` Every weekday from 2010-01-01 to today (boundaries 5 and 8 Jul 2024 included) maps to the old URL up to 5 Jul 2024 and the UDiFF URL from 8 Jul 2024; weekends have none. Harm: the backfill requests files that do not exist.
 - `PBT bhavcopy.missing_file_is_holiday_candidate` For whatever NSE answers on each weekday, a missing file that the calendar lists is a holiday candidate, an unlisted one is a gap; both are reported. Harm: real gaps pass as holidays.
 - `PBT bhavcopy.resume_skips_done` After a run interrupted at any request, `--resume` never requests a day already stored. Harm: a restart re-downloads years of files.
@@ -61,7 +76,7 @@ cd backend
 # every pytest, Hypothesis or data command runs under the 2 GB memory cap
 CAP="systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet"
 CI=1 $CAP python -m pytest tests/hat/properties/test_store.py tests/hat/properties/test_corporate_actions.py \
-  tests/hat/properties/test_bhavcopy.py tests/hat/properties/test_history_build.py tests/hat/properties/test_ingest.py tests/hat/properties/test_features.py -q --no-cov
+  tests/hat/properties/test_bhavcopy.py tests/hat/properties/test_history_build.py tests/hat/properties/test_ingest.py tests/hat/properties/test_quality_gate.py tests/hat/properties/test_features.py -q --no-cov
 $CAP python -m pytest tests/hat/conformance -q --no-cov
 # the database check needs Postgres (a throwaway database whose name ends in _test):
 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTRADER_PG_TESTS=1 \
@@ -100,6 +115,9 @@ Code under check:
 - `backend/app/hat/data/corporate_actions.py`
 - `backend/app/hat/data/history_build.py`
 - `backend/app/hat/data/mcp_client.py`
+- `backend/app/hat/data/ingest.py`
+- `backend/app/hat/data/quality.py`
+- `backend/app/hat/data/renames.py`
 - `backend/app/hat/data/features.py`
 
 Checks:
@@ -108,7 +126,9 @@ Checks:
 - `backend/tests/hat/properties/test_corporate_actions.py`
 - `backend/tests/hat/properties/test_bhavcopy.py`
 - `backend/tests/hat/properties/test_history_build.py`
+- `backend/tests/hat/hat_ingest_support.py`
 - `backend/tests/hat/properties/test_ingest.py`
+- `backend/tests/hat/properties/test_quality_gate.py`
 - `backend/tests/hat/conformance/test_conf_store.py`
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
 - `backend/tests/hat/properties/test_features.py`
@@ -121,8 +141,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `d9a21c63f7a57d1fc0ab9964649604156205140f`
-Covered digest: `6f36a9867c43c7b379ea7870ba6049006a3143e231a80e284007062fdd9971d2`
+Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
+Covered digest: `9c43dbc82775fb809fd6df9bfad8c3a78ab9c8b9784959fd538655d45e506aa2`
 
 ## Scope changes
 
@@ -145,6 +165,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - A correction of bars of an already featured date is not detected: the caller runs with `full`.
 - Runs are serialised with a file lock (`.features.lock` under the data root); two concurrent rebuilds are not tested, the lock is `fcntl.flock` as the index upsert uses.
 - K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten `no_second_websocket` and `single_feed_import_rule`): the checks here (`imports.hat_polars_only` and the rest) are unchanged and still pass.
+
+- PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
 
 ## Scratch breaks
 
@@ -818,4 +840,217 @@ E   AssertionError: assert {'data/features.py': 'pandas'} == {}
 E     Left contains 1 more item:
 E     {'data/features.py': 'pandas'}
 E     Full diff:
+```
+
+### PBT ingest.probe_schedule
+
+Break: the probe interval is 5 minutes instead of 10.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:415: in test_probe_schedule
+tests/hat/properties/test_ingest.py:438: in test_probe_schedule
+E   assert [1080, 1085, ...00, 1105, ...] == [1080, 1090, ...20, 1130, ...]
+E     At index 1 diff: 1085 != 1090
+E     Left contains 24 more items, first extra item: 1200
+E     Use -v to get more diff
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+```
+
+### PBT ingest.fetch_covers_universe
+
+Break: the fetched universe leaves out series BE.
+
+```
+tests/hat/properties/test_ingest.py F
+
+```
+
+### PBT ingest.row_checks
+
+Break: the row check no longer requires low <= open.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:470: in test_row_checks
+tests/hat/properties/test_ingest.py:507: in test_row_checks
+E   assert True == False
+E   Failing explicit example: test_row_checks(
+E       o=1,
+E       h=5,
+E       low=2,
+```
+
+### PBT ingest.raw_write_once
+
+Break: a re-run ignores the stored partition and writes the day again.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:506: in test_raw_write_once
+tests/hat/properties/test_ingest.py:536: in test_raw_write_once
+E   AssertionError: assert 2 == 1
+E    +  where 2 = len([PosixPath('/tmp/tmpar_llli_/bars_daily_raw/date=2026-10-20/part-01a15e78-d85a-715d-b76b-5fb3bbee343b.parquet'), PosixPath('/tmp/tmpar_llli_/bars_daily_raw/date=2026-10-20/part-0
+E   Failing test case: test_raw_write_once(
+E       # The test always failed when commented parts were varied together.
+E       attempts=[(
+```
+
+### PBT ingest.outcome_event
+
+Break: a failed ingest does not trip the data-health kill.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:580: in test_outcome_event
+tests/hat/properties/test_ingest.py:622: in test_outcome_event
+E   assert False == True
+E   Failing test case: test_outcome_event(
+E       plan=['fallback_failure'],
+E   )
+E   Explanation:
+```
+
+### PBT ingest.call_budget
+
+Break: every flagged symbol is looked up twice.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:627: in test_call_budget
+tests/hat/properties/test_ingest.py:644: in test_call_budget
+E   AssertionError: assert 6 <= (((1 + 1) + 2) + 1)
+E    +  where 1 = <built-in function ceil>((1 / 50))
+E    +    where <built-in function ceil> = math.ceil
+E    +  and   1 = IngestReport(trade_date=datetime.date(2026, 10, 20), source='mcp', universe=1, requested=1, stored=1, violations=0, mi... missing=0, flagged=1, lookups_failed=0, actions_created=0, p
+E    +  and   1 = len({0})
+```
+
+### PBT ingest.nightly_index_breadth
+
+Break: India VIX is no longer required among the stored indices.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:652: in test_nightly_index_breadth
+tests/hat/properties/test_ingest.py:685: in test_nightly_index_breadth
+E   AssertionError: assert 'no_vix' in ('ok', 'repeated')
+E   Failing test case: test_nightly_index_breadth(
+E       index='no_vix',
+E       breadth='ok',  # or any other generated value
+E   )
+```
+
+### PBT ingest.renames_from_nse_data
+
+Break: renames before 10 Mar 2026 are dropped.
+
+```
+tests/hat/properties/test_ingest.py F
+tests/hat/properties/test_ingest.py:693: in test_renames_from_nse_data
+tests/hat/properties/test_ingest.py:760: in test_renames_from_nse_data
+E   AssertionError: ('K0S0', datetime.date(2026, 3, 2))
+E   assert (None is not None)
+E   Failing test case: test_renames_from_nse_data(
+E       shape=[[1, 1]],
+E   )
+```
+
+### PBT corporate_actions.flag_rule
+
+Break: the flag threshold is 25% instead of 20%.
+
+```
+tests/hat/properties/test_corporate_actions.py F
+tests/hat/properties/test_corporate_actions.py:381: in test_flag_rule
+tests/hat/properties/test_corporate_actions.py:402: in test_flag_rule
+E   AssertionError: assert False == ((False or Decimal('100') != Decimal('100') or True))
+E    +  where False = flag_symbol(Decimal('100'), Decimal('100'), Decimal('79'), False)
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_flag_rule(
+E       stored=Decimal('100'),
+```
+
+### PBT corporate_actions.lookup_only_flagged
+
+Break: every symbol is flagged, so every symbol is looked up.
+
+```
+tests/hat/properties/test_corporate_actions.py F
+tests/hat/properties/test_corporate_actions.py:401: in test_lookup_only_flagged
+tests/hat/properties/test_corporate_actions.py:425: in test_lookup_only_flagged
+E   AssertionError: assert ['S0000'] == []
+E     Left contains one more item: 'S0000'
+E     Use -v to get more diff
+E   Failing test case: test_lookup_only_flagged(
+E       n=1,  # or any other generated value
+```
+
+### PBT quality_gate.coverage_threshold
+
+Break: the threshold is 98% instead of 99%.
+
+```
+tests/hat/properties/test_quality_gate.py F
+tests/hat/properties/test_quality_gate.py:82: in test_coverage_threshold
+tests/hat/properties/test_quality_gate.py:91: in test_coverage_threshold
+E   AssertionError: assert True == False
+E    +  where True = Check(name='coverage', passed=True, detail={'universe': 100, 'stored': 98}).passed
+E    +    where Check(name='coverage', passed=True, detail={'universe': 100, 'stored': 98}) = coverage_check(100, 98)
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_coverage_threshold(
+```
+
+### PBT quality_gate.ohlc_zero_tolerance
+
+Break: one bad row is tolerated.
+
+```
+tests/hat/properties/test_quality_gate.py F
+tests/hat/properties/test_quality_gate.py:95: in test_ohlc_zero_tolerance
+tests/hat/properties/test_quality_gate.py:107: in test_ohlc_zero_tolerance
+E   AssertionError: assert ('PASS' == 'FAIL'
+E     - FAIL
+E     + PASS) == True
+E    +  where True = bool({3})
+E   Failing explicit example: test_ohlc_zero_tolerance(
+```
+
+### PBT quality_gate.big_moves_explained
+
+Break: the exclusion list is ignored by the check.
+
+```
+tests/hat/properties/test_quality_gate.py F
+
+```
+
+### PBT quality_gate.index_snapshot_present
+
+Break: any stored index passes.
+
+```
+tests/hat/properties/test_quality_gate.py F
+tests/hat/properties/test_quality_gate.py:170: in test_index_snapshot_present
+tests/hat/properties/test_quality_gate.py:181: in test_index_snapshot_present
+E   AssertionError: assert True == ({'INDIA VIX', 'NIFTY 500'} <= {'NIFTY 50'}
+E    +  where True = Check(name='index_snapshot', passed=True, detail={'indices': 1}).passed
+E    +    where Check(name='index_snapshot', passed=True, detail={'indices': 1}) = index_snapshot_check(['NIFTY 50'])
+E     Extra items in the left set:
+E     'NIFTY 500'
+```
+
+### PBT quality_gate.rows_written
+
+Break: a passing gate does not clear the health kill.
+
+```
+tests/hat/properties/test_quality_gate.py F
+tests/hat/properties/test_quality_gate.py:185: in test_rows_written
+tests/hat/properties/test_quality_gate.py:235: in test_rows_written
+E   assert True == not True
+E   Failing explicit example: test_rows_written(
+E       kind='good',
+E       tripped_before=True,
+E   )
 ```

@@ -80,8 +80,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `57f50a9343a7da82f8d9d5525337c94ad2916f16cce04e6d945cc200b7caed8f`
+Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
+Covered digest: `3ed0ba2d6d90b157cc269ed558e4954a9fd5de9b3cc24a27e2aff656168dfea3`
 
 ## Scope changes
 
@@ -94,6 +94,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `TLA OrderReconciliation!AtMostOneEntryPerSignal` and `TLA StopPlacement!StopOnlyTightens` (named on HAT-SCH-051 and HAT-SCH-081) are not built here: 11 §3 assigns both models to PR 13 and PR 15, whose code their actions map to. They are in `KNOWN_GAPS` in `test_conf_verification.py`; the database checks `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises at the database.
 - `hat_telegram_message` and `hat_command_log` have no foreign key, so they are exempt from the `user_id` chain check (`CHAIN_EXEMPT` in `test_conf_schema.py`), like `hat_kill_switch`: a finding on HAT-SCH-012.
 - Sleeve lifecycle, regime and allocation events are not in the 32-type catalogue, so they are not recorded; PR 9 adds them with a spec change.
+
+- PR 7 added an optional `on_finish` hook to `run_job` (`ops/jobs.py`), called inside the final-status transaction; the events and the job-run recording it touches are unchanged, and the ingest outcome events (`ingest.completed`, `ingest.failed`, `quality.failed`) are written through the existing `events.record`.
 
 ## Scratch breaks
 

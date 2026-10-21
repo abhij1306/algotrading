@@ -13,6 +13,12 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA JobScheduler!FailedJobRetryable` A call that finds a failed or interrupted run is allowed to run it again. Harm: one transient failure leaves the day's job dead until someone edits the database.
 - `TLA JobScheduler!NoJobWhenDisabled` With `HAT_ENABLED` false the scheduler never exists and no job is ever started. Harm: a developer machine or a test run starts scheduled HAT jobs by accident.
 - `TLA JobScheduler!NoStuckRunning` A run never stays `running` forever: a crash is reaped at the next start. Harm: a crashed run blocks its key and the job never runs again that day.
+- `TLA NightlyPipeline!FallbackAt2200` A day is ingested from the MCP only after a probe matched, never probed at or after 22:00 or twice at once, and the bhavcopy fallback runs only at 22:00 with no match. Harm: stale or wrong-day data enters the store, or the fallback fires early.
+- `TLA NightlyPipeline!NoDataNoScan` If neither source has the day by 22:00 the run fails with an alert and the data-health kill, and no scan runs. Harm: bots act on yesterday's data.
+- `TLA NightlyPipeline!NoScanAfterGateFail` A failed quality gate fails the job, trips the health kill and no scan runs after it. Harm: a bad day is scanned.
+- `TLA NightlyPipeline!ExitsIndependentOfPipeline` Exits and stops are sent whatever state the nightly pipeline is in. Harm: a data outage leaves positions without protection.
+- `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the one before succeeded. Harm: a scan reads a day not yet ingested or gated.
+- `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
 - `PBT ops.job_run_recording` On the real `run_job`, random calls, body failures, simulated crashes and restarts always leave one row per key, with a stable error code (never raw exception text), correct timestamps, and at most one successful body per key. Harm: an audit row lies about what ran, or an error message leaks a secret.
 - `PBT ops.disabled_starts_nothing` With HAT disabled `start_scheduler` creates no task and touches no logging or database, and with it enabled on a non-Postgres dialect it raises before any task exists. Harm: HAT runs without the database triggers that protect it.
 - `PBT ops.log_records_structured` Every record under `app.hat` renders as one JSON line with `ts`, `level`, `msg` and each context key given. Harm: logs cannot be parsed during an incident.
@@ -56,6 +62,8 @@ When a check fails, decide which side is wrong before touching anything.
 TLA+ model and runner:
 - `verification/tla/JobScheduler.tla` and `verification/tla/JobScheduler.cfg`
 - `verification/tla/broken/JobScheduler__retry_after_success.cfg`, `verification/tla/broken/JobScheduler__split_claim.cfg`, `verification/tla/broken/JobScheduler__no_retry.cfg`, `verification/tla/broken/JobScheduler__ignore_enabled.cfg`, `verification/tla/broken/JobScheduler__no_reap.cfg`
+- `verification/tla/NightlyPipeline.tla` and `verification/tla/NightlyPipeline.cfg`
+- `verification/tla/broken/NightlyPipeline__probe_twice.cfg`, `verification/tla/broken/NightlyPipeline__probe_at_cutoff.cfg`, `verification/tla/broken/NightlyPipeline__fetch_without_match.cfg`, `verification/tla/broken/NightlyPipeline__fallback_always.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_alert.cfg`, `verification/tla/broken/NightlyPipeline__scan_ignores_gate.cfg`, `verification/tla/broken/NightlyPipeline__gate_fail_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__exit_needs_pipeline.cfg`, `verification/tla/broken/NightlyPipeline__skip_order.cfg`, `verification/tla/broken/NightlyPipeline__no_fallback.cfg`
 - `verification/tla/run.sh`
 
 Code under check:
@@ -80,7 +88,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
-Covered digest: `28e2d7d86cf3cf42bf7ca044b8357db77cbd4995b02bb7d95d95366111594d1a`
+Covered digest: `d02fbe57fd66cc9aed1d2c52f44bcab606fc224cb22773bd75e817cdb16c3d29`
 
 ## Scope changes
 
@@ -96,6 +104,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 10 updated `test_conf_verification.py` without narrowing any check: `MERGED_PRS` now includes 10, and `KNOWN_GAPS` gained two ExecutionRouter TLA names that belong to PR 15 (see `verify-risk`).
 - PR 8 updated `test_conf_verification.py`: `MERGED_PRS` now includes 8; `KNOWN_GAPS` unchanged.
 
+
+- PR 7 split the nightly-pipeline promises (probe window, fallback at 22:00, no data no scan, gate, exits independent) out of `JobScheduler` into the `NightlyPipeline` model, because the product of the two state spaces was too large to check; `JobScheduler` keeps the job-run promises. The README and spec property names were renamed to match; no check was weakened. PR 7 also added an `on_finish` hook to `run_job` (called inside the final-status transaction; `ops.job_run_recording` still passes) and `MERGED_PRS` now includes 7, `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
 
@@ -198,4 +208,133 @@ test_ci_verification_job: assert 30 <= 15
 test_db_checks_match_governance_table: AssertionError: governance.exposure_checks   assert 0 == 1
 test_verify_skill_sync_current: AssertionError: verify-governance is stale: run python backend/tests/hat/conformance/hat_conf_skills.py verify-governance after re-confirming
 test_verify_skills_complete: AssertionError: verify-scheduler: Updating   assert ''
+```
+
+### TLA NightlyPipeline!FallbackAt2200
+
+Break: the broken variant `NightlyPipeline__probe_twice.cfg` (mode `probe_twice` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant FallbackAt2200 is violated.
+State 1: <Initial ...>
+State 2: <Probe ...>
+State 3: <Probe ...>
+```
+
+Another break: the broken variant `NightlyPipeline__probe_at_cutoff.cfg` (mode `probe_at_cutoff` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant FallbackAt2200 is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Probe ...>
+```
+
+Another break: the broken variant `NightlyPipeline__fetch_without_match.cfg` (mode `fetch_without_match` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant FallbackAt2200 is violated.
+State 1: <Initial ...>
+State 2: <Fetch ...>
+```
+
+Another break: the broken variant `NightlyPipeline__fallback_always.cfg` (mode `fallback_always` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant FallbackAt2200 is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <McpBecomesReady ...>
+State 5: <Probe ...>
+State 6: <Tick ...>
+```
+
+### TLA NightlyPipeline!NoDataNoScan
+
+Break: the broken variant `NightlyPipeline__nodata_no_kill.cfg` (mode `nodata_no_kill` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant NoDataNoScan is violated.
+State 1: <Initial ...>
+State 2: <McpBecomesReady ...>
+State 3: <Probe ...>
+State 4: <Fetch ...>
+```
+
+Another break: the broken variant `NightlyPipeline__nodata_no_alert.cfg` (mode `nodata_no_alert` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant NoDataNoScan is violated.
+State 1: <Initial ...>
+State 2: <McpBecomesReady ...>
+State 3: <Probe ...>
+State 4: <Fetch ...>
+```
+
+### TLA NightlyPipeline!NoScanAfterGateFail
+
+Break: the broken variant `NightlyPipeline__scan_ignores_gate.cfg` (mode `scan_ignores_gate` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant NoScanAfterGateFail is violated.
+State 1: <Initial ...>
+State 2: <McpBecomesReady ...>
+State 3: <Probe ...>
+State 4: <Fetch ...>
+State 5: <LaterStep ...>
+```
+
+Another break: the broken variant `NightlyPipeline__gate_fail_no_kill.cfg` (mode `gate_fail_no_kill` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant NoScanAfterGateFail is violated.
+State 1: <Initial ...>
+State 2: <McpBecomesReady ...>
+State 3: <Probe ...>
+State 4: <Fetch ...>
+State 5: <Gate ...>
+```
+
+### TLA NightlyPipeline!ExitsIndependentOfPipeline
+
+Break: the broken variant `NightlyPipeline__exit_needs_pipeline.cfg` (mode `exit_needs_pipeline` in the model's `BrokenMode` switch).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial ...>
+State 2: <ExitBecomesDue ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Probe ...>
+State 6: <McpBecomesReady ...>
+```
+
+### TLA NightlyPipeline!NightlyPipelineOrder
+
+Break: the broken variant `NightlyPipeline__skip_order.cfg` (mode `skip_order` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant NightlyPipelineOrder is violated.
+State 1: <Initial ...>
+State 2: <McpBecomesReady ...>
+State 3: <Probe ...>
+State 4: <Fetch ...>
+State 5: <LaterStep ...>
+```
+
+### TLA NightlyPipeline!IngestDecides
+
+Break: the broken variant `NightlyPipeline__no_fallback.cfg` (mode `no_fallback` in the model's `BrokenMode` switch).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial ...>
+State 2: <Probe ...>
+State 3: <Tick ...>
+State 4: <ExitBecomesDue ...>
+State 5: <Tick ...>
+State 6: <ExitSend ...>
 ```
