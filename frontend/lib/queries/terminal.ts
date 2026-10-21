@@ -4,41 +4,13 @@ import { api, parseResponse, unwrap } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
 import type { components } from "@/lib/api/schema";
 import { roundToDecimals } from "@/lib/format";
-import { isMarketOpen } from "@/lib/market-hours";
 import { queryKeys } from "./keys";
 import { shouldRetry } from "./query-client";
 
-const OPTIONS_POLL_OPEN_MS = 3000;
-const OPTIONS_POLL_CLOSED_MS = 20_000;
 const POSITIONS_POLL_MS = 7000;
-const OPTIONS_STRIKE_COUNT = 15;
 const MAX_SEARCH_RESULTS = 8;
 
 const rowsSchema = z.array(z.record(z.string(), z.unknown())).catch([]);
-
-const nullableNumber = z.number().nullable().catch(null);
-
-const optionsLegSchema = z
-  .object({
-    symbol: z.string().nullable().catch(null),
-    ltp: nullableNumber,
-    oi: nullableNumber,
-    volume: nullableNumber,
-    change_pct: nullableNumber,
-  })
-  .nullable()
-  .catch(null);
-
-const optionsBoardSchema = z.object({
-  underlying: z.string().catch(""),
-  spot_price: z.number().catch(0),
-  expiry: z.string().catch(""),
-  atm_strike: z.number().catch(0),
-  strikes: z
-    .array(z.object({ strike: z.number(), ce: optionsLegSchema, pe: optionsLegSchema }))
-    .catch([]),
-  timestamp: z.string().catch(""),
-});
 
 // Number(value || 0), as the page did before validation moved here.
 const lenientNumber = z.coerce.number().catch(0);
@@ -87,25 +59,9 @@ export interface SearchResultItem {
   instrument_type?: string;
 }
 
-export type OptionsBoard = z.output<typeof optionsBoardSchema>;
 export type PositionItem = Omit<z.output<typeof positionSchema>, "net_pnl"> & {
   net_pnl: number;
 };
-
-export interface OptionsOrderflow {
-  pcr_oi: number | null;
-  pcr_volume: number | null;
-  ce_oi: number;
-  pe_oi: number;
-  ce_volume: number;
-  pe_volume: number;
-  timestamp: string;
-}
-
-export interface OptionsBoardSnapshot {
-  board: OptionsBoard;
-  orderflow: OptionsOrderflow;
-}
 
 function toSafeNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -136,29 +92,6 @@ function toSearchResult(row: Record<string, unknown>): SearchResultItem {
     name: toSafeString(row.name, toSafeString(row.symbol)).trim(),
     type: typeof row.type === "string" ? row.type : undefined,
     instrument_type: typeof row.instrument_type === "string" ? row.instrument_type : undefined,
-  };
-}
-
-/** Put/call totals and ratios across the board's strikes. */
-export function buildOptionsOrderflow(board: OptionsBoard): OptionsOrderflow {
-  let ceOi = 0;
-  let peOi = 0;
-  let ceVol = 0;
-  let peVol = 0;
-  for (const row of board.strikes) {
-    ceOi += Number(row.ce?.oi || 0);
-    peOi += Number(row.pe?.oi || 0);
-    ceVol += Number(row.ce?.volume || 0);
-    peVol += Number(row.pe?.volume || 0);
-  }
-  return {
-    ce_oi: ceOi,
-    pe_oi: peOi,
-    ce_volume: ceVol,
-    pe_volume: peVol,
-    pcr_oi: ceOi > 0 ? roundToDecimals(peOi / ceOi, 4) : null,
-    pcr_volume: ceVol > 0 ? roundToDecimals(peVol / ceVol, 4) : null,
-    timestamp: board.timestamp,
   };
 }
 
@@ -201,40 +134,6 @@ export function useSymbolSearch(term: string) {
     },
     enabled: term.length >= 2,
     placeholderData: keepPreviousData,
-  });
-}
-
-/**
- * Polls the options board while `enabled`: every 3s in market hours, 20s otherwise.
- * An empty `expiry` lets the backend pick the nearest one.
- */
-export function useOptionsBoard(params: { underlying: string; expiry: string; enabled: boolean }) {
-  const { underlying, expiry, enabled } = params;
-  return useQuery({
-    queryKey: queryKeys.terminal.optionsBoard({ underlying, expiry }),
-    queryFn: async (): Promise<OptionsBoardSnapshot> => {
-      const board = parseResponse(
-        optionsBoardSchema,
-        await unwrap(
-          api.GET("/api/terminal/options/board", {
-            params: {
-              query: {
-                underlying,
-                strike_count: OPTIONS_STRIKE_COUNT,
-                expiry: expiry || undefined,
-              },
-            },
-          }),
-        ),
-      );
-      return { board, orderflow: buildOptionsOrderflow(board) };
-    },
-    enabled,
-    // No placeholder, and a chain the selectors return to is always fetched again: the caller
-    // shows only a board fetched after its selectors last changed.
-    staleTime: 0,
-    gcTime: 0,
-    refetchInterval: () => (isMarketOpen().isOpen ? OPTIONS_POLL_OPEN_MS : OPTIONS_POLL_CLOSED_MS),
   });
 }
 

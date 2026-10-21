@@ -29,11 +29,6 @@ const RESPONSES: Record<string, unknown> = {
     ],
     timestamp: "2026-10-20T10:05:09+00:00",
   },
-  "/api/market/commodities": [
-    { name: "Gold", symbol: "GC=F", price: 2399.9, changePercent: 0.4 },
-    { name: "Crude Oil", symbol: "CL=F", price: 78.4, changePercent: -1.25 },
-  ],
-  "/api/market/currency/USDINR": { rate: 83.25, changePercent: 0.1 },
 };
 
 function databaseDown(): Response {
@@ -112,16 +107,13 @@ describe("dashboard change columns", () => {
 });
 
 describe("dashboard data loading", () => {
-  it("loads the closed-market endpoints and shows the post-market USDINR rate", async () => {
+  it("loads the closed-market endpoints and shows the post-market snapshot", async () => {
     const fetchMock = stubBackend();
     renderDashboard();
 
-    expect(await screen.findByText("₹83.25")).toBeInTheDocument();
     expect(await screen.findByText("NIFTY 50")).toBeInTheDocument();
     expect(new Set(requestedPaths(fetchMock))).toEqual(
       new Set([
-        "/api/market/commodities",
-        "/api/market/currency/USDINR",
         "/api/market/overview",
         "/api/market/status",
         "/api/market/watchlist",
@@ -147,14 +139,10 @@ describe("dashboard post-market insights", () => {
     stubBackend();
   });
 
-  it("adds Crude Oil from the commodities endpoint after the overview's Gold", async () => {
+  it("lists the overview's Gold row in the commodities panel", async () => {
     renderDashboard();
 
-    expect(await screen.findByText("Crude Oil")).toBeInTheDocument();
-    expect(screen.getByText("$78.40")).toBeInTheDocument();
-    expect(screen.getByText("-1.25%")).toBeInTheDocument();
-    expect(screen.getByText("$2,400.50")).toBeInTheDocument();
-    expect(screen.queryByText("$2,399.90")).not.toBeInTheDocument();
+    expect(await screen.findByText("$2,400.50")).toBeInTheDocument();
   });
 
   it("shows the snapshot time in IST whatever the machine's zone", async () => {

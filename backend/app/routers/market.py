@@ -185,13 +185,11 @@ def get_single_quote(symbol: str) -> dict[str, Any]:
 def search_symbols(
     query: str,
     exclude_indices: bool = False,
-    include_options: bool = True,
     db: Session = DB_DEPENDENCY,
 ) -> list[dict[str, Any]]:
     """
-    Search for companies, indices, and option symbols by symbol or name
+    Search for companies and indices by symbol or name
     exclude_indices: Set to True to only return equities (for analyst mode)
-    include_options: Set to False to exclude option symbols
     """
     if not query or len(query) < 2:
         return []
@@ -225,128 +223,7 @@ def search_symbols(
             {"symbol": c.symbol, "name": c.name, "sector": c.sector, "type": "EQUITY"}
         )
 
-    # Search for option symbols if enabled and query matches index/stock names
-    if include_options and len(query_upper) >= 2:
-        option_results = _search_option_symbols(query_upper, results_list)
-        results_list.extend(option_results)
-
     return results_list[:20]  # Limit to 20 total results
-
-
-# Optionable underlyings (indices + top stocks) and their display names
-OPTIONABLE_UNDERLYINGS = {
-    "NIFTY": NIFTY_50_NAME,
-    "NIFTY50": NIFTY_50_NAME,
-    "BANKNIFTY": "NIFTY Bank",
-    "FINNIFTY": "NIFTY Financial Services",
-    "MIDCPNIFTY": "NIFTY Midcap Select",
-    "RELIANCE": "Reliance Industries",
-    "TCS": "Tata Consultancy Services",
-    "INFY": "Infosys",
-    "HDFCBANK": "HDFC Bank",
-    "ICICIBANK": "ICICI Bank",
-    "SBIN": "State Bank of India",
-    "TATAMOTORS": "Tata Motors",
-    "TATASTEEL": "Tata Steel",
-    "AXISBANK": "Axis Bank",
-    "KOTAKBANK": "Kotak Mahindra Bank",
-    "ITC": "ITC Limited",
-    "LT": "Larsen & Toubro",
-    "HINDUNILVR": "Hindustan Unilever",
-}
-# Stop adding strikes of one underlying once it has this many option rows
-MAX_OPTION_SEARCH_ROWS = 12
-
-
-def _search_option_symbols(query: str, existing_results: list) -> list:
-    """
-    Search for option symbols based on the query.
-    Returns option strikes for matching underlyings.
-    """
-    option_results: list[dict[str, Any]] = []
-    matching_underlyings = _matching_underlyings(query, existing_results)
-    if not matching_underlyings:
-        return option_results
-
-    try:
-        from ..services.option_chain_service import option_chain_service
-
-        for underlying in matching_underlyings[:3]:  # Limit to 3 underlyings
-            try:
-                chain = option_chain_service.get_option_chain(
-                    underlying=underlying,
-                    strike_count=6,  # Get ATM ± 3 strikes
-                )
-                if chain and chain.strikes:
-                    _append_chain_options(underlying, chain, option_results)
-            except Exception:
-                # Skip this underlying if its option chain fetch fails
-                logger.debug("Option chain search failed for %s", underlying, exc_info=True)
-
-    except Exception:
-        # If option chain service fails, return what we have
-        logger.debug("Option chain service unavailable for search", exc_info=True)
-
-    return option_results
-
-
-def _matching_underlyings(query: str, existing_results: list) -> list[str]:
-    """Underlyings whose code or name contains the query, then optionable result symbols."""
-    matching = [
-        underlying
-        for underlying, name in OPTIONABLE_UNDERLYINGS.items()
-        if query in underlying or query in name.upper()
-    ]
-    # Also check if any existing result is an index or equity that has options
-    for result in existing_results:
-        if result.get("type") in ["INDEX", "EQUITY"]:
-            symbol = result.get("symbol", "")
-            if symbol in OPTIONABLE_UNDERLYINGS and symbol not in matching:
-                matching.append(symbol)
-    return matching
-
-
-def _append_chain_options(
-    underlying: str, chain: object, option_results: list[dict[str, Any]]
-) -> None:
-    """Add call/put rows strike by strike until this underlying has MAX_OPTION_SEARCH_ROWS.
-
-    The limit is per underlying, so a long first chain cannot crowd out the others.
-    """
-    expiry = chain.expiry.isoformat() if chain.expiry else None
-    start = len(option_results)
-    for strike in chain.strikes:
-        if strike.call:
-            option_results.append(
-                _option_row(underlying, strike.strike_price, strike.call, "CE", "Call", expiry)
-            )
-        if strike.put:
-            option_results.append(
-                _option_row(underlying, strike.strike_price, strike.put, "PE", "Put", expiry)
-            )
-        if len(option_results) - start >= MAX_OPTION_SEARCH_ROWS:
-            break
-
-
-def _option_row(
-    underlying: str,
-    strike_price: float,
-    leg: object,
-    option_type: str,
-    label: str,
-    expiry: str | None,
-) -> dict[str, Any]:
-    return {
-        "symbol": leg.symbol,
-        "name": f"{underlying} {strike_price} {option_type} ({label})",
-        "sector": "OPTIONS",
-        "type": option_type,
-        "underlying": underlying,
-        "strike": strike_price,
-        "expiry": expiry,
-        "ltp": leg.ltp,
-        "instrument_type": option_type,
-    }
 
 
 @router.get("/sectors", response_model=None)
@@ -545,73 +422,3 @@ def get_sector_performance() -> list[dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Error fetching sector performance: {e}")
         return []
-
-
-@router.get("/commodities", response_model=None)
-def get_commodities() -> list[dict[str, Any]]:
-    """
-    Get commodity prices (Gold, Crude Oil) from Yahoo Finance.
-    Used during post-market hours.
-    """
-    try:
-        import yfinance as yf
-
-        commodities = {"Gold": "GC=F", "Crude Oil": "CL=F"}
-
-        results = []
-        for name, symbol in commodities.items():
-            try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="2d")
-
-                if not hist.empty:
-                    current = hist["Close"].iloc[-1]
-                    prev = hist["Close"].iloc[-2] if len(hist) >= 2 else hist["Open"].iloc[-1]
-                    change_pct = ((current - prev) / prev * 100) if prev else 0
-
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "price": round(current, 2),
-                            "changePercent": round(change_pct, 2),
-                        }
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to fetch {name}: {e}")
-                continue
-
-        return results
-
-    except Exception as e:
-        logger.exception(f"Error fetching commodities: {e}")
-        return []
-
-
-@router.get("/currency/{pair}", response_model=None)
-def get_currency(pair: str) -> dict[str, Any]:
-    """
-    Get currency exchange rate from Yahoo Finance.
-    Example: pair="USDINR" fetches USD/INR rate.
-    """
-    try:
-        import yfinance as yf
-
-        # Convert pair to Yahoo Finance format
-        yf_symbol = f"{pair}=X"
-
-        ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="2d")
-
-        if hist.empty:
-            return {"pair": pair, "rate": 0, "changePercent": 0}
-
-        current = hist["Close"].iloc[-1]
-        prev = hist["Close"].iloc[-2] if len(hist) >= 2 else hist["Open"].iloc[-1]
-        change_pct = ((current - prev) / prev * 100) if prev else 0
-
-        return {"pair": pair, "rate": round(current, 2), "changePercent": round(change_pct, 2)}
-
-    except Exception as e:
-        logger.exception(f"Error fetching currency {pair}: {e}")
-        return {"pair": pair, "rate": 0, "changePercent": 0}

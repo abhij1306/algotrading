@@ -20,7 +20,7 @@ async function failureOf(promise: Promise<unknown>): Promise<ApiError> {
 describe("unwrap", () => {
   it("returns the typed body on success", async () => {
     const api = clientReturning(() => Response.json({ indices: [] }));
-    await expect(unwrap(api.GET("/api/screener/indices"))).resolves.toEqual({ indices: [] });
+    await expect(unwrap(api.GET("/api/market/sectors"))).resolves.toEqual({ indices: [] });
   });
 
   it("normalises the backend error envelope", async () => {
@@ -30,7 +30,7 @@ describe("unwrap", () => {
         { status: 404, statusText: "Not Found" },
       ),
     );
-    const error = await failureOf(unwrap(api.GET("/api/screener/indices")));
+    const error = await failureOf(unwrap(api.GET("/api/market/sectors")));
     expect(error).toMatchObject({
       name: "ApiError",
       code: "DATA_NOT_FOUND",
@@ -43,7 +43,7 @@ describe("unwrap", () => {
     const stringDetail = clientReturning(() =>
       Response.json({ detail: "Job not found" }, { status: 404 }),
     );
-    expect(await failureOf(unwrap(stringDetail.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(stringDetail.GET("/api/market/sectors")))).toMatchObject({
       code: "HTTP_ERROR",
       message: "Job not found",
       status: 404,
@@ -55,7 +55,7 @@ describe("unwrap", () => {
         { status: 422 },
       ),
     );
-    expect(await failureOf(unwrap(listDetail.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(listDetail.GET("/api/market/sectors")))).toMatchObject({
       code: "VALIDATION_ERROR",
       message: "Field required",
       status: 422,
@@ -64,7 +64,7 @@ describe("unwrap", () => {
 
   it("falls back to the status line for non-JSON error bodies", async () => {
     const api = clientReturning(() => new Response("", { status: 502, statusText: "Bad Gateway" }));
-    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(api.GET("/api/market/sectors")))).toMatchObject({
       code: "HTTP_ERROR",
       message: "HTTP 502: Bad Gateway",
       status: 502,
@@ -78,7 +78,7 @@ describe("unwrap", () => {
         { status: 503 },
       ),
     );
-    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(api.GET("/api/market/sectors")))).toMatchObject({
       code: "DATABASE_UNAVAILABLE",
       message: "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
       status: 503,
@@ -89,7 +89,7 @@ describe("unwrap", () => {
     const api = clientReturning(() =>
       Response.json({ error: { code: "BROKER_UNAVAILABLE" } }, { status: 503 }),
     );
-    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(api.GET("/api/market/sectors")))).toMatchObject({
       code: "BROKER_UNAVAILABLE",
       message: "Broker unavailable: Fyers could not be reached. Retry once it is back.",
       status: 503,
@@ -98,7 +98,7 @@ describe("unwrap", () => {
 
   it("reads a bare 503 as the service being unavailable", async () => {
     const api = clientReturning(() => new Response("", { status: 503 }));
-    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(api.GET("/api/market/sectors")))).toMatchObject({
       code: "HTTP_ERROR",
       message: "Service unavailable: the backend is not ready. Retry shortly.",
       status: 503,
@@ -109,7 +109,7 @@ describe("unwrap", () => {
     const api = clientReturning(() => {
       throw new TypeError("Failed to fetch");
     });
-    expect(await failureOf(unwrap(api.GET("/api/screener/indices")))).toMatchObject({
+    expect(await failureOf(unwrap(api.GET("/api/market/sectors")))).toMatchObject({
       code: "NETWORK_ERROR",
       message: "Failed to fetch",
       status: null,

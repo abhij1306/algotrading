@@ -1,15 +1,11 @@
 import { useNavigate } from "react-router";
-import { BarChart3, Target, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import { Button } from "@/components/ui";
 import { formatNumber, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { MarketIndex } from "@/lib/queries/dashboard";
 import { getCompactIndexLabel, getStatusBadge, HEADER_INDEX_SYMBOLS } from "./model";
 
-const QUICK_ACTIONS = [
-  { icon: Zap, label: "Trade", path: "/terminal" },
-  { icon: Target, label: "Backtest", path: "/backtest" },
-  { icon: BarChart3, label: "Screener", path: "/screener" },
-];
+const QUICK_ACTIONS = [{ icon: Zap, label: "Trade", path: "/terminal" }];
 
 function HeaderIndex({ idx }: Readonly<{ idx: MarketIndex }>) {
   const isUp = !roundsNegative(idx.changePercent);

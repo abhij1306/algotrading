@@ -21,44 +21,12 @@ vi.mock("@/lib/realtime/hooks", () => ({
 
 const ORDER_PATH = "/api/trading/order";
 const SEARCH_PATH = "/api/market/search";
-const BOARD_PATH = "/api/terminal/options/board";
-// While set, options board requests wait for it, so a test can see the chain mid-load.
-let boardHold: Promise<void> | null = null;
 const WATCHLIST_PATH = "/api/market/watchlist";
 
 // Symbol search answers, by query text.
 const SEARCH_RESULTS: Record<string, { symbol: string; name: string }[]> = {
   SB: [{ symbol: "SBIN", name: "State Bank" }],
   INF: [{ symbol: "INFY", name: "Infosys" }],
-};
-
-const BOARD = {
-  underlying: "NIFTY",
-  spot_price: 25010.5,
-  expiry: "2026-10-27",
-  atm_strike: 25000,
-  timestamp: "2026-10-20T10:00:00Z",
-  strikes: [
-    {
-      strike: 25000,
-      ce: { symbol: "NIFTY26OCT25000CE", ltp: 120, oi: 1000, volume: 50, change_pct: 1 },
-      pe: { symbol: "NIFTY26OCT25000PE", ltp: 110, oi: 2000, volume: 25, change_pct: -1 },
-    },
-  ],
-};
-
-const BANKNIFTY_BOARD = {
-  ...BOARD,
-  underlying: "BANKNIFTY",
-  spot_price: 56020,
-  atm_strike: 56000,
-  strikes: [
-    {
-      strike: 56000,
-      ce: { symbol: "BANKNIFTY26OCT56000CE", ltp: 300, oi: 500, volume: 40, change_pct: 2 },
-      pe: { symbol: "BANKNIFTY26OCT56000PE", ltp: 280, oi: 600, volume: 30, change_pct: -2 },
-    },
-  ],
 };
 
 type Captured = { url: string; method: string; body: string };
@@ -136,10 +104,6 @@ function respond(url: string): Response {
       { symbol: "SBIN", name: "State Bank", price: 800, change: 9.6, changePercent: 1.21 },
     ]);
   }
-  if (url.includes("/api/terminal/options/board")) {
-    const underlying = new URL(url).searchParams.get("underlying");
-    return Response.json(underlying === "BANKNIFTY" ? BANKNIFTY_BOARD : BOARD);
-  }
   if (url.includes(SEARCH_PATH)) {
     return Response.json(SEARCH_RESULTS[new URL(url).searchParams.get("query") ?? ""] ?? []);
   }
@@ -176,7 +140,6 @@ function installFetch(): Captured[] {
         throw new TypeError("Failed to fetch");
       }
       if (source.url.includes(RISK_CHECK_PATH) && riskHold) await riskHold;
-      if (source.url.includes(BOARD_PATH) && boardHold) await boardHold;
       if (source.url.includes(ORDER_PATH) && orderTruncatedResponses > 0) {
         orderTruncatedResponses -= 1;
         return new Response('{"status":"acc', { status: 200 });
@@ -244,48 +207,9 @@ describe("terminal order payload", () => {
     ]);
   });
 
-  it("sends an options MARKET order sized in lots of the underlying", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-    setValue(/order type/i, "MARKET");
-    setValue(/^lots$/i, "2");
-
-    fireEvent.click(ticketButton("Sell"));
-
-    await screen.findByText("PAPER SELL accepted (ord-1)");
-    expect(orderBodies(calls)).toEqual([
-      '{"mode":"PAPER","symbol":"NIFTY26OCT25000CE","side":"SELL","quantity":150,"product":"INTRADAY","type":"MARKET","price":0,"trigger_price":0,"tag":"terminal-options","instrument_type":"CE","is_live_confirmation_ack":false,"risk_override_reason":null,"client_order_id":"11111111-1111-4111-8111-111111111111"}',
-    ]);
-  });
-
-  it("sizes a ?symbol= option in lots of its own underlying, not the board's", async () => {
-    renderPage("/terminal?symbol=BANKNIFTY26OCT50000CE");
-    await screen.findByText("State Bank");
-    setValue(/order type/i, "MARKET");
-
-    fireEvent.click(ticketButton("Buy"));
-
-    await screen.findByText("PAPER BUY accepted (ord-1)");
-    expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([30]);
-  });
-
-  it("refuses an option whose lot size it does not know", async () => {
-    renderPage("/terminal?symbol=MIDCPNIFTY26OCT12000CE");
-    await screen.findByText("State Bank");
-    setValue(/order type/i, "MARKET");
-
-    fireEvent.click(ticketButton("Buy"));
-
-    expect(
-      await screen.findByText("Unknown lot size for MIDCPNIFTY26OCT12000CE"),
-    ).toBeInTheDocument();
-    expect(orderBodies(calls)).toEqual([]);
-  });
-
   it("blocks an SL order without a trigger, then sends it once the trigger is set", async () => {
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
     setValue(/order type/i, "SL");
     setValue(/^price$/i, "790");
 
@@ -524,32 +448,6 @@ describe("terminal LIVE confirmation", () => {
     expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([4]);
   });
 
-  it("shows an option order's lots and the market price it will send", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
-    setValue(/order type/i, "MARKET");
-    setValue(/^lots$/i, "2");
-
-    fireEvent.click(ticketButton("Buy"));
-
-    const dialog = await screen.findByRole("dialog", {
-      name: "Place LIVE BUY order for NIFTY26OCT25000CE?",
-    });
-    expect(dialogRows(dialog)).toEqual([
-      ["Mode", "LIVE"],
-      ["Side", "BUY"],
-      ["Symbol", "NIFTY26OCT25000CE"],
-      ["Instrument", "CE"],
-      ["Quantity", "150 (2 lots of 75)"],
-      ["Order type", "MARKET"],
-      ["Price", "Market"],
-      ["Trigger", "None"],
-      ["Product", "INTRADAY"],
-      ["Risk override reason", "None"],
-    ]);
-  });
-
   it("shows a price with more than two decimals exactly as it will be sent", async () => {
     renderPage();
     await screen.findAllByText("State Bank");
@@ -700,12 +598,6 @@ describe("terminal data", () => {
     return calls.filter((call) => call.url.includes("/square")).map((call) => call.body);
   }
 
-  function boardUrls(): string[] {
-    return calls
-      .filter((call) => call.url.includes("/api/terminal/options/board"))
-      .map((call) => new URL(call.url).search);
-  }
-
   it("selects the ?symbol= symbol and lists it after the saved watchlist", async () => {
     renderPage("/terminal?symbol=TCS");
     await screen.findAllByText("State Bank");
@@ -740,19 +632,6 @@ describe("terminal data", () => {
     expect(screen.getAllByRole("button", { name: "Sell" })).toHaveLength(1);
   });
 
-  it("shows the board's expiry until one is picked, then requests the picked expiry", async () => {
-    renderPage();
-    expect(await screen.findByText("PCR(OI): 2 | PCR(Vol): 0.5")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("2026-10-27")).toBeInTheDocument();
-    expect(boardUrls()).toEqual(["?underlying=NIFTY&strike_count=15"]);
-
-    fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
-
-    await screen.findByDisplayValue("2026-11-03");
-    await screen.findByText("NIFTY Spot: 25,010.50");
-    expect(boardUrls().at(-1)).toBe("?underlying=NIFTY&strike_count=15&expiry=2026-11-03");
-  });
-
   it("shows the watchlist day change as the backend's percent, not its absolute move", async () => {
     renderPage();
     await screen.findAllByText("State Bank");
@@ -767,7 +646,6 @@ describe("terminal data", () => {
     paperPositions = [{ ...OPEN_POSITION, realized_pnl: -100, net_pnl: 0 }];
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     const square = await screen.findByRole("button", { name: "Square" });
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.000.00Square");
@@ -779,7 +657,6 @@ describe("terminal data", () => {
     paperPositions = [withoutNet];
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     const square = await screen.findByRole("button", { name: "Square" });
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
@@ -789,7 +666,6 @@ describe("terminal data", () => {
     liveStale = true;
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
     expect(screen.getByText("No open positions")).toBeInTheDocument();
@@ -801,7 +677,6 @@ describe("terminal data", () => {
     paperPositions = [{ ...OPEN_POSITION, id: 8, symbol: "INFY" }];
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     expect(await screen.findByText(BROKER_UNAVAILABLE_NOTE)).toBeInTheDocument();
     const [live, paper] = screen.getAllByRole("button", { name: "Square" });
@@ -817,7 +692,6 @@ describe("terminal data", () => {
     paperPositions = [OPEN_POSITION];
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     const square = await screen.findByRole("button", { name: "Square" });
     expect(square.closest("tr")?.textContent).toBe("SBINPAPERLONG10790.00800.00100.00100.00Square");
@@ -837,7 +711,6 @@ describe("terminal data", () => {
     squareResult = { status: "ERROR", message: "Order rejected by broker" };
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Square" }));
 
@@ -857,7 +730,6 @@ describe("terminal data", () => {
     squareResult = { status: "SUBMIT_UNCONFIRMED", message: "Check the broker orderbook." };
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Square" }));
 
@@ -874,7 +746,6 @@ describe("terminal data", () => {
     squareResult = { status: "ERROR", message: "Order rejected by broker" };
     renderPage();
     await screen.findAllByText("State Bank");
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Square" }));
 
@@ -893,7 +764,6 @@ describe("terminal stale selections", () => {
     orderNetworkFailures = 0;
     orderTruncatedResponses = 0;
     orderResult = { status: "accepted", order_id: "ord-1" };
-    boardHold = null;
     calls = installFetch();
     stubClientOrderIds();
   });
@@ -911,69 +781,9 @@ describe("terminal stale selections", () => {
     });
   }
 
-  function tradeSymbol(): string {
-    return screen.getByText("Trade Symbol:").textContent ?? "";
-  }
-
   function watchlistAdds(): Captured[] {
     return calls.filter((call) => call.url.includes(WATCHLIST_PATH) && call.method === "POST");
   }
-
-  it("drops the picked option when the underlying changes, so the old contract cannot be sent", async () => {
-    renderPage();
-    await screen.findAllByText("State Bank");
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-    expect(tradeSymbol()).toBe("Trade Symbol: NIFTY26OCT25000CE");
-
-    fireEvent.change(screen.getByDisplayValue("NIFTY"), { target: { value: "BANKNIFTY" } });
-
-    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
-    await screen.findByRole("button", { name: "BANKNIFTY26OCT56000CE" });
-    expect(screen.queryByRole("button", { name: "NIFTY26OCT25000CE" })).not.toBeInTheDocument();
-    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
-
-    setValue(/order type/i, "MARKET");
-    fireEvent.click(ticketButton("Buy"));
-
-    await screen.findByText("PAPER BUY accepted (ord-1)");
-    expect(orderBodies(calls).map((body) => JSON.parse(body).symbol)).toEqual(["SBIN"]);
-  });
-
-  it("drops the picked option when the expiry changes, even if the new chain lists it", async () => {
-    renderPage();
-    await screen.findAllByText("State Bank");
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-
-    fireEvent.change(screen.getByDisplayValue("2026-10-27"), { target: { value: "2026-11-03" } });
-
-    await screen.findByDisplayValue("2026-11-03");
-    await screen.findByRole("button", { name: "NIFTY26OCT25000CE" });
-    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
-  });
-
-  it("returning to a chain shows no cached board and does not revive the old pick", async () => {
-    renderPage();
-    await screen.findAllByText("State Bank");
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-    fireEvent.change(screen.getByDisplayValue("NIFTY"), { target: { value: "BANKNIFTY" } });
-    await screen.findByRole("button", { name: "BANKNIFTY26OCT56000CE" });
-
-    let release = () => {};
-    boardHold = new Promise((resolve) => {
-      release = resolve;
-    });
-    fireEvent.change(screen.getByDisplayValue("BANKNIFTY"), { target: { value: "NIFTY" } });
-
-    // Until the fresh NIFTY board answers, none of its contracts can be picked.
-    expect(await screen.findByText("Loading options board...")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "NIFTY26OCT25000CE" })).not.toBeInTheDocument();
-    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
-
-    release();
-
-    await screen.findByRole("button", { name: "NIFTY26OCT25000CE" });
-    expect(tradeSymbol()).toBe("Trade Symbol: SBIN");
-  });
 
   it("starts streaming quotes at the open and stops at the close with no symbol change", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
@@ -1036,17 +846,5 @@ describe("terminal stale selections", () => {
 
     await screen.findByText("PAPER BUY accepted (ord-1)");
     expect(orderBodies(calls).map((body) => JSON.parse(body).quantity)).toEqual([2]);
-  });
-
-  it("blocks a fractional number of option lots", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: "NIFTY26OCT25000CE" }));
-    setValue(/order type/i, "MARKET");
-    setValue(/^lots$/i, "1.5");
-
-    expect(screen.getByText("Lots must be a whole number (lot size 75)")).toBeInTheDocument();
-    expect(ticketButton("Buy")).toBeDisabled();
-    fireEvent.click(ticketButton("Buy"));
-    expect(orderBodies(calls)).toEqual([]);
   });
 });

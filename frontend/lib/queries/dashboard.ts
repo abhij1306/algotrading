@@ -82,15 +82,6 @@ const overviewSchema = z.object({
   timestamp: optionalString,
 });
 
-const commoditySchema = z.object({
-  name: z.string().catch(""),
-  symbol: z.string().catch(""),
-  price: optionalNumber,
-  changePercent: optionalNumber,
-});
-
-const currencySchema = z.object({ rate: optionalNumber, changePercent: optionalNumber });
-
 const moverSchema = z.object({
   symbol: z.string().catch(""),
   name: z.string().nullish().catch(null),
@@ -174,12 +165,6 @@ export interface CommodityData {
   changePercent: number | null;
 }
 
-export interface CurrencyData {
-  pair: string;
-  rate: number | null;
-  changePercent: number | null;
-}
-
 export interface SentimentData {
   score: number | null;
   status: string;
@@ -192,7 +177,6 @@ export interface PostMarketData {
   usIndices: IndexData[];
   vix: IndexData[];
   commodities: CommodityData[];
-  currency: CurrencyData;
   sentiment: {
     usFearGreed: SentimentData;
     indiaMMI: SentimentData;
@@ -363,17 +347,14 @@ export function useMarketInsights(enabled: boolean) {
   });
 }
 
-/** US indices, VIX, commodities, USDINR and sentiment for after the close. */
+/** US indices, VIX, commodities and sentiment for after the close. */
 export function usePostMarketInsights(enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.dashboard.postMarketInsights(),
     queryFn: async (): Promise<PostMarketData> => {
-      const [overview, currency] = await Promise.all([
-        unwrap(api.GET("/api/market/overview")).then((body) => parseResponse(overviewSchema, body)),
-        unwrap(
-          api.GET("/api/market/currency/{pair}", { params: { path: { pair: "USDINR" } } }),
-        ).then((body) => parseResponse(currencySchema, body)),
-      ]);
+      const overview = await unwrap(api.GET("/api/market/overview")).then((body) =>
+        parseResponse(overviewSchema, body),
+      );
       return {
         usIndices: overview.indices.filter((row) => US_INDEX_NAMES.has(row.name)).map(toIndexData),
         vix: overview.indices.filter((row) => row.name.includes("VIX")).map(toIndexData),
@@ -385,11 +366,6 @@ export function usePostMarketInsights(enabled: boolean) {
             price: row.price ?? null,
             changePercent: row.change_pct ?? null,
           })),
-        currency: {
-          pair: "USDINR",
-          rate: currency.rate ?? null,
-          changePercent: currency.changePercent ?? null,
-        },
         sentiment: {
           usFearGreed: toSentiment(overview.sentiment.us_fear_greed),
           indiaMMI: toSentiment(overview.sentiment.india_sentiment),
@@ -401,36 +377,6 @@ export function usePostMarketInsights(enabled: boolean) {
     enabled,
     ...POLL_OPTIONS,
   });
-}
-
-/**
- * Yahoo futures quotes (Gold, Crude Oil) from /api/market/commodities. The overview carries Gold
- * and Silver but not Crude Oil, so the post-market panel adds the rows the overview lacks.
- */
-export function useCommodities(enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.dashboard.commodities(),
-    queryFn: async (): Promise<CommodityData[]> =>
-      parseResponse(z.array(commoditySchema), await unwrap(api.GET("/api/market/commodities")))
-        .filter((row) => row.name.length > 0)
-        .map((row) => ({
-          name: row.name,
-          symbol: row.symbol,
-          price: row.price ?? null,
-          changePercent: row.changePercent ?? null,
-        })),
-    enabled,
-    ...POLL_OPTIONS,
-  });
-}
-
-/** The overview's commodity rows, then each extra row whose name the overview does not have. */
-export function mergeCommodities(
-  overviewRows: readonly CommodityData[],
-  extraRows: readonly CommodityData[],
-): CommodityData[] {
-  const known = new Set(overviewRows.map((row) => row.name));
-  return [...overviewRows, ...extraRows.filter((row) => !known.has(row.name))];
 }
 
 /** Symbols shown by the market insights, for live quote subscription. */

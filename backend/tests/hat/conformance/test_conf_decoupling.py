@@ -38,16 +38,15 @@ PENDING = {
     "app.utils.env_loader": "K6",
 }
 
-# Top-level module names of the legacy test helpers (`tests/fakes`, `tests/screener_fakes.py`,
-# the parent `tests/conftest.py`) and of the `tests` package itself.
-LEGACY_TEST_HELPERS = {"fakes", "screener_fakes", "conftest", "tests"}
+# Top-level module names of the legacy test helpers (`tests/fakes`, the parent
+# `tests/conftest.py`) and of the `tests` package itself.
+LEGACY_TEST_HELPERS = {"fakes", "conftest", "tests"}
 
 # Legacy modules that only re-export a helper HAT owns (one implementation, no copy); each is
 # deleted with the legacy code that uses it (K4/K5).
 SHIMS = {
     "utils/clock.py",
     "services/bhavcopy_text.py",
-    "services/backtest_metrics.py",
     "services/execution/paper_book.py",
 }
 

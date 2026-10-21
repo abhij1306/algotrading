@@ -31,14 +31,10 @@ from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: 
 from .routers import (  # noqa: E402
     activity,
     auth,
-    backtest,
     data_snapshot,
     market,
     market_dashboard,
-    options,
     portfolio,
-    screener,
-    strategies,
     system_health,
     terminal,
     trading,
@@ -400,21 +396,17 @@ app.add_middleware(
 # Register routers
 app.include_router(system_health.router)
 app.include_router(unified.router)
-app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
 app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
 app.include_router(market_dashboard.router, prefix="/api")
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"])
 app.include_router(universe.router, prefix="/api/universe", tags=["Universe"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
-app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
 app.include_router(data_snapshot.router)
 app.include_router(terminal.router)
 app.include_router(trading.router)
 app.include_router(portfolio.router)
 app.include_router(activity.router)
-app.include_router(options.router)
-app.include_router(strategies.router)
 
 logger.info("[OK] All routers registered")
 

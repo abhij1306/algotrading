@@ -1,45 +1,35 @@
 import { useState } from "react";
 import { usePositionsBook, type PositionItem } from "@/lib/queries/terminal";
 import { useConnectionStatus } from "@/lib/realtime/hooks";
-import { OptionChain } from "./components/OptionChain";
 import { OrderTicket } from "./components/OrderTicket";
 import { PositionsPanel } from "./components/PositionsPanel";
 import { TerminalHeader } from "./components/TerminalHeader";
-import { ViewToolbar } from "./components/ViewToolbar";
 import { WatchlistSearch } from "./components/WatchlistSearch";
 import { WatchlistTable } from "./components/WatchlistTable";
 import { useLiveRows } from "./hooks/use-live-rows";
-import { useOptionsChain } from "./hooks/use-options-chain";
 import { useSquareAction } from "./hooks/use-square-action";
 import { useTerminalSymbols } from "./hooks/use-terminal-symbols";
 import { DEFAULT_TRADING_MODE, type TradingMode } from "./lib/order-defaults";
-import {
-  currentRow,
-  summarizePositions,
-  tradeSymbolFor,
-  type TerminalView,
-} from "./lib/terminal-view";
+import { currentRow, summarizePositions, type TerminalView } from "./lib/terminal-view";
 
 const NO_POSITIONS: PositionItem[] = [];
 
-/** The terminal: watchlist, option chain or positions, and the order ticket. */
+/** The terminal: watchlist, positions, and the order ticket. */
 export function TerminalScreen() {
   const isConnected = useConnectionStatus() === "connected";
   const [tradingMode, setTradingMode] = useState<TradingMode>(DEFAULT_TRADING_MODE);
-  const [terminalView, setTerminalView] = useState<TerminalView>("options");
+  const terminalView: TerminalView = "positions";
   const [orderMessage, setOrderMessage] = useState<string | null>(null);
   const symbols = useTerminalSymbols();
-  const chain = useOptionsChain(terminalView === "options");
-  const positionsQuery = usePositionsBook(terminalView === "positions");
+  const positionsQuery = usePositionsBook(true);
   const { squaring, squarePosition } = useSquareAction(setOrderMessage);
   const { watchlist, positions } = useLiveRows({
     watchlist: symbols.items,
     selectedSymbol: symbols.selectedSymbol,
-    optionSymbol: chain.selectedOptionSymbol,
     positions: positionsQuery.data?.rows ?? NO_POSITIONS,
   });
   const currentSymbol = currentRow(watchlist, symbols.selectedSymbol);
-  const activeTradeSymbol = tradeSymbolFor(terminalView, chain.selectedOptionSymbol, currentSymbol);
+  const activeTradeSymbol = currentSymbol?.symbol ?? "";
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)]">
@@ -71,25 +61,17 @@ export function TerminalScreen() {
           </div>
         </div>
 
-        {/* Center - Options Board / Positions */}
+        {/* Center - Positions */}
         <div className="flex-1 flex flex-col">
-          <ViewToolbar
-            view={terminalView}
-            onViewChange={setTerminalView}
-            board={chain.snapshot?.board ?? null}
-          />
           <div className="flex-1 flex items-center justify-center">
-            {terminalView === "options" && <OptionChain chain={chain} />}
-            {terminalView === "positions" && (
-              <PositionsPanel
-                summary={summarizePositions(positions)}
-                error={positionsQuery.isError ? "Failed to load positions" : null}
-                positions={positions}
-                liveStale={positionsQuery.data?.liveStale ?? false}
-                squaring={squaring}
-                onSquare={squarePosition}
-              />
-            )}
+            <PositionsPanel
+              summary={summarizePositions(positions)}
+              error={positionsQuery.isError ? "Failed to load positions" : null}
+              positions={positions}
+              liveStale={positionsQuery.data?.liveStale ?? false}
+              squaring={squaring}
+              onSquare={squarePosition}
+            />
           </div>
         </div>
 

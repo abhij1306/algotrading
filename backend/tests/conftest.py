@@ -150,17 +150,3 @@ def sample_portfolio_data() -> dict[str, object]:
             },
         ],
     }
-
-
-@pytest.fixture
-def sample_strategy_data() -> dict[str, object]:
-    """Sample strategy data for testing"""
-    return {
-        "strategy_id": "TEST_STRATEGY_V1",
-        "description": "Test momentum strategy",
-        "timeframe": "1D",
-        "holding_period": 5,
-        "regime": "TREND",
-        "lifecycle_status": "RESEARCH",
-        "regime_notes": "Fails in sideways markets",
-    }

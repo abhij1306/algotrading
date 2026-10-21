@@ -1,12 +1,6 @@
 import { memo } from "react";
 import { Globe, TrendingUp, TrendingDown, DollarSign } from "lucide-react";
-import {
-  formatInr,
-  formatNumber,
-  formatSignedPercent,
-  PLACEHOLDER,
-  roundsNegative,
-} from "@/lib/format";
+import { formatNumber, formatSignedPercent, PLACEHOLDER, roundsNegative } from "@/lib/format";
 import { formatIstDateTime } from "@/lib/time";
 import type { PostMarketData, IndexData, CommodityData } from "@/lib/queries/dashboard";
 
@@ -103,26 +97,6 @@ export const PostMarketInsights = memo(function PostMarketInsights({
           ) : (
             <div className="p-4 text-center text-xs text-foreground-muted">No data</div>
           )}
-
-          {/* Currency */}
-          <div className="p-3 rounded-lg border border-border bg-surface">
-            <div className="text-xs text-foreground-muted mb-1">USD/INR</div>
-            <div className="flex items-baseline justify-between">
-              <div className="text-base font-semibold tabular-nums">
-                {formatInr(data.currency.rate)}
-              </div>
-              <div
-                className={`text-sm tabular-nums font-medium ${toneClass(
-                  typeof data.currency.changePercent === "number",
-                  !roundsNegative(data.currency.changePercent),
-                )}`}
-              >
-                {typeof data.currency.changePercent === "number"
-                  ? formatSignedPercent(data.currency.changePercent)
-                  : "Unavailable"}
-              </div>
-            </div>
-          </div>
 
           {data.vix.length > 0 && (
             <div className="p-3 rounded-lg border border-border bg-surface">

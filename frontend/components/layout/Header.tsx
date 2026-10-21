@@ -17,9 +17,6 @@ export function AppHeader({ onCommandPaletteOpen }: Readonly<HeaderProps>) {
   const navItems = [
     { id: "dashboard", label: "Dashboard", path: "/dashboard" },
     { id: "terminal", label: "Terminal", path: "/terminal" },
-    { id: "screener", label: "Screener", path: "/screener" },
-    { id: "strategies", label: "Strategies", path: "/strategies" },
-    { id: "backtest", label: "Backtest", path: "/backtest" },
   ];
 
   const headerClasses =
@@ -103,9 +100,6 @@ export function MobileNav() {
   const tabs = [
     { id: "dashboard", label: "Home", icon: Command, path: "/dashboard" },
     { id: "terminal", label: "Market", icon: Search, path: "/terminal" },
-    { id: "screener", label: "Screen", icon: Search, path: "/screener" },
-    { id: "strategies", label: "VCP", icon: Bell, path: "/strategies" },
-    { id: "backtest", label: "Test", icon: Bell, path: "/backtest" },
   ];
 
   return (
