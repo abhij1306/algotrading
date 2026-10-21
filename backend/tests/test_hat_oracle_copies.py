@@ -19,6 +19,26 @@ ORACLE = json.loads(
 )
 
 
+def close(got: object, expected: object) -> bool:
+    """Equal structure and strings, numbers equal to 1e-9 relative: a least-squares slope differs
+    in its last digits between BLAS builds, so the oracle is compared to a tolerance."""
+    if isinstance(expected, dict):
+        return (
+            isinstance(got, dict)
+            and got.keys() == expected.keys()
+            and all(close(got[k], v) for k, v in expected.items())
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(got, list)
+            and len(got) == len(expected)
+            and all(close(g, e) for g, e in zip(got, expected, strict=True))
+        )
+    if isinstance(expected, float) and isinstance(got, (int, float)):
+        return got == pytest.approx(expected, rel=1e-9, abs=1e-9)
+    return got == expected
+
+
 def test_oracle_constants_match_the_detector() -> None:
     assert ORACLE["constants"] == {
         "min_history_bars": pattern.MIN_HISTORY_BARS,
@@ -31,7 +51,7 @@ def test_oracle_constants_match_the_detector() -> None:
 def test_oracle_case_matches_the_detector(case: dict) -> None:
     result = pattern.analyze_pattern(pd.DataFrame(case["bars"]), case["rs_rating"])
     got = None if result is None else json.loads(json.dumps(dataclasses.asdict(result)))
-    assert got == case["expected"]
+    assert close(got, case["expected"])
 
 
 def test_oracle_rs_map_matches_the_detector() -> None:
