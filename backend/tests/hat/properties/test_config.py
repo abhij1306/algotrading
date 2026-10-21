@@ -1,12 +1,53 @@
 """PBT config.hash_canonical (HAT-SCH-016): the config hash is canonical."""
 
+import copy
 import json
 import random
+import uuid
+from datetime import date
 
-from hypothesis import assume, given
+import pytest
+import yaml
+from hat.hat_config_support import (
+    UNIVERSE_TYPES,
+    param_leaves,
+    raw_configs,
+    set_at,
+    with_unknown_key,
+)
+from hat.hat_criteria_support import Lcg, frame, make_rows, universe_frame
+from hat.hat_risk_support import AT, CALENDAR
+from hat.hat_support import memory_engine
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.hat.confighash import canonical_json, config_hash
+from app.hat.engine.criteria import REGISTRY, EvalContext
+from app.hat.engine.strategy.config import (
+    ConfigError,
+    Instance,
+    Playbook,
+    StrategyConfig,
+    config_json,
+    parse_config,
+)
+from app.hat.engine.strategy.scoring import evaluate_stage
+from app.hat.engine.strategy.versions import (
+    SEED_NAMES,
+    VersionError,
+    create_bot,
+    publish_version,
+    save_draft,
+    seed_config,
+    seed_default_strategies,
+    seed_text,
+)
+from app.hat.engine.strategy.yamlio import export_yaml, import_yaml
+from app.hat.models import HatBot, HatEvent, HatStrategy, HatStrategyVersion
+from app.hat.risk.policy import POLICY_FIELDS
+from app.hat.schema import seed_hat_reference
 
 # Any string, lone surrogates included: JSON text from an API can carry them.
 text = st.text(alphabet=st.characters(blacklist_categories=()), max_size=8)
@@ -110,3 +151,268 @@ def test_hash_ignores_the_sign_of_zero(config: dict) -> None:
     flipped = with_zero_signs_flipped(config)
     assert same_value(flipped, config)
     assert config_hash(flipped) == config_hash(config)
+
+
+# --- the strategy config model (HAT-CRIT-020..022, HAT-BOT-050..082) --------------------------
+
+ENGINE = memory_engine()
+seed_hat_reference(ENGINE)
+NIGHT = AT.replace(hour=20)
+USER = uuid.UUID("00000000-0000-7000-8000-0000000000a1")
+ACCOUNT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")
+
+
+def all_instances(config: StrategyConfig) -> list[Instance]:
+    out = [*config.universe]
+    for playbook in config.playbooks:
+        out += [*playbook.setup.criteria, *playbook.trigger, *playbook.entry_filters]
+    return out
+
+
+def codes_of(raw: dict) -> set[str]:
+    with pytest.raises(ConfigError) as caught:
+        parse_config(raw)
+    return caught.value.codes
+
+
+@given(raw_configs())
+def test_instance_fields(raw: dict) -> None:
+    """PBT config.instance_fields (HAT-CRIT-020): every stored instance carries exactly the seven
+    fields, parameters spelled out in full; `weight` has no effect on a hard criterion."""
+    config = parse_config(raw)
+    stored = config.to_json()
+    fields = {"type", "stage", "mode", "weight", "params", "enabled", "order"}
+    for instance in all_instances(config):
+        assert set(Instance.model_fields) == fields
+        assert instance.mode in ("hard", "score")
+        assert set(instance.params) == set(REGISTRY[instance.type].params.model_fields)
+    assert stored["universe"] == [i.model_dump(mode="json") for i in config.universe]
+    # a hard criterion's weight is ignored: compare outcomes on a fixed context
+    ctx = EvalContext(
+        date(2024, 1, 2),
+        "x",
+        frame(make_rows(Lcg(1), 1)),
+        universe=universe_frame([("x", {"rs_pct": 50.0})]),
+        series="EQ",
+    )
+    for instance in config.universe:
+        if instance.mode != "hard":
+            continue
+        a = evaluate_stage("universe", [instance], ctx)
+        b = evaluate_stage("universe", [instance.model_copy(update={"weight": 7.0})], ctx)
+        assert (a.passed, a.score, a.reason) == (b.passed, b.score, b.reason)
+
+
+@given(raw_configs(), st.randoms(use_true_random=False))
+def test_stage_slots(raw: dict, rnd: random.Random) -> None:
+    """PBT config.stage_slots (HAT-CRIT-021, 022): an instance only fits a section its type
+    allows, scoring only in setup; the same instances in any list order store identically."""
+    config = parse_config(raw)
+    for instance in all_instances(config):
+        ctype = REGISTRY[instance.type]
+        assert instance.stage == ctype.stage or instance.stage in ctype.extra_stages
+        assert instance.mode == "hard" or instance.stage == "setup"
+    for instance in config.universe:
+        wrong = {"type": "gap_up", "params": {"min_pct": 2.0}}
+        assert codes_of({**raw, "universe": [wrong]}) & {"wrong_stage", "invalid"}
+        assert instance.stage == "universe"
+    # explicit order and stage make the list order irrelevant
+    explicit = parse_config(raw).to_json()
+    for section in (explicit["universe"],):
+        rnd.shuffle(section)
+    assert parse_config(explicit).hash() == config.hash()
+    scored_trigger = {
+        "type": "gap_up",
+        "stage": "trigger",
+        "order": 0,
+        "mode": "score",
+        "weight": 1,
+    }
+    explicit["playbooks"][0]["trigger"] = [scored_trigger]
+    assert "score_outside_setup" in codes_of(explicit)
+
+
+@given(raw_configs(), st.data())
+def test_invalid_never_saves(raw: dict, data: st.DataObject) -> None:
+    """PBT config.invalid_never_saves (HAT-CRIT-020, HAT-BOT-081): a config with an unknown
+    type, a wrong stage, an unknown or out-of-range parameter or a duplicate order is refused
+    with a coded error and no version row or event is written."""
+    leaves = param_leaves(raw)
+    assume(leaves)
+    breakage = data.draw(st.sampled_from(["unknown_param", "bad_value", "unknown_type", "dup"]))
+    bad = copy.deepcopy(raw)
+    leaf = data.draw(st.sampled_from(leaves))
+    if breakage == "unknown_param":
+        bad = with_unknown_key(raw, leaf, "zzz_unknown")
+    elif breakage == "bad_value":
+        bad = set_at(raw, leaf, {"not": "a scalar"})
+    elif breakage == "unknown_type":
+        holder = bad
+        for part in leaf[: leaf.index("params")]:
+            holder = holder[part]
+        holder["type"] = "no_such_criterion"
+    else:
+        assume(len(bad["universe"]) >= 1)
+        first = bad["universe"][0]
+        first["stage"], first["order"] = "universe", 0
+        bad["universe"] = [first, {**copy.deepcopy(first)}]
+    with Session(ENGINE) as session:
+        strategy = seed_default_strategies(session, USER)[0]
+        before = (
+            session.scalar(select(func.count()).select_from(HatStrategyVersion)),
+            session.scalar(select(func.count()).select_from(HatEvent)),
+        )
+        with pytest.raises(ConfigError):
+            save_draft(session, strategy_id=strategy.id, config=bad, calendar=CALENDAR, now=NIGHT)
+        after = (
+            session.scalar(select(func.count()).select_from(HatStrategyVersion)),
+            session.scalar(select(func.count()).select_from(HatEvent)),
+        )
+        session.rollback()
+    assert before == after
+
+
+@given(raw_configs())
+def test_playbook_shape(raw: dict) -> None:
+    """PBT config.playbook_shape (HAT-BOT-050, 051): a playbook is a setup, a trigger list,
+    entry filters and one stop rule; the regime rule and the exit stack belong to the bot."""
+    config = parse_config(raw)
+    stored = config.to_json()
+    assert config.playbooks and len({p.name for p in config.playbooks}) == len(config.playbooks)
+    assert set(Playbook.model_fields) == {"name", "setup", "trigger", "entry_filters", "stop"}
+    assert set(StrategyConfig.model_fields) >= {"regime", "exits", "playbooks", "universe"}
+    for name in ("regime", "exits"):
+        leaked = copy.deepcopy(stored)
+        leaked["playbooks"][0][name] = stored[name]
+        assert "extra_forbidden" in codes_of(leaked)
+    twice = copy.deepcopy(stored)
+    twice["playbooks"] = [stored["playbooks"][0]] * 2
+    assert "duplicate_playbook" in codes_of(twice)
+
+
+def inject(node: object, rnd: random.Random, key: str) -> bool:
+    """Put `key` into a random dict inside `node`; False when none is reachable."""
+    dicts: list[dict] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            dicts.append(value)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(node)
+    rnd.choice(dicts)[key] = 1
+    return True
+
+
+RISK_NAMES = sorted(
+    {*POLICY_FIELDS, "risk_pct", "position_size", "qty", "stop_price", "max_positions", "leverage"}
+)
+
+
+@given(raw_configs(), st.sampled_from(RISK_NAMES), st.randoms(use_true_random=False))
+def test_no_risk_keys(raw: dict, key: str, rnd: random.Random) -> None:
+    """PBT config.no_risk_keys (HAT-DEC-B3, HAT-BOT-070): a config that names a risk or sizing
+    key at any depth is refused with `risk_key`, however valid the rest is."""
+    bad = copy.deepcopy(raw)
+    inject(bad, rnd, key)
+    assert "risk_key" in codes_of(bad)
+    parse_config(raw)  # the clean one still passes
+
+
+@given(raw_configs())
+def test_yaml_round_trip(raw: dict) -> None:
+    """PBT config.yaml_round_trip (HAT-BOT-082): export then import gives the same config and
+    hash, and the text is stable under a second export; the two seeds round-trip too."""
+    config = parse_config(raw)
+    text = export_yaml(config)
+    again = import_yaml(text)
+    assert again.hash() == config.hash()
+    assert again.to_json() == config.to_json()
+    assert export_yaml(again) == text
+    assert config_json(yaml.safe_load(text)) == config.to_json()
+
+
+@pytest.mark.parametrize("name", SEED_NAMES)
+def test_yaml_round_trip_seed(name: str) -> None:
+    config = seed_config(name)
+    assert import_yaml(export_yaml(config)).hash() == config.hash()
+    assert import_yaml(seed_text(name)).hash() == config.hash()
+
+
+@given(st.lists(raw_configs(), min_size=1, max_size=4))
+@settings(max_examples=25, deadline=None)
+def test_save_creates_version(raws: list[dict]) -> None:
+    """PBT config.save_creates_version (HAT-BOT-080, 081, 084): each save adds one draft with
+    the next number, no gaps, linked to its parent, config and hash as validated; publishing
+    freezes a draft; inside the market session nothing is written."""
+    with Session(ENGINE) as session:
+        market = seed_default_strategies(session, uuid.uuid4())[0]
+        base = session.scalar(
+            select(func.count())
+            .select_from(HatStrategyVersion)
+            .where(HatStrategyVersion.strategy_id == market.id)
+        )
+        previous = None
+        for index, raw in enumerate(raws):
+            row = save_draft(
+                session, strategy_id=market.id, config=raw, calendar=CALENDAR, now=NIGHT
+            )
+            assert row.version == base + index + 1
+            assert row.status == "draft"
+            assert row.parent_version_id == (previous.id if previous else row.parent_version_id)
+            assert row.config_hash == parse_config(raw).hash()
+            assert row.config == parse_config(raw).to_json()
+            previous = row
+        numbers = [
+            v.version
+            for v in session.scalars(
+                select(HatStrategyVersion).where(HatStrategyVersion.strategy_id == market.id)
+            )
+        ]
+        assert sorted(numbers) == list(range(1, len(numbers) + 1))
+        count = session.scalar(select(func.count()).select_from(HatStrategyVersion))
+        with pytest.raises(VersionError) as caught:
+            save_draft(session, strategy_id=market.id, config=raws[0], calendar=CALENDAR, now=AT)
+        assert caught.value.code == "market_hours"
+        assert session.scalar(select(func.count()).select_from(HatStrategyVersion)) == count
+        assert previous is not None
+        frozen = publish_version(session, previous.id, backtest_run_id=uuid.uuid4())
+        assert frozen.status == "backtested"
+        with pytest.raises(VersionError):
+            publish_version(session, previous.id, backtest_run_id=uuid.uuid4())
+        session.rollback()
+
+
+@given(st.sampled_from([None, "shadow", "confirm", "auto"]))
+def test_new_bot_mode_shadow(mode: str | None) -> None:
+    """PBT config.new_bot_mode_shadow (HAT-BOT-061): a new bot starts in shadow whatever mode
+    its config names; asking creation for any other mode is refused."""
+    with Session(ENGINE) as session:
+        strategy = seed_default_strategies(session, USER)[0]
+        if mode in (None, "shadow"):
+            bot = create_bot(
+                session,
+                user_id=USER,
+                strategy_id=strategy.id,
+                broker_account_id=ACCOUNT,
+                execution_mode=mode,
+            )
+            assert bot.execution_mode == "shadow"
+            assert isinstance(bot, HatBot)
+        else:
+            with pytest.raises(VersionError):
+                create_bot(
+                    session,
+                    user_id=USER,
+                    strategy_id=strategy.id,
+                    broker_account_id=ACCOUNT,
+                    execution_mode=mode,
+                )
+        session.rollback()
+    for name in SEED_NAMES:
+        assert seed_config(name).execution_mode == "shadow"
+    assert UNIVERSE_TYPES and HatStrategy

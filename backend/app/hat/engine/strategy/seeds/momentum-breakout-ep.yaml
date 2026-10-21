@@ -1,0 +1,54 @@
+bot: momentum-breakout-ep             # Qullamaggie-style
+version: 1
+market: NSE
+execution_mode: shadow
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: adr_min, params: {days: 20, pct: 4}}
+
+regime:
+  index: NIFTY 500                    # assumption; Nifty Smallcap 250 is the alternative
+  rule: sma_fast_above_slow_both_rising
+  params: {fast: 10, slow: 20}
+
+playbooks:
+  - name: breakout
+    setup:
+      threshold: 0.6
+      criteria:
+        - {type: momentum_rank, mode: hard, params: {windows: [21, 63, 126], top_pct: 2, match: any}}
+        - {type: prior_move, mode: hard, params: {min_pct: 30, within_days: [21, 63]}}
+        - {type: consolidation, mode: score, weight: 2, params: {days: [5, 15], max_range_pct: 15, higher_lows: true}}
+        - {type: ma_surf, mode: score, weight: 1, params: {mas: [10, 20], max_distance_pct: 5}}
+    trigger:
+      - {type: price_breaks_level, params: {level: "max(consolidation_high, opening_range_high)", bar: 5m}}
+      - {type: volume_pace, params: {vs_avg50: 1.5}}
+    entry_filters:
+      - {type: adtr_filter, params: {max_multiple: 1.0}}
+      - {type: max_chase, params: {pct: 2}}
+    stop: {rule: low_of_day}
+
+  - name: episodic_pivot
+    setup:                             # built live from the pre-open scan, not the nightly watchlist
+      criteria:
+        - {type: neglect, mode: hard, params: {max_return_63d_pct: 30}}
+    trigger:
+      - {type: gap_up, params: {min_pct: 10}}
+      - {type: early_volume, params: {vs_adv20: 0.5}}
+      - {type: catalyst_attached, params: {within_hours: 24, required_in: [confirm]}}
+      - {type: price_breaks_level, params: {level: opening_range_high, bar: 5m}}
+    entry_filters:
+      - {type: adtr_filter, params: {max_multiple: 1.5}}
+      - {type: max_chase, params: {pct: 2}}
+    stop: {rule: low_of_day}
+
+# sizing: from the account risk policy (0.25% risk, 25% max position, 6 positions)
+
+exits:
+  - {rule: hard_stop}
+  - {rule: partial_after_days, days: 3, sell_fraction: 0.33, only_if_profit: true}
+  - {rule: move_stop_to_breakeven, after: partial}
+  - {rule: close_below_sma, sma: 10, sell_fraction: 1.0, when: "15:25"}   # 20 for slower stocks

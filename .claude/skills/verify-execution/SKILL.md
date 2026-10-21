@@ -152,8 +152,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
-Covered digest: `f27924be6d9d1093317780fd26407454880bbf9b3362dfa2b0bc8619318aab34`
+Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
+Covered digest: `9a5404164a3d58a920875d8f1a97e577f83a831606ba408d7b159196f1b5dc03`
 
 ## Scope changes
 
@@ -172,6 +172,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `gtt_limit_price` raises when the rounded price is not positive (a trigger within about a tick of zero): a refinement of the spec property, not a weakening.
 - PR 13 updated harness files covered by `verify-scheduler` without narrowing any check: `MERGED_PRS` includes 13, `KNOWN_GAPS` lost `TLA OrderReconciliation!AtMostOneEntryPerSignal` and gained `TLA ExecutionRouter!AutoNeedsGtt`, and `test_ops.py` gained `test_session_backoff_alert`.
 - K3 edited `test_conf_broker.py`: `brk.import_boundary` lets `app.hat.data.provider.fyers_websocket` (the data socket module, HAT-OVR-006) import the SDK socket `fyers_apiv3.FyersWebsocket` and nothing else, with a synthetic offender showing any other data module still fails; `fyers_adapter_wraps_existing` adds that module to the SDK importers and `ops.single_fyers_secret_store` to the token readers. The REST model, GTT and secret rules are unchanged for every other module.
+- PR 8 extended `CONF mvp_seed_scope` (`test_conf_broker.py`) with the seeded strategies, markets and owner (HAT-OVR-002); the broker half is unchanged. Its second scratch break is recorded in `verify-criteria`.
+
 
 ## Scratch breaks
 

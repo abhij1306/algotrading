@@ -517,7 +517,7 @@ playbooks:
         - {type: consolidation, mode: score, weight: 2, params: {days: [5, 15], max_range_pct: 15, higher_lows: true}}
         - {type: ma_surf, mode: score, weight: 1, params: {mas: [10, 20], max_distance_pct: 5}}
     trigger:
-      - {type: price_breaks_level, params: {level: max(consolidation_high, opening_range_high), bar: 5m}}
+      - {type: price_breaks_level, params: {level: "max(consolidation_high, opening_range_high)", bar: 5m}}
       - {type: volume_pace, params: {vs_avg50: 1.5}}
     entry_filters:
       - {type: adtr_filter, params: {max_multiple: 1.0}}
