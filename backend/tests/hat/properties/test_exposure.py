@@ -52,9 +52,9 @@ def test_ladder_transitions(trades: list, up: int, down: int) -> None:
         }
     )
     state = ladder_from_trades(trades, policy)
-    assert (LEVELS.index(state.level), state.consecutive_wins, state.consecutive_losses) == oracle(
-        trades, up, down
-    )
+    expected = oracle(trades, up, down)
+    actual = (LEVELS.index(state.level), state.consecutive_wins, state.consecutive_losses)
+    assert actual == expected
     assert state.level in LEVELS
 
 
