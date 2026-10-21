@@ -300,6 +300,7 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 - **Acceptance:**
   - Property: for every backtest expectancy E_bt and discount δ in [0, 1], the benchmark used is E_bt × (1 − δ) and it never exceeds E_bt when E_bt >= 0. Harm: normal post-publication decay is read as failure, or real failure is hidden.
 - **[OWNER-PENDING]** discount δ: docs give the 26% / 58% figures but no setting; default δ = 0.58 (both MVP methods are widely published); owner to confirm.
+- **Deviation (PR 12):** δ stays the configured `DEFAULT_DISCOUNT` (0.58) rather than a value calibrated from HAT's own backtest-versus-shadow results: there are no shadow trades to calibrate against yet. The backtest supplies the expectancy it discounts (09 HAT-BT-060), and the risk-increase gate (06 HAT-GOV-091) uses the same δ. Calibration waits for the first sleeves' shadow evidence.
 
 #### HAT-PORT-066: Lifecycle, regime and allocation changes are events
 - **Statement:** Every change of a sleeve's lifecycle state, every stored regime row and every allocation row appends its event (`sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed`) in the transaction of the change, and only one function writes `hat_bot.lifecycle_state`, so no change can skip its guard or its event.

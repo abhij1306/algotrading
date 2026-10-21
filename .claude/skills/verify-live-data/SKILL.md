@@ -1,6 +1,6 @@
 ---
 name: verify-live-data
-description: How to run, read and update the checks behind Hire a Trader's live data - the live feed (one provider socket, tick listeners, subscription registry, login hooks), 5-minute bars, opening range, volume pace, feed staleness, pre-open gap capture, the 09:16 gap scan, the "hat" subscription owner, bars_5m Parquet and the NSE announcement feeds (Hypothesis properties feed, bars, gapscan, announcements; CONF single-feed import rule). Use before and after any change to backend/app/hat/data/bars.py, live.py, staleness.py, subscriptions.py, preopen.py, gapscan.py, announcements.py, bars_store.py, feed.py or provider/*.py.
+description: How to run, read and update the checks behind Hire a Trader's live data - the live feed (one provider socket, tick listeners, subscription registry, login hooks), 5-minute bars, opening range, volume pace, feed staleness, pre-open gap capture, the 09:16 gap scan, the "hat" subscription owner, bars_5m Parquet and the NSE announcement feeds (Hypothesis properties feed, bars, gapscan, announcements; CONF single-feed import rule). Use before and after any change to backend/app/hat/data/bars.py, live.py, staleness.py, subscriptions.py, preopen.py, gapscan.py, announcements.py, bars_store.py, minute_history.py, feed.py or provider/*.py.
 ---
 
 # verify-live-data
@@ -30,6 +30,8 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.persisted_equals_live` The `bars_5m` rows equal the final bars the bar listener saw, one row per (instrument, bar_start), exactly the spec's columns, however writes failed and re-ran. Harm: replays and audits cannot reproduce a live decision.
 - `PBT bars.gap_pct` The recorded gap is 100 x (o / c - 1), from the indicative price inside 09:00-09:08 else the first tick's open, and the record names its source; a later first tick never replaces a record. Harm: EP gap filters use a wrong gap.
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
+- `PBT bars.history_matches_builder` Aggregating a 1-minute series to 5-minute bars (`minute_history.aggregate`) gives exactly the bars the live builder makes of the same prints (open with the volume, high, low, close): same windows, OHLC and volume, nothing outside the session. Harm: EP backtests read bars built differently from live and mislead promotion decisions.
+- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for 1-minute candles in consecutive chunks of at most 100 days covering exactly the period, writes the builder's bars of them to `bars_5m`, and on a failed response for any symbol (a later one included) writes nothing and raises `history_failed` without the broker's text. Harm: a history gap or a broker message reaches the store or the logs.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed. Harm: impossible gaps are chased or valid EP candidates never watched.
 - `PBT gapscan.timing_recorded` Every gap-scan run, successful or failed, has a `hat_job_run` row with start and finish, and a run finishing at or after 09:20:00 IST raises an alert. Harm: the EP playbook silently never sees its candidates in time.
@@ -115,6 +117,8 @@ Code under check:
 - `backend/app/hat/data/provider/metrics.py`: `FeedMetrics`, `log_exception_throttled`
 - `backend/app/hat/data/provider/fyers_websocket.py`: `fyers_socket_factory`, `fyers_token`
 
+- `backend/app/hat/data/minute_history.py`: `parse_candles`, `candle_prints`, `aggregate`, `load_minute_history`
+
 Checks:
 - `backend/tests/hat/properties/test_feed.py`
 - `backend/tests/hat/properties/test_bars.py`
@@ -132,10 +136,12 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
-Covered digest: `af41d4f142b5b987042438a2a0364ac280af324002e76880df06a72526fce742`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `2fcbf091fc1ba3a6c3fec00880141f62350a14fe32115d2bbc7e7f3f8fe6b3c8`
 
 ## Scope changes
+
+- PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
@@ -983,4 +989,43 @@ Break: in `backend/app/hat/engine/live_entry.py`: `DataHealthKill.write` no long
 ```
 E   AssertionError: assert True == False
 E    +  where True = KillState(account_tripped=False, bot_tripped=False, health_tripped=True, paused=True).health_tripped
+```
+
+### PBT bars.history_matches_builder
+
+Break: in `backend/app/hat/data/minute_history.py`: a 5-minute bar closes at its first candle's close.
+
+```
+tests/hat/properties/test_bars.py F
+tests/hat/properties/test_bars.py:947: in test_history_matches_builder
+    @example(raw=[])
+                   ^^
+tests/hat/properties/test_bars.py:953: in test_history_matches_builder
+    assert aggregate("AAA", candles) == _builder_bars("AAA", candles)
+E   AssertionError: assert [Bar(symbol='...'), volume=0)] == [Bar(symbol='...'), volume=0)]
+```
+
+### PBT bars.minute_history_aggregates_to_5m
+
+Break: in `backend/app/hat/data/minute_history.py`: chunks of 101 days.
+
+```
+tests/hat/properties/test_bars.py F
+tests/hat/properties/test_bars.py:957: in test_minute_history_aggregates_to_5m
+    @settings(deadline=None)
+                   ^^^
+tests/hat/properties/test_bars.py:981: in test_minute_history_aggregates_to_5m
+    assert all((hi - lo).days < CHUNK_DAYS for lo, hi in spans)
+E   assert False
+```
+
+Break (CodeAnt review, all-or-nothing): in `backend/app/hat/data/minute_history.py`: each symbol written to `bars_5m` as soon as it loads, so a later symbol's failure leaves the earlier one stored.
+
+```
+tests/hat/properties/test_bars.py:1004: in test_minute_history_aggregates_to_5m
+E   AssertionError: assert not True
+E    +  where True = exists()
+E    +    where exists = (PosixPath('/tmp/tmpirbze0gm') / 'other').exists
+E   Failing test case: test_minute_history_aggregates_to_5m(
+E       raw=[[1_792_554_300, 1.0, 1.0, 1.0, 1.0, 0]],
 ```

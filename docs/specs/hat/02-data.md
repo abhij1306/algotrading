@@ -793,12 +793,14 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 - **[A]** Fyers pre-open fields: validated during build (DS "Verify: Fyers WebSocket ... pre-open data").
 
 #### HAT-DATA-119: Optional Fyers minute history for EP backtests
-- **Statement:** An optional loader fills `bars_5m` from `FyersClient.get_historical_data` for EP backtests.
+- **Statement:** An optional loader fills `bars_5m` from the Fyers 1-minute history for EP backtests.
 - **Source:** I4; DS "Source map" (intraday history for EP backtest); PLAN PR 12, Q4.
 - **PR:** 12
-- **Verification:** PBT `bars.history_matches_builder`
+- **Verification:** PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`
 - **Acceptance:**
   - Property: for every minute series, aggregating it to 5-minute bars with the loader gives the same bars as feeding the same prints through the live bar builder. Harm: EP backtests use bars built differently from live and mislead promotion decisions.
+  - Property: for every period, the loader asks for 1-minute candles in consecutive chunks of at most 100 days covering exactly the period, writes the builder's bars of those candles to `bars_5m`, and on a failed response for any symbol writes nothing and raises a fixed code without the broker's text. Harm: a history gap or a broker message reaches the store or the logs.
+- **Deviation (PR 12):** `FyersClient.get_historical_data` does not exist. `app/hat/data/minute_history.py` takes the history call as an injected function (the Fyers SDK's `history` request: `resolution "1"`, `date_format "1"` with yyyy-mm-dd ranges, `cont_flag "1"`), so no test reaches Fyers; a candle counts as its four prints (open with the volume, high, low, close) in the order the live builder would see them.
 - **[A]** Fyers minute-history depth: validated during build (DS "Verify").
 
 ## §12 09:16 gap scan

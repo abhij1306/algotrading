@@ -1,6 +1,6 @@
-"""PBT bars.* (HAT-DATA-111..118, HAT-EXEC-120): the tick hook, 5-minute bars, the opening range,
-volume pace, staleness and its health kill, triggers on final bars, persistence, subscriptions and
-gap capture, all on the real code.
+"""PBT bars.* (HAT-DATA-111..119, HAT-DEC-I4, HAT-EXEC-120): the tick hook, 5-minute bars, the
+opening range, volume pace, staleness and its health kill, triggers on final bars, persistence,
+subscriptions, gap capture and the optional minute-history loader, all on the real code.
 
 Time is explicit: every property passes the instants it wants, so no test reads a clock."""
 
@@ -28,8 +28,16 @@ from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
-from app.hat.data.bars_store import SCHEMA, BarStore
+from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
 from app.hat.data.live import EventFeedHealth, LiveData, tick_from_payload
+from app.hat.data.minute_history import (
+    CHUNK_DAYS,
+    MinuteHistoryError,
+    aggregate,
+    candle_prints,
+    load_minute_history,
+    parse_candles,
+)
 from app.hat.data.preopen import GapSource, PreopenGaps
 from app.hat.data.sessions import IST
 from app.hat.data.staleness import STALE_AFTER, StalenessMonitor
@@ -1143,3 +1151,97 @@ def test_gap_pct(
     again = gaps.observe({**later, "open_price": float(prev_close * 2)}, when)
     assert again is None
     assert gaps.records()["AAA"] == record
+
+
+# --- HAT-DEC-I4, HAT-DATA-119: the optional minute-history loader ---------------------------
+
+
+@st.composite
+def minute_candles(draw: st.DrawFn, days: int = 1) -> list[list[Any]]:
+    """Raw history candles ([epoch s, open, high, low, close, volume], prices on the paise grid
+    as the broker sends them) at distinct minutes from 09:00 to 15:44 IST, some outside the
+    session."""
+    minutes = draw(
+        st.sets(
+            st.tuples(st.integers(0, days - 1), st.integers(9 * 60, 15 * 60 + 44)),
+            max_size=40,
+        )
+    )
+    rows = []
+    for day, minute in sorted(minutes):
+        start = MIDNIGHT + timedelta(days=day, minutes=minute)
+        a, b = sorted(draw(st.lists(st.integers(100, 100_000), min_size=2, max_size=2)))
+        open_, close = (draw(st.integers(a, b)) for _ in range(2))
+        volume = draw(st.integers(0, 10**6))
+        rows.append([int(start.timestamp()), open_ / 100, b / 100, a / 100, close / 100, volume])
+    return rows
+
+
+def _builder_bars(symbol: str, candles: list) -> list[Bar]:
+    """The bars the live builder makes of the candles' prints, each arriving on time."""
+    builder = BarBuilder()
+    for candle in candles:
+        for tick in candle_prints(symbol, candle):
+            builder.on_tick(tick, tick.at)
+    return builder.advance(MIDNIGHT + timedelta(days=30))
+
+
+@given(raw=minute_candles())
+@example(raw=[])
+def test_history_matches_builder(raw: list[list[Any]]) -> None:
+    """Aggregating a minute series to 5-minute bars gives the bars the live builder makes of
+    the same prints: same windows, open, high, low, close and volume; nothing outside the
+    session."""
+    candles = parse_candles(raw)
+    assert aggregate("AAA", candles) == _builder_bars("AAA", candles)
+
+
+@given(raw=minute_candles(days=3), first=st.integers(0, 2), span=st.integers(0, 250))
+@settings(deadline=None)
+def test_minute_history_aggregates_to_5m(raw: list[list[Any]], first: int, span: int) -> None:
+    """The loader asks for 1-minute candles in chunks of at most 100 days covering the period,
+    and the `bars_5m` rows it writes are the builder's bars of those candles; a failed response,
+    even for a later symbol, writes nothing and raises a code without the broker's text."""
+    start = DAY + timedelta(days=first)
+    end = start + timedelta(days=span)
+    asked: list[dict[str, str]] = []
+
+    def history(request: dict[str, str]) -> dict[str, Any]:
+        asked.append(request)
+        lo, hi = date.fromisoformat(request["range_from"]), date.fromisoformat(request["range_to"])
+        rows = [r for r in raw if lo <= datetime.fromtimestamp(r[0], IST).date() <= hi]
+        return {"s": "ok", "candles": rows}
+
+    instrument = str(uuid4())
+    with tempfile.TemporaryDirectory() as root:
+        store = BarStore(Path(root))
+        load_minute_history(history, store, {"NSE:AAA-EQ": instrument}, start, end)
+        assert all(r["resolution"] == "1" and r["symbol"] == "NSE:AAA-EQ" for r in asked)
+        spans = [
+            (date.fromisoformat(r["range_from"]), date.fromisoformat(r["range_to"])) for r in asked
+        ]
+        assert spans[0][0] == start
+        assert spans[-1][1] == end
+        assert all((hi - lo).days < CHUNK_DAYS for lo, hi in spans)
+        assert all(b[0] == a[1] + timedelta(days=1) for a, b in zip(spans, spans[1:], strict=False))
+        inside = [c for c in parse_candles(raw) if start <= c.at.astimezone(IST).date() <= end]
+        want = _builder_bars("NSE:AAA-EQ", inside)
+        stored = [r for d in sorted({b.start.date() for b in want}) for r in store.read(d)]
+        assert stored == [row_from_bar(b, instrument) for b in want]
+
+        def broken(request: dict[str, str]) -> dict[str, Any]:
+            # the first symbol loads; the second fails, so neither may be written
+            if request["symbol"] == "NSE:AAA-EQ":
+                return history(request)
+            return {"s": "error", "message": "token expired for client XY1234"}
+
+        empty = BarStore(Path(root) / "other")
+        both = {"NSE:AAA-EQ": instrument, "NSE:ZZZ-EQ": str(uuid4())}
+        try:
+            load_minute_history(broken, empty, both, start, end)
+        except MinuteHistoryError as exc:
+            assert exc.code == "history_failed"
+            assert "XY1234" not in str(exc)
+        else:
+            raise AssertionError("a failed response must raise")
+        assert not (Path(root) / "other").exists()

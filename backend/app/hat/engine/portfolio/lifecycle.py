@@ -161,12 +161,25 @@ def retire_gate(entered_on: date | None, today: date, shadow_trades: int, failin
 
 
 @dataclass(frozen=True)
+class BacktestFacts:
+    """What a sleeve's backtest gives the lifecycle (09 §6, HAT-BT-060): the deflated Sharpe
+    probability at the family's current trial count, the run's trade count and expectancy in R,
+    and that trial count. The default is no evidence."""
+
+    dsr_prob: Decimal | None = None
+    trades: int = 0
+    expectancy: Decimal | None = None
+    trials: int = 0
+
+
+@dataclass(frozen=True)
 class Evidence:
     """Everything a guard reads. A field that is absent makes the guard that needs it fail."""
 
     today: date
     dsr_prob: Decimal | None = None
     backtest_trades: int = 0
+    backtest_trials: int = 0  # the family's trial count the DSR was deflated with
     sessions: frozenset[date] = field(default_factory=frozenset)
     shadow_started_on: date | None = None
     health_zero: bool = False

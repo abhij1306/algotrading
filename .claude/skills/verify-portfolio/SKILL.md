@@ -21,6 +21,7 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
 - `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value one session earlier; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
+- `PBT dsr.evidence_current_trials` The backtest evidence the lifecycle reads is the newest completed run of the sleeve's live version on its family, with the DSR deflated by the family's trial count and Sharpe variance at evaluation time (later failed runs and other versions counted), as `BacktestFacts`; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the Research to Backtested gate on a stale trial count.
 
 ## Run
 
@@ -51,7 +52,7 @@ python -m pytest tests/hat/conformance -q --no-cov              # CONF portfolio
 - A new sleeve: a `hat_bot` row and a `base_weight` entry in the policy; no code (the strategy name maps to its key through `SLEEVE_OF_STRATEGY`, an unknown name is its own key). `allocator.sleeve_count_agnostic` proves any number of rows works.
 - A lifecycle rule: edit `lifecycle.py` (the guard and `EDGES`), `service.py` (the one writer) and `verification/tla/SleeveLifecycle.tla` together; keep a `\* code:` comment on every action, add a broken variant `SleeveLifecycle__<mode>.cfg` (with `EXPECT:` and the mode in the model's `ASSUME`), run both `run.sh` commands, then the properties.
 - A regime rule or threshold: edit `regime.py`, `RegimeConfirmation.tla` (if the 3-day rule changes), the 05 section 3 text and `rules_v1_config`; the stored model version holds the multiplier table, so a new table is a new `hat_regime_model_version` row.
-- Backtest evidence (PR 12) plugs in through `BacktestEvidence` in `service.py`; until then Research to Backtested stays closed.
+- Backtest evidence plugs in through `BacktestEvidence` in `service.py`, now returning `lifecycle.BacktestFacts` (DSR, trades, expectancy, trial count). The default `no_backtest_evidence` keeps Research to Backtested closed; the backtest's source is `app.hat.backtest.runs.backtest_evidence` (PR 12, `verify-backtest`), which `allocate_job` passes to `run_allocation` by default.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-portfolio` prints the digest.
 
 ## Coverage
@@ -71,6 +72,8 @@ Code under check:
 - `backend/app/hat/engine/portfolio/service.py`: `transition`, `advance_automatic`, `run_allocation`, `record_regime`, `policy_at`
 - `backend/app/hat/engine/portfolio/jobs.py`: `regime_job`, `allocate_job`
 
+- `backend/app/hat/backtest/runs.py`: `backtest_evidence`
+
 Checks:
 - `backend/tests/hat/hat_portfolio_support.py`
 - `backend/tests/hat/properties/test_universe.py`
@@ -78,6 +81,7 @@ Checks:
 - `backend/tests/hat/properties/test_health.py`
 - `backend/tests/hat/properties/test_allocator.py`
 - `backend/tests/hat/properties/test_lifecycle.py`
+- `backend/tests/hat/properties/test_dsr.py`
 - `backend/tests/hat/conformance/test_conf_portfolio.py`
 - `backend/app/hat/engine/regime_gate.py`
 
@@ -85,8 +89,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
-Covered digest: `271032f0b0cd402bdbe2801a2a4182aa320e7b42efb9a7d384bb01babdd82927`
+Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
+Covered digest: `d8b9b5fc09d363d1875c40753e9a7b413e2387e5d0e9ff5291d2311a919bca51`
 
 ## Scope changes
 
@@ -96,7 +100,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `AllocateAfterRegime` (HAT-PORT-053) and the job-graph order belong to PR 17 (`JobScheduler`); until then `allocate` fails with `allocate_no_regime` when the regime row of the date is absent.
 - The allocator's first-night rule: a sleeve with no earlier allocation row starts at its target multiplier; the 0.25 daily step applies from the second night.
 - The `regime` job reads the NIFTY 500 close, India VIX and the stored breadth percentage. The advance/decline ratio is recorded as `null` until the ingest provides it (PR 7) and is not an input of the v1 classification.
-- Backtest evidence is a pluggable source (`BacktestEvidence`, default none) until PR 12 builds the backtest; the gate itself (`lifecycle.backtest_gate`) is fully checked.
+- Backtest evidence is a pluggable source (`BacktestEvidence`, default none). PR 12 supplies `runs.backtest_evidence`, whose DSR is recomputed at the family's current trial count (`dsr.evidence_current_trials`, below and in `verify-backtest`); the gate itself (`lifecycle.backtest_gate`) is fully checked.
 - The property `lifecycle.transition_records_its_event` and the nightly `run_allocation` properties run on SQLite in memory (foreign keys not enforced); `portfolio.unique_keys` covers the constraints on Postgres.
 
 ## Scratch breaks
@@ -995,4 +999,18 @@ Break: in `backend/app/hat/engine/regime_gate.py`: close_above_sma_and_rising ac
 E   AssertionError: assert True is False
 FAILED tests/hat/properties/test_regime.py::test_strategy_rules - AssertionEr [cut]
 ============================== 1 failed in 0.57s ===============================
+```
+
+### PBT dsr.evidence_current_trials
+
+Break: in `backend/app/hat/backtest/runs.py`: the evidence reuses the trial count stored when the run completed.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:248: in test_evidence_current_trials
+    @settings(max_examples=30, deadline=None)
+                   ^^^
+tests/hat/properties/test_dsr.py:290: in test_evidence_current_trials
+    assert facts.trials == runs.trial_count(session, family) == 1 + len(later)
+E   AssertionError: assert 1 == 2
 ```

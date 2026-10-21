@@ -2,12 +2,13 @@
 
 HAT's own copy of the legacy `app.services.backtest_metrics` (K1, backend review C5), taken so the
 legacy module can be deleted without losing what PR 12 (the backtest) reuses. Two Sharpe
-conventions are kept so a characterization against the legacy numbers stays possible:
+conventions are kept so a characterization against the legacy numbers stays possible. Series are
+polars (PR 12 moved the module off pandas, HAT-DATA-078); the arithmetic is unchanged.
 
 * `sharpe_mean_std`: `mean / std * sqrt(periods)` of per-period returns, risk-free 0.
 * `sharpe_excess_cagr`: `(cagr - rf) / annualised std`.
 
-No I/O, no pandas state beyond the inputs passed in.
+No I/O and no state beyond the inputs passed in.
 """
 
 from __future__ import annotations
@@ -16,8 +17,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 TRADING_DAYS_PER_YEAR = 252
 # Rounding makes the standard deviation of a constant series about 1e-17, not 0, and a Sharpe
@@ -41,16 +41,22 @@ class TradeStats:
     profit_factor: float  # |gross win / gross loss|; 0.0 when there are no losers
 
 
-def drawdown_series(equity: pd.Series) -> pd.Series:
+def drawdown_series(equity: pl.Series) -> pl.Series:
     """Fractional drawdown from the running peak (values <= 0)."""
-    if equity.empty:
-        return equity.astype(float)
-    return ((equity / equity.cummax()) - 1.0).fillna(0.0)
+    equity = equity.cast(pl.Float64)
+    if equity.is_empty():
+        return equity
+    return ((equity / equity.cum_max()) - 1.0).fill_nan(0.0).fill_null(0.0)
 
 
-def max_drawdown(drawdown: pd.Series) -> float:
+def max_drawdown(drawdown: pl.Series) -> float:
     """Worst drawdown as a non-positive fraction; 0.0 for an empty or flat series."""
-    return float(drawdown.min()) if len(drawdown) else 0.0
+    return float(drawdown.min()) if len(drawdown) else 0.0  # type: ignore[arg-type]
+
+
+def _std(returns: pl.Series) -> float:
+    """The population standard deviation; 0.0 for an empty series."""
+    return float(returns.cast(pl.Float64).std(ddof=0) or 0.0) if len(returns) else 0.0  # type: ignore[arg-type]
 
 
 def total_return(final_equity: float, initial_capital: float) -> float:
@@ -70,25 +76,26 @@ def annualized_return(
     return float((final_equity / initial_capital) ** (periods_per_year / max(1, n_periods)) - 1.0)
 
 
-def sharpe_mean_std(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
+def sharpe_mean_std(returns: pl.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
     """Annualised Sharpe with risk-free 0; 0.0 when volatility is zero."""
-    std = float(returns.std(ddof=0)) if len(returns) else 0.0
+    std = _std(returns)
     if std > VOLATILITY_FLOOR:
-        return float((returns.mean() / std) * np.sqrt(periods_per_year))
+        mean = float(returns.cast(pl.Float64).mean())  # type: ignore[arg-type]
+        return (mean / std) * math.sqrt(periods_per_year)
     return 0.0
 
 
 def sharpe_excess_cagr(
     cagr: float,
-    returns: pd.Series,
+    returns: pl.Series,
     risk_free: float,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
     """``(cagr - risk_free) / annualised std``; 0.0 when volatility is zero."""
-    std = float(returns.std(ddof=0)) if len(returns) else 0.0
+    std = _std(returns)
     if std <= VOLATILITY_FLOOR:  # the floor is per period, like the series
         return 0.0
-    return float((cagr - risk_free) / (std * np.sqrt(periods_per_year)))
+    return (cagr - risk_free) / (std * math.sqrt(periods_per_year))
 
 
 def trade_stats(values: Sequence[float]) -> TradeStats:

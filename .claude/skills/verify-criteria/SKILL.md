@@ -136,13 +136,14 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
-Covered digest: `486d004263d192e6e04b4caf2f5ee003ab11b88c0bf5ca985bb00216d6240742`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `200b52b7826acbe32d9902440e7eccf06bea69ca09a932faf637d6ccfa278804`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 12: `publish_version` also refuses a run that is not `completed` (`run_not_completed`, HAT-BT-061). The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the checks here were re-run unchanged and pass.
 - `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column (02 §7), so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
 - `vcp` is a port of the legacy detector, not a copy. Dropped (other criteria or outside the spec): the Stage 2 gate, the RS gate, overhead resistance, the volume slope, the grade and the breakout test. A contraction's depth uses the highest high and lowest low of its own bars. The final contraction low is the segment minimum, which can be lower than the legacy pivot low; `vcp_parity` records this. The pivot is the highest high of the final contraction. `MIN_BASE_BARS` stays 15. The score is the mean of four linear sub-scores (an `[OWNER-PENDING]` default).
 - PR 15a evaluates the seven live criteria. `catalyst_attached` blocks only in the modes its `required_in` lists, whatever its `mode` field (HAT-CRIT-118 as revised), and `price_breaks_level` breaks on the final bar's high (HAT-CRIT-119 `[OWNER-PENDING]`). Only shadow bots get live candidates until the router (PR 15b); `open_entry` refuses confirm and auto.

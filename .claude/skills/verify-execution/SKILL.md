@@ -190,13 +190,14 @@ Trade lifecycle (PR 11):
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
-Covered digest: `9aab6c58b946753de6ff51790f40fd839b4f61512c7744423b0e7cb7caedace0`
+Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
+Covered digest: `c06b009d5659e7aaab2861b1ce2b5d44bec55978740206dc48ebe00773534bd3`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
 - K4 deleted the legacy `FyersBroker` plugin and `app/brokers`, the `services/fyers/token_store.py` re-export and the DEV_MODE switch (HAT never honoured it), and trimmed `FakeBroker` to the methods the adapter calls (the lenient reads, the tag lookup, `ltp` and `working` state went). `ops.one_login_one_token_store` now asserts the deleted modules stay deleted.
 - K2 moved the Fyers broker, session, login and token store into `app/hat/execution` and replaced the legacy suites that tested them (`test_fyers_token_store`, `test_fyers_auth_flow`, `test_fyers_client_validate_token`, `test_auth_status_cache`) with the properties above. `fyers_adapter_wraps_existing` and `ops__single_fyers_secret_store` were rewritten for the new files (the SDK only in `fyers_session.py` and `fyers_auth.py`; credential words only in `fyers_auth.py`, `fyers_tokens.py`, `fyers_session.py`) and keep their synthetic-offender checks.

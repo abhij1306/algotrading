@@ -14,12 +14,14 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.hat.backtest.runs import backtest_evidence
 from app.hat.data.store import DATASET_BREADTH, DATASET_INDEX, DataStore
 from app.hat.errors import HatError
 from app.hat.ops.jobs import JobError, JobResult
 
 from . import regime
 from .service import (
+    BacktestEvidence,
     PortfolioError,
     ensure_regime_model,
     market_id_of,
@@ -76,11 +78,19 @@ def allocate_job(
     *,
     user_id: uuid.UUID,
     total_equity: Callable[[], Decimal],
+    backtest: BacktestEvidence = backtest_evidence,
 ) -> JobResult:
     """`allocate`: one `hat_allocation_daily` row per sleeve for `trade_date`. `total_equity` is
-    the account equity source (broker funds at session start, [OWNER-PENDING] HAT-PORT-052)."""
+    the account equity source (broker funds at session start, [OWNER-PENDING] HAT-PORT-052).
+    The lifecycle reads each sleeve's backtest evidence from its recorded runs (HAT-BT-060)."""
     try:
-        report = run_allocation(session, trade_date, user_id=user_id, total_equity=total_equity())
+        report = run_allocation(
+            session,
+            trade_date,
+            user_id=user_id,
+            total_equity=total_equity(),
+            backtest=backtest,
+        )
     except PortfolioError as exc:
         raise JobError(exc.code) from exc
     except HatError as exc:  # an unreadable sleeve equity or an unusable total

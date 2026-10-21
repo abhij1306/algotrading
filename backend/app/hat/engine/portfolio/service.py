@@ -390,15 +390,13 @@ def sleeve_health(
     return health_of(Decimal(snap.equity), Decimal(snap.equity_peak), policy)
 
 
-BacktestEvidence = Callable[[Session, HatBot], tuple[Decimal | None, int, Decimal | None]]
+BacktestEvidence = Callable[[Session, HatBot], lifecycle.BacktestFacts]
 
 
-def no_backtest_evidence(
-    _session: Session, _bot: HatBot
-) -> tuple[Decimal | None, int, Decimal | None]:
-    """The default evidence source: none, so Research -> Backtested stays closed until PR 12
-    supplies (deflated Sharpe probability, trade count, backtest expectancy R)."""
-    return None, 0, None
+def no_backtest_evidence(_session: Session, _bot: HatBot) -> lifecycle.BacktestFacts:
+    """No evidence: Research -> Backtested stays closed. The backtest's source is
+    `app.hat.backtest.runs.backtest_evidence` (HAT-BT-060)."""
+    return lifecycle.BacktestFacts()
 
 
 def load_evidence(
@@ -409,15 +407,16 @@ def load_evidence(
     backtest: BacktestEvidence = no_backtest_evidence,
 ) -> lifecycle.Evidence:
     """Everything the guards read for `bot` on `trade_date`."""
-    dsr, trades, expectancy = backtest(session, bot)
+    facts = backtest(session, bot)
     entered = stage_entered_on(session, bot.id, lifecycle.PROBATION)
     health_zero = False
     if bot.lifecycle_state == lifecycle.LIVE:
         health_zero = sleeve_health(session, bot.id, trade_date, policy).probation
     return lifecycle.Evidence(
         today=trade_date,
-        dsr_prob=dsr,
-        backtest_trades=trades,
+        dsr_prob=facts.dsr_prob,
+        backtest_trades=facts.trades,
+        backtest_trials=facts.trials,
         sessions=trading_sessions(session),
         shadow_started_on=stage_entered_on(session, bot.id, lifecycle.SHADOW),
         health_zero=health_zero,
@@ -430,7 +429,7 @@ def load_evidence(
             since=None if entered is None else _close_of(entered),
             until=_close_of(trade_date),
         ),
-        backtest_expectancy=expectancy,
+        backtest_expectancy=facts.expectancy,
     )
 
 

@@ -234,7 +234,7 @@ to an artefact that exists.
 | HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
-| HAT-DATA-119 | [02](02-data.md) | 12 | PBT `bars.history_matches_builder` |
+| HAT-DATA-119 | [02](02-data.md) | 12 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m` |
 | HAT-DATA-120 | [02](02-data.md) | 14 | PBT `gapscan.covers_universe` |
 | HAT-DATA-121 | [02](02-data.md) | 14 | PBT `gapscan.filter` |
 | HAT-DATA-122 | [02](02-data.md) | 14 | PBT `gapscan.timing_recorded`, OPS `gapscan.latency_observed` |
@@ -419,7 +419,7 @@ to an artefact that exists.
 | HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence` |
 | HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
-| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate` |
+| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence` |
 | HAT-GOV-092 | [06](06-risk-and-governance.md) | 2 | DB `governance.risk_version_immutable` |
 | HAT-GOV-093 | [06](06-risk-and-governance.md) | 9, 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-094 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_change_emits_event` |
@@ -506,22 +506,22 @@ to an artefact that exists.
 | HAT-TG-050 | [08](08-telegram.md) | 3 | PBT `telegram.retention_purge` |
 | HAT-BT-010 | [09](09-backtest.md) | 11, 12 | CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity` |
 | HAT-BT-011 | [09](09-backtest.md) | 12 | PBT `backtest.no_lookahead` |
-| HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free` |
+| HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
-| HAT-BT-020 | [09](09-backtest.md) | 12 | PBT `backtest.entry_fill_proxy` |
-| HAT-BT-021 | [09](09-backtest.md) | 12 | PBT `backtest.exit_fill_proxy` |
-| HAT-BT-022 | [09](09-backtest.md) | 12 | PBT `costs.slippage_adverse` |
-| HAT-BT-023 | [09](09-backtest.md) | 12 | PBT `costs.charges_contract` |
+| HAT-BT-020 | [09](09-backtest.md) | 12 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick` |
+| HAT-BT-021 | [09](09-backtest.md) | 12 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close` |
+| HAT-BT-022 | [09](09-backtest.md) | 12 | PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds` |
+| HAT-BT-023 | [09](09-backtest.md) | 12 | PBT `costs.charges_contract`, PBT `costs.charges_contract_run`, PBT `costs.charges_contract_float_rates` |
 | HAT-BT-024 | [09](09-backtest.md) | 12 | PBT `backtest.decimal_money` |
 | HAT-BT-030 | [09](09-backtest.md) | 12 | PBT `dsr.trial_counting` |
 | HAT-BT-031 | [09](09-backtest.md) | 12 | PBT `dsr.family_key` |
 | HAT-BT-032 | [09](09-backtest.md) | 3, 12 | CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics` |
 | HAT-BT-040 | [09](09-backtest.md) | 11, 12 | PBT `backtest.r_and_expectancy` |
 | HAT-BT-041 | [09](09-backtest.md) | 12 | PBT `backtest.metrics_bounds` |
-| HAT-BT-042 | [09](09-backtest.md) | 12 | PBT `dsr.bounds_and_monotonicity`, CONF `dsr_published_example` |
+| HAT-BT-042 | [09](09-backtest.md) | 12 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example` |
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
-| HAT-BT-060 | [09](09-backtest.md) | 9, 12 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
+| HAT-BT-060 | [09](09-backtest.md) | 9, 12 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-BT-061 | [09](09-backtest.md) | 2, 12 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
