@@ -7,11 +7,13 @@ Opt out per command by including `TEST_FILTER=0`.
 """
 
 import json
-import os
 import re
 import sys
+from pathlib import Path
 
-FILTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output_filter.py")
+# Forward slashes so the paths also work in Git Bash on Windows.
+FILTER = Path(__file__).resolve().with_name("test_output_filter.py").as_posix()
+PYTHON = Path(sys.executable).as_posix()
 TEST_CMD = re.compile(
     r"(^|[\s;&|(/])(pytest|vitest)\b|\bpnpm\s+(run\s+)?(test|vitest)\b|\bpython3?\s+-m\s+pytest\b"
 )
@@ -31,7 +33,7 @@ def main() -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not TEST_CMD.search(command) or SKIP.search(command):
         return
-    wrapped = f"( {command}\n) 2>&1 | python3 {FILTER}; ( exit ${{PIPESTATUS[0]}} )"
+    wrapped = f'( {command}\n) 2>&1 | "{PYTHON}" "{FILTER}"; ( exit ${{PIPESTATUS[0]}} )'
     sys.stdout.write(
         json.dumps(
             {

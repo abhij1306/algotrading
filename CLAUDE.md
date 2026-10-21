@@ -175,6 +175,6 @@ an `aiohttp` that does not build on Python 3.14.
 ## Agent Workflow
 
 The HAT MVP is built by an orchestrator agent and up to two builder agents in herdr tabs. On a new
-machine: `scripts/agents/bootstrap.sh`, then `/hat-orchestrator`. Orchestrator guide:
+machine: run `claude --permission-mode auto` inside herdr, then `/hat-orchestrator`. Orchestrator guide:
 `docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`. Roadmap and
 status: `docs/agents/plan.md`.

@@ -1,7 +1,7 @@
 # HAT orchestrator guide
 
 The HAT MVP is built by one orchestrator agent and up to two builder agents, all Claude, each in its
-own [herdr](https://herdr.dev) tab on one Linux VM. This file is the orchestrator's job description.
+own [herdr](https://herdr.dev) tab on one machine (Windows or Linux). This file is the orchestrator's job description.
 Builders follow `builder-protocol.md`. The roadmap and status are in `plan.md`.
 
 ## Roles (owner rules)
@@ -12,40 +12,46 @@ Builders follow `builder-protocol.md`. The roadmap and status are in `plan.md`.
 - **Builder**: one agent per plan PR, in its own git worktree and herdr tab, on the main model in
   auto mode. It may use Sonnet subagents for exploration or building. It takes its PR to green and
   ends its turn with `READY TO MERGE #<n> <sha>` or `BLOCKED #<n>: <reason>`.
-- At most **two builders at once** (the 8 GB VM ran out of memory with more).
+- At most **two builders at once**.
 - Sonnet is used only as a subagent, never as a builder or orchestrator.
 
 ## Starting on a machine (fresh or after a switch)
 
-Everything needed is in this repo; sign-ins are not.
+The machine already has the toolchain (Python 3.14 venv, Node 26, Java 17+, Postgres for the
+`-m postgres` checks, gh, herdr). Everything else is in this repo.
 
-1. `gh auth login` and `claude` (sign in) yourself.
-2. `git clone https://github.com/abhij1306/algotrading $HAT_WS/algotrading` (`HAT_WS` defaults to
-   `/data/workspace`), then `bash $HAT_WS/algotrading/scripts/agents/bootstrap.sh`.
-3. Start `herdr`, run `claude --permission-mode auto` in it from `$HAT_WS/algotrading`, and type
+1. In herdr, open the `algotrading` clone, run `claude --permission-mode auto`, and type
    `/hat-orchestrator`.
-4. Rebuild state from GitHub, not memory: `gh pr list --state open`, `git worktree list`,
+2. Rebuild state from GitHub, not memory: `gh pr list --state open`, `git worktree list`,
    `herdr agent list`, and the status table in `plan.md`. An open PR whose builder isn't running
    gets a fresh builder in its existing branch (the brief says "continue PR #n").
-5. Start the memory watcher in the background:
-   `bash scripts/agents/memwatch.sh 1500` (it exits, and so notifies you, when available memory
-   drops below 1.5 GB; restart it after handling that).
 
 ## Starting a builder
 
 1. Pick the next plan PRs whose `Deps:` have all merged (`plan.md`). Start a PR as soon as its
    deps merge; keep at most two running.
-2. Write its brief to `$HAT_WS/briefs/prNN.txt`. A brief contains:
+2. Write its brief to a file outside the repo (for example `../briefs/prNN.txt`). A brief contains:
    - the PR number, branch (`hat/prNN-<slug>`) and its section in `plan.md`;
    - "Read `docs/agents/builder-protocol.md` first; its HARD RULES override everything";
    - follow-ups earlier PRs left to this one;
    - for a running PR: the review points to fix this round;
    - the end-of-turn lines `READY TO MERGE #<n> <sha>` / `BLOCKED #<n>: <reason>`;
    - "Never call real Fyers, NSE or Telegram endpoints. Never read .env or credential files."
-3. From inside herdr: `scripts/agents/start-builder.sh prNN hat/prNN-<slug> $HAT_WS/briefs/prNN.txt`.
-   It creates or reuses the worktree, opens a tab named after the agent, starts
-   `claude --permission-mode auto`, answers the folder-trust prompt for the worktree, and sends
-   the brief.
+3. Create the worktree, give the builder its own herdr tab (not a split), start it and send the
+   brief:
+
+   ```bash
+   git fetch origin
+   git worktree add ../wt/hat/prNN-<slug> -b hat/prNN-<slug> origin/main   # or check out the existing branch
+   herdr tab create --cwd ../wt/hat/prNN-<slug> --label prNN --no-focus     # note .result.root_pane.pane_id
+   herdr agent start prNN --kind claude --pane <pane id> -- --permission-mode auto
+   herdr agent prompt prNN "$(cat ../briefs/prNN.txt)"
+   ```
+
+   The first start in a new folder stops at Claude's folder-trust prompt (`agent_not_ready`):
+   check it with `herdr agent read prNN --source visible`, answer with
+   `herdr agent send-keys prNN down`, then `herdr agent send-keys prNN enter`, and wait for
+   `herdr agent wait prNN --until idle` before sending the brief.
 4. Watch it in the background:
    `herdr agent wait prNN --until idle --until done --until blocked --timeout 10800000`, then
    `herdr agent read prNN --source recent-unwrapped --lines 60` and look for the end-of-turn line.
@@ -77,8 +83,8 @@ Merge and clean up:
 
 ```bash
 gh pr merge $n --squash --delete-branch --match-head-commit <sha>
-git -C $HAT_WS/algotrading worktree remove $HAT_WS/wt/<branch>   # may already be gone
-git -C $HAT_WS/algotrading worktree prune && git -C $HAT_WS/algotrading pull --ff-only
+git worktree remove ../wt/<branch>      # may already be gone
+git worktree prune && git pull --ff-only
 herdr pane close <builder pane id>                                # from `herdr agent get prNN`
 ```
 
@@ -109,4 +115,3 @@ choice under "Deviations".
   `test_output_filter.py`, so only failures and the final summary reach the agent (exit code kept).
   Put `TEST_FILTER=0` in a command to see full output.
 - `.claude/skills/hat-orchestrator/`: `/hat-orchestrator` loads this guide.
-- `scripts/agents/`: `bootstrap.sh`, `start-builder.sh`, `memwatch.sh`.

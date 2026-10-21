@@ -1,9 +1,9 @@
 # HAT builder protocol
 
 Every builder agent follows this file. You are a Claude agent running in your own herdr tab, in a
-git worktree created for your PR by the orchestrator (see `orchestrator.md`). Paths use `$HAT_WS`
-(default `/data/workspace`): the main clone is `$HAT_WS/algotrading` and worktrees are
-`$HAT_WS/wt/<branch>`. The PR roadmap is `docs/agents/plan.md`; the specs are `docs/specs/hat/`.
+git worktree created for your PR by the orchestrator (see `orchestrator.md`). Worktrees sit in a
+`wt/` folder next to the main clone: `../wt/<branch>` from the clone. The machine may be Windows
+(herdr, Git Bash) or Linux; use commands that work on the one you're on. The PR roadmap is `docs/agents/plan.md`; the specs are `docs/specs/hat/`.
 
 ## HARD RULES (owner). Read these first; they override anything below
 1. **No full test suites locally.** Run only the tests your diff touches, plus `tests/hat/conformance`. CI runs the full suite.
@@ -16,12 +16,12 @@ git worktree created for your PR by the orchestrator (see `orchestrator.md`). Pa
 
 ## Setup
 
-- Main clone: `$HAT_WS/algotrading` (GitHub `abhij1306/algotrading`, default branch `main`). `gh` is logged in as the owner.
+- Main clone: the `algotrading` checkout the orchestrator runs in (GitHub `abhij1306/algotrading`, default branch `main`). `gh` is logged in as the owner.
 - You work in your own git worktree so parallel builders never collide;
-  the orchestrator creates it with `scripts/agents/start-builder.sh` before starting you.
+  the orchestrator creates it before starting you.
   Branch name: `hat/prNN-<slug>` (e.g. `hat/pr02-foundation`).
-- Python: `source $HAT_WS/algotrading/venv/bin/activate` (CPython 3.14, deps from `backend/requirements-ci.lock`). If your PR adds a dependency, add it to the requirements and the lock the way the repo does, and install it into this shared venv.
-- Node: `export PATH=$HAT_WS/.tools/node-v26.12.0-linux-x64/bin:$PATH`, pnpm via `npx pnpm@12.14.0` (or `corepack`). Run `pnpm install --frozen-lockfile` in your worktree's `frontend/` before frontend checks.
+- Python: the main clone's `venv` (`venv/bin/activate`, or `venv\Scripts\activate` on Windows; CPython 3.14, deps from `backend/requirements-ci.lock`). If your PR adds a dependency, add it to the requirements and the lock the way the repo does, and install it into this shared venv.
+- Node 26 on PATH, pnpm via `npx pnpm@12.14.0` (or `corepack`). Run `pnpm install --frozen-lockfile` in your worktree's `frontend/` before frontend checks.
 - Postgres for `-m postgres` tests: container `hatpg` on localhost:5432, env `DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test` (no password), same as CI.
 - Read the repo's `CLAUDE.md` and, for anything touching orders, risk, positions, brokers or execution, `.claude/skills/trading-safety/SKILL.md`. Follow both.
 
@@ -48,7 +48,7 @@ git worktree created for your PR by the orchestrator (see `orchestrator.md`). Pa
   - If the current code breaks a property, it's a finding: report the counterexample in the code's words, never weaken the property to pass.
   - For each critical area your PR builds, add or update `.claude/skills/verify-<area>/SKILL.md` (frontmatter, files/functions covered, one run command, how to tell a real bug from a modeling error, sync commit).
   - Existing repo unit tests stay unless they test legacy behaviour that conflicts with the specs; then change or delete them and say so. Reuse `FakeBroker`, `freeze_market`, `FixedClock` where a property test needs them. Never call real Fyers, NSE or Telegram; fake HTTP with recorded fixtures.
-- Java for TLC: `$HAT_WS/.tools/jdk` (`scripts/agents/bootstrap.sh` installs Temurin 21) and the TLC jar version pinned in `verification/`.
+- Java 17+ for TLC and the TLC jar version pinned in `verification/`.
 - Zero new ruff errors and zero new warnings. Route or response-model changes need `pnpm gen:api` and the regenerated `frontend/lib/api/schema.d.ts` committed.
 - Before pushing, run locally from the worktree root: `ruff format --check .`, `ruff check .`, the tests your diff touches plus `tests/hat/conformance` (HARD RULE 1), `python -m pytest -m postgres --no-cov -q <your db test files>` when you touch schema, and `pnpm check` when you touch the frontend.
 - Commits: conventional style like the existing history (`feat(hat): ...`, `docs(hat): ...`). End every commit message with:
@@ -98,17 +98,12 @@ When your PR is ready, end your turn with one line exactly: `READY TO MERGE #<n>
 - TLC runner: `verification/tla/run.sh`. Add broken `.cfg` variants next to each new model, as `JobScheduler` does.
 - Another builder may be working in parallel. If your rebase conflicts in the shared bookkeeping files, keep both sides' entries.
 
-## Memory limits (after two out-of-memory crashes, 2026-10-21)
+## Working alongside other builders
 
-The VM has 8 GB of RAM. Twice a single `python` test process grew past 6 GB and the kernel killed it, taking the terminal session down too.
-- Run every pytest, Hypothesis or data command under a 2 GB cap:
-  `systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet <command>`
-  If the cap kills your run, that's a finding to fix (an unbounded fixture, a Hypothesis strategy building huge frames, a full-table load), not a reason to raise the cap.
-- Keep Hypothesis data sizes bounded (`max_size` on lists, frames of at most a few thousand rows).
-- Never load the full history or universe in tests.
 - At most **two builders** run at once (owner rule).
+- Keep Hypothesis data sizes bounded (`max_size` on lists, frames of at most a few thousand rows), and never load the full history or universe in tests.
 - Scratch files (break scripts, drafts, outputs) go in your own `prNN/` folder under your session scratchpad, never in a shared folder another builder could overwrite.
-- Never use `pgrep -f` to wait in any form (`while pgrep -f`, `tail --pid=$(pgrep -f ...)`). The waiting shell's own command line contains the pattern, so the loop matches itself and never ends; three such loops were left running for hours. Use `run_in_background` on the command itself and wait for its completion notification, or `wait <pid>`.
+- Never use `pgrep -f` to wait in any form (`while pgrep -f`, `tail --pid=$(pgrep -f ...)`). The waiting shell's own command line contains the pattern, so the loop matches itself and never ends. Use `run_in_background` on the command itself and wait for its completion notification, or `wait <pid>`.
 
 ## Speed rules (owner flagged a 3.5 h PR, 2026-10-21)
 
