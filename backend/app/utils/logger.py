@@ -34,43 +34,15 @@ def safe_log_value(value: object) -> str:
     return "".join(ch if ch.isprintable() else "?" for ch in text)[:_MAX_LOG_VALUE_LENGTH]
 
 
-# Hot paths (per tick, per retry) log a full traceback at most once per site per interval.
+# A line that can repeat per request is logged at most once per site per interval.
 TRACEBACK_INTERVAL_S = 60.0
-_last_traceback_at: dict[str, float] = {}
 _traceback_lock = threading.Lock()
-
-
-def log_exception_throttled(logger: logging.Logger, site: str, msg: str, *args: object) -> bool:
-    """Call inside an except block: logger.exception the first time and then at most once
-    per TRACEBACK_INTERVAL_S for this site; in between, log one debug line without the
-    traceback and count it under runtime metric "logging.suppressed_tracebacks.<site>".
-
-    Returns True when the full traceback was written.
-    """
-    now = time.monotonic()
-    with _traceback_lock:
-        last = _last_traceback_at.get(site)
-        full = last is None or now - last >= TRACEBACK_INTERVAL_S
-        if full:
-            _last_traceback_at[site] = now
-    if full:
-        logger.exception(msg, *args)
-        return True
-
-    from .runtime_metrics import runtime_metrics
-
-    runtime_metrics.increment(f"logging.suppressed_tracebacks.{site}")
-    logger.debug(msg, *args)
-    return False
-
-
 _last_warning_at: dict[str, float] = {}
 
 
 def log_warning_throttled(logger: logging.Logger, site: str, msg: str, *args: object) -> bool:
     """Log one warning line (no traceback) at most once per TRACEBACK_INTERVAL_S for this
-    site; in between, log at debug and count it under runtime metric
-    "logging.suppressed_warnings.<site>".
+    site; in between, log at debug.
 
     Returns True when the warning was written.
     """
@@ -83,10 +55,6 @@ def log_warning_throttled(logger: logging.Logger, site: str, msg: str, *args: ob
     if full:
         logger.warning(msg, *args)
         return True
-
-    from .runtime_metrics import runtime_metrics
-
-    runtime_metrics.increment(f"logging.suppressed_warnings.{site}")
     logger.debug(msg, *args)
     return False
 
@@ -134,7 +102,7 @@ class DatabaseUnavailableLogFilter(logging.Filter):
 _db_unavailable_filter = DatabaseUnavailableLogFilter()
 
 
-def setup_logging(name: str = "smarttrader") -> logging.Logger:
+def setup_logging(name: str = "hat") -> logging.Logger:
     """
     Set up centralized logging with rotation and console output.
     """
@@ -170,8 +138,6 @@ def setup_logging(name: str = "smarttrader") -> logging.Logger:
     if framework_level not in _VALID_LEVELS:
         framework_level = "WARNING"
     logging.getLogger("uvicorn.access").setLevel(framework_level)
-    logging.getLogger("websockets.server").setLevel(framework_level)
-    logging.getLogger("websockets.protocol").setLevel(framework_level)
 
     _share_handlers(logger)
     return logger
@@ -194,4 +160,4 @@ def get_logger(module_name: str) -> logging.Logger:
     """
     Get a logger for a specific module, inheriting from the base configuration.
     """
-    return logging.getLogger(f"smarttrader.{module_name}")
+    return logging.getLogger(f"hat.{module_name}")

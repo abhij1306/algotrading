@@ -2,7 +2,7 @@
 # Python outside backend/ (scripts/).
 # Files under backend/ keep using backend/pyproject.toml directly.
 extend = "backend/pyproject.toml"
-extend-exclude = ["frontend", "archive"]
+extend-exclude = ["frontend"]
 
 [lint.extend-per-file-ignores]
 # Developer CLIs: stdout is their interface (T20), and they run fixed local

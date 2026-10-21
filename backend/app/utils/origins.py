@@ -1,7 +1,8 @@
-"""Which browser origins count as the SmartTrader frontend.
+"""Which browser origins count as the Hire a Trader frontend.
 
 One rule for the CORS middleware: an origin in config.ALLOWED_ORIGINS (CORS_ORIGINS), or any
-http loopback origin on any port, so a frontend that start_dev moved off port 3000 keeps working.
+http loopback origin on any port, so a frontend served on another local port (the Vite dev server
+moves off 3000 when it is taken) keeps working.
 A loopback page is already local; the rule exists to keep pages on other sites out.
 """
 

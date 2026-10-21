@@ -11,7 +11,7 @@ duckdb==1.5.6  # HAT Parquet views (docs/specs/hat/02-data.md §8)
 pydantic==2.14.1
 sqlalchemy==2.1.5
 psycopg2-binary==2.9.13
-pyyaml==6.0.3
+pyyaml==6.0.3  # conformance checks parse .github/workflows/ci.yml
 httpx2==2.15.1  # starlette.testclient (httpx is deprecated there since starlette 1.x)
 
 # fyers-apiv3 runtime deps. fyers-apiv3 itself is installed with --no-deps

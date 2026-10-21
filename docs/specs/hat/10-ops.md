@@ -22,7 +22,7 @@ there is no OpenAlgo process; the broker layer is the in-process Fyers adapter.
 - **PR:** 2 (setting), 17 (lifespan wiring)
 - **Verification:** PBT `ops.disabled_starts_nothing`
 - **Acceptance:**
-  - Property: for every environment in which `HAT_ENABLED` is not a true value, the lifespan creates no HAT task, makes no Telegram or broker call, and the existing SmartTrader startup sequence is unchanged. Harm: HAT trades or polls on a developer machine or in tests that did not opt in.
+  - Property: for every environment in which `HAT_ENABLED` is not a true value, the lifespan creates no HAT task, makes no Telegram or broker call, and the only startup work is the event loop and the database schema (K6). Harm: HAT trades or polls on a developer machine or in tests that did not opt in.
 - **[OWNER-PENDING]** single-process layout instead of the docs' four processes: default in-process tasks (PLAN Q2); revisit for P2.
 
 #### HAT-OPS-002: HAT refuses to run on SQLite

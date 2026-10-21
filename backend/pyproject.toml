@@ -1,11 +1,11 @@
 [project]
-name = "smarttrader-backend"
+name = "hat-backend"
 version = "1.0.0"
-description = "SmartTrader Backend - Quantitative Trading Platform"
+description = "Hire a Trader (HAT) backend"
 requires-python = ">=3.11"
 
 [tool.ruff]
-# Ruff configuration for SmartTrader backend
+# Ruff configuration for the backend
 line-length = 100
 target-version = "py311"
 
@@ -17,14 +17,9 @@ exclude = [
     "__pycache__",
     "*.pyc",
     ".pytest_cache",
-    "migrations",
     "dist",
     "build",
 ]
-
-# Note: For symbol format checking (SYM001-SYM003), use the custom checker:
-#   python scripts/check_symbol_format.py
-# Defaults to backend/app; pass a path to check elsewhere.
 
 [tool.ruff.lint]
 # Enable specific rule sets
@@ -64,14 +59,12 @@ suppress-dummy-args = true
 [tool.ruff.lint.isort]
 # isort configuration
 known-first-party = ["app"]
-known-local-folder = ["fakes"]  # tests/fakes, imported from tests
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
 
 [tool.coverage.run]
 source = ["app"]
 omit = [
     "*/tests/*",
-    "*/migrations/*",
     "*/__pycache__/*",
     "*/venv/*",
 ]

@@ -13,9 +13,11 @@ mkdir -p "$cache" "$(dirname "$out")"
 
 py="${PYTHON:-}"
 if [ -z "$py" ]; then
-  for candidate in "$repo/venv/Scripts/python.exe" "$repo/venv/bin/python" \
-                   "$(git -C "$repo" worktree list --porcelain | sed -n '1s/^worktree //p')/venv/Scripts/python.exe"; do
-    if [ -x "$candidate" ]; then py="$candidate"; break; fi
+  main="$(git -C "$repo" worktree list --porcelain | sed -n '1s/^worktree //p')"
+  for base in "$repo" "$main"; do
+    for candidate in "$base/venv/bin/python" "$base/venv/Scripts/python.exe"; do
+      if [ -x "$candidate" ]; then py="$candidate"; break 2; fi
+    done
   done
 fi
 py="${py:-python}"
@@ -42,7 +44,7 @@ fi
 
 echo "== Checking files that import the schema"
 mapfile -t importers < <(cd "$frontend" && grep -rlE "lib/api/schema" --include='*.ts' --include='*.tsx' \
-  app components hooks lib stores utils 2>/dev/null || true)
+  app components lib 2>/dev/null || true)
 if [ "${#importers[@]}" -eq 0 ]; then
   echo "No files import lib/api/schema yet."
 else

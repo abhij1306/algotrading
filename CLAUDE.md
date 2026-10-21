@@ -1,123 +1,105 @@
-# SmartTrader - Agent & Development Guide
+# Hire a Trader (HAT) - Agent & Development Guide
 
-> Philosophy: build with AI agents as first-class users. Every major capability should be available via UI and API.
+Hire a Trader is a rules-based NSE swing-trading system: a FastAPI backend (`backend/app/hat/`
+holds the whole product), a small React shell (`frontend/`), a PostgreSQL database and a Telegram
+bot. Orders reach Fyers only from a HAT signal, through the risk authority. There is no manual
+trading. The repo holds nothing else: the old SmartTrader code is deleted.
 
 ---
 
 ## Quick Start
 
-### App Startup (recommended)
-
 ```bash
-# from repo root
-start.bat
-```
-
-This launches:
-- Backend: `http://127.0.0.1:8000`
-- Frontend: `http://127.0.0.1:3000` (or next available port)
-
-### Manual Startup
-
-```bash
-# Backend (repo-root venv expected)
+# from the repo root: Python 3.14 and PostgreSQL 18 are required
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
 python scripts/install_backend_deps.py
-python backend/start_server.py
+cp .env.example .env              # then fill in DB_* and the Fyers credentials
 
-# Frontend
+python backend/start_server.py    # http://127.0.0.1:8000
+
+# frontend, in a second terminal
 cd frontend
 pnpm install
-pnpm dev
+pnpm dev                          # http://127.0.0.1:3000, proxies /api to the backend
 ```
+
+`BACKEND_HOST`, `BACKEND_PORT`, `BACKEND_RELOAD`, `BACKEND_ACCESS_LOG` and `BACKEND_LOG_LEVEL`
+configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`.
+
+### Startup (`backend/app/main.py` lifespan)
+
+1. Get the event loop.
+2. Create the database schema (`init_db`). If the database is down, one log line says so and the
+   app keeps serving (requests answer 503) unless `HAT_ENABLED` is true, which refuses to start.
+3. Only when `HAT_ENABLED` is true: start the HAT scheduler (`app/hat/ops/scheduler.py`), check
+   the Fyers token (warn only), then start the live feed (`app/hat/data/feed.py`, the one Fyers
+   data socket). HAT's Telegram bot (PR 16) is not built yet, so nothing starts for it.
+
+With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
+below. Shutdown stops the feed, the scheduler and the database engine, each even if another failed.
+
+### Routes
+
+- `GET /` and `GET /ping`: liveness.
+- The daily Fyers login, `app/hat/api/fyers_auth.py`, under `/api/hat/auth/fyers`:
+  `GET /status`, `GET /url` (the Fyers login link), `POST /token` (trade the auth code for a
+  token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
+  the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
+  dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
+
+`/api/hat/*` read routes and the dashboard arrive with PR 15 and PR 17.
 
 ---
 
 ## Specs and Repo Rules
 
-- **Hire a Trader (HAT):** the specs in `docs/specs/hat/README.md` are the source of truth for
-  `backend/app/hat/`. Where repo code and the specs conflict, the specs win. Every HAT PR names the
-  spec requirement IDs it implements and the verification that proves them. New HAT code is
-  verified with TLA+ models, Hypothesis properties and Postgres checks
-  (`docs/specs/hat/11-verification.md`), not example unit tests; existing tests stay as they are.
-- **Repo paths** come from `backend/app/paths.py`; never compute them from `__file__`
-  (`backend/tests/test_paths.py`).
-- **Startup order** (`main.py` lifespan): symbol_master, then the DB (deferred and retried in the
-  background when it is down), then the Fyers token (warn only), then the index universe (warn
-  only), then the live connect (`backend/tests/test_startup_sequence.py`, `backend/tests/test_deferred_startup.py`).
-- **Schema changes** go through `init_db()`: `Base.metadata.create_all` plus idempotent
-  `ensure_*_schema()` functions. There is no Alembic. Tests build the schema on SQLite, so models
-  must create there; Postgres-only behaviour is tested with `@pytest.mark.postgres` tests (CI job
-  `backend-postgres`).
+- **The specs are the source of truth** for `backend/app/hat/`: `docs/specs/hat/README.md`. Where
+  repo code and the specs conflict, the specs win. Every HAT PR names the requirement IDs it
+  implements. A change to HAT behaviour changes the spec first, in the same PR.
+- **Verification, not unit tests.** HAT code is proved with TLA+ models (`verification/tla/`),
+  Hypothesis properties (`backend/tests/hat/properties/`), Postgres checks
+  (`backend/tests/hat/db/`) and CONF checks (`backend/tests/hat/conformance/`), as
+  `docs/specs/hat/11-verification.md` describes. Do not write example-based unit tests for HAT
+  code; show each new check failing on a deliberate break. The `verify-*` skills in
+  `.claude/skills/` say how to run, read and update each area, and record a digest of the files
+  they cover: after changing a covered file, re-confirm the area and refresh the digest with
+  `python backend/tests/hat/conformance/hat_conf_skills.py <skill>`.
+- **Trading safety.** Read `.claude/skills/trading-safety/SKILL.md` before touching orders, risk,
+  positions, brokers or execution. Never call real Fyers, NSE or Telegram endpoints from tests.
+- **Repo paths** come from `backend/app/paths.py`; never compute them from `__file__`. HAT's data
+  lives under `HAT_DATA_ROOT` (default `data_system/hat/`, gitignored). The Fyers token path is
+  owned by `fyers_tokens.py`.
+- **Schema.** `init_db()` runs `Base.metadata.create_all` and HAT's own upkeep
+  (`app/hat/schema.py`). There is no Alembic and no legacy table: HAT uses a fresh PostgreSQL
+  database, and it refuses to run on any other (HAT-SCH-105). Postgres-only behaviour is tested
+  with `@pytest.mark.postgres` tests (CI job `backend-postgres`).
+- **Import rule.** `app/hat` and `tests/hat` import only the shared modules listed in
+  `SHARED` in `tests/hat/conformance/test_conf_decoupling.py` (`app.base`, `app.database`,
+  `app.paths`, `app.utils.env_loader`), never `app.main` or a router.
+- **Sync, async and local-only.** Blocking work (SDK calls, DB via the sync session, file IO) goes
+  in `def` routes, which FastAPI runs in its threadpool, or behind `asyncio.to_thread`. Never
+  block in `async def`. SDK callbacks arrive on SDK threads: hand work to the event loop with
+  `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`. The server binds to
+  `BACKEND_HOST` (default `127.0.0.1`) and there is no API auth, by decision. Errors never carry
+  broker or database text.
+- **DB sessions.** Use `db_session_scope()` from `app.database` for service-owned DB work and
+  `get_db()` for request-scoped FastAPI dependencies.
 - **Frontend: no new `useEffect`/`useLayoutEffect`** (`.claude/hooks/no-useeffect.sh` blocks them).
 
 ---
 
-## Symbol Management Rules
+## Environment
 
-DB format (`SBIN`, `NIFTY50`) internally; Fyers format (`NSE:SBIN-EQ`) only at the provider
-boundary. Always use `SymbolMaster` for conversion (`scripts/check_symbol_format.py` enforces it; the conversion lives in `app/hat/data/symbols.py`, and the legacy class adds options, futures and metadata):
+`.env.example` lists every variable. Read from the environment (loaded from `.env`):
 
-```python
-from app.hat.data.symbols import symbol_master  # legacy `app.services.symbol_master` inherits it
-
-symbol_master.to_db("NSE:SBIN-EQ")
-symbol_master.to_fyers("SBIN")
-```
-
-Do not use ad-hoc string parsing/replacing.
-
----
-
-## WebSocket Rules
-
-Canonical endpoints:
-- `POST /api/websocket/connect`
-- `POST /api/websocket/subscribe`
-- `POST /api/websocket/disconnect`
-- `GET /api/websocket/status`
-- `WS /api/websocket/stream`
-
-Runtime behavior:
-- Market-hours aware in `live_market_service.py`
-- `DEV_MODE=true` bypasses market-hours checks
-- Subscriptions are aggregate-delta managed across clients
-- Use `GET /api/websocket/status` as the first operational check for provider connection,
-  client counts, queue pressure, and local runtime metrics.
-- `WS /api/websocket/stream` checks the `Origin` header before `accept()` with the rule CORS
-  also uses (`app/utils/origins.py`): `config.ALLOWED_ORIGINS` (`CORS_ORIGINS`) plus any
-  `http://localhost`, `http://127.0.0.1` or `http://[::1]` origin on any port, so a frontend
-  moved off 3000 still works. Anything else, including `null` and look-alikes such as
-  `localhost.evil.com`, is refused (close code 1008 on the stream). A missing `Origin` is allowed:
-  browsers always send one, so only non-browser clients (scripts, tests) omit it.
-
-## Sync, Async and Local-Only Rules
-
-- **Sync vs async routes.** Blocking work (SDK calls, DB via the sync session, file IO) goes
-  in `def` routes, which FastAPI runs in its threadpool, or behind
-  `run_in_threadpool`/`asyncio.to_thread`. Never block in `async def`.
-- **SDK callbacks** arrive on SDK threads. Hand work to the event loop with
-  `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`.
-- **Single-user localhost.** There is no API auth, by decision. The server binds to
-  `BACKEND_HOST` (default `127.0.0.1`). The trading safety
-  rules still apply: idempotency, risk checks, fail closed, PAPER never touches the broker,
-  and no broker or DB error text in responses.
-
-## Backbone Service Conventions
-
-### DB sessions
-- For service-owned non-request DB work, prefer `db_session_scope()` from `app.database`
-  over ad hoc open/close handling.
-- Keep request-scoped FastAPI dependencies on `get_db()`.
-
-### Runtime metrics
-- Add lightweight in-memory runtime metrics for real hot paths before introducing any
-  heavier observability stack.
-- Current approved targets:
-  - websocket connection and queue health
-  - canonical history load timings
-- Do not add speculative telemetry that does not help current local operations or near-term development.
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL.
+- `CLIENT_ID`, `SECRET_KEY`, `REDIRECT_URI`: the Fyers app (`FYERS_APP_ID`, `FYERS_CLIENT_ID` and
+  `FYERS_SECRET_KEY` also work).
+- `HAT_ENABLED` (default false), `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_MCP_BHAVCOPY_URL`,
+  `HAT_MCP_CMMARKET_URL`, and the Telegram secrets `HAT_TELEGRAM_TOKEN`, `HAT_TELEGRAM_CHAT_ID`,
+  `HAT_APPROVAL_SECRET`.
+- `CORS_ORIGINS`, `LOG_LEVEL`, `FRAMEWORK_LOG_LEVEL`.
 
 ---
 
@@ -132,71 +114,55 @@ pnpm build      # vp build
 pnpm gen:api    # regenerate lib/api/schema.d.ts from the backend OpenAPI schema
 ```
 
-`pnpm gen:api` needs the backend venv active (it runs `python ../scripts/export_openapi.py`; no server
-or database needed). Run it after any backend route or response-model change and commit the result:
-CI job `api-schema` fails when the committed `lib/api/schema.d.ts` is stale.
+`pnpm gen:api` needs the backend venv active (it runs `python ../scripts/export_openapi.py`; no
+server or database needed). Run it after any backend route or response-model change and commit the
+result: CI job `api-schema` fails when the committed `lib/api/schema.d.ts` is stale. The
+`sync-api-types` skill does the same and reports contract changes.
 
 ### Backend
 ```bash
-# from the repo root (root ruff.toml covers start_dev.py, scripts/, data_platform/)
+# from the repo root (the root ruff.toml covers scripts/)
 ruff format --check .
 ruff check .
 
 cd backend
-python -m pytest   # test deps: pip install -r requirements-dev.txt; -m puts backend/ on sys.path
-python -m pytest -n auto   # pytest-xdist, as CI does; add --cov=app --cov-report=term-missing:skip-covered for coverage (CI skips it)
+python -m pytest tests/hat/conformance -q            # CONF checks, no database needed
+CI=1 python -m pytest tests/hat/properties/<file> -q # Hypothesis properties under the CI profile
+python -m pytest -n auto --ignore=tests/hat/properties --ignore=tests/hat/conformance
+verification/tla/run.sh                              # from the repo root: the TLC models
 ```
 
-Trading test fixtures (`backend/tests/conftest.py`):
-- `fake_broker`: a `FakeBroker` (`backend/tests/fakes/broker.py`) behind every broker handle the app
-  holds. It records each call and is configured by attributes (`ltp`, `positions`, `working`,
-  `place_reply`, `circuit_open`, ...) or per call with `script(method, *outcomes)`. Do not write a new
-  fake broker in a test file; extend this one.
-- `freeze_market`: the one way to pin market hours. `freeze_market(True)` (open), `False` (a
-  Saturday) or an IST `datetime`; it freezes the risk manager, `live_market` (plus any
-  `LiveMarketService` passed after the instant) and the `market_hours` helpers on a `FixedClock`.
-  Do not monkeypatch `is_market_open` / `is_market_hours` or `datetime` instead.
+Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything. Put long
+test runs under a memory cap, for example
+`systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet <command>`.
 
 ### CI
-`.github/workflows/ci.yml` runs both blocks above on every pull request and on pushes to main.
-Ruff, `vp check` and the tests are expected to stay at zero errors and zero warnings.
+`.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and
+the app tests), `backend-postgres`, `verification-tla`, `verification-conformance`,
+`verification-properties` (four shards, each property file once), `frontend` and `api-schema`.
+Ruff, `vp check` and the tests stay at zero errors and zero warnings. CI installs the hash-pinned
+`backend/requirements-ci.lock`; regenerate it with `python scripts/lock_ci_requirements.py` after
+changing `backend/requirements*.txt`. `fyers-apiv3` is installed with `--no-deps` because it pins
+an `aiohttp` that does not build on Python 3.14.
 
 ---
 
 ## Troubleshooting
 
-### Backend window closes immediately
-1. Run in terminal for traceback:
-```bash
-.\venv\Scripts\python.exe backend\start_server.py
-```
-2. Ensure dependencies installed:
-```bash
-python scripts/install_backend_deps.py
-```
-3. Confirm port 8000 availability:
-```bash
-netstat -ano | findstr :8000
-```
-
-### WebSocket behavior post-market
-- Check `DEV_MODE` env value.
-- Default startup scripts now use `DEV_MODE=false`.
-
-### Python 3.14 dependency note
-- `fyers-apiv3` pins an old `aiohttp` build path that can fail on Windows/Python 3.14.
-- Use `python scripts/install_backend_deps.py` to install a working set.
+- **The server exits at start:** run `python backend/start_server.py` in a terminal for the
+  traceback; install dependencies with `python scripts/install_backend_deps.py`; check that port
+  8000 is free.
+- **"Database unreachable" in the log:** start PostgreSQL and check the `DB_*` variables. With
+  `HAT_ENABLED=true` the server will not start until the database answers.
+- **Fyers shows disconnected:** the token lasts until midnight IST. Log in again from the app
+  header.
 
 ---
 
 ## Contribution Workflow
 
-1. Plan changes
-2. Implement with tests
-3. Run quality checks
-4. Update `docs/specs/hat/` for any HAT behavior/interface change
-5. Submit
-
----
-
-**Last Updated:** October 20, 2026
+1. Plan changes, starting from the spec.
+2. Implement with checks (properties, models, DB and CONF checks).
+3. Run the quality checks above.
+4. Update `docs/specs/hat/` for any HAT behaviour or interface change.
+5. Submit.

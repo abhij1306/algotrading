@@ -120,22 +120,31 @@ def test_a_schema_bug_is_a_500_with_a_fixed_body_not_an_outage(
     assert "no such table" not in response.text
 
 
-def test_startup_logs_one_line_without_password(
+def test_startup_logs_one_line_without_password_and_keeps_serving_with_hat_off(
     down_engine: Engine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(database, "engine", down_engine)
-    validate_database = app_main._step_validate_database()
+    monkeypatch.delenv("HAT_ENABLED", raising=False)
 
-    with caplog.at_level(logging.INFO), pytest.raises(DatabaseUnavailableError):
-        asyncio.run(validate_database)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(app_main._init_database())
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert [r.getMessage() for r in errors] == [
-        "[ERROR] Database unreachable at db.invalid:5432/algotrading "
-        "(start Postgres: net start postgresql-x64-18)"
+        "[ERROR] Database unreachable at db.invalid:5432/algotrading (start Postgres)"
     ]
     assert errors[0].exc_info is None
     assert SECRET not in caplog.text
+
+
+def test_startup_with_hat_enabled_refuses_a_down_database(
+    down_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(database, "engine", down_engine)
+    monkeypatch.setenv("HAT_ENABLED", "true")
+
+    with pytest.raises(DatabaseUnavailableError):
+        asyncio.run(app_main._init_database())
 
 
 @pytest.mark.parametrize(

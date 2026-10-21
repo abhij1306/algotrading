@@ -135,7 +135,7 @@ def test_a_save_failure_writes_nothing_and_runs_no_hook(reply: dict[str, Any], c
         with mock.patch("os.replace", side_effect=OSError("disk full")):
             with pytest.raises(TokenStoreError):
                 harness.service.exchange(code)
-        assert before == store.path.read_bytes()
+        assert store.path.read_bytes() == before
         assert harness.events == []
         assert listing(store) == [store.path.name]
 

@@ -3,7 +3,7 @@
   "venv": "venv",
   "extraPaths": ["backend"],
   "include": ["backend"],
-  "exclude": ["**/__pycache__", "frontend", "archive", "data_system", "venv"],
-  "pythonVersion": "3.11",
+  "exclude": ["**/__pycache__", "frontend", "data_system", "venv"],
+  "pythonVersion": "3.14",
   "typeCheckingMode": "standard"
 }

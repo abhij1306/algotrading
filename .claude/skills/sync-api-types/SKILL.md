@@ -31,6 +31,6 @@ Import from the generated module and index by path and method instead of writing
 ```ts
 import type { paths } from "@/lib/api/schema";
 
-type SectorsResponse =
-  paths["/api/market/sectors"]["get"]["responses"]["200"]["content"]["application/json"];
+type FyersStatus =
+  paths["/api/hat/auth/fyers/status"]["get"]["responses"]["200"]["content"]["application/json"];
 ```

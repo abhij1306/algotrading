@@ -1,5 +1,10 @@
 """
-SmartTrader 3.0 API - FastAPI Application
+Hire a Trader API: the FastAPI app, its routes and its startup.
+
+Startup (the lifespan): connect the event loop, create the database schema, then, only when
+`HAT_ENABLED` is true, start HAT's scheduler and its live feed (the one Fyers data socket,
+HAT-OVR-006). With HAT disabled nothing of HAT runs, and the app serves only the Fyers login
+routes. HAT's Telegram bot (PR 16) has nothing to start yet.
 """
 
 import asyncio
@@ -17,18 +22,16 @@ from .utils.db_errors import db_error_summary, find_db_unavailable_error, is_db_
 from .utils.env_loader import load_dotenv
 from .utils.logger import get_logger, log_warning_throttled, safe_log_value, setup_logging
 
-# Setup logging
 setup_logging()
 logger = get_logger("main")
 
-# Load environment variables
 load_dotenv()
 
-# Import routers - these may have heavy dependencies
-# E402 is suppressed below: routers read config at import, so load_dotenv() must run first.
+# E402 is suppressed below: the modules read the environment at import, so load_dotenv() runs first.
 from .config import config  # noqa: E402
-from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
+from .exceptions import DatabaseUnavailableError  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
+from .hat.settings import is_enabled  # noqa: E402
 from .utils.origins import FrontendCORSMiddleware  # noqa: E402
 
 
@@ -59,21 +62,8 @@ def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(_handler)
 
 
-# Backoff for retrying the database startup work after starting with the DB down.
-DB_RETRY_INITIAL_DELAY_S = 5.0
-DB_RETRY_MAX_DELAY_S = 60.0
-
-
-async def _step_get_event_loop(app: FastAPI) -> None:
-    loop = asyncio.get_running_loop()
-    app.state.loop = loop
-    _install_windows_reset_handler(loop)
-    logger.info(f"[OK] Event loop acquired: {loop}")
-    await asyncio.sleep(0)
-
-
 def _ensure_database_schema() -> None:
-    """Create/upgrade the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
+    """Create the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
     from sqlalchemy import text
 
     from . import database
@@ -88,23 +78,26 @@ def _ensure_database_schema() -> None:
         raise DatabaseUnavailableError() from None
 
 
-async def _step_validate_database() -> None:
+async def _init_database() -> None:
+    """Create the schema. With the database down: one clear log line, no traceback and no
+    password, and the app keeps serving (requests answer 503) unless HAT is enabled, which
+    refuses to start without its database."""
     from .database import describe_database_target
 
     try:
-        _ensure_database_schema()
+        await asyncio.to_thread(_ensure_database_schema)
     except DatabaseUnavailableError:
-        # One clear line, no traceback and no password; requests answer 503 until it is up.
         logger.error(
-            "[ERROR] Database unreachable at %s (start Postgres: net start postgresql-x64-18)",
-            describe_database_target(),
+            "[ERROR] Database unreachable at %s (start Postgres)", describe_database_target()
         )
-        raise
-    logger.info("[OK] Database validated")
-    await asyncio.sleep(0)
+        if is_enabled():
+            raise
+        return
+    logger.info("[OK] Database ready")
 
 
-async def _step_validate_fyers_token(app: FastAPI) -> None:
+async def _validate_fyers_token(app: FastAPI) -> None:
+    """Warn-only: the feed starts blocked, and the login route fixes it, when the token is bad."""
     from .hat.execution.fyers_session import get_fyers_session
 
     is_valid = False
@@ -114,20 +107,28 @@ async def _step_validate_fyers_token(app: FastAPI) -> None:
     except TimeoutError:
         logger.warning("[WARN] Fyers token validation timed out after 5s")
     except Exception as exc:
-        logger.warning(f"[WARN] Fyers token validation errored: {exc}")
+        logger.warning("[WARN] Fyers token validation errored: %s", type(exc).__name__)
 
     app.state.fyers_token_valid = bool(is_valid)
     if app.state.fyers_token_valid:
         logger.info("[OK] Fyers token validated")
     else:
-        logger.warning(
-            "[WARN] Fyers token is invalid/expired. Startup will continue in degraded mode."
-        )
+        logger.warning("[WARN] Fyers token is invalid or expired; log in through the Fyers route.")
+
+
+def _start_hat_scheduler(app: FastAPI) -> None:
+    """The in-process job scheduler (HAT-OPS-013). The daily-cycle jobs are registered by PR 17."""
+    from . import database
+    from .hat.ops.scheduler import start_scheduler
+    from .hat.settings import load_settings
+
+    app.state.hat_scheduler = start_scheduler(
+        load_settings(), dialect_name=database.engine.dialect.name
+    )
 
 
 def _start_hat_feed(app: FastAPI) -> None:
-    """HAT_ENABLED only: build HAT's live feed (the one Fyers data socket, HAT-OVR-006), hang its
-    login hooks on the Fyers auth service, and start it."""
+    """Build HAT's live feed, hang its login hooks on the Fyers auth service and start it."""
     from .database import SessionLocal
     from .hat.data.feed import LiveFeed, calendar_policy_source
     from .hat.execution.fyers_auth import get_fyers_auth
@@ -138,79 +139,35 @@ def _start_hat_feed(app: FastAPI) -> None:
     feed.start(app.state.loop, prevalidated_token=app.state.fyers_token_valid)
 
 
-async def _step_start_hat_feed(app: FastAPI) -> None:
-    from .hat.settings import is_enabled
-
+async def _start_hat(app: FastAPI) -> None:
+    """The scheduler, then the feed, only when HAT_ENABLED. A failure stops what already
+    started, then raises: HAT enabled means HAT runs or the app does not start."""
     if is_enabled():
-        _start_hat_feed(app)
-    await asyncio.sleep(0)
+        try:
+            _start_hat_scheduler(app)
+            await _validate_fyers_token(app)
+            _start_hat_feed(app)
+        except Exception:
+            await _shutdown(app)
+            raise
+        logger.info("[OK] HAT started")
+    else:
+        logger.info("HAT_ENABLED is false: the scheduler and the live feed are not started")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """
-    Application lifespan manager with structured startup sequence.
-
-    Startup sequence:
-    1. Get event loop
-    2. Validate database (deferred, not fatal, when the DB is down)
-    3. Validate Fyers token (warn-only)
-    4. Start HAT's live feed when HAT_ENABLED
-
-    Steps 3-4 do not use the database, so they run even when step 2 finds it down. The
-    deferred schema work is retried in the background until the database answers.
-    """
-    from .services.deferred_startup import DeferredStartup
-    from .services.startup_validator import StartupSequence, StartupStep
-
-    sequence = StartupSequence()
-    deferred_startup = DeferredStartup(
-        _ensure_database_schema,
-        initial_delay=DB_RETRY_INITIAL_DELAY_S,
-        max_delay=DB_RETRY_MAX_DELAY_S,
-    )
-    app.state.deferred_startup = deferred_startup
-
-    try:
-        await sequence.execute_step(
-            StartupStep.SET_EVENT_LOOP,
-            lambda: _step_get_event_loop(app),
-            required=True,
-        )
-        await sequence.execute_step(
-            StartupStep.VALIDATE_DATABASE, _step_validate_database, required=True
-        )
-        await sequence.execute_step(
-            StartupStep.VALIDATE_FYERS_TOKEN,
-            lambda: _step_validate_fyers_token(app),
-            required=False,
-        )
-        await sequence.execute_step(
-            StartupStep.START_HAT_FEED,
-            lambda: _step_start_hat_feed(app),
-            required=False,
-        )
-        if StartupStep.VALIDATE_DATABASE in sequence.deferred_steps:
-            # Keep serving: health reports the DB as down and DB routes answer 503 meanwhile.
-            deferred_startup.start()
-        sequence.log_summary()
-        if sequence.is_complete():
-            logger.info("[OK] Startup sequence complete")
-
-    except Exception as e:
-        logger.exception(f"[ERROR] Startup sequence failed: {e}")
-        sequence.log_summary()
-
+    """Startup: event loop, database schema, then HAT (scheduler, feed) when HAT_ENABLED.
+    Shutdown: the feed, the scheduler and the database engine, each even if another failed."""
+    loop = asyncio.get_running_loop()
+    app.state.loop = loop
+    _install_windows_reset_handler(loop)
+    await _init_database()
+    await _start_hat(app)
     try:
         yield
     finally:
         await _shutdown(app)
-
-
-async def _stop_deferred_startup(app: FastAPI) -> None:
-    deferred_startup = app.state.deferred_startup
-    del app.state.deferred_startup
-    await deferred_startup.stop()
 
 
 async def _stop_hat_feed(app: FastAPI) -> None:
@@ -219,6 +176,14 @@ async def _stop_hat_feed(app: FastAPI) -> None:
         return
     del app.state.hat_feed
     await feed.stop()
+
+
+async def _stop_hat_scheduler(app: FastAPI) -> None:
+    scheduler = getattr(app.state, "hat_scheduler", None)
+    if scheduler is None:
+        return
+    del app.state.hat_scheduler
+    await scheduler.stop()
 
 
 async def _dispose_engine() -> None:
@@ -239,11 +204,11 @@ async def _run_shutdown_step(name: str, step: Callable[[], Awaitable[None]]) -> 
 
 
 async def _shutdown(app: FastAPI) -> None:
-    """Stop background work, close sockets and release the DB pool; each step runs even if
-    an earlier one failed."""
+    """Stop HAT's background work and release the DB pool; each step runs even if an earlier
+    one failed."""
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
-        ("deferred_startup", lambda: _stop_deferred_startup(app)),
         ("hat_feed", lambda: _stop_hat_feed(app)),
+        ("hat_scheduler", lambda: _stop_hat_scheduler(app)),
         ("database_engine", _dispose_engine),
     ]
     results = [await _run_shutdown_step(name, step) for name, step in steps]
@@ -254,9 +219,9 @@ async def _shutdown(app: FastAPI) -> None:
 
 
 app = FastAPI(
-    title="SmartTrader 3.0 API",
+    title="Hire a Trader API",
     version="3.0.0",
-    description="Algorithmic Trading Platform",
+    description="Hire a Trader (HAT): rules-based NSE swing trading",
     lifespan=lifespan,
 )
 
@@ -285,13 +250,11 @@ def _db_unavailable_response(request: Request, exc: BaseException) -> JSONRespon
     return JSONResponse(status_code=error.status_code, content=error.to_dict())
 
 
-@app.exception_handler(SmartTraderException)
-async def smarttrader_exception_handler(
-    request: Request, exc: SmartTraderException
+@app.exception_handler(DatabaseUnavailableError)
+async def database_unavailable_handler(
+    request: Request, exc: DatabaseUnavailableError
 ) -> JSONResponse:
-    if isinstance(exc, DatabaseUnavailableError) or is_db_unavailable(exc):
-        return _db_unavailable_response(request, exc)
-    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+    return _db_unavailable_response(request, exc)
 
 
 @app.exception_handler(DBAPIError)
@@ -322,7 +285,7 @@ async def http_exception_with_db_check(request: Request, exc: StarletteHTTPExcep
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     if is_db_unavailable(exc):
         return _db_unavailable_response(request, exc)
-    logger.error(f"Unhandled: {str(exc)}", exc_info=True)
+    logger.error("Unhandled: %s", exc, exc_info=True)
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
 
@@ -335,15 +298,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
+# HAT routes. PR 15 adds the rest of `/api/hat/*`.
 app.include_router(hat_fyers_auth.router)
-
-logger.info("[OK] All routers registered")
 
 
 @app.get("/", response_model=None)
 def read_root() -> dict[str, Any]:
-    return {"status": "ok", "message": "SmartTrader 3.0 API Running", "version": "3.0.0"}
+    return {"status": "ok", "message": "Hire a Trader API running", "version": "3.0.0"}
 
 
 @app.get("/ping", response_model=None)
