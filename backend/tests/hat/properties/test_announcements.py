@@ -34,9 +34,9 @@ from app.hat.data.announcements import (
     poll_all,
     poll_feed,
 )
+from app.hat.data.sessions import IST
 from app.hat.models import HatAnnouncement, HatMarket
 from app.hat.ops.jobs import session_factory_for
-from app.utils.market_hours import IST
 
 NOW = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
 SYMBOL_ISINS = {"AAA": "INE000000001", "BBB": "INE000000002", "CCC": "INE000000003"}

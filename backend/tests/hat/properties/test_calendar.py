@@ -11,12 +11,17 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
+from app.hat.clock import FixedClock
 from app.hat.data import calendar as cal
+from app.hat.data.sessions import (
+    IST,
+    SESSION_CLOSE,
+    SESSION_OPEN,
+    MarketHoursPolicy,
+    MarketPhase,
+)
 from app.hat.models import HatMarket
 from app.hat.risk.sessions import SessionState, next_session_open
-from app.utils import market_hours
-from app.utils.clock import FixedClock
-from app.utils.market_hours import IST, MarketHoursPolicy, MarketPhase
 
 CalSpec = tuple[time, time, dict[date, cal.CalendarDay]]
 WINDOW_START = date(2026, 1, 1)
@@ -98,7 +103,7 @@ def test_holiday_closed(spec: CalSpec) -> None:
         row = rows.get(day)
         for wall in GRID:
             at = instant(day, wall)
-            phase = policy.phase(at, dev_mode=False)
+            phase = policy.phase(at)
             if row is not None and not row.is_trading:
                 assert not phase.is_open
                 assert phase in (MarketPhase.HOLIDAY, MarketPhase.WEEKEND)
@@ -110,31 +115,19 @@ def test_holiday_closed(spec: CalSpec) -> None:
 
 @settings(max_examples=30)
 @given(spec=calendars())
-def test_holiday_closed_installed_calendar(spec: CalSpec) -> None:
-    """The installed calendar (the startup path) closes every policy, including one built
-    without any holidays of its own, the way live_market_service builds its policy."""
+def test_policy_has_no_process_state(spec: CalSpec) -> None:
+    """A policy is its own calendar and nothing else (no installed global, no DEV_MODE): building
+    one from a loaded calendar never changes a bare policy, so a bare policy is closed only on a
+    weekend and open on every weekday inside the default session, whatever was loaded elsewhere."""
     open_default, close_default, rows = spec
     loaded = through_database(open_default, close_default, rows)
-    market_hours.install_calendar(
-        loaded.holidays(), loaded.sessions(), loaded.session_open, loaded.session_close
-    )
-    try:
-        bare = MarketHoursPolicy(clock=FixedClock(instant(WINDOW_START, time(0, 0))))
-        for offset in range(DAYS):  # ordinary weekdays use the market's default hours
-            day = WINDOW_START + timedelta(days=offset)
-            if day not in rows and day.weekday() < 5:
-                for wall in GRID:
-                    expected = open_default <= wall <= close_default
-                    assert bare.is_open(instant(day, wall), dev_mode=False) == expected
-        for day, row in rows.items():
-            if not row.is_trading:
-                for wall in GRID:
-                    assert not bare.is_open(instant(day, wall), dev_mode=False)
-                    assert not market_hours.DEFAULT_POLICY.is_open(
-                        instant(day, wall), dev_mode=False
-                    )
-    finally:
-        market_hours.install_calendar(frozenset(), {})
+    loaded.policy(FixedClock(instant(WINDOW_START, time(0, 0))))
+    bare = MarketHoursPolicy(clock=FixedClock(instant(WINDOW_START, time(0, 0))))
+    for offset in range(DAYS):
+        day = WINDOW_START + timedelta(days=offset)
+        for wall in GRID:
+            expected = day.weekday() < 5 and SESSION_OPEN <= wall <= SESSION_CLOSE
+            assert bare.is_open(instant(day, wall)) == expected, (day, wall)
 
 
 @settings(max_examples=60)
@@ -172,7 +165,7 @@ def test_session_from_reference_data(spec: CalSpec) -> None:
             expected = None
         assert loaded.session_for(day) == expected
         for wall in GRID:
-            is_open = policy.is_open(instant(day, wall), dev_mode=False)
+            is_open = policy.is_open(instant(day, wall))
             assert is_open == (expected is not None and expected[0] <= wall <= expected[1])
 
 

@@ -17,8 +17,8 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from fractions import Fraction
 
-from app.utils.clock import require_aware
-from app.utils.market_hours import IST
+from app.hat.clock import require_aware
+from app.hat.data.sessions import IST
 
 __all__ = [
     "INDICATIVE_OPEN_FIELDS",

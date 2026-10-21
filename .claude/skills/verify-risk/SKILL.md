@@ -1,11 +1,11 @@
 ---
 name: verify-risk
-description: How to run, read and update the checks behind Hire a Trader's risk authority (position sizing, caps and invariants, exposure ladder, kill switches and manage-only, policy-change rules, mode changes, the single RiskManager decision). Use before and after any change to backend/app/hat/risk, backend/app/services/risk_manager.py, verification/tla/KillSwitch.tla or the risk properties and conformance checks.
+description: How to run, read and update the checks behind Hire a Trader's risk authority (position sizing, caps and invariants, exposure ladder, kill switches and manage-only, policy-change rules, mode changes, the single `evaluate_signal` decision). Use before and after any change to backend/app/hat/risk, backend/app/services/risk_manager.py, verification/tla/KillSwitch.tla or the risk properties and conformance checks.
 ---
 
 # verify-risk
 
-Checks that `RiskManager.evaluate_signal` is the one place a HAT order is sized and gated: the policy numbers come from the effective policy version, the size is exact, every cap and invariant rejects what it must, exits are never blocked, kill switches and pauses act as the spec says, and risk can only be raised through the cooling-off and evidence gate. Specs: `docs/specs/hat/06-risk-and-governance.md` (HAT-RISK-010 to 104, HAT-GOV-080 to 094), `03-schema.md` (HAT-SCH-033/034/073/086), `01-decisions.md` (B13 to B26), `11-verification.md` section 3.
+Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one place a HAT order is sized and gated: the policy numbers come from the effective policy version, the size is exact, every cap and invariant rejects what it must, exits are never blocked, kill switches and pauses act as the spec says, and risk can only be raised through the cooling-off and evidence gate. Specs: `docs/specs/hat/06-risk-and-governance.md` (HAT-RISK-010 to 104, HAT-GOV-080 to 094), `03-schema.md` (HAT-SCH-033/034/073/086), `01-decisions.md` (B13 to B26), `11-verification.md` section 3.
 
 ## Properties
 
@@ -17,12 +17,12 @@ Checks that `RiskManager.evaluate_signal` is the one place a HAT order is sized 
 - `TLA KillSwitch!PauseBlocksEntriesOnly` A paused bot places no new entry, and its exits, stop moves and reconciliation continue. Harm: a pause that still opens positions, or one that strands an open position.
 - `TLA KillSwitch!HealthAutoRearm` A health kill clears by itself as soon as the health inputs pass, without a user. Harm: a brief data glitch freezes the bot until someone notices.
 - `TLA KillSwitch!ExitsContinue` Whatever is tripped, paused or failing, a due exit is eventually sent. Harm: a kill or a health failure traps an open position.
-- `PBT sizing.*` On the real `size_position` and the real `RiskManager.evaluate_signal`: the size is exactly the floor of the smallest of the four terms (risk, position share, 20-day volume, cash), in Decimal with no float; the risk taken never exceeds `equity x risk_pct x ladder multiplier`; a wider stop never grows the size and more equity never shrinks it; a zero size is a skip with a named reason; a stop at or above the entry is refused; the regime and health multipliers are applied once (they are already inside the allocation's `risk_pct`); every number comes from the policy version in force at the signal time, so a pending increase never sizes a trade. Harm: a position larger than the owner's risk budget, or one sized with a limit nobody approved.
-- `PBT caps.*` On the real decision: the 3% global open risk, positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed), the max-chase rule, the SmartTrader halt; exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
+- `PBT sizing.*` On the real `size_position` and the real `evaluate_signal`: the size is exactly the floor of the smallest of the four terms (risk, position share, 20-day volume, cash), in Decimal with no float; the risk taken never exceeds `equity x risk_pct x ladder multiplier`; a wider stop never grows the size and more equity never shrinks it; a zero size is a skip with a named reason; a stop at or above the entry is refused; the regime and health multipliers are applied once (they are already inside the allocation's `risk_pct`); every number comes from the policy version in force at the signal time, so a pending increase never sizes a trade. Harm: a position larger than the owner's risk budget, or one sized with a limit nobody approved.
+- `PBT caps.*` On the real decision: the 3% global open risk, positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk channel (drawdown, manual) or of its health channel (data, broker) is a trip, so an automatic health re-arm never hides a tripped drawdown kill; another bot's rows never count. On the real service on SQLite, random trips, health changes, re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 15% and a bot at 10% from the summed and per-bot equity. Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
-- `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, the existing risk tests are byte-for-byte unchanged and pass, and `RiskManager`'s SmartTrader checks do not read HAT state. Harm: a second sizing path, a hidden override, or a changed SmartTrader behaviour nobody reviewed.
+- `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, the existing risk tests are byte-for-byte unchanged and pass, the legacy `RiskManager` imports nothing from HAT, and no HAT module names the legacy VCP halt flag. Harm: a second sizing path, a hidden override, or a changed SmartTrader behaviour nobody reviewed.
 - `DB risk.*` On Postgres, the real policy, kill and snapshot services write rows the database constraints accept (cooling-off span, kill scope, one snapshot per bot and day), and a service that forgets its own rule is refused. Harm: the code and the database disagree about what a legal row is.
 
 ## Run
@@ -48,7 +48,8 @@ python -m pytest -q --no-cov tests/test_risk_fixes.py tests/test_live_trading_sa
 - A TLC counterexample names each action (`SnapshotAccount`, `PlaceEntry`, `HealthFlip`, `Pause`, `Resume`); each action has a `\* code: backend/app/hat/risk/...py:function` comment naming the function it models. If the real function can take those steps in that order, it is a bug in the code. If it cannot (a guard or transaction the model leaves out), fix the model and say so under Scope changes.
 - A failing `CONF risk.initial_seed_equals_spec` names the field that differs from the 06 section 1 table: the spec is the source of truth, fix `SEED_POLICY` (or change the spec in a separate, called-out change).
 - `CONF risk.existing_suite_green` fails when an existing SmartTrader risk test was edited or no longer passes. Do not edit the test: stop and explain what changed in SmartTrader behaviour.
-- Finding kept visible: the existing market-hours check has a `DEV_MODE` bypass; HAT calls it with `dev_mode=False` and also requires an OPEN session from the trading calendar, so a dev flag never opens a HAT entry.
+- Finding kept visible: the legacy market-hours check has a `DEV_MODE` bypass; HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) has none, and `evaluate_signal` also requires an OPEN session from the trading calendar, so a dev flag never opens a HAT entry.
+- Finding kept visible: the price band is a constant (`MAX_PRICE_DEVIATION_PCT`, 20%), not a policy field, because 06 section 1 fixes the policy document's fields (HAT-RISK-010); making it a field is a spec change.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
 ## Updating
@@ -56,7 +57,7 @@ python -m pytest -q --no-cov tests/test_risk_fixes.py tests/test_live_trading_sa
 - A new cap or invariant: add a predicate in `risk/caps.py`, call it from `risk/decision.py` in the ordered entry checks, add a `Reason` code, a `test_<name>` in `tests/hat/properties/test_caps.py` that drives `decide`, and a broken variant of the new check under "Scratch breaks".
 - A new policy field: change `SEED_POLICY`, `POLICY_FIELDS`, `parse_policy`, `_permissive_fields` (its direction), the 06 section 1 table and the CONF tests together; they read the table, so they fail until all agree.
 - A kill or pause rule: edit `verification/tla/KillSwitch.tla` and `risk/kill.py` / `risk/controls.py` together; keep a `\* code:` comment on every action, add a broken variant `KillSwitch__<mode>.cfg` (with `EXPECT:` and the mode in the model's `ASSUME`), run both `run.sh` commands, then the properties.
-- New HAT code that needs a size: call `RiskManager.evaluate_signal`; `CONF risk.single_sizing_path` fails if anything else calls `size_position`.
+- New HAT code that needs a size: call `evaluate_signal` from `app/hat/risk/service.py`; `CONF risk.single_sizing_path` fails if anything else calls `size_position`.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-risk` prints the digest.
 
 ## Coverage
@@ -76,7 +77,8 @@ Code under check:
 - `backend/app/hat/risk/sessions.py`: `SessionCalendar`, `next_session_open`
 - `backend/app/hat/risk/modes.py`: `plan_mode_change`, `effective_mode`
 - `backend/app/hat/risk/policy.py`: `parse_policy`, `SEED_POLICY`, `effective_version`, `classify_direction`, `build_gate_evidence`, `increase_gate_ok`
-- `backend/app/services/risk_manager.py`: `RiskManager.evaluate_signal`
+- `backend/app/hat/risk/service.py`: `evaluate_signal`, `price_band_ok`, `market_open_at`
+- `backend/app/services/risk_manager.py`: the legacy manager, which imports nothing from HAT
 
 Checks:
 - `backend/tests/hat/hat_risk_support.py`
@@ -93,8 +95,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `75eeea92a6ae61ea934131ea25f55dee552553b9`
-Covered digest: `81e685bf0febf17811ce17c89edc201b50c4dba7d4fea5ca2627c50dc409fb17`
+Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
+Covered digest: `11c7df6878c8632fbd442c2e3a96ad7b77625d1c694d7bff7932d3ebbc61404e`
 
 ## Scope changes
 
@@ -488,13 +490,42 @@ E + and <Reason.MAX_CHASE: 'max_chase'> = Reason.MAX_CHASE
 E Failing test case: test_max_chase_always(
 ```
 
-Break: in `backend/app/hat/risk/decision.py` (caps.vcp_halt_blocks_hat): the SmartTrader halt ignored.
+Break: in `backend/app/hat/risk/decision.py` (caps.hat_kill_is_authority): the account-kill check disabled.
 
 ```
-E AssertionError: assert None == <Reason.SMARTTRADER_HALT: 'smarttrader_halt'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...3-85fa07c708bf'), binding='risk'
-E Failing test case: test_vcp_halt_blocks_hat(
-E halted=True,
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:462: in test_hat_kill_is_authority
+tests/hat/properties/test_caps.py:481: in test_hat_kill_is_authority
+E   AssertionError: assert None == <Reason.KILL_ACCOUNT: 'kill_account'>
+E    +  where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...4-4f5bcc206489'), binding='risk', risk_pct_used=Decimal('0
+E   Failing test case: test_hat_kill_is_authority(
+```
+
+Break: in `backend/app/hat/risk/service.py` (caps.price_band): the band check always passes.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:491: in test_price_band
+tests/hat/properties/test_caps.py:505: in test_price_band
+E   AssertionError: assert None == <Reason.PRICE_OUT_OF_BAND: 'price_out_of_band'>
+E    +  where None = RiskDecision(accepted=True, reason=None, quantity=10000, stop=Decimal('1.1979'), risk_amount=Decimal('121.0000'), warn...097cd915f'), binding='liquidity', risk_pct_used=Decimal('0
+E    +  and   <Reason.PRICE_OUT_OF_BAND: 'price_out_of_band'> = Reason.PRICE_OUT_OF_BAND
+```
+
+Break: in `backend/app/hat/risk/service.py` (caps.price_band): an infinite or NaN band width is accepted.
+
+```
+tests/hat/properties/test_caps.py F
+    | AssertionError: assert True is None
+```
+
+Break: in `backend/app/hat/risk/service.py` (caps.market_hours_only): the default policy ignores the calendar's special session.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:417: in test_special_session_follows_calendar
+tests/hat/properties/test_caps.py:432: in test_special_session_follows_calendar
+E   AssertionError: market_closed
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (caps.decision_total): only missing-input errors are caught.
@@ -777,13 +808,13 @@ E + and Decimal('0.25') = Decimal('0.25')
 FAILED tests/hat/conformance/test_conf_risk.py::test_risk_policy_seed_bot_limits - AssertionError: assert Decimal('0.30') == Decimal('0.25')
 ```
 
-Break: in `backend/app/hat/risk/caps.py` (risk.single_sizing_path): a second module sizes an order.
+Break: in `backend/app/services/risk_manager.py` (risk.single_sizing_path): the legacy manager defines `evaluate_signal` again.
 
 ```
-E AssertionError: assert ['hat/risk/ca.../decision.py'] == ['hat/risk/decision.py']
-E
-E At index 0 diff: 'hat/risk/caps.py' != 'hat/risk/decision.py'
-E Left contains one more item: 'hat/risk/decision.py'
+tests/hat/conformance/test_conf_risk.py F
+tests/hat/conformance/test_conf_risk.py:218: in test_risk__single_sizing_path
+E   assert 'evaluate_signal' not in '"""\nRisk M...eturn None\n'
+E     'evaluate_signal' is contained here:
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (risk.no_gate_override_path): decide takes an override flag.
@@ -813,11 +844,23 @@ E assert result.code == code
 E E AssertionError: assert 'RISK_PASS' == 'MARKET_CLOSED'
 ```
 
-Break: in `backend/app/services/risk_manager.py` (risk.manager_reads_no_hat_state): the manager imports the kill service.
+Break: in `backend/app/services/risk_manager.py` (risk.manager_reads_no_hat_state): the manager imports `app.hat.money`.
 
 ```
-E AssertionError: assert not ({'hat.risk.controls', 'hat.risk.decision'} & {'hat.risk.controls', 'hat.risk.policy_service'})
-FAILED tests/hat/conformance/test_conf_risk.py::test_risk__manager_reads_no_hat_state - AssertionError: assert not ({'hat.risk.controls', 'hat.risk.decision'} & {'hat.ris
+tests/hat/conformance/test_conf_risk.py F
+tests/hat/conformance/test_conf_risk.py:301: in test_risk__manager_reads_no_hat_state
+E   AssertionError: assert {'app.hat.money'} == set()
+E     Extra items in the left set:
+E     'app.hat.money'
+```
+
+Break: in `backend/app/hat/risk/decision.py` (risk.no_legacy_halt_read): a comment names the legacy halt flag.
+
+```
+tests/hat/conformance/test_conf_risk.py F
+tests/hat/conformance/test_conf_risk.py:319: in test_risk__no_legacy_halt_read
+E   AssertionError: assert [('hat/risk/d...DING_HALTED')] == []
+E     Left contains one more item: ('hat/risk/decision.py', 'TRADING_HALTED')
 ```
 
 ### DB risk.*

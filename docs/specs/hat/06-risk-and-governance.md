@@ -1,6 +1,6 @@
 # 06: Risk and Governance
 
-Scope: the account-level risk policy, position sizing, caps, progressive exposure, the strategy regime gate, kill switches and manage-only, the six invariants, governance levers, risk-policy change rules, and how all of it plugs into SmartTrader's existing `RiskManager` as the single risk authority. Requirement format and verification methods: see README.md and 11-verification.md.
+Scope: the account-level risk policy, position sizing, caps, progressive exposure, the strategy regime gate, kill switches and manage-only, the six invariants, governance levers, risk-policy change rules, and the single risk authority, `evaluate_signal` in `app/hat/risk/service.py`. Requirement format and verification methods: see README.md and 11-verification.md.
 
 Bots hold no risk numbers. Every risk number lives in one versioned risk-policy record (`hat_risk_policy_version.policy`), so a strategy edit can never raise risk (BL "Governance / Risk policy is account-level").
 
@@ -442,12 +442,12 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **Acceptance:**
   - Property: for every sequence of policy requests and session opens, the effective policy changes only in a transaction that also appends `risk.change_effective`, and every request appends `risk.change_requested`. Harm: an unaudited risk change.
 
-## §10 Integration into RiskManager
+## §10 The risk authority
 
-SmartTrader's `services/risk_manager.py` (`RiskManager`) is the single risk authority (PLAN C2; MA "Boundary rules"). HAT adds `RiskManager.evaluate_signal(signal_ctx) -> RiskDecision`, which runs the existing market-hours, price-band and margin checks plus the HAT policy, sizing, caps, kill switches and invariants. The HAT checks are pure functions in `app/hat/risk/`.
+`evaluate_signal(signal_ctx) -> RiskDecision` in `app/hat/risk/service.py` is the single risk authority for HAT (PLAN C2; MA "Boundary rules"). It works out two outcomes itself, market open at the signal's instant and the entry price within the price band (20% of the last price, `MAX_PRICE_DEVIATION_PCT`), and composes them with the HAT policy, sizing, caps, kill switches and invariants. The HAT checks are pure functions in `app/hat/risk/`. [K1: it used to be `RiskManager.evaluate_signal` in the legacy `services/risk_manager.py`; it moved so HAT depends on nothing outside `app/hat`. The margin check is not composed: the sizing cash term is stricter.]
 
 #### HAT-RISK-100: One risk authority
-- **Statement:** Every HAT entry is sized and approved only by `RiskManager.evaluate_signal`; no other module sizes a HAT order.
+- **Statement:** Every HAT entry is sized and approved only by `evaluate_signal` (`app/hat/risk/service.py`); no other module sizes a HAT order.
 - **Source:** MA "Boundary rules" ("One risk authority"); PLAN C2; OWN-20OCT.
 - **PR:** 10, 15
 - **Verification:** CONF `risk.single_sizing_path`, TLA `ExecutionRouter!RiskBeforeRoute`
@@ -471,19 +471,19 @@ SmartTrader's `services/risk_manager.py` (`RiskManager`) is the single risk auth
 - **Acceptance:**
   - Property: for every input with any required field missing, None or non-finite, the decision is REJECT with reason `missing_input`. Harm: a default of zero or infinity sizes a real order.
 
-#### HAT-RISK-103: Existing risk paths unchanged
-- **Statement:** Adding `evaluate_signal` does not change the behaviour of the existing terminal and trading risk checks.
+#### HAT-RISK-103: Existing risk paths unchanged and independent of HAT
+- **Statement:** Adding `evaluate_signal` does not change the behaviour of the existing terminal and trading risk checks, and since K1 the legacy `RiskManager` imports nothing from `app.hat`.
 - **Source:** PLAN C2.
 - **PR:** 10
 - **Verification:** CONF `risk.existing_suite_green`
 - **Acceptance:**
   - Property: the existing risk test modules (`test_risk_fixes.py`, `test_live_trading_safety.py` and the rest of the pre-HAT suite) pass unchanged on the PR that adds `evaluate_signal`. Harm: HAT breaks manual trading safety.
 
-#### HAT-RISK-104: VCP halt and HAT kill interplay
-- **Statement:** The existing VCP `TRADING_HALTED` flag also blocks HAT entries; HAT's `/kill` affects HAT bots only. [OWNER-PENDING]
-- **Source:** PLAN Q6, C6.
-- **PR:** 10
-- **Verification:** PBT `caps.vcp_halt_blocks_hat`
+#### HAT-RISK-104: HAT's own kill switches are the only halt
+- **Statement:** HAT's own kill switches (account kill, bot kill, health kill, pause) are the only halt of a HAT entry. The legacy VCP `TRADING_HALTED` flag is not read: `evaluate_signal` takes no database session, `SignalContext` has no halt field and the reason `smarttrader_halt` no longer exists. HAT's `/kill` affects HAT bots only. [Changed in K1 (D59/D60, the legacy is being deleted); it said the VCP flag also blocked HAT entries (OWNER-PENDING, PLAN Q6).]
+- **Source:** PLAN Q6, C6; cleanup plan K1.
+- **PR:** 10, K1
+- **Verification:** PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read`
 - **Acceptance:**
-  - Property: for every state with `TRADING_HALTED` set, every HAT entry decision is REJECT with reason `smarttrader_halt`; and for every HAT kill state, the existing terminal and VCP order paths behave as without HAT. Harm: one halt switch silently fails to stop the other system, or HAT blocks manual trading.
-- **[OWNER-PENDING]** interplay of the two kill/halt switches: default per PLAN Q6; owner to confirm.
+  - Property: for every combination of the account kill, bot kill, health kill and pause, an entry that passes every other check is REJECT with the first tripped switch's reason, and ACCEPT when none is tripped. Harm: a HAT kill is ignored, or an entry is halted by state HAT does not own.
+  - Property: no module of `app/hat` names `TRADING_HALTED`, `smarttrader_halt*` or the legacy `system_config` table. Harm: HAT silently depends on a legacy flag that is deleted with the VCP module.

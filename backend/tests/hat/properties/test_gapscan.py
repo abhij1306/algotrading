@@ -22,9 +22,9 @@ from app.hat.data.gapscan import (
     scan_rows,
 )
 from app.hat.data.mcp_client import McpClient
+from app.hat.data.sessions import IST
 from app.hat.models import HatJobRun, HatPriceBand
 from app.hat.ops.jobs import session_factory_for
-from app.utils.market_hours import IST
 
 DAY = date(2026, 10, 21)
 symbol_names = st.from_regex(r"[A-C][A-C0-9&]{0,3}", fullmatch=True)

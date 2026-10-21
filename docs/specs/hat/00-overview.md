@@ -127,25 +127,33 @@ condensed; PR numbers refer to the plan's PR list.
 | Capability | Status | SmartTrader code | PR |
 | --- | --- | --- | --- |
 | Live ticks and subscriptions | R + M (tick-listener hook) | `services/live_market_service.py`, `services/subscription_registry.py` | 14 |
-| Market hours, clock | R + M (holiday calendar fed from `hat_trading_calendar`) | `utils/market_hours.py`, `utils/clock.py` | 4 |
+| Market hours, clock | N (HAT-owned copies since K1; the holiday calendar from `hat_trading_calendar` builds the policy, nothing is installed process-wide, no `DEV_MODE`) | `app/hat/data/sessions.py`, `app/hat/clock.py` (copied from `utils/market_hours.py`, `utils/clock.py`) | 4, K1 |
 | Symbols | R | `services/symbol_master.py` | 4 |
-| Risk authority | M (`RiskManager.evaluate_signal`) | `services/risk_manager.py` | 10 |
-| Order intent, Decimal money | R | `services/execution/intent.py`, `services/execution/paper_book.py` | 10, 13 |
+| Risk authority | N (`evaluate_signal` in HAT since K1; the legacy `RiskManager` no longer imports HAT) | `app/hat/risk/service.py` | 10, K1 |
+| Order intent, Decimal money | R + N (`to_decimal` / `to_money` copied into HAT since K1) | `services/execution/intent.py`, `app/hat/money.py` | 10, 13, K1 |
 | Broker | R + N (HAT interface, GTT) | `brokers/plugins/fyers.py` (`FyersBroker`), `FyersClient`, `services/fyers/auth_flow.py` | 13 |
 | VCP detector | M (polars port) | `services/vcp/pattern.py` | 8 |
-| Backtest metrics | R | `services/backtest_metrics.py` | 12 |
+| Backtest metrics | N (copied into HAT in K1; the VCP detector's frozen outputs are in `tests/hat/fixtures/vcp_oracle.json`) | `app/hat/backtest/metrics.py` | 12, K1 |
 | Bhavcopy parsing ideas | M | `data_platform/pipelines/phase1_build.py`, `backend/scripts/load_bhavcopy.py` | 5 |
 | Universe constituents | R (seed input) | `services/universe/`, `services/index_universe_loader.py` | 9 |
-| Test fakes | R + M | `tests/fakes/broker.py` (`FakeBroker`), `freeze_market`, `FixedClock` | all |
+| Test fakes | N (HAT-owned since K1) | `tests/hat/fakes/` (`FakeBroker`, the data-socket fake, the Fyers SDK recorder), `app/hat/clock.py` (`FixedClock`) | all, K1 |
 | Criteria, scan, exits, lifecycle, allocator, regime, Telegram, scheduler, event log, Parquet store | N | — | 2-17 |
 
-#### HAT-OVR-040: Extend, never duplicate, shared fakes and services
-- **Statement:** HAT extends `FakeBroker`, `RiskManager`, `LiveMarketService` and `symbol_master` in place instead of creating parallel versions.
+#### HAT-OVR-040: One fake broker and one risk authority
+- **Statement:** HAT keeps one `FakeBroker` (`tests/hat/fakes/broker.py`) and one risk authority (`evaluate_signal` in `app/hat/risk/service.py`) instead of parallel versions. The legacy `FakeBroker`, `RiskManager` and `LiveMarketService` are legacy copies that the cleanup PRs (K3 to K5) delete; HAT order paths never call them. [Reworded in K1; it said HAT extends the legacy `RiskManager` in place.]
 - **Source:** MA "Reuse vs build"; PLAN §2, §6 preamble.
 - **PR:** 10, 13, 14
 - **Verification:** CONF `no_duplicate_fakes_or_authorities`
 - **Acceptance:**
-  - Property: across `backend/`, there is exactly one class implementing the broker fake (`tests/fakes/broker.py:FakeBroker`) and exactly one risk authority class (`RiskManager`) that HAT order paths call. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+  - Property: across `backend/`, HAT has exactly one class implementing the broker fake (`tests/hat/fakes/broker.py:FakeBroker`) and exactly one risk authority function (`evaluate_signal`, defined only in `app/hat/risk/service.py`); the only other definitions of these names are the listed legacy copies. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+
+#### HAT-OVR-041: HAT stands alone from the legacy code
+- **Statement:** Nothing under `app/hat` or `tests/hat` imports `app.main`, a legacy router, a legacy model or a legacy test helper, and no HAT suite loads the legacy app or its manual-trading singletons. The few legacy modules HAT still imports (the Fyers stack, the symbol master, the live-feed service, the database and paths modules) are listed in the check and move into HAT in K2, K3 and K6. The legacy risk manager imports nothing from HAT.
+- **Source:** Cleanup plan K1 (D59, D60).
+- **PR:** K1
+- **Verification:** CONF `imports.hat_decoupled_from_legacy`, CONF `imports.hat_suites_boot_no_legacy_app`, CONF `imports.legacy_does_not_import_hat`
+- **Acceptance:**
+  - Property: the set of legacy modules imported by HAT code or HAT tests equals the listed set, and collecting every HAT suite in a fresh interpreter loads none of `app.main`, `app.routers`, the risk manager, the order execution service, the position sync service or the live exit service. Harm: deleting a legacy module silently breaks HAT, or a HAT test passes only because the legacy app booted around it.
 
 ## §5 Repo conflict resolutions (C1-C12)
 
@@ -155,12 +163,12 @@ the resolution says how it lands in this repo.
 | # | Docs say | Repo today | Resolution |
 | --- | --- | --- | --- |
 | C1 | Own polars indicators (T11); Parquet + DuckDB (T6) | pandas everywhere; no duckdb | `app/hat/**` uses polars + duckdb; existing modules stay pandas. Arrow bridge only at boundaries. VCP detector ported to polars with a parity property against `services/vcp/pattern.py`. |
-| C2 | One risk authority = SmartTrader governance layer, extended | `RiskManager` (order-level checks, float config) | Add `RiskManager.evaluate_signal(...)` composing existing checks with HAT policy, sizing, caps, kill switches and invariants (pure functions in `app/hat/risk/`). Existing paths unchanged. HAT money math is Decimal. |
+| C2 | One risk authority = SmartTrader governance layer, extended | `RiskManager` (order-level checks, float config) | `evaluate_signal(...)` composes the market-hours and price-band outcomes with HAT policy, sizing, caps, kill switches and invariants (pure functions in `app/hat/risk/`). Since K1 it lives in `app/hat/risk/service.py`, not in `RiskManager` (which imports nothing from HAT); the legacy order paths are unchanged. HAT money math is Decimal. |
 | C3 | Docker Compose; Linux host | Windows-first `start.bat` | Additive `deploy/hat/docker-compose.yml`; Windows dev keeps working. |
 | C4 | Four processes | One FastAPI process; live feed singleton | HAT runs in the backend process as lifespan tasks gated by `HAT_ENABLED` (default false). Logical split kept: separate modules, restart-safe jobs. |
 | C5 | OpenAlgo behind the broker interface; keys in OpenAlgo | Fyers creds in `.env` + `fyers/config/access_token.json` | Direct Fyers adapter. Fyers secrets stay where they are. `hat_broker_account.openalgo_ref` kept as a nullable column. |
 | C6 | Regime + allocator set sizing; risk 0.25% | VCP module: NIFTY50 200DMA BULL/BEAR → 1%/0.5%, own halt flag and positions | VCP module left intact during the MVP; S1 supersedes it. Retirement of `services/vcp*` is a follow-up. Kill-switch interplay per Q6. |
-| C7 | `hat_trading_calendar` drives sessions | `MarketHoursPolicy.holidays` empty | PR 4 loads NSE holidays into `hat_trading_calendar` and feeds `DEFAULT_POLICY.holidays`. SmartTrader then refuses orders on holidays (a fix). |
+| C7 | `hat_trading_calendar` drives sessions | `MarketHoursPolicy.holidays` empty | PR 4 loads NSE holidays into `hat_trading_calendar`. Since K1 HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) is built from the loaded calendar (`MarketCalendar.policy`) and passed to its users; nothing is installed into the legacy `market_hours`, which no longer sees holidays. |
 | C8 | 41 tables, uuid v7 PKs, JSONB, triggers, partitioned event log, `revoke` | `create_all` + `ensure_*`; integer PKs; SQLite tests | Follow the repo mechanism (03 §10). |
 | C9 | Data root for 2010+ history | `data_system/` "2025+ active scope" | `HAT_DATA_ROOT = DATA_ROOT / "hat"` in `app/paths.py`, env-overridable, gitignored. |
 | C10 | Telegram `/mode [bot] signal\|confirm\|auto` | — | Superseded by B1 (revised): `shadow\|confirm\|auto`. |

@@ -92,7 +92,8 @@ Code under check:
 - `backend/app/hat/execution/accounts.py`
 - `backend/app/hat/execution/session.py`
 - `backend/app/brokers/plugins/fyers.py`
-- `backend/tests/fakes/broker.py`
+- `backend/tests/hat/fakes/broker.py`
+- `backend/tests/hat/fakes/fyers_sdk.py`
 
 Checks:
 - `backend/tests/hat/hat_exec_support.py`
@@ -106,8 +107,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `8d04fcf1c60765673b20d9ee88f026af18ea5ad0`
-Covered digest: `d2a706460fa356f4723ff0ecb3d6dfd33fc32bd25066b374c078a31a0bc5542e`
+Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
+Covered digest: `a4495575cb5eb3693f006c5675c4360310ebee60ac562bb1b50269e40c91a6f4`
 
 ## Scope changes
 

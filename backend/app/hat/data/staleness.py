@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from app.utils.clock import require_aware
+from app.hat.clock import require_aware
 
 __all__ = ["STALE_AFTER", "FeedHealth", "StalenessMonitor"]
 

@@ -5,6 +5,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from hat.fakes.broker import FakeBroker
 from hat_exec_support import SYMBOLS, USER, adapter_over, exec_env
 from hat_support import memory_engine
 from hypothesis import given, settings
@@ -27,8 +28,6 @@ from app.hat.execution.session import (
     SessionRegistry,
 )
 from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
-
-from fakes.broker import FakeBroker
 
 
 @given(
@@ -242,7 +241,7 @@ def test_order_updates_report_each_change_once(polls: list[dict]) -> None:
 
 @given(st.sampled_from(["orders", "trades", "positions", "holdings", "funds"]))
 def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
-    from hat_exec_support import RecordingSdk
+    from hat.fakes.fyers_sdk import RecordingSdk
 
     sdk = RecordingSdk(reply={"s": "error", "code": -1, "message": "boom"})
     method = getattr(adapter_over(sdk), read)

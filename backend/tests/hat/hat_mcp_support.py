@@ -30,7 +30,6 @@ from app.hat.models import (
     HatPriceBand,
     HatTradingCalendar,
 )
-from app.models.symbol_history import SymbolHistory
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REFERENCE_TABLES = (
@@ -42,7 +41,6 @@ REFERENCE_TABLES = (
     HatIndustry,
     HatTradingCalendar,
     HatJobRun,
-    SymbolHistory,
 )
 
 

@@ -44,7 +44,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` No module under `app.hat` imports (statically, or by name through `importlib` or `__import__`) a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
 - `CONF single_feed_import_rule` HAT imports neither the live service module nor the provider session; live data arrives only through the listener hook and the `"hat"` registry owner. Harm: HAT could read or open a feed some other way.
-- `CONF no_duplicate_fakes_or_authorities` Across `backend/` there is one `FakeBroker`, one `RiskManager` and one `LiveMarketService`, and no other class named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+- `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `FakeBroker`, `RiskManager` and `LiveMarketService` are the listed legacy copies, and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
 
@@ -67,7 +67,7 @@ A failing property prints the falsifying example and a `reproduce_failure` blob.
 
 - Bars: feed the printed ticks to `BarBuilder.on_tick(tick, now)` and `advance(now)`. If the bar the code returns disagrees with the spec rule (bar start by integer arithmetic on seconds of the IST day, open and close by exchange time, a tick arriving at or after end + 2 s is late), it is a bug in `bars.py`. The oracle `expected_bars` is the spec rule, not the code: change it only if the spec changes.
 - Staleness: the rule is the property's, "no tick in (t - 30 s, t]". The statement in 02 §11 says "more than 30 seconds"; the two disagree at exactly 30 s and the acceptance wins (recorded under Scope changes).
-- Listener isolation: a failure means an exception reached the broadcast path or another listener; fix `LiveMarketService._notify_tick_listeners`, never the property.
+- Listener isolation: a failure means an exception reached the broadcast path or another listener; fix `LiveMarketService._notify_tick_listeners` (legacy until K3 gives HAT its own feed), never the property.
 - Gap scan: the F&O rule is `[OWNER-PENDING]` (a known price-band row with a null `band_pct`). If the owner changes it, change the spec first, then `Gapper` and the property together.
 - Announcements: the feed field names (`symbol`, `isin`, `company`, `category`, the `Company - Subject` title, `pubDate`) and URLs are `[A]`, built from recorded fixtures only. A live poll that shows different names is a model error in the parser and the fixtures, not a failure of these properties.
 - Never weaken a property or shrink a strategy to pass; record a narrowing under "Scope changes".
@@ -90,6 +90,8 @@ Code under check:
 - `backend/app/hat/data/gapscan.py`: `scan_rows`, `select_gappers`, `run_gap_scan`
 - `backend/app/hat/data/announcements.py`: `parse_feed`, `store_items`, `attached_announcements`, `catalyst_attached`, `next_poll_at`, `poll_feed`
 - `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`
+- `backend/app/hat/data/sessions.py`: `MarketHoursPolicy`
+- `backend/app/hat/clock.py`: `FixedClock`, `require_aware`
 - `backend/app/services/live_market_service.py`: `add_tick_listener`, `_notify_tick_listeners`
 
 Checks:
@@ -99,6 +101,7 @@ Checks:
 - `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/conformance/test_conf_authorities.py`
 - `backend/tests/hat/hat_live_support.py`
+- `backend/tests/hat/fakes/data_socket.py`
 - `backend/tests/hat/fixtures/rss_announcements.xml`
 - `backend/tests/hat/fixtures/rss_financial_results.xml`
 
@@ -106,8 +109,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `cc7ec57cf0ba97fd82724de3e0ecc74fa96c0ae6`
-Covered digest: `1288e07fd9793b743f5791068d6c7e2124b7622d355554b2f11b22a04c8721e4`
+Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
+Covered digest: `dc5d781912f2ddb7fc00912bddb14cdf7ec780ee54fab1b824856755649f092a`
 
 ## Scope changes
 
@@ -480,12 +483,13 @@ FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule 
 
 ### CONF no_duplicate_fakes_or_authorities
 
-Break: appended `class HatRiskManager: pass` to `app/services/risk_manager.py`.
+Break: appended `class FakeBroker: pass` to `tests/hat/fakes/fyers_sdk.py`.
 
 ```
-E   AssertionError: [('HatRiskManager', 'app/services/risk_manager.py')]
-E   assert [('HatRiskMan..._manager.py')] == []
-E     Left contains one more item: ('HatRiskManager', 'app/services/risk_manager.py')
+tests/hat/conformance/test_conf_authorities.py F
+tests/hat/conformance/test_conf_authorities.py:44: in test_no_duplicate_fakes_or_authorities
+E   AssertionError: ('FakeBroker', ['tests/fakes/broker.py', 'tests/hat/fakes/broker.py', 'tests/hat/fakes/fyers_sdk.py'])
+E   assert ['tests/fakes...fyers_sdk.py'] == ['tests/fakes...es/broker.py']
 ```
 
 ### PBT bars.candidates_never_overwrite_refresh

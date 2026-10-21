@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
 
-from app.utils.clock import SYSTEM_CLOCK, Clock
+from app.hat.clock import SYSTEM_CLOCK, Clock
 
 from ..events import record
 from ..time import trade_date_of

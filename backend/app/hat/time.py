@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from app.utils.clock import SYSTEM_CLOCK, Clock, require_aware
-from app.utils.market_hours import IST
+from app.hat.clock import SYSTEM_CLOCK, Clock, require_aware
+from app.hat.data.sessions import IST
 
 __all__ = ["IST", "as_utc", "trade_date_of", "utc_now"]
 

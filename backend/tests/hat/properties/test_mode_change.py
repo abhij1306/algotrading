@@ -10,12 +10,12 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.data.sessions import IST
 from app.hat.models import HatEvent, HatModeChange
 from app.hat.risk.controls import queue_mode_change
 from app.hat.risk.modes import ModeChange, ModeChangeError, effective_mode, plan_mode_change
 from app.hat.risk.sessions import SessionState
 from app.hat.time import as_utc
-from app.utils.market_hours import IST
 
 instants = st.datetimes(
     min_value=datetime(2026, 10, 12), max_value=datetime(2026, 10, 30), timezones=st.just(IST)

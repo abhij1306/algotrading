@@ -15,7 +15,6 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.symbol_history import SymbolChangeType, SymbolHistory
 from app.services.symbol_master import SymbolMaster
 
 from ..errors import HatError
@@ -163,21 +162,32 @@ def resolve_symbol(
     return min(candidates, key=lambda i: (not i.active, i.series != "EQ", i.id.bytes))
 
 
-def seed_symbol_history(session: Session, market_id: uuid.UUID) -> int:
-    """Seed `hat_instrument_symbol_history` from the legacy `symbol_history` renames.
+@dataclass(frozen=True)
+class SymbolRename:
+    """One recorded rename: `old_symbol` (None when unknown) became `new_symbol` on
+    `effective_from`; `isin` (when known) names the instrument."""
 
-    Each name or symbol change whose new symbol is a current instrument (matched by ISIN when
-    the legacy row has one, else by the new symbol) becomes a change at its effective date.
-    Changes are applied latest first: each one labels the interval before it, which the next
-    (earlier) change then splits.
-    Idempotent. Returns how many legacy renames matched no instrument.
+    old_symbol: str | None
+    new_symbol: str
+    effective_from: date
+    isin: str | None = None
+
+
+def seed_symbol_history(
+    session: Session, market_id: uuid.UUID, renames: Iterable[SymbolRename]
+) -> int:
+    """Seed `hat_instrument_symbol_history` from `renames`, a source the caller injects.
+
+    Each rename whose new symbol is a current instrument (matched by ISIN when the record has
+    one, else by the new symbol) becomes a change at its effective date. Changes are applied
+    latest first: each one labels the interval before it, which the next (earlier) change then
+    splits. HAT reads no legacy table: the caller supplies the records (an export script, or the
+    NSE data of PR 7).
+    Idempotent. Returns how many renames matched no instrument.
     """
-    renames = {SymbolChangeType.NAME_CHANGE, SymbolChangeType.SYMBOL_CHANGE}
-    legacy = session.scalars(
-        select(SymbolHistory)
-        .where(SymbolHistory.change_type.in_(renames), SymbolHistory.new_symbol.is_not(None))
-        .order_by(SymbolHistory.effective_from.desc(), SymbolHistory.id)
-    ).all()
+    legacy = sorted(
+        (r for r in renames if r.new_symbol), key=lambda r: r.effective_from, reverse=True
+    )
     unmatched = 0
     for record in legacy:
         if record.old_symbol == record.new_symbol:

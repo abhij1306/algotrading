@@ -1,6 +1,6 @@
 ---
 name: verify-data
-description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, and the index history load. Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, backend/app/services/bhavcopy_text.py, the history methods of mcp_client.py, or the data build sections of docs/specs/hat/02-data.md.
+description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, and the index history load. Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, backend/app/hat/data/ratios.py, the history methods of mcp_client.py, or the data build sections of docs/specs/hat/02-data.md.
 ---
 
 # verify-data
@@ -70,7 +70,7 @@ No check touches the network: the downloader, the MCP client and the validation 
 ## Coverage
 
 Code under check:
-- `backend/app/services/bhavcopy_text.py`
+- `backend/app/hat/data/ratios.py`
 - `backend/app/hat/data/store.py`
 - `backend/app/hat/data/bhavcopy.py`
 - `backend/app/hat/data/corporate_actions.py`
@@ -92,8 +92,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2b487610c574410445216175176c3cc53be03a46`
-Covered digest: `79b343d1c9e05202cf58e0f990303a936a3b3688bbca71d0ddaf0943a0a8f209`
+Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
+Covered digest: `f1784cf2c18629d1186c0fe6a131781d6a129a93ee30a9506c5b66b03d8751e8`
 
 ## Scope changes
 

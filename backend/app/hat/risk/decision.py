@@ -1,9 +1,9 @@
 """The HAT risk decision: every check of 06 composed into one total function (HAT-RISK-100/101/102).
 
-`decide` is what `RiskManager.evaluate_signal` calls after it has run the existing market-hours
-and price-band checks. It is the only place that calls `size_position`, so no other module sizes
-a HAT order (CONF `risk.single_sizing_path`). It never raises: a missing, non-finite or float
-input, or any arithmetic failure, is a REJECT, never a default (fail closed).
+`decide` is what `app.hat.risk.service.evaluate_signal` calls after it has worked out the
+market-hours and price-band outcomes. It is the only place that calls `size_position`, so no other
+module sizes a HAT order (CONF `risk.single_sizing_path`). It never raises: a missing, non-finite
+or float input, or any arithmetic failure, is a REJECT, never a default (fail closed).
 
 An exit or a protective-stop move is always accepted: no cap, kill, pause or exposure level can
 trap a position (HAT-RISK-035). Anything that is not exactly one of those actions is an entry
@@ -41,7 +41,6 @@ class Reason(StrEnum):
 
     MISSING_INPUT = "missing_input"
     INVALID_INPUT = "invalid_input"
-    SMARTTRADER_HALT = "smarttrader_halt"
     KILL_ACCOUNT = "kill_account"
     KILL_BOT = "kill_bot"
     KILL_HEALTH = "kill_health"
@@ -72,8 +71,8 @@ REASON_CODES = frozenset(reason.value for reason in Reason)
 
 
 @dataclass(frozen=True)
-class LegacyChecks:
-    """The outcomes of the existing `RiskManager` checks that the HAT decision composes:
+class EntryChecks:
+    """The market-hours and price-band outcomes that the HAT decision composes:
     True passed, False failed, None could not be evaluated (treated as missing input)."""
 
     market_open: bool | None
@@ -116,7 +115,6 @@ class SignalContext:
     gate_on: bool | None = None
     feed_stale: bool | None = None
     quality_failed: bool | None = None
-    smarttrader_halted: bool | None = None
     kill: KillState | None = None
     calendar: SessionCalendar | None = None
 
@@ -221,7 +219,6 @@ class _Entry:
     bot_id: object
     instrument_id: object
     virtual: bool
-    halted: bool
     stale: bool
     quality_failed: bool
     gate_on: bool
@@ -233,7 +230,7 @@ class _Entry:
     p_max: Decimal
 
 
-def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
+def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     """Every input of an entry, or `MissingInputError` for the first missing or inexact one."""
     at = _require(ctx.at, "at")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
@@ -262,7 +259,6 @@ def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
         name: _flag(getattr(ctx, name), name)
         for name in (
             "is_virtual",
-            "smarttrader_halted",
             "feed_stale",
             "quality_failed",
             "gate_on",
@@ -273,7 +269,7 @@ def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
     stopouts_today = _count(ctx.stopouts_today, "stopouts_today")
     if not isinstance(kill, KillState) or not isinstance(calendar, SessionCalendar):
         raise MissingInputError("kill or calendar: wrong type")
-    if legacy.market_open is None or legacy.price_band_ok is None:
+    if checks.market_open is None or checks.price_band_ok is None:
         raise MissingInputError("an existing check could not be evaluated")
     session = calendar.state(at)
     if session is SessionState.UNKNOWN:
@@ -301,7 +297,6 @@ def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
         bot_id=bot_id,
         instrument_id=instrument_id,
         virtual=flags["is_virtual"],
-        halted=flags["smarttrader_halted"],
         stale=flags["feed_stale"],
         quality_failed=flags["quality_failed"],
         gate_on=flags["gate_on"],
@@ -314,15 +309,14 @@ def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
     )
 
 
-def _state_reason(e: _Entry, legacy: LegacyChecks) -> Reason | None:
-    """The first of the halt, kill, pause, market and data checks that fails."""
+def _state_reason(e: _Entry, checks: EntryChecks) -> Reason | None:
+    """The first of the kill, pause, market and data checks that fails."""
     checks = (
-        (e.halted, Reason.SMARTTRADER_HALT),
         (e.kill.account_tripped, Reason.KILL_ACCOUNT),
         (e.kill.bot_tripped, Reason.KILL_BOT),
         (e.kill.health_tripped, Reason.KILL_HEALTH),
         (e.kill.paused, Reason.BOT_PAUSED),
-        (e.session is not SessionState.OPEN or not legacy.market_open, Reason.MARKET_CLOSED),
+        (e.session is not SessionState.OPEN or not checks.market_open, Reason.MARKET_CLOSED),
         (e.stale, Reason.STALE_FEED),
         (e.quality_failed, Reason.QUALITY_FAILED),
         (not caps.regime_gate_open(e.gate_on), Reason.REGIME_GATE),
@@ -361,15 +355,15 @@ def _cap_reason(e: _Entry) -> Reason | None:
     return None
 
 
-def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
-    e = _read_entry(ctx, legacy)
+def _entry_decision(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
+    e = _read_entry(ctx, checks)
     policy: RiskPolicy = e.version.policy
     keep = e.version.version_id
 
     def reject(reason: Reason) -> RiskDecision:
         return _reject(reason, version=keep)
 
-    reason = _state_reason(e, legacy) or _cap_reason(e)
+    reason = _state_reason(e, checks) or _cap_reason(e)
     if reason is not None:
         return reject(reason)
     if e.alloc <= 0:
@@ -397,7 +391,7 @@ def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
         (p.open_risk for p in same_mode), risk_amount, e.total_equity, policy.global_open_risk_pct
     ):
         return reject(Reason.GLOBAL_OPEN_RISK)
-    if not legacy.price_band_ok:
+    if not checks.price_band_ok:
         return reject(Reason.PRICE_OUT_OF_BAND)
     warnings = () if sized.binding == "risk" else (f"size_bound_by_{sized.binding}",)
     return RiskDecision(
@@ -414,12 +408,12 @@ def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
     )
 
 
-def decide(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
+def decide(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
     """ACCEPT or REJECT for one signal; total, never raises (HAT-RISK-101)."""
     try:
         if ctx.action in EXIT_ACTIONS:
             return _exit_decision(ctx)
-        return _entry_decision(ctx, legacy)
+        return _entry_decision(ctx, checks)
     except (MissingInputError, PolicyError):
         return _reject(Reason.MISSING_INPUT)
     except SizingInputError:

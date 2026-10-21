@@ -9,7 +9,7 @@ elsewhere); nothing here opens a connection.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -86,8 +86,11 @@ def reference_weekly(
     session_factory: SessionFactory,
     master: SymbolMaster,
     today: date,
+    renames: Callable[[], Iterable[instruments.SymbolRename]] | None = None,
 ) -> Callable[[], JobResult]:
-    """Weekly: instrument master, symbol history, Fyers symbols and industries."""
+    """Weekly: instrument master, symbol history, Fyers symbols and industries.
+
+    `renames` is an optional source of recorded symbol renames (HAT reads no legacy table)."""
 
     def body() -> JobResult:
         csv_rows = parse_equity_list_csv(_read(equity_list, "reference_csv_unavailable"))
@@ -107,7 +110,8 @@ def reference_weekly(
                 today=today,
                 still_listed={(u.symbol, u.series) for u in build.unresolved},
             )
-            instruments.seed_symbol_history(session, market_id)
+            if renames is not None:
+                instruments.seed_symbol_history(session, market_id, renames())
             brokers = instruments.refresh_fyers_symbols(session, master, market_id)
             rows = report.created + report.updated + report.delisted + brokers.written
             if industry_list is not None:
@@ -158,7 +162,7 @@ def bands_nightly(
 def calendar_refresh(
     *, holiday_list: TextSource, session_factory: SessionFactory
 ) -> Callable[[], JobResult]:
-    """Yearly and on change: load holidays into `hat_trading_calendar` and re-install them."""
+    """Yearly and on change: load holidays into `hat_trading_calendar`."""
 
     def body() -> JobResult:
         try:
@@ -172,7 +176,6 @@ def calendar_refresh(
                 session, _market_id(session), days, replace_span=True
             )
             session.commit()
-            hat_calendar.install_from_session(session)
         return JobResult(rows=changed)
 
     return body

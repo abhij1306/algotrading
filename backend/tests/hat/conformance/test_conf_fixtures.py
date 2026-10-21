@@ -107,3 +107,54 @@ def test_fixtures_history_mcp() -> None:
     index, next_end = client.index_history("India VIX", date(2026, 10, 1), 1)
     assert [r["date"] for r in index] == ["2026-09-30", "2026-10-01"]
     assert next_end == date(2026, 9, 1)
+
+
+VCP_ORACLE_SHA256 = "95e991f5a33b950f443db7ccc9a14caff24969832c9ecd10c6e549a2dabf3f4b"
+VCP_ORACLE_CASES = {
+    "clean_vcp_grade_a": "A",
+    "rs_85_grade_b": "B",
+    "breakout_volume_600k": "A",
+    "breakout_volume_400k": "B",
+    "widening_contractions": None,
+    "too_little_history": None,
+    "not_stage_2_reversed": None,
+    "rs_below_80": None,
+    "base_too_deep": None,
+}
+
+
+def test_fixtures_vcp_oracle_frozen() -> None:
+    """K1: the frozen outputs of the legacy VCP detector (the oracle of PR 6's characterization)
+    are byte-for-byte the recorded file, hold the recorded cases and grades, and each accepted
+    case is internally consistent (its stop sits 0.1% under the final contraction low, its last
+    close is the frame's, its depths are the rounded contraction depths). The file is
+    regenerated only on purpose: change `VCP_ORACLE_SHA256` with it."""
+    import hashlib
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "vcp_oracle.json"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == VCP_ORACLE_SHA256
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert {c["name"]: (c["expected"] or {}).get("grade") for c in doc["cases"]} == (
+        VCP_ORACLE_CASES
+    )
+    for case in doc["cases"]:
+        columns = case["bars"]
+        assert set(columns) == {"close", "close_ref", "high", "low", "volume"}
+        assert len({len(v) for v in columns.values()}) == 1, case["name"]
+        expected = case["expected"]
+        if expected is None:
+            continue
+        constants = doc["constants"]
+        assert len(columns["close"]) >= constants["min_history_bars"]
+        assert case["rs_rating"] >= constants["min_rs_rating"]
+        assert expected["latest_close"] == columns["close"][-1]
+        assert expected["stop_level"] == round(
+            expected["final_contraction_low"] * (1 - constants["stop_offset_pct"]), 2
+        )
+        assert expected["contraction_depths"] == [
+            round(c["depth_pct"], 2) for c in expected["contractions"]
+        ]
+        assert 2 <= len(expected["contractions"]) <= 4
+    assert sorted(doc["rs_map"]["expected"]) == sorted(doc["rs_map"]["symbols"])

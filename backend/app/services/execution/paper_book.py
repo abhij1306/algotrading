@@ -20,31 +20,11 @@ This module imports no broker code: nothing here can reach the live broker.
 """
 
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
-PAISE = Decimal("0.01")
-ZERO = Decimal("0")
+from app.hat.money import PAISE, ZERO, to_decimal, to_money  # noqa: F401 (re-exported)
+
 BPS_DIVISOR = Decimal("10000")
-
-
-def to_decimal(value: object, default: Decimal = ZERO) -> Decimal:
-    """`value` as a Decimal, or `default` when it is missing or not a finite number."""
-    if value is None or isinstance(value, bool):
-        return default
-    if isinstance(value, Decimal):
-        result = value
-    else:
-        try:
-            # str() first: Decimal(0.1) is the binary float's exact expansion.
-            result = Decimal(str(value).strip())
-        except (InvalidOperation, ValueError):
-            return default
-    return result if result.is_finite() else default
-
-
-def to_money(value: Decimal) -> Decimal:
-    """Quantize to paise, rounding half up."""
-    return value.quantize(PAISE, rounding=ROUND_HALF_UP)
 
 
 def money_float(value: Decimal) -> float:

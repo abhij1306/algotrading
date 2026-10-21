@@ -7,7 +7,7 @@ One engine runs backtest and live (T12). Backtests are the first stage of every 
 ## §1 Shared engine contract
 
 #### HAT-BT-010: Backtest calls the same scan, risk and exit code as live
-- **Statement:** The backtest day loop calls the same universe/setup scan, `RiskManager.evaluate_signal` sizing and caps, stop rules and exit-stack functions that live trading calls; it has no copies of them.
+- **Statement:** The backtest day loop calls the same universe/setup scan, `evaluate_signal` sizing and caps, stop rules and exit-stack functions that live trading calls; it has no copies of them.
 - **Source:** MA "Decisions register" (T12 one engine for backtest and live); MA "Boundary rules" (criteria library keeps backtest and live on one code path); PLAN PR 12.
 - **PR:** 11, 12
 - **Verification:** CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity`

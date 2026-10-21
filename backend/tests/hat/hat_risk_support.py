@@ -1,8 +1,8 @@
 """Builders and strategies shared by the risk properties (sizing, caps, exposure, kill).
 
 `valid_ctx()` is a signal that every check passes: tests change one thing about it and read the
-decision of the real `RiskManager.evaluate_signal`. Money and weights are Decimal throughout
-(HAT-VER-041).
+decision of the real `evaluate_signal` (`app.hat.risk.service`). Money and weights are Decimal
+throughout (HAT-VER-041).
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ from decimal import Decimal
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
+from app.hat.data.sessions import IST
 from app.hat.risk.caps import OpenPosition
 from app.hat.risk.decision import RiskDecision, SignalContext
 from app.hat.risk.exposure import LadderState
 from app.hat.risk.kill import KillState
 from app.hat.risk.policy import PolicyVersion, RiskPolicy, parse_policy, seed_policy
+from app.hat.risk.service import evaluate_signal
 from app.hat.risk.sessions import SessionCalendar, SessionDay
-from app.services.risk_manager import RiskManager
-from app.utils.market_hours import IST
 
 D = Decimal
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000b1")
@@ -52,7 +52,6 @@ def calendar_around(day: date = TRADE_DAY, span: int = 10) -> SessionCalendar:
 
 CALENDAR = calendar_around()
 AT = datetime.combine(TRADE_DAY, time(10, 30), tzinfo=IST)
-MANAGER = RiskManager()
 
 
 def policy_with(**changes: object) -> RiskPolicy:
@@ -98,7 +97,6 @@ def valid_ctx(**changes: object) -> SignalContext:
         gate_on=True,
         feed_stale=False,
         quality_failed=False,
-        smarttrader_halted=False,
         kill=KillState(),
         calendar=CALENDAR,
     )
@@ -106,7 +104,7 @@ def valid_ctx(**changes: object) -> SignalContext:
 
 
 def decide(ctx: SignalContext) -> RiskDecision:
-    return MANAGER.evaluate_signal(ctx)
+    return evaluate_signal(ctx)
 
 
 HUNDRED, NINETY_FIVE = D(100), D(95)

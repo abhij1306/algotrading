@@ -28,7 +28,7 @@ verification can check.
 | [03-schema.md](03-schema.md) | The 41 tables, event log and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
 | [04-criteria-and-bots.md](04-criteria-and-bots.md) | Nine-stage model, criterion instances, scoring, the 24 criterion types, playbooks, S1 and S2 default configs, versioning | HAT-CRIT, HAT-BOT |
 | [05-portfolio-regime-allocation.md](05-portfolio-regime-allocation.md) | Sleeves, universes, regime v1, health multiplier, allocator, sleeve lifecycle, regime v2 (P2) | HAT-PORT |
-| [06-risk-and-governance.md](06-risk-and-governance.md) | Risk policy, sizing, caps, progressive exposure, regime gate, kill switches, invariants, governance, `RiskManager` integration | HAT-RISK, HAT-GOV |
+| [06-risk-and-governance.md](06-risk-and-governance.md) | Risk policy, sizing, caps, progressive exposure, regime gate, kill switches, invariants, governance, the risk authority (`evaluate_signal`) | HAT-RISK, HAT-GOV |
 | [07-execution-and-brokers.md](07-execution-and-brokers.md) | Modes, router, approvals, trade lifecycle, stops, exits, broker interface, Fyers adapter, tags, reconciliation, live triggers, veto scoring | HAT-EXEC, HAT-BRK |
 | [08-telegram.md](08-telegram.md) | Transport, allowlist, outbound messages, commands, approval tokens, retention | HAT-TG |
 | [09-backtest.md](09-backtest.md) | Shared engine, fill and cost model, runs and trials, metrics and deflated Sharpe, replay determinism, lifecycle evidence | HAT-BT |
@@ -83,6 +83,7 @@ to an artefact that exists.
 | HAT-OVR-006 | [00](00-overview.md) | 14 | CONF `single_feed_import_rule` |
 | HAT-OVR-007 | [00](00-overview.md) | 2, 17 | TLA `JobScheduler!NoJobWhenDisabled`, CONF `hat_enabled_default_false` |
 | HAT-OVR-040 | [00](00-overview.md) | 10, 13, 14 | CONF `no_duplicate_fakes_or_authorities` |
+| HAT-OVR-041 | [00](00-overview.md) | K1 | CONF `imports.hat_decoupled_from_legacy`, CONF `imports.hat_suites_boot_no_legacy_app`, CONF `imports.legacy_does_not_import_hat` |
 | HAT-OVR-050 | [00](00-overview.md) | 2-17 (per row: C1 5/6/8, C2 10, C3 17, C4 2/17, C5 13, C6 —, C7 4, C8 2/3, C9 2, C10 16, C11 3, C12 13) | CONF `conflict_resolutions_traced` |
 | HAT-OVR-051 | [00](00-overview.md) | 2-17 | CONF `existing_suite_green` |
 | HAT-OVR-052 | [00](00-overview.md) | 2, 5 | CONF `hat_data_root_paths` |
@@ -417,7 +418,7 @@ to an artefact that exists.
 | HAT-RISK-101 | [06](06-risk-and-governance.md) | 10 | PBT `caps.decision_total` |
 | HAT-RISK-102 | [06](06-risk-and-governance.md) | 10 | PBT `caps.fail_closed` |
 | HAT-RISK-103 | [06](06-risk-and-governance.md) | 10 | CONF `risk.existing_suite_green` |
-| HAT-RISK-104 | [06](06-risk-and-governance.md) | 10 | PBT `caps.vcp_halt_blocks_hat` |
+| HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
 | HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
 | HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `ExecutionRouter!AutoNeedsGtt` |

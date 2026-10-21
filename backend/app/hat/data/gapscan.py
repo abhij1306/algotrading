@@ -28,7 +28,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.utils.market_hours import IST
+from app.hat.data.sessions import IST
 
 from ..models import HatInstrument, HatJobRun, HatMarket
 from ..ops.jobs import JobError, JobOutcome, JobResult, SessionFactory, run_job

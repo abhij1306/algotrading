@@ -1,28 +1,27 @@
 """
-Test fixtures and configuration for pytest
+Test fixtures and configuration for pytest (the legacy suite).
+
+Nothing heavy is imported at module level: `app.main`, the legacy singletons and the legacy fakes
+are imported inside the fixtures that need them. This file is the parent conftest of
+`tests/hat/`, so a module-level import here would boot the legacy app for every HAT test (the
+HAT suites have their own `tests/hat/conftest.py`; CONF `imports.hat_decoupled`).
 """
 
 from collections.abc import Generator
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.brokers.plugins import fyers as fyers_plugin
-from app.database import Base, get_db
-from app.main import app
-from app.services.live_market_service import LiveMarketService, live_market
-from app.services.order_execution_service import order_execution_service
-from app.services.position_sync_service import position_sync_service
-from app.services.risk_manager import risk_manager
-from app.utils import market_hours
-from app.utils.clock import FixedClock
-from app.utils.market_hours import MarketHoursPolicy
+if TYPE_CHECKING:
+    from app.services.live_market_service import LiveMarketService
+    from app.utils.clock import FixedClock
 
-from fakes.broker import FakeBroker
-from fakes.market import MARKET_CLOSED_INSTANT, MARKET_OPEN_INSTANT, FreezeMarket
+    from fakes.broker import FakeBroker
+    from fakes.market import FreezeMarket
 
 # Test database URL (use in-memory SQLite for tests)
 SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
@@ -31,6 +30,8 @@ SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
 @pytest.fixture(scope="session")
 def test_engine() -> Generator[Engine, None, None]:
     """Create test database engine"""
+    from app.database import Base
+
     engine = create_engine(
         SQLALCHEMY_TEST_DATABASE_URL,
         connect_args={"check_same_thread": False},
@@ -42,7 +43,7 @@ def test_engine() -> Generator[Engine, None, None]:
 
 
 @pytest.fixture
-def freeze_market(monkeypatch: pytest.MonkeyPatch) -> FreezeMarket:
+def freeze_market(monkeypatch: pytest.MonkeyPatch) -> "FreezeMarket":
     """The one way to pin market hours in a test.
 
     `freeze_market(True)` puts "now" mid-session (MARKET_OPEN_INSTANT), `freeze_market(False)`
@@ -54,7 +55,15 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> FreezeMarket:
     `require_market_open`. Returns the clock, so a test can `set` or `advance` it.
     """
 
-    def freeze(at: bool | datetime, *services: LiveMarketService) -> FixedClock:
+    from app.services.live_market_service import live_market
+    from app.services.risk_manager import risk_manager
+    from app.utils import market_hours
+    from app.utils.clock import FixedClock
+    from app.utils.market_hours import MarketHoursPolicy
+
+    from fakes.market import MARKET_CLOSED_INSTANT, MARKET_OPEN_INSTANT
+
+    def freeze(at: bool | datetime, *services: "LiveMarketService") -> "FixedClock":
         if isinstance(at, bool):
             at = MARKET_OPEN_INSTANT if at else MARKET_CLOSED_INSTANT
         clock = FixedClock(at)
@@ -72,11 +81,18 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> FreezeMarket:
 
 
 @pytest.fixture
-def fake_broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
+def fake_broker(monkeypatch: pytest.MonkeyPatch) -> "FakeBroker":
     """A `FakeBroker` behind every broker handle the app holds: the order execution, risk
     manager and position sync singletons (which the live exit service shares), and
     `FyersBroker()` constructed by a route. A service a test builds itself needs
     `service._broker = fake_broker`."""
+    from app.brokers.plugins import fyers as fyers_plugin
+    from app.services.order_execution_service import order_execution_service
+    from app.services.position_sync_service import position_sync_service
+    from app.services.risk_manager import risk_manager
+
+    from fakes.broker import FakeBroker
+
     fake = FakeBroker()
     for owner in (order_execution_service, risk_manager, position_sync_service):
         monkeypatch.setattr(owner, "_broker", fake)
@@ -98,6 +114,8 @@ def db_session(test_engine: Engine) -> Generator[Session, None, None]:
 @pytest.fixture
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create a test client with database override"""
+    from app.database import get_db
+    from app.main import app
 
     def override_get_db() -> Generator[Session, None, None]:
         try:

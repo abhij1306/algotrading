@@ -13,6 +13,7 @@ from sqlalchemy import Connection, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.hat.data.sessions import IST
 from app.hat.models import (
     HatAllocationDaily,
     HatDailyBotSnapshot,
@@ -28,7 +29,6 @@ from app.hat.risk.policy_service import (
     request_policy_change,
     seed_initial_policy,
 )
-from app.utils.market_hours import IST
 
 pytestmark = pytest.mark.postgres
 

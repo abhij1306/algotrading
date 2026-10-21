@@ -22,10 +22,12 @@ from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.hat.clock import FixedClock
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
 from app.hat.data.bars_store import SCHEMA, BarStore
 from app.hat.data.live import EventFeedHealth, LiveData, tick_from_payload
 from app.hat.data.preopen import GapSource, PreopenGaps
+from app.hat.data.sessions import IST
 from app.hat.data.staleness import STALE_AFTER, StalenessMonitor
 from app.hat.data.subscriptions import (
     HAT_OWNER,
@@ -35,8 +37,6 @@ from app.hat.data.subscriptions import (
 )
 from app.hat.models import HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
 from app.services.subscription_registry import SubscriptionRegistry
-from app.utils.clock import FixedClock
-from app.utils.market_hours import IST
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -513,7 +513,7 @@ def test_listener_isolation(
     """For every tick sequence and every set of listeners, any subset of which raises, every tick
     still reaches `latest_values` and the batch broadcast, and every listener that did not raise
     for a tick received it, in order. Listeners also never run before the tick is buffered."""
-    from fakes.data_socket import make_live
+    from hat.fakes.data_socket import make_live
 
     async def scenario() -> None:
         live, _ = make_live()
