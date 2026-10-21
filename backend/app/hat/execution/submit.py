@@ -73,6 +73,7 @@ GTT_PURPOSE = "stop_gtt"
 EVENT_ORDER_REJECTED = "order.rejected"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
+_ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
 
 
 class OrderRefusedError(HatError):
@@ -181,11 +182,18 @@ def adopt_broker_order(
     row.status = found.status
     if row.placed_at is None:
         row.placed_at = utc_now()
-    if first_knowledge and found.status in _PLACED_STATES:
+    if not first_knowledge:
+        return
+    if found.status in _PLACED_STATES:
         _event(session, row, bot_id, _placed_event(row))
-    elif first_knowledge and found.status == "rejected":
+    elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
+        # An entry first found already ended: its signal never reached EntryPlaced, so no
+        # lifecycle step applies here (a non-final rejection carries none); the session end
+        # rejects the signal (`TradeManager.end_session`, `entry_not_filled`).
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
+    elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED)
-    elif first_knowledge and found.status == "cancelled":
+    elif found.status == "cancelled":
         _event(session, row, bot_id, "order.cancelled")
 
 

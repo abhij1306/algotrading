@@ -18,7 +18,9 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
-  DAY limit cannot fill after the close.
+  DAY limit cannot fill after the close. An entry first found already rejected, expired or
+  cancelled with nothing filled (adopted by tag while its signal was still Triggered) ends its
+  signal Rejected with `entry_not_filled`.
 
 A sale is retried once after a rejection with the next tag, and at most two rejected sales of one
 purpose are sent per signal (HAT-OPS-032); then `exit.not_placed` is raised and the broker stop
@@ -36,8 +38,8 @@ from datetime import datetime, time
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..engine import exits, live_trades, trades
-from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..engine import exits, lifecycle, live_trades, trades
+from ..models import HatBot, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, trade_date_of
@@ -82,6 +84,7 @@ MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 ALERT_SALE_REJECTED = "order.rejected"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ENTRY_NOT_FOUND = "entry_not_found"
+ENTRY_NOT_FILLED = "entry_not_filled"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -411,9 +414,15 @@ class TradeManager:
         """The `gtt.verify` job body (HAT-EXEC-063, HAT-OPS-024): the broker's fills first, then
         every open real position's GTT refreshed, or alerted and placed again."""
         report = StopsReport()
-        self.sync(session, account_id, now)  # unreconciled: nothing is placed, every gap alerted
+        # Fills unread (unreconciled, or the book unreadable): the open quantities may be stale,
+        # so no GTT is modified or placed; each position is alerted `gtt.unverified`.
+        fresh = self.sync(session, account_id, now) is not None
         for position in self.open_positions(session, account_id):
-            outcome = self._desk.verify(session, position.id, now)
+            outcome = (
+                self._desk.verify(session, position.id, now)
+                if fresh
+                else self._desk.unverified(session, position.id, now, "fills_unread")
+            )
             if outcome == FAILED:
                 report.failed.append(position.id)
             elif outcome in (VERIFIED, REPLACED):
@@ -427,6 +436,7 @@ class TradeManager:
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
         never sent is cancelled with it. Returns the number of signals ended. Nothing is ended
         when the book cannot be read."""
+        ended = self._end_unfilled(session, account_id, now)
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -438,17 +448,40 @@ class TradeManager:
             )
         )
         if not rows:
-            return 0
+            return ended
         try:
             book = {o.tag for o in self._broker.orders()}
         except BrokerUnavailableError:
-            return 0
-        ended = 0
+            return ended
         for row in rows:
             if row.tag in book:
                 continue  # the next sync adopts it
             row.status = "cancelled" if row.placed_at is None else "expired"
             if trades.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now):
+                ended += 1
+            session.commit()
+        return ended
+
+    @staticmethod
+    def _end_unfilled(session: Session, account_id: uuid.UUID, now: datetime) -> int:
+        """Entries adopted already ended at the broker with no fill while their signal was still
+        Triggered: no later broker update moves such a signal, so it ends here."""
+        filled = select(HatFill.id).where(HatFill.order_id == HatOrder.id).exists()
+        signal_ids = session.scalars(
+            select(HatOrder.signal_id)
+            .join(HatSignal, HatSignal.id == HatOrder.signal_id)
+            .where(
+                HatOrder.broker_account_id == account_id,
+                HatOrder.purpose == ENTRY,
+                HatOrder.is_virtual.is_(False),
+                HatOrder.status.in_(("rejected", "expired", "cancelled")),
+                HatSignal.state == lifecycle.TRIGGERED,
+                ~filled,
+            )
+        ).all()
+        ended = 0
+        for signal_id in signal_ids:
+            if trades.reject_signal(session, signal_id, ENTRY_NOT_FILLED, now):
                 ended += 1
             session.commit()
         return ended

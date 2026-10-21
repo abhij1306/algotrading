@@ -342,8 +342,9 @@ class StopDesk:
             # The GTT triggered and its sale is part filled: the rest may still sell. The sync
             # protects what is left once that order ends (`FillSync._gtt_unfilled`).
             return PROTECTED
-        if self._cover_live(session, target, working, now):
-            return PROTECTED
+        covered = self._cover_live(session, target, working, now)
+        if covered is not None:
+            return PROTECTED if covered else FAILED  # a refused resize is alerted
         unsure = [row for row in working if row.status in UNSURE]
         if any(self._resend(session, target, row) for row in unsure):
             return PROTECTED
@@ -356,16 +357,20 @@ class StopDesk:
 
     def _cover_live(
         self, session: Session, target: _Target, working: list[HatOrder], now: datetime
-    ) -> bool:
-        """Resize every live broker stop to the open quantity; False when none is live."""
+    ) -> bool | None:
+        """Resize every live broker stop to the open quantity: True when all now cover it,
+        False when a resize failed, None when no stop is live."""
         live = [row for row in working if row.status in LIVE and row.broker_order_id]
+        if not live:
+            return None
+        resized = True
         for row in live:
-            if row.qty != target.position.qty_open:
-                self._resize(session, target, row, now)
-        return bool(live)
+            if row.qty != target.position.qty_open and not self._resize(session, target, row, now):
+                resized = False
+        return resized
 
-    def _resize(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> None:
-        self._resize_to(session, target, row, target.position.qty_open, now)
+    def _resize(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> bool:
+        return self._resize_to(session, target, row, target.position.qty_open, now)
 
     def _resize_to(
         self, session: Session, target: _Target, row: HatOrder, qty: int, now: datetime
@@ -532,6 +537,15 @@ class StopDesk:
         return SWAPPED if cancelled else FAILED
 
     # --- the nightly verify -------------------------------------------------------------------
+
+    def unverified(
+        self, session: Session, position_id: uuid.UUID, now: datetime, reason: str
+    ) -> str:
+        """The verify could not run for the position (its fills unread): `gtt.unverified` is
+        alerted and its stops are left as they are."""
+        target = self._target(session, position_id)
+        self._alert(ALERT_GTT_UNVERIFIED, target, now, reason)
+        return FAILED
 
     def verify(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
         """Confirm the position's GTT rests at the broker at the current stop (HAT-EXEC-063,

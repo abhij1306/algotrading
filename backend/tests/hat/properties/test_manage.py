@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
+from app.hat.execution.broker import BrokerUnavailableError
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
     ALERT_GTT_SWAP_FAILED,
@@ -72,14 +73,19 @@ def _writes_since(rig: ManageRig, start: int) -> list[tuple[str, object]]:
     chunks=st.lists(st.integers(min_value=1, max_value=4), min_size=1, max_size=3),
     times=st.lists(SESSION_TIMES, min_size=3, max_size=3),
     refusals=st.integers(min_value=0, max_value=2),
+    resize_refused=st.booleans(),
 )
-@example(chunks=[1], times=[at(10, 40)] * 3, refusals=2)
-def test_real_fill_protected(chunks: list[int], times: list[datetime], refusals: int) -> None:
+@example(chunks=[1], times=[at(10, 40)] * 3, refusals=2, resize_refused=False)
+@example(chunks=[1, 1], times=[at(10, 40)] * 3, refusals=0, resize_refused=True)
+def test_real_fill_protected(
+    chunks: list[int], times: list[datetime], refusals: int, resize_refused: bool
+) -> None:
     """HAT-EXEC-060, HAT-DEC-B17: each entry fill the sync reads is followed, before any other
     broker write, by the position's stop: placed for the open quantity when none rests (an
     intraday SL-M in the session before 15:25, a GTT from 15:25 on and after the close), resized
     to the open quantity when one does. Its trigger is on the tick and never above the stop. A
-    stop the broker refuses twice is alerted and placed by the next sync. Harm: a filled
+    stop the broker refuses twice is alerted and placed by the next sync; a resize it refuses is
+    alerted and sent again by the next sync. Harm: a filled
     position sits at the broker with no stop, or with a stop for fewer shares than it holds."""
     times = sorted(times)
     with Session(memory_engine()) as session:
@@ -97,6 +103,11 @@ def test_real_fill_protected(chunks: list[int], times: list[datetime], refusals:
                 break
             rig.fill(row, qty, D(row.price))
             filled += qty
+            resting = rig.stops(rig.position(outcome.signal_id).id) if n else []  # type: ignore[union-attr]
+            refuse = resize_refused and len(resting) == 1
+            if refuse:
+                modify = "modify_order" if resting[0].purpose == STOP_DAY else "modify_gtt"
+                rig.fake.script(modify, {"s": "error", "message": "Fyers modify refused"})
             start = len(rig.fake.calls)
             rig.sync(when)
             position = rig.position(outcome.signal_id)
@@ -109,6 +120,12 @@ def test_real_fill_protected(chunks: list[int], times: list[datetime], refusals:
                 assert stops == []
                 assert ALERT_STOP_NOT_PLACED in rig.codes()
                 rig.sync(when)  # nothing new: the sync places the stop again
+                stops = rig.stops(position.id)
+            if refuse:
+                [short] = stops
+                assert short.qty < position.qty_open
+                assert ALERT_STOP_NOT_MOVED in rig.codes()
+                rig.sync(when)  # nothing new: the sync resizes the stop again
                 stops = rig.stops(position.id)
             [stop] = stops
             assert stop.qty == position.qty_open
@@ -234,17 +251,17 @@ def test_swap_leaves_no_gap(first: str, second: str, cancel_refused: bool) -> No
 
 @settings(max_examples=30, deadline=None)
 @given(
-    reply=st.sampled_from(["ok", "not_found", "stuck", "unavailable"]),
+    reply=st.sampled_from(["ok", "not_found", "stuck", "unavailable", "unread"]),
     raised=st.decimals(min_value=0, max_value=3, places=2),
 )
 def test_verify_covers(reply: str, raised: Decimal) -> None:
     """HAT-EXEC-063, HAT-OPS-024: each night every open real position's GTT is refreshed to the
     current stop (`gtt.refreshed`). A GTT whose refresh the broker refuses is cancelled, alerted
-    (`gtt.missing`) and placed again; when the broker cannot be reached or the refused GTT
-    cannot be cancelled, the position is alerted (`gtt.unverified`) and nothing is placed, since
-    the old GTT may still rest there and a second one would sell the shares twice. Harm: a GTT
-    that triggered, expired or was never placed goes unnoticed and
-    the position opens the next day without a stop."""
+    (`gtt.missing`) and placed again; when the broker cannot be reached, the refused GTT cannot
+    be cancelled or the fills cannot be read, the position is alerted (`gtt.unverified`) and no
+    GTT is modified or placed, since the old GTT may still rest there and a second one would
+    sell the shares twice. Harm: a GTT that triggered, expired or was never placed goes
+    unnoticed and the position opens the next day without a stop."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
         position = _opened(rig, at(16, 0))
@@ -256,13 +273,16 @@ def test_verify_covers(reply: str, raised: Decimal) -> None:
             rig.fake.script("modify_gtt", UNAVAILABLE if reply == "unavailable" else NOT_FOUND)
         if reply == "stuck":
             rig.fake.script("cancel_gtt", NOT_FOUND)
+        if reply == "unread":  # the trade book cannot be read: the open quantity may be stale
+            rig.fake.script("fetch_tradebook", BrokerUnavailableError("Fyers tradebook failed"))
         places = rig.fake.count("place_gtt")
         rig.manager.verify_stops(session, rig.account_id, at(23, 0))
         goal = broker_trigger(D(position.current_stop), TICK)
         stops = rig.stops(position.id)
-        if reply in ("unavailable", "stuck"):
+        if reply in ("unavailable", "stuck", "unread"):
             assert ALERT_GTT_UNVERIFIED in rig.codes()
             assert rig.fake.count("place_gtt") == places
+            assert reply != "unread" or rig.fake.count("modify_gtt") == 0
             assert [row.id for row in stops] == [old.id]
             return
         [gtt] = stops
@@ -354,20 +374,25 @@ ENDINGS["rejected"] = (5, lifecycle.REJECTED)
 
 
 @settings(max_examples=15, deadline=None)
-@given(ending=st.sampled_from(sorted(ENDINGS)))
-def test_entry_ended_by_broker(ending: str) -> None:
+@given(ending=st.sampled_from(sorted(ENDINGS)), lost=st.booleans())
+def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
     """07 §4, HAT-EXEC-041: an entry the broker ends with nothing filled ends its signal:
     Cancelled when it was cancelled or expired at the close, Rejected when the exchange rejected
-    it after the broker took it; no position opens and no stop is placed. Harm: a dead entry
-    keeps its signal in EntryPlaced, holding one of the bot's slots for good."""
+    it after the broker took it; one whose send answer was lost and that is first found already
+    ended ends Rejected at the session end. No position opens and no stop is placed. Harm: a
+    dead entry keeps its signal in EntryPlaced or Triggered, holding one of the bot's slots."""
     status, state = ENDINGS[ending]
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
+        if lost:
+            rig.fake.script("place_order", unconfirmed(landed=True))
+            state = lifecycle.REJECTED
         outcome = rig.enter(at(10, 30))
         for book in rig.fake.book:
             book["status"] = status
         start = len(rig.fake.calls)
         rig.sync(at(15, 35))
+        rig.manager.end_session(session, rig.account_id, at(15, 40))
         signal = session.get(HatSignal, outcome.signal_id)
         assert signal is not None
         session.refresh(signal)

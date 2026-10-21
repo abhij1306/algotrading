@@ -341,6 +341,18 @@ class FillSync:
             )
             .exists()
         )
+        # A live stop for another quantity than the position holds (a refused resize): protect
+        # resizes it again.
+        short = (
+            select(HatOrder.id)
+            .where(
+                HatOrder.position_id == HatPosition.id,
+                HatOrder.purpose.in_(STOPS),
+                HatOrder.status == "placed",
+                HatOrder.qty != HatPosition.qty_open,
+            )
+            .exists()
+        )
         return set(
             session.scalars(
                 select(HatPosition.id)
@@ -350,7 +362,7 @@ class FillSync:
                     HatPosition.is_virtual.is_(False),
                     HatPosition.closed_at.is_(None),
                     HatPosition.qty_open > 0,
-                    ~working,
+                    ~working | short,
                 )
             )
         )
