@@ -245,7 +245,7 @@ def test_risk__no_gate_override_path() -> None:
 EXISTING_RISK_TESTS = {
     "tests/test_risk_fixes.py": "782f47a584847ea4aef1c9831b04d2a9a61c945e5d386e6a31103154feb3ebe9",
     "tests/test_live_trading_safety.py": (
-        "95b18e2960c691d6b81d127209d0396bbdda86fef42cd25acdcc0414dd9e0915"
+        "65ab84202d6eafaab41efc493da7c5d9e96b7f913cfa1ea815db75f3d4179d96"
     ),
     "tests/test_market_hours_policy.py": (
         "518d543f103ad823479353ca1d82e9d9ac78ed380d69aa27a3dc5dc5a4404ef4"

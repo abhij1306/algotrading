@@ -35,14 +35,18 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-from app.brokers.base import BrokerUnavailableError
-from app.brokers.plugins.fyers import (
+from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     BROKER_ORDER_UNCONFIRMED,
-    FYERS_ORDER_STATUSES,
     SUBMIT_UNCONFIRMED,
 )
+from app.hat.execution.fyers_broker import (
+    FyersUnavailableError as BrokerUnavailableError,
+)
 
+# Fyers orderbook status -> the status `find_order_by_tag` reports (the legacy lookup the legacy
+# suite still uses; K4 deletes it with the legacy broker).
+FYERS_ORDER_STATUSES = {1: "CANCELLED", 2: "FILLED", 4: "SUBMITTED", 5: "REJECTED", 6: "SUBMITTED"}
 DEFAULT_LTP = 800.0
 DEFAULT_FUNDS = 1_000_000.0
 

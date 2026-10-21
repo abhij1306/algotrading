@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.brokers.base import BrokerUnavailableError
 from app.brokers.plugins.fyers import FyersBroker
+from app.hat.execution.fyers_broker import PROCESS_BREAKER
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
 from app.routers import trading
@@ -952,17 +953,16 @@ class OrderbookBroker(FyersBroker):
     client: Any = None  # shadows FyersBroker.client so the test can assign it
 
     def __init__(self, client: OrderbookClient | None) -> None:
+        super().__init__()
         self.client = client
 
 
 @pytest.fixture
 def reset_circuit() -> Generator[None, None, None]:
-    # The circuit state is per class: the subclass keeps its own once it records a call.
-    for broker_cls in (FyersBroker, OrderbookBroker):
-        broker_cls._record_success()
+    # One process-wide breaker (HAT's) is shared by every broker.
+    PROCESS_BREAKER.record_success()
     yield
-    for broker_cls in (FyersBroker, OrderbookBroker):
-        broker_cls._record_success()
+    PROCESS_BREAKER.record_success()
 
 
 def fyers_order(symbol: str, status: int, side: int, qty: int, filled: int) -> dict[str, Any]:
@@ -1051,7 +1051,7 @@ def test_fyers_place_without_a_clear_reply_is_unconfirmed(reply: object) -> None
 def test_fyers_place_with_the_circuit_open_is_rejected_without_sending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(OrderbookBroker, "_circuit_open_until", float("inf"))
+    monkeypatch.setattr(PROCESS_BREAKER, "open_until", float("inf"))
     client = PlaceClient({"s": "ok", "id": "B-1"})
 
     result = OrderbookBroker(client).place_order(MARKET_BUY)  # type: ignore[arg-type]

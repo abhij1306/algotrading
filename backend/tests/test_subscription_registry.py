@@ -18,7 +18,7 @@ from fakes.market import FreezeMarket
 
 
 def test_first_owner_of_a_symbol_needs_it_and_later_owners_do_not() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
 
     assert registry.add("ws-1", ["SBIN", "TCS"]) == {"SBIN", "TCS"}
     assert registry.add("ws-1", ["SBIN"]) == set()  # same owner again: no new reference
@@ -27,7 +27,7 @@ def test_first_owner_of_a_symbol_needs_it_and_later_owners_do_not() -> None:
 
 
 def test_shared_symbol_stays_needed_until_its_last_owner_lets_go() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
     registry.add("ws-1", ["SBIN"])
     registry.add("ws-2", ["SBIN"])
 
@@ -39,7 +39,7 @@ def test_shared_symbol_stays_needed_until_its_last_owner_lets_go() -> None:
 
 
 def test_removing_a_symbol_twice_or_one_never_held_releases_nothing() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
     registry.add("ws-1", ["SBIN"])
     registry.add("ws-2", ["SBIN"])
 
@@ -50,7 +50,7 @@ def test_removing_a_symbol_twice_or_one_never_held_releases_nothing() -> None:
 
 
 def test_drop_owner_releases_only_symbols_no_other_owner_holds() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
     registry.add("ws-1", ["SBIN", "TCS", "INFY"])
     registry.add("ws-2", ["SBIN"])
     registry.add(API_OWNER, ["TCS"])
@@ -62,7 +62,7 @@ def test_drop_owner_releases_only_symbols_no_other_owner_holds() -> None:
 
 
 def test_symbols_are_canonicalised_to_db_format() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
 
     assert registry.add("ws-1", ["NSE:SBIN-EQ", "", "nse:tcs-eq"]) == {"SBIN", "TCS"}
     assert registry.add("ws-2", ["SBIN"]) == set()
@@ -72,7 +72,7 @@ def test_symbols_are_canonicalised_to_db_format() -> None:
 
 
 def test_replay_set_is_the_union_of_every_owners_symbols() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
     registry.add("ws-1", ["SBIN", "TCS"])
     registry.add("ws-2", ["TCS", "INFY"])
     registry.add(API_OWNER, ["RELIANCE"])
@@ -83,7 +83,7 @@ def test_replay_set_is_the_union_of_every_owners_symbols() -> None:
 
 
 def test_concurrent_add_and_remove_keep_refcounts_consistent() -> None:
-    registry = SubscriptionRegistry()
+    registry = SubscriptionRegistry(symbol_master.to_db)
     symbols = [f"SYM{i}" for i in range(50)]
     needed: list[set[str]] = []
     released: list[set[str]] = []

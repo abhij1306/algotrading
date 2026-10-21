@@ -10,8 +10,8 @@ from sqlalchemy import Connection, func, select
 from sqlalchemy.orm import Session
 
 from app.hat.data import instruments as inst
+from app.hat.data.symbols import symbol_master
 from app.hat.models import HatBrokerSymbol, HatInstrument, HatMarket
-from app.services.symbol_master import symbol_master
 
 pytestmark = pytest.mark.postgres
 

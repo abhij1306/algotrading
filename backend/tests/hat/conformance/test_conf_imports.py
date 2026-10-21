@@ -4,6 +4,7 @@
 import ast
 import inspect
 import re
+from pathlib import Path
 
 import pytest
 from hat_conf_repo import APP_ROOT, build_graph, reaches
@@ -132,6 +133,17 @@ SOCKET_MODULES = (
     "socketio",
     "aiohttp",
 )
+# The SDK's REST models (orders, reads, login); the session and login modules import it (K2). The
+# sockets live in `fyers_apiv3.FyersWebsocket`, which stays forbidden.
+REST_MODEL = "fyers_apiv3.fyersModel"
+
+
+def _only_rest_model(path: Path) -> bool:
+    """Every `fyers_apiv3` import in `path` is `from fyers_apiv3 import fyersModel`."""
+    lines = re.findall(r"^\s*(?:from|import)\s+fyers_apiv3.*$", path.read_text("utf-8"), re.M)
+    return all(re.fullmatch(r"\s*from fyers_apiv3 import fyersModel\s*", ln) for ln in lines)
+
+
 SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
 
 
@@ -147,6 +159,8 @@ def test_imports__no_second_websocket() -> None:
     offenders = []
     for path in sorted(HAT_ROOT.rglob("*.py")):
         for name in imports_of(path):
+            if name in {"fyers_apiv3", REST_MODEL} and _only_rest_model(path):
+                continue  # the order and login models, not a socket
             if any(name == m or name.startswith(m + ".") for m in SOCKET_MODULES):
                 offenders.append((path.name, name))
         text = path.read_text(encoding="utf-8")

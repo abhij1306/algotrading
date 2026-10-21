@@ -23,7 +23,7 @@ def test_every_app_module_imports(module_name: str) -> None:
 
 
 def test_app_module_info_logs_reach_the_console_handler() -> None:
-    from app.routers import auth
+    from app.hat.execution import fyers_auth as auth
 
     base = setup_logging()
     console = next(
@@ -38,8 +38,9 @@ def test_app_module_info_logs_reach_the_console_handler() -> None:
     finally:
         console.setStream(original_stream)
 
-    assert " - app.routers.auth - INFO - [Fyers Auth] Access token saved to token.json" in (
-        buffer.getvalue()
+    assert (
+        " - app.hat.execution.fyers_auth - INFO - [Fyers Auth] Access token saved to token.json"
+        in (buffer.getvalue())
     )
 
 

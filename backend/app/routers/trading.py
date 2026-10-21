@@ -643,7 +643,7 @@ def get_funds() -> FundsResponse:
         broker = FyersBroker()
         funds = broker.get_funds()
 
-        return FundsResponse(available=funds.available, used=funds.used, total=funds.total)
+        return FundsResponse(available=funds["available"], used=funds["used"], total=funds["total"])
     except Exception as e:
         logger.exception("Error fetching funds")
         raise HTTPException(status_code=500, detail="Error fetching funds") from e

@@ -30,7 +30,7 @@ export function useFyersStatus() {
       try {
         const body = parseResponse(
           fyersStatusSchema,
-          await unwrap(api.GET("/api/auth/fyers/status")),
+          await unwrap(api.GET("/api/hat/auth/fyers/status")),
         );
         return body.connected
           ? { connected: true, userId: body.user_id ?? "", offline: false }
@@ -49,7 +49,7 @@ export function useFyersStatus() {
 export function useFyersLoginUrl() {
   return useMutation({
     mutationFn: async (): Promise<string> => {
-      const body = parseResponse(loginUrlSchema, await unwrap(api.GET("/api/auth/fyers/url")));
+      const body = parseResponse(loginUrlSchema, await unwrap(api.GET("/api/hat/auth/fyers/url")));
       if (body.url) return body.url;
       throw new ApiError({
         code: "LOGIN_URL_MISSING",
@@ -64,7 +64,7 @@ export function useFyersToken() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (authCode: string) => {
-      await unwrap(api.POST("/api/auth/fyers/token", { body: { auth_code: authCode } }));
+      await unwrap(api.POST("/api/hat/auth/fyers/token", { body: { auth_code: authCode } }));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.auth.fyersStatus() }),
   });
@@ -74,7 +74,7 @@ export function useFyersDisconnect() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      await unwrap(api.POST("/api/auth/fyers/disconnect"));
+      await unwrap(api.POST("/api/hat/auth/fyers/disconnect"));
     },
     onSuccess: () => {
       queryClient.setQueryData<FyersStatus>(queryKeys.auth.fyersStatus(), DISCONNECTED);

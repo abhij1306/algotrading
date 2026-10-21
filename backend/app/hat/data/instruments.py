@@ -15,8 +15,6 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.services.symbol_master import SymbolMaster
-
 from ..errors import HatError
 from ..ids import uuid7
 from ..models import (
@@ -28,6 +26,7 @@ from ..models import (
 )
 from ..time import utc_now
 from .reference import BandRow, IndustryRow, Security
+from .symbols import SymbolMaster
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +392,20 @@ def fyers_symbol(master: SymbolMaster, instrument: HatInstrument) -> str | None:
     if master.to_db(symbol) != instrument.symbol:
         return None
     return symbol
+
+
+def fyers_instruments(session: Session) -> list[tuple[str, str]]:
+    """(database symbol, Fyers symbol) of every active instrument that has a Fyers row, sorted
+    by symbol: the instrument list HAT's broker adapter reports. It comes from `hat_instrument`
+    and `hat_broker_symbol` only, so an index, a delisted stock or a symbol nobody mapped is never
+    in it (HAT-DATA-024)."""
+    rows = session.execute(
+        select(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
+        .join(HatBrokerSymbol, HatBrokerSymbol.instrument_id == HatInstrument.id)
+        .where(HatBrokerSymbol.broker == BROKER_FYERS, HatInstrument.active.is_(True))
+        .order_by(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
+    ).all()
+    return [(symbol, broker_symbol) for symbol, broker_symbol in rows]
 
 
 def refresh_fyers_symbols(

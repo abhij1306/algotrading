@@ -12,8 +12,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Hashable, Iterable
 
-from .symbol_master import symbol_master
-
 # Owner of symbols subscribed through POST /api/websocket/subscribe (no client drops them).
 API_OWNER = "api"
 
@@ -21,9 +19,10 @@ Owner = Hashable
 
 
 class SubscriptionRegistry:
-    """Refcount of symbols per owner; symbols are canonicalised to DB format."""
+    """Refcount of symbols per owner; symbols are canonicalised to DB format by the injected
+    `canonicalize` (HAT's `symbol_master.to_db`), so the registry knows no symbol master."""
 
-    def __init__(self, canonicalize: Callable[[str], str] = symbol_master.to_db) -> None:
+    def __init__(self, canonicalize: Callable[[str], str]) -> None:
         self._canonicalize = canonicalize
         self._lock = threading.Lock()
         self._by_owner: dict[Owner, set[str]] = {}

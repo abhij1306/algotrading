@@ -28,9 +28,9 @@ load_dotenv()
 # E402 is suppressed below: routers read config at import, so load_dotenv() must run first.
 from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
+from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
 from .routers import (  # noqa: E402
     activity,
-    auth,
     data_snapshot,
     market,
     market_dashboard,
@@ -43,6 +43,7 @@ from .routers import (  # noqa: E402
     upload,
     websocket,
 )
+from .services.fyers.auth_flow import install_legacy_hooks  # noqa: E402
 from .utils.origins import FrontendCORSMiddleware  # noqa: E402
 
 
@@ -398,7 +399,8 @@ app.include_router(system_health.router)
 app.include_router(unified.router)
 app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
 app.include_router(market_dashboard.router, prefix="/api")
-app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(hat_fyers_auth.router)
+install_legacy_hooks()
 app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"])
 app.include_router(universe.router, prefix="/api/universe", tags=["Universe"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])

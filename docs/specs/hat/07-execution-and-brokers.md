@@ -2,7 +2,7 @@
 
 Scope: execution modes, the execution router, confirm-mode approvals, the trade lifecycle, stop rules and broker-side stop placement, exit-stack evaluation, HAT's broker interface and its Fyers adapter, order tags and idempotency, reconciliation, live trigger and entry-filter evaluation, and veto scoring. Requirement format and verification methods: see README.md and 11-verification.md.
 
-Build decision (OWN-20OCT): orders go through HAT's own broker interface (`app/hat/execution/broker.py`), implemented in the MVP by a direct Fyers adapter that reuses the tested `FyersBroker`/`FyersClient`. There is no OpenAlgo in the MVP (PLAN C5); `hat_broker_account.openalgo_ref` stays as a nullable column for a later adapter.
+Build decision (OWN-20OCT): orders go through HAT's own broker interface (`app/hat/execution/broker.py`), implemented in the MVP by a direct Fyers adapter over HAT's own `FyersBroker`, `FyersSession` and `FyersAuthService` (moved from the legacy modules in K2, which now inherit from them). There is no OpenAlgo in the MVP (PLAN C5); `hat_broker_account.openalgo_ref` stays as a nullable column for a later adapter.
 
 ## §1 Execution modes
 
@@ -386,7 +386,7 @@ HAT's own contract (`app/hat/execution/broker.py`, protocol `HatBroker`); I7. No
 
 ## §9 Fyers adapter
 
-The MVP adapter (`app/hat/execution/fyers_adapter.py`) wraps the existing `FyersBroker` (place/modify/cancel/positions/funds, circuit breaker, guarded timeout, `SUBMIT_UNCONFIRMED` handling, `find_order_by_tag`), `FyersClient` and the existing auth flow (`login_url()`/`exchange()`), plus GTT calls through the fyers SDK (`place_gtt_order`, `modify_gtt_order`, `cancel_gtt_order`, `gtt_orderbook`). Fyers secrets stay where SmartTrader keeps them today (PLAN C5).
+The MVP adapter (`app/hat/execution/fyers_adapter.py`) wraps HAT's `FyersBroker` in `fyers_broker.py` (place/modify/cancel, GTT place/modify/cancel, positions, funds, order and trade books; per-instance circuit breaker, guarded timeout, `SUBMIT_UNCONFIRMED` for a lost, garbled or id-less reply, no non-finite price sent), `FyersSession` (`fyers_session.py`) and `FyersAuthService` (`fyers_auth.py`, routes under `/api/hat/auth/fyers`). Tag lookup is the adapter's own (`orders()` filtered by tag), not a broker method. Fyers secrets are read only by `fyers_auth.py`, `fyers_tokens.py` and `fyers_session.py` (PLAN C5). [Reworded in K2; it wrapped the legacy `FyersBroker`, `FyersClient` and auth flow.]
 
 #### HAT-BRK-090: Exact Fyers payloads
 - **Statement:** The adapter maps every `intent` and GTT request to an exact, documented Fyers payload with product CNC.

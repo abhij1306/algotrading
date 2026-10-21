@@ -95,8 +95,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
-Covered digest: `11c7df6878c8632fbd442c2e3a96ad7b77625d1c694d7bff7932d3ebbc61404e`
+Sync commit: `ab14ce051d9e8791571525574974cf4ef4ecc246`
+Covered digest: `94459606419f7b78e6ce8c1ae943d39e7bf72fd6300721c39feb2fd93e4207c6`
 
 ## Scope changes
 
@@ -112,6 +112,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The property `caps.kill_thresholds` is checked against an independently written series oracle and on the service through `kill.drawdown_service`.
 - The service-level kill properties use SQLite in memory (foreign keys not enforced), and the Postgres checks in `test_db_risk.py` cover the constraints.
 - This PR refreshed the digest of `verify-governance` (it covers `risk/policy.py`, which gained the policy record, with the cooling-off functions untouched) and of `verify-scheduler` (it covers `test_conf_verification.py`, where `MERGED_PRS` gained 10 and `KNOWN_GAPS` two ExecutionRouter names).
+
+- K2 changed the pinned digest of `tests/test_live_trading_safety.py` in `test_risk__existing_suite_green`. The edit to that file is mechanical: the Fyers circuit breaker moved from class state to the shared `PROCESS_BREAKER` (`app/hat/execution/fyers_broker.py`), so its reset fixture calls `PROCESS_BREAKER.record_success()` and the test broker calls `super().__init__()`. No assertion was added, removed or loosened. The check itself is unchanged.
 
 ## Scratch breaks
 

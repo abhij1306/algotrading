@@ -78,7 +78,7 @@ def test_account_active_after_check(failing: str | None, how: str) -> None:
                 fake.holdings = error
     engine = memory_engine(HatBrokerAccount)
     session = sessionmaker(engine, expire_on_commit=False)()
-    broker = FyersHatBroker(fake, symbols=lambda: [])  # type: ignore[arg-type]
+    broker = FyersHatBroker(fake, instruments=lambda: [])  # type: ignore[arg-type]
     account = onboard_account(session, broker, user_id=USER, broker_name="fyers", account_ref="Z1")
     expected_pass = failing is None
     assert (account.status == "active") == expected_pass
@@ -217,7 +217,7 @@ def test_order_updates_report_each_change_once(polls: list[dict]) -> None:
     """The adapter's polling stream reports an order when its status or fill changed since the
     last successful poll (or it is new), and nothing for an unchanged book."""
     fake = FakeBroker()
-    broker = FyersHatBroker(fake, symbols=lambda: [])  # type: ignore[arg-type]
+    broker = FyersHatBroker(fake, instruments=lambda: [])  # type: ignore[arg-type]
     previous: dict[str, tuple[int, int]] = {}
     for book in polls:
         fake.orders = [

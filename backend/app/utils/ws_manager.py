@@ -16,6 +16,7 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
 from ..services.subscription_registry import SubscriptionRegistry
+from ..services.symbol_master import symbol_master
 from .runtime_metrics import runtime_metrics
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class ConnectionManager:
     def __init__(self, registry: SubscriptionRegistry | None = None) -> None:
         self.connections: dict[WebSocket, ClientConnection] = {}
         # Who wants which symbols (clients and the REST API owner); the provider delta source.
-        self.registry = registry or SubscriptionRegistry()
+        self.registry = registry or SubscriptionRegistry(symbol_master.to_db)
         # Awaited with symbols no owner needs any more after a client is removed.
         self.on_symbols_released: Callable[[list[str]], Awaitable[None]] | None = None
         self._lock = asyncio.Lock()

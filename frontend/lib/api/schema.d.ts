@@ -41,86 +41,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/auth/fyers/disconnect": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /**
-     * Disconnect Fyers
-     * @description Disconnect Fyers: stop the WebSocket and remove the access token file.
-     */
-    post: operations["disconnect_fyers_api_auth_fyers_disconnect_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/auth/fyers/status": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Get Fyers Status
-     * @description Whether a Fyers access token is saved. Cached for 30s to avoid repeated file I/O.
-     */
-    get: operations["get_fyers_status_api_auth_fyers_status_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/auth/fyers/token": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /**
-     * Generate Token
-     * @description Exchange an auth code for an access token and save it.
-     */
-    post: operations["generate_token_api_auth_fyers_token_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/auth/fyers/url": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Get Fyers Auth Url
-     * @description Generate the Fyers login URL from CLIENT_ID, SECRET_KEY and REDIRECT_URI in .env.
-     */
-    get: operations["get_fyers_auth_url_api_auth_fyers_url_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/data/snapshot/status": {
     parameters: {
       query?: never;
@@ -164,6 +84,86 @@ export interface paths {
     };
     /** Get Universe Snapshot */
     get: operations["get_universe_snapshot_api_data_snapshot_universe_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/fyers/disconnect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Fyers Disconnect
+     * @description Remove the saved Fyers token and drop the session.
+     */
+    post: operations["fyers_disconnect_api_hat_auth_fyers_disconnect_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/fyers/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Fyers Status
+     * @description Whether a usable Fyers token is saved. Cached for 30 s.
+     */
+    get: operations["fyers_status_api_hat_auth_fyers_status_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/fyers/token": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Exchange Auth Code
+     * @description Exchange an auth code for an access token and save it. Any failure writes no token.
+     */
+    post: operations["exchange_auth_code_api_hat_auth_fyers_token_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/fyers/url": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Fyers Login Url
+     * @description The Fyers login link, built from the app credentials in the environment.
+     */
+    get: operations["fyers_login_url_api_hat_auth_fyers_url_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1423,6 +1423,15 @@ export interface components {
       /** Used */
       used: number;
     };
+    /** FyersStatusResponse */
+    FyersStatusResponse: {
+      /** Connected */
+      connected: boolean;
+      /** Error */
+      error?: string | null;
+      /** User Id */
+      user_id?: string | null;
+    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -1433,6 +1442,18 @@ export interface components {
      * @enum {string}
      */
     InstrumentType: "EQ" | "FUT" | "CE" | "PE";
+    /** LoginUrlResponse */
+    LoginUrlResponse: {
+      /** Url */
+      url: string;
+    };
+    /** MessageResponse */
+    MessageResponse: {
+      /** Message */
+      message: string;
+      /** Status */
+      status: string;
+    };
     /**
      * Mode
      * @enum {string}
@@ -1801,120 +1822,6 @@ export interface operations {
       };
     };
   };
-  disconnect_fyers_api_auth_fyers_disconnect_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-    };
-  };
-  get_fyers_status_api_auth_fyers_status_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-    };
-  };
-  generate_token_api_auth_fyers_token_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["AuthCodeRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Fyers rejected the auth code */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-      /** @description Fyers credentials missing or token exchange failed */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  get_fyers_auth_url_api_auth_fyers_url_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Fyers credentials missing or auth URL generation failed */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
   get_snapshot_status_api_data_snapshot_status_get: {
     parameters: {
       query?: never;
@@ -2044,6 +1951,127 @@ export interface operations {
       };
       /** @description Snapshot dependencies or artifacts are not available */
       503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  fyers_disconnect_api_hat_auth_fyers_disconnect_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MessageResponse"];
+        };
+      };
+      /** @description The token could not be removed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  fyers_status_api_hat_auth_fyers_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FyersStatusResponse"];
+        };
+      };
+    };
+  };
+  exchange_auth_code_api_hat_auth_fyers_token_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthCodeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MessageResponse"];
+        };
+      };
+      /** @description Fyers rejected the auth code */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description Credentials missing, the exchange failed or the token was not saved */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  fyers_login_url_api_hat_auth_fyers_url_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LoginUrlResponse"];
+        };
+      };
+      /** @description Fyers credentials missing or the link could not be built */
+      500: {
         headers: {
           [name: string]: unknown;
         };

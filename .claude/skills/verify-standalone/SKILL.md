@@ -62,8 +62,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `59bd923d431a827f572769eaddf80081e44fa5fd`
-Covered digest: `2b40c085c467d342fbb87aef01bd5009437cf04dbba1dd8504fec17b0d965676`
+Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
+Covered digest: `35999d8ecbc4e367cf82cba8ab4d7c492340dc3f4479b92e0958010b2f4434e9`
 
 ## Scope changes
 
@@ -73,6 +73,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
 - The pending set in `imports.hat_decoupled_from_legacy` is not empty: K2, K3 and K6 remove the entries.
 - `imports.legacy_does_not_import_hat` allows `app/database.py` until K6 gives HAT its own session factory, and three re-export shims (`utils/clock.py`, `services/bhavcopy_text.py`, `services/execution/paper_book.py`) until the legacy code is deleted (K4/K5). Re-exporting avoids a second copy of each helper.
+
+- K2 moved the six Fyers and symbol modules out of `PENDING` in `test_conf_decoupling.py`, added the six legacy re-export modules to `SHIMS` (they may import HAT; HAT may not import them), and added `database.py` and `main.py` to the wiring files the legacy-does-not-import-HAT check allows. The decoupling check is stricter for HAT (no `app.brokers`, `app.services` or `app.routers` import) and no check was narrowed.
 
 ## Scratch breaks
 

@@ -18,8 +18,6 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.services.symbol_master import SymbolMaster
-
 from ..models import HatMarket
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from . import calendar as hat_calendar
@@ -35,6 +33,7 @@ from .reference import (
     parse_industry_csv,
     parse_price_band_csv,
 )
+from .symbols import SymbolMaster
 
 logger = logging.getLogger(__name__)
 

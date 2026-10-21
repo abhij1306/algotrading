@@ -57,10 +57,10 @@ pnpm dev
 ## Symbol Management Rules
 
 DB format (`SBIN`, `NIFTY50`) internally; Fyers format (`NSE:SBIN-EQ`) only at the provider
-boundary. Always use `SymbolMaster` for conversion (`scripts/check_symbol_format.py` enforces it):
+boundary. Always use `SymbolMaster` for conversion (`scripts/check_symbol_format.py` enforces it; the conversion lives in `app/hat/data/symbols.py`, and the legacy class adds options, futures and metadata):
 
 ```python
-from app.services.symbol_master import symbol_master
+from app.hat.data.symbols import symbol_master  # legacy `app.services.symbol_master` inherits it
 
 symbol_master.to_db("NSE:SBIN-EQ")
 symbol_master.to_fyers("SBIN")

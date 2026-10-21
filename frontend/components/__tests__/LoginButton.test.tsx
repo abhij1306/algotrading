@@ -40,12 +40,12 @@ afterEach(() => {
 describe("LoginButton", () => {
   it("shows the connected Fyers user from the status endpoint", async () => {
     const calls = stubBackend({
-      "/api/auth/fyers/status": () => Response.json({ connected: true, user_id: "XA1234" }),
+      "/api/hat/auth/fyers/status": () => Response.json({ connected: true, user_id: "XA1234" }),
     });
     renderButton();
 
     expect(await screen.findByText("XA1234")).toBeInTheDocument();
-    expect(calls).toEqual(["GET /api/auth/fyers/status"]);
+    expect(calls).toEqual(["GET /api/hat/auth/fyers/status"]);
   });
 
   it("reads an unreachable backend as System Offline", async () => {
@@ -60,8 +60,8 @@ describe("LoginButton", () => {
 
   it("shows the broker outage message when the login URL cannot be built", async () => {
     stubBackend({
-      "/api/auth/fyers/status": () => Response.json({ connected: false }),
-      "/api/auth/fyers/url": () =>
+      "/api/hat/auth/fyers/status": () => Response.json({ connected: false }),
+      "/api/hat/auth/fyers/url": () =>
         Response.json({ error: { code: "BROKER_UNAVAILABLE" } }, { status: 503 }),
     });
     renderButton();
@@ -78,10 +78,10 @@ describe("LoginButton", () => {
   it("opens the login page, exchanges the code and re-reads the status", async () => {
     let connected = false;
     const calls = stubBackend({
-      "/api/auth/fyers/status": () =>
+      "/api/hat/auth/fyers/status": () =>
         Response.json(connected ? { connected: true, user_id: "XA1234" } : { connected: false }),
-      "/api/auth/fyers/url": () => Response.json({ url: "https://fyers.test/login" }),
-      "/api/auth/fyers/token": () => {
+      "/api/hat/auth/fyers/url": () => Response.json({ url: "https://fyers.test/login" }),
+      "/api/hat/auth/fyers/token": () => {
         connected = true;
         return Response.json({ status: "ok" });
       },
@@ -100,10 +100,10 @@ describe("LoginButton", () => {
     expect(open).toHaveBeenCalledWith("https://fyers.test/login", "_blank", "width=800,height=600");
     await waitFor(() =>
       expect(calls).toEqual([
-        "GET /api/auth/fyers/status",
-        "GET /api/auth/fyers/url",
-        "POST /api/auth/fyers/token",
-        "GET /api/auth/fyers/status",
+        "GET /api/hat/auth/fyers/status",
+        "GET /api/hat/auth/fyers/url",
+        "POST /api/hat/auth/fyers/token",
+        "GET /api/hat/auth/fyers/status",
       ]),
     );
   });

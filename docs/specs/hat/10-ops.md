@@ -293,12 +293,12 @@ Fyers variables and `fyers/config/access_token.json`). New HAT secrets (PLAN §7
   - Property: on the host, `.env` is mode 0600 (or stricter), owned by the service user, on an encrypted disk. Harm: another local user reads broker and bot credentials.
 
 #### HAT-OPS-051: Fyers credentials are not duplicated
-- **Statement:** The Fyers adapter reads Fyers credentials and tokens from SmartTrader's existing locations; HAT adds no copy of them.
-- **Source:** OWN-20OCT (direct Fyers adapter reusing FyersBroker/FyersClient); PLAN C5.
+- **Statement:** One Fyers login and one token store: the Fyers adapter reads Fyers credentials and tokens through HAT's own `TokenStore` and login service (`app/hat/execution/fyers_tokens.py`, `fyers_auth.py`, `fyers_session.py`), the only HAT modules that touch them; the legacy token store, client and login route are subclasses or re-exports of those (until K4 and K5 delete them), and HAT adds no second copy. [Reworded in K2; it said HAT reads SmartTrader's existing modules.]
+- **Source:** OWN-20OCT (direct Fyers adapter); PLAN C5; cleanup plan K2.
 - **PR:** 13
 - **Verification:** CONF `ops.single_fyers_secret_store`
 - **Acceptance:**
-  - Property: across `app/hat/**`, every Fyers credential or token access goes through the existing Fyers config and token-store modules, and no HAT table has a column holding a broker secret. Harm: two credential stores drift and one leaks.
+  - Property: across `app/hat/**`, every Fyers credential or token access goes through HAT's token-store, login and session modules (one login route, `/api/hat/auth/fyers`), and no HAT table has a column holding a broker secret. Harm: two credential stores drift and one leaks.
 
 ## §7 Backups
 

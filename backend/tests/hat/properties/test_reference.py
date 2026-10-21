@@ -36,13 +36,13 @@ from app.hat.data.reference import (
     parse_equity_list_csv,
 )
 from app.hat.data.reference_jobs import reference_weekly
+from app.hat.data.symbols import symbol_master
 from app.hat.models import (
     HatBrokerSymbol,
     HatInstrument,
     HatInstrumentSymbolHistory,
 )
 from app.hat.ops.jobs import session_factory_for
-from app.services.symbol_master import symbol_master
 
 START = date(2026, 1, 5)
 KEYS = [(f"INE00000000{i}", "BE" if i == 5 else "EQ") for i in range(6)]
@@ -396,6 +396,57 @@ def test_fyers_symbol_roundtrip(entries: list[tuple[str, str, bool]]) -> None:
     again = inst.refresh_fyers_symbols(session, symbol_master, market_id)
     assert (again.written, again.removed) == (0, 0)
     assert len(session.scalars(select(HatBrokerSymbol)).all()) == len(rows)
+
+
+@given(
+    entries=st.lists(
+        st.tuples(
+            st.booleans(),  # still listed (active)
+            st.sampled_from(["fyers", "fyers", "other", "none"]),  # which broker row it has
+        ),
+        unique_by=None,
+        max_size=15,
+    )
+)
+def test_broker_instrument_list_comes_from_the_tables(entries: list[tuple[bool, str]]) -> None:
+    """HAT-DATA-024: the instruments the Fyers adapter reports are exactly the active instruments
+    that have a Fyers row, sorted, as (symbol, Fyers symbol) pairs; no index, delisted stock, other
+    broker's row or unmapped symbol is in it, and the adapter returns the same list."""
+    session, market_id = new_db()
+    symbols = [f"SYM{i:02d}" for i in range(len(entries))]
+    listing = [
+        security(f"INE{i:09d}", "EQ", symbol, listed_on=date(2010, 1, 1))
+        for i, symbol in enumerate(symbols)
+    ]
+    inst.upsert_instruments(session, market_id, listing, today=START)
+    inst.upsert_instruments(
+        session, market_id, [s for s, e in zip(listing, entries, strict=True) if e[0]], today=START
+    )
+    by_symbol = {i.symbol: i for i in session.scalars(select(HatInstrument))}
+    expected = []
+    for symbol, (active, broker) in zip(symbols, entries, strict=True):
+        if broker != "none":
+            row_broker = "fyers" if broker == "fyers" else "zerodha"
+            session.add(
+                HatBrokerSymbol(
+                    instrument_id=by_symbol[symbol].id,
+                    broker=row_broker,
+                    broker_symbol=f"NSE:{symbol}-EQ",
+                )
+            )
+        if active and broker == "fyers":
+            expected.append((symbol, f"NSE:{symbol}-EQ"))
+    session.flush()
+    assert inst.fyers_instruments(session) == sorted(expected)
+
+    from contextlib import nullcontext
+    from unittest import mock
+
+    from app.hat.execution.fyers_adapter import FyersHatBroker
+
+    with mock.patch("app.database.SessionLocal", return_value=nullcontext(session)):
+        found = FyersHatBroker(object()).instruments()  # type: ignore[arg-type]
+    assert [(i.symbol, i.broker_symbol) for i in found] == sorted(expected)
 
 
 # --- price bands and industries (HAT-DATA-025, 026) -----------------------------------------------

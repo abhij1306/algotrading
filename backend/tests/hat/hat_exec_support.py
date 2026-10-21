@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from hat.fakes.broker import FakeBroker
-from hat.fakes.fyers_sdk import RecordingSdk, SdkBackedBroker, reset_circuit
+from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_support import memory_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,8 +28,7 @@ SYMBOLS = {"SBIN": "NSE:SBIN-EQ", "RELIANCE": "NSE:RELIANCE-EQ", "M&M": "NSE:M&M
 
 
 def adapter_over(sdk: RecordingSdk) -> FyersHatBroker:
-    reset_circuit()
-    return FyersHatBroker(SdkBackedBroker(sdk), symbols=lambda: list(SYMBOLS))
+    return FyersHatBroker(broker_over(sdk), instruments=lambda: list(SYMBOLS.items()))
 
 
 @dataclass
@@ -83,14 +82,13 @@ def exec_env(
     )
     session.add(account)
     session.commit()
-    reset_circuit()
     fake = fake if fake is not None else FakeBroker()
     guard = ExecutionGuard(reconciled=reconciled)
     return ExecEnv(
         session=session,
         account_id=account.id,
         fake=fake,
-        broker=FyersHatBroker(fake, symbols=lambda: list(SYMBOLS)),  # type: ignore[arg-type]
+        broker=FyersHatBroker(fake, instruments=lambda: list(SYMBOLS.items())),  # type: ignore[arg-type]
         guard=guard,
         bot_id=uuid.uuid4(),
     )
