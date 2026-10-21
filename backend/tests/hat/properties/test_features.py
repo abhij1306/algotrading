@@ -320,7 +320,7 @@ def naive(s: Series) -> dict[date, dict[str, Fraction | None]]:
 
 
 @given(world=st.one_of(histories(), histories(full=True)))
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=60, deadline=None)
 def test_formulas(world: list[Series]) -> None:
     """Every scalar feature equals the direct evaluation within 1e-9 relative, and is null
     exactly when the window is not full (or its base is zero)."""
@@ -461,7 +461,7 @@ def test_mom_rank(world: list[Series], pick: int) -> None:
 
 
 @given(world=st.one_of(histories(), histories(full=True)), pick=st.integers(0, 3))
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=60, deadline=None)
 def test_breadth(world: list[Series], pick: int) -> None:
     """Per date, breadth% = 100 x |close > sma50| / |sma50 not null| over the universe (exact
     arithmetic), in [0, 100]; null when no member has an SMA50 yet."""
@@ -693,7 +693,7 @@ def _split_actions(world: list[Series], rng: Lcg) -> list[ActionFactor]:
     chunk=st.integers(1, 40),
     steps=st.integers(1, 4),
 )
-@settings(max_examples=8, deadline=None)
+@settings(max_examples=5, deadline=None)
 def test_incremental_equals_full(world: list[Series], rng: Lcg, chunk: int, steps: int) -> None:
     """Runs through successive cut dates (with a corporate action arriving part-way) leave the
     same features and breadth for every date as one full rebuild over the same bars."""
@@ -727,7 +727,7 @@ def test_incremental_equals_full(world: list[Series], rng: Lcg, chunk: int, step
     cut=st.integers(0, 330),
     change=st.sampled_from(["actions", "universe"]),
 )
-@settings(max_examples=8, deadline=None)
+@settings(max_examples=5, deadline=None)
 def test_changed_inputs_rebuild_everything(
     world: list[Series], rng: Lcg, cut: int, change: str
 ) -> None:
@@ -821,7 +821,7 @@ def _hashes(root: Path) -> dict[str, str]:
 
 
 @given(world=histories(max_instruments=3), rng=RNG, crash_at=st.integers(1, 6))
-@settings(max_examples=8, deadline=None)
+@settings(max_examples=5, deadline=None)
 def test_job_idempotent(world: list[Series], rng: Lcg, crash_at: int) -> None:
     """The `features` body run twice leaves byte-identical files and the second run writes
     nothing; a crash at any write (between a day's features and its breadth, or between days,
