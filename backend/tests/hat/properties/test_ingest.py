@@ -762,7 +762,8 @@ def test_renames_from_nse_data(shape: list[list[int]]) -> None:
         for k, t in enumerate(tracks):
             for d, symbol in enumerate(t):
                 found = resolve_symbol(session, market_id, symbol, days[d])
-                assert found is not None and found.id == ids[f"INE{k:09d}"], (symbol, days[d])
+                assert found is not None, (symbol, days[d])
+                assert found.id == ids[f"INE{k:09d}"], (symbol, days[d])
             spans = sorted(
                 (h.valid_from, h.valid_to)
                 for h in session.scalars(
@@ -772,4 +773,5 @@ def test_renames_from_nse_data(shape: list[list[int]]) -> None:
                 )
             )
             for (_, end), (start, _) in zip(spans, spans[1:], strict=False):
-                assert end is not None and end <= start
+                assert end is not None
+                assert end <= start

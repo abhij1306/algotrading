@@ -155,14 +155,29 @@ def _finish(
             # A restart reaped this run while the body was executing; the stored row wins.
             logger.warning("job run %s was no longer running when it finished", run_id)
             return _outcome(row, executed=True)
-        row.status = status
-        row.calls = result.calls
-        row.rows = result.rows
-        row.error = error
-        row.finished_at = max(as_utc(now), as_utc(row.started_at))
+        started = row.started_at
+
+        def record_end(target: HatJobRun) -> None:
+            target.status = status
+            target.calls = result.calls
+            target.rows = result.rows
+            target.error = error
+            target.finished_at = max(as_utc(now), as_utc(started))
+
+        record_end(row)
         if on_finish is not None:
-            session.flush()
-            on_finish(session, row)
+            try:
+                session.flush()
+                on_finish(session, row)
+            except Exception:
+                # The hook's writes and the status go together or not at all; a hook that fails
+                # must not leave the run `running`, so the status is recorded without it.
+                logger.exception("job finish hook failed", extra={"run": str(run_id)})
+                session.rollback()
+                row = session.get(HatJobRun, run_id)
+                if row is None:
+                    raise RuntimeError("job run row vanished while its body ran") from None
+                record_end(row)
         session.commit()
         return _outcome(row, executed=True)
 

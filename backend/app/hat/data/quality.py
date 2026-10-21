@@ -40,7 +40,7 @@ CHECK_OHLC = "ohlc"
 CHECK_BIG_MOVES = "big_moves"
 CHECK_INDEX = "index_snapshot"
 CHECK_NAMES = (CHECK_COVERAGE, CHECK_OHLC, CHECK_BIG_MOVES, CHECK_INDEX)
-STATUS_PASS = "PASS"  # noqa: S105 - a check status, not a secret
+STATUS_PASS = "PASS"  # noqa: S105
 STATUS_FAIL = "FAIL"
 
 CODE_FAILED = "quality_failed"

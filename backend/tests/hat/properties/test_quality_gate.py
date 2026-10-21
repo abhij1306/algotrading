@@ -96,7 +96,7 @@ def test_coverage_threshold(universe: int, stored: int) -> None:
 @example(bad=set(), n=8)
 @example(bad={3}, n=8)
 def test_ohlc_zero_tolerance(bad: set[int], n: int) -> None:
-    """For every set of fetched rows that break a row check (high below low), the gate's ohlc
+    """For every set of fetched rows that break a row check (a negative volume), the gate's ohlc
     check fails iff the set is not empty: one bad row fails the night."""
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(n))

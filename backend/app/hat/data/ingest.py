@@ -39,7 +39,7 @@ from ..events import record
 from ..ids import uuid7
 from ..models import HatInstrument, HatJobRun, HatMarket
 from ..notify import LogNotifier, Notifier
-from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
+from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory, error_code
 from ..risk.controls import sync_health
 from ..time import IST, utc_now
 from . import corporate_actions as ca
@@ -447,10 +447,10 @@ def _count(fields: Mapping[str, object], *names: str) -> int | None:
         value = fields.get(name)
         if isinstance(value, bool):
             continue
-        if isinstance(value, int):
-            return value
         if isinstance(value, float) and value.is_integer():
-            return int(value)
+            value = int(value)
+        if isinstance(value, int) and value >= 0:
+            return value
     return None
 
 
@@ -463,14 +463,16 @@ def breadth_from_mcp(fields: Mapping[str, object]) -> dict[str, Any] | None:
         return None
     total = _count(fields, "totalStocks", "total_stocks", "total")
     ratio = fields.get("adRatio", fields.get("ad_ratio"))
+    if isinstance(ratio, int | float) and not isinstance(ratio, bool):
+        ad_ratio: float | None = float(ratio)
+    else:
+        ad_ratio = advances / declines if declines else None
     return {
         "total_stocks": total if total is not None else advances + declines + unchanged,
         "advances": advances,
         "declines": declines,
         "unchanged": unchanged,
-        "ad_ratio": float(ratio)
-        if isinstance(ratio, int | float) and not isinstance(ratio, bool)
-        else (advances / declines if declines else None),
+        "ad_ratio": ad_ratio,
         "volume": _count(fields, "totalVolume", "volume") or 0,
         "source": SOURCE_MCP,
     }
@@ -706,8 +708,8 @@ def ingest_body(
         run_id = uuid7()
         try:
             report = run_ingest(deps, trade_date, run_id)
-        except JobError as exc:
-            deps.notifier.alert(exc.code, trade_date, {})
+        except Exception as exc:
+            deps.notifier.alert(error_code(exc), trade_date, {})
             raise
         holder["report"] = report
         return JobResult(calls=deps.client.log.calls, rows=report.stored)
