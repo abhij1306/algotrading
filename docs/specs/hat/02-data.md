@@ -560,6 +560,8 @@ Rebuild 2010 to today from NSE daily bhavcopy files: about 4,150 trading days in
 
 CLI: `python -m app.hat.data.history_build --from 2010-01-01 [--to] [--resume]`. Real-network runs are manual only; checks use recorded fixtures.
 
+Running it (an ops step, from `backend/`, with the HAT database up, `HAT_DATA_ROOT` set and, for actions, index history and the validation sample, `HAT_MCP_BHAVCOPY_URL` of 10-ops.md configured): `python -m app.hat.data.history_build --from 2010-01-01` downloads at about 1 request per second (about 70 minutes for 4,150 days), keeps every zip under `HAT_DATA_ROOT/raw/`, writes `bars_daily_raw` partitions, loads corporate actions and index history, then prints the validation summary. After an interruption, rerun with `--resume`. The exit code is non-zero when a sampled close differs from the MCP, a security has no instrument, a file is unusable, or a day has no file and is not on the holiday list. Securities that appear only in history (delisted, merged) are registered as inactive instruments with their symbol as name and face value 0 until a weekly refresh lists them. Indexes load from `get_index_history` (12-month chunks); the parser for NSE's `ind_close_all` archive CSV is available for operator-supplied files. Smallcap 250's first day is `[A]`: until checked, every index is expected from the start of the build and the report lists the gap.
+
 #### HAT-DATA-090: File format is chosen by date
 - **Statement:** Dates up to 5 Jul 2024 use the old CM bhavcopy name and location; dates from 8 Jul 2024 use the UDiFF name and location.
 - **Source:** DS "Historical data build" (format table).

@@ -41,6 +41,11 @@ from backend.app.models import (  # noqa: E402
     SnapshotIndexStock,
     SnapshotIndexUniverse,
 )
+from backend.app.services.bhavcopy_text import (  # noqa: E402,F401
+    BHAVCOPY_OHLCV_COLUMNS,
+    find_bonus_ratio,
+    split_pair_ints,
+)
 from backend.app.services.snapshots import atomic_write_parquet  # noqa: E402
 from backend.app.services.symbol_master import symbol_master  # noqa: E402
 
@@ -105,54 +110,6 @@ def parse_nifty50_weight_line(line: str) -> tuple[str, float] | None:
     if not (NUMBER_TOKEN_RE.fullmatch(second_last) and NUMBER_TOKEN_RE.fullmatch(weight)):
         return None
     return symbol, float(weight)
-
-
-def _digit_run_end(text: str, i: int) -> int:
-    while i < len(text) and text[i].isdecimal():
-        i += 1
-    return i
-
-
-def _space_run_end(text: str, i: int) -> int:
-    while i < len(text) and text[i].isspace():
-        i += 1
-    return i
-
-
-def _find_ratio(text: str, pos: int) -> tuple[int, int, int] | None:
-    """(start, a, b) of the first "a:b" (spaces allowed around ":") at or after pos.
-
-    Linear-time equivalent of re.search(r"(\\d+)\\s*:\\s*(\\d+)", text, pos).
-    """
-    i = pos
-    while i < len(text):
-        if not text[i].isdecimal():
-            i += 1
-            continue
-        first_end = _digit_run_end(text, i)
-        colon = _space_run_end(text, first_end)
-        if colon < len(text) and text[colon] == ":":
-            second = _space_run_end(text, colon + 1)
-            second_end = _digit_run_end(text, second)
-            if second_end > second:
-                return i, int(text[i:first_end]), int(text[second:second_end])
-        # No ratio can start inside this digit run either: skip past it.
-        i = first_end
-    return None
-
-
-def find_bonus_ratio(text: str) -> tuple[int, int] | None:
-    """First "a:b" ratio after "bonus" whose first number starts on the same line, if any."""
-    pos = 0
-    while (start := text.find("bonus", pos)) >= 0:
-        line_end = text.find("\n", start)
-        if line_end < 0:
-            line_end = len(text)
-        found = _find_ratio(text, start + len("bonus"))
-        if found and found[0] < line_end:
-            return found[1], found[2]
-        pos = line_end + 1
-    return None
 
 
 @dataclass
@@ -330,15 +287,6 @@ LEGACY_INVENTORY_ITEMS = [
         "reason": "documents deprecated yahoo pipeline scripts",
     },
 ]
-BHAVCOPY_OHLCV_COLUMNS = {
-    "SYMBOL",
-    "SERIES",
-    "OPEN_PRICE",
-    "HIGH_PRICE",
-    "LOW_PRICE",
-    "CLOSE_PRICE",
-    "TTL_TRD_QNTY",
-}
 UNIVERSE_SNAPSHOT_REQUIRED_COLS = {
     "date",
     "universe_id",
@@ -987,9 +935,9 @@ class Phase1Builder:
     def _parse_corp_action_factor(purpose: str) -> tuple[str | None, float | None]:
         text = str(purpose).lower()
         if "split" in text and "fv" in text:
-            nums = list(map(int, re.findall(r"\d+", text)))
-            if len(nums) >= 2 and nums[1] != 0:
-                return "split", nums[0] / nums[1]
+            pair = split_pair_ints(text)
+            if pair:
+                return "split", pair[0] / pair[1]
         ratio = find_bonus_ratio(text)
         if ratio:
             a, b = ratio

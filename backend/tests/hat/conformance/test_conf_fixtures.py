@@ -82,3 +82,28 @@ def test_fixtures_mcp_envelopes_and_bulk_quote() -> None:
     stale = client.bulk_quote(["RELIANCE", "TCS"], date(2026, 10, 20))
     assert stale.rows == []
     assert len(stale.mismatched) == 2
+
+
+def test_fixtures_history_mcp() -> None:
+    """The recorded `get_corporate_actions`, `get_stock_history` and `get_index_history` answers
+    unwrap through the client's history methods (shapes seen on 21 Oct 2026)."""
+    client = McpClient(
+        ScriptedTransport(
+            [
+                fixture_json("mcp_corporate_actions.json"),
+                fixture_json("mcp_stock_history.json"),
+                fixture_json("mcp_index_history.json"),
+            ]
+        ),
+        sleep=lambda _s: None,
+    )
+    page = client.corporate_actions("INFY", date(2018, 6, 1), date(2018, 7, 1))
+    assert not page.incomplete
+    assert page.actions[0]["exDate"] == "2018-06-14"
+    assert page.actions[0]["adjustmentFactor"] == 1.0
+    stock = client.stock_history("RELIANCE", date(2026, 10, 15), 1)
+    assert [r["date"] for r in stock][:2] == ["2026-10-13", "2026-10-14"]
+    assert stock[0]["close"] == 1166.7
+    index, next_end = client.index_history("India VIX", date(2026, 10, 1), 1)
+    assert [r["date"] for r in index] == ["2026-09-30", "2026-10-01"]
+    assert next_end == date(2026, 9, 1)

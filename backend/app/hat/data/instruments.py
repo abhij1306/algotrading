@@ -315,6 +315,49 @@ def upsert_instruments(
     return report
 
 
+def register_history_instrument(
+    session: Session,
+    market_id: uuid.UUID,
+    *,
+    isin: str,
+    series: str,
+    symbol: str,
+    first_seen: date,
+) -> uuid.UUID:
+    """The instrument for (isin, series), created inactive when the master does not have it: a
+    security seen only in old bhavcopy files (delisted, merged or renamed away) must still own
+    its history (HAT-DATA-021). Name and face value are unknown here (the symbol and 0 stand in)
+    until a weekly refresh lists it. Repeating the call returns the same row."""
+    row = session.scalar(
+        select(HatInstrument).where(
+            HatInstrument.market_id == market_id,
+            HatInstrument.isin == isin,
+            HatInstrument.series == series,
+        )
+    )
+    if row is not None:
+        return row.id
+    new_id = uuid7()
+    session.add(
+        HatInstrument(
+            id=new_id,
+            market_id=market_id,
+            isin=isin,
+            series=series,
+            symbol=symbol,
+            name=symbol,
+            face_value=Decimal(0),
+            listed_on=first_seen,
+            delisted_on=None,
+            active=False,
+        )
+    )
+    session.flush()
+    session.add(_new_interval(new_id, symbol, first_seen, None))
+    session.flush()
+    return new_id
+
+
 # --- broker symbols (HAT-DATA-024) -------------------------------------------------------------
 
 

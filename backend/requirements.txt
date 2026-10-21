@@ -7,6 +7,8 @@ pandas==3.0.6
 numpy==2.5.4
 scipy==1.18.1
 pyarrow==26.0.0
+polars==2.0.0  # HAT data layer (docs/specs/hat/02-data.md §7, §8)
+duckdb==1.5.6  # HAT Parquet views (docs/specs/hat/02-data.md §8)
 pypdf==6.21.1
 python-dotenv==1.2.4
 pydantic==2.14.1
