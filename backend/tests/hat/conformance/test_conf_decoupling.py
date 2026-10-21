@@ -42,6 +42,15 @@ PENDING = {
 # the parent `tests/conftest.py`) and of the `tests` package itself.
 LEGACY_TEST_HELPERS = {"fakes", "screener_fakes", "conftest", "tests"}
 
+# Legacy modules that only re-export a helper HAT owns (one implementation, no copy); each is
+# deleted with the legacy code that uses it (K4/K5).
+SHIMS = {
+    "utils/clock.py",
+    "services/bhavcopy_text.py",
+    "services/backtest_metrics.py",
+    "services/execution/paper_book.py",
+}
+
 # Modules a HAT suite must never load, however it reaches them: the app, the routers and the
 # singletons of the manual-trading side.
 NEVER_LOADED = (
@@ -114,12 +123,13 @@ def test_imports__hat_decoupled_from_legacy() -> None:
 
 
 def test_imports__legacy_does_not_import_hat() -> None:
-    """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep)
-    imports HAT. The legacy risk manager, routers and services do not."""
+    """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep) and
+    the re-export shims of the helpers HAT now owns (SHIMS, each deleted with the legacy code)
+    import HAT. The legacy risk manager, routers and services do not."""
     offenders = []
     for path in sorted(APP_ROOT.rglob("*.py")):
         rel = path.relative_to(APP_ROOT).as_posix()
-        if rel.startswith("hat/") or rel == "database.py":
+        if rel.startswith("hat/") or rel == "database.py" or rel in SHIMS:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []

@@ -15,11 +15,10 @@ FUNCTION_AUTHORITIES = {
     "evaluate_signal": "app/hat/risk/service.py",
 }
 # Legacy classes that still exist beside HAT's: name -> the one file that may define them. The
-# legacy suite keeps its own `FakeBroker` until K4/K5 delete it, and the legacy `RiskManager` and
-# `LiveMarketService` stay until K4/K5 (K3 for the live service). Each entry goes with its file;
-# the list only shrinks.
+# legacy `RiskManager` and `LiveMarketService` stay until K4/K5 (K3 for the live service); the
+# legacy suite imports HAT's `FakeBroker` (tests/fakes/broker.py re-exports it). Each entry goes
+# with its file; the list only shrinks.
 LEGACY_COPIES = {
-    "FakeBroker": "tests/fakes/broker.py",
     "RiskManager": "app/services/risk_manager.py",
     "LiveMarketService": "app/services/live_market_service.py",
 }
