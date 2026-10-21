@@ -14,7 +14,7 @@ session a `Fraction`, so a value exactly on a threshold is a tie, never a roundi
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -111,8 +111,18 @@ class LiveContext:
         locked_upper_circuit: bool | None,
     ) -> LiveContext:
         """This context with the entry-filter inputs of a trigger's plan set."""
-        return replace(
-            self,
+        return LiveContext(
+            at=self.at,
+            price=self.price,
+            bar_high=self.bar_high,
+            levels=self.levels,
+            cum_volume=self.cum_volume,
+            elapsed=self.elapsed,
+            avg50_volume=self.avg50_volume,
+            adv20=self.adv20,
+            open_price=self.open_price,
+            prev_close=self.prev_close,
+            announcements=self.announcements,
             entry=entry,
             stop=stop,
             adtr20=adtr20,
