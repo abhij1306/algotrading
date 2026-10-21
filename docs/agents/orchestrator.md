@@ -52,11 +52,22 @@ The machine already has the toolchain (Python 3.14 venv, Node 26, Java 17+, Post
    check it with `herdr agent read prNN --source visible`, answer with
    `herdr agent send-keys prNN down`, then `herdr agent send-keys prNN enter`, and wait for
    `herdr agent wait prNN --until idle` before sending the brief.
-4. Watch it in the background:
-   `herdr agent wait prNN --until idle --until done --until blocked --timeout 10800000`, then
-   `herdr agent read prNN --source recent-unwrapped --lines 60` and look for the end-of-turn line.
+4. Watch it in the background, waking only on a final line or a dialog. Builders stop at interim
+   points while a background shell waits on CI or reviews, so a plain wait wakes you for nothing:
+
+   ```bash
+   n=prNN; while true; do
+     herdr agent wait $n --until working --timeout 3600000 >/dev/null 2>&1
+     r=$(herdr agent wait $n --until idle --until done --until blocked --timeout 14400000)
+     tail=$(herdr agent read $n --source recent-unwrapped --lines 15)
+     echo "$r" | grep -q '"blocked"' && break
+     echo "$tail" | grep -qE 'READY TO MERGE #|BLOCKED #' && break
+   done
+   ```
+
    `blocked` means a permission or question dialog: read it, and ask the owner before answering
-   anything that isn't routine.
+   anything that isn't routine. Claude Code tips and popups (for example "Teach auto mode about
+   your environment?") are routine: dismiss them with "Not now".
 
 ## Merge queue
 
@@ -76,8 +87,10 @@ gh api graphql -f query='{repository(owner:"abhij1306",name:"algotrading"){pullR
   -q '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|select([.comments.nodes[].author.login]|index("abhij1306")|not)]|length'   # 0
 ```
 
-Also read CodeAnt's latest "Nitpicks" and "PR Risk" comments for points without a reply. If
-anything fails, send it back: `herdr agent prompt prNN "<what failed, what to fix>"`.
+Also read CodeAnt's "Nitpicks" and "PR Risk" issue comments. Every point needs a reply from the
+builder, and the review-thread check above doesn't see them (a PR once reported ready with six
+unanswered nitpicks, two of them real bugs). If anything fails, send it back:
+`herdr agent prompt prNN "<what failed, what to fix>"`.
 
 Merge and clean up:
 
@@ -94,6 +107,26 @@ Only the PR **next in line** rebases, and its own builder does it. When main mov
 builder: `herdr agent prompt prNN "You're next to merge. Rebase onto origin/main (<sha>), resolve
 every conflict and any CI, Sonar or CodeAnt fallout, and report READY TO MERGE again."` The others
 keep working on their stale base.
+
+## Improving the workflow
+
+Measure every PR from the builder's start to its merge. If a PR takes **longer than 60 minutes**,
+review it before starting the next builder, find the root cause and fix the workflow, not just
+that PR. Look at:
+
+- where the time went: build, local test runs, waits on CI, Sonar and CodeAnt, review rounds,
+  rebases (`gh pr view <n> --json createdAt,mergedAt,commits`, the CI run times and the builder's
+  transcript);
+- tests: slow or redundant suites, Hypothesis profiles, repeated full runs, break runs re-run after
+  small fixes. Cut or speed them up;
+- skills: a verify-* skill that made the builder rediscover things or re-run work;
+- scope: a PR too big for one review cycle. Split it smaller next time;
+- tool calls: repeated reads, polling, re-exploring files the brief could have named;
+- review rounds: CodeAnt or Sonar findings that a brief, a protocol rule or a skill could have
+  prevented.
+
+Record the root cause and the fix as a docs PR to `docs/agents/` (and to the skills or CI where
+the fix lives there), and tell the owner in one or two lines.
 
 ## Never
 
