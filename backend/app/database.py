@@ -30,6 +30,7 @@ from sqlalchemy.schema import CreateColumn, CreateTable
 
 from .base import Base
 from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
+from .hat.data.calendar import install_from_engine as install_hat_calendar
 from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
 from .hat.settings import is_enabled as hat_is_enabled
 from .models import (
@@ -151,6 +152,7 @@ def ensure_hat_database(*, bind: Engine | None = None) -> None:
         ensure_hat_columns(db_engine)
         ensure_hat_schema(db_engine)
         seed_hat_reference(db_engine)
+        install_hat_calendar(db_engine)
     except Exception:
         logger.exception("HAT schema upkeep failed")
         if hat_is_enabled():

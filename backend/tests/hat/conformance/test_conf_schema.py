@@ -320,6 +320,11 @@ def test_schema__market_id_on_market_tables() -> None:
     test_schema__market_id_columns()
 
 
+def test_market_id_on_market_tables() -> None:
+    """HAT-OVR-001 (PR 2, 4): the name the README traceability row uses."""
+    test_schema__market_id_columns()
+
+
 MONEY_CURRENCY_ROWS = {
     "hat_signal",
     "hat_order",

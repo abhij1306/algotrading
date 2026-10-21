@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"count\":1,\"quotes\":[{\"symbol\":\"TCS\",\"close\":2460.9,\"open\":2458.0,\"high\":2497.0,\"low\":2432.1,\"prev_close\":2465.0,\"pct_change\":-0.17,\"volume\":8676373,\"date\":\"2026-10-19\"}]}"}],"isError":false}}
