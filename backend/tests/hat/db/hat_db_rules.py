@@ -822,15 +822,15 @@ CATALOG_QUERIES = {
     ),
     "indexes": (
         "SELECT indexname, indexdef FROM pg_indexes"
-        " WHERE tablename LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1"
+        " WHERE tablename LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1, 2"
     ),
     "constraints": (
         "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint"
-        " WHERE conrelid::regclass::text LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1"
+        " WHERE conrelid::regclass::text LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1, 2"
     ),
     "triggers": (
         "SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal"
-        " AND tgrelid::regclass::text LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1"
+        " AND tgrelid::regclass::text LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1, 2"
     ),
     "functions": (
         "SELECT proname, prosrc FROM pg_proc WHERE proname LIKE 'hat\\_%' ESCAPE '\\' ORDER BY 1"

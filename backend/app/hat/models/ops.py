@@ -1,11 +1,30 @@
-"""Ops tables built in PR 2 (03-schema §7): job runs and quality-gate results."""
+"""Ops tables (03-schema §7): job runs and quality-gate results (PR 2); broker sessions,
+Telegram messages, the command log and daily bot snapshots (PR 3)."""
 
-from sqlalchemy import CheckConstraint, Column, Date, Integer, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Date,
+    Integer,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 
 from ...base import Base
-from ._types import JsonB, Timestamptz, fk, in_values, now_utc, uuid_pk
+from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, uuid_pk
 
-__all__ = ["JOB_STATUSES", "HatJobRun", "HatQualityCheck"]
+__all__ = [
+    "JOB_STATUSES",
+    "HatBrokerSession",
+    "HatCommandLog",
+    "HatDailyBotSnapshot",
+    "HatJobRun",
+    "HatQualityCheck",
+    "HatTelegramMessage",
+]
 
 JOB_STATUSES = ("running", "succeeded", "failed")
 
@@ -46,3 +65,64 @@ class HatQualityCheck(Base):
     check_name = Column(Text, primary_key=True)
     status = Column(Text, nullable=False)
     detail = Column(JsonB, nullable=False)
+
+
+class HatBrokerSession(Base):
+    """Morning login state."""
+
+    __tablename__ = "hat_broker_session"
+
+    broker_account_id = fk("hat_broker_account.id", primary_key=True)
+    trade_date = Column(Date, primary_key=True)
+    logged_in_at = Column(Timestamptz)
+    expires_at = Column(Timestamptz)
+    status = Column(Text, nullable=False)
+
+
+class HatTelegramMessage(Base):
+    """Links cards to signals. Purged after one year (HAT-SCH-091)."""
+
+    __tablename__ = "hat_telegram_message"
+
+    id = uuid_pk()
+    chat_id = Column(BigInteger, nullable=False)
+    kind = Column(Text, nullable=False)
+    ref_id = Column(Uuid)
+    sent_at = Column(Timestamptz, nullable=False, default=now_utc)
+    message_id = Column(BigInteger, nullable=False)
+
+
+class HatCommandLog(Base):
+    """Every inbound command, including rejected ones from unknown chats. Purged after one
+    year (HAT-SCH-091)."""
+
+    __tablename__ = "hat_command_log"
+
+    id = uuid_pk()
+    chat_id = Column(BigInteger, nullable=False)
+    command = Column(Text, nullable=False)
+    args = Column(Text)
+    accepted = Column(Boolean, nullable=False)
+    reason = Column(Text)
+    received_at = Column(Timestamptz, nullable=False, default=now_utc)
+
+
+class HatDailyBotSnapshot(Base):
+    """The kill-switch and drawdown source: one row per bot and day."""
+
+    __tablename__ = "hat_daily_bot_snapshot"
+    __table_args__ = (
+        CheckConstraint(
+            in_values("exposure_level", ("L1", "L2", "L3")),
+            name="ck_hat_daily_bot_snapshot_exposure_level",
+        ),
+    )
+
+    bot_id = fk("hat_bot.id", primary_key=True)
+    trade_date = Column(Date, primary_key=True)
+    equity = Column(Money, nullable=False)
+    equity_peak = Column(Money, nullable=False)
+    open_risk = Column(Money, nullable=False)
+    realized_r = Column(Ratio, nullable=False)
+    exposure_level = Column(Text, nullable=False)
+    currency = Column(Currency, nullable=False)

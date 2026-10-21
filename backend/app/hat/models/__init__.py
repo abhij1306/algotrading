@@ -5,7 +5,15 @@ them (SQLite in tests, Postgres in production).
 """
 
 from .backtest import HatBacktestRun
-from .ops import HatJobRun, HatQualityCheck
+from .events import HatEvent
+from .ops import (
+    HatBrokerSession,
+    HatCommandLog,
+    HatDailyBotSnapshot,
+    HatJobRun,
+    HatQualityCheck,
+    HatTelegramMessage,
+)
 from .portfolio import (
     HatAllocationDaily,
     HatFundamental,
@@ -26,6 +34,16 @@ from .reference import (
     HatPriceBand,
     HatTradingCalendar,
 )
+from .runtime import (
+    HatApproval,
+    HatFill,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+    HatSignalAnnouncement,
+    HatTradeResult,
+    HatWatchlistEntry,
+)
 from .strategy import (
     HatBot,
     HatBrokerAccount,
@@ -39,6 +57,19 @@ from .strategy import (
 )
 
 __all__ = [
+    "HatApproval",
+    "HatBrokerSession",
+    "HatCommandLog",
+    "HatDailyBotSnapshot",
+    "HatEvent",
+    "HatFill",
+    "HatOrder",
+    "HatPosition",
+    "HatSignal",
+    "HatSignalAnnouncement",
+    "HatTelegramMessage",
+    "HatTradeResult",
+    "HatWatchlistEntry",
     "HatAllocationDaily",
     "HatAnnouncement",
     "HatBacktestRun",
