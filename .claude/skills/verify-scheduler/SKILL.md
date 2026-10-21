@@ -79,8 +79,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
-Covered digest: `45e3af826911ad3c64efee9b6dd6f55509d565369b3d3f014129122470e2c8e7`
+Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
+Covered digest: `a249b8233ab29e4b9e1eb23fe411a1f00b779b66062b1e210d763a7c99911fa2`
 
 ## Scope changes
 
@@ -94,6 +94,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 13 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` includes 13; `KNOWN_GAPS` lost `TLA OrderReconciliation!AtMostOneEntryPerSignal` and gained `TLA ExecutionRouter!AutoNeedsGtt` (see `verify-execution`); `test_ops.py` gained `test_session_backoff_alert` and `test_backoff_delay_is_monotone_and_capped`.
 - PR 6 updated `test_conf_verification.py`: `MERGED_PRS` now includes 6; `KNOWN_GAPS` unchanged.
 - PR 10 updated `test_conf_verification.py` without narrowing any check: `MERGED_PRS` now includes 10, and `KNOWN_GAPS` gained two ExecutionRouter TLA names that belong to PR 15 (see `verify-risk`).
+- PR 8 updated `test_conf_verification.py`: `MERGED_PRS` now includes 8; `KNOWN_GAPS` unchanged.
+
 
 ## Scratch breaks
 

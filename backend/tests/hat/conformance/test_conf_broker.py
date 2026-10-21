@@ -274,9 +274,42 @@ def test_ops__one_login_one_token_store() -> None:
     }
 
 
+def _seed_scope_strategies_and_owner() -> None:
+    """The seeds are exactly S1 and S2 on NSE, and every row they create is owned by one user."""
+    import uuid
+
+    from hat.hat_support import memory_engine
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from app.hat.engine.strategy.versions import SEED_NAMES, seed_default_bots
+    from app.hat.models import HatBot, HatMarket, HatStrategy
+    from app.hat.schema import seed_hat_reference
+
+    engine = memory_engine()
+    seed_hat_reference(engine)
+    owner = uuid.uuid4()
+    with Session(engine) as session:
+        seed_default_bots(session, user_id=owner, broker_account_id=uuid.uuid4())
+        strategies = session.scalars(select(HatStrategy)).all()
+        assert (
+            {s.name for s in strategies}
+            == set(SEED_NAMES)
+            == {
+                "stage2-contraction-breakout",
+                "momentum-breakout-ep",
+            }
+        )
+        assert [m.code for m in session.scalars(select(HatMarket)).all()] == ["NSE"]
+        for model in (HatStrategy, HatBot):
+            owners = {row.user_id for row in session.scalars(select(model)).all()}
+            assert owners == {owner}, model
+
+
 def test_mvp_seed_scope() -> None:
     """HAT-DEC-I8 (the broker half of the seed scope): every adapter registered in the MVP is the
     Fyers adapter, and onboarding accepts no other broker. PR 8 extends this check to the seeded
     strategies, markets and `HAT_USER_ID` ownership (HAT-OVR-002)."""
     assert set(accounts.ADAPTER_FACTORIES) == {"fyers"}
+    _seed_scope_strategies_and_owner()
     assert Path(accounts.__file__).exists()

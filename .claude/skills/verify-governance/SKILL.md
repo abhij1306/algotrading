@@ -91,8 +91,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
-Covered digest: `fbe17689935c614406f68b8a96f467ebeb14a61e08d6b5f370bd401c92e00b29`
+Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
+Covered digest: `6721a84079abc4caa892f04f6b10d8a8b635142c9760f29e7854ee4cd049a496`
 
 ## Scope changes
 
@@ -108,6 +108,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `HAT-VER-011` (`traceability_points_to_methods`) lists the README rows whose method does not exist yet in `KNOWN_GAPS` instead of failing: `PBT criteria.fundamentals_point_in_time` (needs the criteria engine) and `CONF old_docs_removed` (a PR 1 item). The list may only shrink.
 - `conflict_resolutions_traced` accepts C6 as untraced (`UNTRACED_RESOLUTIONS = {6}`): no requirement in files 01 to 10 cites `PLAN C6`, which is a spec gap, not a code gap.
 - `PBT config.no_risk_keys`, `calendar.session_from_reference_data` and the other PBT names on PR 2 rows that need later features are not built here (their code does not exist yet).
+- PR 8 added the config-model properties to `test_config.py` (they are checked by `verify-criteria`; the hash properties here are unchanged) and a non-vacuity assertion to `test_import_graph_boundaries` (the `app.hat.engine.criteria` package must exist in the graph; its scratch break is recorded in `verify-criteria`).
+
 
 ## Scratch breaks
 

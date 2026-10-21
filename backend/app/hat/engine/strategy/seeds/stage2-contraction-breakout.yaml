@@ -1,0 +1,51 @@
+bot: stage2-contraction-breakout      # Minervini-style
+version: 1
+market: NSE
+execution_mode: shadow                # shadow | confirm | auto
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: min_price, params: {inr: 50}}
+
+regime:
+  index: NIFTY 500
+  rule: close_above_sma_and_rising    # assumption; Minervini states no fixed index rule
+  params: {sma: 50, rising_days: 10}
+
+setup:
+  threshold: 0.6
+  criteria:
+    - {type: sma_above, mode: hard, params: {a: close, b: 150}}
+    - {type: sma_above, mode: hard, params: {a: close, b: 200}}
+    - {type: sma_above, mode: hard, params: {a: 150, b: 200}}
+    - {type: sma_rising, mode: hard, params: {sma: 200, lookback_days: 21}}
+    - {type: sma_above, mode: hard, params: {a: 50, b: 150}}
+    - {type: sma_above, mode: hard, params: {a: 50, b: 200}}
+    - {type: sma_above, mode: hard, params: {a: close, b: 50}}
+    - {type: pct_from_52w_low, mode: hard, params: {min_pct: 30}}
+    - {type: pct_from_52w_high, mode: hard, params: {max_pct_below: 25}}
+    - {type: rs_rank, mode: hard, params: {min_percentile: 70}}
+    - {type: rs_rank, mode: score, weight: 1, params: {score_from: 70, score_full: 95}}
+    - {type: vcp, mode: score, weight: 2, params: {contractions: [2, 6], depth_ratio_max: 0.75,
+        final_depth_max_pct: 10, lookback_days: 120, dryup_vs_avg50: 0.7}}
+    - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}
+
+trigger:
+  - {type: price_breaks_level, params: {level: pivot, bar: 5m}}
+  - {type: volume_pace, params: {vs_avg50: 1.5}}
+
+entry_filters:
+  - {type: max_chase, params: {pct: 5}}
+
+stop: {rule: below_final_contraction_low, buffer_pct: 0.5, max_pct: 8}   # skip trade if > 8%
+
+# sizing: from the account risk policy (0.25% risk, 20% max position, 6 positions)
+
+exits:                                  # evaluated top to bottom
+  - {rule: hard_stop}
+  - {rule: move_stop_to_breakeven, at_r: 2}
+  - {rule: partial_at_r, at_r: 3, sell_fraction: 0.33}
+  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0, when: "15:25"}
+  - {rule: time_stop, enabled: false, days: 15, min_r: 1}
