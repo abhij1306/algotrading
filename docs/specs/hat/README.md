@@ -231,7 +231,7 @@ to an artefact that exists.
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
 | HAT-DATA-114 | [02](02-data.md) | 14 | PBT `bars.opening_range_fixed` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
-| HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, TLA `ExecutionRouter!NoOrderWhenStale` |
+| HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
 | HAT-DATA-119 | [02](02-data.md) | 12 | PBT `bars.history_matches_builder` |
@@ -450,6 +450,7 @@ to an artefact that exists.
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.final_contraction_low` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
+| HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs` |
 | HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill` |
 | HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap` |
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset` |

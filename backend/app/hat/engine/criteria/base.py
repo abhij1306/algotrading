@@ -150,13 +150,15 @@ class EvalContext:
 
 
 Evaluator = Callable[[EvalContext, Any], CriterionResult]
+# A live criterion reads a `live.LiveContext` (typed as Any here: base must not import live).
+LiveEvaluator = Callable[[Any, Any], CriterionResult]
 
 
 @dataclass(frozen=True)
 class CriterionType:
     """One catalogue entry: the parameter model (its JSON Schema is `hat_criterion_type`'s
-    `param_schema`), the stage, the data it needs and, for daily types, the function.
-    `evaluate` is None for a live type, whose evaluation is PR 15's."""
+    `param_schema`), the stage, the data it needs and its function: `evaluate` over daily bars,
+    or `evaluate_live` over a `LiveContext` for a live trigger or entry filter."""
 
     code: str
     stage: Stage
@@ -165,6 +167,7 @@ class CriterionType:
     evaluate: Evaluator | None = None
     version: int = 1
     extra_stages: tuple[Stage, ...] = ()  # other sections that may hold this type
+    evaluate_live: LiveEvaluator | None = None
 
     def param_schema(self) -> dict[str, Any]:
         return self.params.model_json_schema()

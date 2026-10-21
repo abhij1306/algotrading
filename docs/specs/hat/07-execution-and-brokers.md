@@ -117,12 +117,12 @@ Confirm mode sends a Telegram approval card with Take/Skip buttons; price, size 
   - Property: in every reachable state, no exit or stop action creates an approval, and every fired exit is eventually sent (real modes) or virtually filled (shadow). Harm: an exit stalls waiting for a human while the price falls.
 
 #### HAT-EXEC-034: Catalyst required in confirm for EP
-- **Statement:** For the episodic-pivot playbook, `catalyst_attached` is required in confirm mode and informational in auto unless marked hard.
+- **Statement:** For the episodic-pivot playbook, `catalyst_attached` is required in confirm mode and informational in auto, as its `required_in: [confirm]` says (HAT-CRIT-118).
 - **Source:** BL "Qullamaggie-style bot" (`required_in: [confirm]`); DS "Announcements for EP catalysts".
 - **PR:** 15
 - **Verification:** PBT `criteria.catalyst_required_in_confirm`
 - **Acceptance:**
-  - Property: for every EP signal, in confirm mode an approval is sent only when an announcement for the instrument was published within 24 hours; in auto mode the absence of one does not block the trigger unless the criterion mode is hard. Harm: the user is asked to approve an EP without the catalyst they judge it by.
+  - Property: for every EP signal, in confirm mode an approval is sent only when an announcement for the instrument was published within the criterion's `within_hours` (24 in the seed); in shadow and auto mode the absence of one does not block the trigger unless `required_in` lists that mode. Harm: the user is asked to approve an EP without the catalyst they judge it by.
 
 ## §4 Trade lifecycle
 
@@ -251,6 +251,15 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Verification:** PBT `stops.custom_rules`
 - **Acceptance:**
   - Property: for every valid parameter set and bar history, each rule returns its formula's value and every result is strictly below entry; a result ≤ 0 or ≥ entry yields SKIP. Harm: a malformed stop sizes an unbounded position.
+
+#### HAT-EXEC-053: Stops are priced on the instrument's real tick
+- **Statement:** Every stop rounds to the instrument's NSE tick for the trade date. The tick comes from the price slabs NSE has used since 15 April 2025 (below ₹250: 0.01; ₹250 to ₹1,000: 0.05; to ₹5,000: 0.10; to ₹10,000: 0.50; to ₹20,000: 1.00; above: 5.00), applied to the close of the last trading day of the month before the trade date. There is no default tick: a stop with no known tick is skipped.
+- **Source:** NSE circulars on price-linked tick sizes (June 2024 below ₹250; April 2025 six slabs; monthly review on the previous month's last close); BL "Stop rules"; PR 11 follow-up (stops used a fixed 0.05).
+- **PR:** 15
+- **Verification:** PBT `stops.tick_size_slabs`
+- **Acceptance:**
+  - Property: for every price p > 0 the tick is the slab's (0.01 iff p < 250; 0.05 iff 250 <= p <= 1000; and so on), it is monotone non-decreasing in p, and for every daily-close history the tick of a trade date depends only on the last close before the first day of that date's month (the latest earlier close when there is none). Harm: an off-grid stop is refused by the exchange, or a stop on a 0.01-tick stock sits up to 4 paise looser than the rule.
+- **[OWNER-PENDING]** a stock listed in the current month: NSE fixes its tick from the issue price, which HAT does not hold; default = its latest close before the trade date.
 
 ## §6 Stop placement at the broker
 
@@ -505,7 +514,7 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. This section covers evaluation in the live service. Triggers evaluate on final 5-minute bars (09:20–15:20) built by the bar builder (02 §11); entry filters run at trigger time.
 
 #### HAT-EXEC-120: Triggers on final bars inside the window
-- **Statement:** Trigger criteria evaluate only on final 5-minute bars and only between 09:20 and 15:20 IST.
+- **Statement:** Trigger criteria evaluate only on final 5-minute bars and only between 09:20 and 15:20 IST. A trigger whose signal write fails is evaluated again on the next final bar; one whose signal is stored never fires again that day.
 - **Source:** MA "Daily cycle" steps 4–5; DS "Live data" (09:20–15:20 triggers); B8, B9.
 - **PR:** 15
 - **Verification:** PBT `bars.trigger_only_on_final_bars`
@@ -513,15 +522,15 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
   - Property: for every tick stream, `signal.triggered` timestamps lie in [09:20, 15:20] IST and each is derived from a bar marked final (close + 2 s). Harm: triggers fire on half-built bars or in the auction.
 
 #### HAT-EXEC-121: All trigger criteria must pass
-- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules).
+- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules). `catalyst_attached` counts only in the modes its `required_in` lists (HAT-CRIT-118); a playbook with no blocking trigger criterion (none enabled, or only a `catalyst_attached` that does not block in the bot's mode) never triggers. A trigger criterion over daily bars (`neglect`) is evaluated once on the bars before the trade date when the candidate is built, and fails closed without them.
 - **Source:** BL "Configuration model" stage 4; BL default configs.
 - **PR:** 15
 - **Verification:** PBT `criteria.trigger_conjunction`
 - **Acceptance:**
-  - Property: for every bar and criteria set, the playbook triggers iff the conjunction of enabled trigger criteria is true, and a triggered signal records each criterion's value. Harm: entries on half the setup.
+  - Property: for every bar and set of enabled trigger criteria, the playbook triggers iff at least one of them is blocking and the conjunction of the blocking ones is true, and a triggered signal records each criterion's value. Harm: entries on half the setup.
 
 #### HAT-EXEC-122: Entry filters skip with reason
-- **Statement:** At trigger, `adtr_filter` and `max_chase` (always on) run; any failure records a skip reason and no order is routed.
+- **Statement:** At trigger, the initial stop is computed (HAT-EXEC-050..053), then the enabled entry filters run in their configured order with `max_chase` always among them (HAT-CRIT-122); the first failure records a skip reason and no order is routed. The reason is the failing filter's type (`adtr_filter`, `max_chase`) or the stop rule's skip reason, and the signal is stored Rejected with it before any risk check.
 - **Source:** BL "Configuration model" stage 5; BL "Criteria library" (`adtr_filter`, `max_chase`); B25.
 - **PR:** 15
 - **Verification:** PBT `criteria.entry_filters_skip`

@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
 import polars as pl
 
+from ..data.ticks import tick_for_date
 from .criteria import EvalContext
 from .regime_gate import regime_allows_longs
 from .stops import StopInputs, plan_stop
@@ -38,6 +39,8 @@ __all__ = [
 ]
 
 EP_PLAYBOOK = "episodic_pivot"
+# The setup levels stored with a watchlist row for the live trigger and stop (07 §12).
+LEVEL_KEYS = ("pivot", "consolidation_high", "final_contraction_low")
 
 
 @dataclass(frozen=True)
@@ -112,8 +115,10 @@ def _stage_json(stage: StageOutcome) -> dict[str, Any]:
 
 def criteria_results(evaluation: PlaybookEvaluation) -> dict[str, Any]:
     """The stored `criteria_results`: the stages in stage order, stopping at the first that
-    failed (HAT-CRIT-010)."""
-    return {"stages": [_stage_json(s) for s in evaluation.stages]}
+    failed (HAT-CRIT-010), and the setup levels the live trigger reads (`levels`, text
+    decimals, a level the setup did not expose left out)."""
+    levels = {k: str(v) for k in LEVEL_KEYS if (v := _extra(evaluation, k)) is not None}
+    return {"stages": [_stage_json(s) for s in evaluation.stages], "levels": levels}
 
 
 def _extra(evaluation: PlaybookEvaluation, key: str) -> Decimal | None:
@@ -131,11 +136,12 @@ def _planned_stop(
     evaluation: PlaybookEvaluation,
     pivot: Decimal | None,
     lows: Sequence[float | None],
+    tick: Decimal | None,
 ) -> Decimal | None:
-    """The stop the setup implies at the pivot, for the rules that can be priced overnight. A
-    skip (too wide, no pivot) leaves it empty; the live entry recomputes it from the real
-    entry price (HAT-BOT-062)."""
-    if pivot is None:
+    """The stop the setup implies at the pivot, for the rules that can be priced overnight, on
+    the instrument's tick grid (HAT-EXEC-053). A skip (too wide, no pivot, no tick) leaves it
+    empty; the live entry recomputes it from the real entry price (HAT-BOT-062)."""
+    if pivot is None or tick is None:
         return None
     rule = playbook.stop
     contraction_low = _extra(evaluation, "final_contraction_low")
@@ -143,9 +149,20 @@ def _planned_stop(
         return None
     swing = [d for v in lows if v is not None and (d := _dec(v)) is not None]
     plan = plan_stop(
-        rule, StopInputs(entry=pivot, final_contraction_low=contraction_low, swing_lows=swing)
+        rule,
+        StopInputs(entry=pivot, tick=tick, final_contraction_low=contraction_low, swing_lows=swing),
     )
     return plan.stop
+
+
+def next_session_tick(ctx: EvalContext) -> Decimal | None:
+    """The tick of the session after the scan date: NSE sets it from the close of the last
+    trading day of the month before (`data.ticks`). The day after `as_of` stands for the next
+    session; across a month end with a holiday on its last weekday it reads one month early,
+    which only the overnight planned stop uses (the live entry prices its own stop)."""
+    history = ctx.history
+    closes = [None if c is None else _dec(c) for c in history.close]
+    return tick_for_date(history.dates, closes, ctx.as_of + timedelta(days=1))
 
 
 def _lookback_lows(playbook: Playbook, ctx: EvalContext) -> list[float | None]:
@@ -191,7 +208,9 @@ def _scan_playbook(
                 score=evaluation.stages[-1].score,
                 criteria_results=criteria_results(evaluation),
                 pivot=pivot,
-                planned_stop=_planned_stop(playbook, evaluation, pivot, lows),
+                planned_stop=_planned_stop(
+                    playbook, evaluation, pivot, lows, next_session_tick(ctx)
+                ),
                 adtr=_dec(adtr.get(instrument_id)),
             )
         )

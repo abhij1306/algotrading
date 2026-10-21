@@ -1,13 +1,15 @@
-"""PBT for initial stop rules (HAT-EXEC-050..052, HAT-BOT-062) and stop pricing at the broker
-(HAT-EXEC-062)."""
+"""PBT for initial stop rules (HAT-EXEC-050..052, HAT-BOT-062), NSE tick sizes (HAT-EXEC-053) and
+stop pricing at the broker (HAT-EXEC-062)."""
 
+from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
+from app.hat.data.ticks import reference_close, tick_for_date, tick_size
 from app.hat.engine import stops
 from app.hat.engine.stops import StopInputs, plan_stop
 from app.hat.engine.strategy.config import (
@@ -147,3 +149,73 @@ def test_custom_rules(
         StopBelowFinalContractionLow(rule="below_final_contraction_low"),
     ):
         assert plan_stop(rule, bare).skip == stops.SKIP_BAD_INPUT
+
+
+# --- tick sizes (HAT-EXEC-053) ----------------------------------------------------------------
+
+# The NSE slabs since 15 April 2025, from the circular: (lowest price of the slab in paise, tick).
+NSE_SLABS_PAISE = [
+    (1, "0.01"),
+    (25_000, "0.05"),
+    (100_001, "0.10"),
+    (500_001, "0.50"),
+    (1_000_001, "1.00"),
+    (2_000_001, "5.00"),
+]
+SLAB_EDGES = [p for lo, _ in NSE_SLABS_PAISE for p in (lo - 1, lo, lo + 1) if p > 0]
+
+
+def oracle_tick(price_paise: int) -> Decimal:
+    return Decimal([tick for lo, tick in NSE_SLABS_PAISE if price_paise >= lo][-1])
+
+
+@st.composite
+def close_histories(draw: st.DrawFn) -> tuple[list[date], list[Decimal | None], date]:
+    trade = date(2026, draw(st.integers(1, 12)), draw(st.integers(1, 28)))
+    days = draw(st.lists(st.integers(-70, 5), unique=True, max_size=12))
+    dates = [trade + timedelta(days=d) for d in days]
+    closes = [
+        draw(
+            st.one_of(
+                st.none(),
+                st.sampled_from(SLAB_EDGES + [10_000, 300_000]).map(
+                    lambda p: Decimal(p).scaleb(-2)
+                ),
+            )
+        )
+        for _ in dates
+    ]
+    return dates, closes, trade
+
+
+@example(price=24_999)
+@example(price=25_000)  # exactly ₹250 is in the 0.05 slab
+@example(price=100_000)  # exactly ₹1,000 is still 0.05
+@example(price=100_001)
+@given(price=st.one_of(st.sampled_from(SLAB_EDGES), st.integers(1, 10_000_000)))
+def test_tick_size_slabs(price: int) -> None:
+    """HAT-EXEC-053: the tick of a price is the NSE slab it falls in (0.01 below ₹250, 0.05 to
+    ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above), each upper bound
+    inclusive; a non-positive price has none. Harm: a stop or GTT price off the exchange's tick
+    grid is refused by the broker, leaving a position with no stop."""
+    assert tick_size(Decimal(price).scaleb(-2)) == oracle_tick(price)
+    assert tick_size(Decimal(-price).scaleb(-2)) is None
+    assert tick_size(Decimal(0)) is None
+
+
+@given(history=close_histories())
+def test_tick_size_reference_close(
+    history: tuple[list[date], list[Decimal | None], date],
+) -> None:
+    """HAT-EXEC-053 (part of `tick_size_slabs`): the tick of a trade date is set from the last
+    close before the first day of its month, else (a listing this month) the latest close before
+    the trade date; never from the trade date's own close or a later one. Harm: a stock that
+    crossed ₹250 this month is priced on the new grid a month early and its stop is refused."""
+    dates, closes, trade = history
+    known = sorted((d, c) for d, c in zip(dates, closes, strict=True) if c is not None)
+    before_month = [c for d, c in known if d < trade.replace(day=1)]
+    before_trade = [c for d, c in known if d < trade]
+    want = before_month[-1] if before_month else (before_trade[-1] if before_trade else None)
+    assert reference_close(dates, closes, trade) == want
+    tick = tick_for_date(dates, closes, trade)
+    assert tick == (None if want is None else oracle_tick(int(want.scaleb(2))))

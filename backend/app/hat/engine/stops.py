@@ -23,7 +23,6 @@ from .strategy.config import (
 )
 
 __all__ = [
-    "DEFAULT_TICK",
     "SKIP_BAD_INPUT",
     "SKIP_NOT_BELOW_ENTRY",
     "SKIP_TOO_WIDE",
@@ -39,8 +38,6 @@ __all__ = [
     "swing_low",
 ]
 
-# [A] the NSE tick of most equities; the real tick comes from the instrument in PR 15.
-DEFAULT_TICK = Decimal("0.05")
 SKIP_TOO_WIDE = "stop_too_wide"
 SKIP_NOT_BELOW_ENTRY = "stop_not_below_entry"
 SKIP_BAD_INPUT = "stop_input_missing"
@@ -134,11 +131,12 @@ def swing_low(entry: Decimal, lows: Sequence[Decimal], tick: Decimal) -> StopPla
 
 @dataclass(frozen=True)
 class StopInputs:
-    """What a stop rule may read at entry: the entry price, the tick, and whichever market
-    values the rule needs (a missing one is a skip, never a guess)."""
+    """What a stop rule may read at entry: the entry price, the instrument's tick on the trade
+    date (`data.ticks`, HAT-EXEC-053; there is no default tick), and whichever market values the
+    rule needs (a missing one is a skip, never a guess)."""
 
     entry: Decimal
-    tick: Decimal = DEFAULT_TICK
+    tick: Decimal
     final_contraction_low: Decimal | None = None
     day_lows: Sequence[Decimal] = ()
     atr: Decimal | None = None

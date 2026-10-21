@@ -530,7 +530,7 @@ Every signal records the exact strategy version and risk-policy version that pro
 | instrument_id | uuid FK hat_instrument | |
 | trade_date | date | the session the entry is for |
 | score | numeric | setup score in [0, 1] |
-| criteria_results | jsonb | pass/fail/score + value per criterion |
+| criteria_results | jsonb | pass/fail/score + value per criterion (`stages`), and `levels`: the setup's `pivot` (a copy of the `pivot` column, which is what the live trigger reads), and the `consolidation_high` and `final_contraction_low` that the live trigger and stop read from here |
 | pivot | numeric(18,4) null | |
 | planned_stop | numeric(18,4) null | |
 | adtr | numeric(18,4) null | |
@@ -548,7 +548,7 @@ Every signal records the exact strategy version and risk-policy version that pro
 | instrument_id | uuid FK hat_instrument | |
 | trade_date | date | |
 | triggered_at | timestamptz | |
-| trigger_price | numeric(18,4) | |
+| trigger_price | numeric(18,4) | the level the trigger broke (HAT-CRIT-119); the entry price is on `signal.triggered` |
 | stop_price | numeric(18,4) | |
 | qty | int | ≥ 0 |
 | risk_amount | numeric(18,4) | |

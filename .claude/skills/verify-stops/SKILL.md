@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's initi
 
 # verify-stops
 
-Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, and that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 052, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072). The model `StopPlacement` (the stop order at the broker only tightens) belongs to PR 15 with the router.
+Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, and that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072). The model `StopPlacement` (the stop order at the broker only tightens) belongs to PR 15 with the router.
 
 ## Properties
 
@@ -18,6 +18,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT exits.rule_semantics` Each of the nine rules alone sells or raises the stop exactly when the spec says, in the phase the spec gives it (live, 15:25 close, nightly), and a disabled rule or a missing price never fires one. Harm: a rule firing early or late changes every trade result.
 - `PBT exits.never_lowers_stop` Over any run of evaluations the stop never goes down, a new stop is always above the current one and a result carrying a lower stop changes nothing. Harm: a lower stop widens the risk the position was sized for.
 - `DB governance.stop_only_rises` The database refuses an UPDATE that lowers `hat_position.current_stop` (alone or with other columns, one row or all) and refuses to DELETE a position; equal or higher stops and other columns move freely. Harm: a lowered stop, or a delete and re-insert, widens the risk behind the owner's back.
+- `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
 
 ## Run
 
@@ -35,7 +36,7 @@ No check calls a broker or the exchange; the shadow engine properties in `test_e
 
 - A failing property prints a falsifying example (entry, low, buffer, tick for a stop; the rule stack, the position and the view for an exit). Reproduce it with the real function (`stops.plan_stop`, `exits.evaluate`). If the real code breaks the spec, that is a bug: fix it. Never weaken the property or narrow its strategy; a narrowing needs a reason under "Scope changes".
 - The oracles are written apart from the code: stops with `Fraction`, the firing conditions of the exit rules in `expected_sells` and `expected_phase` in `test_exits.py`. If the two disagree, read the spec text (07 §5, §7) before deciding which is wrong.
-- Stops are rounded down to the tick (`DEFAULT_TICK = 0.05` until PR 15 reads the instrument's own tick); a lower stop is never tighter than the formula. The custom rules follow the same rounding.
+- Stops are rounded down to the instrument's real tick (`data/ticks.py`, HAT-EXEC-053; `StopInputs.tick` is required, there is no default); a lower stop is never tighter than the formula. The custom rules follow the same rounding.
 - `regime_exit` needs no price of its own: it fires on the index at night. `evaluate_position` refuses an exit with no price (`exit_without_price`) before writing anything.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
@@ -50,6 +51,7 @@ No check calls a broker or the exchange; the shadow engine properties in `test_e
 
 Code under check:
 - `backend/app/hat/engine/stops.py`
+- `backend/app/hat/data/ticks.py`
 - `backend/app/hat/engine/exits.py`
 - `backend/app/hat/engine/strategy/config.py`
 - `backend/app/hat/schema.py`
@@ -66,14 +68,14 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
-Covered digest: `d77d69472ce56a9aca483367e546cd9e38aa4136bc9ebedf17efd935ff981a71`
+Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
+Covered digest: `eb3275791cde5c6990bac91b68f76d33285c1191a21ed988cae7f7fa5b00b84d`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
-- The tick is `DEFAULT_TICK = 0.05` for every instrument until PR 15 reads it from the instrument; the properties run on 0.01, 0.05, 0.1 and 1.
+- PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
 - `TLA StopPlacement!StopOnlyTightens` (HAT-RISK-070, HAT-SCH-081) is not built: the model describes the stop order at the broker and belongs to PR 15 with the router. It stays in `KNOWN_GAPS`.
 - `exits.veto_score` (HAT-EXEC-130) is not built: the veto score belongs to PRs 15 and 16.
 - Exits of a real position are the router's (PR 15); `evaluate_position` refuses a position that is not virtual.
@@ -174,4 +176,18 @@ Break: in `backend/app/hat/schema.py`: the delete guard lets the delete through.
 E   AssertionError: the database accepted: deleting a position
 FAILED tests/hat/db/test_db_runtime.py::test_governance__stop_only_rises - As [cut]
 ============================== 1 failed in 0.30s ===============================
+```
+
+### PBT stops.tick_size_slabs
+
+Break: in `backend/app/hat/data/ticks.py`: `price < 250` became `price <= 250`, so ₹250.00 gets the 0.01 tick.
+
+```
+E   AssertionError: assert Decimal('0.01') == Decimal('0.05')
+E    +  where Decimal('0.01') = tick_size(Decimal('250.00'))
+E    +    where Decimal('250.00') = <built-in method scaleb of decimal.Decimal object at 0x7fbedb0047c0>(-2)
+E    +      where <built-in method scaleb of decimal.Decimal object at 0x7fbedb0047c0> = Decimal('25000').scaleb
+E    +        where Decimal('25000') = Decimal(25000)
+E    +  and   Decimal('0.05') = oracle_tick(25000)
+E   Failing explicit example: test_tick_size_slabs(
 ```

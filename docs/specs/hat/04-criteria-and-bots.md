@@ -305,7 +305,7 @@ Common properties for every catalogue type (apply to each requirement below; ver
   - Property: for every (open, prev_close > 0), `passed` iff (open / prev_close − 1) × 100 >= min_pct, with prev_close taken from the adjusted daily bars of the previous session. Harm: small gaps trigger the episodic-pivot playbook, or a split makes a fake gap.
 
 #### HAT-CRIT-116: `volume_pace`
-- **Statement:** `volume_pace` passes iff the day's volume projected to a full session is at least 1.5 × the 50-day average volume.
+- **Statement:** `volume_pace` passes iff the day's volume projected to a full session is at least 1.5 × the 50-day average volume. At a trigger the volume and the elapsed fraction are both read at the bar's final instant (end + 2 s).
 - **Source:** BL "Criteria library" (`× 50-day avg, projected to full day (1.5)`); BL bot configs (`vs_avg50: 1.5`); DS "Bar builder rules"; B8.
 - **PR:** 8, 15
 - **Verification:** PBT `criteria.volume_pace_contract`
@@ -323,13 +323,13 @@ Common properties for every catalogue type (apply to each requirement below; ver
 - **[A]** early volume: default 0.5× ADV20; validated in shadow mode over one earnings season (BL "Defaults that are assumptions").
 
 #### HAT-CRIT-118: `catalyst_attached`
-- **Statement:** `catalyst_attached` passes iff an NSE announcement matched to the instrument was published within the last 24 hours; it is required in confirm mode and informational in auto mode unless marked hard.
+- **Statement:** `catalyst_attached` passes iff an NSE announcement matched to the instrument was published within the last 24 hours; it is required in the modes its `required_in` lists (default confirm) and informational in the others. A trigger-stage instance is always `hard` (the `score` mode exists only in the setup stage, HAT-CRIT-020), so `required_in` alone decides where it blocks: listing all three modes makes it block everywhere. [Revised in PR 15a: the earlier "unless marked hard" could not be told apart from the default `mode: hard` every stored instance carries.]
 - **Source:** BL "Criteria library"; BL "Qullamaggie-style bot" (`required_in: [confirm]`); DS "Announcements for EP catalysts"; B10, I6.
 - **PR:** 8, 15
 - **Verification:** PBT `criteria.catalyst_attached_contract`
 - **Acceptance:**
   - Property: for every set of announcements and trigger time T, `passed` iff some announcement with matching `instrument_id` has T − 24h <= published_at <= T. Harm: stale or unrelated news is shown as the reason for a trade.
-  - Property: for every mode, the criterion blocks the trigger only when the bot's mode is in `required_in` or the instance is `hard`; otherwise its result is recorded but does not block. Harm: auto mode would skip valid EPs on a feed gap, or confirm mode would show cards with no catalyst.
+  - Property: for every mode, the criterion blocks the trigger only when the bot's mode is in `required_in`; otherwise its result is recorded but does not block. Harm: auto mode would skip valid EPs on a feed gap, or confirm mode would show cards with no catalyst.
 
 #### HAT-CRIT-119: `price_breaks_level`
 - **Statement:** `price_breaks_level` fires when live price trades above the configured level (pivot, opening-range high, or the maximum of consolidation high and opening-range high), with the opening range defined by the first 5-minute bar.
@@ -339,7 +339,7 @@ Common properties for every catalogue type (apply to each requirement below; ver
 - **Acceptance:**
   - Property: for every tick sequence, the criterion fires at most once per (bot, playbook, instrument, trade date), only at a tick with price > level, and never before 09:20 IST when the level uses the opening range (the 09:15-09:20 bar must be final). Harm: entries fire before the opening range is known or fire repeatedly.
   - Property: the trigger price recorded equals the level. Harm: the max-chase check and sizing use the wrong reference price.
-- **[OWNER-PENDING]** break semantics: default = first tick strictly above the level during 09:20-15:20 IST; the docs give only "level" and "bar (5-min)". Owner to confirm.
+- **[OWNER-PENDING]** break semantics: default = the first final 5-minute bar whose final instant (bar end + 2 s) lies in 09:20-15:20 IST and whose high is strictly above the level, so a tick traded above the level inside that bar; triggers evaluate only on final bars (HAT-EXEC-120), and the entry price is the bar's close. The docs give only "level" and "bar (5-min)". Owner to confirm. [Reconciled in PR 15a with HAT-EXEC-120, which had evaluation on final bars while this default read "first tick".]
 
 #### HAT-CRIT-120: `neglect`
 - **Statement:** `neglect` passes iff the 63-day return is at most 30%.
