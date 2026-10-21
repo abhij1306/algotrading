@@ -15,6 +15,8 @@ from sqlalchemy import (
 from ...base import Base
 from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, now_utc, uuid_pk
 
+INSTRUMENT_ID = "hat_instrument.id"
+
 __all__ = [
     "HatAnnouncement",
     "HatBrokerSymbol",
@@ -58,7 +60,7 @@ class HatInstrument(Base):
 class HatInstrumentSymbolHistory(Base):
     __tablename__ = "hat_instrument_symbol_history"
 
-    instrument_id = fk("hat_instrument.id", primary_key=True)
+    instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     symbol = Column(Text, nullable=False)
     valid_from = Column(Date, primary_key=True)
     valid_to = Column(Date)
@@ -68,7 +70,7 @@ class HatBrokerSymbol(Base):
     __tablename__ = "hat_broker_symbol"
     __table_args__ = (UniqueConstraint("broker", "broker_symbol"),)
 
-    instrument_id = fk("hat_instrument.id", primary_key=True)
+    instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     broker = Column(Text, primary_key=True)
     broker_symbol = Column(Text, nullable=False)
     broker_token = Column(Text)
@@ -79,7 +81,7 @@ class HatPriceBand(Base):
     __tablename__ = "hat_price_band"
     __table_args__ = (CheckConstraint("band_pct IN (2, 5, 10, 20)", name="ck_hat_price_band_pct"),)
 
-    instrument_id = fk("hat_instrument.id", primary_key=True)
+    instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     band_pct = Column(Ratio)
     effective_from = Column(Date, primary_key=True)
 
@@ -87,7 +89,7 @@ class HatPriceBand(Base):
 class HatIndustry(Base):
     __tablename__ = "hat_industry"
 
-    instrument_id = fk("hat_instrument.id", primary_key=True)
+    instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     sector = Column(Text, nullable=False)
     industry = Column(Text, nullable=False)
     effective_from = Column(Date, primary_key=True)
@@ -98,7 +100,7 @@ class HatCorporateAction(Base):
     __table_args__ = (UniqueConstraint("instrument_id", "ex_date", "action_type"),)
 
     id = uuid_pk()
-    instrument_id = fk("hat_instrument.id")
+    instrument_id = fk(INSTRUMENT_ID)
     ex_date = Column(Date, nullable=False)
     action_type = Column(Text, nullable=False)
     # Unscaled: a split or bonus factor is never rounded to 4 dp.
@@ -125,7 +127,7 @@ class HatAnnouncement(Base):
     id = uuid_pk()
     guid = Column(Text, nullable=False, unique=True)
     feed = Column(Text, nullable=False)
-    instrument_id = Column(Uuid, ForeignKey("hat_instrument.id"))
+    instrument_id = Column(Uuid, ForeignKey(INSTRUMENT_ID))
     company_raw = Column(Text, nullable=False)
     category = Column(Text, nullable=False)
     title = Column(Text, nullable=False)

@@ -21,8 +21,9 @@ CACHE_DIR="${TLA_CACHE_DIR:-${HOME}/.cache/hat-tla}/${TLC_VERSION}"
 JAR="${CACHE_DIR}/tla2tools.jar"
 
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "${file}" | cut -d' ' -f1
+  else shasum -a 256 "${file}" | cut -d' ' -f1; fi
 }
 
 fetch_jar() {
@@ -31,7 +32,7 @@ fetch_jar() {
   rm -f "${JAR}"
   local tmp
   tmp="$(mktemp "${CACHE_DIR}/download.XXXXXX")"
-  curl --fail --silent --show-error --location --retry 3 --output "${tmp}" "${TLC_URL}"
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --output "${tmp}" "${TLC_URL}"
   local got
   got="$(sha256_of "${tmp}")"
   if [[ "${got}" != "${TLC_SHA256}" ]]; then

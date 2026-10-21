@@ -26,6 +26,8 @@ from ...base import Base
 from ..risk.policy import require_cooling_off
 from ._types import VERSION_STATUSES, JsonB, Timestamptz, fk, in_values, now_utc, uuid_pk
 
+BOT_ID = "hat_bot.id"
+
 __all__ = [
     "HatBot",
     "HatBrokerAccount",
@@ -198,7 +200,7 @@ class HatModeChange(Base):
     )
 
     id = uuid_pk()
-    bot_id = fk("hat_bot.id")
+    bot_id = fk(BOT_ID)
     from_mode = Column(Text, nullable=False)
     to_mode = Column(Text, nullable=False)
     requested_at = Column(Timestamptz, nullable=False, default=now_utc)
@@ -220,7 +222,7 @@ class HatKillSwitch(Base):
 
     id = uuid_pk()
     scope = Column(Text, nullable=False)
-    bot_id = fk("hat_bot.id", nullable=True)
+    bot_id = fk(BOT_ID, nullable=True)
     state = Column(Text, nullable=False)
     tripped_at = Column(Timestamptz, nullable=False)
     reason = Column(Text, nullable=False)
@@ -235,7 +237,7 @@ class HatExposureState(Base):
         CheckConstraint("consecutive_losses >= 0", name="ck_hat_exposure_state_losses"),
     )
 
-    bot_id = fk("hat_bot.id", primary_key=True)
+    bot_id = fk(BOT_ID, primary_key=True)
     level = Column(Text, nullable=False)
     consecutive_wins = Column(Integer, nullable=False)
     consecutive_losses = Column(Integer, nullable=False)

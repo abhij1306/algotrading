@@ -99,7 +99,8 @@ def test_tla_bounds_declared() -> None:
     named under Bounds:."""
     for model in _models():
         header = _header(model)
-        assert re.search(r"Bounds:", header) and re.search(r"Assumptions:", header), model.name
+        assert re.search(r"Bounds:", header), model.name
+        assert re.search(r"Assumptions:", header), model.name
         bounds = header[header.index("Bounds:") : header.index("Assumptions:")]
         constants = _cfg_constants(model.with_suffix(".cfg"))
         assert constants, model.name
@@ -197,7 +198,8 @@ def test_tla_broken_variants_fail() -> None:
             prop = match.group(1)
             assert prop in _cfg_properties(cfg), cfg.name  # the broken cfg checks what it expects
             mode = re.search(r'BrokenMode = "(\w+)"', body)
-            assert mode and mode.group(1) != "none", cfg.name
+            assert mode, cfg.name
+            assert mode.group(1) != "none", cfg.name
             assert f'"{mode.group(1)}"' in text  # the model knows this variant
             assert mode.group(1) == cfg.stem.split("__", 1)[1], cfg.name
             expected.setdefault(prop, []).append(cfg.name)
@@ -205,11 +207,9 @@ def test_tla_broken_variants_fail() -> None:
                 assert name in _cfg_constants(cfg), (cfg.name, name)
         assert properties <= set(expected), properties - set(expected)
     script = (TLA_DIR / "run.sh").read_text(encoding="utf-8")
-    assert (
-        "--broken" in script
-        and "is violated" in script
-        and "Temporal properties were violated" in script
-    )
+    assert "--broken" in script
+    assert "is violated" in script
+    assert "Temporal properties were violated" in script
 
 
 # --- Hypothesis -----------------------------------------------------------------------------
@@ -338,9 +338,12 @@ def test_spec_requirements_well_formed() -> None:
     assert len(reqs) > 100
     for req in reqs:
         methods = set(re.findall(r"\b(TLA|PBT|DB|CONF|OPS)\b", req.verification))
-        assert req.verification and methods and methods <= METHODS, req.id
+        assert req.verification, req.id
+        assert methods, req.id
+        assert methods <= METHODS, req.id
         bullets = re.findall(r"^\s+- Property: .*$", req.block, re.MULTILINE)
-        assert bullets and any("Harm:" in b for b in bullets), req.id
+        assert bullets, req.id
+        assert any("Harm:" in b for b in bullets), req.id
 
 
 # Finding: no requirement in 01-10 cites `PLAN C6` (the VCP module stays intact in the MVP;
@@ -458,7 +461,8 @@ def test_verify_skills_complete() -> None:
         for block in re.split(r"^### ", skill["sections"]["Scratch breaks"], flags=re.MULTILINE)[
             1:
         ]:
-            assert "Break:" in block and "```" in block, block.splitlines()[0]
+            assert "Break:" in block, block.splitlines()[0]
+            assert "```" in block, block.splitlines()[0]
         run = skill["sections"]["Run"]
         assert "```" in run, path
 

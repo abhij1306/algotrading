@@ -216,7 +216,8 @@ class JobRunMachine(RuleBasedStateMachine):
         if self.expected.get(key) in ("succeeded", "running"):
             return
         run_id, stored = _claim(self.factory, job, day, datetime.now(UTC))
-        assert run_id is not None and stored is None
+        assert run_id is not None
+        assert stored is None
         self.expected[key] = "running"
 
     @rule()

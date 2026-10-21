@@ -181,7 +181,8 @@ CHAIN_EXEMPT = {"hat_kill_switch": "account-scope rows have a null bot_id (spec 
 def test_schema__user_id_columns() -> None:
     for name in USER_ROOTS:
         col = MODEL[name].columns["user_id"]
-        assert logical_type(col) == "uuid" and not col.nullable, name
+        assert logical_type(col) == "uuid", name
+        assert not col.nullable, name
     # Every other owned table reaches a root through non-null FKs.
     reach = set(USER_ROOTS) | {"hat_market"}  # reference tables are not owned
     pending = {n for n in MODEL if n not in reach}
@@ -261,7 +262,8 @@ def test_schema__time_types() -> None:
                 col.name,
             )
             if isinstance(col.type, sa.DateTime) and col.nullable:
-                assert col.default is None and col.server_default is None, (name, col.name)
+                assert col.default is None, (name, col.name)
+                assert col.server_default is None, (name, col.name)
             if isinstance(col.type, sa.DateTime) and not col.nullable and col.name.endswith("_at"):
                 if col.name in (
                     "created_at",
@@ -286,7 +288,8 @@ def test_schema__time_defaults_are_aware_utc() -> None:
             if col.name in ("created_at", "recorded_at") and not col.nullable:
                 assert col.default is not None, (name, col.name)
                 value = col.default.arg(None)  # a Python callable taking the exec context
-                assert value.tzinfo is not None and value.utcoffset().total_seconds() == 0
+                assert value.tzinfo is not None
+                assert value.utcoffset().total_seconds() == 0
                 assert value.tzinfo == UTC or str(value.tzinfo) == "UTC"
 
 

@@ -13,7 +13,7 @@ def _without_negative_zero(value: object) -> object:
         return {key: _without_negative_zero(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_without_negative_zero(item) for item in value]
-    if isinstance(value, float) and value == 0.0:
+    if isinstance(value, float) and not value:  # true for 0.0 and -0.0 only (NaN is truthy)
         return 0.0
     return value
 

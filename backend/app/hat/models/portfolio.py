@@ -27,6 +27,8 @@ from ._types import (
     uuid_pk,
 )
 
+MARKET_ID = "hat_market.id"
+
 __all__ = [
     "HatAllocationDaily",
     "HatFundamental",
@@ -46,7 +48,7 @@ class HatUniverse(Base):
 
     id = uuid_pk()
     user_id = Column(Uuid, nullable=False)
-    market_id = fk("hat_market.id")
+    market_id = fk(MARKET_ID)
     name = Column(Text, nullable=False)
     kind = Column(Text, nullable=False)
 
@@ -97,7 +99,7 @@ class HatRegimeModelVersion(Base):
     )
 
     id = uuid_pk()
-    market_id = fk("hat_market.id")
+    market_id = fk(MARKET_ID)
     kind = Column(Text, nullable=False)
     version = Column(Integer, nullable=False)
     status = Column(Text, nullable=False)
@@ -116,7 +118,7 @@ class HatRegimeState(Base):
     )
 
     trade_date = Column(Date, primary_key=True)
-    market_id = fk("hat_market.id", primary_key=True)
+    market_id = fk(MARKET_ID, primary_key=True)
     model_version_id = fk("hat_regime_model_version.id", primary_key=True)
     state = Column(Text, nullable=False)
     probabilities = Column(JsonB)
