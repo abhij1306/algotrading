@@ -51,7 +51,7 @@ not_true = st.one_of(
 )
 noise = st.dictionaries(
     st.text(alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ_", min_size=1, max_size=12).filter(
-        lambda key: key != "HAT_ENABLED"
+        lambda key: key not in ("HAT_ENABLED", "HAT_USER_ID")
     ),
     st.text(max_size=8),
     max_size=5,

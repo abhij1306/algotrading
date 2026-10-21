@@ -47,6 +47,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
     )
 
 
+def is_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Only the `HAT_ENABLED` switch, so an unrelated bad setting cannot fail a disabled start."""
+    source = os.environ if env is None else env
+    return _is_true(source.get("HAT_ENABLED"))
+
+
 def require_postgres(dialect_name: str) -> None:
     """Fail closed unless the database is PostgreSQL (HAT-SCH-105): the triggers and CHECKs
     that protect versions, stops and the event log exist only there."""

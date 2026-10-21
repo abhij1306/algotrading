@@ -31,7 +31,7 @@ from sqlalchemy.schema import CreateColumn, CreateTable
 from .base import Base
 from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
 from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
-from .hat.settings import load_settings as load_hat_settings
+from .hat.settings import is_enabled as hat_is_enabled
 from .models import (
     BacktestDailyResult,
     BacktestRun,
@@ -153,7 +153,7 @@ def ensure_hat_database(*, bind: Engine | None = None) -> None:
         seed_hat_reference(db_engine)
     except Exception:
         logger.exception("HAT schema upkeep failed")
-        if load_hat_settings().enabled:
+        if hat_is_enabled():
             raise
 
 

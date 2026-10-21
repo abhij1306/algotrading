@@ -15,6 +15,30 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
     # The Postgres-only DDL, repeated.
     rules.check_migration__ensure_idempotent(pg_engine, ensure_hat_schema)
 
+    # `init_db()` runs the HAT migration: with every trigger and function removed first, one
+    # run must restore the catalog exactly (a disabled HAT swallows upkeep errors, so the
+    # restored catalog is what proves the step ran).
+    before = rules.catalog(pg_engine)
+    with pg_engine.begin() as connection:
+        for table in ("hat_strategy_version", "hat_universe_version", "hat_risk_policy_version"):
+            names = connection.execute(
+                text(
+                    "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal"
+                    " AND tgrelid = CAST(:t AS regclass)"
+                ),
+                {"t": table},
+            ).scalars()
+            for name in list(names):
+                connection.execute(text(f"DROP TRIGGER {name} ON {table}"))
+        connection.execute(text("DROP FUNCTION IF EXISTS hat_strategy_version_immutable CASCADE"))
+        connection.execute(text("DROP FUNCTION IF EXISTS hat_universe_version_immutable CASCADE"))
+        connection.execute(
+            text("DROP FUNCTION IF EXISTS hat_risk_policy_version_immutable CASCADE")
+        )
+    assert rules.catalog(pg_engine)["triggers"] != before["triggers"]
+    init_db()
+    assert rules.catalog(pg_engine) == before
+
     # `init_db()` end to end: any number of runs gives the catalog of one run, one NSE row.
     # (init_db uses the process engine, which points at the same DB_* database.)
     rules.check_migration__ensure_idempotent(pg_engine, lambda _engine: init_db())
