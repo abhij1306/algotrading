@@ -3,11 +3,12 @@ and through the real service on SQLite, against an independently written model."
 
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 from hat_risk_support import AT, D, seed_bot, seed_pending_approval
 from hat_support import memory_engine
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from app.hat.risk.controls import (
     pause_bot,
     rearm_kill,
     resume_bot,
+    snapshot_bots,
     sync_health,
     trip_kill,
 )
@@ -320,3 +322,126 @@ def test_drawdown_kills_from_snapshots(equities: list, rearm_first: bool) -> Non
         session.execute(delete(HatKillSwitch))
         session.execute(delete(HatDailyBotSnapshot))
         session.commit()
+
+
+# --- planned reallocation is not a drawdown (HAT-RISK-066) --------------------------------------
+
+CAPITAL = st.integers(1, 10_000_000).map(lambda n: D(n) / 100)
+
+
+@given(st.lists(st.tuples(CAPITAL, st.booleans()), min_size=2, max_size=12))
+def test_reallocation_is_not_drawdown(days: list) -> None:
+    """The allocator moves a sleeve's capital between nights (regime, health, cluster caps) and
+    snapshot equity is allocation plus realised P&L. With no trade results, whatever sequence of
+    capitals (a sleeve benched for a night included) the bot and account kills stay armed, the
+    stored peak never exceeds the equity it is restated for, and the restated drawdown is 0."""
+    from datetime import date
+
+    from app.hat.models import HatAllocationDaily
+
+    engine = memory_engine()
+    with Session(engine) as session:
+        bot = seed_bot(session)
+        first = date(2026, 3, 2)
+        for offset, (capital, benched) in enumerate(days):
+            amount = D(0) if benched and offset else capital
+            session.add(
+                HatAllocationDaily(
+                    trade_date=first + timedelta(days=offset),
+                    bot_id=bot,
+                    base_weight=D("0.5"),
+                    regime_mult=D(1),
+                    health_mult=D(1),
+                    final_weight=D("0.5"),
+                    capital=amount,
+                    risk_pct=D("0.0025"),
+                    currency="INR",
+                )
+            )
+            session.flush()
+            snapshot_bots(session, first + timedelta(days=offset))
+        session.commit()
+        for snap in session.scalars(select(HatDailyBotSnapshot)):
+            assert snap.equity_peak <= snap.equity + D("0.0001") or snap.equity == 0
+        assert evaluate_drawdown_kills(session, seed_policy(), AT + timedelta(days=400)) == []
+
+
+@given(
+    CAPITAL,
+    st.integers(25, 100).map(lambda n: D(n) / 100),
+    st.integers(0, 40).map(lambda n: D(n) / 100),
+)
+def test_reallocation_does_not_hide_a_loss(
+    capital: Decimal, keep: Decimal, loss_share: Decimal
+) -> None:
+    """A real loss still trips after the capital was cut the same night: with the allocation cut
+    to `keep` x capital and `loss_share` of the new capital lost, the bot kill trips exactly
+    when that loss is at least the policy's 10% of the capital it was measured against."""
+    from datetime import date, datetime, time
+
+    from app.hat.data.sessions import IST
+    from app.hat.models import HatAllocationDaily, HatPosition, HatTradeResult
+
+    new_capital = (capital * keep).quantize(D("0.01"))
+    assume(new_capital > 0)
+    loss = (new_capital * loss_share).quantize(D("0.01"))
+    engine = memory_engine()
+    with Session(engine) as session:
+        bot = seed_bot(session)
+        first, second = date(2026, 3, 2), date(2026, 3, 3)
+        for day, amount in ((first, capital), (second, new_capital)):
+            session.add(
+                HatAllocationDaily(
+                    trade_date=day,
+                    bot_id=bot,
+                    base_weight=D("0.5"),
+                    regime_mult=D(1),
+                    health_mult=D(1),
+                    final_weight=D("0.5"),
+                    capital=amount,
+                    risk_pct=D("0.0025"),
+                    currency="INR",
+                )
+            )
+        position = HatPosition(
+            id=uuid.uuid4(),
+            bot_id=bot,
+            signal_id=uuid.uuid4(),
+            instrument_id=uuid.uuid4(),
+            is_virtual=False,
+            qty_open=0,
+            avg_entry=D(100),
+            initial_stop=D(95),
+            current_stop=D(95),
+            currency="INR",
+            opened_at=datetime(2026, 3, 1, tzinfo=IST),
+            closed_at=datetime.combine(second, time(10, 0), tzinfo=IST),
+            state="closed",
+            rules_fired={},
+        )
+        session.add(position)
+        session.flush()
+        session.add(
+            HatTradeResult(
+                position_id=position.id,
+                realized_pnl=-loss,
+                fees=D(0),
+                currency="INR",
+                r_multiple=D(-1),
+                holding_days=1,
+                exit_reason="stop",
+                mfe_r=D(0),
+                mae_r=D(-1),
+            )
+        )
+        session.flush()
+        snapshot_bots(session, first)
+        snapshot_bots(session, second)
+        session.commit()
+        tripped = evaluate_drawdown_kills(session, seed_policy(), AT + timedelta(days=400))
+        snap = session.get(HatDailyBotSnapshot, (bot, second))
+        assert snap.equity == new_capital - loss
+        breach = (snap.equity_peak - snap.equity) * 100 >= 10 * snap.equity_peak
+        assert (str(bot) in tripped) is breach
+        assert snap.equity_peak >= new_capital
+        assert snap.equity_peak <= new_capital + D("0.0001")  # restated, not the old 100%

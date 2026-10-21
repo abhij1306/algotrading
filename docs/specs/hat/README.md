@@ -275,8 +275,8 @@ to an artefact that exists.
 | HAT-SCH-060 | [03](03-schema.md) | 3 | CONF `schema.event_columns`, DB `events.partitioned` |
 | HAT-SCH-061 | [03](03-schema.md) | 3 | DB `events.append_only` |
 | HAT-SCH-062 | [03](03-schema.md) | 3 | PBT `events.atomic_with_state` |
-| HAT-SCH-063 | [03](03-schema.md) | 3 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
-| HAT-SCH-064 | [03](03-schema.md) | 3 | PBT `events.correlation` |
+| HAT-SCH-063 | [03](03-schema.md) | 3, 9 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
+| HAT-SCH-064 | [03](03-schema.md) | 3, 9 | PBT `events.correlation` |
 | HAT-SCH-065 | [03](03-schema.md) | 3, 16 | PBT `events.user_actor_chat_id` |
 | HAT-SCH-066 | [03](03-schema.md) | 3 | DB `events.partitions_ahead` |
 | HAT-SCH-067 | [03](03-schema.md) | 3 | PBT `events.ids_increasing` |
@@ -373,8 +373,9 @@ to an artefact that exists.
 | HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
 | HAT-PORT-062 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days` |
 | HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
-| HAT-PORT-064 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions` |
+| HAT-PORT-064 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.retire_gate` |
 | HAT-PORT-065 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.discounted_benchmark` |
+| HAT-PORT-066 | [05](05-portfolio-regime-allocation.md) | 9 | CONF `lifecycle_single_writer`, PBT `lifecycle.transition_records_its_event` |
 | HAT-PORT-070 | [05](05-portfolio-regime-allocation.md) | P2 | PBT `regime_v2.no_lookahead` |
 | HAT-PORT-071 | [05](05-portfolio-regime-allocation.md) | P2 | PBT `regime_v2.relabel_stable` |
 | HAT-PORT-072 | [05](05-portfolio-regime-allocation.md) | P2 | PBT `regime_v2.multiplier_convex` |
@@ -402,6 +403,7 @@ to an artefact that exists.
 | HAT-RISK-063 | [06](06-risk-and-governance.md) | 10, 14 | TLA `KillSwitch!HealthAutoRearm` |
 | HAT-RISK-064 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!NoAutoRearm` |
 | HAT-RISK-065 | [06](06-risk-and-governance.md) | 10, 15 | TLA `KillSwitch!ExitsContinue` |
+| HAT-RISK-066 | [06](06-risk-and-governance.md) | 9 | PBT `kill.reallocation_is_not_drawdown` |
 | HAT-RISK-070 | [06](06-risk-and-governance.md) | 3, 10, 11 | TLA `StopPlacement!StopOnlyTightens`, DB `governance.stop_only_rises`, PBT `exits.never_lowers_stop` |
 | HAT-RISK-071 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_add_to_loser` |
 | HAT-RISK-072 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_pyramiding` |

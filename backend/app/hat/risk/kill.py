@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from uuid import UUID
 
 from ..time import as_utc
@@ -149,6 +149,71 @@ def tripped_since(
         if drawdown_breached(point.equity, point.peak, threshold):
             return True
     return False
+
+
+def rebase_peak(
+    prev_equity: Decimal,
+    prev_peak: Decimal,
+    prev_capital: Decimal | None,
+    capital: Decimal | None,
+) -> Decimal:
+    """The previous peak restated at a new allocation, so a planned reallocation is not a loss.
+
+    Snapshot equity is allocation capital plus realised P&L (06 §2), so cutting a sleeve's
+    capital (a regime or health change, HAT-PORT-050) lowers equity without any trade losing
+    money. The previous equity moves to `prev_equity + (capital - prev_capital)` and the peak
+    scales by the same ratio, which keeps (peak - equity) / peak exactly as it was before the
+    reallocation: only trading results move the drawdown (HAT-RISK-066). Unknown capital on
+    either side (no allocation row) or no change leaves the peak as it is; a base that is not
+    positive after the move (nothing left to measure against) restarts the peak at zero, so the
+    next equity becomes the peak.
+    """
+    try:
+        equity = exact(prev_equity, "equity")
+        peak = exact(prev_peak, "peak")
+        old = None if prev_capital is None else exact(prev_capital, "capital")
+        new = None if capital is None else exact(capital, "capital")
+    except MissingInputError:
+        return prev_peak
+    if old is None or new is None or old == new:
+        return peak
+    moved = equity + (new - old)
+    if equity <= 0 or moved <= 0:
+        return Decimal(0)
+    with localcontext() as ctx:
+        ctx.prec = 60  # wide enough that the ratio of two stored amounts is exact
+        return peak * moved / equity
+
+
+@dataclass(frozen=True)
+class SnapshotPoint:
+    """One time's equity and the allocation capital it was measured against (None: unknown)."""
+
+    at: datetime
+    equity: Decimal
+    capital: Decimal | None = None
+
+
+def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
+    """Equity points with peaks restated for planned reallocation (`rebase_peak`).
+
+    A point whose allocation capital is zero has nothing at risk (a sleeve out of Live, or an
+    account with every sleeve benched): it moves the running peak but is not itself returned, so
+    it can never read as a breach. With no capital known anywhere this is the plain running
+    maximum of the equity.
+    """
+    out: list[EquityPoint] = []
+    previous: tuple[Decimal, Decimal, Decimal | None] | None = None  # equity, peak, capital
+    for point in sorted(points, key=lambda p: as_utc(p.at)):
+        if previous is None:
+            peak = point.equity
+        else:
+            base = rebase_peak(previous[0], previous[1], previous[2], point.capital)
+            peak = max(point.equity, base)
+        previous = (point.equity, peak, point.capital)
+        if point.capital is None or point.capital != 0:
+            out.append(EquityPoint(point.at, point.equity, peak))
+    return out
 
 
 def account_series(bot_snapshots: Iterable[tuple[datetime, Decimal]]) -> list[EquityPoint]:
