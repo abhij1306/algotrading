@@ -135,6 +135,7 @@ class EventFeedHealth:
         self._submit(lambda: self._write(now, silent))
 
     def feed_recovered(self, now: datetime) -> None:
+        del now  # the protocol passes it; recovery writes no event
         self._notify(False)
 
     def _notify(self, stale: bool) -> None:

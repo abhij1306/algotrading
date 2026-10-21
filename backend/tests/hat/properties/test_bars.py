@@ -490,7 +490,8 @@ def test_listener_isolation(
         sent = [{"symbol": s, "ltp": float(i + 1), "seq": i} for i, s in enumerate(symbols)]
         for tick in sent:
             await live._update_buffer(dict(tick))  # noqa: SLF001 - the loop-thread entry point
-        assert all(seen_buffered) and len(seen_buffered) == len(sent)
+        assert all(seen_buffered)
+        assert len(seen_buffered) == len(sent)
         last = {t["symbol"]: t for t in sent}
         assert {s: t["seq"] for s, t in live.latest_values.items()} == {
             s: t["seq"] for s, t in last.items()

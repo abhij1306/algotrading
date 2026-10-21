@@ -172,12 +172,13 @@ def test_timing_recorded(start_s: int, duration_ms: int, fails: bool) -> None:
         return gapscan.JobResult()
 
     alerts: list[str] = []
-    with patch("app.hat.ops.jobs.utc_now", lambda *_a: next(clock)):
+    with patch("app.hat.ops.jobs.utc_now", side_effect=clock):
         run_gap_scan(body=body, trade_date=DAY, session_factory=factory, alert=alerts.append)
     with Session(engine) as session:
         row = session.scalar(select(HatJobRun).where(HatJobRun.job == JOB_GAPSCAN))
     assert row is not None
-    assert row.started_at is not None and row.finished_at is not None
+    assert row.started_at is not None
+    assert row.finished_at is not None
     assert (
         row.finished_at.replace(tzinfo=UTC) - row.started_at.replace(tzinfo=UTC)
         == finished - started

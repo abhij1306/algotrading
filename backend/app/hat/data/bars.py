@@ -130,7 +130,7 @@ class BarBuilder:
     _seq: int = 0
 
     def __post_init__(self) -> None:
-        if not self.session_open < self.session_close:
+        if self.session_open >= self.session_close:
             raise ValueError("the session must open before it closes")
 
     def session_start(self, day: date) -> datetime:
