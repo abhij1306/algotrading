@@ -38,6 +38,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` No module under `app.hat` imports a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
 - `CONF single_feed_import_rule` HAT imports neither the live service module nor the provider session; live data arrives only through the listener hook and the `"hat"` registry owner. Harm: HAT could read or open a feed some other way.
+- `CONF no_duplicate_fakes_or_authorities` Across `backend/` there is one `FakeBroker`, one `RiskManager` and one `LiveMarketService`, and no other class named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
 
@@ -90,6 +91,7 @@ Checks:
 - `backend/tests/hat/properties/test_gapscan.py`
 - `backend/tests/hat/properties/test_announcements.py`
 - `backend/tests/hat/conformance/test_conf_imports.py`
+- `backend/tests/hat/conformance/test_conf_authorities.py`
 - `backend/tests/hat/hat_live_support.py`
 - `backend/tests/hat/fixtures/rss_announcements.xml`
 - `backend/tests/hat/fixtures/rss_financial_results.xml`
@@ -98,8 +100,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `SYNCSHA`
-Covered digest: `SYNCDIGEST`
+Sync commit: `cc7ec57cf0ba97fd82724de3e0ecc74fa96c0ae6`
+Covered digest: `aaa7a58539f0e33c05e82dfd22a3aadbaf4e37af639a88cff647ca7a4dfb1b31`
 
 ## Scope changes
 
@@ -466,4 +468,14 @@ E   AssertionError: subscriptions.py
 E   assert not True
 E    +  where True = any(<generator object test_single_feed_import_rule.<locals>.<genexpr> at 0x7f759beea840>)
 FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule - AssertionError: subscriptions.py
+```
+
+### CONF no_duplicate_fakes_or_authorities
+
+Break: appended `class HatRiskManager: pass` to `app/services/risk_manager.py`.
+
+```
+E   AssertionError: [('HatRiskManager', 'app/services/risk_manager.py')]
+E   assert [('HatRiskMan..._manager.py')] == []
+E     Left contains one more item: ('HatRiskManager', 'app/services/risk_manager.py')
 ```
