@@ -416,7 +416,8 @@ def test_rs_pct(world: list[Series], pick: int) -> None:
         expected = _avg_rank_pct(weights)
         for iid, pct in expected.items():
             value = got[(iid, day)]["rs_pct"]
-            assert value is not None and 0.0 <= value <= 100.0
+            assert value is not None
+            assert 0.0 <= value <= 100.0
             assert math.isclose(value, pct, rel_tol=1e-12, abs_tol=1e-12), (iid, day, value, pct)
         for a, wa in weights.items():
             for b, wb in weights.items():
@@ -511,7 +512,8 @@ def test_breadth_without_sma50(world: list[Series]) -> None:
         run_features(store, [])
         for day in store.days(DATASET_BARS):
             stored = store.read_partition(DATASET_BREADTH, day)
-            assert stored.height == 1 and stored["breadth_pct"][0] is None
+            assert stored.height == 1
+            assert stored["breadth_pct"][0] is None
 
 
 def test_flat_series_is_not_above_its_own_mean() -> None:
@@ -534,7 +536,8 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
         frame([Series("flat", rows), Series("flat2", [dict(r) for r in rows])])
     )
     last = breadth.filter(pl.col("date") == rows[-1]["date"]).row(0, named=True)
-    assert last["above_sma50"] == 0 and last["with_sma50"] == 2
+    assert last["above_sma50"] == 0
+    assert last["with_sma50"] == 2
     assert ABOVE_MARGIN < 1e-9
 
 
@@ -707,7 +710,8 @@ def test_incremental_equals_full(world: list[Series], rng: Lcg, chunk: int, step
             run_features(incr, seen, through=cut, chunk_days=chunk)
         run_features(incr, final_actions, chunk_days=chunk)
         report = run_features(full, final_actions, full=True, chunk_days=126)
-        assert report.full and len(report.dates) == len(dates)
+        assert report.full
+        assert len(report.dates) == len(dates)
         a, b = read_features(incr), read_features(full)
         assert list(a) == list(b) == dates
         for day in dates:

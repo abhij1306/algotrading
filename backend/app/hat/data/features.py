@@ -97,14 +97,14 @@ _LATEST = (
 )
 _RANGE_SQL = f"""
 SELECT {_COLUMNS_SQL}, ingest_run_id FROM bars_daily_adj WHERE date BETWEEN ? AND ?
-"""  # noqa: S608 - constant text, values are parameters
+"""  # noqa: S608
 _OLDER_SQL = f"""
 SELECT {_COLUMNS_SQL} FROM (
     SELECT *, row_number() OVER (PARTITION BY instrument_id ORDER BY date DESC) AS rn FROM (
         SELECT * FROM bars_daily_adj
         WHERE date < ? AND instrument_id NOT IN (SELECT unnest(CAST(? AS VARCHAR[]))) {_LATEST}))
 WHERE rn <= ?
-"""  # noqa: S608 - constant text, values are parameters
+"""  # noqa: S608
 
 
 class FeaturesError(HatError):

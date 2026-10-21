@@ -36,7 +36,8 @@ def test_features__schema() -> None:
     """HAT-DATA-070: each written partition has exactly the §7 columns (instrument_id text, the
     rest float64), unique instrument ids, and sits in `features_daily/date=YYYY-MM-DD/`."""
     spec = _spec_columns()
-    assert spec[0] == "instrument_id" and len(spec) == 18
+    assert spec[0] == "instrument_id"
+    assert len(spec) == 18
     run = uuid7()
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
