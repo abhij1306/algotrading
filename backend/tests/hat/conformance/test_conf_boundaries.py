@@ -42,7 +42,8 @@ def test_import_graph_boundaries() -> None:
     graph = build_graph()
     assert any(m.startswith("app.hat.") for m in graph)
     criteria = [m for m in graph if m.startswith("app.hat.engine.criteria")]
-    assert "app.hat.engine.criteria.vcp" in criteria and len(criteria) >= 7  # not vacuous
+    assert "app.hat.engine.criteria.vcp" in criteria
+    assert len(criteria) >= 7  # not vacuous
     assert _graph_violations(graph, "app.hat.engine.criteria", CRITERIA_FORBIDDEN) == {}
     for area in ("app.hat.engine", "app.hat.data", "app.hat.risk"):
         assert _graph_violations(graph, area, BROKER_FORBIDDEN) == {}, area

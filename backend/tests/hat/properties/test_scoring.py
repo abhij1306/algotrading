@@ -102,9 +102,11 @@ def test_empty_score_is_one(items: list[Instance], threshold: float) -> None:
     outcome = evaluate_stage("setup", hard_only, ctx(), threshold)
     active = [i for i in hard_only if i.enabled]
     if all(hard_passes(i) for i in active):
-        assert outcome.passed and outcome.score == 1.0
+        assert outcome.passed
+        assert outcome.score == 1.0
     else:
-        assert not outcome.passed and outcome.failed is not None
+        assert not outcome.passed
+        assert outcome.failed is not None
 
 
 @given(hard_ok=st.booleans(), score=st.floats(0, 1), threshold=st.floats(0, 1))
@@ -153,7 +155,8 @@ def test_hard_short_circuit(items: list[Instance]) -> None:
         assert [o.order for o in outcome.outcomes] == [i.order for i in active]
         return
     first = failing[0]
-    assert outcome.failed is not None and not outcome.passed
+    assert outcome.failed is not None
+    assert not outcome.passed
     assert outcome.failed.order == first.order == outcome.outcomes[-1].order
     assert outcome.reason == outcome.failed.result.reason == "rs_below_min"
     assert outcome.failed.result.value == RS
@@ -193,9 +196,11 @@ def test_stage_order(series: str, regime: bool, rs: float) -> None:
     assert names == ["universe", "regime", "setup"][: len(names)]
     assert all(s.passed for s in result.stages[:-1])
     if series != "EQ":
-        assert names == ["universe"] and not result.passed
+        assert names == ["universe"]
+        assert not result.passed
     elif not regime:
-        assert names == ["universe", "regime"] and not result.passed
+        assert names == ["universe", "regime"]
+        assert not result.passed
     else:
         assert names == ["universe", "regime", "setup"]
         assert result.passed == result.stages[-1].passed

@@ -9,7 +9,6 @@ from datetime import date
 import pytest
 import yaml
 from hat.hat_config_support import (
-    UNIVERSE_TYPES,
     param_leaves,
     raw_configs,
     set_at,
@@ -45,7 +44,7 @@ from app.hat.engine.strategy.versions import (
     seed_text,
 )
 from app.hat.engine.strategy.yamlio import export_yaml, import_yaml
-from app.hat.models import HatBot, HatEvent, HatStrategy, HatStrategyVersion
+from app.hat.models import HatBacktestRun, HatBot, HatEvent, HatStrategyVersion
 from app.hat.risk.policy import POLICY_FIELDS
 from app.hat.schema import seed_hat_reference
 
@@ -278,7 +277,8 @@ def test_playbook_shape(raw: dict) -> None:
     entry filters and one stop rule; the regime rule and the exit stack belong to the bot."""
     config = parse_config(raw)
     stored = config.to_json()
-    assert config.playbooks and len({p.name for p in config.playbooks}) == len(config.playbooks)
+    assert config.playbooks
+    assert len({p.name for p in config.playbooks}) == len(config.playbooks)
     assert set(Playbook.model_fields) == {"name", "setup", "trigger", "entry_filters", "stop"}
     assert set(StrategyConfig.model_fields) >= {"regime", "exits", "playbooks", "universe"}
     for name in ("regime", "exits"):
@@ -343,6 +343,37 @@ def test_yaml_round_trip_seed(name: str) -> None:
     assert import_yaml(seed_text(name)).hash() == config.hash()
 
 
+def add_run(session: Session, version: HatStrategyVersion) -> HatBacktestRun:
+    """A backtest run row for `version` (what publishing needs as evidence)."""
+    run = HatBacktestRun(
+        id=uuid.uuid4(),
+        strategy_version_id=version.id,
+        risk_policy_version_id=uuid.uuid4(),
+        family_key="probe",
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        data_snapshot={},
+        status="completed",
+        metrics={},
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def row_of(session: Session, version_id: uuid.UUID) -> HatStrategyVersion:
+    """A version of the same strategy other than `version_id` (the first saved one)."""
+    version = session.get(HatStrategyVersion, version_id)
+    assert version is not None
+    first = session.scalars(
+        select(HatStrategyVersion)
+        .where(HatStrategyVersion.strategy_id == version.strategy_id)
+        .order_by(HatStrategyVersion.version)
+    ).first()
+    assert first is not None
+    return first
+
+
 @given(st.lists(raw_configs(), min_size=1, max_size=4))
 @settings(max_examples=25, deadline=None)
 def test_save_creates_version(raws: list[dict]) -> None:
@@ -380,10 +411,15 @@ def test_save_creates_version(raws: list[dict]) -> None:
         assert caught.value.code == "market_hours"
         assert session.scalar(select(func.count()).select_from(HatStrategyVersion)) == count
         assert previous is not None
-        frozen = publish_version(session, previous.id, backtest_run_id=uuid.uuid4())
+        other = add_run(session, row_of(session, previous.id))
+        with pytest.raises(VersionError) as refused:  # evidence from another version
+            publish_version(session, previous.id, backtest_run_id=other.id)
+        assert refused.value.code in ("run_not_for_version", "unknown_run")
+        run = add_run(session, previous)
+        frozen = publish_version(session, previous.id, backtest_run_id=run.id)
         assert frozen.status == "backtested"
         with pytest.raises(VersionError):
-            publish_version(session, previous.id, backtest_run_id=uuid.uuid4())
+            publish_version(session, previous.id, backtest_run_id=run.id)
         session.rollback()
 
 
@@ -415,4 +451,3 @@ def test_new_bot_mode_shadow(mode: str | None) -> None:
         session.rollback()
     for name in SEED_NAMES:
         assert seed_config(name).execution_mode == "shadow"
-    assert UNIVERSE_TYPES and HatStrategy

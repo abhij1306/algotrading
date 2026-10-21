@@ -215,6 +215,22 @@ class ConsolidationParams(ParamModel):
         return self
 
 
+def _window_range(
+    high: list[float | None], low: list[float | None], length: int, params: ConsolidationParams
+) -> tuple[Decimal, Decimal] | None:
+    """(range %, window high) of the last `length` sessions when they qualify, else None."""
+    highs, lows = last(high, length), last(low, length)
+    if highs is None or lows is None:
+        return None
+    top, bottom = dec(max(highs)), dec(min(lows))
+    if bottom <= 0:
+        return None
+    if params.higher_lows and dec(min(lows[length // 2 :])) < dec(min(lows[: length // 2])):
+        return None
+    rng = (top / bottom - 1) * 100
+    return (rng, top) if rng <= dec(params.max_range_pct) else None
+
+
 def consolidation(ctx: EvalContext, params: ConsolidationParams) -> CriterionResult:
     """HAT-CRIT-111: the tightest window of `days` sessions ending on the date whose high/low
     range is at most `max_range_pct` and, with `higher_lows`, whose second half never undercuts
@@ -226,17 +242,9 @@ def consolidation(ctx: EvalContext, params: ConsolidationParams) -> CriterionRes
         return no_data()
     best: tuple[Decimal, int, Decimal] | None = None  # (range %, -length, window high)
     for length in range(low_days, high_days + 1):
-        highs, lows = last(bars.high, length), last(bars.low, length)
-        if highs is None or lows is None:
-            continue
-        top, bottom = dec(max(highs)), dec(min(lows))
-        if bottom <= 0:
-            continue
-        if params.higher_lows and dec(min(lows[length // 2 :])) < dec(min(lows[: length // 2])):
-            continue
-        rng = (top / bottom - 1) * 100
-        if rng <= dec(params.max_range_pct) and (best is None or (rng, -length) < best[:2]):
-            best = (rng, -length, top)
+        found = _window_range(bars.high, bars.low, length, params)
+        if found is not None and (best is None or (found[0], -length) < best[:2]):
+            best = (found[0], -length, found[1])
     if best is None:
         return verdict(False, None, "range_too_wide")
     score = clamp01(1.0 - float(best[0]) / params.max_range_pct)

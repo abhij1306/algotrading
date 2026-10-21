@@ -1,6 +1,6 @@
 ---
 name: verify-criteria
-description: How to run, read and update the checks behind Hire a Trader's criteria library (the 16 daily criteria and the registered live ones), stage scoring, the strategy config model (instances, playbooks, versions, YAML, no risk keys), the two seeded bots and the catalogue conformance checks. Use before and after any change to backend/app/hat/engine/criteria, backend/app/hat/engine/strategy or the seed YAML files.
+description: How to run, read and update the checks behind Hire a Trader's criteria library (the 17 daily criteria and the seven registered live ones), stage scoring, the strategy config model (instances, playbooks, versions, YAML, no risk keys), the two seeded bots and the catalogue conformance checks. Use before and after any change to backend/app/hat/engine/criteria, backend/app/hat/engine/strategy or the seed YAML files.
 ---
 
 # verify-criteria
@@ -114,7 +114,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `79e3416f95b72a3d6dd84c71ee9de3cfb21866f85d35dff4f8f803178220774b`
+Covered digest: `fd9b49567b35b0644a758bf2cf03421b65566eb7bf20a34c13abc79268f55471`
 
 ## Scope changes
 

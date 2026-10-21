@@ -22,7 +22,14 @@ from sqlalchemy.orm import Session
 
 from ...errors import HatError
 from ...events import record
-from ...models import HatBot, HatCriterionType, HatMarket, HatStrategy, HatStrategyVersion
+from ...models import (
+    HatBacktestRun,
+    HatBot,
+    HatCriterionType,
+    HatMarket,
+    HatStrategy,
+    HatStrategyVersion,
+)
 from ...risk.sessions import SessionCalendar, SessionState
 from ..criteria import REGISTRY
 from .config import StrategyConfig, parse_config
@@ -90,11 +97,9 @@ def _new_version(
     at: datetime | None,
 ) -> HatStrategyVersion:
     existing = _versions(session, strategy.id)
-    parent = (
-        parent_version_id
-        if parent_version_id is not None
-        else (existing[-1].id if existing else None)
-    )
+    parent = parent_version_id
+    if parent is None and existing:
+        parent = existing[-1].id
     if parent is not None and parent not in {v.id for v in existing}:
         raise VersionError("unknown_parent")
     row = HatStrategyVersion(
@@ -134,10 +139,12 @@ def save_draft(
     `parent_version_id` (default: the latest version). Raises `ConfigError` for an invalid
     config and `VersionError("market_hours")` unless the calendar says the market is closed at
     `now`; either way nothing is written."""
-    parsed = config if isinstance(config, StrategyConfig) else parse_config(config)
+    # Validate afresh even a built model: it may have been changed since it was parsed.
+    parsed = parse_config(config.to_json() if isinstance(config, StrategyConfig) else config)
     if calendar.state(now) is not SessionState.CLOSED:
         raise VersionError("market_hours")
-    strategy = session.get(HatStrategy, strategy_id)
+    # The row lock makes concurrent saves take turns, so each reads the true latest version.
+    strategy = session.get(HatStrategy, strategy_id, with_for_update=True)
     if strategy is None:
         raise VersionError("unknown_strategy")
     return _new_version(session, strategy, parsed, parent_version_id, now)
@@ -153,6 +160,11 @@ def publish_version(
         raise VersionError("unknown_version")
     if row.status != "draft":
         raise VersionError("not_a_draft")
+    run = session.get(HatBacktestRun, backtest_run_id)
+    if run is None:
+        raise VersionError("unknown_run")
+    if run.strategy_version_id != version_id:
+        raise VersionError("run_not_for_version")
     row.status = "backtested"
     row.backtest_run_id = backtest_run_id
     session.flush()

@@ -100,7 +100,9 @@ def evaluate(code: str, params: BaseModel | dict[str, Any], ctx: EvalContext) ->
     """Validate `params` against the type's model and evaluate. A live type (no daily
     evaluator) is not evaluated here: it fails closed with reason `not_evaluable`."""
     ctype = get_type(code)
-    model = params if isinstance(params, ctype.params) else ctype.params.model_validate(params)
+    # Always validate afresh: a model instance may have been changed since it was built.
+    raw = params.model_dump() if isinstance(params, BaseModel) else params
+    model = ctype.params.model_validate(raw)
     if ctype.evaluate is None:
         return no_data("not_evaluable")
     return ctype.evaluate(ctx, model)

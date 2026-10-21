@@ -67,7 +67,8 @@ def test_series_in_contract(rng: Lcg, series: str | None, allowed: list[str]) ->
     ctx = context(make_rows(rng, 3), series=series)
     result = contract("series_in", {"series": allowed}, ctx, rng)
     if series is None:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
     else:
         assert result.passed == (series in allowed)
 
@@ -92,7 +93,8 @@ def test_min_turnover_contract(rng: Lcg, length: int, days: int, inr_cr: float, 
     result = contract("min_turnover", {"days": days, "inr_cr": inr_cr}, ctx, rng)
     window = rows[length - days :] if length >= days else None
     if window is None:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     traded = [
         Fraction(r.traded) if r.traded is not None else rupees(r.close) * r.volume for r in window
@@ -142,7 +144,8 @@ def test_price_band_allowed_contract(rng: Lcg, history: list, allowed: list | No
     result = contract("price_band_allowed", params, ctx, rng)
     effective = sorted((d, i) for i, (d, _) in enumerate(bands) if d <= as_of)
     if not effective:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     pct = bands[effective[-1][1]][1]
     name = "none" if pct is None else int(pct)
@@ -165,7 +168,8 @@ def test_adr_min_contract(rng: Lcg, style: str, length: int, days: int, pct: flo
     ctx = context(rows)
     result = contract("adr_min", {"days": days, "pct": pct}, ctx, rng)
     if length < days:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     adr = mean([100 * (rupees(r.high) / rupees(r.low) - 1) for r in rows[length - days :]])
     assert result.passed == (adr >= Fraction(str(pct)))
@@ -203,7 +207,8 @@ def test_sma_above_contract(rng: Lcg, style: str, length: int, a: object, b: obj
 
     left, right = value(a), value(b)
     if left is None or right is None:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
     else:
         assert result.passed == (left > right)
     assert fails_closed("sma_above", params, ctx)
@@ -227,7 +232,8 @@ def test_sma_rising_contract(rng: Lcg, style: str, length: int, sma: int, lookba
     result = contract("sma_rising", params, ctx, rng)
     now, before = sma_of(rows, sma), sma_of(rows, sma, lookback)
     if now is None or before is None:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
     else:
         assert result.passed == (now > before)
     assert fails_closed("sma_rising", params, ctx)
@@ -246,7 +252,8 @@ def test_pct_from_52w_low_contract(rng: Lcg, style: str, length: int, min_pct: f
     params = {"min_pct": min_pct}
     result = contract("pct_from_52w_low", params, ctx, rng)
     if length < 252:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     low = rupees(min(r.low for r in rows[-252:]))
     assert result.passed == ((rupees(rows[-1].close) / low - 1) * 100 >= Fraction(str(min_pct)))
@@ -266,7 +273,8 @@ def test_pct_from_52w_high_contract(rng: Lcg, style: str, length: int, max_below
     params = {"max_pct_below": max_below}
     result = contract("pct_from_52w_high", params, ctx, rng)
     if length < 252:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     high = rupees(max(r.high for r in rows[-252:]))
     assert result.passed == ((1 - rupees(rows[-1].close) / high) * 100 <= Fraction(str(max_below)))
@@ -295,7 +303,8 @@ def test_rs_rank_contract(rng, rs, others, min_percentile, score_from, score_ful
     params = {"min_percentile": min_percentile, "score_from": score_from, "score_full": score_full}
     result = contract("rs_rank", params, ctx, rng)
     if not present or rs is None:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     assert result.passed == (rs >= min_percentile)
     on_the_edge = context(
@@ -421,7 +430,8 @@ def test_consolidation_contract(rng, style, length, days, max_range, higher) -> 
     params = {"days": days, "max_range_pct": max_range, "higher_lows": higher}
     result = contract("consolidation", params, ctx, rng)
     if length < days[0]:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     best = None
     for size in range(days[0], min(days[1], length) + 1):
@@ -458,7 +468,8 @@ def test_ma_surf_contract(rng, style, length, mas, max_dist) -> None:  # noqa: A
     result = contract("ma_surf", params, ctx, rng)
     averages = [sma_of(rows, m) for m in mas]
     if not rows or any(a is None for a in averages):
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     worst = max(abs(rupees(rows[-1].close) / a - 1) * 100 for a in averages if a is not None)  # type: ignore[operator]
     assert result.passed == (worst <= Fraction(str(max_dist)))
@@ -484,7 +495,8 @@ def test_prior_move_contract(rng, style, length, min_pct, within) -> None:  # no
     params = {"min_pct": min_pct, "within_days": within}
     result = contract("prior_move", params, ctx, rng)
     if length < within[0]:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     window = rows[length - min(within[1], length) :]
     hit = any(
@@ -529,7 +541,8 @@ def test_earnings_growth_contract(rng: Lcg, filed: list, accelerating: bool) -> 
         if d <= 0
     ]
     if not known:
-        assert not result.passed and result.reason == "no_data"  # nothing filed by the date
+        assert not result.passed
+        assert result.reason == "no_data"  # nothing filed by the date
         return
     _, eps, sales = known[-1]
     ok = eps >= 20 and sales >= 20
@@ -558,7 +571,8 @@ def test_neglect_contract(rng: Lcg, style: str, length: int, max_ret: float) -> 
     result = contract("neglect", params, ctx, rng)
     previous = rows[:-1]  # bars up to the previous session
     if len(previous) < 64:
-        assert not result.passed and result.reason == "no_data"
+        assert not result.passed
+        assert result.reason == "no_data"
         return
     window = previous[-64:]
     ret = (rupees(window[-1].close) / rupees(window[0].close) - 1) * 100
