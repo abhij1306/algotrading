@@ -164,12 +164,12 @@ E   AssertionError: ['app.main', 'app.routers', 'app.routers.activity', 'app.rou
 
 ### CONF imports.legacy_does_not_import_hat
 
-Break: appended `from app.hat.money import to_money` to `app/utils/clock.py`.
+Break: appended `from app.hat.money import to_money` to `app/utils/market_hours.py`.
 
 ```
 tests/hat/conformance/test_conf_decoupling.py F
-tests/hat/conformance/test_conf_decoupling.py:134: in test_imports__legacy_does_not_import_hat
-E   AssertionError: assert ['utils/clock.py'] == []
+tests/hat/conformance/test_conf_decoupling.py:144: in test_imports__legacy_does_not_import_hat
+E   AssertionError: assert ['utils/market_hours.py'] == []
 ```
 
 ### CONF fixtures.vcp_oracle_frozen
