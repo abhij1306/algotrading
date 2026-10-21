@@ -7,15 +7,12 @@ import {
   getChangeText,
   getChangeTone,
   listWithSelected,
-  optionChainKey,
   screenSymbols,
   searchView,
-  shownOptionSymbol,
   selectedSymbolFor,
   squareMessage,
   summarizePositions,
   ticketSizing,
-  tradeSymbolFor,
   watchlistInstrumentType,
   withQuote,
   withQuotePnl,
@@ -222,20 +219,6 @@ describe("symbol selection", () => {
   });
 });
 
-describe("tradeSymbolFor", () => {
-  it.each([
-    ["options" as const, "NIFTY26OCT25000CE", "NIFTY26OCT25000CE"],
-    ["options" as const, "", "SBIN"],
-    ["positions" as const, "NIFTY26OCT25000CE", "SBIN"],
-  ])("%s view with option %o trades %s", (view, option, expected) => {
-    expect(tradeSymbolFor(view, option, item("SBIN"))).toBe(expected);
-  });
-
-  it("trades nothing with no option and no current row", () => {
-    expect(tradeSymbolFor("options", "", null)).toBe("");
-  });
-});
-
 describe("screenSymbols", () => {
   it("dedupes and drops empty symbols, keeping first-seen order", () => {
     expect(
@@ -279,49 +262,6 @@ describe("squareMessage", () => {
     ],
   ])("%o unconfirmed=%s", (row, unconfirmed, expected) => {
     expect(squareMessage(row, { unconfirmed, message: "broker timeout" })).toBe(expected);
-  });
-});
-
-describe("shownOptionSymbol", () => {
-  const leg = (symbol: string) => ({ symbol, ltp: 1, oi: 1, volume: 1, change_pct: 0 });
-  const niftyBoard = {
-    strikes: [{ strike: 25000, ce: leg("NIFTY26OCT25000CE"), pe: leg("NIFTY26OCT25000PE") }],
-  };
-  const nifty = optionChainKey("NIFTY", "");
-
-  it.each([
-    [
-      "a CE on the shown chain",
-      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
-      nifty,
-      "NIFTY26OCT25000CE",
-    ],
-    [
-      "a PE on the shown chain",
-      { chain: nifty, symbol: "NIFTY26OCT25000PE" },
-      nifty,
-      "NIFTY26OCT25000PE",
-    ],
-    ["no pick", null, nifty, ""],
-    [
-      "a pick from before the underlying changed",
-      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
-      optionChainKey("BANKNIFTY", ""),
-      "",
-    ],
-    [
-      "a pick from before the expiry changed",
-      { chain: nifty, symbol: "NIFTY26OCT25000CE" },
-      optionChainKey("NIFTY", "2026-11-03"),
-      "",
-    ],
-    ["a contract no longer on the board", { chain: nifty, symbol: "NIFTY26OCT24000CE" }, nifty, ""],
-  ])("%s", (_name, pick, chain, expected) => {
-    expect(shownOptionSymbol(pick, chain, niftyBoard)).toBe(expected);
-  });
-
-  it("trades nothing while no board is shown", () => {
-    expect(shownOptionSymbol({ chain: nifty, symbol: "NIFTY26OCT25000CE" }, nifty, null)).toBe("");
   });
 });
 

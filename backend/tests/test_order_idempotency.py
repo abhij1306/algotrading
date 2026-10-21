@@ -437,27 +437,6 @@ def test_live_order_api_requires_a_uuid4_client_order_id(
     assert broker.calls == []
 
 
-def test_options_order_api_requires_client_order_id_for_live(api: TestClient) -> None:
-    response = api.post(
-        "/api/terminal/options/order",
-        json={
-            "underlying": "NIFTY",
-            "expiry": "2026-10-27",
-            "strike": 25000,
-            "option_type": "CE",
-            "side": "BUY",
-            "quantity": 75,
-            "mode": "LIVE",
-            "is_live_confirmation_ack": True,
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json()["detail"][0]["msg"] == (
-        "Value error, LIVE order requires a client_order_id (UUID v4)"
-    )
-
-
 def test_duplicate_of_a_failed_order_answers_200_with_its_state(
     api: TestClient,
     orders: Session,

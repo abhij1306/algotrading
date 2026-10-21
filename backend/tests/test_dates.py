@@ -9,10 +9,9 @@ from typing import NoReturn
 import pytest
 from fastapi.testclient import TestClient
 
-from app import database
 from app.exceptions import InvalidDateError
 from app.main import app
-from app.routers import strategies, universe
+from app.routers import universe
 from app.utils.dates import parse_iso_date, parse_optional_iso_date
 
 BAD = "2025-13-40"
@@ -104,60 +103,6 @@ def test_data_snapshot_rejects_an_invalid_date(api: TestClient, path: str) -> No
 
     assert response.status_code == 400
     assert response.json() == invalid("date")
-
-
-def test_vcp_scan_run_rejects_an_invalid_scan_date(
-    api: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(strategies.vcp_service, "run_scan", _must_not_run)
-
-    response = api.post("/api/strategies/vcp/scan/run", json={"scan_date": BAD})
-
-    assert response.status_code == 400
-    assert response.json() == invalid("scan_date")
-
-
-def test_vcp_signal_rejects_an_invalid_scan_date_with_400(
-    api: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Was 404 before parse_iso_date: a malformed date is a bad request, not a missing signal.
-    monkeypatch.setattr(strategies.vcp_service, "get_signal_detail", _must_not_run)
-
-    response = api.get(f"/api/strategies/vcp/signal/SBIN?scan_date={BAD}")
-
-    assert response.status_code == 400
-    assert response.json() == invalid("scan_date")
-
-
-def test_vcp_signal_passes_a_valid_scan_date_through(
-    api: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_detail(symbol: str, scan_date: date | None) -> dict[str, object]:
-        seen.update(symbol=symbol, scan_date=scan_date)
-        return {"symbol": symbol}
-
-    monkeypatch.setattr(strategies.vcp_service, "get_signal_detail", fake_detail)
-
-    response = api.get("/api/strategies/vcp/signal/SBIN?scan_date=2025-03-04")
-
-    assert response.status_code == 200
-    assert seen == {"symbol": "SBIN", "scan_date": date(2025, 3, 4)}
-
-
-@pytest.mark.parametrize("field", ["start_date", "end_date"])
-def test_backtest_run_rejects_an_invalid_date(
-    api: TestClient, monkeypatch: pytest.MonkeyPatch, field: str
-) -> None:
-    no_db = SimpleNamespace(commit=lambda: None, rollback=lambda: None, close=lambda: None)
-    monkeypatch.setattr(database, "SessionLocal", lambda: no_db)
-    body = {"start_date": "2025-01-01", "end_date": "2025-01-31", field: BAD}
-
-    response = api.post("/api/backtest/run", json=body)
-
-    assert response.status_code == 400
-    assert response.json() == invalid(field)
 
 
 @pytest.mark.parametrize(

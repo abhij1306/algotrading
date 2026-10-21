@@ -41,9 +41,7 @@ pnpm dev
 ## Core Modules
 
 - Dashboard
-- Screener
 - Terminal
-- Backtest
 
 ---
 
@@ -62,7 +60,6 @@ Canonical pipeline:
 
 ## API Highlights
 
-- Screener: `/api/screener/results`, `/api/screener/indices`
 - WebSocket: `/api/websocket/connect`, `/api/websocket/subscribe`, `/api/websocket/disconnect`, `/api/websocket/status`, `WS /api/websocket/stream`
 - Terminal: `/api/terminal/chart`, `/api/terminal/paper/order`
 - Data snapshots: `/api/data/snapshot/stock`, `/api/data/snapshot/universe`, `/api/data/snapshot/status`

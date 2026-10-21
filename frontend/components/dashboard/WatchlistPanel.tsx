@@ -1,7 +1,6 @@
 import { memo, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { ChevronRight, TrendingDown, TrendingUp } from "lucide-react";
-import { Button } from "@/components/ui";
+import { TrendingDown, TrendingUp } from "lucide-react";
 import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { DashboardWatchlistItem } from "@/lib/queries/dashboard";
 import { terminalPath } from "./model";
@@ -56,14 +55,6 @@ export function WatchlistPanel(
           <span className="font-medium text-sm">Watchlist</span>
           {isLive && <span className="w-1.5 h-1.5 rounded-full bg-profit" />}
         </div>
-        <Button
-          onClick={() => void navigate("/screener")}
-          variant="ghost"
-          size="sm"
-          className="h-6 text-xs"
-        >
-          View All <ChevronRight className="w-3 h-3 ml-0.5" />
-        </Button>
       </div>
       <PanelBody
         loading={data.loading}

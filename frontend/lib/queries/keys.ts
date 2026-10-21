@@ -1,38 +1,9 @@
 /** Central query-key factory. Keys go general to specific so prefixes can be invalidated. */
 export const queryKeys = {
-  screener: {
-    all: ["screener"] as const,
-    indices: () => ["screener", "indices"] as const,
-    results: (params: {
-      universe: string;
-      page: number;
-      limit: number;
-      sortBy: string;
-      sortOrder: string;
-      query: string;
-    }) => ["screener", "results", params] as const,
-    liveQuotes: (symbols: readonly string[]) => ["screener", "live-quotes", symbols] as const,
-  },
-  backtest: {
-    all: ["backtest"] as const,
-    status: () => ["backtest", "status"] as const,
-    strategies: () => ["backtest", "strategies"] as const,
-    runs: () => ["backtest", "runs"] as const,
-    result: (jobId: string) => ["backtest", "result", jobId] as const,
-  },
-  strategies: {
-    all: ["strategies"] as const,
-    workspaceRoot: () => ["strategies", "workspace"] as const,
-    workspace: (params: { universe: string; showAll: boolean }) =>
-      ["strategies", "workspace", params] as const,
-    signal: (symbol: string) => ["strategies", "signal", symbol] as const,
-  },
   terminal: {
     all: ["terminal"] as const,
     symbolSearch: (term: string) => ["terminal", "symbol-search", term] as const,
     watchlist: () => ["terminal", "watchlist"] as const,
-    optionsBoard: (params: { underlying: string; expiry: string }) =>
-      ["terminal", "options-board", params] as const,
     positions: () => ["terminal", "positions"] as const,
     riskCheck: (order: object, openId: number) =>
       ["terminal", "risk-check", order, openId] as const,
@@ -50,6 +21,5 @@ export const queryKeys = {
     indices: (marketOpen: boolean) => ["dashboard", "indices", { marketOpen }] as const,
     marketInsights: () => ["dashboard", "market-insights"] as const,
     postMarketInsights: () => ["dashboard", "post-market-insights"] as const,
-    commodities: () => ["dashboard", "commodities"] as const,
   },
 };

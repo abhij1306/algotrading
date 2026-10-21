@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router";
-import { Search, TrendingUp, BarChart3, Activity, Settings, Home, LineChart } from "lucide-react";
+import { Search, TrendingUp, Settings, Home, LineChart } from "lucide-react";
 import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { debounce } from "@/lib/debounce";
@@ -130,53 +130,6 @@ function CommandPaletteDialog({ onClose }: Readonly<Pick<CommandPaletteProps, "o
           onClose();
         },
         category: "Navigation",
-      },
-      {
-        id: "nav-screener",
-        title: "Stock Screener",
-        subtitle: "Find stocks matching your criteria",
-        shortcut: formatShortcut("3"),
-        icon: <BarChart3 className="w-4 h-4" />,
-        action: () => {
-          void navigate("/screener");
-          onClose();
-        },
-        category: "Navigation",
-      },
-      {
-        id: "nav-backtest",
-        title: "Backtest",
-        subtitle: "Test your strategies",
-        shortcut: formatShortcut("4"),
-        icon: <Activity className="w-4 h-4" />,
-        action: () => {
-          void navigate("/backtest");
-          onClose();
-        },
-        category: "Navigation",
-      },
-      {
-        id: "nav-strategies",
-        title: "Strategies",
-        subtitle: "Run the VCP scanner and manage strategy signals",
-        shortcut: formatShortcut("5"),
-        icon: <TrendingUp className="w-4 h-4" />,
-        action: () => {
-          void navigate("/strategies");
-          onClose();
-        },
-        category: "Navigation",
-      },
-      {
-        id: "action-backtest",
-        title: "Run Quick Backtest",
-        subtitle: "Start a new backtest with default settings",
-        icon: <Activity className="w-4 h-4" />,
-        action: () => {
-          void navigate("/backtest/new");
-          onClose();
-        },
-        category: "Actions",
       },
       {
         id: "settings",

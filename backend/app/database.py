@@ -12,11 +12,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import (
-    Column,
     Connection,
     Engine,
     MetaData,
-    Table,
     create_engine,
     insert,
     inspect,
@@ -33,15 +31,10 @@ from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables
 from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
 from .hat.settings import is_enabled as hat_is_enabled
 from .models import (
-    BacktestDailyResult,
-    BacktestRun,
     Company,
     CustomUniverse,
     CustomUniverseMember,
     LiveOrder,
-    StrategyPosition,
-    SystemConfig,
-    VCPScanResult,
 )
 from .models.live_order import CLIENT_ORDER_ID_INDEX
 from .paths import ENV_FILE
@@ -132,9 +125,7 @@ def describe_database_target(url: URL | None = None) -> str:
 def init_db() -> None:
     """Create all tables and backfill schema changes on existing databases."""
     Base.metadata.create_all(bind=engine)
-    ensure_backtest_schema(bind=engine)
     ensure_universe_schema(bind=engine)
-    ensure_strategy_schema(bind=engine)
     ensure_live_order_schema(bind=engine)
     ensure_hat_database(bind=engine)
     logger.info("Database initialized: %s", describe_database_target())
@@ -189,36 +180,6 @@ def get_or_create_company(db: Session, symbol: str, **kwargs: object) -> Company
         db.commit()
         db.refresh(company)
     return company
-
-
-def ensure_backtest_schema(*, bind: Engine | None = None) -> None:
-    """Backfill missing backtest table columns on existing databases."""
-    db_engine = bind or engine
-    for table in (BacktestRun.__table__, BacktestDailyResult.__table__):
-        inspector = inspect(db_engine)
-        existing_tables = set(inspector.get_table_names())
-        if table.name not in existing_tables:
-            continue
-
-        existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-        missing_columns = [
-            column for column in table.columns if column.name not in existing_columns
-        ]
-        if not missing_columns:
-            continue
-
-        added: list[str] = []
-        with db_engine.begin() as connection:
-            for column in missing_columns:
-                column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
-                connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
-                added.append(column.name)
-
-        logger.warning(
-            "Backfilled missing columns on %s: %s",
-            table.name,
-            ", ".join(added),
-        )
 
 
 def ensure_universe_schema(*, bind: Engine | None = None) -> None:
@@ -344,62 +305,6 @@ def _rebuild_sqlite_custom_members(connection: Connection) -> None:
     connection.execute(text(f"ALTER TABLE {rebuilt.name} RENAME TO {_CUSTOM_MEMBERS}"))
     for index in model.indexes:
         index.create(connection)
-
-
-_COPY_LEGACY_PNL_SQL = "UPDATE positions SET pnl_inr = COALESCE(pnl_inr, pnl_rs)"
-# vcp_scan_results column -> backfill statement run when that column is newly added
-_VCP_SCAN_BACKFILLS = {
-    "scan_id": ("UPDATE vcp_scan_results SET scan_id = COALESCE(scan_id, CAST(id AS VARCHAR(36)))"),
-    "scan_timestamp": (
-        "UPDATE vcp_scan_results SET scan_timestamp = COALESCE(scan_timestamp, created_at)"
-    ),
-}
-
-
-def ensure_strategy_schema(*, bind: Engine | None = None) -> None:
-    """Backfill missing strategy tables/columns on existing databases."""
-    db_engine = bind or engine
-    for table in (VCPScanResult.__table__, StrategyPosition.__table__, SystemConfig.__table__):
-        inspector = inspect(db_engine)
-        existing_tables = set(inspector.get_table_names())
-        if table.name not in existing_tables:
-            continue
-
-        existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-        missing_columns = [
-            column for column in table.columns if column.name not in existing_columns
-        ]
-        if missing_columns:
-            _add_strategy_columns(db_engine, table, missing_columns, existing_columns)
-        elif table.name == "positions" and {"pnl_rs", "pnl_inr"} <= existing_columns:
-            with db_engine.begin() as connection:
-                connection.execute(text(_COPY_LEGACY_PNL_SQL))
-            logger.warning("Backfilled positions.pnl_inr from legacy pnl_rs")
-
-
-def _add_strategy_columns(
-    db_engine: Engine, table: Table, missing_columns: list[Column], existing_columns: set[str]
-) -> None:
-    """ALTER TABLE ADD each missing column, then backfill the new columns from legacy data."""
-    added: list[str] = []
-    with db_engine.begin() as connection:
-        for column in missing_columns:
-            column_sql = str(CreateColumn(column).compile(dialect=db_engine.dialect)).strip()
-            connection.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column_sql}"))
-            added.append(column.name)
-        for statement in _strategy_backfills(table.name, added, existing_columns):
-            connection.execute(text(statement))
-
-    logger.warning("Backfilled missing columns on %s: %s", table.name, ", ".join(added))
-
-
-def _strategy_backfills(table_name: str, added: list[str], existing_columns: set[str]) -> list[str]:
-    """Backfill statements for the columns just added to a strategy table."""
-    if table_name == "vcp_scan_results":
-        return [_VCP_SCAN_BACKFILLS[name] for name in _VCP_SCAN_BACKFILLS if name in added]
-    if table_name == "positions" and "pnl_rs" in existing_columns and "pnl_inr" in added:
-        return [_COPY_LEGACY_PNL_SQL]
-    return []
 
 
 def ensure_live_order_schema(*, bind: Engine | None = None) -> None:

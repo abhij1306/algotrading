@@ -5,7 +5,7 @@ from pathlib import Path
 from app import paths
 from app.data_repository import _INTRADAY_FALLBACK_ROOT
 from app.routers import upload
-from app.services import fyers_client, history_service, index_universe_loader
+from app.services import fyers_client, index_universe_loader
 from app.services.fyers.token_store import token_store
 from app.services.snapshots import get_snapshot_store
 from app.utils import logger
@@ -35,12 +35,6 @@ def test_standard_locations_sit_at_fixed_places_under_the_root() -> None:
 def test_data_readers_and_writers_resolve_under_the_repository_data_system() -> None:
     sources = REPO_ROOT / "data_system" / "01_sources"
 
-    assert history_service.EQUITY_SOURCE_PATH == (
-        sources / "fyers_stock_prices" / "stock_price_daily.parquet"
-    )
-    assert history_service.INDEX_SOURCE_PATH == (
-        sources / "fyers_index_prices" / "universe_index_price_daily.parquet"
-    )
     assert Path(_INTRADAY_FALLBACK_ROOT) == sources / "nse_intraday"
     assert index_universe_loader.NSE_DATA_PATH == (
         REPO_ROOT / "data_system" / "03_universe" / "constituents"

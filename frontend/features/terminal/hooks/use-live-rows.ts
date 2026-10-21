@@ -29,17 +29,16 @@ function useScreenQuotes(groups: readonly (readonly string[])[]) {
 export function useLiveRows(params: {
   watchlist: WatchlistItem[];
   selectedSymbol: string;
-  optionSymbol: string;
   positions: PositionItem[];
 }) {
-  const { watchlist: items, selectedSymbol, optionSymbol, positions: basePositions } = params;
+  const { watchlist: items, selectedSymbol, positions: basePositions } = params;
   const quoteGroups = useMemo(
     () => [
       items.map((item) => item.symbol),
-      [selectedSymbol, optionSymbol],
+      [selectedSymbol],
       basePositions.map((position) => position.symbol),
     ],
-    [items, selectedSymbol, optionSymbol, basePositions],
+    [items, selectedSymbol, basePositions],
   );
   const quotes = useScreenQuotes(quoteGroups);
   const watchlist = useMemo(

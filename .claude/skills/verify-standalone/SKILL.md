@@ -5,7 +5,7 @@ description: How to run, read and update the checks that keep Hire a Trader inde
 
 # verify-standalone
 
-Checks that HAT does not import or boot the legacy application (K1 of the cleanup), that the legacy code does not import HAT, and that the helpers HAT copied out of the legacy code (backtest metrics, with the clock, sessions, money and ratio helpers; the legacy modules now re-export them, so there is one implementation) keep their properties and their frozen oracle.
+Checks that HAT does not import or boot the legacy application (K1 of the cleanup), that the legacy code does not import HAT, and that the helpers HAT copied out of the legacy code (backtest metrics, with the clock, sessions, money and ratio helpers; the remaining legacy modules re-export them, so there is one implementation) keep their properties and their frozen oracle.
 
 ## Properties
 
@@ -27,18 +27,16 @@ cd backend
 CAP="systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet"
 CI=1 $CAP python -m pytest tests/hat/properties/test_metrics.py -q --no-cov
 $CAP python -m pytest tests/hat/conformance/test_conf_decoupling.py tests/hat/conformance/test_conf_fixtures.py -q --no-cov
-# the legacy-side check of the frozen oracle against the detector (delete in K5):
-$CAP python -m pytest tests/test_hat_oracle_copies.py -q --no-cov
 ```
 
-No check touches the network or a database. The decoupling checks read source files, plus one subprocess that collects `tests/hat` and lists loaded modules; only `tests/test_hat_oracle_copies.py` (legacy side) imports the legacy VCP detector, to compare it with the frozen oracle.
+No check touches the network or a database. The decoupling checks read source files, plus one subprocess that collects `tests/hat` and lists loaded modules.
 
 ## Bug or model error
 
 - A failing `imports.hat_decoupled_from_legacy` names the module and the HAT file. Fix the import (use the HAT copy, or inject the dependency); add to the pending set only with the cleanup PR that removes it written next to the entry.
 - A failing `imports.hat_suites_boot_no_legacy_app` lists the loaded legacy modules. Find the first import that pulled them (a test helper, a root `conftest.py` import) and make it lazy or HAT-local; never filter the list.
 - A failing `metrics.*` property is a real bug in `app/hat/backtest/metrics.py`; the legacy copy has the same flaw for a constant series (found here, fixed with `VOLATILITY_FLOOR`).
-- A failing `fixtures.vcp_oracle_frozen` means the file changed. Regenerate it only on purpose, from the legacy `pattern.py`, and change the recorded hash with it.
+- A failing `fixtures.vcp_oracle_frozen` means the file changed. The legacy detector it came from is deleted (K5a), so the file is now the only record of those outputs: regenerate it only on purpose, from a recovered `pattern.py`, and change the recorded hash with it.
 
 ## Updating
 
@@ -59,14 +57,13 @@ Checks:
 - `backend/tests/hat/properties/test_metrics.py`
 - `backend/tests/hat/conformance/test_conf_decoupling.py`
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
-- `backend/tests/test_hat_oracle_copies.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
-Covered digest: `aed561008ee0f68fefcdc0cc7b5ff7725332b4cf8f39c3cb64ff9e88af164f7d`
+Sync commit: `59bd923d431a827f572769eaddf80081e44fa5fd`
+Covered digest: `2b40c085c467d342fbb87aef01bd5009437cf04dbba1dd8504fec17b0d965676`
 
 ## Scope changes
 
@@ -75,7 +72,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
 - `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
 - The pending set in `imports.hat_decoupled_from_legacy` is not empty: K2, K3 and K6 remove the entries.
-- `imports.legacy_does_not_import_hat` allows `app/database.py` until K6 gives HAT its own session factory, and four re-export shims (`utils/clock.py`, `services/bhavcopy_text.py`, `services/backtest_metrics.py`, `services/execution/paper_book.py`) until the legacy code is deleted (K4/K5). Re-exporting avoids a second copy of each helper.
+- `imports.legacy_does_not_import_hat` allows `app/database.py` until K6 gives HAT its own session factory, and three re-export shims (`utils/clock.py`, `services/bhavcopy_text.py`, `services/execution/paper_book.py`) until the legacy code is deleted (K4/K5). Re-exporting avoids a second copy of each helper.
 
 ## Scratch breaks
 

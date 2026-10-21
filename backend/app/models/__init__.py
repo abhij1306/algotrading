@@ -4,7 +4,6 @@ Models Package
 Re-export all models for convenient importing.
 """
 
-from .backtest import BacktestDailyResult, BacktestRun, PortfolioDailyResult
 from .company import Company
 from .data_snapshot import DatasetArtifact, DatasetRun, SnapshotIndexStock, SnapshotIndexUniverse
 from .fundamental import FinancialStatement, QuarterlyResult
@@ -15,7 +14,6 @@ from .log import AllocatorDecision, DataUpdateLog
 from .market import MarketNews, StockUniverse, Watchlist
 from .order import ActionCenter, PaperFund, PaperOrder, PaperPosition, PaperTrade
 from .price import HistoricalPrice, IntradayCandle
-from .strategy import StrategyConfig, StrategyContract, StrategyMetadata
 from .symbol_history import SymbolChangeType, SymbolHistory
 from .universe import (
     CustomUniverse,
@@ -25,7 +23,6 @@ from .universe import (
     IndexWeightageChange,
     UniverseSnapshot,
 )
-from .vcp import StrategyPosition, SystemConfig, VCPScanResult
 
 __all__ = [
     # Company & Fundamentals
@@ -35,14 +32,6 @@ __all__ = [
     # Price Data
     "HistoricalPrice",
     "IntradayCandle",
-    # Backtest
-    "BacktestRun",
-    "BacktestDailyResult",
-    "PortfolioDailyResult",
-    # Strategy
-    "StrategyConfig",
-    "StrategyContract",
-    "StrategyMetadata",
     # Paper Trading
     "PaperOrder",
     "PaperTrade",
@@ -74,7 +63,4 @@ __all__ = [
     "CustomUniverse",
     "CustomUniverseMember",
     "UniverseSnapshot",
-    "VCPScanResult",
-    "StrategyPosition",
-    "SystemConfig",
 ]

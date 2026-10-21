@@ -21,7 +21,6 @@ from app.exceptions import DatabaseUnavailableError
 from app.main import app
 from app.models.live_order import LiveOrder
 from app.services import fyers_client
-from app.services.history_service import daily_history_service
 from app.services.order_execution_service import OrderExecutionService
 from app.utils.db_errors import is_db_unavailable
 from app.utils.logger import DatabaseUnavailableLogFilter
@@ -70,38 +69,6 @@ def down_client(down_engine: Engine) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
     app.dependency_overrides.clear()
-
-
-def test_backtest_status_with_db_down_returns_503_envelope(
-    down_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_down() -> NoReturn:
-        raise _connection_refused()
-
-    monkeypatch.setattr(daily_history_service, "get_index_coverage_map", raise_down)
-
-    response = down_client.get("/api/backtest/status")
-
-    assert response.status_code == 503
-    assert response.json() == DOWN_BODY
-    assert SECRET not in response.text
-
-
-def test_genuine_sql_error_stays_a_500(
-    down_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_bug() -> NoReturn:
-        raise ProgrammingError("SELECT nope", {}, Exception(f"column nope {SECRET}"))
-
-    monkeypatch.setattr(daily_history_service, "get_index_coverage_map", raise_bug)
-
-    response = down_client.get("/api/backtest/status")
-
-    assert response.status_code == 500
-    assert response.json() == {"error": {"code": "INTERNAL_ERROR", "message": "Server error"}}
-    assert SECRET not in response.text
 
 
 def test_paper_order_with_db_down_returns_503_and_leaks_nothing(
@@ -189,18 +156,6 @@ def test_health_with_db_down_reports_down_without_driver_text(
     assert SECRET not in response.text
 
 
-def test_screener_preflight_with_db_down_returns_503(
-    down_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
-
-    response = down_client.get("/api/system/pre-flight/screener")
-
-    assert response.status_code == 503
-    assert response.json() == DOWN_BODY
-
-
 @pytest.fixture
 def schemaless_client() -> Generator[TestClient, None, None]:
     """The database answers, but has none of the app's tables (schema drift)."""
@@ -241,23 +196,6 @@ def test_health_with_schema_bug_is_degraded_not_an_outage(
         "startup": "COMPLETE",
     }
     assert "no such table" not in response.text
-
-
-def test_screener_preflight_with_schema_bug_is_not_ready_and_not_503(
-    schemaless_client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(fyers_client, "get_fyers_client", lambda: None)
-
-    response = schemaless_client.get("/api/system/pre-flight/screener")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "ready": False,
-        "message": "Database query failed. Check the server log.",
-        "fyers_connected": False,
-        "data_fresh": False,
-        "last_update": None,
-    }
 
 
 def test_startup_logs_one_line_without_password(

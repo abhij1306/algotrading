@@ -1,10 +1,5 @@
 import { formatSignedPercent, roundToDecimals } from "@/lib/format";
-import type {
-  OptionsBoard,
-  PositionItem,
-  SearchResultItem,
-  WatchlistItem,
-} from "@/lib/queries/terminal";
+import type { PositionItem, SearchResultItem, WatchlistItem } from "@/lib/queries/terminal";
 import type { Quote } from "@/lib/realtime/quote-store";
 import { inferInstrumentType, optionLotSize } from "./order";
 
@@ -101,46 +96,9 @@ export function currentRow(rows: WatchlistItem[], selectedSymbol: string): Watch
   return rows.find((s) => s.symbol === selectedSymbol) ?? rows.at(0) ?? null;
 }
 
-/** The ticket trades the picked option while the option chain is on screen, else the symbol. */
-export function tradeSymbolFor(
-  view: TerminalView,
-  optionSymbol: string,
-  current: WatchlistItem | null,
-): string {
-  const option = view === "options" ? optionSymbol : "";
-  return option || (current?.symbol ?? "");
-}
-
 /** Every distinct, non-empty symbol on screen. */
 export function screenSymbols(groups: readonly (readonly string[])[]): string[] {
   return Array.from(new Set(groups.flat().filter(Boolean)));
-}
-
-/** An option picked on the chain, tagged with the chain (underlying and expiry) it was on. */
-export interface OptionPick {
-  chain: string;
-  symbol: string;
-}
-
-/** The chain the selectors name; an empty expiry is the backend's nearest one. */
-export function optionChainKey(underlying: string, expiry: string): string {
-  return `${underlying}|${expiry}`;
-}
-
-/**
- * The picked option while it is a contract on the chain shown for the current selectors, else
- * "". A pick from another underlying or expiry, or one no longer listed, is never traded.
- */
-export function shownOptionSymbol(
-  pick: OptionPick | null,
-  chain: string,
-  board: Pick<OptionsBoard, "strikes"> | null,
-): string {
-  if (pick?.chain !== chain || !board) return "";
-  const listed = board.strikes.some(
-    (row) => row.ce?.symbol === pick.symbol || row.pe?.symbol === pick.symbol,
-  );
-  return listed ? pick.symbol : "";
 }
 
 export interface SearchView {

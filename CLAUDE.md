@@ -117,7 +117,6 @@ Runtime behavior:
 - Current approved targets:
   - websocket connection and queue health
   - canonical history load timings
-  - strategy scan/backtest timings
 - Do not add speculative telemetry that does not help current local operations or near-term development.
 
 ---

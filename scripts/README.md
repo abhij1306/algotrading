@@ -8,8 +8,8 @@ Active helpers only (run from repo root):
 Dev startup is `start.bat` (Windows) or `python start_dev.py` at the repo root.
 
 Backend data/maintenance CLIs live in `backend/scripts/` (run from repo root, e.g.
-`python backend/scripts/sync_index_universes.py`):
-`sync_index_universes`, `load_bhavcopy`, `refresh_fyers_equity_daily`,
+`python backend/scripts/load_bhavcopy.py`):
+`load_bhavcopy`, `refresh_fyers_equity_daily`,
 `refresh_fyers_index_daily`, `refresh_fyers_intraday_archive`.
 
 Lint and format are `ruff` (backend) and `pnpm check` (frontend).

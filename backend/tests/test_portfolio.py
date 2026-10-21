@@ -25,12 +25,3 @@ def test_portfolio_stats(client: TestClient) -> None:
     data = response.json()
     assert "totalValue" in data
     assert "dayChange" in data
-
-
-def test_backtest_strategies_available(client: TestClient) -> None:
-    # Test the backtest strategies endpoint - returns dict with "strategies" key
-    response = client.get("/api/backtest/strategies")
-    assert response.status_code == 200
-    data = response.json()
-    assert "strategies" in data
-    assert isinstance(data["strategies"], list)

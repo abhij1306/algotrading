@@ -2,11 +2,8 @@ import { useMemo, type ReactNode } from "react";
 import type { MarketStatus } from "@/lib/market-hours";
 import {
   getInsightSymbols,
-  mergeCommodities,
-  useCommodities,
   useMarketInsights,
   usePostMarketInsights,
-  type CommodityData,
   type MarketInsights,
   type PostMarketData,
   type SectorData,
@@ -31,7 +28,6 @@ interface InsightsView<Data> {
 }
 
 const NO_SYMBOLS: string[] = [];
-const NO_COMMODITIES: CommodityData[] = [];
 
 function moverWithQuote(row: StockMover, quotes: QuoteMap): StockMover {
   const quote = quotes[row.symbol];
@@ -51,15 +47,6 @@ function sectorWithQuote(row: SectorData, quotes: QuoteMap): SectorData {
     value: quote.ltp ?? row.value,
     changePercent: quote.changePct ?? row.changePercent,
   };
-}
-
-/** The post-market snapshot plus the commodity rows (Crude Oil) the overview does not carry. */
-function withCommodities(
-  data: PostMarketData | undefined,
-  extra: readonly CommodityData[],
-): PostMarketData | null {
-  if (!data) return null;
-  return { ...data, commodities: mergeCommodities(data.commodities, extra) };
 }
 
 /** The fetched movers and sectors with any live quote laid over them. */
@@ -88,13 +75,11 @@ function useMarketHoursView(enabled: boolean): InsightsView<MarketInsights> {
   };
 }
 
-/** The post-market snapshot with the extra commodity rows, while `enabled` (after the close). */
+/** The post-market snapshot, while `enabled` (after the close). */
 function usePostMarketView(enabled: boolean): InsightsView<PostMarketData> {
   const query = usePostMarketInsights(enabled);
-  // Optional extra rows: a failed commodities fetch leaves the overview's own rows on screen.
-  const extra = useCommodities(enabled).data ?? NO_COMMODITIES;
   return {
-    data: enabled ? withCommodities(query.data, extra) : null,
+    data: enabled ? (query.data ?? null) : null,
     loading: query.isPending,
     error: failureText("Failed to load post-market data", query.error),
   };
