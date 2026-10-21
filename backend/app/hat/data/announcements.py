@@ -156,7 +156,7 @@ def parse_feed(feed: str, text: str) -> tuple[list[FeedItem], int]:
     publication time). A document with a doctype or entity declaration is refused outright."""
     if feed not in FEEDS:
         raise FeedError("feed_unknown")
-    if len(text) > MAX_FEED_BYTES or _UNSAFE.search(text):
+    if len(text.encode("utf-8", errors="replace")) > MAX_FEED_BYTES or _UNSAFE.search(text):
         raise FeedError("feed_unsafe")
     try:
         root = ET.fromstring(text)  # noqa: S314 - refused above if it declares a doctype

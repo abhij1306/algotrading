@@ -291,11 +291,12 @@ def test_volume_pace_builder(sequence: list[tuple[int, int]], probe: int) -> Non
     builder = BarBuilder()
     assert builder.volume_pace("AAA", at_us(probe)) is None
     total = 0
-    for offset, qty in sequence:
+    # only the ticks that have arrived by the probe time: later ones are not yet traded
+    for offset, qty in sorted(s for s in sequence if s[0] <= probe):
         builder.on_tick(Tick("AAA", at_us(offset), Decimal(1), qty), at_us(offset))
         total += qty
     assert builder.day_volume("AAA", DAY) == total
-    if sequence:
+    if total or any(s[0] <= probe for s in sequence):
         assert builder.volume_pace("AAA", at_us(probe)) == volume_pace(total, at_us(probe))
     else:
         assert builder.volume_pace("AAA", at_us(probe)) is None
@@ -310,7 +311,7 @@ def test_tick_volume_delta(start: int, steps: list[int], first_qty: int) -> None
     """A tick's volume is the change in the cumulative day volume, never negative: over a run of
     ticks the volumes after the first sum to the rise in cumulative volume, and the first tick
     contributes only its own print, not the volume traded before HAT subscribed."""
-    last: dict[str, int] = {}
+    last: dict[str, tuple[date, int]] = {}
     arrival = at_us(OPEN_SOD * US)
     cumulative = [start]
     for step in steps:
@@ -326,6 +327,51 @@ def test_tick_volume_delta(start: int, steps: list[int], first_qty: int) -> None
         quantities_out.append(tick.qty)
     assert quantities_out[0] == first_qty
     assert sum(quantities_out[1:]) == cumulative[-1] - cumulative[0]
+
+
+@given(offsets=st.lists(st.integers(OPEN_SOD * US, CLOSE_SOD * US - 1), max_size=40))
+def test_no_store_keeps_no_bars(offsets: list[int]) -> None:
+    """Without a bar store, final bars are reported to listeners and then forgotten: nothing
+    accumulates for a writer that does not exist. Harm: the long-running loop grows memory
+    for the whole session."""
+    clock = FixedClock(at_us(OPEN_SOD * US))
+    live = LiveData(health=QuietHealth(), is_open=lambda _t: False, clock=clock)
+    seen: list[Bar] = []
+    live.add_bar_listener(seen.append)
+    for offset in sorted(offsets):
+        clock.set(at_us(offset))
+        live.on_tick({"symbol": "AAA", "ltp": 10.0, "exch_feed_time": clock.now().timestamp()})
+        live.step()
+    clock.set(at_us(CLOSE_SOD * US + 3600 * US))
+    live.step()
+    assert live.pending_bars == 0
+    assert len(seen) == len({o // (300 * US) for o in offsets})
+
+
+@given(
+    ltq=st.integers(1, 5000),
+    previous=st.integers(0, 10**6),
+    rise=st.integers(0, 10**6),
+    bad_volume=st.sampled_from([None, "", "x", -5]),
+)
+def test_tick_volume_fallbacks(ltq: int, previous: int, rise: int, bad_volume: object) -> None:
+    """A tick with no usable cumulative volume contributes its own last traded quantity, and the
+    first tick of a new trade date contributes its own print instead of its total minus the
+    previous day's total. Harm: a print is lost from bar and day volume, or a new session's
+    opening bar is charged yesterday's volume."""
+    last: dict[str, tuple[date, int]] = {}
+    day_one = at_us(OPEN_SOD * US)
+    day_two = day_one + timedelta(days=1)
+    first = tick_from_payload({"symbol": "AAA", "ltp": 10, "volume": previous}, day_one, last)
+    assert first is not None
+    broken = {"symbol": "AAA", "ltp": 10, "volume": bad_volume, "last_traded_qty": ltq}
+    tick = tick_from_payload(broken, day_one, last)
+    assert tick is not None
+    assert tick.qty == ltq
+    new_day = {"symbol": "AAA", "ltp": 10, "volume": previous + rise, "last_traded_qty": ltq}
+    tick = tick_from_payload(new_day, day_two, last)
+    assert tick is not None
+    assert tick.qty == ltq
 
 
 # --- staleness (HAT-DATA-116) ------------------------------------------------------------------
@@ -565,9 +611,11 @@ def test_candidates_never_overwrite_refresh(
         read_done.set()
         release.wait(0.2)  # the refresh runs now if nothing stops it
 
-    _SlowInputs.pause = pause
     refresh.start()
-    with patch("app.hat.data.subscriptions.SubscriptionInputs", _SlowInputs):
+    with (
+        patch.object(_SlowInputs, "pause", pause),
+        patch("app.hat.data.subscriptions.SubscriptionInputs", _SlowInputs),
+    ):
         subs.add_candidates(candidates)
     release.set()
     refresh.join(5)

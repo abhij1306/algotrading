@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import UUID
 
+import pytest
 from hat_live_support import (
     add_instrument,
     live_engine,
@@ -24,6 +25,7 @@ from app.hat.data import announcements
 from app.hat.data.announcements import (
     FEED_ANNOUNCEMENTS,
     FEED_RESULTS,
+    FeedError,
     HttpFeedFetcher,
     attached_announcements,
     catalyst_attached,
@@ -88,6 +90,21 @@ def test_fetch_bounded(chunks: list[bytes], cap: int) -> None:
         text = HttpFeedFetcher(get=lambda *_a, **_k: body)(FEED_ANNOUNCEMENTS)
     assert text.encode() == whole[: cap + 1]
     assert body.read <= cap + 1 + 40 or body.read == len(whole)
+
+
+@given(words=st.integers(1, 40), extra=st.integers(-1, 1))
+def test_parse_size_in_bytes(words: int, extra: int) -> None:
+    """The size limit counts encoded bytes, not characters: a document of multibyte text is
+    refused exactly when its UTF-8 size is over the limit. Harm: a feed far over the memory
+    budget passes because its characters are fewer than its bytes."""
+    doc = rss_document([rss_item("g", "é" * words, AT, symbol="AAA", isin=SYMBOL_ISINS["AAA"])])
+    size = len(doc.encode("utf-8"))
+    with patch.object(announcements, "MAX_FEED_BYTES", size + extra):
+        if extra < 0:
+            with pytest.raises(FeedError):
+                parse_feed(FEED_ANNOUNCEMENTS, doc)
+        else:
+            parse_feed(FEED_ANNOUNCEMENTS, doc)
 
 
 def test_poll_schedule_edges() -> None:

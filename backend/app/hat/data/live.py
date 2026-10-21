@@ -16,7 +16,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -80,32 +80,35 @@ def _exchange_time(payload: Mapping[str, Any]) -> datetime | None:
 
 
 def tick_from_payload(
-    payload: Mapping[str, Any], arrival: datetime, last_volume: dict[str, int]
+    payload: Mapping[str, Any], arrival: datetime, last_volume: dict[str, tuple[date, int]]
 ) -> Tick | None:
     """A `Tick` from a normalized feed payload, or None when it has no symbol or price.
 
     The exchange time is the payload's, else the arrival time. The volume of the print is the
     change in the payload's cumulative day volume since the symbol's previous tick (never
-    negative); the first tick seen contributes its own `last_traded_qty` (or 0), so volume that
-    traded before HAT subscribed is not put into the current bar. `last_volume` carries the
-    previous cumulative volume per symbol.
+    negative); the first tick seen that day contributes its own `last_traded_qty` (or 0), so
+    volume that traded before HAT subscribed is not put into the current bar. A tick with no
+    usable cumulative volume contributes its `last_traded_qty`. `last_volume` carries the
+    previous cumulative volume per symbol with the trade date it belongs to, so a new day never
+    subtracts yesterday's total.
     """
     symbol = payload.get("symbol")
     price = _decimal(payload.get("ltp"))
     if not isinstance(symbol, str) or not symbol or price is None or price <= 0:
         return None
+    when = _exchange_time(payload) or arrival
+    day = trade_date_of(when)
     cumulative = _decimal(payload.get("volume"))
-    previous = last_volume.get(symbol)
-    qty = 0
+    traded = _decimal(payload.get("last_traded_qty"))
+    own = int(traded) if traded is not None and traded > 0 else 0
+    qty = own
     if cumulative is not None and cumulative >= 0:
         total = int(cumulative)
-        if previous is not None and total >= previous:
-            qty = total - previous
-        else:
-            traded = _decimal(payload.get("last_traded_qty"))
-            qty = int(traded) if traded is not None and traded > 0 else 0
-        last_volume[symbol] = total
-    return Tick(symbol, _exchange_time(payload) or arrival, price, qty)
+        previous = last_volume.get(symbol)
+        if previous is not None and previous[0] == day and total >= previous[1]:
+            qty = total - previous[1]
+        last_volume[symbol] = (day, total)
+    return Tick(symbol, when, price, qty)
 
 
 def run_listener_call(call: Callable[[], None], what: str) -> None:
@@ -189,7 +192,7 @@ class LiveData:
         self.gaps = PreopenGaps()
         self._store = store
         self._instrument_ids = instrument_ids
-        self._last_volume: dict[str, int] = {}
+        self._last_volume: dict[str, tuple[date, int]] = {}
         self._bar_listeners: list[BarListener] = []
         self._unsaved: list[Bar] = []
         self._detach: Callable[[], None] | None = None
@@ -224,8 +227,14 @@ class LiveData:
         for bar in finals:
             for listener in self._bar_listeners:
                 run_listener_call(lambda b=bar, fn=listener: fn(b), "bar listener")
-        self._unsaved.extend(finals)
+        if self._store is not None:  # without a store nothing would ever clear the list
+            self._unsaved.extend(finals)
         return finals
+
+    @property
+    def pending_bars(self) -> int:
+        """Final bars waiting to be written."""
+        return len(self._unsaved)
 
     def persist(self) -> int:
         """Write the final bars not yet stored (blocking; run it off the loop). A failure keeps

@@ -18,12 +18,14 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.volume_pace` For t in (09:15, 15:30] pace(t) x (elapsed / 375 min) = V exactly, and there is no pace outside that range. Harm: an early trickle projects to a huge pace and fires false breakouts.
 - `PBT bars.volume_pace_builder` The builder gives no pace before a symbol's first tick of the session, and afterwards the pace of the day volume of every in-session tick. Harm: pace is read before any data exists.
 - `PBT bars.tick_volume_delta` A tick's volume is the change in cumulative day volume, never negative; the first tick contributes only its own print. Harm: bar volume and pace count volume traded before HAT subscribed, or go negative.
+- `PBT bars.tick_volume_fallbacks` A tick with no usable cumulative volume contributes its own last traded quantity, and the first tick of a new trade date contributes its own print rather than its total minus the previous day's total. Harm: a print is lost from bar and day volume, or a new session's opening bar is charged yesterday's volume.
 - `PBT bars.staleness_trip` The feed is stale at t exactly when t is in market hours and no tick arrived in (t - 30 s, t]; each transition into stale reaches the health sink once and each recovery once. Harm: orders are placed on a frozen tape, or a transient gap leaves a bot disabled.
 - `PBT bars.staleness_boundary` Silence of exactly 30 s is stale and 30 s minus one microsecond is not. Harm: the threshold is off by one.
 - `PBT bars.staleness_events_recorded` Each transition into stale writes exactly one `feed.stale` event and calls the health kill once; recovery clears the kill and writes nothing. Harm: the owner is never alerted, or is alerted repeatedly.
 - `PBT bars.listener_isolation` With any set of listeners, any subset of which raises, every tick still reaches `latest_values` and the broadcast batch, and every listener that did not raise for a tick got it, in order. Harm: a HAT bug freezes SmartTrader's live quotes.
 - `PBT bars.subscription_set` The `"hat"` owner's set equals watchlist, open positions and candidates; positions are always in it; the provider holds exactly the symbols some owner holds, and releasing HAT never unsubscribes a symbol another owner holds; a set at or above the limit alerts. Harm: an open position stops receiving prices so its exits never fire.
 - `PBT bars.subscription_inputs` The inputs are today's watchlist symbols, every open position's symbol (not closed ones, not other days' watchlists) and the candidates. Harm: stale symbols hold feed budget, or an open position is missed.
+- `PBT bars.no_store_keeps_no_bars` Without a bar store, final bars reach the listeners and are then forgotten; nothing accumulates. Harm: the long-running loop grows memory all session.
 - `PBT bars.persisted_equals_live` The `bars_5m` rows equal the final bars the bar listener saw, one row per (instrument, bar_start), exactly the spec's columns, however writes failed and re-ran. Harm: replays and audits cannot reproduce a live decision.
 - `PBT bars.gap_pct` The recorded gap is 100 x (o / c - 1), from the indicative price inside 09:00-09:08 else the first tick's open, and the record names its source; a later first tick never replaces a record. Harm: EP gap filters use a wrong gap.
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
@@ -36,6 +38,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.dedupe_recorded_fixtures` The recorded feeds: a GUID listed twice stores once, repeated polls add nothing, and an item with no GUID gets a stable derived one. Harm: the real feed shape breaks the dedupe.
 - `PBT announcements.unmatched_kept` Every polled item has a row, `raw` equals the item as received, an unmatched item has a null instrument until a later poll finds it. Harm: a catalyst for a renamed stock is lost.
 - `PBT announcements.match_window` An item is attached iff its instrument is the candidate's and t - within_hours <= published_at <= t. Harm: a stale or unrelated headline is shown as the reason to take a trade.
+- `PBT announcements.parse_size_in_bytes` The feed size limit counts encoded bytes: a document is refused exactly when its UTF-8 size is over the limit. Harm: a multibyte feed far over the memory budget passes as fewer characters.
 - `PBT announcements.fetch_bounded` The feed fetcher returns at most the first limit + 1 bytes of a body and stops reading once it has them. Harm: an oversized feed exhausts the process memory before it is refused.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` No module under `app.hat` imports (statically, or by name through `importlib` or `__import__`) a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
@@ -103,7 +106,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `cc7ec57cf0ba97fd82724de3e0ecc74fa96c0ae6`
-Covered digest: `68fe9f3813fd2c6eb2232249fb821ba0107f234c17c421a02ed8c374ae696cc6`
+Covered digest: `bbab35761e893de5ede584c1a573b70bab2306719c44d215a585bcb5e6278f20`
 
 ## Scope changes
 
@@ -502,4 +505,35 @@ Break: in `app/hat/data/announcements.py`, the loop in `_take` no longer stops o
 ```
 tests/hat/properties/test_announcements.py:89: in test_fetch_bounded
 E   AssertionError: assert b'   ' == b'  '
+```
+
+### PBT bars.tick_volume_fallbacks
+
+Break: in `app/hat/data/live.py`, the same-trade-date test was removed from the delta rule (yesterday's total is subtracted), and, second break, the fallback to the print's own quantity was set to 0.
+
+```
+tests/hat/properties/test_bars.py:374: in test_tick_volume_fallbacks
+E   AssertionError: assert 0 == 1
+E    +  where 0 = Tick(symbol='AAA', ... qty=0)   (second break: line 370, the same assertion)
+```
+
+### PBT bars.no_store_keeps_no_bars
+
+Break: in `app/hat/data/live.py`, `step` appends final bars to the unsaved list even with no store.
+
+```
+tests/hat/properties/test_bars.py:347: in test_no_store_keeps_no_bars
+E   assert 1 == 0
+E    +  where 1 = <LiveData object>.pending_bars
+E   Failing test case: test_no_store_keeps_no_bars(offsets=[33_300_000_000])
+```
+
+### PBT announcements.parse_size_in_bytes
+
+Break: in `app/hat/data/announcements.py`, the size check counts characters instead of encoded bytes.
+
+```
+tests/hat/properties/test_announcements.py:104: in test_parse_size_in_bytes
+E   Failed: DID NOT RAISE FeedError
+E   Failing test case: test_parse_size_in_bytes(words=1, extra=-1)
 ```
