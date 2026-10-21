@@ -417,24 +417,7 @@ def open_entry(
     # The trigger price is the level the trigger broke (HAT-CRIT-119); a caller without one
     # (a backtest proxy) records the entry price.
     trigger = base.trigger_level if base.trigger_level is not None else entry
-    signal = HatSignal(
-        id=signal_id,
-        bot_id=request.bot_id,
-        strategy_version_id=bot.live_version_id,
-        risk_policy_version_id=decision.policy_version_id or policy.version_id,
-        playbook=request.playbook,
-        instrument_id=request.instrument_id,
-        trade_date=request.trade_date,
-        triggered_at=request.triggered_at,
-        trigger_price=trigger,
-        stop_price=decision.stop if decision.stop is not None else (base.stop_price or _ZERO),
-        qty=decision.quantity or 0 if accepted else 0,
-        risk_amount=decision.risk_amount or _ZERO if accepted else _ZERO,
-        currency="INR",
-        mode=SHADOW,
-        state=lifecycle.INITIAL_STATE,
-        risk_decision=_decision_row(decision),
-    )
+    signal = _signal_row(request, bot, policy, decision, signal_id, trigger, accepted=accepted)
     session.add(signal)
     session.flush()
     now = request.triggered_at
@@ -461,6 +444,41 @@ def open_entry(
     qty = int(decision.quantity or 0)
     position = _virtual_entry(session, signal, bot, decision, fills.fill("buy", qty, entry), now)
     return EntryOutcome(signal.id, signal.state, decision, position.id)
+
+
+def _signal_row(
+    request: EntryRequest,
+    bot: HatBot,
+    policy: PolicyVersion,
+    decision: RiskDecision,
+    signal_id: uuid.UUID,
+    trigger: Decimal,
+    *,
+    accepted: bool,
+) -> HatSignal:
+    """The `hat_signal` row of one decision: a rejected signal carries no size or risk."""
+    base = request.context
+    stop = decision.stop if decision.stop is not None else (base.stop_price or _ZERO)
+    qty = (decision.quantity or 0) if accepted else 0
+    risk = (decision.risk_amount or _ZERO) if accepted else _ZERO
+    return HatSignal(
+        id=signal_id,
+        bot_id=request.bot_id,
+        strategy_version_id=bot.live_version_id,
+        risk_policy_version_id=decision.policy_version_id or policy.version_id,
+        playbook=request.playbook,
+        instrument_id=request.instrument_id,
+        trade_date=request.trade_date,
+        triggered_at=request.triggered_at,
+        trigger_price=trigger,
+        stop_price=stop,
+        qty=qty,
+        risk_amount=risk,
+        currency="INR",
+        mode=SHADOW,
+        state=lifecycle.INITIAL_STATE,
+        risk_decision=_decision_row(decision),
+    )
 
 
 def _triggered_payload(

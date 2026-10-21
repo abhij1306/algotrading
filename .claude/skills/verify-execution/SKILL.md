@@ -191,7 +191,7 @@ Trade lifecycle (PR 11):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `437bb295890f8eb795a9a67559ef6e3bee111f346951d813cb57ab7cb10eb081`
+Covered digest: `c06b009d5659e7aaab2861b1ce2b5d44bec55978740206dc48ebe00773534bd3`
 
 ## Scope changes
 
