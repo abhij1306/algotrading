@@ -61,3 +61,8 @@ def test_runtime__state_domain(conn: Connection) -> None:
 @pytest.mark.postgres
 def test_runtime__per_bot_serialised(conn: Connection) -> None:
     rules.check_runtime__per_bot_serialised(conn)
+
+
+@pytest.mark.postgres
+def test_runtime__publish_serialised(conn: Connection) -> None:
+    rules.check_runtime__publish_serialised(conn)

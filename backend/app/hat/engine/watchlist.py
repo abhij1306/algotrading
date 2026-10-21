@@ -3,14 +3,19 @@
 
 `scan_and_publish` runs the pure `scan.scan_bot` for one bot and writes its rows and one event in
 the caller's transaction. It is idempotent: a bot's watchlist for a trade date is written once, so
-a job that crashed after this returned and ran again adds nothing. A bot with no live strategy
-version or no universe publishes nothing (fail closed).
+a job that crashed after this returned and ran again adds nothing, and two runs at the same time
+are serialised by the bot's lock (the second sees the first one's event). A bot with no live
+strategy version or no universe publishes nothing and records nothing (fail closed), so a run
+after the universe is assigned still publishes that day.
+
+The members are read point in time from the universe the bot's version names (HAT-PORT-021):
+membership belongs to the universe, and a version pins its definition, not a frozen list.
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -20,6 +25,7 @@ from sqlalchemy.orm import Session
 from ..events import record
 from ..models import HatBot, HatEvent, HatStrategyVersion, HatUniverseVersion, HatWatchlistEntry
 from . import lifecycle
+from .botlock import lock_bot
 from .portfolio.service import members_of
 from .scan import ScanInputs, ScanResult, scan_bot
 from .strategy.config import parse_config
@@ -38,12 +44,29 @@ class Published:
     skipped: str | None = None
 
 
+def _universe_id(session: Session, bot: HatBot) -> uuid.UUID | None:
+    if bot.universe_version_id is None:
+        return None
+    version = session.get(HatUniverseVersion, bot.universe_version_id)
+    return None if version is None else version.universe_id
+
+
 def bot_universe_members(session: Session, bot: HatBot, day: date) -> frozenset[uuid.UUID]:
     """The instruments in the bot's universe on `day`, point in time; empty without one."""
-    if bot.universe_version_id is None:
-        return frozenset()
-    version = session.get(HatUniverseVersion, bot.universe_version_id)
-    return frozenset() if version is None else members_of(session, version.universe_id, day)
+    universe_id = _universe_id(session, bot)
+    return frozenset() if universe_id is None else members_of(session, universe_id, day)
+
+
+def _with_members(inputs: ScanInputs, members: frozenset[uuid.UUID]) -> ScanInputs:
+    return ScanInputs(
+        as_of=inputs.as_of,
+        members={str(m) for m in members},
+        bars=inputs.bars,
+        regime_closes=inputs.regime_closes,
+        features=inputs.features,
+        series=inputs.series,
+        price_bands=inputs.price_bands,
+    )
 
 
 def _already_published(session: Session, bot_id: uuid.UUID, trade_date: date) -> bool:
@@ -68,6 +91,7 @@ def scan_and_publish(
 
     `inputs.members` is replaced by the bot's universe on `inputs.as_of` (the caller does not
     choose the universe). Idempotent per (bot, trade date)."""
+    lock_bot(session, bot_id)  # held to commit: a concurrent run waits, then sees our event
     bot = session.get(HatBot, bot_id)
     if bot is None or bot.live_version_id is None:
         return Published(0, False, "no_live_version")
@@ -76,9 +100,12 @@ def scan_and_publish(
     version = session.get(HatStrategyVersion, bot.live_version_id)
     if version is None:
         return Published(0, False, "no_live_version")
+    universe_id = _universe_id(session, bot)
+    if universe_id is None:
+        return Published(0, False, "no_universe")
     config = parse_config(version.config)
-    members = bot_universe_members(session, bot, inputs.as_of)
-    result: ScanResult = scan_bot(config, replace(inputs, members={str(m) for m in members}))
+    members = members_of(session, universe_id, inputs.as_of)
+    result: ScanResult = scan_bot(config, _with_members(inputs, members))
     for row in result.rows:
         session.add(
             HatWatchlistEntry(

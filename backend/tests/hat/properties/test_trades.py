@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 from hat_engine_support import TRADE_DAY, open_trade, seed_engine_world
 from hat_risk_support import policy_with, version_of
@@ -14,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import lifecycle, trades
-from app.hat.models import HatPosition, HatSignal, HatWatchlistEntry
+from app.hat.models import HatBot, HatPosition, HatSignal, HatUniverseMember, HatWatchlistEntry
 from app.hat.risk.exposure import max_positions
 
 PLAYBOOKS = ("stage2", "momentum", "episodic", "other")
@@ -32,11 +33,10 @@ def test_shared_bot_cap(playbooks: list[str]) -> None:
     engine = memory_engine()
     with Session(engine) as session:
         world = seed_engine_world(session, instruments=len(playbooks))
+        stored = replace(version_of(policy), version_id=world.policy_version_id)
         accepted = 0
         for playbook, instrument in zip(playbooks, world.instruments, strict=True):
-            outcome = open_trade(
-                session, world, instrument, playbook, policy_versions=[version_of(policy)]
-            )
+            outcome = open_trade(session, world, instrument, playbook, policy_versions=[stored])
             if outcome.outcome.position_id is not None:
                 accepted += 1
             else:
@@ -80,3 +80,26 @@ def test_watchlist_expires_at_session_end(triggered: list[bool]) -> None:
         assert sum(r.status == lifecycle.EXPIRED for r in rows) == expired
         assert sum(r.status == lifecycle.TRIGGERED for r in rows) == triggered.count(True)
         assert trades.expire_watchlist(session, TRADE_DAY) == 0
+
+
+@settings(max_examples=20)
+@given(st.booleans(), st.booleans())
+def test_retry_returns_existing_signal(mode_changed: bool, left_universe: bool) -> None:
+    """HAT-EXEC-021: a repeated trigger for the same (bot, playbook, instrument, day) returns the
+    signal it already made and writes nothing, even after the bot left shadow mode or the
+    instrument left the universe in between. Harm: a job retried after such a change crashes
+    instead of finding the trade it already took, and its caller cannot tell it was taken."""
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, instruments=1)
+        instrument = world.instruments[0]
+        first = open_trade(session, world, instrument).outcome
+        if mode_changed:
+            session.get(HatBot, world.bot_id).execution_mode = "confirm"
+        if left_universe:
+            for member in session.scalars(select(HatUniverseMember)):
+                member.effective_to = TRADE_DAY
+        session.flush()
+        again = open_trade(session, world, instrument).outcome
+        assert again.duplicate
+        assert again.signal_id == first.signal_id
+        assert session.scalar(select(func.count()).select_from(HatSignal)) == 1

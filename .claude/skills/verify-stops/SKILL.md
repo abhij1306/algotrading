@@ -67,7 +67,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
-Covered digest: `f5cbb17c55cb76ed4257d94d4eca069fd5e1372b75a886e026544df9ecef7130`
+Covered digest: `d77d69472ce56a9aca483367e546cd9e38aa4136bc9ebedf17efd935ff981a71`
 
 ## Scope changes
 
@@ -99,6 +99,12 @@ Break: in `backend/app/hat/engine/stops.py`: the buffer ticks go above the day's
 ```
 FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup:  [cut]
 ============================== 1 failed in 0.20s ===============================
+```
+
+Break: in `backend/app/hat/engine/stops.py`: `low_of_day` no longer rounds the stop down to the tick.
+
+```
+FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup: [cut]
 ```
 
 ### PBT stops.custom_rules
@@ -169,4 +175,3 @@ E   AssertionError: the database accepted: deleting a position
 FAILED tests/hat/db/test_db_runtime.py::test_governance__stop_only_rises - As [cut]
 ============================== 1 failed in 0.30s ===============================
 ```
-

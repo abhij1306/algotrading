@@ -82,8 +82,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `CONF lifecycle_transitions_match_spec` The states, endings and (from, to) pairs of `lifecycle.TRANSITIONS` equal the table in 07 §4, row for row, and `TRADE_STATES` equals the 11 states. Harm: the machine that runs is not the machine the owner approved.
 - `PBT exits.replay_reproduces_state` After every step of a shadow trade the state stored on the signal and position equals the fold of its events over the table. Harm: a state that cannot be rebuilt from the log hides a missed event.
 - `PBT exits.shadow_rows_virtual` A shadow trade driven from signal to close writes only virtual orders, fills and positions with no broker ids and no fees, the broker records zero calls, the quantities add up and a closed position has one result whose R is its P&L over the initial risk. Harm: a shadow row that looks real can be reconciled against, and sold at, the broker.
+- `PBT trades.retry_returns_existing_signal` A repeated trigger for the same (bot, playbook, instrument, day) returns the signal it already made and writes nothing, even after the bot left shadow mode or the instrument left the universe. Harm: a retried job crashes instead of finding the trade it already took.
 - `PBT trades.shared_bot_cap` However entries are spread over a bot's playbooks the accepted ones never exceed the bot's position cap, and one is rejected exactly when the cap is full (the cap is the bot's, not the playbook's). Harm: each playbook gets its own cap and the bot holds a multiple of what the policy allows.
 - `PBT config.trade_keeps_entry_version` After the bot moves to a newer strategy version an open trade still evaluates the exit rules of the version it entered under, and a trade opened after the move uses the new ones. Harm: a promotion silently rewrites the exits of positions already held.
+- `DB runtime.publish_serialised` Two real nightly publishes of one bot and day, the first holding inside its scan after its "already published?" read, write one `watchlist.published`; the second waits on the bot's lock and skips. Harm: duplicate watchlist rows and events.
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 
@@ -107,7 +109,7 @@ CI=1 python -m pytest tests/hat/properties/test_config.py -k trade_keeps_entry_v
 python -m pytest tests/hat/conformance/test_conf_lifecycle.py -q --no-cov
 # the DB checks need a throwaway Postgres whose database name ends in _test
 SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
-  python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or state_domain"
+  python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or publish_serialised or state_domain"
 ```
 
 All adapter checks run on `FakeBroker` or a recording stand-in for the Fyers SDK. No check calls Fyers, and none needs a credential.
@@ -175,6 +177,7 @@ Trade lifecycle (PR 11):
 - `verification/tla/TradeLifecycle.tla` and `verification/tla/TradeLifecycle.cfg`
 - `verification/tla/broken/TradeLifecycle__no_lock.cfg`, `verification/tla/broken/TradeLifecycle__state_without_event.cfg`, `verification/tla/broken/TradeLifecycle__skip_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__virtual_skips_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__reopen.cfg`, `verification/tla/broken/TradeLifecycle__result_late.cfg`, `verification/tla/broken/TradeLifecycle__exits_use_live.cfg`, `verification/tla/broken/TradeLifecycle__exit_stalls.cfg`
 - `backend/app/hat/engine/trades.py`
+- `backend/app/hat/engine/botlock.py`
 - `backend/app/hat/engine/lifecycle.py`
 - `backend/app/hat/models/runtime.py`
 - `backend/tests/hat/properties/test_trades.py`
@@ -188,7 +191,7 @@ Trade lifecycle (PR 11):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
-Covered digest: `4febb13e7bcd3bfed0768eb5520f137e238cf33cef932881643e3a8c2e83aea9`
+Covered digest: `fde9f3e0c27e33401ada4c91d8a2e935924ceff342e56f495a908105111e0e43`
 
 ## Scope changes
 
@@ -1037,4 +1040,20 @@ Break: in `backend/app/hat/models/runtime.py`: the signal state CHECK also admit
 E   AssertionError: the database accepted: signal state 'open'
 FAILED tests/hat/db/test_db_runtime.py::test_runtime__state_domain - Assertio [cut]
 ============================== 1 failed in 0.18s ===============================
+```
+
+### PBT trades.retry_returns_existing_signal
+
+Break: in `backend/app/hat/engine/trades.py`: the entry rules (mode, universe, policy) run before the existing-signal lookup.
+
+```
+FAILED tests/hat/properties/test_trades.py::test_retry_returns_existing_signal
+```
+
+### DB runtime.publish_serialised
+
+Break: in `backend/app/hat/engine/watchlist.py`: `scan_and_publish` takes no bot lock (the `no_publish_lock` variant in `test_db_broken_variants.py`).
+
+```
+tests/hat/db/test_db_broken_variants.py::test_check_fails_when_rule_is_broken[runtime.publish_serialised-...] PASSED (the check raised AssertionError: 2 publishes)
 ```

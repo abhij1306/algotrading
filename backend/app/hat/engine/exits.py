@@ -17,10 +17,10 @@ Evaluation rules, as written in the spec:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_FLOOR, Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from .strategy.config import (
     ExitBreakeven,
@@ -152,33 +152,65 @@ def _reached_r(view: ExitView, pos: PositionState, at_r: float) -> bool:
     return view.price is not None and risk > 0 and view.price - pos.avg_entry >= _dec(at_r) * risk
 
 
+def _price_at_or_below_stop(rule: ExitHardStop, pos: PositionState, view: ExitView) -> bool:
+    return view.price is not None and view.price <= pos.current_stop
+
+
+def _partial_r(rule: ExitPartialAtR, pos: PositionState, view: ExitView) -> bool:
+    return _reached_r(view, pos, rule.at_r)
+
+
+def _gain_target(rule: ExitPctGainTarget, pos: PositionState, view: ExitView) -> bool:
+    price = view.price
+    return price is not None and (price - pos.avg_entry) * 100 >= _dec(rule.pct) * pos.avg_entry
+
+
+def _after_days(rule: ExitPartialAfterDays, pos: PositionState, view: ExitView) -> bool:
+    price = view.price
+    if price is None or view.days_held < rule.days:
+        return False
+    return not rule.only_if_profit or price > pos.avg_entry
+
+
+def _below_sma(rule: ExitCloseBelowSma, pos: PositionState, view: ExitView) -> bool:
+    level = view.sma.get(rule.sma)
+    return view.price is not None and level is not None and view.price < level
+
+
+def _below_swing_low(rule: ExitTrailingSwingLow, pos: PositionState, view: ExitView) -> bool:
+    level = view.swing_low.get(rule.lookback_days)
+    return view.price is not None and level is not None and view.price < level
+
+
+def _time_stop(rule: ExitTimeStop, pos: PositionState, view: ExitView) -> bool:
+    price = view.price
+    if price is None or view.days_held < rule.days:
+        return False
+    risk = pos.avg_entry - pos.initial_stop
+    return risk > 0 and (price - pos.avg_entry) < _dec(rule.min_r) * risk
+
+
+def _regime_off(rule: ExitRegime, pos: PositionState, view: ExitView) -> bool:
+    return view.regime_off
+
+
+# The firing test of each rule that sells. Missing data never fires a rule.
+_SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
+    ExitHardStop: _price_at_or_below_stop,
+    ExitPartialAtR: _partial_r,
+    ExitPctGainTarget: _gain_target,
+    ExitPartialAfterDays: _after_days,
+    ExitCloseBelowSma: _below_sma,
+    ExitTrailingSwingLow: _below_swing_low,
+    ExitTimeStop: _time_stop,
+    ExitRegime: _regime_off,
+}
+
+
 def _sells(rule: ExitRule, pos: PositionState, view: ExitView) -> bool:
     """Whether a rule that sells fires on this view. Missing data never fires a rule."""
-    price = view.price
-    if isinstance(rule, ExitHardStop):
-        return price is not None and price <= pos.current_stop
-    if isinstance(rule, ExitPartialAtR):
-        return _reached_r(view, pos, rule.at_r)
-    if isinstance(rule, ExitPctGainTarget):
-        return price is not None and (price - pos.avg_entry) * 100 >= _dec(rule.pct) * pos.avg_entry
-    if isinstance(rule, ExitPartialAfterDays):
-        if price is None or view.days_held < rule.days:
-            return False
-        return not rule.only_if_profit or price > pos.avg_entry
-    if isinstance(rule, ExitCloseBelowSma):
-        level = view.sma.get(rule.sma)
-        return price is not None and level is not None and price < level
-    if isinstance(rule, ExitTrailingSwingLow):
-        level = view.swing_low.get(rule.lookback_days)
-        return price is not None and level is not None and price < level
-    if isinstance(rule, ExitTimeStop):
-        if price is None or view.days_held < rule.days:
-            return False
-        risk = pos.avg_entry - pos.initial_stop
-        return risk > 0 and (price - pos.avg_entry) < _dec(rule.min_r) * risk
-    if isinstance(rule, ExitRegime):
-        return view.regime_off
-    return False
+    test = _SELL_TESTS.get(type(rule))
+    return test is not None and test(rule, pos, view)
 
 
 def _is_full(rule: ExitRule) -> bool:
@@ -197,56 +229,87 @@ def _breakeven_due(
     return rule.at_r is not None and _reached_r(view, pos, rule.at_r)
 
 
+_Live = list[tuple[int, str, ExitRule]]
+
+
+def _live_rules(rules: Sequence[ExitRule], pos: PositionState, phase: Phase) -> _Live:
+    """The enabled, not yet fired rules that run in `phase`, in stack order."""
+    allowed = _PHASES[phase]
+    return [
+        (index, rid, rule)
+        for index, rule in enumerate(rules)
+        if rule.enabled
+        and _RULE_PHASE[rule.rule] in allowed
+        and (rid := rule_id(index, rule)) not in pos.fired
+    ]
+
+
+def _partial_actions(
+    live: _Live, pos: PositionState, view: ExitView
+) -> tuple[tuple[ExitAction, ...], tuple[str, ...]]:
+    """The partial sells that fire, merged into one full exit when they cover what is left."""
+    hits = [
+        (rid, rule)
+        for _, rid, rule in live
+        if not isinstance(rule, ExitBreakeven) and is_partial_rule(rule) and _sells(rule, pos, view)
+    ]
+    qtys = [
+        fraction_qty(_fraction_of(rule) or 1.0, pos.qty_original, pos.qty_open) for _, rule in hits
+    ]
+    ids = tuple(rid for rid, _ in hits)
+    if not hits:
+        return (), ids
+    if sum(qtys) >= pos.qty_open:
+        return (ExitAction("full", pos.qty_open, ids),), ids
+    actions = tuple(
+        ExitAction("partial", qty, (rid,)) for (rid, _), qty in zip(hits, qtys, strict=True)
+    )
+    return actions, ids
+
+
+def _breakevens(
+    rules: Sequence[ExitRule],
+    live: _Live,
+    pos: PositionState,
+    view: ExitView,
+    ids: tuple[str, ...],
+) -> tuple[list[str], Decimal | None, list[tuple[str, str]]]:
+    """The breakeven moves that are due: their ids, the stop they raise to (only ever up) and
+    the ones ignored because they would not raise it (HAT-RISK-070)."""
+    done = any(is_partial_rule(rules[int(rid.split(":", 1)[0])]) for rid in (*pos.fired, *ids))
+    fired: list[str] = []
+    ignored: list[tuple[str, str]] = []
+    new_stop: Decimal | None = None
+    for _, rid, rule in live:
+        if not (isinstance(rule, ExitBreakeven) and _breakeven_due(rule, pos, view, done)):
+            continue
+        fired.append(rid)
+        if pos.avg_entry > pos.current_stop and (new_stop is None or pos.avg_entry > new_stop):
+            new_stop = pos.avg_entry
+        else:
+            ignored.append((rid, IGNORED_NOT_RAISING))
+    return fired, new_stop, ignored
+
+
 def evaluate(
     rules: Sequence[ExitRule], pos: PositionState, view: ExitView, phase: Phase
 ) -> Evaluation:
     """What the stack does for `pos` at `view` in `phase` (HAT-EXEC-070..073)."""
     if pos.qty_open <= 0:
         return Evaluation()
-    allowed = _PHASES[phase]
-    live = [
-        (index, rule_id(index, rule), rule)
-        for index, rule in enumerate(rules)
-        if rule.enabled and _RULE_PHASE[rule.rule] in allowed
-    ]
-    live = [(i, rid, rule) for i, rid, rule in live if rid not in pos.fired]
-    full_hits = [(rid, rule) for _, rid, rule in live if _is_full(rule) and _sells(rule, pos, view)]
+    live = _live_rules(rules, pos, phase)
+    full_hits = [rid for _, rid, rule in live if _is_full(rule) and _sells(rule, pos, view)]
     if full_hits:
         # Full beats partial: one exit of everything left; only the rules behind it are fired.
-        first = full_hits[0][0]
+        first = full_hits[0]
         return Evaluation(actions=(ExitAction("full", pos.qty_open, (first,)),), fired=(first,))
-    partial_hits = [
-        (rid, rule)
-        for _, rid, rule in live
-        if not isinstance(rule, ExitBreakeven) and is_partial_rule(rule) and _sells(rule, pos, view)
-    ]
-    qtys = [
-        fraction_qty(_fraction_of(rule) or 1.0, pos.qty_original, pos.qty_open)
-        for _, rule in partial_hits
-    ]
-    ids = tuple(rid for rid, _ in partial_hits)
-    actions: tuple[ExitAction, ...] = ()
-    if partial_hits and sum(qtys) >= pos.qty_open:
-        actions = (ExitAction("full", pos.qty_open, ids),)
-    elif partial_hits:
-        actions = tuple(
-            ExitAction("partial", qty, (rid,))
-            for (rid, _), qty in zip(partial_hits, qtys, strict=True)
-        )
+    actions, ids = _partial_actions(live, pos, view)
     fired = list(ids)
     ignored: list[tuple[str, str]] = []
     new_stop: Decimal | None = None
     if not actions or actions[0].kind != "full":
-        done = any(is_partial_rule(rules[int(rid.split(":", 1)[0])]) for rid in (*pos.fired, *ids))
-        for _, rid, rule in live:
-            if isinstance(rule, ExitBreakeven) and _breakeven_due(rule, pos, view, done):
-                fired.append(rid)
-                if pos.avg_entry > pos.current_stop and (
-                    new_stop is None or pos.avg_entry > new_stop
-                ):
-                    new_stop = pos.avg_entry
-                else:
-                    ignored.append((rid, IGNORED_NOT_RAISING))
+        moved, new_stop, ignored = _breakevens(rules, live, pos, view, ids)
+        fired.extend(moved)
     order = {rid: n for n, (_, rid, _) in enumerate(live)}
     return Evaluation(
         actions=actions,

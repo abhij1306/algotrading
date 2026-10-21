@@ -104,10 +104,11 @@ def low_of_day(
     entry: Decimal, day_lows: Sequence[Decimal], buffer_ticks: int, tick: Decimal
 ) -> StopPlan:
     """HAT-EXEC-051: the lowest low of the day's bars up to the entry bar, less `buffer_ticks`
-    ticks; it must be strictly below the entry."""
+    ticks, rounded down to the tick (a low off the grid gives no off-grid stop); it must be
+    strictly below the entry."""
     if not day_lows or not _positive(entry, tick, *day_lows) or buffer_ticks < 0:
         return _skip(SKIP_BAD_INPUT)
-    return _valid(entry, min(day_lows) - buffer_ticks * tick)
+    return _valid(entry, floor_to_tick(min(day_lows) - buffer_ticks * tick, tick))
 
 
 def pct_below_entry(entry: Decimal, pct: Decimal, tick: Decimal) -> StopPlan:

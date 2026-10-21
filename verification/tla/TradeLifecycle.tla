@@ -116,7 +116,7 @@ Move(t, steps, to) ==
     /\ st' = [st EXCEPT ![t] = to]
     /\ log' = [log EXCEPT ![t] = @ \o steps]
 
-\* code: backend/app/hat/engine/trades.py:lock_bot  (take the bot's advisory lock, then read the
+\* code: backend/app/hat/engine/botlock.py:lock_bot  (take the bot's advisory lock, then read the
 \* snapshot the caps use; the broken variant "no_lock" reads without the lock)
 Evaluate(t) ==
     /\ st[t] = "Watchlisted"

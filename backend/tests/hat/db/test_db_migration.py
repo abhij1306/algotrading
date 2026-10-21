@@ -15,9 +15,10 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
     # The Postgres-only DDL, repeated.
     rules.check_migration__ensure_idempotent(pg_engine, ensure_hat_schema)
 
-    # `init_db()` runs the HAT migration: with every trigger and function removed first, one
-    # run must restore the catalog exactly (a disabled HAT swallows upkeep errors, so the
-    # restored catalog is what proves the step ran).
+    # `init_db()` runs the HAT migration: with every trigger and function removed first, and the
+    # state CHECKs a table created before PR 11 lacks, one run must restore the catalog exactly
+    # (a disabled HAT swallows upkeep errors, so the restored catalog is what proves the step
+    # ran; `create_all` never adds a constraint to an existing table).
     before = rules.catalog(pg_engine)
     with pg_engine.begin() as connection:
         for table in (
@@ -43,7 +44,12 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
         connection.execute(
             text("DROP FUNCTION IF EXISTS hat_risk_policy_version_immutable CASCADE")
         )
+        connection.execute(text("ALTER TABLE hat_signal DROP CONSTRAINT hat_signal_state_check"))
+        connection.execute(
+            text("ALTER TABLE hat_position DROP CONSTRAINT hat_position_state_check")
+        )
     assert rules.catalog(pg_engine)["triggers"] != before["triggers"]
+    assert rules.catalog(pg_engine)["constraints"] != before["constraints"]
     init_db()
     assert rules.catalog(pg_engine) == before
 

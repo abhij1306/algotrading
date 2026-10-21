@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
@@ -53,6 +53,7 @@ from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..time import IST, as_utc, trade_date_of
 from . import exits, lifecycle
+from .botlock import lock_bot
 from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
@@ -99,23 +100,6 @@ class TradeError(HatError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
-
-
-# --- per-bot serialisation --------------------------------------------------------------------
-
-
-def lock_bot(session: Session, bot_id: uuid.UUID) -> None:
-    """Hold the bot's lock until the transaction ends (commit or rollback).
-
-    Two evaluations of one bot can then never interleave: the second waits here, reads the
-    snapshot after the first committed, and so sees the slot the first took. Other bots are
-    unaffected. A no-op on SQLite, which runs one writer at a time."""
-    if session.get_bind().dialect.name != "postgresql":
-        return
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"hat:bot:{bot_id}"},
-    )
 
 
 # --- the snapshot the caps read ---------------------------------------------------------------
@@ -305,6 +289,33 @@ def _decision_row(decision: RiskDecision) -> dict[str, object]:
     return document
 
 
+def _existing_signal(session: Session, request: EntryRequest) -> HatSignal | None:
+    return session.scalar(
+        select(HatSignal).where(
+            HatSignal.bot_id == request.bot_id,
+            HatSignal.playbook == request.playbook,
+            HatSignal.instrument_id == request.instrument_id,
+            HatSignal.trade_date == request.trade_date,
+        )
+    )
+
+
+def _entry_policy(session: Session, bot: HatBot, request: EntryRequest) -> PolicyVersion:
+    """The policy version a new entry is decided under, after the rules that refuse it outright."""
+    if bot.execution_mode != SHADOW:
+        raise TradeError("mode_not_shadow")  # confirm and auto are the router's (PR 15, D20)
+    if request.instrument_id not in bot_universe_members(session, bot, request.trade_date):
+        # Leaving the universe stops new entries (HAT-PORT-023); an open position is untouched.
+        raise TradeError("not_in_universe")
+    if bot.live_version_id is None:
+        raise TradeError("no_live_version")
+    versions: Sequence[PolicyVersion] = request.context.policy_versions or []
+    policy = effective_version(versions, request.triggered_at)
+    if policy is None:
+        raise TradeError("no_policy_version")
+    return policy
+
+
 def open_entry(
     session: Session, request: EntryRequest, *, decide: DECIDE = evaluate_signal
 ) -> EntryOutcome:
@@ -318,28 +329,13 @@ def open_entry(
     bot = session.get(HatBot, request.bot_id)
     if bot is None:
         raise TradeError("unknown_bot")
-    if bot.execution_mode != SHADOW:
-        raise TradeError("mode_not_shadow")  # confirm and auto are the router's (PR 15, D20)
-    if request.instrument_id not in bot_universe_members(session, bot, request.trade_date):
-        # Leaving the universe stops new entries (HAT-PORT-023); an open position is untouched.
-        raise TradeError("not_in_universe")
-    existing = session.scalar(
-        select(HatSignal).where(
-            HatSignal.bot_id == request.bot_id,
-            HatSignal.playbook == request.playbook,
-            HatSignal.instrument_id == request.instrument_id,
-            HatSignal.trade_date == request.trade_date,
-        )
-    )
+    existing = _existing_signal(session, request)
     if existing is not None:
+        # Checked before the entry rules: a retry after a mode or universe change still gets
+        # the signal it already made.
         return EntryOutcome(existing.id, existing.state, None, None, duplicate=True)
-    if bot.live_version_id is None:
-        raise TradeError("no_live_version")
+    policy = _entry_policy(session, bot, request)
     base = request.context
-    versions: Sequence[PolicyVersion] = base.policy_versions or []
-    policy = effective_version(versions, request.triggered_at)
-    if policy is None:
-        raise TradeError("no_policy_version")
     slots, entries, stopouts = bot_snapshot(
         session, request.bot_id, request.trade_date, request.last_prices
     )
@@ -543,6 +539,38 @@ def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qt
     return (realized_pnl / risk).quantize(_RATIO_PLACES)
 
 
+def _locked_virtual_position(session: Session, position_id: uuid.UUID) -> HatPosition:
+    """The position, re-read under its bot's lock; only a virtual one is the engine's."""
+    position = session.get(HatPosition, position_id)
+    if position is None:
+        raise TradeError("unknown_position")
+    lock_bot(session, position.bot_id)
+    session.refresh(position)
+    if not position.is_virtual:
+        raise TradeError("position_not_virtual")  # real exits are the router's (PR 15)
+    return position
+
+
+def _raise_stop(
+    session: Session,
+    signal: HatSignal,
+    position: HatPosition,
+    old: Decimal,
+    new: Decimal,
+    now: datetime,
+) -> None:
+    _emit(
+        session,
+        signal,
+        "stop.moved",
+        aggregate_type="position",
+        aggregate_id=position.id,
+        payload={"from": str(old), "to": str(new)},
+        now=now,
+    )
+    position.current_stop = new
+
+
 def evaluate_position(
     session: Session,
     position_id: uuid.UUID,
@@ -557,13 +585,7 @@ def evaluate_position(
     stop, sell partials, or close the position and write its trade result (HAT-EXEC-070..073).
 
     `high` and `low` are the extremes the price made since entry, for the result's MFE and MAE."""
-    position = session.get(HatPosition, position_id)
-    if position is None:
-        raise TradeError("unknown_position")
-    lock_bot(session, position.bot_id)
-    session.refresh(position)
-    if not position.is_virtual:
-        raise TradeError("position_not_virtual")  # real exits are the router's (PR 15)
+    position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return exits.Evaluation()
     signal = session.get(HatSignal, position.signal_id)
@@ -584,16 +606,7 @@ def evaluate_position(
     if result.actions and price is None:
         raise TradeError("exit_without_price")  # nothing is written for an exit with no price
     if result.new_stop is not None and result.new_stop > state.current_stop:
-        _emit(
-            session,
-            signal,
-            "stop.moved",
-            aggregate_type="position",
-            aggregate_id=position.id,
-            payload={"from": str(state.current_stop), "to": str(result.new_stop)},
-            now=now,
-        )
-        position.current_stop = result.new_stop
+        _raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
     for rule_id, reason in result.ignored:
         # A rule that would not raise the stop is logged, never applied (HAT-RISK-070).
         _log_ignored(rule_id, reason)

@@ -462,13 +462,15 @@ def check_runtime__state_domain(conn: Connection) -> None:
         )
 
 
-def _committed_bot_world(engine: Engine) -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID], uuid.UUID]:
+def _committed_bot_world(
+    engine: Engine, config: dict[str, object] | None = None
+) -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID], uuid.UUID]:
     """A shadow bot with a live version and a universe of two instruments, committed for real:
     (bot, user, instruments, risk policy version)."""
     with engine.begin() as connection:
         market = b.market(connection)
         strategy = b.strategy(connection, market)
-        version = b.strategy_version(connection, strategy)
+        version = b.strategy_version(connection, strategy, **({"config": config} if config else {}))
         account = b.broker_account(connection)
         instruments = [
             b.instrument(connection, market, isin=f"INE{n:09d}", symbol=f"PB{n}") for n in (1, 2)
@@ -573,6 +575,75 @@ def check_runtime__per_bot_serialised(conn: Connection) -> None:
                     " CASCADE"
                 )
             )
+
+
+def check_runtime__publish_serialised(conn: Connection) -> None:
+    """HAT-CRIT-010, HAT-EXEC-045: two runs of one bot's nightly publish for one day at the same
+    time write one `watchlist.published`. The first holds the bot's lock inside the scan, after
+    its "already published?" read; the second must wait, then see the first one's event."""
+    import polars as pl
+    import yaml
+    from hat_risk_support import AT, TRADE_DAY
+    from sqlalchemy.orm import Session
+
+    from app.hat.engine import watchlist
+    from app.hat.engine.scan import ScanInputs
+    from app.hat.engine.strategy.versions import seed_text
+
+    engine = conn.engine
+    config = yaml.safe_load(seed_text("stage2-contraction-breakout"))
+    bot, _, _, _ = _committed_bot_world(engine, config)
+    inputs = ScanInputs(as_of=TRADE_DAY, members=(), bars=pl.DataFrame(), regime_closes=())
+    first_in = threading.Event()
+    release = threading.Event()
+    real_scan = watchlist.scan_bot
+    results: list[str | None] = []
+
+    def held_scan(*args: object):  # noqa: ANN202
+        if threading.current_thread().name == "holder":
+            first_in.set()
+            release.wait(10)
+        return real_scan(*args)
+
+    def worker() -> None:
+        if threading.current_thread().name != "holder":
+            first_in.wait(5)
+        with Session(engine) as session:
+            published = watchlist.scan_and_publish(session, bot, inputs, TRADE_DAY, AT)
+            session.commit()
+            results.append(published.skipped)
+
+    holder = threading.Thread(target=worker, name="holder")
+    racer = threading.Thread(target=worker, name="racer")
+    watchlist.scan_bot = held_scan
+    try:
+        holder.start()
+        racer.start()
+        deadline = time.monotonic() + 5
+        waiting = text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+        while time.monotonic() < deadline and racer.is_alive():
+            with engine.connect() as probe:
+                if probe.execute(waiting).scalar_one() >= 1:
+                    break
+            time.sleep(0.05)  # noqa: ASYNC251
+        release.set()
+        holder.join(10)
+        racer.join(10)
+        with engine.connect() as probe:
+            events = probe.execute(
+                text(
+                    "SELECT count(*) FROM hat_event"
+                    " WHERE bot_id = :bot AND event_type = 'watchlist.published'"
+                ),
+                {"bot": bot},
+            ).scalar_one()
+        assert events == 1, f"{events} publishes of one bot's watchlist for one day"
+        assert sorted(results, key=str) == [None, "already_published"], results
+    finally:
+        watchlist.scan_bot = real_scan
+        release.set()
+        with engine.begin() as connection:
+            connection.execute(text("TRUNCATE hat_event, hat_watchlist_entry, hat_bot CASCADE"))
 
 
 # --- event log (HAT-SCH-060, 061, 066, 068) -------------------------------------------------

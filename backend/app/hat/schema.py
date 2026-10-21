@@ -96,6 +96,37 @@ BEGIN
 END $$
 """
 
+
+# The lifecycle state domains (HAT-SCH-059) as the models declare them, for a table created before
+# the models had them: `create_all` never alters an existing table. The text matches the models'
+# CHECKs, so both paths give one catalog (DB `migration.ensure_idempotent` compares them).
+_SIGNAL_STATE_CHECK = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_signal_state_check' AND conrelid = to_regclass('hat_signal')
+  ) THEN
+    ALTER TABLE hat_signal ADD CONSTRAINT hat_signal_state_check CHECK (state IN (
+      'Watchlisted', 'Triggered', 'AwaitingApproval', 'EntryPlaced', 'Open', 'PartiallyExited',
+      'ExitPending', 'Closed', 'Rejected', 'Expired', 'Cancelled'));
+  END IF;
+END $$
+"""
+
+_POSITION_STATE_CHECK = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_position_state_check' AND conrelid = to_regclass('hat_position')
+  ) THEN
+    ALTER TABLE hat_position ADD CONSTRAINT hat_position_state_check
+      CHECK (state IN ('Open', 'PartiallyExited', 'ExitPending', 'Closed'));
+  END IF;
+END $$
+"""
+
 # Invariant 1 (HAT-SCH-081, HAT-RISK-070): a long position's stop can only rise.
 _STOP_ONLY_TIGHTENS_FN = """
 CREATE OR REPLACE FUNCTION hat_stop_only_tightens() RETURNS trigger AS $$
@@ -145,6 +176,8 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
   FOR EACH ROW EXECUTE FUNCTION hat_risk_policy_version_immutable()
 """,
     _COOLING_OFF_CHECK,
+    _SIGNAL_STATE_CHECK,
+    _POSITION_STATE_CHECK,
     _STOP_ONLY_TIGHTENS_FN,
     """
 CREATE OR REPLACE TRIGGER hat_position_stop_guard

@@ -24,6 +24,8 @@ __all__ = [
     "HOLDING_STATES",
     "INITIAL_STATE",
     "STATES",
+    "STEP_ENTRY_PLACED",
+    "STEP_EXIT_PLACED",
     "TRANSITIONS",
     "LifecycleStateError",
     "fold",
@@ -58,6 +60,10 @@ INITIAL_STATE = WATCHLISTED
 # The states that hold one of a bot's position slots (the per-bot caps count them, 06 §3).
 HOLDING_STATES = (ENTRY_PLACED, OPEN, PARTIALLY_EXITED, EXIT_PENDING)
 
+# The two steps an `order.placed` event drives, told apart by the order's purpose.
+STEP_ENTRY_PLACED = "order.placed.entry"
+STEP_EXIT_PLACED = "order.placed.exit"
+
 # (from, step) -> to. Steps are named by the event that drives them, with `order.placed` split by
 # purpose and `approval.sent` standing for the approval card (it has no event of its own).
 TRANSITIONS: dict[tuple[str, str], str] = {
@@ -65,8 +71,8 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     (WATCHLISTED, "watchlist.expired"): EXPIRED,
     (TRIGGERED, "signal.rejected"): REJECTED,
     (TRIGGERED, "approval.sent"): AWAITING_APPROVAL,
-    (TRIGGERED, "order.placed.entry"): ENTRY_PLACED,
-    (AWAITING_APPROVAL, "order.placed.entry"): ENTRY_PLACED,
+    (TRIGGERED, STEP_ENTRY_PLACED): ENTRY_PLACED,
+    (AWAITING_APPROVAL, STEP_ENTRY_PLACED): ENTRY_PLACED,
     (AWAITING_APPROVAL, "signal.expired"): EXPIRED,
     (AWAITING_APPROVAL, "signal.skipped"): CANCELLED,
     (AWAITING_APPROVAL, "kill.tripped"): CANCELLED,
@@ -76,15 +82,15 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     (ENTRY_PLACED, "order.cancelled"): CANCELLED,
     (OPEN, "exit.partial"): PARTIALLY_EXITED,
     (PARTIALLY_EXITED, "exit.partial"): PARTIALLY_EXITED,
-    (OPEN, "order.placed.exit"): EXIT_PENDING,
-    (PARTIALLY_EXITED, "order.placed.exit"): EXIT_PENDING,
+    (OPEN, STEP_EXIT_PLACED): EXIT_PENDING,
+    (PARTIALLY_EXITED, STEP_EXIT_PLACED): EXIT_PENDING,
     (EXIT_PENDING, "position.closed"): CLOSED,
 }
 
 _EXIT_PURPOSES = frozenset({"exit_partial", "exit_full", "flatten"})
 # Events that drive a step by their type alone.
 _PLAIN_STEPS = frozenset(
-    step for _, step in TRANSITIONS if step not in {"order.placed.entry", "order.placed.exit"}
+    key[1] for key in TRANSITIONS if key[1] not in {STEP_ENTRY_PLACED, STEP_EXIT_PLACED}
 )
 
 
@@ -104,9 +110,9 @@ def step_of(event_type: str, payload: Mapping[str, Any] | None = None) -> str | 
     if event_type == "order.placed":
         purpose = (payload or {}).get("purpose")
         if purpose == "entry":
-            return "order.placed.entry"
+            return STEP_ENTRY_PLACED
         if purpose in _EXIT_PURPOSES and purpose != "exit_partial":
-            return "order.placed.exit"
+            return STEP_EXIT_PLACED
         return None
     return event_type if event_type in _PLAIN_STEPS else None
 

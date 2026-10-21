@@ -71,23 +71,30 @@ def test_final_contraction_low(
     elif (Fraction(entry) - exact) * 100 > Fraction(max_pct) * Fraction(entry):
         assert plan.skip == stops.SKIP_TOO_WIDE
     else:
-        assert plan.stop is not None and Fraction(plan.stop) == exact
-        assert plan.stop % TICK == 0 and 0 < plan.stop < entry
+        assert plan.stop is not None
+        assert Fraction(plan.stop) == exact
+        assert plan.stop % TICK == 0
+        assert 0 < plan.stop < entry
         assert (entry - plan.stop) / entry * 100 <= max_pct
-    assert plan.skipped == (plan.stop is None) == (plan.skip is not None)
+    assert plan.skipped == (plan.stop is None)
+    assert plan.skipped == (plan.skip is not None)
 
 
 @given(prices, st.lists(prices, min_size=1, max_size=20), st.integers(0, 20))
 def test_low_of_day(entry: Decimal, lows: list[Decimal], buffer_ticks: int) -> None:
-    """HAT-EXEC-051: stop = the lowest low of the day so far less buffer_ticks ticks; strictly
-    below the entry or skipped. Harm: a stop above the day's low is hit by normal noise; one
-    at or above the entry is not a stop."""
+    """HAT-EXEC-051: stop = the lowest low of the day so far less buffer_ticks ticks, rounded
+    down to the tick (the lows here are on a 0.01 grid, the tick is 0.05); strictly below the
+    entry or skipped. Harm: a stop above the day's low is hit by normal noise; one at or above
+    the entry is not a stop; one off the tick grid is refused by the exchange."""
     plan = stops.low_of_day(entry, lows, buffer_ticks, TICK)
-    exact = min(lows) - buffer_ticks * TICK
-    if 0 < exact < entry:
-        assert plan.stop == exact
+    exact = grid_floor(Fraction(min(lows) - buffer_ticks * TICK), TICK)
+    if 0 < exact < Fraction(entry):
+        assert plan.stop is not None
+        assert Fraction(plan.stop) == exact
+        assert plan.stop % TICK == 0
     else:
-        assert plan.stop is None and plan.skip == stops.SKIP_NOT_BELOW_ENTRY
+        assert plan.stop is None
+        assert plan.skip == stops.SKIP_NOT_BELOW_ENTRY
     assert stops.low_of_day(entry, [], buffer_ticks, TICK).skip == stops.SKIP_BAD_INPUT
 
 
@@ -103,7 +110,8 @@ def test_custom_rules(
 ) -> None:
     """HAT-EXEC-052, HAT-BOT-062: pct_below_entry, atr_multiple and swing_low give the formula
     rounded down to the tick, strictly below the entry, else a skip with a fixed reason; a rule
-    whose input is missing is a skip, never a guess; the dispatcher agrees with the functions.
+    whose input is missing is a skip, never a guess; the dispatcher gives what each function
+    gives.
     Harm: a stop above or at the entry, or off the tick grid, is refused or fires at once."""
     atr = min(lows)
     expected = {
@@ -118,15 +126,15 @@ def test_custom_rules(
     }
     for name, plan in plans.items():
         if 0 < expected[name] < Fraction(entry):
-            assert plan.stop is not None and Fraction(plan.stop) == expected[name]
+            assert plan.stop is not None
+            assert Fraction(plan.stop) == expected[name]
             assert plan.stop % tick == 0
         else:
-            assert plan.stop is None and plan.skip == stops.SKIP_NOT_BELOW_ENTRY
+            assert plan.stop is None
+            assert plan.skip == stops.SKIP_NOT_BELOW_ENTRY
     inputs = StopInputs(entry, tick, atr=atr, swing_lows=lows)
-    assert plan_stop(StopPctBelowEntry(rule="pct_below_entry", pct=float(pct)), inputs).skip in (
-        None,
-        stops.SKIP_NOT_BELOW_ENTRY,
-    )
+    pct_rule = StopPctBelowEntry(rule="pct_below_entry", pct=float(pct))
+    assert plan_stop(pct_rule, inputs) == plans["pct"]
     assert plan_stop(StopAtrMultiple(rule="atr_multiple", days=14, multiple=2.0), inputs) == (
         stops.atr_multiple(entry, atr, Decimal("2.0"), tick)
     )

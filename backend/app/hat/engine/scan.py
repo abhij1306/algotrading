@@ -75,7 +75,7 @@ class WatchRow:
 class ScanResult:
     rows: tuple[WatchRow, ...]
     gate_on: bool
-    evaluated: int  # instruments that had bars and were evaluated
+    evaluated: int  # members with a bar on `as_of`, which were evaluated
 
 
 def _dec(value: object) -> Decimal | None:
@@ -149,15 +149,20 @@ def _planned_stop(
 
 
 def _lookback_lows(playbook: Playbook, ctx: EvalContext) -> list[float | None]:
-    """The lows a `swing_low` stop reads: the last `lookback_days` bars (none for other rules)."""
+    """The lows a `swing_low` stop reads: the last `lookback_days` bars, none for other rules and
+    none when the history is shorter (a stop is never priced from a partial lookback)."""
     days = getattr(playbook.stop, "lookback_days", 0)
-    return ctx.history.low[-days:] if days else []
+    lows = ctx.history.low
+    return lows[-days:] if days and len(lows) >= days else []
 
 
 def _scan_playbook(
-    config: StrategyConfig, playbook: Playbook, inputs: ScanInputs, per_instrument: dict[str, Any]
+    config: StrategyConfig,
+    playbook: Playbook,
+    inputs: ScanInputs,
+    features: pl.DataFrame | None,
+    per_instrument: dict[str, Any],
 ) -> list[WatchRow]:
-    features = inputs.features
     adtr = {}
     if features is not None and "adtr20" in features.columns:
         adtr = dict(
@@ -193,26 +198,39 @@ def _scan_playbook(
     return rows
 
 
+def _member_bars(inputs: ScanInputs, members: Sequence[str]) -> dict[str, Any]:
+    """Each member's bars up to `as_of`, for the members that have a bar on `as_of` itself: a
+    member that did not trade on the scan date (suspended, no data) is not evaluated on stale
+    bars."""
+    per_instrument: dict[str, Any] = {}
+    if not members or not inputs.bars.height:
+        return per_instrument
+    frame = inputs.bars.filter(
+        pl.col("instrument_id").cast(pl.String).is_in(members) & (pl.col("date") <= inputs.as_of)
+    )
+    for key, part in frame.partition_by("instrument_id", as_dict=True).items():
+        if part["date"].max() != inputs.as_of:
+            continue
+        per_instrument[str(key[0] if isinstance(key, tuple) else key)] = part
+    return per_instrument
+
+
 def scan_bot(config: StrategyConfig, inputs: ScanInputs) -> ScanResult:
     """The watchlist rows of every nightly playbook of `config` for `inputs.as_of`, best score
     first (ties by instrument id), and whether the regime gate was on."""
     gate_on = regime_allows_longs(config.regime, inputs.regime_closes)
     if not gate_on:
         return ScanResult((), False, 0)  # stage 2 fails for every symbol: nothing is evaluated
-    members = {str(m) for m in inputs.members}
-    per_instrument: dict[str, Any] = {}
-    if members and inputs.bars.height:
-        frame = inputs.bars.filter(
-            pl.col("instrument_id").cast(pl.String).is_in(sorted(members))
-            & (pl.col("date") <= inputs.as_of)
-        )
-        for key, part in frame.partition_by("instrument_id", as_dict=True).items():
-            name = str(key[0] if isinstance(key, tuple) else key)
-            per_instrument[name] = part
+    members = sorted({str(m) for m in inputs.members})
+    per_instrument = _member_bars(inputs, members)
+    features = inputs.features
+    if features is not None:
+        # Ranks are taken within the universe: a non-member's row never moves a cutoff.
+        features = features.filter(pl.col("instrument_id").cast(pl.String).is_in(members))
     rows: list[WatchRow] = []
     for playbook in config.playbooks:
         if playbook.name == EP_PLAYBOOK:
             continue
-        rows.extend(_scan_playbook(config, playbook, inputs, per_instrument))
+        rows.extend(_scan_playbook(config, playbook, inputs, features, per_instrument))
     rows.sort(key=lambda r: (-r.score, r.playbook, r.instrument_id))
     return ScanResult(tuple(rows), True, len(per_instrument))

@@ -107,7 +107,7 @@ class HatSignal(Base):
         UniqueConstraint("bot_id", "playbook", "instrument_id", "trade_date"),
         CheckConstraint("qty >= 0", name="ck_hat_signal_qty"),
         CheckConstraint(in_values("mode", SIGNAL_MODES), name="ck_hat_signal_mode"),
-        CheckConstraint(in_values("state", TRADE_STATES), name="ck_hat_signal_state"),
+        CheckConstraint(in_values("state", TRADE_STATES), name="hat_signal_state_check"),
         Index("hat_signal_bot_date", "bot_id", "trade_date"),
     )
 
@@ -222,7 +222,7 @@ class HatPosition(Base):
     __tablename__ = "hat_position"
     __table_args__ = (
         CheckConstraint("qty_open >= 0", name="ck_hat_position_qty_open"),
-        CheckConstraint(in_values("state", POSITION_STATES), name="ck_hat_position_state"),
+        CheckConstraint(in_values("state", POSITION_STATES), name="hat_position_state_check"),
         # The update trigger cannot see an INSERT: a position starts with its initial stop.
         CheckConstraint("current_stop >= initial_stop", name="ck_hat_position_stop_tightens"),
         Index(

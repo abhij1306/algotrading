@@ -4,7 +4,7 @@ helpers that drive the shadow engine (`app.hat.engine.trades`) by trigger and by
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -74,6 +74,7 @@ class World:
     version_id: uuid.UUID
     universe_id: uuid.UUID
     instruments: list[uuid.UUID]
+    policy_version_id: uuid.UUID  # the stored version 1, so a signal's FK points at a real row
 
 
 @dataclass
@@ -81,6 +82,8 @@ class Trade:
     world: World
     outcome: trades.EntryOutcome
     opened: datetime
+    high: Decimal = Decimal(100)  # the running extremes since the entry at 100 (MFE, MAE)
+    low: Decimal = Decimal(100)
 
 
 def seed_engine_world(
@@ -100,7 +103,7 @@ def seed_engine_world(
     )
     session.add(market)
     session.flush()
-    seed_initial_policy(session, USER, datetime(2026, 1, 1, tzinfo=UTC))
+    policy = seed_initial_policy(session, USER, datetime(2026, 1, 1, tzinfo=UTC))
     config = yaml.safe_load(seed_text(SEED))
     if exits is not None:
         config["exits"] = exits
@@ -158,13 +161,14 @@ def seed_engine_world(
     )
     session.add(bot)
     session.flush()
-    return World(USER, bot.id, strategy.id, version.id, universe.id, ids)
+    return World(USER, bot.id, strategy.id, version.id, universe.id, ids, policy.id)
 
 
 def request_for(
     world: World, instrument: uuid.UUID, playbook: str = "pb", **ctx: object
 ) -> trades.EntryRequest:
-    ctx.setdefault("policy_versions", [version_of(seed_policy())])
+    stored = replace(version_of(seed_policy()), version_id=world.policy_version_id)
+    ctx.setdefault("policy_versions", [stored])
     context = valid_ctx(**ctx)
     return trades.EntryRequest(
         bot_id=world.bot_id,
@@ -200,6 +204,7 @@ def step_trade(
 ) -> exits.Evaluation:
     """One price of the position at `days` days and `minutes` minutes after the entry."""
     assert trade.outcome.position_id is not None
+    trade.high, trade.low = max(trade.high, price), min(trade.low, price)
     view = exits.ExitView(price=price, days_held=days, sma={10: D(100)})
     return trades.evaluate_position(
         session,
@@ -207,6 +212,6 @@ def step_trade(
         view,
         phase,
         trade.opened + timedelta(days=days, minutes=minutes + 1),
-        high=max(price, D(100)),
-        low=min(price, D(100)),
+        high=trade.high,
+        low=trade.low,
     )

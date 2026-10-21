@@ -305,7 +305,7 @@ to an artefact that exists.
 | HAT-SCH-104 | [03](03-schema.md) | 2 | CONF `schema.sqlite_create_all` |
 | HAT-SCH-105 | [03](03-schema.md) | 2, 17 | CONF `runtime.refuses_sqlite` |
 | HAT-SCH-106 | [03](03-schema.md) | 2, 3 | CONF `schema.prefix_and_boundary` |
-| HAT-CRIT-010 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `scoring.stage_order`, PBT `scan.watchlist_gates` |
+| HAT-CRIT-010 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `scoring.stage_order`, PBT `scan.watchlist_gates`, PBT `scan.no_universe_publishes_nothing`, DB `runtime.publish_serialised` |
 | HAT-CRIT-011 | [04](04-criteria-and-bots.md) | 8 | PBT `config.stage_slots` |
 | HAT-CRIT-020 | [04](04-criteria-and-bots.md) | 8 | PBT `config.instance_fields`, CONF `criterion_instance_schema` |
 | HAT-CRIT-021 | [04](04-criteria-and-bots.md) | 8 | PBT `config.invalid_never_saves`, CONF `criterion_type_registry` |
@@ -324,7 +324,7 @@ to an artefact that exists.
 | HAT-CRIT-107 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.pct_from_52w_low_contract` |
 | HAT-CRIT-108 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.pct_from_52w_high_contract` |
 | HAT-CRIT-109 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.rs_rank_contract` |
-| HAT-CRIT-110 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.momentum_rank_contract` |
+| HAT-CRIT-110 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `criteria.momentum_rank_contract`, PBT `scan.rank_within_members` |
 | HAT-CRIT-111 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.consolidation_contract` |
 | HAT-CRIT-112 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.ma_surf_contract` |
 | HAT-CRIT-113 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.prior_move_contract` |
@@ -433,7 +433,7 @@ to an artefact that exists.
 | HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `ExecutionRouter!AutoNeedsGtt` |
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute` |
-| HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day` |
+| HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
 | HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours` |
 | HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce` |
 | HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!NoTakeAfterExpiry` |

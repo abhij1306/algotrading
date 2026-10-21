@@ -726,7 +726,7 @@ Every signal records the exact strategy version and risk-policy version that pro
 - **Verification:** DB `runtime.state_domain`
 - **Acceptance:**
   - Property: an insert or update giving a signal or position a state outside its set raises. Harm: a misspelt state strands a trade that no rule reads.
-- **Note:** a bot's entries are evaluated and inserted in one transaction under a Postgres advisory lock keyed by the bot (HAT-EXEC-045); the database check `runtime.per_bot_serialised` runs two such transactions at once and requires that they cannot both take the last position slot.
+- **Note:** a bot's entries are evaluated and inserted in one transaction under a Postgres advisory lock keyed by the bot (HAT-EXEC-045); the database check `runtime.per_bot_serialised` runs two such transactions at once and requires that they cannot both take the last position slot. The nightly publish (`scan_and_publish`) takes the same lock before its "already published?" read; `runtime.publish_serialised` runs two publishes of one bot and day at once and requires one `watchlist.published`.
 
 ## §6 Event log
 

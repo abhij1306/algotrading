@@ -58,10 +58,11 @@ The router receives a signal only after `evaluate_signal` returned ACCEPT (06 §
 #### HAT-EXEC-021: Duplicate triggers are refused
 - **Statement:** One signal per (bot, playbook, instrument, trade_date); the signal id is the idempotency key, and a second trigger never creates a second order.
 - **Source:** MA "Failure handling" (Duplicate trigger); SCH `hat_signal` unique key.
-- **PR:** 3, 15
-- **Verification:** TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`
+- **PR:** 3, 11, 15
+- **Verification:** TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal`
 - **Acceptance:**
   - Property: in every behaviour, including concurrent and repeated triggers, at most one entry order exists per signal key. Harm: a double position at double risk.
+  - Property: a repeated trigger returns the existing signal before any entry rule is re-checked, so a retry after a mode or universe change finds the trade it already made and writes nothing. Harm: a retried job fails and its caller cannot tell the trade was taken.
 
 #### HAT-EXEC-022: Router honours invariants 4 and 5
 - **Statement:** The router places no entry while the feed is stale or the day's data failed the gate, and no order outside market hours.
@@ -236,7 +237,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
   - Property: for every final contraction low L > 0, entry P > 0 and buffer b, the stop equals L × (1 − b/100) rounded down to the tick, and the result is SKIP exactly when (P − stop)/P > max_pct/100. Harm: stops wider than the playbook allows are accepted, or valid trades are dropped.
 
 #### HAT-EXEC-051: low_of_day
-- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1).
+- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid.
 - **Source:** BL "Stop rules"; BL "Qullamaggie-style bot" (`stop: {rule: low_of_day}`).
 - **PR:** 11
 - **Verification:** PBT `stops.low_of_day`

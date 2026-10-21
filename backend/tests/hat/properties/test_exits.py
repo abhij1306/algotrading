@@ -9,7 +9,6 @@ from decimal import Decimal
 from fractions import Fraction
 
 import pytest
-from hat.fakes.broker import FakeBroker
 from hat_engine_support import (
     Trade,
     exit_stack,
@@ -183,12 +182,14 @@ def test_full_beats_partial(
     ]
     if firing:  # a full exit fires: it is the whole output, whatever partials also fire
         assert [(a.kind, a.qty) for a in result.actions] == [("full", pos.qty_open)]
-        assert result.fired == (firing[0],) and result.new_stop is None
+        assert result.fired == (firing[0],)
+        assert result.new_stop is None
     kinds = {a.kind for a in result.actions}
     assert kinds <= {"full"} or kinds == {"partial"}
     assert sum(a.qty for a in result.actions) <= pos.qty_open
     if "full" in kinds:
-        assert len(result.actions) == 1 and result.actions[0].qty == pos.qty_open
+        assert len(result.actions) == 1
+        assert result.actions[0].qty == pos.qty_open
 
 
 @given(stacks, positions(), st.data(), st.lists(PHASES, min_size=1, max_size=8))
@@ -220,7 +221,8 @@ def test_fire_once(
         sold += sum(a.qty for a in result.actions)
         pos = exits.apply(pos, result)
         assert pos.qty_open == before.qty_open - sum(a.qty for a in result.actions) >= 0
-    assert sold + pos.qty_open == start_open and pos.qty_open >= 0
+    assert sold + pos.qty_open == start_open
+    assert pos.qty_open >= 0
 
 
 @given(
@@ -347,7 +349,8 @@ def check_rule_semantics(rule: object, pos: PositionState, data: st.DataObject, 
         assert result.actions[0].qty == want
         assert result.fired == (exits.rule_id(0, rule),)
     else:
-        assert not result.fired and result.new_stop is None
+        assert not result.fired
+        assert result.new_stop is None
 
 
 @given(positions(), st.data(), st.booleans(), st.sampled_from([0.25, 0.5]))
@@ -405,8 +408,7 @@ paths = st.lists(
 SHADOW_STACKS = st.sampled_from(["trend", "partials", "stop_only"])
 
 
-def run_path(session: Session, kind: str, path: list[tuple[int, int]]) -> tuple[Trade, FakeBroker]:
-    broker = FakeBroker()
+def run_path(session: Session, kind: str, path: list[tuple[int, int]]) -> Trade:
     world = seed_engine_world(session, exits=exit_stack(kind))
     trade = open_trade(session, world)
     assert trade.outcome.position_id is not None
@@ -414,29 +416,32 @@ def run_path(session: Session, kind: str, path: list[tuple[int, int]]) -> tuple[
         step_trade(session, trade, D(price), days=days, minutes=step)
         if session.get(HatPosition, trade.outcome.position_id).closed_at is not None:
             break
-    return trade, broker
+    return trade
 
 
 @settings(max_examples=40)
 @given(SHADOW_STACKS, paths)
 def test_shadow_rows_virtual(kind: str, path: list[tuple[int, int]]) -> None:
     """HAT-EXEC-010, HAT-EXEC-044: a shadow trade driven from signal to close writes only virtual
-    orders, fills and positions, with no broker order id, no broker trade id and no fees; the
-    broker records zero calls; the sold quantity plus what stays open is the entry quantity; and
+    orders, fills and positions, with no broker order id, no broker trade id and no fees (the
+    engine imports no broker at all: CONF import_graph_boundaries); the sold quantity plus what
+    stays open is the entry quantity; and
     a closed position has exactly one trade result whose R is its P&L over the initial risk.
     Harm: a shadow row that looks real can be reconciled against, and sold at, the broker."""
     engine = memory_engine()
     with Session(engine) as session:
-        trade, broker = run_path(session, kind, path)
+        trade = run_path(session, kind, path)
         session.flush()
-        assert broker.calls == []
         orders = session.scalars(select(HatOrder)).all()
         fills = session.scalars(select(HatFill)).all()
         position = session.get(HatPosition, trade.outcome.position_id)
-        assert orders and all(o.is_virtual and o.broker_order_id is None for o in orders)
-        assert fills and all(
-            f.is_virtual and f.broker_trade_id is None and f.fees == 0 for f in fills
-        )
+        assert orders
+        assert all(o.is_virtual for o in orders)
+        assert all(o.broker_order_id is None for o in orders)
+        assert fills
+        assert all(f.is_virtual for f in fills)
+        assert all(f.broker_trade_id is None for f in fills)
+        assert all(f.fees == 0 for f in fills)
         assert position.is_virtual
         bought = sum(o.qty for o in orders if o.side == "buy")
         sold = sum(o.qty for o in orders if o.side == "sell")
@@ -444,9 +449,11 @@ def test_shadow_rows_virtual(kind: str, path: list[tuple[int, int]]) -> None:
         results = session.scalars(select(HatTradeResult)).all()
         event(f"closed={position.closed_at is not None} partial={sold > 0}")
         if position.closed_at is None:
-            assert not results and position.qty_open > 0
+            assert not results
+            assert position.qty_open > 0
             return
-        assert position.qty_open == 0 and len(results) == 1
+        assert position.qty_open == 0
+        assert len(results) == 1
         pnl = sum(
             (f.qty * Decimal(f.price) * (1 if o.side == "sell" else -1))
             for o, f in session.execute(
@@ -487,3 +494,8 @@ def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None
             if position.closed_at is not None:
                 assert signal.state == lifecycle.CLOSED
                 break
+        # A step the table does not allow from the reached state is refused, and the stored
+        # state still equals the fold of the log.
+        with pytest.raises(lifecycle.LifecycleStateError):
+            lifecycle.next_state(signal.state, "signal.triggered")
+        assert trades.replay_state(session, signal.id) == signal.state

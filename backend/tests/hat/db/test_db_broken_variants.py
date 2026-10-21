@@ -46,6 +46,15 @@ def per_call_bot_lock(_conn: Connection) -> None:
     _patch_trades("lock_bot", lambda session, _bot_id: real(session, uuid.uuid4()))
 
 
+def no_publish_lock(_conn: Connection) -> None:
+    """The code is broken: the nightly publish takes no bot lock."""
+    from app.hat.engine import watchlist
+
+    original = watchlist.lock_bot
+    watchlist.lock_bot = lambda *_args, **_kwargs: None
+    UNDO.append(lambda: setattr(watchlist, "lock_bot", original))
+
+
 def sql(*statements: str) -> Break:
     def apply(conn: Connection) -> None:
         for statement in statements:
@@ -373,16 +382,20 @@ VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
         ("delete guard dropped", sql("DROP TRIGGER hat_position_no_delete_guard ON hat_position")),
     ],
     "runtime.state_domain": [
-        ("signal state CHECK dropped", sql(drop_constraint("hat_signal", "ck_hat_signal_state"))),
+        (
+            "signal state CHECK dropped",
+            sql(drop_constraint("hat_signal", "hat_signal_state_check")),
+        ),
         (
             "position state CHECK dropped",
-            sql(drop_constraint("hat_position", "ck_hat_position_state")),
+            sql(drop_constraint("hat_position", "hat_position_state_check")),
         ),
     ],
     "runtime.per_bot_serialised": [
         ("the bot lock is a no-op", no_bot_lock),
         ("the bot lock is keyed per call", per_call_bot_lock),
     ],
+    "runtime.publish_serialised": [("the publish takes no bot lock", no_publish_lock)],
     "events.append_only": [
         ("trigger dropped", sql("DROP TRIGGER hat_event_no_update ON hat_event")),
         (
