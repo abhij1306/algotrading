@@ -18,8 +18,8 @@ export const router = createBrowserRouter([
     element: <RootLayout />,
     errorElement: <RouteError />,
     children: [
-      { index: true, element: <Navigate to="/dashboard" replace /> },
-      { path: "dashboard", element: page(() => import("@/app/dashboard/page")) },
+      { index: true, element: <Navigate to="/hat" replace /> },
+      { path: "hat", element: page(() => import("@/app/hat/page")) },
       { path: "*", element: <NotFound /> },
     ],
   },
