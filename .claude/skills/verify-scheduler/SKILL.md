@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's job s
 
 # verify-scheduler
 
-Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Specs: `docs/specs/hat/10-ops.md` §2, `03-schema.md` §7 (HAT-SCH-072), `11-verification.md` (HAT-VER-030..034, 040, 050, 060, 070..072).
+Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, that the windowed `exits.close` job runs only inside 15:20-15:25 IST and sends nothing from 15:30 on, that the 15:25 live price of each MA exit is kept next to the official close, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Specs: `docs/specs/hat/10-ops.md` §2, §3 (HAT-OPS-034), `07-execution-and-brokers.md` §7 (HAT-EXEC-074, HAT-DEC-B18), `03-schema.md` §7 (HAT-SCH-072), `11-verification.md` (HAT-VER-030..034, 040, 050, 060, 070..072).
 
 ## Properties
 
@@ -13,6 +13,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA JobScheduler!FailedJobRetryable` A call that finds a failed or interrupted run is allowed to run it again. Harm: one transient failure leaves the day's job dead until someone edits the database.
 - `TLA JobScheduler!NoJobWhenDisabled` With `HAT_ENABLED` false the scheduler never exists and no job is ever started. Harm: a developer machine or a test run starts scheduled HAT jobs by accident.
 - `TLA JobScheduler!NoStuckRunning` A run never stays `running` forever: a crash is reaped at the next start. Harm: a crashed run blocks its key and the job never runs again that day.
+- `TLA JobScheduler!ExitsCloseInWindow` `exits.close` evaluates only between 15:20 and 15:25 IST (the scheduler never starts it from 15:25 on and its body refuses outside the window), succeeds at most once a day, and none of its sales reaches the broker from 15:30 on, even from a run that started at 15:24. Harm: MA exits fire on a stale or after-hours price, twice, or as orders the exchange will not take.
 - `TLA NightlyPipeline!FallbackAt2200` A day is ingested from the MCP only after a probe matched, never probed at or after 22:00 or twice at once, and the bhavcopy fallback runs only at 22:00 with no match. Harm: stale or wrong-day data enters the store, or the fallback fires early.
 - `TLA NightlyPipeline!NoDataNoScan` If neither source has the day by 22:00 the run fails with an alert and the data-health kill, and no scan runs. Harm: bots act on yesterday's data.
 - `TLA NightlyPipeline!NoScanAfterGateFail` A failed quality gate fails the job, trips the health kill and no scan runs after it. Harm: a bad day is scanned.
@@ -21,6 +22,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
 - `PBT ops.job_run_recording` On the real `run_job`, random calls, body failures, simulated crashes and restarts always leave one row per key, with a stable error code (never raw exception text), correct timestamps, and at most one successful body per key. Harm: an audit row lies about what ran, or an error message leaks a secret.
 - `PBT ops.disabled_starts_nothing` With HAT disabled `start_scheduler` creates no task and touches no logging or database, and with it enabled on a non-Postgres dialect it raises before any task exists. Harm: HAT runs without the database triggers that protect it.
+- `PBT ops.close_gap_recorded` Every `close_below_sma` evaluation of the close window records the live price it used, fired or not; once the nightly ingest has the official close, exactly one `exit.close_gap` per position records that close and its gap, against the same position; a close still missing is recorded by a later run and a repeated run changes nothing. Harm: the backtest/live gap of MA exits cannot be measured.
 - `PBT ops.log_records_structured` Every record under `app.hat` renders as one JSON line with `ts`, `level`, `msg` and each context key given. Harm: logs cannot be parsed during an incident.
 - `DB ops.job_run_unique` The database rejects a second `hat_job_run` row for one (job, trade_date), including under concurrent inserts. Harm: idempotency rests on application code alone and a race runs a job twice.
 - `CONF verification harness` The TLC runner is pinned by version and sha256 and refuses a mismatching jar; every model has a cfg, stated bounds and assumptions, a code location per action and a broken variant per property; the `ci` Hypothesis profile is registered and loaded; the CI verification jobs (`verification-tla`, `verification-conformance`, sharded `verification-properties`) run everything, each inside the 5-minute target; every DB check has a broken variant; every spec requirement is well formed; verify skills are complete and current. Harm: a check silently stops running or stops being able to fail.
@@ -61,19 +63,22 @@ When a check fails, decide which side is wrong before touching anything.
 
 TLA+ model and runner:
 - `verification/tla/JobScheduler.tla` and `verification/tla/JobScheduler.cfg`
-- `verification/tla/broken/JobScheduler__retry_after_success.cfg`, `verification/tla/broken/JobScheduler__split_claim.cfg`, `verification/tla/broken/JobScheduler__no_retry.cfg`, `verification/tla/broken/JobScheduler__ignore_enabled.cfg`, `verification/tla/broken/JobScheduler__no_reap.cfg`
+- `verification/tla/broken/JobScheduler__retry_after_success.cfg`, `verification/tla/broken/JobScheduler__split_claim.cfg`, `verification/tla/broken/JobScheduler__no_retry.cfg`, `verification/tla/broken/JobScheduler__ignore_enabled.cfg`, `verification/tla/broken/JobScheduler__no_reap.cfg`, `verification/tla/broken/JobScheduler__no_window.cfg`, `verification/tla/broken/JobScheduler__late_send.cfg`
 - `verification/tla/NightlyPipeline.tla` and `verification/tla/NightlyPipeline.cfg`
 - `verification/tla/broken/NightlyPipeline__probe_twice.cfg`, `verification/tla/broken/NightlyPipeline__probe_at_cutoff.cfg`, `verification/tla/broken/NightlyPipeline__fetch_without_match.cfg`, `verification/tla/broken/NightlyPipeline__fallback_always.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_alert.cfg`, `verification/tla/broken/NightlyPipeline__scan_ignores_gate.cfg`, `verification/tla/broken/NightlyPipeline__gate_fail_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__exit_needs_pipeline.cfg`, `verification/tla/broken/NightlyPipeline__skip_order.cfg`, `verification/tla/broken/NightlyPipeline__no_fallback.cfg`
 - `verification/tla/run.sh`
 
 Code under check:
 - `backend/app/hat/ops/jobs.py`: `run_job`, `_claim`, `_finish`, `recover_interrupted`, `error_code`
-- `backend/app/hat/ops/scheduler.py`: `start_scheduler`, `HatScheduler.tick`
+- `backend/app/hat/ops/scheduler.py`: `start_scheduler`, `HatScheduler.tick`, `HatScheduler.due_jobs` (the `until` window and `retry_after`)
+- `backend/app/hat/ops/trade_jobs.py`: `trade_jobs` (`exits.close`, `gtt.swap`, `gtt.verify`)
+- `backend/app/hat/execution/manage.py`: `TradeManager.close_exits`, `TradeManager._sell` (the 15:30 check at sending)
+- `backend/app/hat/engine/live_trades.py`: `record_close_evaluation`, `record_close_gaps`
 - `backend/app/hat/logs.py`: `JsonFormatter`
 - `backend/app/hat/models/ops.py`: `HatJobRun`
 
 Checks:
-- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_enabled_refuses_a_non_postgres_database`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`
+- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_enabled_refuses_a_non_postgres_database`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`
 - `backend/tests/hat/db/test_db_portfolio_ops.py`: `test_ops__job_run_unique`
 - `backend/tests/hat/db/hat_db_rules.py`: `check_ops__job_run_unique`
 - `backend/tests/hat/db/test_db_broken_variants.py`
@@ -88,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `68bb80556087a6cd31fe66d5a45d07df9258c709746be5a7d745dde54caff553`
+Covered digest: `4ad9114102e851e3085ec7824da3cfdc3dc36fa895ce1cf70231e64bca85c8f2`
 
 ## Scope changes
 
@@ -104,6 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 10 updated `test_conf_verification.py` without narrowing any check: `MERGED_PRS` now includes 10, and `KNOWN_GAPS` gained two ExecutionRouter TLA names that belong to PR 15 (see `verify-risk`).
 - PR 8 updated `test_conf_verification.py`: `MERGED_PRS` now includes 8; `KNOWN_GAPS` unchanged.
 
+- PR 15c added the `exits.close` part to `JobScheduler` as an independent sub-model (the clock in four spans, one trade date; bounded by `MaxCalls` starts) rather than a model of its own: it shares the scheduler's start gate. It checks the window and the 15:30 sending cut-off, not the minute-level retry interval (`retry_after` is one minute, inside the five-minute window). `MERGED_PRS` now includes 15 and `KNOWN_GAPS` lost `TLA StopPlacement!StopOnlyTightens` (the model is in `verify-stops`). `ops.close_gap_recorded` drives virtual positions (the evaluation record is the same for real ones) with at most three positions per example.
 
 - PR 7 split the nightly-pipeline promises (probe window, fallback at 22:00, no data no scan, gate, exits independent) out of `JobScheduler` into the `NightlyPipeline` model, because the product of the two state spaces was too large to check; `JobScheduler` keeps the job-run promises. The README and spec property names were renamed to match; no check was weakened. PR 7 also added an `on_finish` hook to `run_job` (called inside the final-status transaction; `ops.job_run_recording` still passes) and `MERGED_PRS` now includes 7, `KNOWN_GAPS` unchanged.
 - PR 15b updated the harness without narrowing any check: `KNOWN_GAPS` lost `TLA ExecutionRouter!AutoNeedsGtt`, `TLA ExecutionRouter!NoAddToOpenPosition` and `TLA ExecutionRouter!ModeChangeNextSession` (the `ExecutionRouter` model now exists), `MERGED_PRS` is unchanged (15c adds 15), and two models joined `verification/tla` (`ExecutionRouter`, `ApprovalToken`; their checks and breaks are in `verify-execution`). The new property file `test_router.py` is placed by `ci_property_shards.py`'s partition like any other.
@@ -154,6 +160,48 @@ Error: Temporal properties were violated.
 State 2: <Restart ...>
 State 3: <StartScheduler ...>
 State 4: <Claim ...>
+```
+
+### TLA JobScheduler!ExitsCloseInWindow
+
+Break: the variant `no_window`: the scheduler starts `exits.close` whenever it is 15:20 or later (no `until`) and the body does not refuse outside the window.
+
+```
+Error: Invariant ExitsCloseInWindow is violated.
+State 1: <Initial predicate>
+State 2: <StartScheduler ...>
+State 3: <ClockTick ...>
+State 4: <ClockTick ...>
+State 5: <CloseRun ...>
+```
+
+Break: the variant `late_send`: a sale is checked against the time the job started instead of the clock at sending.
+
+```
+Error: Invariant ExitsCloseInWindow is violated.
+State 1: <Initial predicate>
+State 2: <StartScheduler ...>
+State 3: <ClockTick ...>
+State 4: <CloseRun ...>
+State 5: <ClockTick ...>
+State 6: <ClockTick ...>
+State 7: <CloseSell ...>
+```
+
+### PBT ops.close_gap_recorded
+
+Break: in `backend/app/hat/engine/live_trades.py`, `record_close_gaps` writes the gap as live price minus close.
+
+```
+    assert Decimal(event.payload["gap"]) == official - live
+E   AssertionError: assert Decimal('-0.01') == (Decimal('50.01') - Decimal('50.00'))
+```
+
+Break: `record_close_gaps` no longer skips a position whose gap it already recorded.
+
+```
+    assert again == 0
+E   assert 1 == 0
 ```
 
 ### PBT ops.job_run_recording

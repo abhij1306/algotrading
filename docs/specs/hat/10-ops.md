@@ -115,10 +115,10 @@ Jobs (PLAN §4.3):
 | `live.prepare` (subscribe watchlist + positions) | 08:45 | 14 | 17 |
 | `preopen.gaps` / `gapscan` | 09:00–09:08 / 09:16 | 14 | 17 |
 | `announcements.poll` | every 2 min 07:30–15:30, else 15 min | 14 | 17 |
-| `exits.close` (MA / partial-after-days / time stops on live price) | 15:20–15:25 | 15 | 17 |
-| `gtt.swap` (intraday stop → GTT) | ~15:25 | 15 | 17 |
+| `exits.close` (MA / partial-after-days / time stops on live price; never started from 15:25, retried each minute) | 15:20–15:25 | 15 | 17 |
+| `gtt.swap` (intraday stop → GTT; retried each minute until it succeeds) | 15:25 | 15 | 17 |
 | `digest.rejections` 15:35, `pnl.daily` 15:40 | — | 16 | 17 |
-| `gtt.verify` (GTT exists for every open position) | nightly | 15 | 17 |
+| `gtt.verify` (GTT exists for every open position) | nightly, 23:00 | 15 | 17 |
 | `snapshot.bots` (`hat_daily_bot_snapshot`, drawdowns → kill/health) | nightly | 10 | 17 |
 | `events.partitions` | nightly | 3 | 17 |
 | `history.build` (one-off CLI) | manual | 5 | — |
@@ -165,6 +165,7 @@ Jobs (PLAN §4.3):
 - **Verification:** TLA `StopPlacement!NightlyVerifyCovers`
 - **Acceptance:**
   - Property: after every `gtt.verify` run, every open non-virtual position either has a matching active GTT at the broker or a health alert naming it has been sent. Harm: a position sits overnight without a protective stop and nobody knows.
+- **Implementation (PR 15c):** `ops/trade_jobs.py` builds the `exits.close`, `gtt.swap` and `gtt.verify` jobs of one broker account (bodies `TradeManager.close_exits`, `swap_stops`, `verify_stops`; an incomplete run fails with a fixed code and is retried); PR 17 registers them. 07 §6 describes what each does.
 
 ## §4 Failure handling
 
@@ -219,6 +220,7 @@ MA "Failure handling" (verbatim):
 - **Acceptance:**
   - Property: for every `close_below_sma` evaluation at 15:25, the event payload records the live price used and, once the nightly ingest has the official close, the gap between them is recorded against the same position. Harm: the backtest/live discrepancy cannot be measured, so a systematic exit bias goes unnoticed.
 - **[A]** exit at 15:25 on live price: default 15:25 live price; validated by comparing both prices in shadow mode (BL "Defaults that are assumptions").
+- **Implementation (PR 15c):** `exits.close` records `exit.close_evaluated` (trade date, live price, rule ids, SMA levels, which fired, virtual or not) for every position with an enabled `close_below_sma` rule, fired or not. `live_trades.record_close_gaps(trade_date, closes)` then writes one `exit.close_gap` per evaluated position (official close, gap, gap %, the SMAs the live price and the close were below) once the nightly ingest has that instrument's close; a later run fills the closes still missing. PR 17 calls it after the nightly ingest.
 
 ## §5 Deployment
 

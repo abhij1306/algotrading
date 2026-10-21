@@ -2,6 +2,11 @@
 
 PR 2 builds the loop and the start gate; the daily-cycle jobs are registered by PR 17. The loop
 calls `run_job`, which is idempotent, so a tick that fires twice cannot run a body twice.
+
+A job with a window (`until`, PR 15c) is never started at or after its end: `exits.close` runs
+between 15:20 and 15:25 IST or not at all that day (HAT-EXEC-074, TLA
+`JobScheduler!ExitsCloseInWindow`), and a failed run is tried again after its own
+`retry_after`, which fits inside the window.
 """
 
 from __future__ import annotations
@@ -25,11 +30,14 @@ RETRY_AFTER = timedelta(minutes=10)
 
 @dataclass(frozen=True)
 class ScheduledJob:
-    """A job that becomes due at `at` (IST) on each trade date."""
+    """A job that becomes due at `at` (IST) on each trade date, and is no longer started from
+    `until` (IST) on when it has a window."""
 
     name: str
     at: time
     fn: Callable[[], JobResult | None]
+    until: time | None = None
+    retry_after: timedelta = RETRY_AFTER
 
 
 class HatScheduler:
@@ -46,13 +54,16 @@ class HatScheduler:
         self._task: asyncio.Task[None] | None = None
 
     def due_jobs(self, now: datetime) -> list[tuple[ScheduledJob, date]]:
-        """Jobs whose time has passed today and that have not just been attempted."""
+        """Jobs whose time has passed today, whose window (if any) has not ended, and that have
+        not just been attempted."""
         today = trade_date_of(now)
         local = now.astimezone(IST).time()
         due = []
         for job in self._jobs:
+            if local < job.at or (job.until is not None and local >= job.until):
+                continue
             last = self._attempted.get((job.name, today))
-            if local >= job.at and (last is None or now - last >= RETRY_AFTER):
+            if last is None or now - last >= job.retry_after:
                 due.append((job, today))
         return due
 

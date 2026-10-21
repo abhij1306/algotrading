@@ -27,7 +27,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
+MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 
 
 def _models() -> list[Path]:
@@ -420,12 +420,6 @@ README_ROW = re.compile(
 KNOWN_GAPS = {
     "PBT criteria.fundamentals_point_in_time",  # HAT-DEC-I5: needs the criteria engine (PR 8)
     "CONF old_docs_removed",  # HAT-DEC-BD4: a PR 1 documentation check nobody built
-    # PR 3 (HAT-SCH-081): the row names a TLA property of a model that 11 §3 assigns to PR 15
-    # (the stop mover). Its actions map to code that does not exist yet, so the model arrives
-    # with that code; the database check `governance.stop_only_rises` covers the same promise at
-    # the database in the meantime. (PR 13 built OrderReconciliation, which closed
-    # `OrderReconciliation!AtMostOneEntryPerSignal` of HAT-SCH-051.)
-    "TLA StopPlacement!StopOnlyTightens",
 }
 
 

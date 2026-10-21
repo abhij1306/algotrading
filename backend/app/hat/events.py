@@ -62,7 +62,14 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "gtt.placed",
         "gtt.refreshed",
     ),
-    "Positions": ("position.opened", "stop.moved", "exit.partial", "position.closed"),
+    "Positions": (
+        "position.opened",
+        "stop.moved",
+        "exit.partial",
+        "position.closed",
+        "exit.close_evaluated",
+        "exit.close_gap",
+    ),
     "Control": (
         "mode.change_requested",
         "bot.paused",

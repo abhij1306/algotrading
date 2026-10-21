@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from ..engine import lifecycle
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount, HatOrder, HatSignal
+from ..models import HatBrokerAccount, HatOrder, HatPosition, HatSignal
 from ..time import utc_now
 from .broker import (
     CODE_OK,
@@ -59,6 +59,7 @@ __all__ = [
     "SendOutcome",
     "UnresolvedOrderError",
     "adopt_broker_order",
+    "record_broker_status",
     "reserve_order",
     "resolve_by_tag",
     "send_order",
@@ -187,6 +188,22 @@ def adopt_broker_order(
         _event(session, row, bot_id, "order.cancelled")
 
 
+def record_broker_status(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> bool:
+    """Move a placed order to the status the broker now shows (no commit); False when unchanged.
+    An entry that ended with nothing filled (cancelled, or a DAY limit expired at the close)
+    records `order.cancelled`, which ends its signal Cancelled; any other change is the order's
+    own bookkeeping (fills are recorded from the trade book, stops have no lifecycle step)."""
+    if found.status == row.status:
+        return False
+    unfilled_end = found.status in ("cancelled", "expired") and found.filled_qty == 0
+    row.status = found.status
+    if unfilled_end and row.purpose == ENTRY:
+        _event(session, row, bot_id, "order.cancelled")
+    return True
+
+
 def _placed_event(row: HatOrder) -> str:
     return "gtt.placed" if row.purpose == GTT_PURPOSE else "order.placed"
 
@@ -197,6 +214,7 @@ def _event(
     bot_id: uuid.UUID | None,
     event_type: str,
     code: str = CODE_OK,
+    rule: str | None = None,
 ) -> None:
     payload = {
         "tag": row.tag,
@@ -204,6 +222,8 @@ def _event(
         "broker_order_id": row.broker_order_id,
         "code": code,
     }
+    if rule is not None:
+        payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
     record(
         session,
         aggregate_type="order",
@@ -220,7 +240,8 @@ def _event(
 def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str, object]) -> None:
     """Move the order's signal along the lifecycle step its event drives, in the same commit
     (HAT-EXEC-042): an entry `order.placed` takes a Triggered or AwaitingApproval signal to
-    EntryPlaced. An order event the table does not allow from the signal's state is logged and
+    EntryPlaced, and a full exit order's takes an open trade (signal and position) to
+    ExitPending. An order event the table does not allow from the signal's state is logged and
     leaves the state: the order's own bookkeeping must never fail after a broker call."""
     step = lifecycle.step_of(event_type, payload)
     if step is None:
@@ -232,6 +253,10 @@ def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str
         signal.state = lifecycle.next_state(signal.state, step)
     except lifecycle.LifecycleStateError:
         logger.error("order event %s does not move a signal in %s", event_type, signal.state)
+        return
+    position = session.get(HatPosition, row.position_id) if row.position_id else None
+    if position is not None and signal.state in lifecycle.POSITION_STATES:
+        position.state = signal.state
 
 
 def _check_allowed(
@@ -315,8 +340,10 @@ def send_order(
     symbol: str,
     bot_id: uuid.UUID,
     tick_size: Decimal | None = None,
+    rule: str | None = None,
 ) -> SendOutcome:
-    """Send the reserved order `tag` to the broker, at most once per tag. Safe to call again."""
+    """Send the reserved order `tag` to the broker, at most once per tag. Safe to call again.
+    `rule` names the exit rule of a sale; it is kept on the order's `order.placed` event."""
     row = _row(session, tag)
     if row.status in _ENDED:
         return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
@@ -347,7 +374,7 @@ def send_order(
         raise BrokerUnavailableError(code)
     if status == "placed":
         row.status, row.broker_order_id = "placed", broker_id
-        _event(session, row, bot_id, _placed_event(row))
+        _event(session, row, bot_id, _placed_event(row), rule=rule)
     elif status == "rejected":
         row.status = "rejected"
         _event(session, row, bot_id, "order.rejected", code)

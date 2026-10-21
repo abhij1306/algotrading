@@ -173,6 +173,12 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 | PartiallyExited | PartiallyExited | `exit.partial` | another partial fills |
 | ExitPending | Closed | `order.filled`, `position.closed` | remaining qty filled |
 
+How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `execution/fills.py`):
+
+- The entry's first fill moves EntryPlaced to Open; a later fill of the same order adds to the position at the weighted average price. The entry is a DAY limit order: a remainder still unfilled at the close expires at the broker and the filled part is kept as the position. Only an entry order that ended with nothing filled drives EntryPlaced → Cancelled; an `order.cancelled` of a stop or a sale moves no state. **[OWNER-PENDING]** (partial-entry policy; this is the default).
+- No sale is placed for a broker stop: the first fill of a stop (or any fill that empties a position no full exit order was placed for) carries `exit_triggered: true` on its `order.filled`, which stands for the "exit order placed" step (ExitPending) on replay.
+- An entry HAT may have sent (pending or unconfirmed) that the broker's book does not hold at the session end, after a good reconciliation, ends its signal Rejected with reason `entry_not_found`.
+
 #### HAT-EXEC-040: Lifecycle states and transitions
 - **Statement:** A trade's state is one of the 11 states above and changes only along the transition table.
 - **Source:** BL "Trade lifecycle"; SCH "Event types (MVP)".
@@ -279,11 +285,21 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 3. GTT limit price set 1% below trigger so moderate gap-downs still fill [A]. A gap below the limit price leaves the GTT unfilled; the offset reduces that risk but cannot remove it, so an open position whose GTT triggered without a fill raises a health alert.
 4. A broker without reliable GTT for delivery cannot run auto mode (HAT-EXEC-012).
 
+Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` `FillSync`, `execution/manage.py` `TradeManager`, `ops/trade_jobs.py`; model `verification/tla/StopPlacement.tla`):
+
+- The fill sync reads the broker's order and trade books (fail closed) and protects a position right after recording each of its fills, before any other action on it. With no working stop it places an intraday SL-M SELL CNC stop in the session before 15:25 and a GTT from 15:25 on and after the close (a day stop placed after the swap would expire with no GTT behind it); a working stop for another quantity is resized. A stop the broker refuses after the one retry is alerted (`stop.not_placed`) and placed again by the next sync, which protects every open real position HAT's book shows without a working stop.
+- A broker stop's trigger is `current_stop` rounded down to the instrument's tick, so it is never above `current_stop`; `follow` modifies it up and never down, and a refused modify is alerted (`stop.not_moved`).
+- `gtt.swap` (15:25, retried every minute until it succeeds) places the GTT first and cancels the intraday stop only once the GTT is confirmed; a failure leaves the intraday stop working and is alerted (`gtt.swap_failed`). A position with a sale still working is swapped on the retry.
+- `gtt.verify` (23:00) reads the fills first, then refreshes each open real position's GTT to the current stop (`gtt.refreshed`); a GTT the broker does not confirm is alerted (`gtt.missing`), ended in HAT's book and placed again; when the broker cannot be reached, or no tick is known, the position is alerted (`gtt.unverified`) and nothing is placed.
+- Fyers GTTs carry no order tag, so an untagged SELL trade on the symbol of the one open real position with a working GTT is attributed to that GTT, and an untagged SELL order on it that ended short of its quantity is the GTT triggering without a fill (`gtt.unfilled`, then protected again). A symbol two open positions share is not attributed. **[verify on a live account]**
+- `hard_stop` is never sold by HAT while a broker stop rests: the broker stop is the hard stop. A position whose stop the broker keeps refusing is alerted, not sold at market. **[OWNER-PENDING]** (whether to flatten such a position instead).
+- Nothing in stop placement checks a kill switch or pause (06 §6).
+
 #### HAT-EXEC-060: Stop at the broker on every real fill
 - **Statement:** Every real entry fill is followed by an intraday stop order (purpose `stop_day`) at the position's stop price.
 - **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17.
 - **PR:** 15
-- **Verification:** TLA `StopPlacement!StopAfterFill`
+- **Verification:** TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected`
 - **Acceptance:**
   - Property: in every behaviour, after a real entry fill, a working broker stop for the open quantity exists before any other action on that position, and from then on there is always a working stop (day or GTT) while qty_open > 0. Harm: a position sits unprotected if the machine dies.
 
@@ -291,7 +307,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Statement:** At ~15:25 each intraday stop is replaced by a GTT stop (purpose `stop_gtt`) for overnight protection, without a gap in coverage.
 - **Source:** BL "Stop placement at the broker" step 2; MA "Daily cycle"; SCH events `gtt.placed`.
 - **PR:** 15
-- **Verification:** TLA `StopPlacement!NoUnprotectedGap`
+- **Verification:** TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap`
 - **Acceptance:**
   - Property: in every interleaving of the swap steps with fills, rejections and crashes, the GTT is confirmed placed before the intraday stop is cancelled, so at no state is a real open position without a working stop; a failed GTT placement leaves the intraday stop working and raises an alert. Harm: the position goes overnight unprotected.
 
@@ -299,7 +315,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Statement:** The GTT limit price is set 1% [A] below its trigger price.
 - **Source:** BL "Stop placement" step 3; BL "Defaults that are assumptions" (GTT limit offset).
 - **PR:** 13, 15
-- **Verification:** PBT `stops.gtt_limit_offset`
+- **Verification:** PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`
 - **Acceptance:**
   - Property: for every trigger price T > 0 and tick size, the GTT limit equals T × (1 − 0.01) rounded down to the tick and is < T. Harm: a gap-down skips past the limit and the stop never fills.
   - Property: in every behaviour where a GTT triggers and is not filled, a health alert is raised for that position. Harm: the owner believes the position is protected after the stop failed to fill.
@@ -309,7 +325,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Statement:** Every night the engine confirms a GTT stop exists at the broker for every open real position and alerts on any gap.
 - **Source:** MA "Daily cycle" step 9; BL "Stop placement" step 2 (refreshed nightly); SCH event `gtt.refreshed`.
 - **PR:** 15
-- **Verification:** TLA `StopPlacement!NightlyVerifyCovers`
+- **Verification:** TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers`
 - **Acceptance:**
   - Property: in every behaviour, after the nightly `gtt.verify` job, every open real position either has a broker GTT whose trigger equals `current_stop`, or a health alert was raised and a re-placement attempted. Harm: a missing GTT goes unnoticed for days.
 
@@ -317,7 +333,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **Statement:** When `current_stop` rises, the working broker stop (day or GTT) is modified to the new price; it is never modified downward.
 - **Source:** BL "Invariants" 1; SCH `stop.moved`; DS "Broker interface" (`modify_order`, `modify_gtt`).
 - **PR:** 15
-- **Verification:** TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`
+- **Verification:** TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens`
 - **Acceptance:**
   - Property: in every reachable state, the broker stop price for an open position is ≤ `current_stop` and eventually equals it, and the sequence of broker stop prices is non-decreasing. Harm: the broker stop lags a raised stop and gives back profit, or is lowered.
 
@@ -377,6 +393,7 @@ Evaluation rules (BL "Evaluation rules"): top to bottom on every price event or 
 - **Acceptance:**
   - Property: in every simulated trading day, the `exits.close` job runs once within 15:20–15:25 IST and its exit orders are sent before 15:30. Harm: MA exits miss the session and the position carries overnight against the rule.
 - **[A]** exit at 15:25 vs official close: default 15:25 live price; validated in shadow by logging both and comparing (PLAN Q10).
+- **Implementation (PR 15c):** `exits.close` is a scheduled job with a window (`ScheduledJob.until`): the scheduler starts it at or after 15:20 and never from 15:25 IST on, and a failed run is tried again a minute later inside the window. Its body (`TradeManager.close_exits`) refuses outside the window, runs the close-phase rules of every open position of the account's bots (virtual through `trades.evaluate_position`, real through the same `exits.evaluate`), records each `close_below_sma` evaluation with the live price (`exit.close_evaluated`, HAT-OPS-034), and sends each sale as a MARKET SELL CNC order. Whether a sale may go out is read from the clock at the moment it is sent, so nothing is sent from 15:30 on even by a run that started at 15:24.
 
 ## §8 Broker interface
 

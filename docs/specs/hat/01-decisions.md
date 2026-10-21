@@ -274,7 +274,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Statement:** On fill an intraday stop order rests at the broker; around 15:25 it is replaced with a GTT stop for overnight.
 - **Source:** MA (B17); BL "Stop placement at the broker (B17)".
 - **PR:** 13, 15
-- **Verification:** TLA `StopPlacement!AlwaysProtected`
+- **Verification:** TLA `StopPlacement!AlwaysProtected`, PBT `manage.real_fill_protected`
 - **Acceptance:**
   - Property: in every reachable state, every real open position has a resting broker-side stop (intraday SL or GTT). Harm: a gap-down overnight or a machine outage hits an unprotected position. Detail: 07 §6.
 
