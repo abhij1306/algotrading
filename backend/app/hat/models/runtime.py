@@ -40,6 +40,10 @@ __all__ = [
     "HatWatchlistEntry",
 ]
 
+BOT_ID = "hat_bot.id"
+INSTRUMENT_ID = "hat_instrument.id"
+SIGNAL_ID = "hat_signal.id"
+
 SIGNAL_MODES = ("shadow", "confirm", "auto")
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
 ORDER_SIDES = ("buy", "sell")
@@ -62,11 +66,11 @@ class HatWatchlistEntry(Base):
     __table_args__ = (Index("hat_watchlist_entry_bot_date", "bot_id", "trade_date"),)
 
     id = uuid_pk()
-    bot_id = fk("hat_bot.id")
+    bot_id = fk(BOT_ID)
     strategy_version_id = fk("hat_strategy_version.id")
     # `default` for single-playbook bots.
     playbook = Column(Text, nullable=False)
-    instrument_id = fk("hat_instrument.id")
+    instrument_id = fk(INSTRUMENT_ID)
     trade_date = Column(Date, nullable=False)
     score = Column(Ratio, nullable=False)
     criteria_results = Column(JsonB, nullable=False)
@@ -88,11 +92,11 @@ class HatSignal(Base):
     )
 
     id = uuid_pk()
-    bot_id = fk("hat_bot.id")
+    bot_id = fk(BOT_ID)
     strategy_version_id = fk("hat_strategy_version.id")
     risk_policy_version_id = fk("hat_risk_policy_version.id")
     playbook = Column(Text, nullable=False)
-    instrument_id = fk("hat_instrument.id")
+    instrument_id = fk(INSTRUMENT_ID)
     trade_date = Column(Date, nullable=False)
     triggered_at = Column(Timestamptz, nullable=False)
     trigger_price = Column(Money, nullable=False)
@@ -112,7 +116,7 @@ class HatSignalAnnouncement(Base):
 
     __tablename__ = "hat_signal_announcement"
 
-    signal_id = fk("hat_signal.id", primary_key=True)
+    signal_id = fk(SIGNAL_ID, primary_key=True)
     announcement_id = fk("hat_announcement.id", primary_key=True)
 
 
@@ -127,7 +131,7 @@ class HatApproval(Base):
         ),
     )
 
-    signal_id = fk("hat_signal.id", primary_key=True)
+    signal_id = fk(SIGNAL_ID, primary_key=True)
     sent_at = Column(Timestamptz, nullable=False)
     expires_at = Column(Timestamptz, nullable=False)
     decided_at = Column(Timestamptz)
@@ -150,7 +154,7 @@ class HatOrder(Base):
     )
 
     id = uuid_pk()
-    signal_id = fk("hat_signal.id")
+    signal_id = fk(SIGNAL_ID)
     position_id = fk("hat_position.id", nullable=True)
     broker_account_id = fk("hat_broker_account.id")
     purpose = Column(Text, nullable=False)
@@ -174,6 +178,10 @@ class HatFill(Base):
     __table_args__ = (
         UniqueConstraint("order_id", "broker_trade_id"),
         CheckConstraint("qty > 0", name="ck_hat_fill_qty"),
+        # A real fill needs its broker trade id, or NULLs would defeat the unique key.
+        CheckConstraint(
+            "is_virtual OR broker_trade_id IS NOT NULL", name="ck_hat_fill_broker_trade_id"
+        ),
     )
 
     id = uuid_pk()
@@ -194,6 +202,8 @@ class HatPosition(Base):
     __tablename__ = "hat_position"
     __table_args__ = (
         CheckConstraint("qty_open >= 0", name="ck_hat_position_qty_open"),
+        # The update trigger cannot see an INSERT: a position starts with its initial stop.
+        CheckConstraint("current_stop >= initial_stop", name="ck_hat_position_stop_tightens"),
         Index(
             "hat_position_open_by_bot",
             "bot_id",
@@ -203,9 +213,9 @@ class HatPosition(Base):
     )
 
     id = uuid_pk()
-    bot_id = fk("hat_bot.id")
-    signal_id = fk("hat_signal.id")
-    instrument_id = fk("hat_instrument.id")
+    bot_id = fk(BOT_ID)
+    signal_id = fk(SIGNAL_ID)
+    instrument_id = fk(INSTRUMENT_ID)
     is_virtual = Column(Boolean, nullable=False)
     qty_open = Column(Integer, nullable=False)
     avg_entry = Column(Money, nullable=False)

@@ -84,7 +84,7 @@ def seed(
         )
         session.add(
             HatEvent(
-                id=10**9 + uuid.uuid4().int % 10**9,
+                id=10**9 + uuid.uuid4().int % 10**18,
                 occurred_at=datetime(2011, 1, 1, tzinfo=UTC),
                 recorded_at=datetime(2011, 1, 1 + number, tzinfo=UTC),
                 user_id=uuid.uuid4(),

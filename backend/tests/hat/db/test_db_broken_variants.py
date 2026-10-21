@@ -243,6 +243,8 @@ def runtime_domain_variants() -> list[tuple[str, Break]]:
             ("hat_signal", "ck_hat_signal_qty"),
             ("hat_fill", "ck_hat_fill_qty"),
             ("hat_position", "ck_hat_position_qty_open"),
+            ("hat_fill", "ck_hat_fill_broker_trade_id"),
+            ("hat_position", "ck_hat_position_stop_tightens"),
         )
     ]
 

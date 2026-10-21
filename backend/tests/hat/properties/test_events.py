@@ -64,7 +64,7 @@ def new_position(stop: Decimal) -> uuid.UUID:
                 is_virtual=True,
                 qty_open=1,
                 avg_entry=stop,
-                initial_stop=stop,
+                initial_stop=Decimal("0.0001"),  # moves in this test go both ways
                 current_stop=stop,
                 currency="INR",
                 opened_at=datetime(2026, 1, 1, tzinfo=UTC),

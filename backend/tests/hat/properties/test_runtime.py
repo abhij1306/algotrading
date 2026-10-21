@@ -112,6 +112,7 @@ def write_trade(mode: str, decision: str, purposes: list[str], fills: int) -> uu
                         currency="INR",
                         filled_at=NOW,
                         is_virtual=child_is_virtual(order_virtual),
+                        broker_trade_id=uuid.uuid4().hex,
                     )
                 )
         session.commit()

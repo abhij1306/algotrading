@@ -125,7 +125,8 @@ def test_schema__event_columns() -> None:
         assert f"'{actor}'" in check, actor
     assert len(ddl.actors) == 4
     identity = table.columns["id"].identity
-    assert identity is not None and identity.always is True
+    assert identity is not None
+    assert identity.always is True
     assert "bigint" in str(CreateTable(table).compile(dialect=postgresql.dialect())).lower()
     # SQLite: an integer key the app fills in (HAT-SCH-067), same column set
     sqlite_sql = str(CreateTable(table).compile(dialect=sqlite.dialect()))

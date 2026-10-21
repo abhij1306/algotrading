@@ -132,10 +132,11 @@ def _check(
             raise EventError("a trade event needs the signal id as correlation_id")
         if aggregate_type == "signal" and correlation_id != aggregate_id:
             raise EventError("a signal event's correlation_id is the signal's own id")
-    if actor == "user" and not isinstance(payload.get("chat_id"), int):
+    chat_id = payload.get("chat_id")
+    if actor == "user" and (isinstance(chat_id, bool) or not isinstance(chat_id, int)):
         raise EventError("a user event carries the Telegram chat_id in its payload")
     try:
-        json.dumps(payload)
+        json.dumps(payload, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise EventError("payload is not JSON serializable") from exc
 

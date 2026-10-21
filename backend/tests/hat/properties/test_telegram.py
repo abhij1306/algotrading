@@ -65,7 +65,8 @@ def test_retention_purge(
             return purge_job(session, day)
 
     first = run_job(JOB, day, body, session_factory=FACTORY)
-    assert first.status is RunStatus.SUCCEEDED and first.executed
+    assert first.status is RunStatus.SUCCEEDED
+    assert first.executed
 
     floor = date(day.year - 1, day.month, 28 if (day.month, day.day) == (2, 29) else day.day)
     with FACTORY() as session:

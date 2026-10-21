@@ -211,6 +211,26 @@ def check_runtime__domain_checks(conn: Connection) -> None:
         "a position with qty_open 0",
         lambda: b.position(conn, w, new_signal(), qty_open=0),
     )
+    rejects(
+        conn,
+        "a real fill with no broker trade id",
+        lambda: b.fill(conn, first, is_virtual=False, broker_trade_id=None),
+    )
+    accepts(conn, "a virtual fill with no broker trade id", lambda: b.fill(conn, first))
+    rejects(
+        conn,
+        "a position opened with a stop below its initial stop",
+        lambda: b.position(
+            conn, w, new_signal(), initial_stop=Decimal("95"), current_stop=Decimal("94")
+        ),
+    )
+    accepts(
+        conn,
+        "a position opened with a stop above its initial stop",
+        lambda: b.position(
+            conn, w, new_signal(), initial_stop=Decimal("95"), current_stop=Decimal("96")
+        ),
+    )
 
 
 ORDER_STATUSES = (
@@ -352,7 +372,8 @@ def check_governance__stop_only_rises(conn: Connection) -> None:
                 w,
                 b.signal(conn, w, playbook=f"p{old}-{new}"),
                 current_stop=old,
-                initial_stop=old,
+                # Far below every tested stop, so the trigger (not the insert CHECK) decides.
+                initial_stop=Decimal("0.0001"),
             )
 
             def move(p: uuid.UUID = position, n: Decimal = new) -> None:
@@ -576,8 +597,9 @@ def check_events__partitions_ahead(
                 )
     # The schema upkeep run (what startup does) covers the current month and two more.
     ensure_hat_schema(conn)
-    today = datetime.now(UTC).date()
+    moment = datetime.now(UTC)
+    today = moment.date()
     children = _children(conn)
     for first in months_to_cover(today, SPEC_MONTHS_AHEAD):
         assert partition_name(first) in children, f"ensure_hat_schema left {first:%Y-%m} out"
-    assert _routed_to(conn, datetime.now(UTC)) == partition_name(months_to_cover(today, 0)[0])
+    assert _routed_to(conn, moment) == partition_name(months_to_cover(today, 0)[0])
