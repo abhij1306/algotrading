@@ -289,11 +289,13 @@ def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
         now += timedelta(seconds=gap)
         step = watch.observe(now, live)
         if live:
-            assert step.retry_in is None and not step.alert
+            assert step.retry_in is None
+            assert not step.alert
             down_since, alerts, delays = None, 0, []
             continue
         down_since = down_since or now
-        assert step.retry_in is not None and 1 <= step.retry_in <= BACKOFF_CAP_SECONDS
+        assert step.retry_in is not None
+        assert 1 <= step.retry_in <= BACKOFF_CAP_SECONDS
         delays.append(step.retry_in)
         assert delays == sorted(delays)
         if step.alert:

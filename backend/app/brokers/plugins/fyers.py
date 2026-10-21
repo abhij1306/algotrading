@@ -505,11 +505,12 @@ class FyersBroker(IBroker):
         if response is no_reply or not isinstance(response, dict):
             return unconfirmed
         if response.get("s") == "ok":
-            if not response.get("id"):
+            gtt_id = response.get("id")
+            if not gtt_id:
                 logger.error("Fyers accepted a GTT order without returning its id")
                 return unconfirmed
             return OrderResponse(
-                order_id=str(response["id"]),
+                order_id=str(gtt_id),
                 status="SUBMITTED",
                 message=response.get("message", "GTT Placed"),
                 details=response,

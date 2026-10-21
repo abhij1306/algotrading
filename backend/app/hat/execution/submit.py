@@ -233,6 +233,51 @@ def _check_allowed(
         raise OrderRefusedError("exit_must_sell")
 
 
+def _lookup_before_retry(
+    session: Session, broker: HatBroker, row: HatOrder, tag: str, bot_id: uuid.UUID
+) -> SendOutcome | None:
+    """An attempt was made before: ask the broker for the tag. An order found is adopted and
+    returned; None means the book has none and the same tag may be placed again."""
+    if row.purpose == GTT_PURPOSE:
+        raise UnresolvedOrderError("a GTT has no tag to look up")
+    found = resolve_by_tag(broker, tag)
+    if found is None:
+        return None
+    adopt_broker_order(session, row, found, bot_id)
+    session.commit()
+    return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
+
+
+def _call_broker(
+    broker: HatBroker, row: HatOrder, tag: str, symbol: str, tick_size: Decimal | None
+) -> tuple[str, str | None, str]:
+    """Place the order or the GTT; return (status, broker id, code)."""
+    if row.purpose == GTT_PURPOSE:
+        if tick_size is None or row.trigger_price is None:
+            raise OrderRefusedError("gtt_needs_trigger_and_tick")
+        result = broker.place_gtt_stop(
+            GttRequest(
+                symbol=symbol,
+                qty=row.qty,
+                trigger_price=row.trigger_price,
+                limit_price=gtt_limit_price(row.trigger_price, tick_size),
+            )
+        )
+        return result.status, result.gtt_id, result.code
+    outcome = broker.place_order(
+        OrderIntent(
+            symbol=symbol,
+            side=Side(row.side),
+            qty=row.qty,
+            order_type=OrderType(row.order_type),
+            tag=tag,
+            price=row.price,
+            trigger_price=row.trigger_price,
+        )
+    )
+    return outcome.status, outcome.broker_order_id, outcome.code
+
+
 def send_order(
     session: Session,
     broker: HatBroker,
@@ -249,15 +294,10 @@ def send_order(
         return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
     _check_allowed(session, broker, guard, row, bot_id)
 
-    attempted = row.status == "unconfirmed" or row.placed_at is not None
-    if attempted:
-        if row.purpose == GTT_PURPOSE:
-            raise UnresolvedOrderError("a GTT has no tag to look up")
-        found = resolve_by_tag(broker, tag)
-        if found is not None:
-            adopt_broker_order(session, row, found, bot_id)
-            session.commit()
-            return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
+    if row.status == "unconfirmed" or row.placed_at is not None:
+        adopted = _lookup_before_retry(session, broker, row, tag, bot_id)
+        if adopted is not None:
+            return adopted
         # The lookup returned absent: the same tag may be placed again.
     row.placed_at = utc_now()
     session.commit()  # the attempt is stamped before the call, so a crash is seen as unknown
@@ -266,32 +306,7 @@ def send_order(
     if refusal is not None:
         raise OrderRefusedError(refusal)
 
-    if row.purpose == GTT_PURPOSE:
-        if tick_size is None or row.trigger_price is None:
-            raise OrderRefusedError("gtt_needs_trigger_and_tick")
-        result = broker.place_gtt_stop(
-            GttRequest(
-                symbol=symbol,
-                qty=row.qty,
-                trigger_price=row.trigger_price,
-                limit_price=gtt_limit_price(row.trigger_price, tick_size),
-            )
-        )
-        status, broker_id, code = result.status, result.gtt_id, result.code
-    else:
-        outcome = broker.place_order(
-            OrderIntent(
-                symbol=symbol,
-                side=Side(row.side),
-                qty=row.qty,
-                order_type=OrderType(row.order_type),
-                tag=tag,
-                price=row.price,
-                trigger_price=row.trigger_price,
-            )
-        )
-        status, broker_id, code = outcome.status, outcome.broker_order_id, outcome.code
-
+    status, broker_id, code = _call_broker(broker, row, tag, symbol, tick_size)
     if status == "rejected" and code == CODE_UNAVAILABLE:
         # Nothing was sent (circuit open, no client): not a rejection, so it burns no retry.
         session.commit()

@@ -93,10 +93,9 @@ def test_only_the_fyers_adapter_is_registered(name: str) -> None:
     assert set(ADAPTER_FACTORIES) == {"fyers"}
     engine = memory_engine(HatBrokerAccount)
     session = sessionmaker(engine)()
+    adapter = FyersHatBroker(FakeBroker())
     with pytest.raises(OnboardingError):
-        onboard_account(
-            session, FyersHatBroker(FakeBroker()), user_id=USER, broker_name=name, account_ref="Z"
-        )  # type: ignore[arg-type]
+        onboard_account(session, adapter, user_id=USER, broker_name=name, account_ref="Z")
     assert session.query(HatBrokerAccount).count() == 0
 
 
@@ -199,7 +198,8 @@ def test_record_session_writes_the_morning_login() -> None:
     today = date(2026, 10, 21)
     assert record_session(session, broker, account, today) is SessionStatus.LIVE  # type: ignore[arg-type]
     row = session.get(HatBrokerSession, (account, today))
-    assert row.status == "live" and row.logged_in_at is not None
+    assert row.status == "live"
+    assert row.logged_in_at is not None
     broker.status = SessionStatus.EXPIRED
     record_session(session, broker, account, today, lost_alert=True)  # type: ignore[arg-type]
     types = sorted(e.event_type for e in session.query(HatEvent))
@@ -245,12 +245,14 @@ def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
     from hat_exec_support import RecordingSdk
 
     sdk = RecordingSdk(reply={"s": "error", "code": -1, "message": "boom"})
+    method = getattr(adapter_over(sdk), read)
     with pytest.raises(BrokerUnavailableError):
-        getattr(adapter_over(sdk), read)()
+        method()
 
 
 def test_decimal_funds_and_exact_positions() -> None:
     env = exec_env()
     env.fake.available = 12345.5
     funds = env.broker.funds()
-    assert funds.available == Decimal("12345.5") and isinstance(funds.total, Decimal)
+    assert funds.available == Decimal("12345.5")
+    assert isinstance(funds.total, Decimal)

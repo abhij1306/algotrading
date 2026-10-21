@@ -91,7 +91,10 @@ def test_encode_decode_roundtrip(signal: uuid.UUID, purpose: str, sequence: int)
     """HAT-DEC-I10: 20 alphanumeric characters starting HT, never the terminal's ST prefix, and
     in the alphabet and length the broker accepts."""
     tag = encode_tag(signal, purpose, sequence)
-    assert len(tag) == 20 and tag.isalnum() and tag.startswith("HT") and not tag.startswith("ST")
+    assert len(tag) == 20
+    assert tag.isalnum()
+    assert tag.startswith("HT")
+    assert not tag.startswith("ST")
     assert FYERS_ALLOWED.fullmatch(tag)
     assert FYERS_ORDER_TAG_PATTERN.fullmatch(tag)  # the pattern the Fyers client itself enforces
     assert len(tag) <= FYERS_CAPABILITIES.tag_max_len
@@ -150,8 +153,9 @@ def test_sequence_counts_earlier_orders(purposes: list[str]) -> None:
     for purpose in purposes:
         count = seen.get(purpose, 0)
         if count > MAX_SEQUENCE:
+            request = env.request(signal, purpose)
             with pytest.raises(TagExhaustedError):
-                reserve_order(env.session, env.request(signal, purpose))
+                reserve_order(env.session, request)
             continue
         tag = reserve_order(env.session, env.request(signal, purpose))
         assert decode_tag(tag).sequence == count
@@ -165,8 +169,9 @@ def test_a_signal_with_36_orders_of_one_purpose_is_refused_the_37th() -> None:
     signal = uuid7()
     for _ in range(36):
         reserve_order(env.session, env.request(signal, "exit_partial"))
+    request = env.request(signal, "exit_partial")
     with pytest.raises(TagExhaustedError):
-        reserve_order(env.session, env.request(signal, "exit_partial"))
+        reserve_order(env.session, request)
     assert len({o.tag for o in env.session.query(type(_row(env))).all()}) == 36
 
 
@@ -209,8 +214,10 @@ def test_fyers_payload_mapping(intent: OrderIntent) -> None:
     """HAT-BRK-090: the SDK receives exactly the documented keys with the documented values."""
     sdk = RecordingSdk()
     result = adapter_over(sdk).place_order(intent)
-    assert result.status == "placed" and result.broker_order_id == "SDK-1"
-    assert len(sdk.calls) == 1 and sdk.calls[0][0] == "place_order"
+    assert result.status == "placed"
+    assert result.broker_order_id == "SDK-1"
+    assert len(sdk.calls) == 1
+    assert sdk.calls[0][0] == "place_order"
     assert sdk.calls[0][1] == {
         "symbol": SYMBOLS[intent.symbol],
         "qty": intent.qty,
@@ -300,8 +307,9 @@ def test_gtt_payloads(symbol: str, qty: int, trigger: Decimal, limit: Decimal, g
     sdk = RecordingSdk()
     broker = adapter_over(sdk)
     if limit >= trigger:
+        request = GttRequest(symbol, qty, trigger, limit)
         with pytest.raises(InvalidIntentError):
-            broker.place_gtt_stop(GttRequest(symbol, qty, trigger, limit))
+            broker.place_gtt_stop(request)
         assert sdk.calls == []
         return
     assert broker.place_gtt_stop(GttRequest(symbol, qty, trigger, limit)).status == "placed"
@@ -372,8 +380,9 @@ def test_broker_errors_fail_closed(kind: str, read: str) -> None:
         broker = adapter_over(sdk)
     else:
         broker = adapter_over_fake(_failing_fake(kind))
+    method = getattr(broker, read)
     with pytest.raises(BrokerUnavailableError) as raised:
-        getattr(broker, read)()
+        method()
     error = raised.value
     assert error.code in {"broker_unavailable", "broker_response_invalid"}
     assert SECRET not in f"{error!s}{error!r}{error.args}"
@@ -667,7 +676,8 @@ def test_refusals_happen_before_the_broker(case: dict) -> None:
     )
     if allowed:
         out = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
-        assert out.status == "placed" and env.fake.count("place_order") == 1
+        assert out.status == "placed"
+        assert env.fake.count("place_order") == 1
     else:
         with pytest.raises(OrderRefusedError):
             send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
@@ -690,7 +700,8 @@ def test_an_unreachable_broker_is_not_a_rejection() -> None:
         send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
     assert env.session.query(HatOrder).one().status == "pending"
     out = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
-    assert out.status == "placed" and len([r for r in env.fake.book if r["orderTag"] == tag]) == 1
+    assert out.status == "placed"
+    assert len([r for r in env.fake.book if r["orderTag"] == tag]) == 1
 
 
 def test_a_virtual_order_never_reaches_the_broker() -> None:
@@ -727,6 +738,7 @@ def test_a_pending_gtt_is_not_retried_after_a_lost_answer() -> None:
         tick_size=Decimal("0.05"),
     )
     assert out.status == "unconfirmed"
+    tick = Decimal("0.05")
     with pytest.raises(UnresolvedOrderError):
         send_order(
             env.session,
@@ -735,7 +747,7 @@ def test_a_pending_gtt_is_not_retried_after_a_lost_answer() -> None:
             tag,
             symbol="SBIN",
             bot_id=env.bot_id,
-            tick_size=Decimal("0.05"),
+            tick_size=tick,
         )
     assert env.fake.count("place_gtt") == 1
     assert env.fake.calls_named("place_gtt")[0]["price"] == 99.0
