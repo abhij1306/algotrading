@@ -104,7 +104,7 @@ SnapshotAccount ==
                ELSE IF ~breach /\ acct = "tripped" /\ BrokenMode = "auto_rearm_on_recovery"
                        THEN /\ acct' = "armed"
                             /\ appr' = appr
-                            /\ badRearm' = (badRearm \/ ~askedAcct)
+                            /\ badRearm' = TRUE
                        ELSE /\ acct' = acct
                             /\ appr' = appr
                             /\ badRearm' = badRearm
@@ -167,7 +167,7 @@ Resume(k) ==
     /\ paused' = [paused EXCEPT ![k] = FALSE]
     /\ IF BrokenMode = "resume_clears_kill"
           THEN /\ bot' = [bot EXCEPT ![k] = "armed"]
-               /\ badRearm' = (badRearm \/ (bot[k] = "tripped" /\ ~askedBot[k]))
+               /\ badRearm' = (badRearm \/ (bot[k] = "tripped"))
           ELSE /\ bot' = bot
                /\ badRearm' = badRearm
     /\ UNCHANGED <<acct, health, unhealthy, appr, pos, exitDue, acctSeen, botSeen, askedAcct,

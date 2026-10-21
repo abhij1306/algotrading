@@ -122,4 +122,5 @@ def test_level_never_exceeds_l3(wins: list) -> None:
 def test_breakeven_counts_as_a_loss(flat: list) -> None:
     """A trade closed at 0 R is a loss for the ladder (the conservative reading)."""
     state = ladder_from_trades(flat, SEED)
-    assert state.consecutive_wins == 0 and state.level == "L1"
+    assert state.consecutive_wins == 0
+    assert state.level == "L1"

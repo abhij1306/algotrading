@@ -68,11 +68,13 @@ def test_risk__policy_schema_fields() -> None:
     assert set(doc["p_max"]) == nested["p_max"]
     assert set(doc["kill"]) == nested["kill"]
     assert set(doc["base_weight"]) == nested["base_weight"]
+    extra = {**doc, "extra": 1}
     with pytest.raises(PolicyError):
-        parse_policy({**doc, "extra": 1})
+        parse_policy(extra)
     for name in POLICY_FIELDS:
+        without = {k: v for k, v in doc.items() if k != name}
         with pytest.raises(PolicyError):
-            parse_policy({k: v for k, v in doc.items() if k != name})
+            parse_policy(without)
 
 
 def test_risk__no_risk_keys_in_strategy_schema() -> None:
@@ -137,7 +139,8 @@ def test_risk__initial_seed_equals_spec() -> None:
         int(down),
     )
     section5 = SPEC_06[SPEC_06.index("## §4") : SPEC_06.index("## §5")]
-    assert "L1" in section5 and "L3" in section5
+    assert "L1" in section5
+    assert "L3" in section5
     health = doc["health_bands"]
     assert (Decimal(health["half_dd"]), Decimal(health["zero_dd"])) == (
         Decimal("0.08"),
@@ -208,7 +211,8 @@ def test_risk__single_sizing_path() -> None:
             users.append(path.relative_to(APP_ROOT).as_posix())
     assert users == ["hat/risk/decision.py"]
     manager = (APP_ROOT / "services" / "risk_manager.py").read_text(encoding="utf-8")
-    assert "evaluate_signal" in manager and "size_position" not in manager
+    assert "evaluate_signal" in manager
+    assert "size_position" not in manager
 
 
 OVERRIDE_WORDS = re.compile(

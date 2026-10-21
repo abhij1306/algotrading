@@ -199,16 +199,49 @@ def _count(value: object, name: str) -> int:
     return value
 
 
-def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
+@dataclass(frozen=True)
+class _Entry:
+    """The context of an entry, read and validated once: every field is present and of its type."""
+
+    at: datetime
+    strategy_key: str
+    version: PolicyVersion
+    entry: Decimal
+    stop: Decimal
+    trigger: Decimal
+    equity: Decimal
+    total_equity: Decimal
+    alloc: Decimal
+    cash: Decimal
+    adv20: Decimal
+    kill: KillState
+    ladder: LadderState
+    positions: Sequence[caps.OpenPosition]
+    industry: str
+    bot_id: object
+    instrument_id: object
+    virtual: bool
+    halted: bool
+    stale: bool
+    quality_failed: bool
+    gate_on: bool
+    locked: bool
+    entries_today: int
+    stopouts_today: int
+    session: SessionState
+    configured_chase: Decimal | None
+    p_max: Decimal
+
+
+def _read_entry(ctx: SignalContext, legacy: LegacyChecks) -> _Entry:
+    """Every input of an entry, or `MissingInputError` for the first missing or inexact one."""
     at = _require(ctx.at, "at")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
         raise MissingInputError("at: needs an aware instant")
     strategy_key = _require(ctx.strategy_key, "strategy_key")
-    versions = _require(ctx.policy_versions, "policy_versions")
-    version = effective_version(versions, at)
+    version = effective_version(_require(ctx.policy_versions, "policy_versions"), at)
     if version is None:
         raise MissingInputError("policy: no version in force")
-    policy: RiskPolicy = version.policy
     entry = exact(ctx.entry_price, "entry_price")
     stop = exact(ctx.stop_price, "stop_price")
     trigger = exact(ctx.trigger_level, "trigger_level")
@@ -225,12 +258,17 @@ def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
     industry = _require(ctx.industry, "industry")
     bot_id = _require(ctx.bot_id, "bot_id")
     instrument_id = _require(ctx.instrument_id, "instrument_id")
-    virtual = _flag(ctx.is_virtual, "is_virtual")
-    halted = _flag(ctx.smarttrader_halted, "smarttrader_halted")
-    stale = _flag(ctx.feed_stale, "feed_stale")
-    quality_failed = _flag(ctx.quality_failed, "quality_failed")
-    gate_on = _flag(ctx.gate_on, "gate_on")
-    locked = _flag(ctx.locked_upper_circuit, "locked_upper_circuit")
+    flags = {
+        name: _flag(getattr(ctx, name), name)
+        for name in (
+            "is_virtual",
+            "smarttrader_halted",
+            "feed_stale",
+            "quality_failed",
+            "gate_on",
+            "locked_upper_circuit",
+        )
+    }
     entries_today = _count(ctx.entries_today, "entries_today")
     stopouts_today = _count(ctx.stopouts_today, "stopouts_today")
     if not isinstance(kill, KillState) or not isinstance(calendar, SessionCalendar):
@@ -240,79 +278,123 @@ def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
     session = calendar.state(at)
     if session is SessionState.UNKNOWN:
         raise MissingInputError("calendar: no row for the trade date")
-    configured_chase = ctx.configured_max_chase_pct
-    if configured_chase is not None:
-        configured_chase = exact(configured_chase, "configured_max_chase_pct")
-    p_max = policy.p_max.get(strategy_key)
-    if p_max is None or ladder.level not in policy.ladder:
+    chase = ctx.configured_max_chase_pct
+    p_max = version.policy.p_max.get(strategy_key)
+    if p_max is None or ladder.level not in version.policy.ladder:
         raise MissingInputError("policy: no entry for this strategy or level")
-    keep = version.version_id
+    return _Entry(
+        at=at,
+        strategy_key=strategy_key,
+        version=version,
+        entry=entry,
+        stop=stop,
+        trigger=trigger,
+        equity=equity,
+        total_equity=total_equity,
+        alloc=alloc,
+        cash=cash,
+        adv20=adv20,
+        kill=kill,
+        ladder=ladder,
+        positions=positions,
+        industry=industry,
+        bot_id=bot_id,
+        instrument_id=instrument_id,
+        virtual=flags["is_virtual"],
+        halted=flags["smarttrader_halted"],
+        stale=flags["feed_stale"],
+        quality_failed=flags["quality_failed"],
+        gate_on=flags["gate_on"],
+        locked=flags["locked_upper_circuit"],
+        entries_today=entries_today,
+        stopouts_today=stopouts_today,
+        session=session,
+        configured_chase=None if chase is None else exact(chase, "configured_max_chase_pct"),
+        p_max=p_max,
+    )
+
+
+def _state_reason(e: _Entry, legacy: LegacyChecks) -> Reason | None:
+    """The first of the halt, kill, pause, market and data checks that fails."""
+    checks = (
+        (e.halted, Reason.SMARTTRADER_HALT),
+        (e.kill.account_tripped, Reason.KILL_ACCOUNT),
+        (e.kill.bot_tripped, Reason.KILL_BOT),
+        (e.kill.health_tripped, Reason.KILL_HEALTH),
+        (e.kill.paused, Reason.BOT_PAUSED),
+        (e.session is not SessionState.OPEN or not legacy.market_open, Reason.MARKET_CLOSED),
+        (e.stale, Reason.STALE_FEED),
+        (e.quality_failed, Reason.QUALITY_FAILED),
+        (not caps.regime_gate_open(e.gate_on), Reason.REGIME_GATE),
+        (not caps.stop_valid(e.entry, e.stop), Reason.STOP_NOT_BELOW_ENTRY),
+    )
+    for failed, reason in checks:
+        if failed:
+            return reason
+    chase = caps.effective_max_chase_pct(e.configured_chase, e.strategy_key)
+    if not caps.chase_ok(e.entry, e.trigger, chase, locked_upper=e.locked):
+        return Reason.MAX_CHASE
+    return None
+
+
+def _cap_reason(e: _Entry) -> Reason | None:
+    """The first of the position, industry and daily caps that fails. The positions are the
+    caller's snapshot: two evaluations racing on one snapshot are serialised per bot by the
+    caller (the lifecycle's per-bot transaction), not here."""
+    policy = e.version.policy
+    mine = [p for p in e.positions if p.is_virtual == e.virtual and p.bot_id == e.bot_id]
+    held = [p for p in mine if p.instrument_id == e.instrument_id]
+    checks = (
+        (any(caps.is_loser(p) for p in held), Reason.ADD_TO_LOSER),
+        (bool(held), Reason.POSITION_EXISTS),
+        (not caps.positions_ok(len(mine), e.ladder.level, policy), Reason.MAX_POSITIONS),
+        (
+            not caps.industry_ok(sum(1 for p in mine if p.industry == e.industry), policy),
+            Reason.INDUSTRY_CAP,
+        ),
+        (not caps.entries_ok(e.entries_today, policy), Reason.ENTRY_CAP),
+        (not caps.stopouts_ok(e.stopouts_today, policy), Reason.STOPOUT_CAP),
+    )
+    for failed, reason in checks:
+        if failed:
+            return reason
+    return None
+
+
+def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
+    e = _read_entry(ctx, legacy)
+    policy: RiskPolicy = e.version.policy
+    keep = e.version.version_id
 
     def reject(reason: Reason) -> RiskDecision:
         return _reject(reason, version=keep)
 
-    if halted:
-        return reject(Reason.SMARTTRADER_HALT)
-    if kill.account_tripped:
-        return reject(Reason.KILL_ACCOUNT)
-    if kill.bot_tripped:
-        return reject(Reason.KILL_BOT)
-    if kill.health_tripped:
-        return reject(Reason.KILL_HEALTH)
-    if kill.paused:
-        return reject(Reason.BOT_PAUSED)
-    if session is not SessionState.OPEN or not legacy.market_open:
-        return reject(Reason.MARKET_CLOSED)
-    if stale:
-        return reject(Reason.STALE_FEED)
-    if quality_failed:
-        return reject(Reason.QUALITY_FAILED)
-    if not caps.regime_gate_open(gate_on):
-        return reject(Reason.REGIME_GATE)
-    if not caps.stop_valid(entry, stop):
-        return reject(Reason.STOP_NOT_BELOW_ENTRY)
-    chase = caps.effective_max_chase_pct(configured_chase, strategy_key)
-    if not caps.chase_ok(entry, trigger, chase, locked_upper=locked):
-        return reject(Reason.MAX_CHASE)
-
-    same_mode = [p for p in positions if p.is_virtual == virtual]
-    mine = [p for p in same_mode if p.bot_id == bot_id]
-    held = [p for p in mine if p.instrument_id == instrument_id]
-    if any(caps.is_loser(p) for p in held):
-        return reject(Reason.ADD_TO_LOSER)
-    if held:
-        return reject(Reason.POSITION_EXISTS)
-    if not caps.positions_ok(len(mine), ladder.level, policy):
-        return reject(Reason.MAX_POSITIONS)
-    if not caps.industry_ok(sum(1 for p in mine if p.industry == industry), policy):
-        return reject(Reason.INDUSTRY_CAP)
-    if not caps.entries_ok(entries_today, policy):
-        return reject(Reason.ENTRY_CAP)
-    if not caps.stopouts_ok(stopouts_today, policy):
-        return reject(Reason.STOPOUT_CAP)
-
-    if alloc <= 0:
+    reason = _state_reason(e, legacy) or _cap_reason(e)
+    if reason is not None:
+        return reject(reason)
+    if e.alloc <= 0:
         return reject(Reason.NO_ALLOCATION)
-    if alloc > policy.risk_pct * policy.multiplier_hi * policy.multiplier_hi:
+    if e.alloc > policy.risk_pct * policy.multiplier_hi * policy.multiplier_hi:
         return reject(Reason.ALLOCATION_EXCEEDS_POLICY)
     sized = size_position(
         SizingInputs(
-            equity=equity,
-            allocation_risk_pct=alloc,
-            level_risk_mult=risk_multiplier(ladder.level, policy),
-            entry_price=entry,
-            stop_price=stop,
-            p_max=p_max,
-            adv20=adv20,
+            equity=e.equity,
+            allocation_risk_pct=e.alloc,
+            level_risk_mult=risk_multiplier(e.ladder.level, policy),
+            entry_price=e.entry,
+            stop_price=e.stop,
+            p_max=e.p_max,
+            adv20=e.adv20,
             adv_cap_pct=policy.adv_cap_pct,
-            free_cash=cash,
+            free_cash=e.cash,
         )
     )
     if sized.reason is not None:
         return reject(Reason(sized.reason))
-    risk_amount = (entry - stop) * sized.quantity
+    risk_amount = (e.entry - e.stop) * sized.quantity
+    same_mode = [p for p in e.positions if p.is_virtual == e.virtual]
     if not caps.global_open_risk_ok(
-        (p.open_risk for p in same_mode), risk_amount, total_equity, policy.global_open_risk_pct
+        (p.open_risk for p in same_mode), risk_amount, e.total_equity, policy.global_open_risk_pct
     ):
         return reject(Reason.GLOBAL_OPEN_RISK)
     if not legacy.price_band_ok:
@@ -321,7 +403,7 @@ def _entry_decision(ctx: SignalContext, legacy: LegacyChecks) -> RiskDecision:
     return RiskDecision(
         accepted=True,
         quantity=sized.quantity,
-        stop=stop,
+        stop=e.stop,
         risk_amount=risk_amount,
         warnings=warnings,
         policy_version_id=keep,

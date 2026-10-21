@@ -49,8 +49,9 @@ def test_mode_change_next_session(to_mode: str, at: datetime) -> None:
 def test_unknown_mode_refused(mode: str, at: datetime) -> None:
     if mode in ("shadow", "confirm", "auto"):
         return
+    evening = datetime.combine(TRADE_DAY, time(20), tzinfo=IST)
     with pytest.raises(ModeChangeError):
-        plan_mode_change(mode, datetime.combine(TRADE_DAY, time(20), tzinfo=IST), CALENDAR)
+        plan_mode_change(mode, evening, CALENDAR)
 
 
 @given(st.lists(st.tuples(MODE, st.integers(0, 12)), max_size=6), st.integers(0, 12))

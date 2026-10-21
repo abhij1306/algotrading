@@ -47,6 +47,10 @@ def load_versions(session: Session, user_id: uuid.UUID) -> list[PolicyVersion]:
     ]
 
 
+EVENT_REQUESTED = "risk.change_requested"
+EVENT_EFFECTIVE = "risk.change_effective"
+
+
 def _event(
     session: Session,
     row: HatRiskPolicyVersion,
@@ -99,8 +103,8 @@ def seed_initial_policy(
     )
     session.add(row)
     session.flush()
-    _event(session, row, "risk.change_requested", "engine", None, now)
-    _event(session, row, "risk.change_effective", "engine", None, now)
+    _event(session, row, EVENT_REQUESTED, "engine", None, now)
+    _event(session, row, EVENT_EFFECTIVE, "engine", None, now)
     return row
 
 
@@ -162,7 +166,7 @@ def request_policy_change(
     )
     session.add(row)
     session.flush()
-    _event(session, row, "risk.change_requested", actor, chat_id, requested_at)
+    _event(session, row, EVENT_REQUESTED, actor, chat_id, requested_at)
     return row
 
 
@@ -176,7 +180,7 @@ def apply_due_versions(session: Session, user_id: uuid.UUID, now: datetime) -> i
     announced = set(
         session.scalars(
             select(HatEvent.aggregate_id).where(
-                HatEvent.event_type == "risk.change_effective",
+                HatEvent.event_type == EVENT_EFFECTIVE,
                 HatEvent.aggregate_type == "risk_policy",
             )
         ).all()
@@ -194,5 +198,5 @@ def apply_due_versions(session: Session, user_id: uuid.UUID, now: datetime) -> i
                 < (as_utc(row.effective_from), row.version)
             ):
                 older.superseded_at = as_utc(row.effective_from)
-        _event(session, row, "risk.change_effective", "scheduler", None, as_utc(row.effective_from))
+        _event(session, row, EVENT_EFFECTIVE, "scheduler", None, as_utc(row.effective_from))
     return len(due)

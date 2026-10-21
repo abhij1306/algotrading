@@ -6,6 +6,7 @@ Implements circuit breakers, position limits, and margin checks.
 """
 
 import logging
+import math
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -345,7 +346,8 @@ class RiskManager:
         band_ok: bool | None = None
         try:
             entry, ltp = float(ctx.entry_price), float(ctx.ltp)  # type: ignore[arg-type]
-            if entry == entry and ltp == ltp and ltp > 0:  # not NaN, a price to compare with
+            finite = math.isfinite(entry) and math.isfinite(ltp)  # a huge Decimal becomes inf
+            if finite and ltp > 0:  # a real price to compare with
                 order = RiskOrder(
                     symbol=str(ctx.instrument_id or ""),
                     side="BUY",

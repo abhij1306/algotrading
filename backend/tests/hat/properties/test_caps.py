@@ -271,9 +271,7 @@ def test_kill_threshold_boundary(peak: Decimal) -> None:
     """Exactly 15% below the peak trips the account kill; a paisa less of a drop does not."""
     at_limit = peak * D("0.85")
     assert kill.drawdown_breached(at_limit, peak, SEED.account_drawdown_pct)
-    assert not kill.drawdown_breached(
-        at_limit + D("0.0001") * peak, peak, SEED.account_drawdown_pct
-    )
+    assert not kill.drawdown_breached(at_limit + D("0.01"), peak, SEED.account_drawdown_pct)
 
 
 @given(
@@ -374,9 +372,9 @@ def test_stale_blocks_entry(feed_stale: bool, quality_failed: bool) -> None:
 @st.composite
 def instants(draw: st.DrawFn) -> tuple[datetime, bool]:
     """An instant on the calendar and whether it lies inside a session (built, not looked up):
-    a weekday inside 09:15 to 15:30 IST is in; a weekend, a holiday, or a weekday outside those
-    hours is out."""
-    kind = draw(st.sampled_from(("inside", "before", "after", "weekend", "holiday")))
+    a weekday inside 09:15 to 15:30 IST is in; a weekend, or a weekday outside those hours is
+    out (holidays are applied to the calendar by the test)."""
+    kind = draw(st.sampled_from(("inside", "before", "after", "weekend")))
     offset = draw(st.integers(min_value=-6, max_value=6))
     day = TRADE_DAY + timedelta(days=offset)
     while day.weekday() >= 5:
@@ -391,7 +389,7 @@ def instants(draw: st.DrawFn) -> tuple[datetime, bool]:
     else:
         minutes = draw(st.integers(15 * 60 + 31, 24 * 60 - 1))
     at = datetime.combine(day, time(minutes // 60, minutes % 60), tzinfo=IST)
-    return at, kind == "inside" or kind == "holiday_open"
+    return at, kind == "inside"
 
 
 @given(instants(), st.sets(st.integers(min_value=-6, max_value=6), max_size=3))
@@ -809,12 +807,13 @@ def test_policy_change_inside_session_or_without_evidence_is_refused(kind: str) 
                         requested_at=evening,
                         chat_id=1,
                     )
+            short_calendar = calendar_around(TRADE_DAY, span=0)
             with pytest.raises(PolicyChangeError):
                 request_policy_change(
                     session,
                     user_id=USER,
                     proposed=proposed,
-                    calendar=calendar_around(TRADE_DAY, span=0),
+                    calendar=short_calendar,
                     requested_at=evening,
                     gate_evidence=PASSING,
                     chat_id=1,

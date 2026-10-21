@@ -94,12 +94,14 @@ def test_risk__policy_service_without_cooling_off_is_rejected(
     user = uuid.uuid4()
     with session_on(conn) as session:
         seed_initial_policy(session, user, EVENING - timedelta(days=1))
+        proposed = policy_with(risk_pct="0.0030")
+        calendar = calendar_around(TRADE_DAY, span=40)
         with pytest.raises((CoolingOffError, IntegrityError)):
             request_policy_change(
                 session,
                 user_id=user,
-                proposed=policy_with(risk_pct="0.0030"),
-                calendar=calendar_around(TRADE_DAY, span=40),
+                proposed=proposed,
+                calendar=calendar,
                 requested_at=EVENING,
                 gate_evidence=EVIDENCE,
                 chat_id=1,

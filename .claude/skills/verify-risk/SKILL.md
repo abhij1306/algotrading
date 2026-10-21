@@ -94,7 +94,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `75eeea92a6ae61ea934131ea25f55dee552553b9`
-Covered digest: `8b9291629aa5a29093ee7926e08ec2dbee157848e9d1bd84d626ec32b163f357`
+Covered digest: `65410e601dc64d451e58f701f9007eaf19023e6387b0deb4d1e65b090d7acb02`
 
 ## Scope changes
 
@@ -197,10 +197,10 @@ Break: `verification/tla/broken/KillSwitch__health_manual_rearm.cfg` selects the
 ```
 Error: Temporal properties were violated.
 State 1: <Initial>
-State 2: <HealthFlip>
-State 3: <SnapshotBot>
-State 4: <HealthEval>
-State 5: <Pause>
+State 2: <PlaceEntry>
+State 3: <PlaceEntry>
+State 4: <SnapshotBot>
+State 5: <SnapshotBot>
 State 6: <HealthFlip>
 State 7: <HealthEval>
 State 8: <HealthFlip>
@@ -213,13 +213,13 @@ Break: `verification/tla/broken/KillSwitch__exit_blocked_when_killed.cfg` select
 ```
 Error: Temporal properties were violated.
 State 1: <Initial>
-State 2: <HealthFlip>
-State 3: <PlaceEntry>
-State 4: <HealthFlip>
-State 5: <ExitDue>
-State 6: <HealthEval>
-State 7: <SnapshotBot>
-State 8: <SnapshotAccount>
+State 2: <PlaceEntry>
+State 3: <ExitDue>
+State 4: <CreateApproval>
+State 5: <SnapshotAccount>
+State 6: <SnapshotBot>
+State 7: <HealthFlip>
+State 8: <SnapshotBot>
 ```
 
 ### PBT sizing.*
@@ -230,7 +230,7 @@ Break: in `backend/app/hat/risk/sizing.py` (sizing.formula_exact): liquidity ter
 
 ```
 E assert False
-E + where False = <function test_formula_exact.<locals>.fits at 0x7fecb6ef6da0>(1)
+E + where False = <function test_formula_exact.<locals>.fits at 0x7f92253c33d0>(1)
 E Failing test case: test_formula_exact(
 E inp=SizingInputs(equity=Decimal('1000.00'),
 ```
@@ -248,9 +248,9 @@ Break: in `backend/app/hat/risk/sizing.py` (sizing.risk_bounded): the risk term 
 
 ```
 E AssertionError: assert (1 * (Decimal('2.00') - Decimal('0.01'))) <= ((Decimal('1000.00') * Decimal('0.0010')) * Decimal('1.0'))
-E + where Decimal('2.00') = SignalContext(signal_id=UUID('701ec02d-89e8-4521-b0b5-b03818fe3c96'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kolk
-E + and Decimal('0.01') = SignalContext(signal_id=UUID('701ec02d-89e8-4521-b0b5-b03818fe3c96'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kolkat
-E + and Decimal('1000.00') = SignalContext(signal_id=UUID('701ec02d-89e8-4521-b0b5-b03818fe3c96'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kol
+E + where Decimal('2.00') = SignalContext(signal_id=UUID('3497e468-f33e-4b39-80cc-7318ab5f8dcb'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kolk
+E + and Decimal('0.01') = SignalContext(signal_id=UUID('3497e468-f33e-4b39-80cc-7318ab5f8dcb'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kolkat
+E + and Decimal('1000.00') = SignalContext(signal_id=UUID('3497e468-f33e-4b39-80cc-7318ab5f8dcb'), bot_id=UUID('00000000-0000-7000-8000-0000000000b...neInfo(key='Asia/Kol
 ```
 
 Break: in `backend/app/hat/risk/sizing.py` (sizing.monotone): the risk term wraps at 1000 shares.
@@ -275,7 +275,7 @@ Break: in `backend/app/hat/risk/sizing.py` (sizing.zero_skips_with_reason): a ze
 
 ```
 E AssertionError: assert not True
-E + where True = RiskDecision(accepted=True, reason=None, quantity=0, stop=Decimal('0.01'), risk_amount=Decimal('0.00'), warnings=(), p...e-4e01e70b18dc'), binding='risk'
+E + where True = RiskDecision(accepted=True, reason=None, quantity=0, stop=Decimal('0.01'), risk_amount=Decimal('0.00'), warnings=(), p...f-49338a2559e3'), binding='risk'
 E Failing test case: test_zero_skips_with_reason(
 E parts={'strategy_key': 'stage2-contraction-breakout',
 ```
@@ -293,7 +293,7 @@ Break: in `backend/app/hat/risk/decision.py` (sizing.adv_cap_from_policy): the l
 
 ```
 E AssertionError: assert 1 == 2
-E + where 1 = RiskDecision(accepted=True, reason=None, quantity=1, stop=Decimal('95'), risk_amount=Decimal('5'), warnings=('size_bou...d52bc308b'), binding='liquidity', r
+E + where 1 = RiskDecision(accepted=True, reason=None, quantity=1, stop=Decimal('95'), risk_amount=Decimal('5'), warnings=('size_bou...85148e48e'), binding='liquidity', r
 E Failing test case: test_adv_cap_from_policy(
 E adv_cap=Decimal('0.02'),
 ```
@@ -319,9 +319,9 @@ FAILED tests/hat/properties/test_sizing.py::test_uses_effective_policy - Excepti
 Break: in `backend/app/hat/risk/policy.py` (sizing.pending_increase_never_applies): a version still in its cooling-off counts as in force.
 
 ```
-E AssertionError: assert (False, 'size...01fa176ffd0')) == (False, 'size...ea0cbb166d7'))
+E AssertionError: assert (False, 'size...9154fad3bbf')) == (False, 'size...c49b58f0a13'))
 E
-E At index 3 diff: UUID('ae17c3be-f14a-4f9a-a102-401fa176ffd0') != UUID('2efdd23f-b609-48b6-87a3-1ea0cbb166d7')
+E At index 3 diff: UUID('672c0517-7c97-41f0-b932-09154fad3bbf') != UUID('cadb3203-fb4f-4749-853d-ac49b58f0a13')
 E
 ```
 
@@ -342,7 +342,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.global_open_risk): the candidate'
 
 ```
 E AssertionError: assert None == <Reason.GLOBAL_OPEN_RISK: 'global_open_risk'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...e-64bc72053921'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...4-ab15316d56e0'), binding='risk'
 E + and <Reason.GLOBAL_OPEN_RISK: 'global_open_risk'> = Reason.GLOBAL_OPEN_RISK
 E Failing test case: test_global_open_risk(
 ```
@@ -351,7 +351,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.max_positions): limit off by one.
 
 ```
 E AssertionError: assert None == <Reason.MAX_POSITIONS: 'max_positions'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=250, stop=Decimal('95'), risk_amount=Decimal('1250'), warnings=(), p...e-85bb97c6906c'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=250, stop=Decimal('95'), risk_amount=Decimal('1250'), warnings=(), p...4-53a366a4c8d1'), binding='risk'
 E + and <Reason.MAX_POSITIONS: 'max_positions'> = Reason.MAX_POSITIONS
 E Failing test case: test_max_positions(
 ```
@@ -360,7 +360,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.industry): limit off by one.
 
 ```
 E AssertionError: assert None == <Reason.INDUSTRY_CAP: 'industry_cap'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...b-ec74d6f68585'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...5-6f3383e5d63e'), binding='risk'
 E + and <Reason.INDUSTRY_CAP: 'industry_cap'> = Reason.INDUSTRY_CAP
 E Failing test case: test_industry(
 ```
@@ -378,7 +378,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.daily_stopouts): limit off by one
 
 ```
 E AssertionError: assert None == <Reason.STOPOUT_CAP: 'stopout_cap'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...4-676b8349695e'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...0-d2bc10b12d49'), binding='risk'
 E + and <Reason.STOPOUT_CAP: 'stopout_cap'> = Reason.STOPOUT_CAP
 E Failing test case: test_daily_stopouts(
 ```
@@ -396,7 +396,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.regime_gate_blocks_entries): gate
 
 ```
 E AssertionError: assert None == <Reason.REGIME_GATE: 'regime_gate'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...9-be3b38d37335'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...b-786b84abe68b'), binding='risk'
 E + and <Reason.REGIME_GATE: 'regime_gate'> = Reason.REGIME_GATE
 E Failing test case: test_regime_gate_blocks_entries(
 ```
@@ -405,8 +405,8 @@ Break: in `backend/app/hat/risk/kill.py` (caps.kill_thresholds): drawdown compar
 
 ```
 E AssertionError: assert False
-E + where False = <function drawdown_breached at 0x7fb245772cf0>(Decimal('0.8500'), Decimal('1.00'), Decimal('0.15'))
-E + where <function drawdown_breached at 0x7fb245772cf0> = kill.drawdown_breached
+E + where False = <function drawdown_breached at 0x7f7b8638e6c0>(Decimal('0.8500'), Decimal('1.00'), Decimal('0.15'))
+E + where <function drawdown_breached at 0x7f7b8638e6c0> = kill.drawdown_breached
 E + and Decimal('0.15') = RiskPolicy(risk_pct=Decimal('0.0025'), p_max={'stage2-contraction-breakout': Decimal('0.20'), 'momentum-breakout-ep': ...f_dd=Decimal('0.08'), h
 ```
 
@@ -414,8 +414,8 @@ Break: in `backend/app/hat/risk/kill.py` (caps.kill_thresholds): snapshots befor
 
 ```
 E AssertionError: assert True is False
-E + where True = <function tripped_since at 0x7f9e63e5f320>([EquityPoint(at=datetime.datetime(2026, 10, 21, 10, 30, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')), equity=
-E + where <function tripped_since at 0x7f9e63e5f320> = kill.tripped_since
+E + where True = <function tripped_since at 0x7f2128f86cf0>([EquityPoint(at=datetime.datetime(2026, 10, 21, 10, 30, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')), equity=
+E + where <function tripped_since at 0x7f2128f86cf0> = kill.tripped_since
 E Failing test case: test_kill_thresholds(
 ```
 
@@ -424,8 +424,8 @@ Break: in `backend/app/hat/risk/kill.py` (caps.kill_isolation): any bot's kill s
 ```
 E AssertionError: assert not True
 E + where True = KillState(account_tripped=False, bot_tripped=True, health_tripped=False, paused=False).manage_only
-E + where KillState(account_tripped=False, bot_tripped=True, health_tripped=False, paused=False) = <function kill_state_of at 0x7fd76110e4b0>([KillRow(scope='bot', bot_id
-E + where <function kill_state_of at 0x7fd76110e4b0> = kill.kill_state_of
+E + where KillState(account_tripped=False, bot_tripped=True, health_tripped=False, paused=False) = <function kill_state_of at 0x7f77d0a69e80>([KillRow(scope='bot', bot_id
+E + where <function kill_state_of at 0x7f77d0a69e80> = kill.kill_state_of
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (caps.no_add_to_loser): the loser check removed.
@@ -443,11 +443,20 @@ Break: in `backend/app/hat/risk/decision.py` (caps.no_pyramiding): the open-posi
 FAILED tests/hat/properties/test_caps.py::test_no_pyramiding - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
 ```
 
+Break: in `backend/app/hat/risk/caps.py and `app/hat/risk/sizing.py`` (caps.entry_requires_stop): a stop of zero or less allowed (the invariant and the sizing guard both relaxed).
+
+```
+E AssertionError: assert 0 < Decimal('0.00')
+E + where Decimal('0.00') = RiskDecision(accepted=True, reason=None, quantity=1250, stop=Decimal('0.00'), risk_amount=Decimal('2500.00'), warnings...d-04ca5ea1e704'), bin
+E Failing test case: test_entry_requires_stop(
+E pair=(Decimal('2.00'), Decimal('0.01')),
+```
+
 Break: in `backend/app/hat/risk/decision.py` (caps.stale_blocks_entry): the stale-feed check removed.
 
 ```
 E AssertionError: assert None == <Reason.STALE_FEED: 'stale_feed'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...3-78a598f11222'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...e-6028cf470144'), binding='risk'
 E + and <Reason.STALE_FEED: 'stale_feed'> = Reason.STALE_FEED
 E Failing test case: test_stale_blocks_entry(
 ```
@@ -456,7 +465,7 @@ Break: in `backend/app/hat/risk/decision.py` (caps.market_hours_only): the calen
 
 ```
 E AssertionError: assert None == <Reason.MARKET_CLOSED: 'market_closed'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...f-ad443673cad6'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...b-423f7f943da9'), binding='risk'
 E + and <Reason.MARKET_CLOSED: 'market_closed'> = Reason.MARKET_CLOSED
 E Failing test case: test_market_hours_only(
 ```
@@ -474,7 +483,7 @@ Break: in `backend/app/hat/risk/caps.py` (caps.max_chase_always): the locked-upp
 
 ```
 E AssertionError: assert None == <Reason.MAX_CHASE: 'max_chase'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=277, stop=Decimal('81.00'), risk_amount=Decimal('2493.00'), warnings...e-9a0d23dfe34e'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=277, stop=Decimal('81.00'), risk_amount=Decimal('2493.00'), warnings...7-7a448c0411df'), binding='risk'
 E + and <Reason.MAX_CHASE: 'max_chase'> = Reason.MAX_CHASE
 E Failing test case: test_max_chase_always(
 ```
@@ -483,7 +492,7 @@ Break: in `backend/app/hat/risk/decision.py` (caps.vcp_halt_blocks_hat): the Sma
 
 ```
 E AssertionError: assert None == <Reason.SMARTTRADER_HALT: 'smarttrader_halt'>
-E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...5-2d2c267ebceb'), binding='risk'
+E + where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...3-85fa07c708bf'), binding='risk'
 E Failing test case: test_vcp_halt_blocks_hat(
 E halted=True,
 ```
@@ -530,15 +539,6 @@ E Failing test case: test_increase_gate(
 E raw=[(Decimal('0.00'), False), (Decimal('0.00'), False)],
 ```
 
-Break: in `backend/app/hat/risk/policy_service.py` (caps.policy_change_emits_event): the request writes no event.
-
-```
-E assert 1 == 2
-E + where 1 = len([<app.hat.models.events.HatEvent object at 0x7fb0d973e690>])
-E + and 2 = len([<app.hat.models.strategy.HatRiskPolicyVersion object at 0x7fb0d92faf30>, <app.hat.models.strategy.HatRiskPolicyVersion object at 0x7fb0d9993750>])
-E Failing test case: test_policy_change_emits_event(
-```
-
 Break: in `backend/app/hat/risk/policy_service.py` (caps.policy_change_emits_event): a change allowed inside market hours.
 
 ```
@@ -554,13 +554,13 @@ E steps=[(
 E 'raise',
 ```
 
-Break: in `backend/app/hat/risk/caps.py and `app/hat/risk/sizing.py`` (caps.entry_requires_stop): a stop of zero or less allowed (the invariant and the sizing guard both relaxed).
+Break: in `backend/app/hat/risk/policy_service.py` (caps.policy_change_emits_event): the request writes no event.
 
 ```
-E AssertionError: assert 0 < Decimal('0.00')
-E + where Decimal('0.00') = RiskDecision(accepted=True, reason=None, quantity=1250, stop=Decimal('0.00'), risk_amount=Decimal('2500.00'), warnings...f-db3355eb28cb'), bin
-E Failing test case: test_entry_requires_stop(
-E pair=(Decimal('2.00'), Decimal('0.01')),
+E assert 1 == 2
+E + where 1 = len([<app.hat.models.events.HatEvent object at 0x7f9993b46750>])
+E + and 2 = len([<app.hat.models.strategy.HatRiskPolicyVersion object at 0x7f99938ff250>, <app.hat.models.strategy.HatRiskPolicyVersion object at 0x7f99938fefd0>])
+E Failing test case: test_policy_change_emits_event(
 ```
 
 ### PBT exposure.*
@@ -615,10 +615,7 @@ E ClosedTrade(r_multiple=Decimal('1'), is_virtual=False),
 Break: in `backend/app/hat/risk/exposure.py` (exposure.ladder_transitions): a breakeven trade counts as a win.
 
 ```
-E AssertionError: assert (1 == 0)
-E + where 1 = LadderState(level='L1', consecutive_wins=1, consecutive_losses=0).consecutive_wins
-E Failing test case: test_breakeven_counts_as_a_loss(
-E flat=[ClosedTrade(r_multiple=Decimal('0'),
+FAILED tests/hat/properties/test_exposure.py::test_breakeven_counts_as_a_loss - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
 ```
 
 ### PBT kill.*
@@ -679,10 +676,10 @@ E scope='account', # or any other generated value
 Break: in `backend/app/hat/risk/controls.py` (kill.drawdown_service): the bot threshold read from the account setting.
 
 ```
-E AssertionError: assert set() == {'0b07d1b8-4c...9528657f5a16'}
+E AssertionError: assert set() == {'0153f27d-d1...25050218e6c3'}
 E
 E Extra items in the right set:
-E '0b07d1b8-4c9c-40a0-8abe-9528657f5a16'
+E '0153f27d-d1d5-4c41-be06-25050218e6c3'
 ```
 
 ### PBT calendar.*
@@ -759,7 +756,7 @@ Break: in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spec): seed
 E AssertionError: assert Decimal('0.0030') == Decimal('0.0025')
 E + where Decimal('0.0030') = Decimal('0.0030')
 E + and Decimal('0.0025') = _number('0.0025 (0.25%)')
-E + where '0.0025 (0.25%)' = <function test_risk__initial_seed_equals_spec.<locals>.row at 0x7f538b9f3cc0>('risk_pct')
+E + where '0.0025 (0.25%)' = <function test_risk__initial_seed_equals_spec.<locals>.row at 0x7f32eb941220>('risk_pct')
 ```
 
 Break: in `backend/app/hat/risk/policy_service.py` (initial_risk_policy_seed): seed row filed as an increase.
@@ -794,7 +791,7 @@ Break: in `backend/app/hat/risk/decision.py` (risk.no_gate_override_path): decid
 ```
 E AssertionError: ('decision.py', 'decide')
 E assert not True
-E + where True = any(<generator object test_risk__no_gate_override_path.<locals>.<genexpr> at 0x7fe6738c3d80>)
+E + where True = any(<generator object test_risk__no_gate_override_path.<locals>.<genexpr> at 0x7fbf11a0d9a0>)
 FAILED tests/hat/conformance/test_conf_risk.py::test_risk__no_gate_override_path - AssertionError: ('decision.py', 'decide')
 ```
 
@@ -838,7 +835,7 @@ Break: in `backend/app/hat/risk/controls.py` (risk.snapshot_job): a rerun insert
 
 ```
 E psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint "hat_daily_bot_snapshot_pkey"
-E DETAIL: Key (bot_id, trade_date)=(01a15c24-d8eb-7091-a8a5-564152c23f75, 2026-10-19) already exists.
+E DETAIL: Key (bot_id, trade_date)=(01a15ccd-577a-713b-8b32-15dbc2966983, 2026-10-19) already exists.
 E sqlalchemy.exc.IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flush is occurring prematurely)
 E (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "hat_daily_bot_snapshot_pkey"
 ```
@@ -847,8 +844,8 @@ Break: in `backend/app/hat/risk/controls.py` (risk.kill_rows): an account kill w
 
 ```
 E psycopg2.errors.CheckViolation: new row for relation "hat_kill_switch" violates check constraint "ck_hat_kill_switch_scope_bot"
-E DETAIL: Failing row contains (01a15c24-e70f-756a-a853-e29880393b38, account, a2e30f8c-0667-4541-9761-f6424427ee8a, tripped, 2026-10-20 09:00:00+00, manual, null).
+E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2f9e1eba-3061-4ad8-99af-0532002ae618, tripped, 2026-10-20 09:00:00+00, manual, null).
 E sqlalchemy.exc.IntegrityError: (psycopg2.errors.CheckViolation) new row for relation "hat_kill_switch" violates check constraint "ck_hat_kill_switch_scope_bot"
-E DETAIL: Failing row contains (01a15c24-e70f-756a-a853-e29880393b38, account, a2e30f8c-0667-4541-9761-f6424427ee8a, tripped, 2026-10-20 09:00:00+00, manual, null).
+E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2f9e1eba-3061-4ad8-99af-0532002ae618, tripped, 2026-10-20 09:00:00+00, manual, null).
 ```
 

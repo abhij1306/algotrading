@@ -82,8 +82,9 @@ def test_formula_exact(inp: SizingInputs) -> None:
 def test_floats_rejected(inp: SizingInputs, field: str) -> None:
     """No float is used: any money or fraction passed as a float is refused, never coerced."""
     value = float(getattr(inp, field)) if getattr(inp, field).is_finite() else 1.0
+    bad = SizingInputs(**{**inp.__dict__, field: value})
     with pytest.raises(MissingInputError):
-        size_position(SizingInputs(**{**inp.__dict__, field: value}))
+        size_position(bad)
 
 
 @st.composite
@@ -344,7 +345,9 @@ def test_pending_increase_never_applies(parts: dict, bigger_cap: Decimal) -> Non
 @given(sizing_inputs())
 def test_domain_errors_are_not_silent(inp: SizingInputs) -> None:
     """Out-of-domain numbers raise instead of sizing: a negative equity, a fraction above 1."""
+    negative = SizingInputs(**{**inp.__dict__, "equity": -inp.equity})
+    over_one = SizingInputs(**{**inp.__dict__, "p_max": D("1.5")})
     with pytest.raises(SizingInputError):
-        size_position(SizingInputs(**{**inp.__dict__, "equity": -inp.equity}))
+        size_position(negative)
     with pytest.raises(SizingInputError):
-        size_position(SizingInputs(**{**inp.__dict__, "p_max": D("1.5")}))
+        size_position(over_one)
