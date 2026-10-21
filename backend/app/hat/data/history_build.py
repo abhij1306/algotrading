@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import logging
-import random
 import sys
 import time
 from collections import defaultdict
@@ -317,8 +317,12 @@ def validate_build(
         ).fetchall()
     finally:
         con.close()
-    rng = random.Random(seed)  # noqa: S311 - a reproducible sample, not a secret
-    chosen = rng.sample(pool, min(sample_size, len(pool)))
+
+    # a reproducible sample: the rows with the smallest hash of (seed, symbol, day)
+    def rank(row: tuple[str, date, Decimal]) -> str:
+        return hashlib.sha256(f"{seed}:{row[0]}:{row[1]}".encode()).hexdigest()
+
+    chosen = sorted(pool, key=rank)[:sample_size]
     for symbol, day, ours in sorted(chosen, key=lambda r: (r[1], r[0])):
         report.samples.append(SampleCheck(symbol, day, ours, close_source(symbol, day)))
     return report
@@ -347,6 +351,32 @@ class BuildReport:
 ActionLoader = Callable[[], Normalised]
 
 
+@dataclass(frozen=True)
+class Pacing:
+    """Request spacing and the clock it is measured on (injected by tests)."""
+
+    interval: float = 1.0
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
+
+
+@dataclass(frozen=True)
+class ActionHooks:
+    """Where corporate actions come from and where they are stored."""
+
+    loader: Callable[[], tuple[Sequence[ActionRecord], int]]
+    sink: Callable[[Sequence[ActionRecord]], LoadReport]
+
+
+@dataclass(frozen=True)
+class Validation:
+    """The MCP close lookup and the size and seed of the sample compared with it."""
+
+    close_source: CloseSource
+    sample_size: int = SAMPLE_SIZE
+    seed: int = 0
+
+
 def run_history_build(
     *,
     store: DataStore,
@@ -356,16 +386,11 @@ def run_history_build(
     end: date,
     holidays: Collection[date] = (),
     resume: bool = True,
-    interval: float = 1.0,
-    clock: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-    action_loader: Callable[[], tuple[Sequence[ActionRecord], int]] | None = None,
-    action_sink: Callable[[Sequence[ActionRecord]], LoadReport] | None = None,
+    pacing: Pacing = Pacing(),  # noqa: B008 - frozen, shared by design
+    actions: ActionHooks | None = None,
     index_source: IndexSource | None = None,
-    close_source: CloseSource | None = None,
     index_starts: dict[str, date] | None = None,
-    sample_size: int = SAMPLE_SIZE,
-    seed: int = 0,
+    validation: Validation | None = None,
 ) -> BuildReport:
     """Download, parse, write, load, validate. Safe to repeat: raw zips are never fetched twice,
     a day's file is rewritten from the same zip with the same run id, and actions and index rows
@@ -375,51 +400,62 @@ def run_history_build(
     if state.run_id is None:
         state.run_id = str(uuid7())
         state.save()
-    downloader = Downloader(store, fetch, state, interval=interval, clock=clock, sleep=sleep)
-    download = downloader.run(days, resume=resume)
-    report = BuildReport(
-        download,
-        DayReconciliation(),
-        PartitionReport(),
+    downloader = Downloader(
+        store, fetch, state, interval=pacing.interval, clock=pacing.clock, sleep=pacing.sleep
     )
+    download = downloader.run(days, resume=resume)
+    report = BuildReport(download, DayReconciliation(), PartitionReport())
     for day in days:
-        name = archive_name(day)
-        if not store.raw_exists(name):
-            continue
-        run_path = store.partition_dir(DATASET_BARS, day) / f"part-{state.run_id}.parquet"
-        if resume and run_path.exists():
-            continue
-        try:
-            parsed = parse_bhavcopy(day, store.read_raw(name))
-        except Exception as exc:
-            report.problems[day] = getattr(exc, "code", "bhavcopy_unreadable")
-            continue
-        _record_left_out(report, parsed)
-        unknown = [r for r in parsed.rows if catalog.lookup(r.isin, r.series) is None]
-        if unknown:
-            catalog.register(unknown)
-        rows, unresolved = to_bar_rows(parsed, catalog.lookup, state.run_id)
-        report.unresolved.update(unresolved)
-        if rows:
-            store.write_bars(day, rows)
-            report.rows_written += len(rows)
-            report.files_written += 1
-        else:
-            report.problems[day] = "no_rows"
+        _write_day(store, catalog, state.run_id, day, resume, report)
     have = set(store.days(DATASET_BARS))
     report.days = reconcile_days(days, have, state.candidates, holidays)
     report.partitions = partition_report(store, DATASET_BARS, [d for d in days if d in have])
-    if action_loader is not None and action_sink is not None:
-        records, failed = action_loader()
-        report.actions = action_sink(records)
+    if actions is not None:
+        records, failed = actions.loader()
+        report.actions = actions.sink(records)
         report.action_symbols_failed = failed
     if index_source is not None:
         report.index = load_index_history(store, index_source, start, end)
         starts = index_starts or {n: max(start, DEFAULT_INDEX_START) for n in INDEX_NAMES}
         report.index_missing = index_coverage(store, have, starts)
-    if close_source is not None:
-        report.validation = validate_build(store, close_source, sample_size=sample_size, seed=seed)
+    if validation is not None:
+        report.validation = validate_build(
+            store, validation.close_source, sample_size=validation.sample_size, seed=validation.seed
+        )
     return report
+
+
+def _write_day(
+    store: DataStore,
+    catalog: InstrumentCatalog,
+    run_id: str,
+    day: date,
+    resume: bool,
+    report: BuildReport,
+) -> None:
+    """Parse one stored zip and write its bars as this run's partition file."""
+    name = archive_name(day)
+    if not store.raw_exists(name):
+        return
+    if resume and (store.partition_dir(DATASET_BARS, day) / f"part-{run_id}.parquet").exists():
+        return
+    try:
+        parsed = parse_bhavcopy(day, store.read_raw(name))
+    except Exception as exc:
+        report.problems[day] = getattr(exc, "code", "bhavcopy_unreadable")
+        return
+    _record_left_out(report, parsed)
+    unknown = [r for r in parsed.rows if catalog.lookup(r.isin, r.series) is None]
+    if unknown:
+        catalog.register(unknown)
+    rows, unresolved = to_bar_rows(parsed, catalog.lookup, run_id)
+    report.unresolved.update(unresolved)
+    if not rows:
+        report.problems[day] = "no_rows"
+        return
+    store.write_bars(day, rows)
+    report.rows_written += len(rows)
+    report.files_written += 1
 
 
 def _record_left_out(report: BuildReport, parsed: ParsedDay) -> None:
@@ -467,7 +503,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
 
     from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
     from . import calendar as hat_calendar
-    from . import corporate_actions as ca
     from .bhavcopy import http_fetcher
     from .mcp_client import client_from_env
 
@@ -486,19 +521,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
         ]
     client = client_from_env(process_env())
 
-    def load_actions_from_mcp() -> tuple[list[ActionRecord], int]:
-        assert client is not None
-        records: list[ActionRecord] = []
-        failed = 0
-        for instrument_id, symbol in instruments:
-            try:
-                page = client.corporate_actions(symbol, args.start, end)
-            except McpError:
-                failed += 1
-                continue
-            records.extend(ca.from_mcp(instrument_id, page.actions).records)
-        return records, failed
-
     def sink(records: Sequence[ActionRecord]) -> LoadReport:
         with SessionLocal() as session:
             result = load_actions(session, records)
@@ -513,16 +535,45 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
         end=end,
         holidays=holidays,
         resume=args.resume,
-        interval=args.interval,
-        action_loader=None if args.skip_actions or client is None else load_actions_from_mcp,
-        action_sink=sink,
-        index_source=None if args.skip_index or client is None else mcp_index_source(client),
-        close_source=None if args.skip_validation or client is None else mcp_close_source(client),
-        seed=args.seed,
+        pacing=Pacing(interval=args.interval),
+        actions=_mcp_actions(client, instruments, args.start, end, sink)
+        if client is not None and not args.skip_actions
+        else None,
+        index_source=mcp_index_source(client)
+        if client is not None and not args.skip_index
+        else None,
+        validation=Validation(mcp_close_source(client), seed=args.seed)
+        if client is not None and not args.skip_validation
+        else None,
     )
     sys.stdout.write(_summary(report))
     failed = report.validation is not None and report.validation.failed
     return 1 if failed or report.unresolved or report.problems or report.days.gaps else 0
+
+
+def _mcp_actions(
+    client: McpClient,
+    instruments: Sequence[tuple[object, str]],
+    start: date,
+    end: date,
+    sink: Callable[[Sequence[ActionRecord]], LoadReport],
+) -> ActionHooks:
+    """Fetch each instrument's actions from the MCP (a failed lookup is counted, not fatal)."""
+    from . import corporate_actions as ca
+
+    def loader() -> tuple[list[ActionRecord], int]:
+        records: list[ActionRecord] = []
+        failed = 0
+        for instrument_id, symbol in instruments:
+            try:
+                page = client.corporate_actions(symbol, start, end)
+            except McpError:
+                failed += 1
+                continue
+            records.extend(ca.from_mcp(instrument_id, page.actions).records)  # type: ignore[arg-type]
+        return records, failed
+
+    return ActionHooks(loader, sink)
 
 
 def _summary(report: BuildReport) -> str:

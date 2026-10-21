@@ -212,7 +212,8 @@ def test_parsers_agree_wrong_date_reported(day: date, other: date, rows: st.Data
     assume(day != other)
     data = rows.draw(bhav_rows(day, 1, 4))
     parsed = parse_bhavcopy(other, render_old(day, data))
-    assert parsed.rows == [] and parsed.wrong_date == len(data)
+    assert parsed.rows == []
+    assert parsed.wrong_date == len(data)
 
 
 @given(day=st.one_of(OLD_DAYS, NEW_DAYS), rows=st.data())

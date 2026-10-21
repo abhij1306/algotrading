@@ -78,8 +78,9 @@ def test_atomic_write(
             raise InterruptError
 
         broken = DataStore(root, writer=torn_writer, replace=failing_replace)
+        rows = [bar(iid, run, str(second))]
         with pytest.raises(InterruptError):
-            broken.write_bars(DAYS[0], [bar(iid, run, str(second))])
+            broken.write_bars(DAYS[0], rows)
         assert _snapshot(root) == before  # no partial or temporary file is left either
         frame = good.read_bars(DAYS[0])
         assert frame.height == (1 if had_previous else 0)
@@ -118,8 +119,9 @@ def test_raw_immutable_adjusted_values_not_storable() -> None:
     as are names that would leave `raw/`."""
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
+        adjusted = [bar(uuid7(), uuid7(), source="adjusted")]
         with pytest.raises(StoreError):
-            store.write_bars(DAYS[0], [bar(uuid7(), uuid7(), source="adjusted")])
+            store.write_bars(DAYS[0], adjusted)
         for name in ("../x.zip", "a/b.zip", "", ".hidden"):
             with pytest.raises(StoreError):
                 store.store_raw(name, b"x")
@@ -172,8 +174,9 @@ def test_bars_daily_unique(plan: list[dict], order: random.Random) -> None:
         assert {(i, d): (c, r) for i, d, c, r in rows} == expected
         if plan[0]:
             (day, iid), price = next(iter(plan[0].items()))
+            twice = [bar(iid, run_ids[0], str(price))] * 2
             with pytest.raises(StoreError):
-                store.write_bars(day, [bar(iid, run_ids[0], str(price))] * 2)
+                store.write_bars(day, twice)
 
 
 @given(

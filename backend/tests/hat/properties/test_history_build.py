@@ -20,6 +20,7 @@ from hypothesis import strategies as st
 from app.hat.data.bhavcopy import BhavRow, FetchResult, archive_url, weekdays
 from app.hat.data.history_build import (
     DictCatalog,
+    Pacing,
     history_build_job,
     mcp_close_source,
     mcp_index_source,
@@ -85,10 +86,10 @@ def _files(root: Path) -> dict[str, str]:
     }
 
 
-@given(world=eras(), holiday_pick=st.sets(st.sampled_from(WINDOW)), seed=st.integers(0, 2))
+@given(world=eras(), holiday_pick=st.sets(st.sampled_from(WINDOW)))
 @settings(max_examples=40)
 def test_build_offline_end_to_end(
-    world: dict[date, list[BhavRow] | None], holiday_pick: set[date], seed: int
+    world: dict[date, list[BhavRow] | None], holiday_pick: set[date]
 ) -> None:
     """The offline build writes exactly the rows each file holds (same normalised rows on both
     sides of 8 Jul 2024), one per (instrument, date); a day with no file stays empty and is
@@ -105,12 +106,13 @@ def test_build_offline_end_to_end(
             "start": WINDOW[0],
             "end": WINDOW[-1],
             "holidays": holiday_pick,
-            "interval": 0,
-            "seed": seed,
+            "pacing": Pacing(interval=0),
         }
         report = run_history_build(fetch=_fetcher(world, asked), resume=True, **args)  # type: ignore[arg-type]
-        assert sorted(asked) == WINDOW and len(asked) == len(set(asked))
-        assert report.unresolved == set() and report.problems == {}
+        assert sorted(asked) == WINDOW
+        assert len(asked) == len(set(asked))
+        assert report.unresolved == set()
+        assert report.problems == {}
         assert set(report.days.holidays) == missing & holiday_pick
         assert set(report.days.gaps) == missing - holiday_pick
         assert report.days.unaccounted == []
@@ -149,7 +151,8 @@ def test_build_offline_end_to_end(
 
         again: list[date] = []
         run_history_build(fetch=_fetcher(world, again), resume=True, **args)  # type: ignore[arg-type]
-        assert again == [] and _files(store.root) == snapshot
+        assert again == []
+        assert _files(store.root) == snapshot
 
         full: list[date] = []
         run_history_build(fetch=_fetcher(world, full), resume=False, **args)  # type: ignore[arg-type]
@@ -174,9 +177,10 @@ def test_build_offline_unresolved_security_is_reported() -> None:
             catalog=DictCatalog(),
             start=day,
             end=day,
-            interval=0,
+            pacing=Pacing(interval=0),
         )
-        assert report.unresolved == {("INE000000001", "EQ")} and report.rows_written == 0
+        assert report.unresolved == {("INE000000001", "EQ")}
+        assert report.rows_written == 0
         assert store.read_bars(day).height == 0
 
 
@@ -255,9 +259,11 @@ def test_mcp_corporate_actions_page(has_warning: bool, error: bool) -> None:
     if error:
         payload = {"error": "lookup failed"}
     client = McpClient(ScriptedTransport([payload]), sleep=lambda _s: None)
+    start, end = date(2018, 1, 1), date(2018, 12, 31)
     if error:
         with pytest.raises(McpError):
-            client.corporate_actions("INFY", date(2018, 1, 1), date(2018, 12, 31))
+            client.corporate_actions("INFY", start, end)
     else:
-        page = client.corporate_actions("INFY", date(2018, 1, 1), date(2018, 12, 31))
-        assert page.actions == [] and page.incomplete is has_warning
+        page = client.corporate_actions("INFY", start, end)
+        assert page.actions == []
+        assert page.incomplete is has_warning

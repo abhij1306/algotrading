@@ -48,8 +48,9 @@ def test_store__data_root() -> None:
         for bad in ("../escape.zip", "/etc/passwd", "a/../../b"):
             with pytest.raises(StoreError):
                 store.raw_path(bad)
+        first_day = date(2024, 1, 1)
         with pytest.raises(StoreError):
-            store.partition_dir("somewhere_else", date(2024, 1, 1))
+            store.partition_dir("somewhere_else", first_day)
     ignored = subprocess.run(  # noqa: S603 - fixed arguments, no input
         [
             shutil.which("git") or "git",

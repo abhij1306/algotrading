@@ -242,6 +242,36 @@ _UDIFF = _Layout(
 )
 
 
+def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow | None, str]:
+    """One file row as a `BhavRow`, or None and the `ParsedDay` counter that counts it."""
+    series = row[layout.series].upper()
+    if series not in EQUITY_SERIES:
+        return None, "skipped_series"
+    when = layout.parse_date(row[layout.date_col])
+    if when is None or when != day:
+        return None, "wrong_date"
+    isin = row[layout.isin].upper()
+    open_, high, low, close = (
+        _decimal(row[c]) for c in (layout.open, layout.high, layout.low, layout.close)
+    )
+    prev = _decimal(row[layout.prev])
+    volume = _integer(row[layout.volume])
+    if (
+        not ISIN_RE.match(isin)
+        or open_ is None
+        or high is None
+        or low is None
+        or close is None
+        or prev is None
+        or volume is None
+        or not row[layout.symbol]
+    ):
+        return None, "invalid"
+    symbol = row[layout.symbol].upper()
+    value = _decimal(row.get(layout.value))
+    return BhavRow(day, isin, series, symbol, open_, high, low, close, prev, volume, value), ""
+
+
 def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
     """Parse the zip for `day` in the format its date selects. Only equity series are kept
     (counted when skipped); a row that cannot be read, or is dated another day, is counted and
@@ -255,49 +285,14 @@ def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
     seen: set[tuple[str, str]] = set()
     for raw in reader:
         row = {(k or "").strip(): (v or "").strip() for k, v in raw.items() if k is not None}
-        series = row[layout.series].upper()
-        if series not in EQUITY_SERIES:
-            out.skipped_series += 1
-            continue
-        when = layout.parse_date(row[layout.date_col])
-        if when is None or when != day:
-            out.wrong_date += 1
-            continue
-        isin = row[layout.isin].upper()
-        prices = [_decimal(row[c]) for c in (layout.open, layout.high, layout.low, layout.close)]
-        prev = _decimal(row[layout.prev])
-        volume = _integer(row[layout.volume])
-        if (
-            not ISIN_RE.match(isin)
-            or any(p is None for p in prices)
-            or prev is None
-            or volume is None
-            or not row[layout.symbol]
-        ):
-            out.invalid += 1
-            continue
-        key = (isin, series)
-        if key in seen:
+        parsed, left_out = _read_row(layout, day, row)
+        if parsed is None:
+            setattr(out, left_out, getattr(out, left_out) + 1)
+        elif (parsed.isin, parsed.series) in seen:
             out.duplicates += 1
-            continue
-        seen.add(key)
-        o, h, low, c = prices
-        assert o is not None and h is not None and low is not None and c is not None
-        out.rows.append(
-            BhavRow(
-                day,
-                isin,
-                series,
-                row[layout.symbol].upper(),
-                o,
-                h,
-                low,
-                c,
-                prev,
-                volume,
-                _decimal(row.get(layout.value)),
-            )
-        )
+        else:
+            seen.add((parsed.isin, parsed.series))
+            out.rows.append(parsed)
     return out
 
 

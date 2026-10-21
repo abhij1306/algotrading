@@ -75,6 +75,7 @@ INDEX_SCHEMA = pa.schema(
 )
 DATASET_SCHEMAS = {DATASET_BARS: BAR_SCHEMA, DATASET_INDEX: INDEX_SCHEMA}
 
+PART_GLOB = "part-*.parquet"
 FACTOR_PLACES = 18  # cumulative factors are stored as decimal(20, 18)
 INVERSE_PLACES = 12  # and their reciprocals, for volume, as decimal(24, 12)
 FACTOR_MIN = Decimal("1e-9")  # a cumulative factor outside [1e-9, 100) cannot be held exactly
@@ -302,7 +303,7 @@ class DataStore:
 
     def partition_files(self, dataset: str, day: date) -> list[Path]:
         directory = self.partition_dir(dataset, day)
-        return sorted(directory.glob("part-*.parquet")) if directory.is_dir() else []
+        return sorted(directory.glob(PART_GLOB)) if directory.is_dir() else []
 
     def raw_path(self, name: str) -> Path:
         if not name or name != Path(name).name or name.startswith("."):
@@ -387,7 +388,7 @@ class DataStore:
 
     def partition_files_index(self, day: date) -> list[Path]:
         directory = self.partition_dir(DATASET_INDEX, day)
-        return sorted(directory.glob("part-*.parquet")) if directory.is_dir() else []
+        return sorted(directory.glob(PART_GLOB)) if directory.is_dir() else []
 
     def days(self, dataset: str) -> list[date]:
         base = self._under_root(self.root / dataset)
@@ -395,7 +396,7 @@ class DataStore:
             return []
         found = []
         for child in sorted(base.glob("date=*")):
-            if any(child.glob("part-*.parquet")):
+            if any(child.glob(PART_GLOB)):
                 found.append(date.fromisoformat(child.name[5:]))
         return found
 
@@ -426,7 +427,7 @@ class DataStore:
         return con
 
     def _dataset_view(self, con: duckdb.DuckDBPyConnection, dataset: str, view: str) -> None:
-        pattern = "part-*.parquet"
+        pattern = PART_GLOB
         files = sorted(self._under_root(self.root / dataset).glob(f"date=*/{pattern}"))
         if files:
             listed = ", ".join("'" + str(f).replace("'", "''") + "'" for f in files)

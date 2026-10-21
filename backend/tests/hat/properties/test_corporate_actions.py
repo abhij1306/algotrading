@@ -226,13 +226,16 @@ def test_factor_parse(a: int, tenths: int, template: int) -> None:
     ]
     parsed = parse_action_text(texts[template])
     assert parsed is not None
-    assert parsed.action_type == "split" and parsed.factor == Fraction(b_text) / a
+    assert parsed.action_type == "split"
+    assert parsed.factor == Fraction(b_text) / a
     assert 0 < parsed.factor <= 1
     x, y = a, int(tenths)
     for text in (f"Bonus issue {x}:{y}", f"Dividend Rs 5 - bonus {x} : {y}", f"BONUS {x}:{y}"):
         parsed = parse_action_text(text)
-        assert parsed is not None and parsed.action_type == "bonus"
-        assert parsed.factor == Fraction(y, x + y) and 0 < parsed.factor <= 1
+        assert parsed is not None
+        assert parsed.action_type == "bonus"
+        assert parsed.factor == Fraction(y, x + y)
+        assert 0 < parsed.factor <= 1
     assert parse_action_text(f"Face value split from Rs {b_text} to Rs {a}") is None
     assert parse_action_text(f"Face value split from Rs {a} to Rs {a}") is None
 
@@ -244,7 +247,8 @@ def test_factor_parse_unparseable_is_reported(text: str) -> None:
     assert parse_action_text(text) is None
     csv_text = f'SYMBOL,PURPOSE,EX-DATE\nAAA,"{text.replace(chr(34), "")} split",14-Jun-2018\n'
     result = from_archive_csv(csv_text, lambda s, d: uuid.UUID(int=1))
-    assert result.records == [] and len(result.unparsed) == 1
+    assert result.records == []
+    assert len(result.unparsed) == 1
 
 
 KEYS = [(i, d, t) for i in range(3) for d in range(3) for t in ("split", "bonus")]
