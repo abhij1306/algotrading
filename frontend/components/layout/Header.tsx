@@ -11,6 +11,7 @@ export function AppHeader() {
     <header className="h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle">
       <button
         onClick={() => void navigate("/hat")}
+        aria-label="Hire a Trader home"
         className="flex items-center gap-2 hover:opacity-80 transition-opacity"
       >
         <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover shadow-sm">
