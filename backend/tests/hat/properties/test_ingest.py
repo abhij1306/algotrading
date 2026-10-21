@@ -541,7 +541,7 @@ def test_raw_write_once(attempts: list[tuple[str, int, bool]]) -> None:
             assert len(files) == 1
             if first is None:
                 first = (files[0], _sha(files[0]), Decimal(price))
-            assert (files[0], _sha(files[0])) == first[:2]
+            assert first[:2] == (files[0], _sha(files[0]))
         assert first is not None
         closes = set(world.store.read_bars(TRADE_DAY)["close"].to_list())
         fallbacks = len(world.fallback_calls)
