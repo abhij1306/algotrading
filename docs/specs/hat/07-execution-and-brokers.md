@@ -122,7 +122,7 @@ Confirm mode sends a Telegram approval card with Take/Skip buttons; price, size 
 - **PR:** 15
 - **Verification:** PBT `criteria.catalyst_required_in_confirm`
 - **Acceptance:**
-  - Property: for every EP signal, in confirm mode an approval is sent only when an announcement for the instrument was published within 24 hours; in shadow and auto mode the absence of one does not block the trigger unless `required_in` lists that mode. Harm: the user is asked to approve an EP without the catalyst they judge it by.
+  - Property: for every EP signal, in confirm mode an approval is sent only when an announcement for the instrument was published within the criterion's `within_hours` (24 in the seed); in shadow and auto mode the absence of one does not block the trigger unless `required_in` lists that mode. Harm: the user is asked to approve an EP without the catalyst they judge it by.
 
 ## §4 Trade lifecycle
 
@@ -514,7 +514,7 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. This section covers evaluation in the live service. Triggers evaluate on final 5-minute bars (09:20–15:20) built by the bar builder (02 §11); entry filters run at trigger time.
 
 #### HAT-EXEC-120: Triggers on final bars inside the window
-- **Statement:** Trigger criteria evaluate only on final 5-minute bars and only between 09:20 and 15:20 IST.
+- **Statement:** Trigger criteria evaluate only on final 5-minute bars and only between 09:20 and 15:20 IST. A trigger whose signal write fails is evaluated again on the next final bar; one whose signal is stored never fires again that day.
 - **Source:** MA "Daily cycle" steps 4–5; DS "Live data" (09:20–15:20 triggers); B8, B9.
 - **PR:** 15
 - **Verification:** PBT `bars.trigger_only_on_final_bars`
@@ -522,12 +522,12 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
   - Property: for every tick stream, `signal.triggered` timestamps lie in [09:20, 15:20] IST and each is derived from a bar marked final (close + 2 s). Harm: triggers fire on half-built bars or in the auction.
 
 #### HAT-EXEC-121: All trigger criteria must pass
-- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules). `catalyst_attached` counts only in the modes its `required_in` lists (HAT-CRIT-118); a playbook with no enabled trigger criterion never triggers. A trigger criterion over daily bars (`neglect`) is evaluated once on the bars before the trade date when the candidate is built, and fails closed without them.
+- **Statement:** A playbook triggers only when every enabled trigger criterion passes on the same bar (price breaks level and volume pace, plus EP gap, early volume and catalyst rules). `catalyst_attached` counts only in the modes its `required_in` lists (HAT-CRIT-118); a playbook with no blocking trigger criterion (none enabled, or only a `catalyst_attached` that does not block in the bot's mode) never triggers. A trigger criterion over daily bars (`neglect`) is evaluated once on the bars before the trade date when the candidate is built, and fails closed without them.
 - **Source:** BL "Configuration model" stage 4; BL default configs.
 - **PR:** 15
 - **Verification:** PBT `criteria.trigger_conjunction`
 - **Acceptance:**
-  - Property: for every bar and non-empty set of enabled trigger criteria, the playbook triggers iff the conjunction of the blocking ones is true, and a triggered signal records each criterion's value. Harm: entries on half the setup.
+  - Property: for every bar and set of enabled trigger criteria, the playbook triggers iff at least one of them is blocking and the conjunction of the blocking ones is true, and a triggered signal records each criterion's value. Harm: entries on half the setup.
 
 #### HAT-EXEC-122: Entry filters skip with reason
 - **Statement:** At trigger, the initial stop is computed (HAT-EXEC-050..053), then the enabled entry filters run in their configured order with `max_chase` always among them (HAT-CRIT-122); the first failure records a skip reason and no order is routed. The reason is the failing filter's type (`adtr_filter`, `max_chase`) or the stop rule's skip reason, and the signal is stored Rejected with it before any risk check.

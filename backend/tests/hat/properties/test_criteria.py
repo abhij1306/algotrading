@@ -1130,6 +1130,17 @@ def chase_filters(draw: st.DrawFn) -> tuple[list[dict], str]:
             draw(st.integers(0, len(items))),
             {"type": "max_chase", "params": {"pct": pct}, "enabled": state == "enabled"},
         )
+    # explicit orders anywhere in the allowed range, the highest one included
+    orders = draw(
+        st.lists(
+            st.one_of(st.just(10_000), st.integers(0, 10_000)),
+            min_size=len(items),
+            max_size=len(items),
+            unique=True,
+        )
+    )
+    for item, order in zip(items, sorted(orders), strict=True):
+        item["order"] = order
     return items, state
 
 
@@ -1163,6 +1174,14 @@ def test_max_chase_contract(
 DOCUMENTED_CHASE = {S1: Fraction(5), S2: Fraction(2)}  # HAT-CRIT-122 defaults; 2 otherwise
 
 
+@example(
+    filters=(
+        [{"type": "adtr_filter", "params": {"max_multiple": 1.0}, "order": 10_000}],
+        "deleted",
+    ),
+    configured=None,
+    strategy=S1,
+)  # a filter at the highest allowed order: the forced max_chase still comes after it
 @given(
     filters=chase_filters(),
     configured=st.one_of(st.none(), st.sampled_from([Decimal("1.5"), Decimal(4)])),
@@ -1174,8 +1193,10 @@ def test_max_chase_always_applied(
     """HAT-CRIT-122 (part of `max_chase_contract`): the entry filters evaluated at a trigger hold
     exactly one max_chase whatever the config says. An enabled one keeps its place and
     percentage; a disabled or deleted one is evaluated last with the playbook's last configured
-    percentage, else the strategy's documented default (5 for S1, 2 for S2, else 2). Harm:
-    deleting max_chase in the editor lets a bot buy any distance above the breakout."""
+    percentage, else the strategy's documented default (5 for S1, 2 for S2, else 2), even when
+    a configured filter holds the highest allowed order. Harm: deleting max_chase in the editor
+    lets a bot buy any distance above the breakout, or a filter at order 10000 makes every
+    trigger of the playbook fail."""
     items, state = filters
     book = playbook(filters=items)
     instances = entry_filter_instances(book, configured, strategy)
@@ -1187,6 +1208,7 @@ def test_max_chase_always_applied(
         return
     assert instances[:-1] == enabled
     assert instances[-1].type == "max_chase"
+    assert all(i.order < instances[-1].order for i in book.entry_filters)
     want = Fraction(configured) if configured is not None else DOCUMENTED_CHASE.get(strategy, 2)
     assert oracle_pct(chases[0].params["pct"]) == want
 

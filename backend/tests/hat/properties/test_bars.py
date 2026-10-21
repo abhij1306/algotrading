@@ -668,6 +668,67 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
     assert trigger.context.price == expected.close
 
 
+@settings(max_examples=25, deadline=None)
+@given(failures=st.integers(0, 4), bars=st.integers(1, 4))
+def test_failed_signal_write_retries(failures: int, bars: int) -> None:
+    """HAT-EXEC-120 (part of `trigger_only_on_final_bars`): a breakout holds on `bars`
+    consecutive final bars and the first `failures` signal writes fail. Each failed write
+    releases the key, so the next final bar fires again; the first write that succeeds stores
+    the day's one signal, at its own bar's final instant, and no later bar fires. Harm: a
+    database blip at the breakout loses the day's signal for good."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        world = seed_engine_world(session, instruments=1)
+        session.commit()
+    attempts = [0]
+
+    def sessions() -> Session:
+        attempts[0] += 1
+        if attempts[0] <= failures:
+            raise RuntimeError("database unavailable")
+        return Session(engine)
+
+    book = trigger_support.playbook(
+        trigger=[{"type": "price_breaks_level", "params": {"level": "pivot"}}]
+    )
+    cand = trigger_support.candidate(
+        book,
+        bot_id=world.bot_id,
+        instrument_id=world.instruments[0],
+        pivot=Decimal(99),
+        daily=DailyInputs(
+            tick=Decimal("0.05"), band_known=True, band_pct=None, adv20=Decimal(1_000_000)
+        ),
+    )
+    monitor = TriggerMonitor(BarBuilder())
+    monitor.add(cand)
+    service = TriggerService(monitor, sessions, Contexts(world.policy_version_id), lambda: False)
+    finals = [
+        Bar(
+            "AAA",
+            at_us((11 * 3600 + 300 * n) * US),
+            Decimal(99),
+            Decimal(101),
+            Decimal(98),
+            Decimal(100),
+            9,
+        )
+        for n in range(bars)
+    ]
+    fired = [len(service.on_bar(bar)) for bar in finals]
+    assert fired == [1 if n <= failures else 0 for n in range(bars)]
+    with Session(engine) as session:
+        stored = list(session.scalars(select(HatSignal)))
+    if failures >= bars:
+        assert stored == []
+        return
+    (signal,) = stored
+    # SQLite keeps the instant's IST wall time without its offset
+    assert signal.triggered_at.replace(tzinfo=None) == finals[failures].final_at.replace(
+        tzinfo=None
+    )
+
+
 # --- listener hook (HAT-DATA-111) --------------------------------------------------------------
 
 

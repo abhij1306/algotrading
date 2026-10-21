@@ -61,7 +61,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.catalyst_attached_contract` `catalyst_attached` passes exactly when a matched announcement was published in [at - within_hours, at], both ends included and nothing after `at`; `required_in` never changes the result. Harm: a stale or future-dated announcement is taken as the catalyst of a confirm-mode EP trade.
 - `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level, at that bar's final instant, with the level as the trigger price and the bar's close as the live price; the opening range level does not exist before its bar is final. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20.
 - `PBT criteria.adtr_filter_contract` `adtr_filter` passes exactly when entry - stop is at most `max_multiple` x ADTR(20); a stop at or above the entry, or a missing input, fails closed. Harm: an entry whose stop is wider than the stock's daily range is stopped out by noise.
-- `PBT criteria.max_chase_contract` `max_chase` passes exactly when price <= level x (1 + pct/100) and the stock is not locked at its upper circuit (unknown circuit state fails closed), and (`test_max_chase_always_applied`) the filters evaluated at a trigger always hold exactly one `max_chase`: an enabled one in place, a disabled or deleted one last with the last configured percentage, else the strategy default (S1 5, S2 2, else 2). Harm: deleting max_chase lets a bot buy any distance above the breakout, or into a locked circuit it cannot exit.
+- `PBT criteria.max_chase_contract` `max_chase` passes exactly when price <= level x (1 + pct/100) and the stock is not locked at its upper circuit (unknown circuit state fails closed), and (`test_max_chase_always_applied`) the filters evaluated at a trigger always hold exactly one `max_chase`: an enabled one in place, a disabled or deleted one last with the last configured percentage, else the strategy default (S1 5, S2 2, else 2), even when a configured filter holds the highest allowed order (10000). Harm: deleting max_chase lets a bot buy any distance above the breakout, or into a locked circuit it cannot exit.
 - `PBT criteria.trigger_conjunction` A playbook triggers exactly when it has at least one blocking enabled trigger criterion and every blocking one passes on the same bar; disabled criteria are not evaluated, `catalyst_attached` blocks only in a mode in its `required_in`, and a daily-bar trigger (`neglect`) counts with the result the candidate was built with and fails closed without one. Harm: one passing criterion fires an entry the others reject, or an all-disabled playbook buys every bar.
 - `PBT criteria.entry_filters_skip` On SQLite with the real `open_entry`: the stop is planned first, then the entry filters in order with max_chase always present; the first failure is stored as a Rejected signal with that reason and stage `entry_filter`, no position, and no risk call; with no failure the signal goes to the risk check. Harm: a trade the filters reject is opened, or a skip leaves no reason.
 - `PBT criteria.level_expression` `pivot` and `opening_range_high` name one level each and `max(consolidation_high, opening_range_high)` the larger of two that must both exist; a missing or non-positive level, or any other expression, has no level (`level_undefined`), and the config refuses an unknown expression. Harm: a zero level, or the consolidation high alone before the opening range exists, fires at the open.
@@ -136,8 +136,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `ecb359668f0839ad5805f348afd96395ad5dfc8c`
-Covered digest: `d4d7e846660d10d4ebca16e243aff90cc5d602197ead8bb6a4a930c1d9b5e47c`
+Sync commit: `97faa19caa3bb168c4cac037be5c1ed3317dd7f1`
+Covered digest: `486d004263d192e6e04b4caf2f5ee003ab11b88c0bf5ca985bb00216d6240742`
 
 ## Scope changes
 
@@ -945,6 +945,14 @@ E   Failing test case: test_max_chase_always_applied(
 E       # The test always failed when commented parts were varied together.
 E       filters=([], 'deleted'),
 E       configured=None,  # or any other generated value
+```
+
+Break: in `backend/app/hat/engine/trigger.py`: the forced max_chase is built as a validated config `Instance`, so a filter at order 10000 gives it order 10001 and planning fails.
+
+```
+E   pydantic_core._pydantic_core.ValidationError: 1 validation error for Instance
+E   order
+E     Input should be less than or equal to 10000 [type=less_than_equal, input_value=10001, input_type=int]
 ```
 
 ### PBT criteria.trigger_conjunction

@@ -25,11 +25,14 @@ Rules:
   then the entry filters run in their configured order; `max_chase` always runs, with the
   playbook's last configured percentage, even when the config deleted or disabled it
   (HAT-CRIT-122). The first failure names the skip reason (HAT-EXEC-122).
-- One (bot, playbook, instrument, trade date) fires at most once.
+- One (bot, playbook, instrument, trade date) has at most one signal. A fired key is pending
+  until its signal write reports back: `confirm` closes it for the day, `release` (a failed
+  write) lets the next final bar evaluate it again, so a lost write never loses the day.
 """
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -291,10 +294,16 @@ def entry_filter_instances(
         return enabled
     pct = effective_max_chase_pct(configured_pct, strategy_key)
     last_order = max((i.order for i in playbook.entry_filters), default=-1)
-    forced = Instance(
+    # Built without validation: it is evaluated after every configured filter, and its order may
+    # pass the config's limit (a filter at the highest allowed order). Its fields are fixed and
+    # known valid; the parameters are validated again when it is evaluated.
+    forced = Instance.model_construct(
         type=MAX_CHASE,
         stage="entry_filter",
+        mode="hard",
+        weight=1.0,
         params={"pct": float(pct)},
+        enabled=True,
         order=last_order + 1,
     )
     return [*enabled, forced]
@@ -408,13 +417,17 @@ def in_window(at: datetime) -> bool:
 
 
 class TriggerMonitor:
-    """Watches the day's candidates and fires each at most once. Single-threaded by contract:
-    it is a bar listener of `LiveData`, called on the loop thread with each final bar in order."""
+    """Watches the day's candidates and fires each until its signal is written. `on_bar` is a
+    bar listener of `LiveData`, called on the loop thread with each final bar in order;
+    `confirm` and `release` may come from the worker that wrote the signal, so the fired and
+    pending sets are guarded by a lock."""
 
     def __init__(self, view: BarView) -> None:
         self._view = view
         self._by_symbol: dict[str, dict[tuple[uuid.UUID, str, uuid.UUID, date], Candidate]] = {}
         self._fired: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
+        self._pending: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
+        self._lock = threading.Lock()
         self._day_lows: dict[tuple[str, date], list[Decimal]] = {}
 
     def add(self, candidate: Candidate) -> None:
@@ -423,7 +436,30 @@ class TriggerMonitor:
 
     def mark_fired(self, key: tuple[uuid.UUID, str, uuid.UUID, date]) -> None:
         """A key that already has its signal (a restart mid-session) never fires again."""
-        self._fired.add(key)
+        with self._lock:
+            self._fired.add(key)
+
+    def confirm(self, key: tuple[uuid.UUID, str, uuid.UUID, date]) -> None:
+        """The fired key's signal is stored: it never fires again that day."""
+        with self._lock:
+            self._pending.discard(key)
+            self._fired.add(key)
+
+    def release(self, key: tuple[uuid.UUID, str, uuid.UUID, date]) -> None:
+        """The fired key's signal write failed: the next final bar evaluates it again."""
+        with self._lock:
+            self._pending.discard(key)
+
+    def _claim(self, key: tuple[uuid.UUID, str, uuid.UUID, date]) -> bool:
+        with self._lock:
+            if key in self._fired or key in self._pending:
+                return False
+            self._pending.add(key)
+            return True
+
+    def _open(self, key: tuple[uuid.UUID, str, uuid.UUID, date]) -> bool:
+        with self._lock:
+            return key not in self._fired and key not in self._pending
 
     def candidates(self) -> list[Candidate]:
         return [c for group in self._by_symbol.values() for c in group.values()]
@@ -463,15 +499,14 @@ class TriggerMonitor:
         for key, candidate in sorted(
             self._by_symbol.get(bar.symbol, {}).items(), key=lambda kv: str(kv[0])
         ):
-            if key in self._fired or candidate.trade_date != day:
+            if candidate.trade_date != day or not self._open(key):
                 continue
             ctx = self.context(candidate, bar)
             evaluation = evaluate_trigger(
                 candidate.playbook, ctx, candidate.mode, candidate.daily_results
             )
-            if not evaluation.fired:
+            if not evaluation.fired or not self._claim(key):
                 continue
-            self._fired.add(key)
             lows = self._day_lows[(bar.symbol, day)]
             plan = plan_entry(candidate, ctx, evaluation.level, lows)
             fired.append(Trigger(candidate, bar.final_at, evaluation, plan, ctx))

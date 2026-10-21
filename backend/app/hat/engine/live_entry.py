@@ -350,16 +350,21 @@ class TriggerService:
             work()
 
     def write(self, trigger: Trigger, stale: bool) -> trades.EntryOutcome | None:
-        """Write one trigger's signal and commit. A failure is logged and leaves nothing."""
+        """Write one trigger's signal and commit, then tell the monitor: a stored signal (a new
+        one or the existing one) closes the key for the day; a failure is logged, leaves
+        nothing and releases the key, so the next final bar evaluates it again."""
+        key = trigger.candidate.key
         try:
             with self._session_factory() as session:
                 base = self._contexts.entry_context(session, trigger.candidate.bot_id, trigger.at)
                 outcome = submit_trigger(session, trigger, base, feed_stale=stale)
                 session.commit()
-                return outcome
         except Exception:
             logger.exception("writing a trigger failed")
+            self.monitor.release(key)
             return None
+        self.monitor.confirm(key)
+        return outcome
 
 
 class DataHealthKill:
