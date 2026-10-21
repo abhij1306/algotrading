@@ -29,6 +29,9 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy.schema import CreateColumn, CreateTable
 
 from .base import Base
+from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
+from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
+from .hat.settings import load_settings as load_hat_settings
 from .models import (
     BacktestDailyResult,
     BacktestRun,
@@ -133,7 +136,25 @@ def init_db() -> None:
     ensure_universe_schema(bind=engine)
     ensure_strategy_schema(bind=engine)
     ensure_live_order_schema(bind=engine)
+    ensure_hat_database(bind=engine)
     logger.info("Database initialized: %s", describe_database_target())
+
+
+def ensure_hat_database(*, bind: Engine | None = None) -> None:
+    """HAT's Postgres-only DDL and reference seed (HAT-SCH-101, HAT-SCH-021).
+
+    A failure here must not take SmartTrader's own startup down while HAT is off: it is logged,
+    and raised only when HAT_ENABLED is true.
+    """
+    db_engine = bind or engine
+    try:
+        ensure_hat_columns(db_engine)
+        ensure_hat_schema(db_engine)
+        seed_hat_reference(db_engine)
+    except Exception:
+        logger.exception("HAT schema upkeep failed")
+        if load_hat_settings().enabled:
+            raise
 
 
 def get_db() -> Generator[Session, None, None]:

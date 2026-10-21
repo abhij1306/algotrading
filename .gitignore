@@ -18,6 +18,13 @@ nse_data/phase1/metadata/
 data/
 historical_data/
 
+# Hire a Trader (HAT): Parquet bars, raw bhavcopy zips, backtest outputs (HAT_DATA_ROOT)
+data_system/hat/
+
+# TLA+ model checking scratch (verification/tla/run.sh)
+verification/tla/states/
+verification/tla/.tlc.out
+
 # All Data Files
 *.parquet
 *.csv
