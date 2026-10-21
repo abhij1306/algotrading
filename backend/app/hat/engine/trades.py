@@ -54,6 +54,7 @@ from ..risk.service import evaluate_signal
 from ..time import IST, as_utc, trade_date_of
 from . import exits, lifecycle
 from .botlock import lock_bot
+from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_WIDE
 from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
@@ -90,6 +91,19 @@ _POSITION_STATES = (
     lifecycle.CLOSED,
 )
 HARD_STOP = "hard_stop"
+# Why a trigger was skipped before the risk check: the initial stop could not be set, or an entry
+# filter failed (HAT-EXEC-122). They are stored as the signal's REJECT reason, like a risk reason.
+ENTRY_SKIP_REASONS = frozenset(
+    {
+        SKIP_BAD_INPUT,
+        SKIP_NOT_BELOW_ENTRY,
+        SKIP_TOO_WIDE,
+        "adtr_filter",
+        "max_chase",
+        "level_undefined",
+        "no_live_price",
+    }
+)
 _ZERO = Decimal(0)
 _RATIO_PLACES = Decimal("0.000001")
 
@@ -262,7 +276,11 @@ def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
 class EntryRequest:
     """One trigger. `context` holds the market-side inputs (prices, equity, cash, ADV, the
     calendar, gate, feed and quality flags, kill, ladder and policy versions); `open_entry`
-    fills in the bot, the instrument, the signal id and the database snapshot itself."""
+    fills in the bot, the instrument, the signal id and the database snapshot itself.
+
+    `skip_reason` (one of `ENTRY_SKIP_REASONS`) records a trigger whose stop or entry filters
+    already failed: the signal is stored Rejected with that reason and no risk check runs.
+    `criteria` is each trigger and entry-filter result, kept on `signal.triggered`."""
 
     bot_id: uuid.UUID
     playbook: str
@@ -271,6 +289,8 @@ class EntryRequest:
     triggered_at: datetime
     context: SignalContext
     last_prices: dict[uuid.UUID, Decimal] | None = None
+    skip_reason: str | None = None
+    criteria: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -284,9 +304,18 @@ class EntryOutcome:
 
 def _decision_row(decision: RiskDecision) -> dict[str, object]:
     document = decision.to_json()
-    if not decision.accepted and decision.reason not in REASON_CODES:
+    if not decision.accepted and decision.reason in ENTRY_SKIP_REASONS:
+        document["stage"] = "entry_filter"
+    elif not decision.accepted and decision.reason not in REASON_CODES:
         document["reason"] = "invalid_input"
     return document
+
+
+def _skip_decision(reason: str) -> RiskDecision:
+    """A trigger skipped before the risk check; an unknown reason is stored as invalid input."""
+    return RiskDecision(
+        accepted=False, reason=reason if reason in ENTRY_SKIP_REASONS else "invalid_input"
+    )
 
 
 def _existing_signal(session: Session, request: EntryRequest) -> HatSignal | None:
@@ -351,9 +380,15 @@ def open_entry(
         entries_today=entries,
         stopouts_today=stopouts,
     )
-    decision = decide(ctx)
+    if request.skip_reason is not None:
+        decision = _skip_decision(request.skip_reason)
+    else:
+        decision = decide(ctx)
     accepted = bool(decision.accepted and decision.quantity and decision.stop is not None)
     entry = base.entry_price if base.entry_price is not None else _ZERO
+    # The trigger price is the level the trigger broke (HAT-CRIT-119); a caller without one
+    # (a backtest proxy) records the entry price.
+    trigger = base.trigger_level if base.trigger_level is not None else entry
     signal = HatSignal(
         id=signal_id,
         bot_id=request.bot_id,
@@ -363,7 +398,7 @@ def open_entry(
         instrument_id=request.instrument_id,
         trade_date=request.trade_date,
         triggered_at=request.triggered_at,
-        trigger_price=entry,
+        trigger_price=trigger,
         stop_price=decision.stop if decision.stop is not None else (base.stop_price or _ZERO),
         qty=decision.quantity or 0 if accepted else 0,
         risk_amount=decision.risk_amount or _ZERO if accepted else _ZERO,
@@ -381,7 +416,7 @@ def open_entry(
         "signal.triggered",
         aggregate_type="signal",
         aggregate_id=signal.id,
-        payload={"playbook": request.playbook, "trigger_price": str(entry), "mode": SHADOW},
+        payload=_triggered_payload(request, trigger, entry),
         now=now,
     )
     if not accepted:
@@ -397,6 +432,20 @@ def open_entry(
         return EntryOutcome(signal.id, signal.state, decision, None)
     position = _virtual_entry(session, signal, bot, decision, entry, now)
     return EntryOutcome(signal.id, signal.state, decision, position.id)
+
+
+def _triggered_payload(
+    request: EntryRequest, trigger: Decimal, entry: Decimal
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "playbook": request.playbook,
+        "trigger_price": str(trigger),
+        "mode": SHADOW,
+    }
+    if request.criteria:
+        payload["entry_price"] = str(entry)
+        payload["criteria"] = [dict(item) for item in request.criteria]
+    return payload
 
 
 def _virtual_order(

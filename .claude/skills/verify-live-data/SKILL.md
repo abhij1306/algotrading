@@ -61,6 +61,8 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `CONF imports.no_second_websocket` Only `app/hat/data/provider/fyers_websocket.py` imports or names the Fyers data-socket SDK or any other WebSocket library (statically, or by name through `importlib` or `__import__`), nothing outside `app/hat` imports `fyers_apiv3`, and `LiveFeed.add_tick_listener` is the only tick input `live.py` uses. Harm: a second socket breaks the broker session and drops the feed.
 - `CONF single_feed_import_rule` Only `feed.py` builds a `ProviderSession` or imports the provider modules, only `main.py` builds a `LiveFeed` and only inside `if is_enabled()`, and only in the body of `if is_enabled()` (not under a negated or nested `if not is_enabled()`); the only importer of `feed.py` is `main.py` (K5b deleted the legacy read side). Harm: a second feed or session could open a socket HAT does not control, or open one with HAT off.
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); no legacy copy is left (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`, K5b the legacy `LiveMarketService`; a class named `RiskManager` or `LiveMarketService` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+- `PBT bars.trigger_only_on_final_bars` With prints arriving late or out of order through the real bar builder, a pivot breakout fires once, at the final instant (end + 2 s) of the first final bar in [09:20, 15:20] whose high is above the pivot, never from a print in a bar still open or a late print the bar never took, and never at an instant before the bar was handed over. Harm: an entry fires on a print the 5-minute bar later disowns, or before the bar that justifies it exists.
+- `PBT bars.stale_feed_trips_health_kill` Wired as in production (staleness monitor, `EventFeedHealth`, `DataHealthKill`), the account's data-health kill is tripped exactly while the feed is stale and clears by itself when ticks resume, even when the trip and the recovery fall on one instant; a trigger fired while stale is stored Rejected with `stale_feed` and opens nothing, one on a live feed opens its virtual position. Harm: entries keep being taken on prices that stopped updating, or the account stays manage-only after the feed is back.
 
 ## Run
 
@@ -102,6 +104,8 @@ Code under check:
 - `backend/app/hat/data/gapscan.py`: `scan_rows`, `select_gappers`, `run_gap_scan`
 - `backend/app/hat/data/announcements.py`: `parse_feed`, `store_items`, `attached_announcements`, `catalyst_attached`, `next_poll_at`, `poll_feed`
 - `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`
+- `backend/app/hat/engine/trigger.py`: `TriggerMonitor`, `in_window`
+- `backend/app/hat/engine/live_entry.py`: `TriggerService`, `DataHealthKill`
 - `backend/app/hat/data/sessions.py`: `MarketHoursPolicy`
 - `backend/app/hat/clock.py`: `FixedClock`, `require_aware`
 - `backend/app/hat/data/feed.py`: `LiveFeed`, `connect_status_message`
@@ -119,6 +123,7 @@ Checks:
 - `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/conformance/test_conf_authorities.py`
 - `backend/tests/hat/hat_live_support.py`
+- `backend/tests/hat/hat_trigger_support.py`
 - `backend/tests/hat/fakes/data_socket.py`
 - `backend/tests/hat/fixtures/rss_announcements.xml`
 - `backend/tests/hat/fixtures/rss_financial_results.xml`
@@ -127,8 +132,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4401555a27c445bbcbdc84621169a9c114cebe0b`
-Covered digest: `9a08c4aa63e80c40d1a694c79ca332e08dbfd775deef9348fc729b9627d2952e`
+Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
+Covered digest: `06ae5b8554a36900f9c001840cf42a703639f0b5acac9836f88597baeb452cb4`
 
 ## Scope changes
 
@@ -933,4 +938,22 @@ E       holidays=set(),
 E       today_is_a_holiday=False,
 E       second=36000,
 E       calendar='missing',
+```
+
+### PBT bars.trigger_only_on_final_bars
+
+Break: in `backend/app/hat/engine/trigger.py`: a trigger is stamped with the bar's end instead of its final instant (end + 2 s).
+
+```
+E   AssertionError: assert datetime.datetime(2026, 10, 21, 9, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) == datetime.datetime(2026, 10, 21, 9,  [cut]
+E    +  where datetime.datetime(2026, 10, 21, 9, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) = Trigger(candidate=Candidate(bot_id=UUID('00000000 [cut]
+```
+
+### PBT bars.stale_feed_trips_health_kill
+
+Break: in `backend/app/hat/engine/live_entry.py`: `DataHealthKill` no longer moves a change to an instant after the previous one, so a recovery at the trip's own instant leaves the kill tripped.
+
+```
+E   AssertionError: assert True == False
+E    +  where True = KillState(account_tripped=False, bot_tripped=False, health_tripped=True, paused=False).health_tripped
 ```

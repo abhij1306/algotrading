@@ -770,7 +770,7 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 - **Statement:** A silence of 30 seconds or more (no tick in the last 30 seconds) during market hours marks the feed stale, records `feed.stale` and blocks new orders until ticks resume. The acceptance below fixes the boundary: a tick exactly 30 seconds ago no longer counts.
 - **Source:** DS "Bar builder rules"; BL "Invariants" (4: no order when the live feed is stale); BL "Kill switches" (health → manage-only, automatic re-arm).
 - **PR:** 14, 15
-- **Verification:** PBT `bars.staleness_trip`, TLA `ExecutionRouter!NoOrderWhenStale`
+- **Verification:** PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`
 - **Acceptance:**
   - Property: for every tick timeline during market hours, the feed is stale at t if and only if no tick arrived in (t − 30 s, t]; each transition to stale records exactly one `feed.stale` event. Harm: orders are sized and placed on prices that are minutes old.
   - Property: in every reachable state where the feed is stale, no entry order is created and affected bots are manage-only; exits and broker-side stops are unaffected. Harm: a frozen feed lets a breakout entry fire at a price that no longer exists.

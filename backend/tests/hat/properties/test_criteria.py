@@ -3,14 +3,17 @@
 Every test checks the common contract of 04 §4 (repeated calls agree, a row dated after the
 evaluation date changes nothing, the score is in [0, 1], missing data fails closed) and then the
 criterion's own rule against an independent computation in `Fraction`s over integer paise. The
-live trigger and entry-filter types (`gap_up` .. `max_chase`) are evaluated in PR 15, which adds
-their contracts; the registry holds their parameter schemas now (CONF `criterion_type_registry`).
+live trigger and entry-filter types (`gap_up` .. `max_chase`, HAT-CRIT-115..119, 121, 122) read a
+`LiveContext`; their contracts, the trigger conjunction, the entry-filter skip and the EP candidate
+rule are checked at the end, the breakout through the real bar builder and trigger monitor.
 """
 
 import dataclasses
 import json
 import math
+from dataclasses import replace
 from datetime import date, timedelta
+from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
@@ -29,12 +32,47 @@ from hat.hat_criteria_support import (
     rupees,
     universe_frame,
 )
+from hat.hat_trigger_support import (
+    AT,
+    DAY,
+    MODES,
+    S1,
+    S2,
+    candidate,
+    drive,
+    ist,
+    live_contract,
+    paise,
+    playbook,
+    seed_playbook,
+    session_ticks,
+)
+from hat_engine_support import seed_engine_world
+from hat_risk_support import valid_ctx, version_of
+from hat_support import memory_engine
 from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
+from sqlalchemy.orm import Session
 
+from app.hat.data.bars import BarBuilder
 from app.hat.data.features import BAR_COLUMNS, compute_features
-from app.hat.engine.criteria import EvalContext, evaluate
+from app.hat.data.gapscan import Gapper, GapRow
+from app.hat.engine.criteria import CriterionResult, EvalContext, evaluate, evaluate_live
 from app.hat.engine.criteria import vcp as vcp_module
+from app.hat.engine.criteria.live import LiveContext, resolve_level
+from app.hat.engine.live_entry import ep_candidates, submit_trigger
+from app.hat.engine.trades import evaluate_signal
+from app.hat.engine.trigger import (
+    DailyInputs,
+    Trigger,
+    TriggerEvaluation,
+    TriggerMonitor,
+    entry_filter_instances,
+    evaluate_trigger,
+    plan_entry,
+)
+from app.hat.models import HatSignal
+from app.hat.risk.policy import seed_policy
 
 STYLES = st.sampled_from(["walk", "tie", "flat"])
 SLOW = settings(
@@ -860,3 +898,556 @@ def test_inclusive_edges_contract(k: int, pct: int) -> None:
     rows = flat_rows([a, b])
     assert passes("ma_surf", "max_distance_pct", float(pct), rows)
     assert not passes("ma_surf", "max_distance_pct", pct - 0.01, rows)
+
+
+# --- live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122; 07 §12) -------------
+
+PAISE = st.integers(1, 5_000_000)  # ₹0.01 .. ₹50,000.00
+MAYBE_PAISE = st.one_of(st.none(), st.integers(-100, 0), PAISE)
+SESSION_BARS = 75  # 09:15 .. 15:30 in five-minute bars
+TRIGGER_TYPES = ("gap_up", "volume_pace", "early_volume", "catalyst_attached", "price_breaks_level")
+
+
+def maybe(value: int | None) -> Decimal | None:
+    return None if value is None else paise(value)
+
+
+def oracle_pct(value: float) -> Fraction:
+    return Fraction(str(value))
+
+
+def assert_no_data(result: CriterionResult) -> None:
+    assert not result.passed
+    assert result.score == 0.0
+
+
+@example(open_=11_000, prev=10_000, min_pct=10.0)  # exactly a 10% gap passes
+@example(open_=10_999, prev=10_000, min_pct=10.0)
+@given(open_=MAYBE_PAISE, prev=MAYBE_PAISE, min_pct=st.sampled_from([0.5, 5.0, 10.0, 12.5, 20.0]))
+def test_gap_up_contract(open_: int | None, prev: int | None, min_pct: float) -> None:
+    """HAT-CRIT-115: passes iff (open / previous close - 1) x 100 >= min_pct, exactly; a missing
+    or non-positive open or close fails closed. Harm: a 9.99% gap (or a float rounding of 10%)
+    starts an EP trade the rule excludes, or a real 10% gap is missed."""
+    ctx = LiveContext(at=AT, open_price=maybe(open_), prev_close=maybe(prev))
+    result = live_contract("gap_up", {"min_pct": min_pct}, ctx)
+    if open_ is None or prev is None or open_ <= 0 or prev <= 0:
+        assert_no_data(result)
+        assert result.reason == "no_data"
+        return
+    gap = 100 * (Fraction(open_, prev) - 1)
+    assert result.passed == (gap >= oracle_pct(min_pct))
+    assert result.reason in ("ok", "gap_too_small")
+
+
+@example(volume=1_500, bars=SESSION_BARS, avg=1_000, mult=1.5)  # the tie passes
+@example(volume=1_499, bars=SESSION_BARS, avg=1_000, mult=1.5)
+@given(
+    volume=st.one_of(st.none(), st.integers(-5, 10_000_000)),
+    bars=st.one_of(st.none(), st.integers(0, SESSION_BARS + 1)),
+    avg=st.one_of(st.none(), st.integers(-5, 2_000_000)),
+    mult=st.sampled_from([0.5, 1.0, 1.5, 2.0, 3.0]),
+)
+def test_volume_pace_contract(
+    volume: int | None, bars: int | None, avg: int | None, mult: float
+) -> None:
+    """HAT-CRIT-116: with `bars` five-minute bars final, the day's volume projected to the full
+    session, V x 75 / bars, is at least vs_avg50 x the 50-day average volume. No elapsed share
+    (before the first bar is final, or after the close), no volume or no average fails closed.
+    Harm: a thin early burst, or a pace measured against the wrong share of the day, fires a
+    breakout the volume rule rejects."""
+    elapsed = None if bars is None else Fraction(bars, SESSION_BARS)
+    ctx = LiveContext(
+        at=AT,
+        cum_volume=volume,
+        elapsed=elapsed,
+        avg50_volume=None if avg is None else Decimal(avg),
+    )
+    result = live_contract("volume_pace", {"vs_avg50": mult}, ctx)
+    if volume is None or volume < 0 or avg is None or avg <= 0 or not bars or bars > SESSION_BARS:
+        assert_no_data(result)
+        return
+    projected = Fraction(volume * SESSION_BARS, bars)
+    assert result.passed == (projected >= oracle_pct(mult) * avg)
+
+
+@example(volume=500, adv=1_000, mult=0.5)  # the tie passes
+@example(volume=499, adv=1_000, mult=0.5)
+@given(
+    volume=st.one_of(st.none(), st.integers(-5, 10_000_000)),
+    adv=st.one_of(st.none(), st.integers(-5, 5_000_000)),
+    mult=st.sampled_from([0.1, 0.25, 0.5, 1.0, 2.0]),
+)
+def test_early_volume_contract(volume: int | None, adv: int | None, mult: float) -> None:
+    """HAT-CRIT-117: the cumulative day volume at the trigger is at least vs_adv20 x ADV(20),
+    exactly; no volume or no ADV fails closed. Harm: an EP gap on thin volume is bought."""
+    ctx = LiveContext(at=AT, cum_volume=volume, adv20=None if adv is None else Decimal(adv))
+    result = live_contract("early_volume", {"vs_adv20": mult}, ctx)
+    if volume is None or volume < 0 or adv is None or adv <= 0:
+        assert_no_data(result)
+        return
+    assert result.passed == (volume >= oracle_pct(mult) * adv)
+
+
+@example(offsets=[24 * 3600], hours=24, required=["confirm"])  # exactly at the window's start
+@example(offsets=[24 * 3600 + 1], hours=24, required=["confirm"])
+@example(offsets=[0], hours=1, required=[])  # published at the trigger instant
+@example(offsets=[-1], hours=1, required=["shadow"])  # one second in the future
+@given(
+    offsets=st.lists(st.integers(-6 * 3600, 200 * 3600), max_size=6),
+    hours=st.integers(1, 168),
+    required=st.lists(st.sampled_from(MODES), unique=True, max_size=3),
+)
+def test_catalyst_attached_contract(offsets: list[int], hours: int, required: list[str]) -> None:
+    """HAT-CRIT-118: passes iff an announcement matched to the instrument was published in
+    [at - within_hours, at] (both ends included, nothing after `at`); `required_in` does not
+    change the result, only whether it blocks (`trigger_conjunction`). Harm: a stale or
+    future-dated announcement is taken as the catalyst of a confirm-mode EP trade."""
+    published = tuple(AT - timedelta(seconds=s) for s in offsets)
+    ctx = LiveContext(at=AT, announcements=published)
+    result = live_contract(
+        "catalyst_attached", {"within_hours": hours, "required_in": required}, ctx
+    )
+    inside = [s for s in offsets if 0 <= s <= hours * 3600]
+    assert result.passed == bool(inside)
+    assert result.reason == ("ok" if inside else "no_catalyst")
+    other = live_contract("catalyst_attached", {"within_hours": hours, "required_in": []}, ctx)
+    assert other == result
+
+
+LEVEL_EXPRESSIONS = ("pivot", "opening_range_high", "max(consolidation_high, opening_range_high)")
+STEPS = st.lists(
+    st.tuples(st.integers(0, 6 * 3600 + 14 * 60), st.integers(9_000, 11_000), st.integers(0, 50)),
+    max_size=40,
+)
+
+
+def oracle_level(expr: str, pivot: int, consolidation: int, first_high: int | None) -> int | None:
+    if expr == "pivot":
+        return pivot
+    if first_high is None:
+        return None
+    return first_high if expr == "opening_range_high" else max(consolidation, first_high)
+
+
+@example(
+    steps=[(0, 10_000, 1), (300, 10_001, 1)],
+    expr="pivot",
+    pivot=10_000,
+    consolidation=10_000,
+)  # the first bar touches the pivot without trading above it; the second breaks it
+@given(
+    steps=STEPS,
+    expr=st.sampled_from(LEVEL_EXPRESSIONS),
+    pivot=st.integers(9_500, 10_500),
+    consolidation=st.integers(9_500, 10_500),
+)
+@settings(max_examples=150, deadline=None)
+def test_price_breaks_level_contract(
+    steps: list[tuple[int, int, int]], expr: str, pivot: int, consolidation: int
+) -> None:
+    """HAT-CRIT-119, HAT-BOT-071, HAT-EXEC-120: driven through the real bar builder and trigger
+    monitor, a `price_breaks_level` playbook fires once, on the first final bar whose high is
+    strictly above the level and whose final instant is in [09:20, 15:20]; the trigger's time is
+    that instant, its price the level, its live price the bar's close. The opening range level
+    does not exist before the first bar is final, and a touch is not a break. Harm: a breakout
+    is bought on a touch, before the opening range exists, or after 15:20."""
+    book = playbook(trigger=[{"type": "price_breaks_level", "params": {"level": expr}}])
+    cand = candidate(book, pivot=paise(pivot), consolidation_high=paise(consolidation))
+    builder = BarBuilder()
+    monitor = TriggerMonitor(builder)
+    monitor.add(cand)
+    bars, fired = drive(monitor, builder, session_ticks("AAA", steps), ist(DAY, 16, 0))
+    highs: dict[int, int] = {}
+    closes: dict[int, tuple[int, int]] = {}
+    for n, (second, price, _qty) in enumerate(steps):
+        bucket = second // 300
+        highs[bucket] = max(highs.get(bucket, 0), price)
+        closes[bucket] = max(closes.get(bucket, (-1, 0)), (second * 1000 + n, price))
+    level = oracle_level(expr, pivot, consolidation, highs.get(0))
+    window_end = ist(DAY, 15, 20)
+    expected = next(
+        (
+            b
+            for b in sorted(highs)
+            if level is not None
+            and highs[b] > level
+            and ist(DAY, 9, 15) + timedelta(seconds=300 * b + 302) <= window_end
+        ),
+        None,
+    )
+    assert [bar.high for bar in bars] == [paise(highs[b]) for b in sorted(highs)]
+    if expected is None:
+        assert fired == []
+        return
+    (trigger,) = fired
+    assert trigger.at == ist(DAY, 9, 15) + timedelta(seconds=300 * expected + 302)
+    assert trigger.evaluation.level == paise(level)
+    assert trigger.plan.level == paise(level)
+    assert trigger.context.price == paise(closes[expected][1])
+
+
+@example(entry=10_000, stop=9_000, adtr=1_000, mult=1.0)  # width exactly one ADTR passes
+@example(entry=10_000, stop=8_999, adtr=1_000, mult=1.0)
+@example(entry=10_000, stop=10_000, adtr=1_000, mult=1.0)  # a stop at the entry fails closed
+@given(
+    entry=MAYBE_PAISE,
+    stop=MAYBE_PAISE,
+    adtr=MAYBE_PAISE,
+    mult=st.sampled_from([0.5, 1.0, 1.5, 2.0]),
+)
+def test_adtr_filter_contract(
+    entry: int | None, stop: int | None, adtr: int | None, mult: float
+) -> None:
+    """HAT-CRIT-121: passes iff entry - stop <= max_multiple x ADTR(20), exactly; a stop at or
+    above the entry, or any missing input, fails closed. Harm: an entry whose stop is wider than
+    the stock's daily range is taken, and the stop is hit by ordinary noise."""
+    ctx = LiveContext(at=AT, entry=maybe(entry), stop=maybe(stop), adtr20=maybe(adtr))
+    result = live_contract("adtr_filter", {"max_multiple": mult}, ctx)
+    valid = all(v is not None and v > 0 for v in (entry, stop, adtr))
+    if not valid or stop >= entry:  # type: ignore[operator]
+        assert_no_data(result)
+        return
+    assert result.passed == (entry - stop <= oracle_pct(mult) * adtr)  # type: ignore[operator]
+
+
+@st.composite
+def chase_filters(draw: st.DrawFn) -> tuple[list[dict], str]:
+    """Entry filters with max_chase enabled, disabled or deleted, and an adtr filter maybe."""
+    state = draw(st.sampled_from(["enabled", "disabled", "deleted"]))
+    items: list[dict] = []
+    if draw(st.booleans()):
+        items.append({"type": "adtr_filter", "params": {"max_multiple": 1.0}})
+    if state != "deleted":
+        pct = draw(st.sampled_from([1.0, 2.0, 3.5, 5.0]))
+        items.insert(
+            draw(st.integers(0, len(items))),
+            {"type": "max_chase", "params": {"pct": pct}, "enabled": state == "enabled"},
+        )
+    return items, state
+
+
+@example(price=10_200, level=10_000, pct=2.0, locked=False)  # exactly 2% above passes
+@example(price=10_201, level=10_000, pct=2.0, locked=False)
+@example(price=10_000, level=10_000, pct=2.0, locked=True)  # locked at the upper circuit
+@example(price=10_000, level=10_000, pct=2.0, locked=None)  # circuit state unknown
+@given(
+    price=MAYBE_PAISE,
+    level=MAYBE_PAISE,
+    pct=st.sampled_from([0.5, 1.0, 2.0, 5.0, 12.5]),
+    locked=st.sampled_from([True, False, None]),
+)
+def test_max_chase_contract(
+    price: int | None, level: int | None, pct: float, locked: bool | None
+) -> None:
+    """HAT-CRIT-122: passes iff price <= level x (1 + pct/100), exactly, and the stock is not
+    locked at its upper circuit; an unknown circuit state or a missing price or level fails
+    closed. Harm: an entry far above the breakout, or one into a locked upper circuit that
+    cannot be exited, is bought."""
+    ctx = LiveContext(
+        at=AT, price=maybe(price), trigger_level=maybe(level), locked_upper_circuit=locked
+    )
+    result = live_contract("max_chase", {"pct": pct}, ctx)
+    if price is None or level is None or price <= 0 or level <= 0 or locked is None:
+        assert_no_data(result)
+        return
+    assert result.passed == (not locked and price <= level * (1 + oracle_pct(pct) / 100))
+
+
+DOCUMENTED_CHASE = {S1: Fraction(5), S2: Fraction(2)}  # HAT-CRIT-122 defaults; 2 otherwise
+
+
+@given(
+    filters=chase_filters(),
+    configured=st.one_of(st.none(), st.sampled_from([Decimal("1.5"), Decimal(4)])),
+    strategy=st.sampled_from([S1, S2, "some-other-bot"]),
+)
+def test_max_chase_always_applied(
+    filters: tuple[list[dict], str], configured: Decimal | None, strategy: str
+) -> None:
+    """HAT-CRIT-122 (part of `max_chase_contract`): the entry filters evaluated at a trigger hold
+    exactly one max_chase whatever the config says. An enabled one keeps its place and
+    percentage; a disabled or deleted one is evaluated last with the playbook's last configured
+    percentage, else the strategy's documented default (5 for S1, 2 for S2, else 2). Harm:
+    deleting max_chase in the editor lets a bot buy any distance above the breakout."""
+    items, state = filters
+    book = playbook(filters=items)
+    instances = entry_filter_instances(book, configured, strategy)
+    chases = [i for i in instances if i.type == "max_chase"]
+    assert len(chases) == 1
+    enabled = [i for i in book.entry_filters if i.enabled]
+    if state == "enabled":
+        assert instances == enabled
+        return
+    assert instances[:-1] == enabled and instances[-1].type == "max_chase"
+    want = Fraction(configured) if configured is not None else DOCUMENTED_CHASE.get(strategy, 2)
+    assert oracle_pct(chases[0].params["pct"]) == want
+
+
+@st.composite
+def trigger_sets(draw: st.DrawFn) -> list[dict]:
+    types = draw(st.lists(st.sampled_from(TRIGGER_TYPES), unique=True, max_size=5))
+    items: list[dict] = []
+    for code in types:
+        params: dict = {}
+        if code == "catalyst_attached":
+            params = {"required_in": draw(st.lists(st.sampled_from(MODES), unique=True))}
+        elif code == "price_breaks_level":
+            params = {"level": draw(st.sampled_from(LEVEL_EXPRESSIONS))}
+        items.append({"type": code, "params": params, "enabled": draw(st.booleans())})
+    return items
+
+
+@st.composite
+def live_contexts(draw: st.DrawFn) -> LiveContext:
+    def price() -> Decimal | None:
+        return draw(st.one_of(st.none(), st.integers(9_000, 12_000).map(paise)))
+
+    return LiveContext(
+        at=AT,
+        bar_high=price(),
+        levels={"pivot": price(), "consolidation_high": price(), "opening_range_high": price()},
+        cum_volume=draw(st.one_of(st.none(), st.integers(0, 3_000_000))),
+        elapsed=Fraction(draw(st.integers(1, SESSION_BARS)), SESSION_BARS),
+        avg50_volume=Decimal(draw(st.integers(1, 2_000_000))),
+        adv20=Decimal(draw(st.integers(1, 2_000_000))),
+        open_price=price(),
+        prev_close=price(),
+        announcements=tuple(
+            AT - timedelta(hours=h) for h in draw(st.lists(st.integers(-2, 48), max_size=2))
+        ),
+    )
+
+
+@given(items=trigger_sets(), ctx=live_contexts(), mode=st.sampled_from(MODES))
+def test_trigger_conjunction(items: list[dict], ctx: LiveContext, mode: str) -> None:
+    """HAT-EXEC-121, HAT-CRIT-118: a playbook triggers iff it has at least one blocking enabled
+    trigger criterion and every blocking one passes on the same bar; a disabled criterion is not
+    evaluated, and `catalyst_attached` blocks only in a mode listed in its `required_in` (its
+    result is recorded either way). Harm: one passing criterion fires an entry the others
+    reject, or a playbook with every criterion disabled buys every bar."""
+    book = playbook(trigger=items)
+    evaluation = evaluate_trigger(book, ctx, mode)
+    enabled = [i for i in items if i["enabled"]]
+    assert [o.type for o in evaluation.outcomes] == [i["type"] for i in enabled]
+    blocking = [
+        evaluate_live(i["type"], book.trigger[n].params, ctx).passed
+        for n, i in enumerate(items)
+        if i["enabled"] and (i["type"] != "catalyst_attached" or mode in i["params"]["required_in"])
+    ]
+    assert evaluation.fired == (bool(blocking) and all(blocking))
+
+
+@example(
+    levels={"pivot": 0, "consolidation_high": 10_000, "opening_range_high": 10_100},
+    expr="max(consolidation_high, opening_range_high)",
+)
+@given(
+    levels=st.fixed_dictionaries(
+        {
+            "pivot": st.one_of(st.none(), st.integers(-10, 20_000)),
+            "consolidation_high": st.one_of(st.none(), st.integers(-10, 20_000)),
+            "opening_range_high": st.one_of(st.none(), st.integers(-10, 20_000)),
+        }
+    ),
+    expr=st.sampled_from([*LEVEL_EXPRESSIONS, "close", "max(pivot, opening_range_high)"]),
+)
+def test_level_expression(levels: dict[str, int | None], expr: str) -> None:
+    """HAT-BOT-071: `pivot` and `opening_range_high` name one level each; `max(consolidation_high,
+    opening_range_high)` is the larger of the two and exists only when both do. A missing or
+    non-positive level, or any other expression, has no level (the criterion fails closed with
+    `level_undefined`), and the config refuses an unknown expression. Harm: a breakout level of
+    zero, or the consolidation high alone before the opening range exists, fires at the open."""
+    prices = {k: maybe(v) for k, v in levels.items()}
+    positive = {k: v for k, v in levels.items() if v is not None and v > 0}
+    if expr == "pivot":
+        want = positive.get("pivot")
+    elif expr == "opening_range_high":
+        want = positive.get("opening_range_high")
+    elif expr == LEVEL_EXPRESSIONS[2]:
+        both = [positive.get("consolidation_high"), positive.get("opening_range_high")]
+        want = max(both) if None not in both else None  # type: ignore[type-var]
+    else:
+        want = None
+        with pytest.raises(ValueError):
+            playbook(trigger=[{"type": "price_breaks_level", "params": {"level": expr}}])
+    assert resolve_level(expr, prices) == maybe(want)
+    if expr in LEVEL_EXPRESSIONS:
+        ctx = LiveContext(at=AT, bar_high=paise(30_000), levels=prices)
+        result = live_contract("price_breaks_level", {"level": expr}, ctx)
+        assert result.passed == (want is not None)
+        assert result.reason == ("ok" if want is not None else "level_undefined")
+
+
+EP_BANDS_SEEN = st.sampled_from([None, Decimal(2), Decimal(5), Decimal(10), Decimal(20)])
+
+
+@st.composite
+def gappers(draw: st.DrawFn) -> list[Gapper]:
+    out = []
+    for n in range(draw(st.integers(0, 8))):
+        prev = draw(st.one_of(st.none(), st.integers(1_000, 100_000)))
+        opened = draw(st.one_of(st.none(), st.integers(1_000, 140_000)))
+        out.append(
+            Gapper(
+                row=GapRow(f"S{n}", maybe(opened), maybe(prev), None),
+                passes_universe=draw(st.booleans()),
+                band_known=draw(st.booleans()),
+                band_pct=draw(EP_BANDS_SEEN),
+            )
+        )
+    return out
+
+
+@example(
+    items=[Gapper(GapRow("S0", paise(11_000), paise(10_000), None), True, True, Decimal(20))],
+    passing={"S0"},
+)  # exactly a 10% gap on a 20% band
+@given(items=gappers(), passing=st.sets(st.sampled_from([f"S{n}" for n in range(8)])))
+def test_ep_candidate_bands(items: list[Gapper], passing: set[str]) -> None:
+    """HAT-BOT-052: the EP candidates of a gap scan are, in scan order, exactly the gappers with
+    an open at least 10% above the previous close, in the universe, with a known 10% or 20% band
+    or no band (an F&O name), whose EP setup passes. Harm: a 2% or 5% band stock, which can lock
+    at its circuit right after the entry, or one whose band is unknown, becomes an EP trade."""
+    picked = ep_candidates(items, lambda symbol: symbol in passing)
+    want = [
+        g.row.symbol
+        for g in items
+        if g.row.open is not None
+        and g.row.prev_close is not None
+        and Fraction(g.row.open) >= Fraction(g.row.prev_close) * Fraction(11, 10)
+        and g.passes_universe
+        and g.band_known
+        and g.band_pct in (None, Decimal(10), Decimal(20))
+        and g.row.symbol in passing
+    ]
+    assert picked == want
+
+
+@given(
+    catalyst=st.booleans(),
+    required=st.one_of(st.none(), st.lists(st.sampled_from(MODES), unique=True)),
+)
+def test_catalyst_required_in_confirm(catalyst: bool, required: list[str] | None) -> None:
+    """HAT-CRIT-118, HAT-EXEC-034: on the seeded episodic-pivot playbook, with every other
+    trigger criterion passing, a missing catalyst blocks the trigger exactly in the modes its
+    `required_in` lists (the seed: confirm only) and is recorded, not blocking, in the others.
+    Harm: a confirm-mode EP trade reaches the owner with no news behind the gap, or shadow EP
+    trades stop because shadow has no catalyst feed."""
+    book = seed_playbook(S2, "episodic_pivot")
+    if required is not None:
+        trigger = [
+            i.model_copy(update={"params": {**i.params, "required_in": required}})
+            if i.type == "catalyst_attached"
+            else i
+            for i in book.trigger
+        ]
+        book = book.model_copy(update={"trigger": trigger})
+    blocks_in = required if required is not None else ["confirm"]
+    ctx = LiveContext(
+        at=AT,
+        bar_high=paise(11_500),
+        levels={"opening_range_high": paise(11_400)},
+        cum_volume=1_000_000,
+        adv20=Decimal(1_000_000),
+        open_price=paise(11_000),
+        prev_close=paise(10_000),
+        announcements=(AT - timedelta(hours=2),) if catalyst else (),
+    )
+    for mode in MODES:
+        evaluation = evaluate_trigger(book, ctx, mode)
+        assert evaluation.fired == (catalyst or mode not in blocks_in)
+        (outcome,) = [o for o in evaluation.outcomes if o.type == "catalyst_attached"]
+        assert outcome.result.passed == catalyst
+        assert outcome.blocking == (mode in blocks_in)
+
+
+@st.composite
+def entry_filter_sets(draw: st.DrawFn) -> list[dict]:
+    items: list[dict] = []
+    if draw(st.booleans()):
+        mult = draw(st.sampled_from([0.5, 1.0, 1.5]))
+        items.append({"type": "adtr_filter", "params": {"max_multiple": mult}})
+    if draw(st.booleans()):
+        pct = draw(st.sampled_from([1.0, 2.0, 5.0]))
+        chase = {"type": "max_chase", "params": {"pct": pct}, "enabled": draw(st.booleans())}
+        items.insert(draw(st.integers(0, len(items))), chase)
+    return items
+
+
+def oracle_filter(
+    item: dict, entry: Decimal, stop: Decimal | None, level: Decimal, adtr: int, locked: bool | None
+) -> bool:
+    params = item["params"]
+    if item["type"] == "adtr_filter":
+        if stop is None or stop >= entry:
+            return False
+        return Fraction(entry - stop) <= oracle_pct(params["max_multiple"]) * Fraction(adtr, 100)
+    if locked is None or locked:
+        return False
+    return Fraction(entry) <= Fraction(level) * (1 + oracle_pct(params["pct"]) / 100)
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    entry=st.integers(9_000, 11_000),
+    level=st.integers(9_000, 11_000),
+    stop_pct=st.sampled_from([0.5, 2.0, 5.0, 8.0]),
+    adtr=st.integers(50, 1_500),
+    items=entry_filter_sets(),
+    band=st.sampled_from(["fno", "unknown", "20"]),
+)
+def test_entry_filters_skip(
+    entry: int, level: int, stop_pct: float, adtr: int, items: list[dict], band: str
+) -> None:
+    """HAT-EXEC-122, HAT-CRIT-121, HAT-CRIT-122: at a trigger the stop is planned first, then the
+    entry filters run in their configured order with max_chase always present (last, at the
+    strategy default, when the config disabled or deleted it). The first failure is the skip:
+    the signal is stored Rejected with that reason and stage `entry_filter`, no position opens
+    and the risk check never runs; with no failure the signal goes to the risk check. Harm: a
+    trade the filters reject is opened, or a skipped trade leaves no record of why."""
+    book = playbook(filters=items, stop={"rule": "pct_below_entry", "pct": stop_pct})
+    engine = memory_engine()
+    with Session(engine) as session:
+        world = seed_engine_world(session, instruments=1)
+        daily = DailyInputs(
+            prev_close=paise(10_000),
+            adv20=Decimal(1_000_000),
+            adtr20=paise(adtr),
+            tick=Decimal("0.05"),
+            band_known=band != "unknown",
+            band_pct=Decimal(20) if band == "20" else None,
+        )
+        cand = candidate(book, daily=daily, bot_id=world.bot_id, instrument_id=world.instruments[0])
+        ctx = LiveContext(at=AT, price=paise(entry))
+        plan = plan_entry(cand, ctx, paise(level))
+        locked = None if band == "unknown" else band == "20" and entry >= 12_000
+        chase = [i for i in items if i["type"] == "max_chase" and i["enabled"]]
+        order = [i for i in items if i.get("enabled", True)]
+        if not chase:
+            order.append({"type": "max_chase", "params": {"pct": 5.0}})  # S1's default
+        failing = [
+            i["type"]
+            for i in order
+            if not oracle_filter(i, paise(entry), plan.stop, paise(level), adtr, locked)
+        ]
+        want = plan.skip if plan.stop is None else (failing[0] if failing else None)
+        assert plan.skip == want
+        assert [o.type for o in plan.filters] == [i["type"] for i in order]
+        decided: list[object] = []
+        trigger = Trigger(cand, AT, TriggerEvaluation(True, (), paise(level)), plan, ctx)
+        stored = replace(version_of(seed_policy()), version_id=world.policy_version_id)
+        outcome = submit_trigger(
+            session,
+            trigger,
+            valid_ctx(policy_versions=[stored]),
+            decide=lambda c: decided.append(c) or evaluate_signal(c),
+        )
+        signal = session.get(HatSignal, outcome.signal_id)
+        if want is not None:
+            assert signal.state == "Rejected"
+            assert signal.risk_decision["reason"] == want
+            assert signal.risk_decision["stage"] == "entry_filter"
+            assert outcome.position_id is None and decided == []
+        else:
+            assert "stage" not in signal.risk_decision
+            assert len(decided) == 1

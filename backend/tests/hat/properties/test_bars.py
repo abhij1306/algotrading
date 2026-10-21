@@ -1,11 +1,13 @@
-"""PBT bars.* (HAT-DATA-111..118): the tick hook, 5-minute bars, the opening range, volume pace,
-staleness, persistence, subscriptions and gap capture, all on the real code.
+"""PBT bars.* (HAT-DATA-111..118, HAT-EXEC-120): the tick hook, 5-minute bars, the opening range,
+volume pace, staleness and its health kill, triggers on final bars, persistence, subscriptions and
+gap capture, all on the real code.
 
 Time is explicit: every property passes the instants it wants, so no test reads a clock."""
 
 import tempfile
 import threading
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -14,8 +16,11 @@ from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
 
+import hat_trigger_support as trigger_support
 import pyarrow.parquet as pq
-from hat_support import event_engine
+from hat_engine_support import seed_engine_world
+from hat_risk_support import valid_ctx, version_of
+from hat_support import event_engine, memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import func, select
@@ -35,7 +40,11 @@ from app.hat.data.subscriptions import (
     SubscriptionRegistry,
     load_inputs,
 )
-from app.hat.models import HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
+from app.hat.engine.live_entry import DataHealthKill, TriggerService
+from app.hat.engine.trigger import DailyInputs, TriggerMonitor
+from app.hat.models import HatEvent, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
+from app.hat.risk import controls
+from app.hat.risk.policy import seed_policy
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -483,6 +492,153 @@ def test_staleness_events_recorded(steps: list[tuple[str, int]]) -> None:
     assert stored == trips
     assert changes.count(True) == trips
     assert changes.count(False) == sum(1 for a, b in transitions if a and not b)
+
+
+class Contexts:
+    """The market-side entry inputs: a context every risk check accepts (the feed state is the
+    trigger service's own)."""
+
+    def __init__(self, policy_version_id: object) -> None:
+        self.stored = replace(version_of(seed_policy()), version_id=policy_version_id)
+
+    def entry_context(self, session: Session, bot_id: object, at: datetime) -> object:
+        return valid_ctx(policy_versions=[self.stored])
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    steps=st.lists(
+        st.tuples(st.sampled_from(["tick", "check"]), st.integers(0, 45 * US)), max_size=20
+    ),
+)
+def test_stale_feed_trips_health_kill(steps: list[tuple[str, int]]) -> None:
+    """HAT-DATA-116, HAT-RISK-063: wired as in production (staleness monitor -> EventFeedHealth
+    -> DataHealthKill), the account's data-health kill is tripped exactly while the feed is
+    stale, so every bot is manage-only, and clears by itself when ticks resume; a trigger fired
+    while the feed is stale is stored Rejected with `stale_feed` and opens nothing, one fired
+    on a live feed opens its virtual position. Harm: entries keep being taken on prices that
+    stopped updating."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        world = seed_engine_world(session, instruments=1)
+        session.commit()
+    now = [(10 * 3600) * US]
+    health = EventFeedHealth(
+        lambda: Session(engine), DataHealthKill(lambda: Session(engine), lambda: at_us(now[0]))
+    )
+    monitor = StalenessMonitor(health, is_open)
+    monitor.on_tick(at_us(now[0]))
+    for kind, gap in steps:
+        now[0] += gap
+        if kind == "tick":
+            monitor.on_tick(at_us(now[0]))
+        else:
+            monitor.check(at_us(now[0]))
+        with Session(engine) as session:
+            assert controls.kill_state(session, world.bot_id).health_tripped == monitor.stale
+    book = trigger_support.playbook(
+        trigger=[{"type": "price_breaks_level", "params": {"level": "pivot"}}]
+    )
+    cand = trigger_support.candidate(
+        book,
+        bot_id=world.bot_id,
+        instrument_id=world.instruments[0],
+        pivot=Decimal(99),
+        daily=DailyInputs(
+            tick=Decimal("0.05"), band_known=True, band_pct=None, adv20=Decimal(1_000_000)
+        ),
+    )
+    trigger_monitor = TriggerMonitor(BarBuilder())
+    trigger_monitor.add(cand)
+    service = TriggerService(
+        trigger_monitor,
+        lambda: Session(engine),
+        Contexts(world.policy_version_id),
+        lambda: monitor.stale,
+    )
+    bar = Bar("AAA", at_us(14 * 3600 * US), Decimal(99), Decimal(101), Decimal(98), Decimal(100), 9)
+    (fired,) = service.on_bar(bar)
+    with Session(engine) as session:
+        signal = session.scalar(select(HatSignal).where(HatSignal.bot_id == world.bot_id))
+        opened = session.scalar(select(func.count()).select_from(HatPosition))
+    assert fired.at == bar.final_at
+    if monitor.stale:
+        assert signal.state == "Rejected"
+        assert signal.risk_decision["reason"] == "stale_feed"
+        assert opened == 0
+    else:
+        assert signal.risk_decision["decision"] == "ACCEPT"
+        assert opened == 1
+
+
+# --- triggers on final bars (HAT-EXEC-120) -----------------------------------------------------
+
+
+@example(
+    script=[(300 - 1, 0, 10_100), (300 + 1, 0, 9_900)],
+    pivot=10_000,
+)  # a print above the pivot inside a bar that ends below it: the bar's high still breaks
+@example(script=[(299, 3, 10_100), (300, 0, 9_900)], pivot=10_000)  # the break print is late
+@given(
+    script=st.lists(
+        st.tuples(
+            st.integers(0, 6 * 3600 + 14 * 60),  # exchange second after 09:15
+            st.integers(0, 6),  # arrival delay, seconds (2 s or more after the bar end is late)
+            st.integers(9_800, 10_200),  # paise
+        ),
+        max_size=40,
+    ),
+    pivot=st.integers(9_900, 10_100),
+)
+@settings(max_examples=150, deadline=None)
+def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: int) -> None:
+    """HAT-EXEC-120, HAT-DATA-113: the trigger monitor sees only final bars. With prints
+    arriving late or out of order, a pivot breakout fires once, at the final instant (end + 2 s)
+    of the first final bar in [09:20, 15:20] whose high is above the pivot, never on a print
+    inside a bar that is still open, never from a late print the bar never took, and never at
+    an instant before the bar was handed over. Harm: an entry fires on a print the 5-minute bar
+    later disowns, or before the bar that justifies it exists."""
+    opens = datetime.combine(DAY, time(9, 15), tzinfo=IST)
+    events = sorted(
+        (
+            (
+                opens + timedelta(seconds=s + delay),
+                n,
+                Tick("AAA", opens + timedelta(seconds=s), Decimal(p).scaleb(-2), 1),
+            )
+            for n, (s, delay, p) in enumerate(script)
+        ),
+        key=lambda e: (e[0], e[1]),
+    )
+    book = trigger_support.playbook(
+        trigger=[{"type": "price_breaks_level", "params": {"level": "pivot"}}]
+    )
+    builder = BarBuilder()
+    monitor = TriggerMonitor(builder)
+    monitor.add(trigger_support.candidate(book, pivot=Decimal(pivot).scaleb(-2)))
+    finals: list[tuple[datetime, Bar]] = []
+    fired: list[tuple[datetime, object]] = []
+    for arrival, _n, tick in events:
+        for bar in builder.advance(arrival):
+            finals.append((arrival, bar))
+            fired.extend((arrival, t) for t in monitor.on_bar(bar))
+        builder.on_tick(tick, arrival)
+    end = datetime.combine(DAY, time(16, 0), tzinfo=IST)
+    for bar in builder.advance(end):
+        finals.append((end, bar))
+        fired.extend((end, t) for t in monitor.on_bar(bar))
+    level = Decimal(pivot).scaleb(-2)
+    last_in_window = datetime.combine(DAY, time(15, 20), tzinfo=IST)
+    expected = next(
+        (bar for _, bar in finals if bar.high > level and bar.final_at <= last_in_window), None
+    )
+    if expected is None:
+        assert fired == []
+        return
+    ((handed_at, trigger),) = fired
+    assert trigger.at == expected.final_at <= handed_at
+    assert trigger.context.bar_high == expected.high
+    assert trigger.context.price == expected.close
 
 
 # --- listener hook (HAT-DATA-111) --------------------------------------------------------------

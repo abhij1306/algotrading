@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's crite
 
 # verify-criteria
 
-Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Specs: `docs/specs/hat/04-criteria-and-bots.md` §1-§8 (HAT-CRIT-010..040, 100..114, 120; HAT-BOT-050, 060, 061, 070, 072, 080..084), `01-decisions.md` (HAT-DEC-B2..B7, B22, T10), `00-overview.md` (HAT-OVR-002, 003), `03-schema.md` (HAT-SCH-016, 032).
+Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Specs: `docs/specs/hat/04-criteria-and-bots.md` §1-§8 (HAT-CRIT-010..040, 100..122; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), `07-execution-and-brokers.md` §12 (HAT-EXEC-120..122), `01-decisions.md` (HAT-DEC-B2..B7, B22, T10), `00-overview.md` (HAT-OVR-002, 003), `03-schema.md` (HAT-SCH-016, 032).
 
 ## Properties
 
@@ -55,6 +55,18 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT scan.no_row_for_removed` An instrument removed from the universe produces no watchlist row and the rows of the others are unchanged; `scan_and_publish` uses the bot's own universe on the scan date and publishes once per bot and day. Harm: a removed stock keeps being proposed for entry.
 - `PBT scan.rank_within_members` A universe rank (`momentum_rank`) is taken among the bot's members only: feature rows of instruments outside the universe change no row. Harm: another universe's leaders push this bot's stocks out of its top band.
 - `PBT scan.no_universe_publishes_nothing` A bot with no universe publishes and records nothing, so the same day's run after a universe is assigned still publishes. Harm: an empty "published" watchlist blocks that day's real one.
+- `PBT criteria.gap_up_contract` `gap_up` passes exactly when (open / previous close - 1) x 100 is at least `min_pct` (a 10.00% gap passes), and a missing or non-positive open or close fails closed. Harm: a 9.99% gap starts an EP trade the rule excludes, or a real 10% gap is missed.
+- `PBT criteria.volume_pace_contract` `volume_pace` passes exactly when the day's volume projected to the full session (V / elapsed share, a `Fraction`) is at least `vs_avg50` x the 50-day average volume; before the first bar is final, or with no volume or average, it fails closed. Harm: a thin early burst fires a breakout the volume rule rejects.
+- `PBT criteria.early_volume_contract` `early_volume` passes exactly when the cumulative day volume at the trigger is at least `vs_adv20` x ADV(20); missing inputs fail closed. Harm: an EP gap on thin volume is bought.
+- `PBT criteria.catalyst_attached_contract` `catalyst_attached` passes exactly when a matched announcement was published in [at - within_hours, at], both ends included and nothing after `at`; `required_in` never changes the result. Harm: a stale or future-dated announcement is taken as the catalyst of a confirm-mode EP trade.
+- `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level, at that bar's final instant, with the level as the trigger price and the bar's close as the live price; the opening range level does not exist before its bar is final. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20.
+- `PBT criteria.adtr_filter_contract` `adtr_filter` passes exactly when entry - stop is at most `max_multiple` x ADTR(20); a stop at or above the entry, or a missing input, fails closed. Harm: an entry whose stop is wider than the stock's daily range is stopped out by noise.
+- `PBT criteria.max_chase_contract` `max_chase` passes exactly when price <= level x (1 + pct/100) and the stock is not locked at its upper circuit (unknown circuit state fails closed), and (`test_max_chase_always_applied`) the filters evaluated at a trigger always hold exactly one `max_chase`: an enabled one in place, a disabled or deleted one last with the last configured percentage, else the strategy default (S1 5, S2 2, else 2). Harm: deleting max_chase lets a bot buy any distance above the breakout, or into a locked circuit it cannot exit.
+- `PBT criteria.trigger_conjunction` A playbook triggers exactly when it has at least one blocking enabled trigger criterion and every blocking one passes on the same bar; disabled criteria are not evaluated and `catalyst_attached` blocks only in a mode in its `required_in`. Harm: one passing criterion fires an entry the others reject, or an all-disabled playbook buys every bar.
+- `PBT criteria.entry_filters_skip` On SQLite with the real `open_entry`: the stop is planned first, then the entry filters in order with max_chase always present; the first failure is stored as a Rejected signal with that reason and stage `entry_filter`, no position, and no risk call; with no failure the signal goes to the risk check. Harm: a trade the filters reject is opened, or a skip leaves no reason.
+- `PBT criteria.level_expression` `pivot` and `opening_range_high` name one level each and `max(consolidation_high, opening_range_high)` the larger of two that must both exist; a missing or non-positive level, or any other expression, has no level (`level_undefined`), and the config refuses an unknown expression. Harm: a zero level, or the consolidation high alone before the opening range exists, fires at the open.
+- `PBT criteria.ep_candidate_bands` The EP candidates of a gap scan are, in scan order, exactly the gappers with a gap of at least 10% (exact), in the universe, with a known 10% or 20% band or no band (F&O), whose EP setup passes. Harm: a 2% or 5% band stock that can lock at its circuit after the entry becomes an EP trade.
+- `PBT criteria.catalyst_required_in_confirm` On the seeded episodic-pivot playbook with every other trigger passing, a missing catalyst blocks exactly in the modes its `required_in` lists (the seed: confirm) and is recorded, not blocking, elsewhere. Harm: a confirm-mode EP trade reaches the owner with no news behind the gap, or shadow EP trades stop for want of a catalyst feed.
 
 ## Run
 
@@ -84,7 +96,7 @@ When a check fails, decide which side is wrong before touching anything.
 - A new criterion type: add its parameter model and evaluator under `engine/criteria`, register it in `engine/criteria/__init__.py` in the order of the 04 §4 table, add its row to the spec table first (`criterion_catalogue_complete` reads it), add its `<code>_contract` property to `test_criteria.py` and a bullet and scratch break here.
 - A new config field or rule: the models are in `engine/strategy/config.py`; extend `hat_config_support.py` so the generators produce it, and keep `test_no_risk_keys` generating every key of the risk policy.
 - A seed change: edit the spec YAML first, then the file under `engine/strategy/seeds/`; `seed_bots_match_spec_yaml` compares them.
-- Live criteria (`gap_up`, `volume_pace`, `early_volume`, `catalyst_attached`, `price_breaks_level`, `adtr_filter`, `max_chase`) are registered with parameter schemas only; their evaluation and contracts arrive with PR 15.
+- Live criteria (`gap_up`, `volume_pace`, `early_volume`, `catalyst_attached`, `price_breaks_level`, `adtr_filter`, `max_chase`) read a `LiveContext` (`engine/criteria/live.py`); the trigger stage and entry filters are combined in `engine/trigger.py` and turned into signals in `engine/live_entry.py`. A new live type adds its evaluator, a `<code>_contract` property built from `hat_trigger_support.py`, and a bullet and break here.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-criteria` prints the digest.
 
 ## Coverage
@@ -97,6 +109,8 @@ Code under check:
 - `backend/app/hat/engine/criteria/setup.py`
 - `backend/app/hat/engine/criteria/vcp.py`
 - `backend/app/hat/engine/criteria/live.py`
+- `backend/app/hat/engine/trigger.py`
+- `backend/app/hat/engine/live_entry.py`
 - `backend/app/hat/engine/strategy/__init__.py`
 - `backend/app/hat/engine/strategy/config.py`
 - `backend/app/hat/engine/strategy/scoring.py`
@@ -109,6 +123,7 @@ Checks:
 - `backend/tests/hat/hat_criteria_support.py`
 - `backend/tests/hat/hat_config_support.py`
 - `backend/tests/hat/properties/test_criteria.py`
+- `backend/tests/hat/hat_trigger_support.py`
 - `backend/tests/hat/properties/test_scoring.py`
 - `backend/tests/hat/conformance/test_conf_criteria.py`
 - `backend/tests/hat/fixtures/vcp_oracle.json`
@@ -121,8 +136,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
-Covered digest: `faaa1e4b7fd96c93e7545bb5021789cdf932fd656ab87df2277310b6e0134c88`
+Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
+Covered digest: `782a7cf4dc4bebfaf253ee94485d05e4da7f21bef257b766a483b1db9861b081`
 
 ## Scope changes
 
@@ -130,7 +145,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column (02 §7), so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
 - `vcp` is a port of the legacy detector, not a copy. Dropped (other criteria or outside the spec): the Stage 2 gate, the RS gate, overhead resistance, the volume slope, the grade and the breakout test. A contraction's depth uses the highest high and lowest low of its own bars. The final contraction low is the segment minimum, which can be lower than the legacy pivot low; `vcp_parity` records this. The pivot is the highest high of the final contraction. `MIN_BASE_BARS` stays 15. The score is the mean of four linear sub-scores (an `[OWNER-PENDING]` default).
-- The seven live criteria are registered with schemas and answer `not_evaluable` (no data); their contracts, and `max_chase` always applying (HAT-CRIT-122), are PR 15.
+- PR 15a evaluates the seven live criteria. `catalyst_attached` blocks only in the modes its `required_in` lists, whatever its `mode` field (HAT-CRIT-118 as revised), and `price_breaks_level` breaks on the final bar's high (HAT-CRIT-119 `[OWNER-PENDING]`). Only shadow bots get live candidates until the router (PR 15b); `open_entry` refuses confirm and auto.
 - `neglect` is a trigger type that the Q-EP setup also holds, so it is evaluated here and allowed in a setup list (`extra_stages`).
 - `PBT criteria.fundamentals_point_in_time` (HAT-DEC-I5) is not built: it needs the fundamentals feed (Phase 2). `earnings_growth_contract` covers the point-in-time rule on the criterion itself.
 - `PBT regime.strategy_rules` (HAT-BOT-053) and the shared per-bot cap property of HAT-BOT-050 were built in PR 11 (`verify-portfolio`, `verify-execution`); the config model only stores the regime rule.
@@ -831,4 +846,158 @@ Break: in `backend/app/hat/engine/watchlist.py`: a bot without a universe publis
 
 ```
 FAILED tests/hat/properties/test_scan.py::test_no_universe_publishes_nothing
+```
+
+### PBT criteria.gap_up_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `gap >= min_pct` became `>` (a gap exactly at the minimum fails).
+
+```
+E   AssertionError: assert False == (Fraction(10, 1) >= Fraction(10, 1))
+E    +  where False = CriterionResult(passed=False, score=0.0, value=10.0, reason='gap_too_small', extras={}).passed
+E    +  and   Fraction(10, 1) = oracle_pct(10.0)
+E   Failing explicit example: test_gap_up_contract(
+E       open_=11000,
+E       prev=10000,
+```
+
+### PBT criteria.volume_pace_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `projected >= needed` became `>`.
+
+```
+E   AssertionError: assert False == (Fraction(1500, 1) >= (Fraction(3, 2) * 1000))
+E    +  where False = CriterionResult(passed=False, score=0.0, value=1500.0, reason='volume_pace_low', extras={}).passed
+E    +  and   Fraction(3, 2) = oracle_pct(1.5)
+E   Failing explicit example: test_volume_pace_contract(
+E       volume=1500,
+E       bars=75,
+```
+
+### PBT criteria.early_volume_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `cum_volume >= needed` became `>`.
+
+```
+E   AssertionError: assert False == (500 >= (Fraction(1, 2) * 1000))
+E    +  where False = CriterionResult(passed=False, score=0.0, value=500.0, reason='early_volume_low', extras={}).passed
+E    +  and   Fraction(1, 2) = oracle_pct(0.5)
+E   Failing explicit example: test_early_volume_contract(
+E       volume=500,
+E       adv=1000,
+```
+
+### PBT criteria.catalyst_attached_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: the window lost its upper end (`since <= t`), so a future-dated announcement counts.
+
+```
+E   AssertionError: assert True == False
+E    +  where True = CriterionResult(passed=True, score=1.0, value=-0.0002777777777777778, reason='ok', extras={}).passed
+E    +  and   False = bool([])
+E   Failing explicit example: test_catalyst_attached_contract(
+E       offsets=[-1],
+E       hours=1,
+```
+
+### PBT criteria.price_breaks_level_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `high > level` became `>=` (a touch is a break).
+
+```
+E   AssertionError: assert datetime.datetime(2026, 10, 21, 9, 20, 2, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) == (datetime.datetime(2026, 10, 21, [cut]
+E    +  where datetime.datetime(2026, 10, 21, 9, 20, 2, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) = Trigger(candidate=Candidate(bot_id=UUID('00000 [cut]
+E    +  and   datetime.datetime(2026, 10, 21, 9, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) = ist(datetime.date(2026, 10, 21), 9, 15)
+```
+
+### PBT criteria.adtr_filter_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `width <= max_multiple x ADTR` became `<`.
+
+```
+E   AssertionError: assert False == ((10000 - 9000) <= (Fraction(1, 1) * 1000))
+E    +  where False = CriterionResult(passed=False, score=0.0, value=1.0, reason='stop_wider_than_adtr', extras={}).passed
+E    +  and   Fraction(1, 1) = oracle_pct(1.0)
+E   Failing explicit example: test_adtr_filter_contract(
+E       entry=10000,
+E       stop=9000,
+```
+
+### PBT criteria.max_chase_contract
+
+Break: in `backend/app/hat/engine/criteria/live.py`: the upper-circuit check was removed (`if ctx.locked_upper_circuit:` became `if False:`).
+
+```
+E   AssertionError: assert True == ((not True))
+E    +  where True = CriterionResult(passed=True, score=1.0, value=0.0, reason='ok', extras={}).passed
+E   Failing explicit example: test_max_chase_contract(
+E       price=10000,
+E       level=10000,
+E       pct=2.0,
+```
+
+Break: in `backend/app/hat/engine/trigger.py`: `entry_filter_instances` returns the enabled filters as they are (`if any(...MAX_CHASE...)` became `if True:`), so a deleted max_chase is not applied.
+
+```
+E   assert 0 == 1
+E    +  where 0 = len([])
+E   Failing test case: test_max_chase_always_applied(
+E       # The test always failed when commented parts were varied together.
+E       filters=([], 'deleted'),
+E       configured=None,  # or any other generated value
+```
+
+### PBT criteria.trigger_conjunction
+
+Break: in `backend/app/hat/engine/trigger.py`: `fired = bool(blocking_results) and all(blocking_results)` became `all(blocking_results)` (an empty trigger set fires).
+
+```
+E   assert True == ((False))
+E    +  where True = TriggerEvaluation(fired=True, outcomes=(), level=None).fired
+E    +  and   False = bool([])
+```
+
+### PBT criteria.entry_filters_skip
+
+Break: in `backend/app/hat/engine/trigger.py`: every failing filter overwrites the skip (`if skip is None and not result.passed` became `if not result.passed`), so the last failure, not the first, is stored.
+
+```
+E   AssertionError: assert 'max_chase' == 'adtr_filter'
+E     
+E     - adtr_filter
+E     + max_chase
+E   Failing test case: test_entry_filters_skip(
+E       # The test always failed when commented parts were varied together.
+```
+
+### PBT criteria.level_expression
+
+Break: in `backend/app/hat/engine/criteria/live.py`: `resolve_level` returns the larger of the known levels even when one is missing.
+
+```
+E   AssertionError: assert Decimal('0.01') == None
+E    +  where Decimal('0.01') = resolve_level('max(consolidation_high, opening_range_high)', {'pivot': None, 'consolidation_high': None, 'opening_rang [cut]
+E    +  and   None = maybe(None)
+E   Failing test case: test_level_expression(
+```
+
+### PBT criteria.ep_candidate_bands
+
+Break: in `backend/app/hat/engine/live_entry.py`: `ep_candidates` dropped the EP setup condition.
+
+```
+E   AssertionError: assert ['S0'] == []
+E     
+E     Left contains one more item: 'S0'
+E     
+```
+
+### PBT criteria.catalyst_required_in_confirm
+
+Break: in `backend/app/hat/engine/trigger.py`: every trigger criterion blocks (`blocking = True`), ignoring `required_in`.
+
+```
+E   AssertionError: assert True == ('shadow' in ['confirm'])
+E   AssertionError: assert False == ((False or 'shadow' not in ['confirm']))
+============================== 1 failed in 1.36s ===============================
 ```

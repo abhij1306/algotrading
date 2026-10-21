@@ -19,12 +19,15 @@ from .base import (
     CriterionType,
     EvalContext,
     Evaluator,
+    LiveEvaluator,
     ParamModel,
     Stage,
     no_data,
 )
+from .live import LiveContext
 
 BARS = "bars_daily"
+NOT_EVALUABLE = "not_evaluable"
 FEATURES = "features_daily"
 
 
@@ -39,8 +42,17 @@ def _t(
     needs: tuple[str, ...],
     evaluate: Evaluator | None = None,
     extra_stages: tuple[Stage, ...] = (),
+    live_fn: LiveEvaluator | None = None,
 ) -> CriterionType:
-    return CriterionType(code, stage, params, needs, evaluate, extra_stages=extra_stages)
+    return CriterionType(
+        code, stage, params, needs, evaluate, extra_stages=extra_stages, evaluate_live=live_fn
+    )
+
+
+def _live(
+    code: str, stage: Stage, params: type[ParamModel], needs: tuple[str, ...], fn: LiveEvaluator
+) -> CriterionType:
+    return _t(code, stage, params, needs, live_fn=fn)
 
 
 # Library-table order of 04 §4.
@@ -75,15 +87,29 @@ _TYPES = (
         ("fundamentals",),
         setup.earnings_growth,
     ),
-    _t("gap_up", "trigger", live.GapUpParams, ("preopen", "live_bars")),
-    _t("volume_pace", "trigger", live.VolumePaceParams, ("live_bars", BARS)),
-    _t("early_volume", "trigger", live.EarlyVolumeParams, ("live_bars", BARS)),
-    _t("catalyst_attached", "trigger", live.CatalystAttachedParams, ("announcements",)),
-    _t("price_breaks_level", "trigger", live.PriceBreaksLevelParams, ("live_bars",)),
+    _live("gap_up", "trigger", live.GapUpParams, ("preopen", "live_bars"), live.gap_up),
+    _live("volume_pace", "trigger", live.VolumePaceParams, ("live_bars", BARS), live.volume_pace),
+    _live(
+        "early_volume", "trigger", live.EarlyVolumeParams, ("live_bars", BARS), live.early_volume
+    ),
+    _live(
+        "catalyst_attached",
+        "trigger",
+        live.CatalystAttachedParams,
+        ("announcements",),
+        live.catalyst_attached,
+    ),
+    _live(
+        "price_breaks_level",
+        "trigger",
+        live.PriceBreaksLevelParams,
+        ("live_bars",),
+        live.price_breaks_level,
+    ),
     # The Q-EP setup is built live and holds `neglect` (BL "Qullamaggie-style bot").
     _t("neglect", "trigger", setup.NeglectParams, (BARS,), setup.neglect, ("setup",)),
-    _t("adtr_filter", "entry_filter", live.AdtrFilterParams, (BARS,)),
-    _t("max_chase", "entry_filter", live.MaxChaseParams, ("live_bars",)),
+    _live("adtr_filter", "entry_filter", live.AdtrFilterParams, (BARS,), live.adtr_filter),
+    _live("max_chase", "entry_filter", live.MaxChaseParams, ("live_bars",), live.max_chase),
 )
 
 REGISTRY: dict[str, CriterionType] = {t.code: t for t in _TYPES}
@@ -96,16 +122,32 @@ def get_type(code: str) -> CriterionType:
         raise UnknownCriterionError("unknown criterion type") from None
 
 
-def evaluate(code: str, params: BaseModel | dict[str, Any], ctx: EvalContext) -> CriterionResult:
-    """Validate `params` against the type's model and evaluate. A live type (no daily
-    evaluator) is not evaluated here: it fails closed with reason `not_evaluable`."""
-    ctype = get_type(code)
+def _params(ctype: CriterionType, params: BaseModel | dict[str, Any]) -> BaseModel:
     # Always validate afresh: a model instance may have been changed since it was built.
     raw = params.model_dump() if isinstance(params, BaseModel) else params
-    model = ctype.params.model_validate(raw)
+    return ctype.params.model_validate(raw)
+
+
+def evaluate(code: str, params: BaseModel | dict[str, Any], ctx: EvalContext) -> CriterionResult:
+    """Validate `params` against the type's model and evaluate over daily bars. A live type
+    has no daily evaluator: here it fails closed with reason `not_evaluable`."""
+    ctype = get_type(code)
+    model = _params(ctype, params)
     if ctype.evaluate is None:
-        return no_data("not_evaluable")
+        return no_data(NOT_EVALUABLE)
     return ctype.evaluate(ctx, model)
+
+
+def evaluate_live(
+    code: str, params: BaseModel | dict[str, Any], ctx: live.LiveContext
+) -> CriterionResult:
+    """Validate `params` and evaluate a live trigger or entry filter at one instant. A daily
+    type is not evaluated here: it fails closed with reason `not_evaluable`."""
+    ctype = get_type(code)
+    model = _params(ctype, params)
+    if ctype.evaluate_live is None:
+        return no_data(NOT_EVALUABLE)
+    return ctype.evaluate_live(ctx, model)
 
 
 __all__ = [
@@ -114,7 +156,9 @@ __all__ = [
     "CriterionResult",
     "CriterionType",
     "EvalContext",
+    "LiveContext",
     "UnknownCriterionError",
     "evaluate",
+    "evaluate_live",
     "get_type",
 ]
