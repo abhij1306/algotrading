@@ -366,6 +366,69 @@ class McpClient:
             raise McpError(CODE_BAD_RESPONSE, attempts=1)
         return [s for s in stocks if isinstance(s, dict) and isinstance(s.get("symbol"), str)]
 
+    def corporate_actions(self, symbol: str, from_date: date, to_date: date) -> CorporateActionPage:
+        """`get_corporate_actions` for one symbol (HAT-DATA-094). An `error` answer is a failed
+        call, never "no actions"; a `warning` marks the list incomplete."""
+        data = self.call(
+            SERVER_BHAVCOPY,
+            "get_corporate_actions",
+            {"symbol": symbol, "fromDate": from_date.isoformat(), "toDate": to_date.isoformat()},
+            symbol_count=1,
+        )
+        if not isinstance(data, dict) or "error" in data:
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        actions = data.get("actions")
+        if not isinstance(actions, list):
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        return CorporateActionPage(
+            [a for a in actions if isinstance(a, dict)], incomplete="warning" in data
+        )
+
+    def stock_history(self, symbol: str, end_date: date, months: int = 1) -> list[dict[str, Any]]:
+        """`get_stock_history` rows (raw, unadjusted) for the window ending at `end_date`; used
+        by the build's validation sample (HAT-DATA-096)."""
+        data = self.call(
+            SERVER_BHAVCOPY,
+            "get_stock_history",
+            {"symbol": symbol, "months": months, "endDate": end_date.isoformat()},
+            symbol_count=1,
+        )
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        return [r for r in rows if isinstance(r, dict)]
+
+    def index_history(
+        self, index_name: str, end_date: date, months: int = 12
+    ) -> tuple[list[dict[str, Any]], date | None]:
+        """One chunk of `get_index_history` and the `next_end_date` to chain from."""
+        data = self.call(
+            SERVER_BHAVCOPY,
+            "get_index_history",
+            {"indexName": index_name, "months": months, "endDate": end_date.isoformat()},
+            symbol_count=1,
+        )
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        return (
+            [r for r in rows if isinstance(r, dict)],
+            parse_data_date(data.get("next_end_date")),
+        )
+
+
+@dataclass(frozen=True)
+class CorporateActionPage:
+    actions: list[dict[str, Any]]
+    incomplete: bool
+
+
+def client_from_env(env: Mapping[str, str]) -> McpClient | None:
+    """The real client for an operator run (the history build CLI), or None when no endpoint is
+    configured; tests never call this."""
+    endpoints = endpoints_from_env(env)
+    return McpClient(HttpTransport(endpoints)) if endpoints else None
+
 
 def _quote_date(data: object) -> date | None:
     quotes = data.get("quotes") if isinstance(data, dict) else None

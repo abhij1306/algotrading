@@ -47,6 +47,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
     )
 
 
+def process_env() -> Mapping[str, str]:
+    """The process environment, for operator entry points that read other `HAT_*` variables."""
+    return os.environ
+
+
 def is_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Only the `HAT_ENABLED` switch, so an unrelated bad setting cannot fail a disabled start."""
     source = os.environ if env is None else env
