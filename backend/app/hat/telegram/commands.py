@@ -1,0 +1,383 @@
+"""The text commands (08 §3; HAT-TG-030..037, HAT-DEC-I11, HAT-GOV-080).
+
+The command set is closed: exactly the ten in `COMMANDS`, each with a fixed argument shape;
+anything else is refused with no state change (HAT-TG-030). No command takes a price, a size or
+a stop, none acts on a single position, and none touches the regime gate (HAT-GOV-080,
+HAT-DEC-B12).
+
+This is the text path, and it holds no route to an order (HAT-TG-031, CONF
+`telegram.no_order_import_in_text_path`): it imports nothing that places, sends or approves one.
+`/flatten`, `/arm` and `/mode … auto` only ask for a second confirmation here; the confirmed
+action runs from its button (`callbacks.py`). Every handler works in the caller's transaction
+and does not commit; the service logs the command in the same transaction.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from ..errors import HatError
+from ..execution.modes import (
+    AUTO,
+    MODES,
+    ModeRefusedError,
+    UnknownModeError,
+    request_mode,
+    request_mode_change,
+)
+from ..models import HatBot, HatBrokerAccount
+from ..risk import controls, kill
+from ..risk.modes import ModeChangeError, plan_mode_change
+from ..risk.sessions import SessionCalendar, SessionState
+from ..settings import load_settings, process_env
+from ..time import trade_date_of
+from . import reads, render
+from .client import Button
+from .confirm import PendingConfirmations
+
+__all__ = [
+    "COMMANDS",
+    "CommandContext",
+    "Reply",
+    "addressee",
+    "for_another_bot",
+    "parse",
+    "queue_modes",
+    "rearm_all",
+    "run_command",
+]
+
+# (fewest, most) arguments of each command; its keys are the command set, in spec order.
+_ARITY = {
+    "/status": (0, 0),
+    "/positions": (0, 0),
+    "/watchlist": (0, 1),
+    "/pause": (0, 1),
+    "/resume": (0, 1),
+    "/mode": (1, 2),
+    "/kill": (0, 0),
+    "/flatten": (0, 0),
+    "/arm": (0, 0),
+    "/login": (0, 1),
+}
+COMMANDS = tuple(_ARITY)
+_MAX_ARG = 64
+
+
+@dataclass(frozen=True)
+class Reply:
+    """A handler's answer: whether the command was accepted, the reason when it was not, and
+    the message (and buttons) to send back."""
+
+    accepted: bool
+    reason: str | None = None
+    text: str | None = None
+    buttons: tuple[tuple[Button, ...], ...] = field(default=())
+
+
+def refused(reason: str, text: str | None = None) -> Reply:
+    return Reply(False, reason, text or f"Refused: {reason}")
+
+
+@dataclass(frozen=True)
+class CommandContext:
+    chat_id: int
+    now: datetime
+    confirmations: PendingConfirmations
+    links: reads.LoginLinks | None = None
+    price: reads.PriceSource = field(default=lambda _instrument: None)
+    feed: Callable[[], str] = field(default=lambda: "unknown")
+    bot_username: str | None = None  # the bot's own `getMe` username; None when unknown
+
+
+def addressee(text: str) -> str | None:
+    """The `@bot` suffix of a message's first word (`/kill@hat_bot` -> `hat_bot`), else None."""
+    parts = text.strip().split(maxsplit=1)
+    if not parts or "@" not in parts[0]:
+        return None
+    return parts[0].split("@", 1)[1]
+
+
+def for_another_bot(text: str, bot_username: str | None) -> bool:
+    """A command whose `@bot` suffix names another bot, compared without case. While this bot's
+    own username is unknown every suffixed command counts as another bot's (fail closed)."""
+    suffix = addressee(text)
+    if suffix is None:
+        return False
+    return bot_username is None or suffix.lower() != bot_username.lower()
+
+
+def parse(text: str) -> tuple[str, list[str]] | None:
+    """(command, args) of a message that starts with one of the ten commands (an `@bot` suffix
+    is allowed; `run_command` checks that it names this bot) and has the command's number of
+    arguments; else None."""
+    parts = text.strip().split()
+    if not parts:
+        return None
+    command = parts[0].split("@", 1)[0].lower()
+    args = parts[1:]
+    if command not in _ARITY:
+        return None
+    fewest, most = _ARITY[command]
+    if not fewest <= len(args) <= most or any(len(a) > _MAX_ARG for a in args):
+        return None
+    return command, args
+
+
+# --- read-only commands (HAT-TG-037) -----------------------------------------------------------
+
+
+def _status(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
+    return Reply(True, text=render.status_text(reads.status_view(session, ctx.now, ctx.feed())))
+
+
+def _positions(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
+    return Reply(True, text=render.positions_text(reads.position_rows(session, ctx.now, ctx.price)))
+
+
+def _watchlist(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    bots = reads.bots_named(session, args[0] if args else None)
+    if not bots:
+        return refused("unknown_bot")
+    day = trade_date_of(ctx.now)
+    texts = []
+    for bot in bots:
+        found, rows = reads.watchlist_rows(session, bot, day)
+        texts.append(render.watchlist_text(reads.bot_label(session, bot), found, rows))
+    return Reply(True, text="\n\n".join(texts))
+
+
+def _login(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    accounts = reads.accounts(session, args[0] if args else None)
+    if not accounts:
+        return refused("unknown_broker")
+    links = [
+        (reads.account_label(a), ctx.links.link(a) if ctx.links is not None else None)
+        for a in accounts
+    ]
+    return Reply(True, text=render.login_text(links, repeat=False))
+
+
+# --- controls ----------------------------------------------------------------------------------
+
+
+def _pause(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    bots = reads.bots_named(session, args[0] if args else None)
+    if not bots:
+        return refused("unknown_bot")
+    done = [
+        reads.bot_label(session, b)
+        for b in bots
+        if controls.pause_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
+    ]
+    if not done:
+        return refused("not_active", "Nothing to pause")
+    return Reply(True, text=f"Paused (manage-only): {', '.join(done)}")
+
+
+def _resume(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    bots = reads.bots_named(session, args[0] if args else None)
+    if not bots:
+        return refused("unknown_bot")
+    done = [
+        reads.bot_label(session, b)
+        for b in bots
+        if controls.resume_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
+    ]
+    if not done:
+        return refused("not_paused", "Nothing to resume")
+    return Reply(True, text=f"Resumed: {', '.join(done)} (a tripped kill switch still holds)")
+
+
+def _kill(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
+    """HAT-TG-034: trip the account kill switch; `trip_kill` ends every pending approval in the
+    same transaction. Exits and stops keep running."""
+    row = controls.trip_kill(
+        session,
+        scope="account",
+        bot_id=None,
+        reason="manual",
+        now=ctx.now,
+        actor="user",
+        chat_id=ctx.chat_id,
+    )
+    if row is None:
+        return refused("already_tripped", "The account kill switch is already tripped")
+    return Reply(True, text="Kill switch tripped: every bot is manage-only; approvals cancelled")
+
+
+def _ask(ctx: CommandContext, action: str, bots: tuple[str, ...] = ()) -> Reply:
+    data, pending = ctx.confirmations.ask(action, ctx.chat_id, ctx.now, bots)
+    return Reply(
+        True,
+        text=render.confirm_text(action, pending.expires_at),
+        buttons=((("Confirm", data),),),
+    )
+
+
+def _flatten(ctx: CommandContext, _session: Session, _args: Sequence[str]) -> Reply:
+    return _ask(ctx, "flatten")
+
+
+def _tripped(session: Session) -> list[tuple[str, HatBot | None]]:
+    """The drawdown or manual kills that are tripped now: (scope, bot)."""
+    rows = controls.kill_rows(session)
+    out: list[tuple[str, HatBot | None]] = []
+    if kill.current_state(rows, "account", None, "risk") == kill.TRIPPED:
+        out.append(("account", None))
+    for bot in reads.bots_named(session, None):
+        if kill.current_state(rows, "bot", bot.id, "risk") == kill.TRIPPED:
+            out.append(("bot", bot))
+    return out
+
+
+def _arm(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
+    if not _tripped(session):
+        return refused("nothing_tripped", "No kill switch to re-arm")
+    return _ask(ctx, "arm")
+
+
+def rearm_all(session: Session, now: datetime, chat_id: int) -> int:
+    """The confirmed `/arm`: re-arm every tripped drawdown or manual kill (HAT-RISK-064)."""
+    count = 0
+    for scope, bot in _tripped(session):
+        row = controls.rearm_kill(
+            session,
+            scope=scope,
+            bot_id=bot.id if bot is not None else None,
+            confirmed=True,
+            now=now,
+            chat_id=chat_id,
+        )
+        count += row is not None
+    return count
+
+
+def _account(session: Session, bot: HatBot) -> HatBrokerAccount | None:
+    return session.get(HatBrokerAccount, bot.broker_account_id)
+
+
+def _owner_accounts(session: Session, bots: Sequence[HatBot]) -> bool:
+    """HAT-OVR-061: auto is the owner's switch: every bot's account belongs to `HAT_USER_ID`."""
+    owner = load_settings(process_env()).user_id
+    for bot in bots:
+        account = _account(session, bot)
+        if account is None or account.user_id != owner:
+            return False
+    return True
+
+
+def _mode_refusal(
+    session: Session, bots: Sequence[HatBot], to_mode: str, now: datetime, calendar: SessionCalendar
+) -> str | None:
+    """Why the change may not be queued now (HAT-TG-032), checked without writing."""
+    if to_mode not in MODES:
+        return "unknown_mode"
+    state = calendar.state(now)
+    if state is SessionState.UNKNOWN:
+        return "no_calendar"  # no row for today: whether the market is open is not known
+    if state is not SessionState.CLOSED:
+        return "market_hours"
+    if to_mode == AUTO and not _owner_accounts(session, bots):
+        return "auto_not_owner"
+    try:
+        plan_mode_change(to_mode, now, calendar)
+        for bot in bots:
+            account = _account(session, bot)
+            request_mode(
+                to_mode,
+                account_status=account.status if account is not None else "",
+                capabilities=(account.capabilities or {}) if account is not None else {},
+            )
+    except UnknownModeError:
+        return "unknown_mode"
+    except ModeRefusedError:
+        return "mode_needs_gtt"
+    except ModeChangeError:
+        return "no_next_session"
+    return None
+
+
+def queue_modes(
+    session: Session, bots: Sequence[HatBot], to_mode: str, now: datetime, chat_id: int
+) -> Reply:
+    """Queue `to_mode` for every bot from the next session open, all or none. Refused, with
+    nothing written, inside market hours, for an unknown mode, or for an account without GTT."""
+    calendar = reads.session_calendar(session)
+    if calendar is None:
+        return refused("no_calendar")
+    refusal = _mode_refusal(session, bots, to_mode, now, calendar)
+    if refusal is not None:
+        return refused(refusal)
+    effective = None
+    for bot in bots:
+        try:
+            row = request_mode_change(
+                session,
+                bot_id=bot.id,
+                to_mode=to_mode,
+                requested_at=now,
+                calendar=calendar,
+                via="telegram",
+                actor="user",
+                chat_id=chat_id,
+            )
+        except HatError:
+            session.rollback()
+            return refused("mode_refused")
+        effective = row.effective_from
+    names = ", ".join(reads.bot_label(session, b) for b in bots)
+    when = effective.isoformat() if effective is not None else "the next session"
+    return Reply(True, text=f"Mode {to_mode} for {names} from {when}")
+
+
+def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    to_mode = args[-1].lower()
+    bots = reads.bots_named(session, args[0] if len(args) == 2 else None)
+    if not bots:
+        return refused("unknown_bot")
+    if to_mode != AUTO:
+        return queue_modes(session, bots, to_mode, ctx.now, ctx.chat_id)
+    calendar = reads.session_calendar(session)
+    if calendar is None:
+        return refused("no_calendar")
+    refusal = _mode_refusal(session, bots, to_mode, ctx.now, calendar)
+    if refusal is not None:
+        return refused(refusal)
+    return _ask(ctx, "mode_auto", tuple(str(b.id) for b in bots))
+
+
+Handler = Callable[[CommandContext, Session, Sequence[str]], Reply]
+HANDLERS: dict[str, Handler] = {
+    "/status": _status,
+    "/positions": _positions,
+    "/watchlist": _watchlist,
+    "/pause": _pause,
+    "/resume": _resume,
+    "/mode": _mode,
+    "/kill": _kill,
+    "/flatten": _flatten,
+    "/arm": _arm,
+    "/login": _login,
+}
+
+
+def run_command(ctx: CommandContext, session: Session, text: str) -> tuple[str, str | None, Reply]:
+    """Run one text message: (logged command, logged args, reply). Text that is not one of the
+    ten commands with valid arguments is refused and changes nothing. A command addressed to
+    another bot in a group (`/kill@other_bot`) is ignored: refused (`other_bot`) with no reply."""
+    parts = text.strip().split()
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    logged = head if head.startswith("/") else "text"
+    if for_another_bot(text, ctx.bot_username):
+        return logged, None, Reply(False, "other_bot")
+    parsed = parse(text)
+    if parsed is None:
+        reason = "unknown_command" if head not in _ARITY else "bad_arguments"
+        return logged, None, refused(reason)
+    command, args = parsed
+    return command, " ".join(args) or None, HANDLERS[command](ctx, session, args)

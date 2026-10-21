@@ -5,7 +5,9 @@ checked by `tests/hat/db`."""
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import get_args
 
+import pytest
 from hat_support import event_engine
 from hypothesis import given
 from hypothesis import strategies as st
@@ -13,9 +15,11 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.orm import Session
 
 from app.hat.events import (
+    ACTORS,
     AGGREGATE_TYPES,
     EVENT_TYPES,
     TRADE_EVENT_TYPES,
+    Actor,
     EventError,
     record,
 )
@@ -451,3 +455,48 @@ def test_events_stay_after_a_failed_neighbour(start: int, count: int) -> None:
                 pass
         session.commit()
     assert count_events(aggregate_id) == count
+
+
+CHAT_IDS = st.one_of(
+    st.integers(min_value=-(10**15), max_value=10**15),
+    st.none(),
+    st.booleans(),
+    st.text(max_size=8),
+    st.floats(allow_nan=False, allow_infinity=False),
+)
+
+
+@given(st.sampled_from(sorted(ACTORS)), CHAT_IDS, st.booleans())
+def test_user_actor_chat_id(actor: str, chat_id: object, present: bool) -> None:
+    """HAT-SCH-065: `record()` writes a `user` event only when its payload carries the
+    Telegram chat id as an integer, and refuses it, writing nothing, otherwise; other actors
+    need no chat id. The `Actor` type names exactly the catalogue's actors. Harm: skips,
+    flattens and pauses cannot be counted in the discipline metrics."""
+    assert frozenset(get_args(Actor)) == ACTORS
+    aggregate_id = uuid.uuid4()
+    payload = {"chat_id": chat_id} if present else {}
+    valid = isinstance(chat_id, int) and not isinstance(chat_id, bool) and present
+    with Session(ENGINE) as session:
+        if actor == "user" and not valid:
+            with pytest.raises(EventError):
+                record(
+                    session,
+                    aggregate_type="bot",
+                    aggregate_id=aggregate_id,
+                    event_type="bot.paused",
+                    actor=actor,  # type: ignore[arg-type]
+                    payload=payload,
+                )
+            session.commit()
+            assert count_events(aggregate_id) == 0
+            return
+        record(
+            session,
+            aggregate_type="bot",
+            aggregate_id=aggregate_id,
+            event_type="bot.paused",
+            actor=actor,  # type: ignore[arg-type]
+            payload=payload,
+        )
+        session.commit()
+    assert count_events(aggregate_id) == 1

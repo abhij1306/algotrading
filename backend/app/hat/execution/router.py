@@ -148,11 +148,15 @@ class ExecutionRouter:
         guard: ExecutionGuard,
         reconciler: ReconciliationService,
         notifier: Notifier | None = None,
+        issuer: trades.TokenIssuer | None = None,
     ) -> None:
         self._broker = broker
         self._guard = guard
         self._reconciler = reconciler
         self._notifier = notifier or LogNotifier()
+        # Signs each approval card's token (the Telegram signer). Without one a confirm card
+        # can never be taken (`trades._send_approval`).
+        self._issuer = issuer
 
     # --- routing ------------------------------------------------------------------------------
 
@@ -173,7 +177,7 @@ class ExecutionRouter:
         if bot is None:
             raise trades.TradeError("unknown_bot")
         mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
-        outcome = trades.open_entry(session, request, decide=decide, mode=mode)
+        outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
         session.commit()
         if outcome.mode == AUTO and outcome.state == lifecycle.TRIGGERED:
             self.place_entry(session, outcome.signal_id, now=now, check=check)

@@ -6,11 +6,16 @@
 (* unique row is per key. NWorkers callers race on it, through the         *)
 (* scheduler, which exists only when HAT is enabled.                       *)
 (*                                                                         *)
-(* A second, independent part models the windowed job `exits.close` of  *)
+(* A second, independent part models the windowed job `exits.close` of    *)
 (* one trade date (HAT-EXEC-074, B18): the clock passes 15:20, 15:25 and   *)
-(* 15:30; the scheduler starts the job only inside its window and retries *)
+(* 15:30; the scheduler starts the job only inside its window and retries  *)
 (* a failure there; the body refuses outside the window; a sale it decides *)
 (* is sent only while the clock at sending is before 15:30.                *)
+(*                                                                         *)
+(* A third part models the Telegram day (08 §2, PR 16): its clock passes   *)
+(* 08:30, 09:05 and 15:30; the broker login comes and goes; the 08:30      *)
+(* prompt, the 09:05 reprompt and the after-close reports each run once,   *)
+(* send only on a trading day, and the reprompt only while logged out.     *)
 (*                                                                         *)
 (* Bounds: NWorkers = 2 concurrent callers of run_job for the one key;     *)
 (*   MaxCalls = 3 run_job calls per caller (also the most exits.close      *)
@@ -29,17 +34,23 @@
 (*   The clock moves forward through four spans (before 15:20, the window  *)
 (*   to 15:25, 15:25 to 15:30, after 15:30) at any point between actions;  *)
 (*   a run of exits.close and each of its sales are atomic steps that read *)
-(*   the clock once.                                                       *)
+(*   the clock once. The Telegram clock is a second, independent one with  *)
+(*   four spans (before 08:30, to 09:05, to 15:30, after the close); the   *)
+(*   day is a trading day or not from the start; each Telegram job reads   *)
+(*   the calendar and the login state once, in one atomic step.            *)
 (*                                                                         *)
 (* Properties: AtMostOnceSuccess, FailedJobRetryable, NoJobWhenDisabled,   *)
-(*   ExitsCloseInWindow (invariants) and NoStuckRunning (temporal).        *)
+(*   ExitsCloseInWindow, LoginPromptOrder, ReportsAfterClose (invariants)  *)
+(*   and NoStuckRunning (temporal).                                        *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS NWorkers, MaxCalls, MaxRestarts, BrokenMode
 
 ASSUME BrokenMode \in {"none", "retry_after_success", "split_claim", "no_reap",
-                       "ignore_enabled", "no_retry", "no_window", "late_send"}
+                       "ignore_enabled", "no_retry", "no_window", "late_send",
+                       "prompt_holiday", "reprompt_logged_in", "report_before_close",
+                       "report_holiday"}
 
 \* The spans of the exits.close day: before 15:20, the window, 15:25-15:30, after 15:30.
 Spans == <<"before", "window", "closing", "after">>
@@ -63,12 +74,19 @@ VARIABLES
     closeOk,       \* exits.close successes recorded
     salesDue,      \* sales the last body decided and has not sent yet
     ranOutside,    \* an exits.close body evaluated outside 15:20-15:25
-    sentLate       \* an exits.close sale reached the broker from 15:30 on
+    sentLate,      \* an exits.close sale reached the broker from 15:30 on
+    trading,       \* the Telegram day is a trading day of hat_trading_calendar
+    tspan,         \* the Telegram clock: 1 before 08:30, 2 to 09:05, 3 to 15:30, 4 after
+    loggedIn,      \* the broker session is live for the day
+    tgRan,         \* the Telegram jobs that ran: subset of {"prompt", "reprompt", "report"}
+    badPrompt,     \* ghost: a login prompt broke its order or its condition
+    badReport      \* ghost: a report was sent before the close or on a non-trading day
 
 closeVars == <<span, closeRow, closeStarts, closeOk, salesDue, ranOutside, sentLate>>
+tgVars == <<trading, tspan, loggedIn, tgRan, badPrompt, badReport>>
 
 vars == <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
-          refusedFailed, closeVars>>
+          refusedFailed, closeVars, tgVars>>
 
 Init ==
     /\ enabled \in BOOLEAN
@@ -88,6 +106,12 @@ Init ==
     /\ salesDue = 0
     /\ ranOutside = FALSE
     /\ sentLate = FALSE
+    /\ trading \in BOOLEAN
+    /\ tspan = 1
+    /\ loggedIn \in BOOLEAN
+    /\ tgRan = {}
+    /\ badPrompt = FALSE
+    /\ badReport = FALSE
 
 \* A run can be taken when none exists, when the last one failed or was interrupted, and
 \* (only in the broken variant) after it succeeded.
@@ -105,6 +129,7 @@ StartScheduler ==
     /\ schedulerUp' = TRUE
     /\ UNCHANGED <<enabled, row, pc, seen, calls, successes, restarts, started, refusedFailed,
                    closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_claim  (insert the row, or flip a failed row to running,
 \* in one transaction; otherwise return the stored outcome)
@@ -121,6 +146,7 @@ Claim(w) ==
                /\ refusedFailed' = (refusedFailed \/ row = "failed")
                /\ row' = row
     /\ UNCHANGED <<enabled, schedulerUp, seen, successes, restarts, closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_claim  (broken variant "split_claim" only: the real claim
 \* is the single transaction above, never a read followed by a separate write)
@@ -132,6 +158,7 @@ CheckOnly(w) ==
     /\ seen' = [seen EXCEPT ![w] = row]
     /\ pc' = [pc EXCEPT ![w] = "checked"]
     /\ UNCHANGED <<enabled, schedulerUp, row, successes, restarts, refusedFailed, closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_claim  (broken variant "split_claim" only: the write half)
 TakeAfterCheck(w) ==
@@ -143,6 +170,7 @@ TakeAfterCheck(w) ==
                /\ pc' = [pc EXCEPT ![w] = "done"]
     /\ UNCHANGED <<enabled, schedulerUp, seen, calls, successes, restarts, started,
                    refusedFailed, closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_finish  (the body returned: record succeeded)
 FinishOk(w) ==
@@ -153,6 +181,7 @@ FinishOk(w) ==
     /\ pc' = [pc EXCEPT ![w] = "done"]
     /\ UNCHANGED <<enabled, schedulerUp, seen, calls, restarts, started, refusedFailed,
                    closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_finish  (the body raised: record failed with a code)
 FinishFail(w) ==
@@ -162,6 +191,7 @@ FinishFail(w) ==
     /\ pc' = [pc EXCEPT ![w] = "done"]
     /\ UNCHANGED <<enabled, schedulerUp, seen, calls, successes, restarts, started,
                    refusedFailed, closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/scheduler.py:tick  (a later call by the same caller: the scheduler
 \* ticks again)
@@ -170,6 +200,7 @@ Recall(w) ==
     /\ pc' = [pc EXCEPT ![w] = "idle"]
     /\ UNCHANGED <<enabled, schedulerUp, row, seen, calls, successes, restarts, started,
                    refusedFailed, closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:recover_interrupted  (new process: in-flight callers are
 \* gone, runs still `running` become failed/interrupted before any job runs)
@@ -180,6 +211,7 @@ Restart ==
     /\ row' = IF row = "running" /\ BrokenMode # "no_reap" THEN "failed" ELSE row
     /\ UNCHANGED <<enabled, schedulerUp, seen, calls, successes, started, refusedFailed,
                    closeVars>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/scheduler.py:HatScheduler.due_jobs  (time passes)
 ClockTick ==
@@ -187,6 +219,7 @@ ClockTick ==
     /\ span' = span + 1
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
                    refusedFailed, closeRow, closeStarts, closeOk, salesDue, ranOutside, sentLate>>
+    /\ UNCHANGED tgVars
 
 \* The scheduler starts exits.close at or after 15:20 and never from 15:25 on (its `until`);
 \* broken variant "no_window": whenever it is late enough.
@@ -210,6 +243,7 @@ CloseRun ==
           /\ salesDue' = sales
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
                    refusedFailed, span, sentLate>>
+    /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/execution/manage.py:TradeManager._sell  (the clock is read when the sale
 \* is sent: from 15:30 on it is not placed and is alerted; broken variant "late_send": the time
@@ -221,10 +255,63 @@ CloseSell ==
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
                    refusedFailed, span, closeRow, closeStarts, closeOk, ranOutside>>
 
+    /\ UNCHANGED tgVars
+
+\* code: backend/app/hat/ops/scheduler.py:tick  (the Telegram day's clock moves on)
+TgTick ==
+    /\ tspan < 4
+    /\ tspan' = tspan + 1
+    /\ UNCHANGED <<trading, loggedIn, tgRan, badPrompt, badReport>>
+    /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
+                   refusedFailed, closeVars>>
+
+\* code: backend/app/hat/execution/session.py:record_session  (environment: the daily login
+\* succeeds, or the session is lost)
+LoginFlip ==
+    /\ loggedIn' = ~loggedIn
+    /\ UNCHANGED <<trading, tspan, tgRan, badPrompt, badReport>>
+    /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
+                   refusedFailed, closeVars>>
+
+\* code: backend/app/hat/telegram/reports.py:login_prompt  (08:30, until 09:05: links for every
+\* account, only on a trading day)
+Prompt ==
+    /\ schedulerUp /\ tspan = 2 /\ "prompt" \notin tgRan
+    /\ tgRan' = tgRan \cup {"prompt"}
+    /\ badPrompt' = (badPrompt \/ (~trading /\ BrokenMode = "prompt_holiday")
+                     \/ "reprompt" \in tgRan)
+    /\ UNCHANGED <<trading, tspan, loggedIn, badReport>>
+    /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
+                   refusedFailed, closeVars>>
+
+\* code: backend/app/hat/telegram/reports.py:login_prompt  (09:05, until 15:30, `repeat`: links
+\* only for the accounts with no live session, read when the job runs)
+Reprompt ==
+    /\ schedulerUp /\ tspan = 3 /\ "reprompt" \notin tgRan
+    /\ tgRan' = tgRan \cup {"reprompt"}
+    /\ LET sends == trading /\ (~loggedIn \/ BrokenMode = "reprompt_logged_in")
+       IN badPrompt' = (badPrompt \/ (sends /\ loggedIn))
+    /\ UNCHANGED <<trading, tspan, loggedIn, badReport>>
+    /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
+                   refusedFailed, closeVars>>
+
+\* code: backend/app/hat/telegram/reports.py:daily_report  (15:35 to 15:45: the rejection
+\* digest, the daily report and the veto digest, only on a trading day)
+Report ==
+    /\ schedulerUp /\ "report" \notin tgRan
+    /\ tspan = 4 \/ (tspan = 3 /\ BrokenMode = "report_before_close")
+    /\ tgRan' = tgRan \cup {"report"}
+    /\ LET sends == trading \/ BrokenMode = "report_holiday"
+       IN badReport' = (badReport \/ (sends /\ (tspan # 4 \/ ~trading)))
+    /\ UNCHANGED <<trading, tspan, loggedIn, badPrompt>>
+    /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
+                   refusedFailed, closeVars>>
+
 Next ==
     \/ StartScheduler
     \/ Restart
     \/ ClockTick \/ CloseRun \/ CloseSell
+    \/ TgTick \/ LoginFlip \/ Prompt \/ Reprompt \/ Report
     \/ \E w \in Workers :
           Claim(w) \/ CheckOnly(w) \/ TakeAfterCheck(w) \/ FinishOk(w) \/ FinishFail(w)
           \/ Recall(w)
@@ -243,6 +330,8 @@ TypeOK ==
     /\ successes \in 0..(NWorkers * MaxCalls)
     /\ span \in 1..4
     /\ closeRow \in {"none", "succeeded", "failed"}
+    /\ tspan \in 1..4
+    /\ tgRan \subseteq {"prompt", "reprompt", "report"}
 
 \* A body succeeds at most once, and a body never runs while another does or after success.
 AtMostOnceSuccess ==
@@ -262,6 +351,14 @@ ExitsCloseInWindow ==
     /\ ~ranOutside
     /\ closeOk <= 1
     /\ ~sentLate
+
+\* HAT-TG-021: no login prompt on a non-trading day; the 08:30 prompt never comes after the 09:05
+\* reprompt, which goes out only while the broker is not logged in (a server started after 09:05
+\* skips the 08:30 prompt and still reprompts).
+LoginPromptOrder == ~badPrompt
+
+\* HAT-TG-024: the scheduled reports go out only after the 15:30 close of a trading day.
+ReportsAfterClose == ~badReport
 
 \* A run never stays `running` forever (a crash is reaped at restart).
 NoStuckRunning == (row = "running") ~> (row # "running")

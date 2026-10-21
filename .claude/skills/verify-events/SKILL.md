@@ -23,6 +23,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `PBT runtime.virtual_consistency` For every set of trades written through `position_is_virtual` and `child_is_virtual`, a fill has its order's `is_virtual`, an order its position's, and a position is virtual exactly when its signal's mode was shadow or it was skipped in confirm mode; an unknown mode raises. Harm: virtual trades count as real P&L or real positions lose their broker stops.
 - `PBT retention.purge_scope` For every set of rows and run date, a Telegram message or command-log row is gone exactly when it is older than one year (IST date), rows of every other table and files under the data root are untouched, and a second run deletes nothing. Harm: trade history is deleted or chat logs outlive their year.
 - `PBT telegram.retention_purge` Through the real `run_job`, the `retention.purge` job leaves exactly the last year of both chat tables, records one success, and a repeat is a no-op. Harm: as above, with a job that runs twice.
+- `PBT events.user_actor_chat_id` `record()` refuses an event with `actor = 'user'` whose payload has no integer `chat_id` (a bool is not one), takes one that has it, and takes any other actor without it; `actor` is typed as the four actors. Harm: a user action in the log cannot be traced to the chat that sent it (HAT-SCH-065).
 - `PBT ingest.event_and_state_atomic` An ingest outcome row and its `ingest.*` / `quality.failed` event are both stored or both absent for every failure point before commit. Harm: the night's ingest status and the audit log disagree.
 - `CONF events.catalogue` The event types in `app/hat/events.py`, group by group, equal the 32 in the spec table, and the actors and aggregate types equal the DDL. Harm: code and audits disagree on what can happen.
 - `CONF schema.runtime_columns, event_columns, indexes` The eight runtime tables, the seven ops tables and `hat_event` equal the spec columns, types, nullability, keys and uniques, and every §9 index exists with its columns, uniqueness, order and partial predicate. Harm: a trade cannot be replayed, or reconciliation by tag degrades to a full scan.
@@ -82,7 +83,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `25ee1725ed8df6afee9ecaabb4643ecdaf67a6c0515ae66af083944e1524b941`
+Covered digest: `27a1a61ed6f24905f44f67333ecbd2863b4073f6f8a33e64b53205a7777b7bd4`
 
 ## Scope changes
 
@@ -98,6 +99,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 7 added an optional `on_finish` hook to `run_job` (`ops/jobs.py`), called inside the final-status transaction; the events and the job-run recording it touches are unchanged, and the ingest outcome events (`ingest.completed`, `ingest.failed`, `quality.failed`) are written through the existing `events.record`.
 - PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
+- PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
 
 ## Scratch breaks
 
@@ -274,4 +276,15 @@ E
 E     - own
 E     + other)
 E   Failing test case: test_correlation_links_the_signal(
+```
+
+### PBT events.user_actor_chat_id
+
+Break: in `backend/app/hat/events.py`, the user-actor check accepts any `chat_id` that is not None.
+
+```
+E   Failed: DID NOT RAISE EventError
+E   Failing test case: test_user_actor_chat_id(
+E       actor='user',
+E       chat_id=False,
 ```

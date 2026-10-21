@@ -6,7 +6,9 @@
 (* when the account kill is tripped, its own kill is tripped, its health   *)
 (* kill is tripped, it is paused, or a live health input is failing.       *)
 (* Exits are never gated. Drawdown and manual kills re-arm only through a  *)
-(* second, confirmed step; the health kill clears by itself.               *)
+(* second, confirmed step; the health kill clears by itself. /flatten only *)
+(* asks; the confirmed flatten sells every open position through the exit  *)
+(* path (purpose flatten), whatever the kill or pause state (PR 16).       *)
 (*                                                                         *)
 (* Bounds: NBots = 2 bots; each bot has one position cycle (none, open,    *)
 (*   closed) and one approval in flight; kills, health flips, pauses and   *)
@@ -23,7 +25,8 @@
 (*                                                                         *)
 (* Properties: TripOnDrawdown, TripImpliesManageOnly, KillCancelsApprovals,*)
 (*   DataHealthManageOnly, NoAutoRearm, PauseBlocksEntriesOnly (invariants)*)
-(*   and HealthAutoRearm, ExitsContinue (temporal).                        *)
+(*   FlattenNeedsConfirm, FlattenExitOnly (invariants) and HealthAutoRearm,*)
+(*   ExitsContinue (temporal).                                             *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -33,7 +36,8 @@ ASSUME BrokenMode \in {"none", "no_trip_on_drawdown", "entry_ignores_kill",
                        "kill_keeps_approvals", "entry_ignores_live_health",
                        "auto_rearm_on_recovery", "resume_clears_kill",
                        "entry_ignores_pause", "health_manual_rearm",
-                       "exit_blocked_when_killed"}
+                       "exit_blocked_when_killed", "flatten_without_confirm",
+                       "flatten_opens"}
 
 Bots == 1..NBots
 Reasons == {"acct", "bot", "health", "unhealthy", "paused"}
@@ -52,10 +56,14 @@ VARIABLES
     askedAcct,   \* the second confirmation step for the account re-arm was taken
     askedBot,    \* per bot: the same for the bot kill
     badEntry,    \* ghost: the reasons that were in force when an entry was placed
-    badRearm     \* ghost: a drawdown or manual kill was re-armed without the second step
+    badRearm,    \* ghost: a drawdown or manual kill was re-armed without the second step
+    askedFlat,   \* /flatten asked and its confirmation is pending
+    badFlat,     \* ghost: a flatten ran without the confirmed second step
+    flatOpen     \* ghost: a flatten opened or grew a position
 
+flatVars == <<askedFlat, badFlat, flatOpen>>
 vars == <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
-          askedAcct, askedBot, badEntry, badRearm>>
+          askedAcct, askedBot, badEntry, badRearm, askedFlat, badFlat, flatOpen>>
 
 Init ==
     /\ acct = "armed"
@@ -72,6 +80,9 @@ Init ==
     /\ askedBot = [b \in Bots |-> FALSE]
     /\ badEntry = {}
     /\ badRearm = FALSE
+    /\ askedFlat = FALSE
+    /\ badFlat = FALSE
+    /\ flatOpen = FALSE
 
 \* What blocks a new entry for bot b right now.
 Blocking(b) ==
@@ -110,6 +121,7 @@ SnapshotAccount ==
                             /\ badRearm' = badRearm
     /\ UNCHANGED <<bot, health, unhealthy, paused, pos, exitDue, botSeen, askedAcct, askedBot,
                    badEntry>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:evaluate_drawdown_kills  (the same read for one bot's
 \* equity against its own peak; other bots are untouched)
@@ -126,6 +138,7 @@ SnapshotBot(k) ==
                     /\ badRearm' = badRearm
     /\ UNCHANGED <<acct, health, unhealthy, paused, pos, exitDue, acctSeen, askedAcct, askedBot,
                    badEntry>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:trip_kill  (/kill: the account kill trips and every
 \* undecided approval ends in the same transaction)
@@ -135,6 +148,7 @@ ManualKill ==
                ELSE [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
     /\ UNCHANGED <<bot, health, unhealthy, paused, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:sync_health  (environment: a data or broker health
 \* input starts or stops failing)
@@ -142,6 +156,7 @@ HealthFlip(k) ==
     /\ unhealthy' = [unhealthy EXCEPT ![k] = ~@]
     /\ UNCHANGED <<acct, bot, health, paused, appr, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:sync_health  (the health check job: trip while
 \* failing, clear by itself once healthy)
@@ -153,6 +168,7 @@ HealthEval(k) ==
     /\ ~(BrokenMode = "health_manual_rearm" /\ ~unhealthy[k])
     /\ UNCHANGED <<acct, bot, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:pause_bot
 Pause(k) ==
@@ -160,6 +176,7 @@ Pause(k) ==
     /\ paused' = [paused EXCEPT ![k] = TRUE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, appr, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:resume_bot  (lifts the pause only, never a kill)
 Resume(k) ==
@@ -172,6 +189,7 @@ Resume(k) ==
                /\ badRearm' = badRearm
     /\ UNCHANGED <<acct, health, unhealthy, appr, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (the entry gate runs when an approval is
 \* created for a signal)
@@ -181,6 +199,7 @@ CreateApproval(k) ==
     /\ appr' = [appr EXCEPT ![k] = "pending"]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (a Take re-runs the gate; a refused take
 \* leaves the approval pending until it expires)
@@ -190,6 +209,7 @@ Take(k) ==
     /\ appr' = [appr EXCEPT ![k] = "taken"]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:cancel_pending_approvals  (an undecided approval
 \* ends as expired)
@@ -198,6 +218,7 @@ Expire(k) ==
     /\ appr' = [appr EXCEPT ![k] = "cancelled"]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (the entry is placed only after an ACCEPT;
 \* the ghost records every reason that was in force at that moment)
@@ -210,6 +231,7 @@ PlaceEntry(k) ==
     /\ badEntry' = badEntry \cup Blocking(k)
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (an exit rule fires for an open position)
 ExitDue(k) ==
@@ -217,6 +239,7 @@ ExitDue(k) ==
     /\ exitDue' = [exitDue EXCEPT ![k] = TRUE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (an exit is always accepted, whatever the
 \* kill, pause or cap state; the broken variant gates it like an entry)
@@ -227,6 +250,7 @@ ExitSend(k) ==
     /\ exitDue' = [exitDue EXCEPT ![k] = FALSE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:rearm_kill  (the first step: the user asks to re-arm)
 RequestRearmAcct ==
@@ -234,6 +258,7 @@ RequestRearmAcct ==
     /\ askedAcct' = TRUE
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
                    askedBot, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:rearm_kill  (the second, confirmed step re-arms and
 \* writes kill.rearmed)
@@ -242,6 +267,7 @@ ConfirmRearmAcct ==
     /\ acct' = "armed" /\ askedAcct' = FALSE /\ acctSeen' = FALSE
     /\ UNCHANGED <<bot, health, unhealthy, paused, appr, pos, exitDue, botSeen, askedBot,
                    badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:rearm_kill  (the first step for a bot kill)
 RequestRearmBot(k) ==
@@ -249,6 +275,7 @@ RequestRearmBot(k) ==
     /\ askedBot' = [askedBot EXCEPT ![k] = TRUE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
                    askedAcct, badEntry, badRearm>>
+    /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/controls.py:rearm_kill  (the confirmed step for a bot kill)
 ConfirmRearmBot(k) ==
@@ -259,11 +286,37 @@ ConfirmRearmBot(k) ==
     /\ UNCHANGED <<acct, health, unhealthy, paused, appr, pos, exitDue, acctSeen, askedAcct,
                    badEntry, badRearm>>
 
+    /\ UNCHANGED flatVars
+
+\* code: backend/app/hat/telegram/commands.py:_flatten  (the first step: /flatten only asks)
+RequestFlatten ==
+    /\ ~askedFlat
+    /\ askedFlat' = TRUE
+    /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
+                   askedAcct, askedBot, badEntry, badRearm, badFlat, flatOpen>>
+
+\* code: backend/app/hat/execution/manage.py:flatten  (the confirmed step: every open position
+\* is sold through the exit path, never gated by a kill or pause, and nothing is bought)
+ConfirmFlatten ==
+    /\ askedFlat \/ BrokenMode = "flatten_without_confirm"
+    /\ badFlat' = (badFlat \/ ~askedFlat)
+    /\ askedFlat' = FALSE
+    /\ pos' = [k \in Bots |->
+                 IF pos[k] = "open" THEN "closed"
+                 ELSE IF pos[k] = "none" /\ BrokenMode = "flatten_opens" THEN "open"
+                 ELSE pos[k]]
+    /\ flatOpen' = (flatOpen \/ \E k \in Bots : pos[k] # "open" /\ pos'[k] = "open")
+    /\ exitDue' = [k \in Bots |-> FALSE]
+    /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,
+                   askedBot, badEntry, badRearm>>
+
 Next ==
     \/ SnapshotAccount
     \/ ManualKill
     \/ RequestRearmAcct
     \/ ConfirmRearmAcct
+    \/ RequestFlatten
+    \/ ConfirmFlatten
     \/ \E k \in Bots :
           SnapshotBot(k) \/ HealthFlip(k) \/ HealthEval(k) \/ Pause(k) \/ Resume(k)
           \/ CreateApproval(k) \/ Take(k) \/ Expire(k) \/ PlaceEntry(k) \/ ExitDue(k)
@@ -283,6 +336,7 @@ TypeOK ==
     /\ appr \in [Bots -> {"none", "pending", "taken", "cancelled"}]
     /\ pos \in [Bots -> {"none", "open", "closed"}]
     /\ badEntry \subseteq Reasons
+    /\ askedFlat \in BOOLEAN
 
 \* A drawdown breach read since the last re-arm leaves the kill tripped (account and bot).
 TripOnDrawdown ==
@@ -306,6 +360,12 @@ NoAutoRearm == ~badRearm
 
 \* A paused bot places no entry.
 PauseBlocksEntriesOnly == "paused" \notin badEntry
+
+\* A flatten runs only after the confirmed second step (HAT-GOV-082).
+FlattenNeedsConfirm == ~badFlat
+
+\* A flatten only closes positions: it never opens or grows one (HAT-TG-035).
+FlattenExitOnly == ~flatOpen
 
 \* A health kill clears by itself: once the checks are healthy, it is armed or fails again.
 HealthAutoRearm ==

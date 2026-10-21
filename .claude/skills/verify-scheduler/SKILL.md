@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `b6172ec3c872568bf30de936ba4418340b8ec35771c0d8d5c92ffd83cc45e987`
+Covered digest: `7e109d063e4c5f3a1e0e907b0e1ddf28bae8d1377d52ec8659666fc25ec33797`
 
 ## Scope changes
 
@@ -113,6 +113,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 7 split the nightly-pipeline promises (probe window, fallback at 22:00, no data no scan, gate, exits independent) out of `JobScheduler` into the `NightlyPipeline` model, because the product of the two state spaces was too large to check; `JobScheduler` keeps the job-run promises. The README and spec property names were renamed to match; no check was weakened. PR 7 also added an `on_finish` hook to `run_job` (called inside the final-status transaction; `ops.job_run_recording` still passes) and `MERGED_PRS` now includes 7, `KNOWN_GAPS` unchanged.
 - PR 15b updated the harness without narrowing any check: `KNOWN_GAPS` lost `TLA ExecutionRouter!AutoNeedsGtt`, `TLA ExecutionRouter!NoAddToOpenPosition` and `TLA ExecutionRouter!ModeChangeNextSession` (the `ExecutionRouter` model now exists), `MERGED_PRS` is unchanged (15c adds 15), and two models joined `verification/tla` (`ExecutionRouter`, `ApprovalToken`; their checks and breaks are in `verify-execution`). The new property file `test_router.py` is placed by `ci_property_shards.py`'s partition like any other.
+- PR 16 added the Telegram jobs to `JobScheduler` (`TgTick`, `LoginFlip`, `Prompt`, `Reprompt`, `Report`; `LoginPromptOrder`, `ReportsAfterClose`), whose breaks are in `verify-telegram`, and `16` to `MERGED_PRS`; `KNOWN_GAPS` is unchanged.
 
 ## Scratch breaks
 

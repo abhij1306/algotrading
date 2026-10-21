@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `e3574ab99457b01aa4732e687c356e83cc165cfc157a26610031ccb37237af5c`
+Covered digest: `9eb7709aa7c2d07f5af3806280e8d56a729c0320adcdf3d65f6be0ca8727d6d9`
 
 ## Scope changes
 
@@ -109,7 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `conflict_resolutions_traced` accepts C6 as untraced (`UNTRACED_RESOLUTIONS = {6}`): no requirement in files 01 to 10 cites `PLAN C6`, which is a spec gap, not a code gap.
 - `PBT config.no_risk_keys`, `calendar.session_from_reference_data` and the other PBT names on PR 2 rows that need later features are not built here (their code does not exist yet).
 - PR 8 added the config-model properties to `test_config.py` (they are checked by `verify-criteria`; the hash properties here are unchanged) and a non-vacuity assertion to `test_import_graph_boundaries` (the `app.hat.engine.criteria` package must exist in the graph; its scratch break is recorded in `verify-criteria`).
-
+- PR 16 added `time.day_bounds` (the UTC window of an IST trade date), now used by `engine/trades.py` and the Telegram reads and reports instead of three copies; no check was narrowed.
 
 ## Scratch breaks
 

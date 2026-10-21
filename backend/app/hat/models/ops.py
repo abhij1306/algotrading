@@ -1,5 +1,6 @@
 """Ops tables (03-schema §7): job runs and quality-gate results (PR 2); broker sessions,
-Telegram messages, the command log and daily bot snapshots (PR 3)."""
+Telegram messages, the command log and daily bot snapshots (PR 3); the Telegram cursors
+(PR 16)."""
 
 from sqlalchemy import (
     BigInteger,
@@ -23,6 +24,7 @@ __all__ = [
     "HatDailyBotSnapshot",
     "HatJobRun",
     "HatQualityCheck",
+    "HatTelegramCursor",
     "HatTelegramMessage",
 ]
 
@@ -105,6 +107,17 @@ class HatCommandLog(Base):
     accepted = Column(Boolean, nullable=False)
     reason = Column(Text)
     received_at = Column(Timestamptz, nullable=False, default=now_utc)
+
+
+class HatTelegramCursor(Base):
+    """Where the Telegram service has got to: `updates` is the next `getUpdates` offset
+    (HAT-TG-011), `events` the last `hat_event` id the relay sent (HAT-TG-024). Not purged."""
+
+    __tablename__ = "hat_telegram_cursor"
+
+    name = Column(Text, primary_key=True)
+    position = Column(BigInteger, nullable=False)
+    updated_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
 class HatDailyBotSnapshot(Base):

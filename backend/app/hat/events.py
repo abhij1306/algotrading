@@ -19,7 +19,7 @@ import threading
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
@@ -34,6 +34,7 @@ from .time import utc_now
 
 __all__ = [
     "ACTORS",
+    "Actor",
     "AGGREGATE_TYPES",
     "EVENT_GROUPS",
     "EVENT_TYPES",
@@ -103,6 +104,9 @@ AGGREGATE_TYPES: frozenset[str] = frozenset(
     }
 )
 ACTORS: frozenset[str] = frozenset(EVENT_ACTORS)
+# Who caused an event. A `user` event is a Telegram command or button and carries the sender's
+# `chat_id` in its payload (HAT-SCH-065, HAT-TG-013): `record()` refuses one without it.
+Actor = Literal["engine", "user", "broker", "scheduler"]
 
 # Events of these groups belong to one signal's trade, so they carry the signal id as their
 # correlation id. `watchlist.published` is the exception: a watchlist belongs to a bot and a
@@ -187,7 +191,7 @@ def record(
     aggregate_type: str,
     aggregate_id: uuid.UUID,
     event_type: str,
-    actor: str,
+    actor: Actor,
     payload: Mapping[str, Any],
     correlation_id: uuid.UUID | None = None,
     causation_id: int | None = None,

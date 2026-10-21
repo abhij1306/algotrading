@@ -35,8 +35,8 @@ import logging
 import secrets
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
@@ -66,7 +66,7 @@ from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
-from ..time import IST, as_utc, trade_date_of
+from ..time import as_utc, day_bounds, trade_date_of
 from . import exits, lifecycle
 from .botlock import lock_bot
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_WIDE
@@ -104,6 +104,8 @@ MODES = (SHADOW, CONFIRM, AUTO)
 DECIDE = Callable[[SignalContext], RiskDecision]
 # HAT-EXEC-030: an approval card expires 5 minutes after it is sent.
 APPROVAL_WINDOW = timedelta(minutes=5)
+# Issues an approval card's token from (signal id, expires_at); `telegram.tokens.ApprovalSigner`.
+TokenIssuer = Callable[[uuid.UUID, datetime], str]
 VETO = "veto"  # the payload flag of a veto trade's events
 # An accepted auto signal rests in Triggered until the router places its order: it holds a slot.
 _SLOT_PENDING_STATES = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
@@ -172,8 +174,7 @@ class TradeError(HatError):
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, time(0), tzinfo=IST)
-    return as_utc(start), as_utc(start + timedelta(days=1))
+    return day_bounds(day)
 
 
 def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
@@ -393,8 +394,6 @@ class EntryOutcome:
     position_id: uuid.UUID | None
     duplicate: bool = False
     mode: str = SHADOW
-    # The approval card's token (confirm): handed to the card sender, stored only as its hash.
-    approval_token: str | None = field(default=None, repr=False)
 
 
 def _decision_row(decision: RiskDecision) -> dict[str, object]:
@@ -445,6 +444,7 @@ def open_entry(
     decide: DECIDE = evaluate_signal,
     fills: FillModel = SHADOW_FILLS,
     mode: str = SHADOW,
+    issue: TokenIssuer | None = None,
 ) -> EntryOutcome:
     """Evaluate one trigger and route an accepted one by `mode`, the bot's effective mode, in one
     transaction holding the bot's lock (HAT-EXEC-020, HAT-EXEC-021, HAT-RISK-100): shadow opens
@@ -518,7 +518,9 @@ def open_entry(
             now=request.triggered_at,
         )
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
-    return _route_accepted(session, signal, bot, decision, entry, request.triggered_at, fills)
+    return _route_accepted(
+        session, signal, bot, decision, entry, request.triggered_at, fills, issue
+    )
 
 
 def _route_accepted(
@@ -529,15 +531,14 @@ def _route_accepted(
     entry: Decimal,
     now: datetime,
     fills: FillModel,
+    issue: TokenIssuer | None,
 ) -> EntryOutcome:
-    """An accepted signal by its mode: confirm sends the card, auto waits for the router and
+    """An accepted signal by its mode: confirm writes the card, auto waits for the router and
     shadow opens the virtual position."""
     mode = signal.mode
     if mode == CONFIRM:
-        token = _send_approval(session, signal, now)
-        return EntryOutcome(
-            signal.id, signal.state, decision, None, mode=mode, approval_token=token
-        )
+        _send_approval(session, signal, now, issue)
+        return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     if mode == AUTO:
         # The router places the real order after this transaction commits (HAT-BRK-101).
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
@@ -602,23 +603,28 @@ def _triggered_payload(
     return payload
 
 
-def _send_approval(session: Session, signal: HatSignal, now: datetime) -> str:
+def _send_approval(
+    session: Session, signal: HatSignal, now: datetime, issue: TokenIssuer | None
+) -> None:
     """The approval card of a confirm signal (HAT-EXEC-030): its `hat_approval` row, expiring
     `APPROVAL_WINDOW` after it is sent, moves the signal to AwaitingApproval in this
-    transaction. Returns the card's token; only its sha256 is stored (HAT-SCH-056)."""
-    token = secrets.token_urlsafe(32)
+    transaction. The card's token comes from `issue` (the Telegram signer, HMAC-bound to the
+    signal and the expiry, HAT-TG-040) and only its sha256 is stored (HAT-SCH-056). Without an
+    issuer the token is random and unknown to any signer, so no button can ever take the card:
+    it fails closed and expires."""
     sent = as_utc(now)  # stored in UTC: SQLite keeps no offset
+    expires = sent + APPROVAL_WINDOW
+    token = issue(signal.id, expires) if issue is not None else secrets.token_urlsafe(32)
     session.add(
         HatApproval(
             signal_id=signal.id,
             sent_at=sent,
-            expires_at=sent + APPROVAL_WINDOW,
+            expires_at=expires,
             token_hash=hashlib.sha256(token.encode()).hexdigest(),
         )
     )
     signal.state = lifecycle.next_state(signal.state, "approval.sent")
     session.flush()
-    return token
 
 
 def _virtual_order(

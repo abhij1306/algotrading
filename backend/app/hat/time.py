@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.hat.clock import SYSTEM_CLOCK, Clock, require_aware
 from app.hat.data.sessions import IST
 
-__all__ = ["IST", "as_utc", "trade_date_of", "utc_now"]
+__all__ = ["IST", "as_utc", "day_bounds", "trade_date_of", "utc_now"]
 
 
 def utc_now(clock: Clock = SYSTEM_CLOCK) -> datetime:
@@ -25,3 +25,10 @@ def as_utc(instant: datetime) -> datetime:
 def trade_date_of(instant: datetime) -> date:
     """The exchange-local calendar date of an aware instant (NSE: Asia/Kolkata)."""
     return require_aware(instant).astimezone(IST).date()
+
+
+def day_bounds(day: date) -> tuple[datetime, datetime]:
+    """The UTC instants where the exchange-local (IST) day `day` starts and the next one starts:
+    the window of everything whose trade date is `day`."""
+    start = datetime.combine(day, datetime.min.time(), tzinfo=IST)
+    return as_utc(start), as_utc(start + timedelta(days=1))
