@@ -19,6 +19,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.volume_pace_builder` The builder gives no pace before a symbol's first tick of the session, and afterwards the pace of the day volume of every in-session tick. Harm: pace is read before any data exists.
 - `PBT bars.tick_volume_delta` A tick's volume is the change in cumulative day volume, never negative; the first tick contributes only its own print. Harm: bar volume and pace count volume traded before HAT subscribed, or go negative.
 - `PBT bars.tick_volume_fallbacks` A tick with no usable cumulative volume contributes its own last traded quantity, and the first tick of a new trade date contributes its own print rather than its total minus the previous day's total. Harm: a print is lost from bar and day volume, or a new session's opening bar is charged yesterday's volume.
+- `PBT bars.feed_connection_window` The live feed may connect on a trading day from 09:00 IST to the 15:30 close and never on a weekend. Harm: the 09:00 to 09:08 gap capture receives no ticks, or the feed stays up all night.
 - `PBT bars.staleness_trip` The feed is stale at t exactly when t is in market hours and no tick arrived in (t - 30 s, t]; each transition into stale reaches the health sink once and each recovery once. Harm: orders are placed on a frozen tape, or a transient gap leaves a bot disabled.
 - `PBT bars.staleness_boundary` Silence of exactly 30 s is stale and 30 s minus one microsecond is not. Harm: the threshold is off by one.
 - `PBT bars.staleness_events_recorded` Each transition into stale writes exactly one `feed.stale` event and calls the health kill once; recovery clears the kill and writes nothing. Harm: the owner is never alerted, or is alerted repeatedly.
@@ -106,7 +107,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `cc7ec57cf0ba97fd82724de3e0ecc74fa96c0ae6`
-Covered digest: `bbab35761e893de5ede584c1a573b70bab2306719c44d215a585bcb5e6278f20`
+Covered digest: `1288e07fd9793b743f5791068d6c7e2124b7622d355554b2f11b22a04c8721e4`
 
 ## Scope changes
 
@@ -536,4 +537,15 @@ Break: in `app/hat/data/announcements.py`, the size check counts characters inst
 tests/hat/properties/test_announcements.py:104: in test_parse_size_in_bytes
 E   Failed: DID NOT RAISE FeedError
 E   Failing test case: test_parse_size_in_bytes(words=1, extra=-1)
+```
+
+### PBT bars.feed_connection_window
+
+Break: in `app/services/live_market_service.py`, the pre-open start `PREOPEN_FROM` moved from 09:00 to 09:15.
+
+```
+tests/hat/properties/test_bars.py:601: in test_feed_connection_window
+E   assert False == True
+E    +  where False = connection_allowed()
+E   Failing test case: test_feed_connection_window(second=32400, ...)
 ```

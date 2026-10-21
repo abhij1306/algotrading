@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from datetime import time as clock_time
 from time import perf_counter
 from typing import Any
 
@@ -32,6 +33,8 @@ from .symbol_master import symbol_master
 logger = logging.getLogger(__name__)
 
 # _market_status shown by get_status() for each market phase.
+PREOPEN_FROM = clock_time(9, 0)  # IST: the pre-open session; the feed may connect from here
+
 MARKET_STATUS_BY_PHASE: dict[MarketPhase, str] = {
     MarketPhase.DEV: "OPEN (DEV)",
     MarketPhase.WEEKEND: "CLOSED_WEEKEND",
@@ -154,6 +157,16 @@ class LiveMarketService:
         self._market_status = MARKET_STATUS_BY_PHASE[phase]
         return phase.is_open
 
+    def connection_allowed(self) -> bool:
+        """Whether the feed may be connected now: market hours, or the pre-open session from 09:00
+        IST on a trading day, so the opening gaps can be captured (HAT-DATA-118)."""
+        if self.is_market_open():
+            return True
+        policy = self.market_hours
+        if policy.phase(dev_mode=self.dev_mode) is not MarketPhase.PRE_MARKET:
+            return False
+        return policy.now_ist().time() >= PREOPEN_FROM
+
     def add_tick_listener(self, listener: TickListener) -> Callable[[], None]:
         """Call `listener(tick)` for every inbound tick; returns a function that removes it.
 
@@ -234,7 +247,7 @@ class LiveMarketService:
     async def _check_connection_health(self) -> None:
         """One monitor check: reconnect during market hours, disconnect off-hours."""
         state = self.session.state
-        if not self.is_market_open():
+        if not self.connection_allowed():
             # Ensure we are disconnected off-hours, including a runner that is retrying.
             if state in (SessionState.CONNECTING, SessionState.CONNECTED, SessionState.DROPPED):
                 logger.info("[WS] Market closed. Cleaning up connection.")
@@ -347,7 +360,7 @@ class LiveMarketService:
                 self._last_connect_block_reason = "token_invalid"
             return "token_invalid"
 
-        if not self.is_market_open():
+        if not self.connection_allowed():
             if self._last_connect_block_reason != "market_closed":
                 logger.info(
                     f"Market is CLOSED ({self._market_status}). Skipping Fyers connection for now."
@@ -425,7 +438,7 @@ class LiveMarketService:
 
     async def _connect_for_subscribe(self) -> None:
         """A subscribe while the session is idle: connect when the market is open."""
-        if self.is_market_open():
+        if self.connection_allowed():
             await self.connect_async()
             return
         now = time.time()

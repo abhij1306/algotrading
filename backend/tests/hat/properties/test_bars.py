@@ -587,6 +587,20 @@ class _SlowInputs(SubscriptionInputs):
             pause()
 
 
+@given(second=st.integers(0, 24 * 3600 - 1), weekend=st.booleans())
+def test_feed_connection_window(second: int, weekend: bool) -> None:
+    """The live feed may connect on a trading day from 09:00 IST (the pre-open session, so the
+    opening gaps can be captured) to the 15:30 close, and never on a weekend. Harm: the 09:00 to
+    09:08 gap capture receives no ticks, or the feed stays up all night."""
+    from app.services.live_market_service import LiveMarketService
+
+    day = date(2026, 10, 24 if weekend else 21)  # a Saturday or a Wednesday
+    when = datetime.combine(day, time(), IST) + timedelta(seconds=second)
+    service = LiveMarketService(FixedClock(when.astimezone(UTC)))
+    expected = not weekend and 9 * 3600 <= second <= 15 * 3600 + 1800
+    assert service.connection_allowed() == expected
+
+
 @settings(max_examples=8, deadline=None)
 @given(
     old=symbol_sets,
