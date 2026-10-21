@@ -7,6 +7,7 @@ are imported inside the fixtures that need them. This file is the parent conftes
 HAT suites have their own `tests/hat/conftest.py`; CONF `imports.hat_decoupled`).
 """
 
+import os
 from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -23,8 +24,10 @@ if TYPE_CHECKING:
     from fakes.broker import FakeBroker
     from fakes.market import FreezeMarket
 
-# Test database URL (use in-memory SQLite for tests)
-SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
+# Test database URL: a SQLite file per pytest-xdist worker (`gw0`, `gw1`, ...), so parallel
+# workers never share rows. Without xdist the name stays `test.db`.
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+SQLALCHEMY_TEST_DATABASE_URL = f"sqlite:///./test{'_' + _WORKER if _WORKER else ''}.db"
 
 
 @pytest.fixture(scope="session")

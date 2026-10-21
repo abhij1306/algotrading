@@ -9,6 +9,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 from hat_conf_skills import (
     PLACEHOLDER,
@@ -250,28 +251,66 @@ def test_pbt_names_follow_the_convention() -> None:
 # --- CI job ---------------------------------------------------------------------------------
 
 
-def test_ci_verification_job() -> None:
-    """HAT-VER-060: the job runs every model, every broken variant, the properties under the
-    `ci` profile and the conformance checks inside 15 minutes."""
+def _ci_jobs() -> dict:
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     )
-    job = workflow["jobs"]["verification"]
-    assert job["timeout-minutes"] <= 15
-    steps = job["steps"]
-    runs = [step.get("run", "") for step in steps]
-    uses = [step.get("uses", "") for step in steps]
+    return workflow["jobs"]
+
+
+def _runs(job: dict) -> list[str]:
+    return [step.get("run", "") for step in job["steps"]]
+
+
+def test_ci_verification_job() -> None:
+    """HAT-VER-060: the verification jobs run every model, every broken variant, the properties
+    under the `ci` profile and the conformance checks, each inside the 5-minute target (10-minute
+    hard timeout), and the backend job leaves those suites to them."""
+    jobs = _ci_jobs()
+    tla, conf, props = (
+        jobs["verification-tla"],
+        jobs["verification-conformance"],
+        jobs["verification-properties"],
+    )
+    for job in (tla, conf, props):
+        assert job["timeout-minutes"] <= 10
+        assert "continue-on-error" not in job
+        for step in job["steps"]:
+            assert "continue-on-error" not in step
+    uses = [step.get("uses", "") for step in tla["steps"]]
+    java = next(s for s in tla["steps"] if s.get("uses", "").startswith("actions/setup-java@"))
     assert any(u.startswith("actions/setup-java@") for u in uses)
-    java = next(s for s in steps if s.get("uses", "").startswith("actions/setup-java@"))
     assert int(java["with"]["java-version"]) >= 17
-    assert any(r.strip() == "verification/tla/run.sh" for r in runs)
-    assert any(r.strip() == "verification/tla/run.sh --broken" for r in runs)
-    assert any("pytest tests/hat/properties" in r for r in runs)
-    assert any("pytest tests/hat/conformance" in r for r in runs)
-    assert str(job["env"]["CI"]).lower() == "true"  # selects the `ci` Hypothesis profile
-    for step in steps:
-        assert "continue-on-error" not in step
-    assert "continue-on-error" not in job
+    assert any(r.strip() == "verification/tla/run.sh" for r in _runs(tla))
+    assert any(r.strip() == "verification/tla/run.sh --broken" for r in _runs(tla))
+    assert any("pytest tests/hat/conformance" in r for r in _runs(conf))
+    assert any("pytest" in r and "ci_property_shards.py" in r for r in _runs(props))
+    # CI=true selects the `ci` Hypothesis profile
+    assert str(conf["env"]["CI"]).lower() == "true"
+    assert str(props["env"]["CI"]).lower() == "true"
+    backend = " ".join(_runs(jobs["backend"]))
+    assert "--ignore=tests/hat/properties" in backend
+    assert "--ignore=tests/hat/conformance" in backend
+
+
+def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HAT-VER-060: the property matrix is a partition of tests/hat/properties: every file is in
+    exactly one shard, so a new property file can never run nowhere."""
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "scripts"))
+    from ci_property_shards import shard_files
+
+    matrix = _ci_jobs()["verification-properties"]["strategy"]["matrix"]["shard"]
+    shards = len(matrix)
+    assert matrix == list(range(1, shards + 1))
+    command = " ".join(_runs(_ci_jobs()["verification-properties"]))
+    assert f'ci_property_shards.py "${{{{ matrix.shard }}}}" {shards}' in command
+    everything = sorted(
+        f"tests/hat/properties/{p.name}" for p in (HAT_TESTS / "properties").glob("test_*.py")
+    )
+    dealt = [f for shard in matrix for f in shard_files(shard, shards)]
+    assert sorted(dealt) == everything
+    assert len(dealt) == len(set(dealt))
+    assert all(shard_files(shard, shards) for shard in matrix)
 
 
 # --- database check coverage ----------------------------------------------------------------

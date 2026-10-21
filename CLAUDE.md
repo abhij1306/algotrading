@@ -145,7 +145,7 @@ ruff check .
 
 cd backend
 python -m pytest   # test deps: pip install -r requirements-dev.txt; -m puts backend/ on sys.path
-python -m pytest --cov=app --cov-report=term-missing:skip-covered   # coverage is opt-in; CI passes these
+python -m pytest -n auto   # pytest-xdist, as CI does; add --cov=app --cov-report=term-missing:skip-covered for coverage (CI skips it)
 ```
 
 Trading test fixtures (`backend/tests/conftest.py`):
