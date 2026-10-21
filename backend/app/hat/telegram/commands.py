@@ -43,6 +43,8 @@ __all__ = [
     "COMMANDS",
     "CommandContext",
     "Reply",
+    "addressee",
+    "for_another_bot",
     "parse",
     "queue_modes",
     "rearm_all",
@@ -89,11 +91,30 @@ class CommandContext:
     links: reads.LoginLinks | None = None
     price: reads.PriceSource = field(default=lambda _instrument: None)
     feed: Callable[[], str] = field(default=lambda: "unknown")
+    bot_username: str | None = None  # the bot's own `getMe` username; None when unknown
+
+
+def addressee(text: str) -> str | None:
+    """The `@bot` suffix of a message's first word (`/kill@hat_bot` -> `hat_bot`), else None."""
+    parts = text.strip().split(maxsplit=1)
+    if not parts or "@" not in parts[0]:
+        return None
+    return parts[0].split("@", 1)[1]
+
+
+def for_another_bot(text: str, bot_username: str | None) -> bool:
+    """A command whose `@bot` suffix names another bot, compared without case. While this bot's
+    own username is unknown every suffixed command counts as another bot's (fail closed)."""
+    suffix = addressee(text)
+    if suffix is None:
+        return False
+    return bot_username is None or suffix.lower() != bot_username.lower()
 
 
 def parse(text: str) -> tuple[str, list[str]] | None:
     """(command, args) of a message that starts with one of the ten commands (an `@bot` suffix
-    is allowed) and has the command's number of arguments; else None."""
+    is allowed; `run_command` checks that it names this bot) and has the command's number of
+    arguments; else None."""
     parts = text.strip().split()
     if not parts:
         return None
@@ -347,10 +368,13 @@ HANDLERS: dict[str, Handler] = {
 
 def run_command(ctx: CommandContext, session: Session, text: str) -> tuple[str, str | None, Reply]:
     """Run one text message: (logged command, logged args, reply). Text that is not one of the
-    ten commands with valid arguments is refused and changes nothing."""
+    ten commands with valid arguments is refused and changes nothing. A command addressed to
+    another bot in a group (`/kill@other_bot`) is ignored: refused (`other_bot`) with no reply."""
     parts = text.strip().split()
     head = parts[0].split("@", 1)[0].lower() if parts else ""
     logged = head if head.startswith("/") else "text"
+    if for_another_bot(text, ctx.bot_username):
+        return logged, None, Reply(False, "other_bot")
     parsed = parse(text)
     if parsed is None:
         reason = "unknown_command" if head not in _ARITY else "bad_arguments"

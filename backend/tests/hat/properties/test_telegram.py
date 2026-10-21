@@ -23,6 +23,7 @@ from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hat_telegram_support import (
     AT,
+    BOT_USERNAME,
     CHAT,
     LIVE,
     TRADE_DAY,
@@ -460,6 +461,69 @@ def test_unknown_command_rejected(text: str, now: datetime) -> None:
     assert handled.reply.reason in {"unknown_command", "bad_arguments", "not_a_command"}
     assert state(rig) == before
     assert rig.fake.calls[broker:] == []
+
+
+SAFETY_TEXTS = st.sampled_from(
+    ("/kill", "/flatten", "/arm", "/pause", "/resume", "/mode auto", "/mode shadow", "/status")
+)
+BOT_NAMES = st.text(
+    alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    min_size=1,
+    max_size=32,
+)
+
+
+def _cased(name: str, upper: list[bool]) -> str:
+    return "".join(ch.upper() if up else ch.lower() for ch, up in zip(name, upper, strict=False))
+
+
+@SLOW
+@given(
+    SAFETY_TEXTS,
+    BOT_NAMES.filter(lambda n: n.lower() != BOT_USERNAME.lower()),
+    st.lists(st.booleans(), min_size=len(BOT_USERNAME), max_size=len(BOT_USERNAME)),
+    st.sampled_from((AT, EVENING)),
+)
+@example("/kill", BOT_USERNAME + "x", [False] * len(BOT_USERNAME), AT)
+def test_other_bot_ignored(text: str, other: str, upper: list[bool], now: datetime) -> None:
+    """HAT-TG-030: in a group, a command addressed to another bot (`/kill@other_bot`) is
+    ignored: one refused row (`other_bot`), no reply, no state change, no broker call. The same
+    command addressed to this bot, its `getMe` username in any case, runs as if unsuffixed; while
+    `getMe` fails, every suffixed command is refused (fail closed).
+    Harm: a kill, flatten or re-arm meant for another bot acts on this one."""
+    rig = TgRig().at(now)
+    card_of(rig, wall_relay(rig))
+    command, *args = text.split()
+    before, broker, sent = state(rig), len(rig.fake.calls), len(rig.transport.texts())
+    logged = len(rig.log())
+    handled = rig.service.handle(text_update(1, CHAT, " ".join([f"{command}@{other}", *args])))
+    [row] = rig.log()[logged:]
+    assert handled.reply is not None
+    assert not handled.reply.accepted
+    assert handled.reply.reason == row.reason == "other_bot"
+    assert row.command == command
+    assert state(rig) == before
+    assert rig.fake.calls[broker:] == []
+    assert rig.transport.texts()[sent:] == []
+
+    own = rig.service.handle(text_update(2, CHAT, f"/kill@{_cased(BOT_USERNAME, upper)}"))
+    plain = TgRig().at(now)
+    card_of(plain, wall_relay(plain))
+    plain.transport.failing.add("getMe")  # its own name unknown: every suffix is refused
+    blind = plain.service.handle(text_update(1, CHAT, f"/kill@{BOT_USERNAME}"))
+    assert blind.reply is not None
+    assert blind.reply.reason == "other_bot"
+    plain.transport.failing.clear()
+    unsuffixed = plain.service.handle(text_update(2, CHAT, "/kill"))
+    assert own.reply is not None
+    assert unsuffixed.reply is not None
+    assert (own.command, own.reply.accepted, own.reply.reason) == (
+        unsuffixed.command,
+        unsuffixed.reply.accepted,
+        unsuffixed.reply.reason,
+    )
+    assert own.reply.accepted
+    assert state(rig) != before
 
 
 # --- HAT-TG-031: no order from text -------------------------------------------------------------

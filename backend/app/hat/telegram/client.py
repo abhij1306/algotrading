@@ -1,9 +1,9 @@
 """The Telegram Bot API client (08 §1, §2; HAT-TG-010, HAT-TG-014, HAT-TG-020).
 
-Outbound HTTPS only: `getUpdates` long polling, `sendMessage`, `answerCallbackQuery` and
-`editMessageReplyMarkup`. No webhook is ever registered and no socket is bound: the transport
-refuses any other method. The client holds the one allowlisted chat id and every message goes to
-it; no method takes a chat id (HAT-TG-020).
+Outbound HTTPS only: `getMe` (the bot's own username), `getUpdates` long polling, `sendMessage`,
+`answerCallbackQuery` and `editMessageReplyMarkup`. No webhook is ever registered and no socket
+is bound: the transport refuses any other method. The client holds the one allowlisted chat id
+and every message goes to it; no method takes a chat id (HAT-TG-020).
 
 `HttpsTransport` posts with `requests`, imported only when a real call is made. (The plan named
 aiohttp; HAT's import rule keeps socket libraries to the one live-data module, CONF
@@ -31,7 +31,7 @@ __all__ = [
 
 API_ROOT = "https://api.telegram.org"
 ALLOWED_METHODS = frozenset(
-    {"getUpdates", "sendMessage", "answerCallbackQuery", "editMessageReplyMarkup"}
+    {"getMe", "getUpdates", "sendMessage", "answerCallbackQuery", "editMessageReplyMarkup"}
 )
 CODE_TRANSPORT = "telegram_transport"
 CODE_TIMEOUT = "telegram_timeout"
@@ -109,6 +109,12 @@ class BotClient:
     def __init__(self, transport: TelegramTransport, chat_id: int) -> None:
         self._transport = transport
         self.chat_id = chat_id
+
+    def username(self) -> str | None:
+        """The bot's own username (`getMe`), None when the answer has none."""
+        result = self._transport.call("getMe", {}, _SEND_TIMEOUT)
+        name = result.get("username") if isinstance(result, dict) else None
+        return name if isinstance(name, str) and name else None
 
     def updates(self, offset: int, timeout: int = POLL_SECONDS) -> list[dict[str, Any]]:
         """The updates from `offset` on (long polling for up to `timeout` seconds)."""

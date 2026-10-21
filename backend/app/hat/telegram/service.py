@@ -12,7 +12,9 @@ it, because a replayed Take, `/flatten` confirmation or `/kill` must not act twi
 - from any chat but the allowlisted one: refused (`unknown_chat`), nothing else written, no reply
   and no answer to the button (HAT-TG-005);
 - a text message: one of the ten commands (`commands.py`), else refused; the text path cannot
-  reach an order (HAT-TG-031);
+  reach an order (HAT-TG-031). A command with an `@bot` suffix runs only when the suffix is this
+  bot's own username (`getMe`, asked once and kept); one naming another bot, or any suffix
+  while the username is unknown, is refused (`other_bot`) with no reply;
 - a button: an approval Take or Skip, or a second confirmation (`callbacks.py`).
 
 The row, the handler's state change and its events commit together (the order path commits on
@@ -36,7 +38,7 @@ from ..time import utc_now
 from . import store
 from .callbacks import ApprovalDesk, ButtonContext, Flattener, run_callback
 from .client import POLL_SECONDS, BotClient, TelegramError
-from .commands import CommandContext, Reply, refused, run_command
+from .commands import CommandContext, Reply, addressee, refused, run_command
 from .confirm import PendingConfirmations
 from .reads import LoginLinks, PriceSource
 from .relay import EventRelay
@@ -110,6 +112,7 @@ class TelegramService:
         self._price = price or (lambda _instrument: None)
         self._feed = feed or (lambda: "unknown")
         self._clock = clock
+        self._username: str | None = None
 
     @property
     def chat_id(self) -> int:
@@ -157,6 +160,8 @@ class TelegramService:
         callback_id = callback.get("id") if isinstance(callback, dict) else None
         if chat_id != self._client.chat_id:
             return self._refuse_stranger(chat_id, text, data, now)
+        if data is None and text and addressee(text) is not None:
+            self._learn_username()
         with self._factory() as session:
             try:
                 command, args, reply = self._run(session, chat_id, text, data, now)
@@ -198,9 +203,19 @@ class TelegramService:
         if not text:
             return "text", None, refused("not_a_command")
         ctx_text = CommandContext(
-            chat_id, now, self._confirmations, self._links, self._price, self._feed
+            chat_id, now, self._confirmations, self._links, self._price, self._feed, self._username
         )
         return run_command(ctx_text, session, text)
+
+    def _learn_username(self) -> None:
+        """Ask `getMe` for the bot's own username until it is known; a failure leaves it unknown,
+        so suffixed commands stay refused until a later message asks again."""
+        if self._username is not None:
+            return
+        try:
+            self._username = self._client.username()
+        except TelegramError as exc:
+            logger.warning("telegram getMe failed: %s", exc.code)
 
     def _refuse_stranger(
         self, chat_id: int | None, text: str | None, data: str | None, now: datetime

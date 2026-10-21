@@ -21,6 +21,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.unknown_chat_has_no_effect` An update from any other chat writes one refused `hat_command_log` row (`unknown_chat`) and nothing else: no reply, no broker call. Harm: a stranger controls the bots.
 - `PBT telegram.every_command_logged` Every message is one `hat_command_log` row with the sender's chat id; a refused one has a reason and changed nothing. Harm: discipline metrics and audits miss user actions.
 - `PBT telegram.unknown_command_rejected` Text that is not one of the ten commands with its arguments is refused and changes nothing. Harm: malformed input triggers an action.
+- `PBT telegram.other_bot_ignored` A command addressed to another bot (`/kill@other_bot`) is refused (`other_bot`) with no reply, no state change and no broker call; suffixed with this bot's `getMe` username in any case it acts as the bare command; while `getMe` fails every suffixed command is refused. Harm: a kill, flatten or re-arm meant for another bot in the group acts on this one.
 - `PBT telegram.no_free_text_orders` No text, even a Take button's data typed as a message, places an order or writes an entry `hat_order`. Harm: a typo or a forged message opens a position.
 - `PBT telegram.offset_at_most_once` Across any crash point, no update is handled twice and every update after the persisted offset is handled. Harm: a replayed confirmation or Take acts twice; a dropped `/kill` does not act.
 - `PBT telegram.user_events_attributed` Every event a command or button records has `actor = 'user'` and the chat id, and every accepted change records one. Harm: skips, pauses and flattens are missing from the discipline metrics.
@@ -115,7 +116,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `5fd3a7c3dd10a5e1792c8c570601818749888829bc8be128c31200360de245fd`
+Covered digest: `e15391b242c746e4ff6927480ca99b6c9e38239cf3eff4b5c17ed6374c1f1a46`
 
 ## Scope changes
 
@@ -129,6 +130,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `TLA ApprovalToken!SecondConfirmRequired` models the confirmation of a lever (auto, re-arm, flatten), not the approval card; the card's signature and single use are checked on the real code (`telegram.token_forgery_rejected`, `telegram.expiry_window`).
 - Review round (before the first push): sales of one position are now serialised in `TradeManager` (`_sale_lock`, held from the "nothing else is selling" check until the order is sent), because the Telegram flatten runs on its own thread beside the tick path; `ManagerFlattener` must be given the same `TradeManager` instances the live exits use (PR 17 wiring). A flatten confirmed outside the session is refused (`market_closed`) with nothing recorded, and one position or account that fails no longer stops the others (`FlattenReport.failed`); `telegram.flatten_logged` now asserts the refusal after 15:30. The poller survives any error, a refused button answer no longer loses the reply, an unrenderable event is skipped instead of holding back the relay, a Take whose placement was refused says so, `route_by_mode` refuses confirm bots (their cards need the router's signer), and `/mode` on a day the calendar lacks says `no_calendar`. `telegram.relay_late_commit` and `telegram.veto_digest_on_week_end` were added for the relay gaps and the week-end rule, which had no check.
 - `TgRig` uses `OpenFlattener` (no positions, session open) instead of an empty `ManagerFlattener`; the real `ManagerFlattener` over `TradeManager` runs in `telegram.flatten_logged`.
+- `/cmd@other_bot` (found by a CodeAnt nitpick on PR #113): the `@bot` suffix was dropped without checking it, so in a group `/kill@another_bot` ran here. The client now also calls `getMe`; the service asks it once, when the first suffixed command arrives, and keeps the username. `telegram.other_bot_ignored` was added, and the method-allowlist CONF check now lists five methods.
 - Sonar round (PR #113): `COMMANDS` is now `tuple(_ARITY)`, so the command set is written once; the token decoder catches `ValueError` alone (`binascii.Error` is one). Behaviour is unchanged and every check here passed again. The `logging.exception` suggestions were declined: a traceback can carry broker or database text, so failures log only the exception type (HAT-TG-014).
 
 ## Scratch breaks
@@ -265,6 +267,16 @@ Break: in `commands.py`, `parse` drops the upper bound on argument count.
     | Failing test case: test_unknown_command_rejected(
     | AssertionError: assert not True
     | Failing test case: test_unknown_command_rejected(
+```
+
+### PBT telegram.other_bot_ignored
+
+Break: three in `commands.py`, each run alone: (1) `run_command` drops the `for_another_bot` check; (2) `for_another_bot` compares the suffix case-sensitively; (3) `for_another_bot` lets every suffix through while the username is unknown (fail open).
+
+```
+(1) E   AssertionError: assert not True
+(2) E   AssertionError: assert ('/kill', False, 'other_bot') == ('/kill', True, None)
+(3) E   AssertionError: assert None == 'other_bot'
 ```
 
 ### PBT telegram.no_free_text_orders

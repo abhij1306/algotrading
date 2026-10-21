@@ -201,11 +201,13 @@ def test_no_override_command() -> None:
 
 def test_telegram__no_webhook_no_listener() -> None:
     """HAT-TG-010: nothing in app/hat/telegram imports a server stack, binds, listens or names
-    setWebhook; the client allows only the four outbound methods and refuses any other before
+    setWebhook; the client allows only the five outbound methods and refuses any other before
     a request is made (the scan is shown to catch a planted listener)."""
     assert _listener_findings(TELEGRAM) == []
     assert (
-        frozenset({"getUpdates", "sendMessage", "answerCallbackQuery", "editMessageReplyMarkup"})
+        frozenset(
+            {"getMe", "getUpdates", "sendMessage", "answerCallbackQuery", "editMessageReplyMarkup"}
+        )
         == ALLOWED_METHODS
     )
 

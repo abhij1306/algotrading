@@ -15,9 +15,10 @@ persisted so a restart neither replays nor drops updates. Exactly one chat is al
 (`id, chat_id, command, args, accepted, reason, received_at`).
 
 Implementation (PR 16, `app/hat/telegram/`): the client posts to the Bot API with `requests`
-(`aiohttp` does not build on Python 3.14, see CLAUDE.md) and calls only `getUpdates`,
+(`aiohttp` does not build on Python 3.14, see CLAUDE.md) and calls only `getMe`, `getUpdates`,
 `sendMessage`, `answerCallbackQuery` and `editMessageReplyMarkup`; any other method is refused
-before a request is made. The offset is the `updates` row of `hat_telegram_cursor` (03 §4.8). For
+before a request is made. `getMe` gives the bot's own username, asked once and kept, so a
+command with an `@bot` suffix runs only when the suffix names this bot (HAT-TG-030). The offset is the `updates` row of `hat_telegram_cursor` (03 §4.8). For
 each update in id order the service first commits the offset past it and then handles it, so a
 crash between the two drops that one update and never replays it (HAT-TG-011 asks for at most
 once). An update from another chat is logged as `unknown_chat` with no reply and no answer to its
@@ -170,13 +171,14 @@ sent again. `/flatten` sells every open real position (a virtual trade has nothi
 named belongs to `HAT_USER_ID` (HAT-OVR-061).
 
 #### HAT-TG-030: Command set is closed
-- **Statement:** The bot accepts exactly the ten commands above; anything else is rejected and logged.
+- **Statement:** The bot accepts exactly the ten commands above; anything else is rejected and logged. A command with an `@bot` suffix (Telegram's group form) is accepted only when the suffix equals the bot's own `getMe` username, compared without case; one addressed to another bot, or any suffixed command while the username is unknown, is ignored: logged as refused (`other_bot`) with no reply and no effect.
 - **Source:** DS "Telegram / Commands"; PLAN §4.4.
 - **PR:** 16
-- **Verification:** CONF `telegram.command_catalogue`, PBT `telegram.unknown_command_rejected`
+- **Verification:** CONF `telegram.command_catalogue`, PBT `telegram.unknown_command_rejected`, PBT `telegram.other_bot_ignored`
 - **Acceptance:**
   - Property: the registered command table equals {`/status`, `/positions`, `/watchlist`, `/pause`, `/resume`, `/mode`, `/kill`, `/flatten`, `/arm`, `/login`}. Harm: an undocumented command is an unreviewed control path.
   - Property: for every text not parsing as one of those commands with valid arguments, the result is `accepted = false` with no state change. Harm: malformed input could trigger an action.
+  - Property: for every command and every `@bot` suffix that differs from the bot's username ignoring case, the result is `accepted = false` with reason `other_bot`, no reply, no state change and no broker call; the same command suffixed with the bot's own username in any case acts as the unsuffixed command. Harm: `/kill`, `/flatten` or `/arm` meant for another bot in the group acts on this one.
 
 #### HAT-TG-031: No order from free text
 - **Statement:** No inbound text message can create, modify or cancel an order; only buttons on bot-generated cards (and the exit-only `/flatten`) reach execution.

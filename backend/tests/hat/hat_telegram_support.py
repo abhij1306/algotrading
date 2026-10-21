@@ -57,6 +57,7 @@ __all__ = [
     "TRADE_DAY",
     "FakeTransport",
     "TgRig",
+    "BOT_USERNAME",
     "button_update",
     "ist",
     "text_update",
@@ -64,6 +65,7 @@ __all__ = [
 
 D = Decimal
 CHAT = 424242
+BOT_USERNAME = "Hat_Test_Bot"
 SECRET = bytes(range(32, 64))  # a test key of 32 bytes; the real one comes from the environment
 LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True)
 _TICKERS = tuple(SYMBOLS)
@@ -76,7 +78,8 @@ def ist(day: date, hour: int, minute: int = 0) -> datetime:
 
 class FakeTransport:
     """The Bot API, faked: records every call; `getUpdates` returns the queued updates from the
-    offset on; `sendMessage` numbers its messages; a method in `failing` raises."""
+    offset on; `sendMessage` numbers its messages; `getMe` names the bot `BOT_USERNAME`; a method
+    in `failing` raises."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -90,6 +93,8 @@ class FakeTransport:
             raise TelegramError("telegram_transport")
         if method == "getUpdates":
             return [u for u in self.queued if u["update_id"] >= payload["offset"]]
+        if method == "getMe":
+            return {"id": 1, "is_bot": True, "username": BOT_USERNAME}
         if method == "sendMessage":
             self._next += 1
             return {"message_id": self._next}
