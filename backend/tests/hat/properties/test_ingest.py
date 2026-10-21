@@ -133,7 +133,7 @@ def test_event_and_state_atomic(runs: list[tuple[str, str]]) -> None:
         assert rows == stored
         assert len(events) == stored
         if job in committed:
-            assert events == [committed[job]]
+            assert [committed[job]] == events
 
 
 # --- PR 5: the Parquet store and the index history (HAT-DEC-T6, HAT-DATA-011, 085, 095) -----------
