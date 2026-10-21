@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from app.services.live_market_service import LiveMarketService
     from app.utils.clock import FixedClock
 
-    from fakes.broker import FakeBroker
     from fakes.market import FreezeMarket
 
 # Test database URL: a SQLite file per pytest-xdist worker (`gw0`, `gw1`, ...), so parallel
@@ -53,13 +52,12 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> "FreezeMarket":
     on a Saturday (MARKET_CLOSED_INSTANT), and `freeze_market(instant)` at any aware
     datetime (build it with `tzinfo=IST`). DEV_MODE is turned off so it cannot reopen the
     market. It swaps in a `MarketHoursPolicy` on a `FixedClock` for every owner of a policy:
-    the risk manager, the `live_market` singleton plus any `LiveMarketService` passed after
-    the instant, and the module helpers `is_market_open` / `is_market_hours` /
+    the `live_market` singleton plus any `LiveMarketService` passed after
+    the instant, and the module helpers `is_market_open` /
     `require_market_open`. Returns the clock, so a test can `set` or `advance` it.
     """
 
     from app.services.live_market_service import live_market
-    from app.services.risk_manager import risk_manager
     from app.utils import market_hours
     from app.utils.clock import FixedClock
     from app.utils.market_hours import MarketHoursPolicy
@@ -72,7 +70,6 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> "FreezeMarket":
         clock = FixedClock(at)
         policy = MarketHoursPolicy(clock)
         monkeypatch.setenv("DEV_MODE", "false")
-        monkeypatch.setattr(risk_manager, "market_hours", policy)
         for service in (live_market, *services):
             monkeypatch.setattr(service, "market_hours", policy)
             monkeypatch.setattr(service, "dev_mode", False)
@@ -81,26 +78,6 @@ def freeze_market(monkeypatch: pytest.MonkeyPatch) -> "FreezeMarket":
         return clock
 
     return freeze
-
-
-@pytest.fixture
-def fake_broker(monkeypatch: pytest.MonkeyPatch) -> "FakeBroker":
-    """A `FakeBroker` behind every broker handle the app holds: the order execution, risk
-    manager and position sync singletons (which the live exit service shares), and
-    `FyersBroker()` constructed by a route. A service a test builds itself needs
-    `service._broker = fake_broker`."""
-    from app.brokers.plugins import fyers as fyers_plugin
-    from app.services.order_execution_service import order_execution_service
-    from app.services.position_sync_service import position_sync_service
-    from app.services.risk_manager import risk_manager
-
-    from fakes.broker import FakeBroker
-
-    fake = FakeBroker()
-    for owner in (order_execution_service, risk_manager, position_sync_service):
-        monkeypatch.setattr(owner, "_broker", fake)
-    monkeypatch.setattr(fyers_plugin, "FyersBroker", lambda: fake)
-    return fake
 
 
 @pytest.fixture

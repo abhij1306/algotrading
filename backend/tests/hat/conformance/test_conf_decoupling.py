@@ -37,31 +37,27 @@ PENDING = {
 LEGACY_TEST_HELPERS = {"fakes", "conftest", "tests"}
 
 # Legacy modules that only re-export a helper HAT owns (one implementation, no copy); each is
-# deleted with the legacy code that uses it (K4/K5).
+# deleted with the legacy code that uses it (K5b; K4 deleted `paper_book`, the broker package and
+# the token-store re-export with the manual-trading code).
 SHIMS = {
     "utils/clock.py",
-    "services/execution/paper_book.py",
     # K2: the Fyers stack. Each inherits or re-exports HAT's version and adds only legacy-only code.
-    "brokers/base.py",
-    "brokers/plugins/fyers.py",
     "services/fyers/auth_flow.py",
-    "services/fyers/token_store.py",
     "services/fyers_client.py",
+    # K4: `fyers_available` reads HAT's token store for the legacy data fetcher (K5b); K6 cuts it.
+    "config.py",
     "services/symbol_master.py",
 }
 # Legacy modules that import HAT to wire it in: `database.py` (schema upkeep) and `main.py` (it
 # registers HAT's routes and the legacy hooks on HAT's Fyers login).
 WIRING = {"database.py", "main.py"}
 
-# Modules a HAT suite must never load, however it reaches them: the app, the routers and the
-# singletons of the manual-trading side.
+# Modules a HAT suite must never load, however it reaches them: the app and the routers. (The
+# manual-trading singletons they once listed are deleted, K4; `test_conf_risk.py` checks that none
+# comes back.)
 NEVER_LOADED = (
     "app.main",
     "app.routers",
-    "app.services.risk_manager",
-    "app.services.order_execution_service",
-    "app.services.position_sync_service",
-    "app.services.live_exit_service",
 )
 
 

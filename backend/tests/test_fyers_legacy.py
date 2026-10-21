@@ -1,6 +1,6 @@
-"""What is left of the legacy Fyers stack after K2 moved it into HAT: the DEV_MODE switch, the
-legacy client singleton and the hooks that hang the legacy live feed on HAT's Fyers login. The
-login, the token file and the session are HAT's and are verified under `tests/hat`."""
+"""What is left of the legacy Fyers stack after K2 moved it into HAT (and K4 removed the DEV_MODE
+switch): the legacy client singleton and the hooks that hang the legacy live feed on HAT's Fyers
+login. The login, the token file and the session are HAT's and are verified under `tests/hat`."""
 
 import asyncio
 import threading
@@ -12,7 +12,6 @@ import pytest
 
 from app import config as config_module
 from app.hat.execution.fyers_auth import FyersAuthService, FyersCredentials
-from app.hat.execution.fyers_session import FyersSession
 from app.hat.execution.fyers_tokens import StoredToken, TokenStore, TokenStoreError
 from app.services import fyers_client as fyers_client_module
 from app.services import live_market_service as lms
@@ -48,29 +47,13 @@ def make_service(store: TokenStore) -> FyersAuthService:
     )
 
 
-# --- config.fyers_available and DEV_MODE ----------------------------------------------------
-
-
-@pytest.mark.parametrize("flag", ["true", "1", " Yes ", "ON"])
-def test_fyers_is_unavailable_in_dev_mode_even_with_a_usable_token(
-    store: TokenStore, monkeypatch: pytest.MonkeyPatch, flag: str
-) -> None:
-    # The legacy FyersClient skips loading the token under DEV_MODE, so quotes must not pick Fyers.
-    monkeypatch.setattr(config_module, "token_store", store)
-    store.save(REPLY, client_id="CLIENT-100")
-    monkeypatch.setenv("DEV_MODE", flag)
-
-    assert config_module.fyers_available() is False
-
-    monkeypatch.setenv("DEV_MODE", "false")
-    assert config_module.fyers_available() is True
+# --- config.fyers_available ------------------------------------------------------------------
 
 
 def test_fyers_available_reads_the_store_at_call_time(
     store: TokenStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config_module, "token_store", store)
-    monkeypatch.delenv("DEV_MODE", raising=False)
     monkeypatch.delenv("FYERS_CLIENT_ID", raising=False)
     monkeypatch.delenv("FYERS_ACCESS_TOKEN", raising=False)
     assert config_module.fyers_available() is False
@@ -110,22 +93,6 @@ def test_fyers_available_is_false_when_the_token_file_is_unreadable(
 # --- the legacy client singleton ------------------------------------------------------------
 
 
-def test_the_legacy_client_loads_nothing_under_dev_mode(
-    store: TokenStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import app.hat.execution.fyers_session as session_module
-
-    store.save(REPLY, client_id="CLIENT-100")
-    monkeypatch.setattr(session_module, "token_store", store)
-    monkeypatch.setenv("DEV_MODE", "true")
-    monkeypatch.setattr(FyersClient, "_instance", None)
-
-    client = FyersClient()
-
-    assert (client.fyers, client.access_token) == (None, None)
-    assert FyersClient() is client  # still the process singleton
-
-
 def test_the_legacy_client_loads_the_token_through_the_hat_session(
     store: TokenStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,7 +100,6 @@ def test_the_legacy_client_loads_the_token_through_the_hat_session(
 
     store.save(REPLY, client_id="CLIENT-100")
     monkeypatch.setattr(session_module, "token_store", store)
-    monkeypatch.delenv("DEV_MODE", raising=False)
     monkeypatch.setattr(FyersClient, "_instance", None)
 
     client = FyersClient()
@@ -252,15 +218,3 @@ def test_default_login_hook_without_an_app_loop_does_nothing(
     monkeypatch.setattr(live_market, "connect_async", fail)
 
     auth_flow._connect_live_feed()  # no loop, no error
-
-
-def test_dev_mode_client_never_loads_a_token_even_when_validated(
-    store: TokenStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store.save(REPLY, client_id="CLIENT-100")
-    monkeypatch.setattr(fyers_client_module, "fyers_client_disabled", lambda: True)
-    client = object.__new__(FyersClient)
-    FyersSession.__init__(client, store, load=False, model_factory=lambda **_k: object())
-
-    assert client.validate_token() is False
-    assert client.fyers is None

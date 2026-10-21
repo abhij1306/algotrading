@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
 import { Activity } from "lucide-react";
 
-/** The dashboard bands: header, stats, insights, then the indices and watchlist grid. */
+/** The dashboard bands: header, insights, then the indices and watchlist grid. */
 export function DashboardLayout(
   props: Readonly<{
     header: ReactNode;
-    stats: ReactNode;
     insights: ReactNode;
     indices: ReactNode;
     watchlist: ReactNode;
@@ -14,7 +13,6 @@ export function DashboardLayout(
   return (
     <div className="flex flex-col h-screen">
       {props.header}
-      {props.stats}
       {props.insights}
       <div className="flex-1 overflow-auto">
         <div className="grid grid-cols-1 lg:grid-cols-5 h-full">

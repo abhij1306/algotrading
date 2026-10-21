@@ -1,16 +1,13 @@
 import { memo, type ReactNode } from "react";
-import { useNavigate } from "react-router";
 import { TrendingDown, TrendingUp } from "lucide-react";
 import { formatInr, formatSignedPercent, roundsNegative } from "@/lib/format";
 import type { DashboardWatchlistItem } from "@/lib/queries/dashboard";
-import { terminalPath } from "./model";
 import { PanelBody, TradingViewButton } from "./PanelStates";
 import type { PanelData } from "./useDashboardData";
 
 const WatchlistRow = memo(function WatchlistRow({
   stock,
-  onClick,
-}: Readonly<{ stock: DashboardWatchlistItem; onClick: () => void }>) {
+}: Readonly<{ stock: DashboardWatchlistItem }>) {
   const hasChangePercent =
     typeof stock.changePercent === "number" && Number.isFinite(stock.changePercent);
   const isUp = hasChangePercent && !roundsNegative(stock.changePercent);
@@ -28,7 +25,7 @@ const WatchlistRow = memo(function WatchlistRow({
     );
   }
   return (
-    <tr onClick={onClick} className="cursor-pointer hover:bg-surface transition-colors">
+    <tr className="hover:bg-surface transition-colors">
       <td className="py-2.5 pl-4">
         <div className="flex items-center gap-1">
           <span className="font-medium">{stock.symbol}</span>
@@ -46,7 +43,6 @@ export function WatchlistPanel(
   props: Readonly<{ data: PanelData<DashboardWatchlistItem>; isLive: boolean }>,
 ) {
   const { data, isLive } = props;
-  const navigate = useNavigate();
   return (
     <div className="lg:col-span-2">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface h-9">
@@ -73,11 +69,7 @@ export function WatchlistPanel(
           </thead>
           <tbody className="text-sm">
             {data.rows.map((stock) => (
-              <WatchlistRow
-                key={stock.symbol}
-                stock={stock}
-                onClick={() => void navigate(terminalPath(stock.symbol))}
-              />
+              <WatchlistRow key={stock.symbol} stock={stock} />
             ))}
           </tbody>
         </table>

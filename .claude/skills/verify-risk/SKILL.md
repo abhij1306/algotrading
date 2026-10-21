@@ -1,6 +1,6 @@
 ---
 name: verify-risk
-description: How to run, read and update the checks behind Hire a Trader's risk authority (position sizing, caps and invariants, exposure ladder, kill switches and manage-only, policy-change rules, mode changes, the single `evaluate_signal` decision). Use before and after any change to backend/app/hat/risk, backend/app/services/risk_manager.py, verification/tla/KillSwitch.tla or the risk properties and conformance checks.
+description: How to run, read and update the checks behind Hire a Trader's risk authority (position sizing, caps and invariants, exposure ladder, kill switches and manage-only, policy-change rules, mode changes, the single `evaluate_signal` decision). Use before and after any change to backend/app/hat/risk, verification/tla/KillSwitch.tla or the risk properties and conformance checks.
 ---
 
 # verify-risk
@@ -22,7 +22,7 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk channel (drawdown, manual) or of its health channel (data, broker) is a trip, so an automatic health re-arm never hides a tripped drawdown kill; another bot's rows never count. On the real service on SQLite, random trips, health changes, re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 15% and a bot at 10% from the summed and per-bot equity. Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
-- `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, the existing risk tests are byte-for-byte unchanged and pass, the legacy `RiskManager` imports nothing from HAT, and no HAT module names the legacy VCP halt flag. Harm: a second sizing path, a hidden override, or a changed SmartTrader behaviour nobody reviewed.
+- `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, HAT's pinned safety properties (exits, regime gate, stop, staleness, session, kill, caps, tag and fail-closed broker rules) still exist as Hypothesis properties, match their recorded digests and pass, the legacy manual-trading modules are gone, and no HAT module names the legacy VCP halt flag. Harm: a second sizing path, a hidden override, a safety property weakened to fit a change, or a manual-trading path around HAT's risk decision.
 - `DB risk.*` On Postgres, the real policy, kill and snapshot services write rows the database constraints accept (cooling-off span, kill scope, one snapshot per bot and day), and a service that forgets its own rule is refused. Harm: the code and the database disagree about what a legal row is.
 
 ## Run
@@ -37,9 +37,6 @@ python -m pytest tests/hat/conformance -q --no-cov              # CONF risk.* an
 # database checks need Postgres (a throwaway database whose name ends in _test):
 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTRADER_PG_TESTS=1 \
   python -m pytest -m postgres tests/hat/db -q --no-cov
-# the SmartTrader risk and execution tests that must stay green and unedited:
-python -m pytest -q --no-cov tests/test_risk_fixes.py tests/test_live_trading_safety.py \
-  tests/test_market_hours_policy.py tests/test_order_execution_characterization.py
 ```
 
 ## Bug or model error
@@ -47,8 +44,8 @@ python -m pytest -q --no-cov tests/test_risk_fixes.py tests/test_live_trading_sa
 - A failing property prints the falsifying example (for sizing, the nine inputs; for caps, the context fields that differ from the valid one; for the kill service, the operation list). Reproduce it with the real function. If the real code breaks the property, that is a finding: report the counterexample in the PR and fix the code. Never weaken the property or narrow its strategy to get past it.
 - A TLC counterexample names each action (`SnapshotAccount`, `PlaceEntry`, `HealthFlip`, `Pause`, `Resume`); each action has a `\* code: backend/app/hat/risk/...py:function` comment naming the function it models. If the real function can take those steps in that order, it is a bug in the code. If it cannot (a guard or transaction the model leaves out), fix the model and say so under Scope changes.
 - A failing `CONF risk.initial_seed_equals_spec` names the field that differs from the 06 section 1 table: the spec is the source of truth, fix `SEED_POLICY` (or change the spec in a separate, called-out change).
-- `CONF risk.existing_suite_green` fails when an existing SmartTrader risk test was edited or no longer passes. Do not edit the test: stop and explain what changed in SmartTrader behaviour.
-- Finding kept visible: the legacy market-hours check has a `DEV_MODE` bypass; HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) has none, and `evaluate_signal` also requires an OPEN session from the trading calendar, so a dev flag never opens a HAT entry.
+- `CONF risk.hat_safety_properties_pinned` fails when a pinned safety property was edited (digest), is no longer a `@given` property, or fails. Do not edit the property: stop and explain which safety behaviour changed; re-pin (update `SAFETY_DIGESTS`) only for a deliberate, reviewed change, and say so in the PR.
+- Finding kept visible: HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) has no `DEV_MODE` bypass, and `evaluate_signal` requires an OPEN session from the trading calendar, so a dev flag never opens a HAT entry.
 - Finding kept visible: the price band is a constant (`MAX_PRICE_DEVIATION_PCT`, 20%), not a policy field, because 06 section 1 fixes the policy document's fields (HAT-RISK-010); making it a field is a spec change.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
@@ -78,7 +75,6 @@ Code under check:
 - `backend/app/hat/risk/modes.py`: `plan_mode_change`, `effective_mode`
 - `backend/app/hat/risk/policy.py`: `parse_policy`, `SEED_POLICY`, `effective_version`, `classify_direction`, `build_gate_evidence`, `increase_gate_ok`
 - `backend/app/hat/risk/service.py`: `evaluate_signal`, `price_band_ok`, `market_open_at`
-- `backend/app/services/risk_manager.py`: the legacy manager, which imports nothing from HAT
 
 Checks:
 - `backend/tests/hat/hat_risk_support.py`
@@ -95,8 +91,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `ab14ce051d9e8791571525574974cf4ef4ecc246`
-Covered digest: `94459606419f7b78e6ce8c1ae943d39e7bf72fd6300721c39feb2fd93e4207c6`
+Sync commit: `0e4fd97e0e947c65d99dfe5dfab827d4038dd4eb`
+Covered digest: `9b8d6474721f8059b05e5c18a1ef4b1b87740aa85fc1c184b7b450a5e58c5791`
 
 ## Scope changes
 
@@ -113,7 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The service-level kill properties use SQLite in memory (foreign keys not enforced), and the Postgres checks in `test_db_risk.py` cover the constraints.
 - This PR refreshed the digest of `verify-governance` (it covers `risk/policy.py`, which gained the policy record, with the cooling-off functions untouched) and of `verify-scheduler` (it covers `test_conf_verification.py`, where `MERGED_PRS` gained 10 and `KNOWN_GAPS` two ExecutionRouter names).
 
-- K2 changed the pinned digest of `tests/test_live_trading_safety.py` in `test_risk__existing_suite_green`. The edit to that file is mechanical: the Fyers circuit breaker moved from class state to the shared `PROCESS_BREAKER` (`app/hat/execution/fyers_broker.py`), so its reset fixture calls `PROCESS_BREAKER.record_success()` and the test broker calls `super().__init__()`. No assertion was added, removed or loosened. The check itself is unchanged.
+- K4 deleted the legacy manual-trading code and the digest pin of its risk tests (`test_risk__existing_suite_green`, HAT-RISK-103). `risk.hat_safety_properties_pinned` pins HAT's own safety properties in its place, `risk.manager_reads_no_hat_state` goes with the legacy risk manager, and `risk.no_manual_trading_path` checks that the deleted modules stay deleted. The spec row of HAT-RISK-103 was rewritten to match.
 
 ## Scratch breaks
 
@@ -810,13 +806,15 @@ E + and Decimal('0.25') = Decimal('0.25')
 FAILED tests/hat/conformance/test_conf_risk.py::test_risk_policy_seed_bot_limits - AssertionError: assert Decimal('0.30') == Decimal('0.25')
 ```
 
-Break: in `backend/app/services/risk_manager.py` (risk.single_sizing_path): the legacy manager defines `evaluate_signal` again.
+Break: in `backend/app/services/risk_manager.py` (risk.single_sizing_path): a legacy risk manager file exists again.
 
 ```
-tests/hat/conformance/test_conf_risk.py F
-tests/hat/conformance/test_conf_risk.py:218: in test_risk__single_sizing_path
-E   assert 'evaluate_signal' not in '"""\nRisk M...eturn None\n'
-E     'evaluate_signal' is contained here:
+tests/hat/conformance/test_conf_risk.py F                                [100%]
+tests/hat/conformance/test_conf_risk.py:217: in test_risk__single_sizing_path
+E   AssertionError: assert not True
+E    +  where True = exists()
+E    +    where exists = ((PosixPath('backend/app') / 'services') / 'risk_manager.py').exists
+FAILED tests/hat/conformance/test_conf_risk.py::test_risk__single_sizing_path
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (risk.no_gate_override_path): decide takes an override flag.
@@ -828,32 +826,54 @@ E + where True = any(<generator object test_risk__no_gate_override_path.<locals>
 FAILED tests/hat/conformance/test_conf_risk.py::test_risk__no_gate_override_path - AssertionError: ('decision.py', 'decide')
 ```
 
-Break: in `backend/tests/test_risk_fixes.py` (risk.existing_suite_green): an existing risk test edited.
+Break: in `backend/tests/hat/properties/test_caps.py` (risk.hat_safety_properties_pinned): a pinned property edited (`test_exits_never_blocked` ignores the pause input).
 
 ```
-E AssertionError: tests/test_risk_fixes.py was edited: stop and explain, never adapt the test
-E assert '469cc9184ae7...3682f27a87f76' == '782f47a58484...03154feb3ebe9'
-E
-E - 782f47a584847ea4aef1c9831b04d2a9a61c945e5d386e6a31103154feb3ebe9
+tests/hat/conformance/test_conf_risk.py F                                [100%]
+tests/hat/conformance/test_conf_risk.py:361: in test_risk__hat_safety_properties_pinned
+E   AssertionError: properties/test_caps.py::test_exits_never_blocked was edited: stop and explain, never weaken the property to fit a change
+E   assert '5b37974e0337...cedff4fa0d43f' == '8274671f6c65...93aa0f4609e7b'
+E     
+E     - 8274671f6c65ec6b48cb77db76a0aa5282381752bbfaf64b6be93aa0f4609e7b
+E     + 5b37974e03373c949c5eda12b2677613684462e25cd5d07b8cacedff4fa0d43f
+FAILED tests/hat/conformance/test_conf_risk.py::test_risk__hat_safety_properties_pinned
 ```
 
-Break: in `backend/app/services/risk_manager.py` (risk.existing_suite_green): the existing market-hours check changed.
+Break: in `backend/app/hat/risk/decision.py` (risk.hat_safety_properties_pinned): `EXIT_ACTIONS` emptied, so an exit is treated as an entry and can be refused; the pinned properties run and fail.
 
 ```
-E AssertionError: est_risk_market_hours_follow_the_policy[instant4-MARKET_CLOSED] _______
-E tests/test_risk_fixes.py:491: in test_risk_market_hours_follow_the_policy
-E assert result.code == code
-E E AssertionError: assert 'RISK_PASS' == 'MARKET_CLOSED'
+tests/hat/conformance/test_conf_risk.py F                                [100%]
+tests/hat/conformance/test_conf_risk.py:373: in test_risk__hat_safety_properties_pinned
+E   AssertionError: ime_gate_blocks_entries(strategy: str) -> None:
+E                        ^^^
+E     tests/hat/properties/test_caps.py:237: in test_regime_gate_blocks_entries
+E         assert decide(valid_ctx(strategy_key=strategy, gate_on=False, action="exit")).accepted
+E     E   AssertionError: assert False
+E     E    +  where False = RiskDecision(accepted=False, reason='regime_gate', quantity=None, stop=None, risk_amount=None, warnings=(), policy_ver..._id=UUID('523a797b-dbfa-4bcd-bf6d-5bc0ed183e69'), b
 ```
 
-Break: in `backend/app/services/risk_manager.py` (risk.manager_reads_no_hat_state): the manager imports `app.hat.money`.
+Break: in `backend/app/services/order_execution_service.py` (risk.no_manual_trading_path): an order-execution module exists again.
 
 ```
-tests/hat/conformance/test_conf_risk.py F
-tests/hat/conformance/test_conf_risk.py:301: in test_risk__manager_reads_no_hat_state
-E   AssertionError: assert {'app.hat.money'} == set()
-E     Extra items in the left set:
-E     'app.hat.money'
+tests/hat/conformance/test_conf_risk.py F                                [100%]
+tests/hat/conformance/test_conf_risk.py:399: in test_risk__no_manual_trading_path
+E   AssertionError: assert ['services/or...n_service.py'] == []
+E     
+E     Left contains one more item: 'services/order_execution_service.py'
+E     Use -v to get more diff
+FAILED tests/hat/conformance/test_conf_risk.py::test_risk__no_manual_trading_path
+```
+
+Break: in `backend/app/utils/helpers.py` (risk.no_manual_trading_path): a class named `ManualRiskManager` is defined.
+
+```
+tests/hat/conformance/test_conf_risk.py F                                [100%]
+tests/hat/conformance/test_conf_risk.py:406: in test_risk__no_manual_trading_path
+E   AssertionError: assert ['utils/helpers.py'] == []
+E     
+E     Left contains one more item: 'utils/helpers.py'
+E     Use -v to get more diff
+FAILED tests/hat/conformance/test_conf_risk.py::test_risk__no_manual_trading_path
 ```
 
 Break: in `backend/app/hat/risk/decision.py` (risk.no_legacy_halt_read): a comment names the legacy halt flag.

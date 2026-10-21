@@ -1,5 +1,5 @@
-"""A down database answers 503 DATABASE_UNAVAILABLE, fails trading closed, leaks no driver
-text and logs one line instead of a traceback per request."""
+"""A down database answers 503 DATABASE_UNAVAILABLE, leaks no driver text and logs one line instead
+of a traceback per request."""
 
 import asyncio
 import logging
@@ -19,19 +19,13 @@ from app import main as app_main
 from app.database import get_db
 from app.exceptions import DatabaseUnavailableError
 from app.main import app
-from app.models.live_order import LiveOrder
 from app.services import fyers_client
-from app.services.order_execution_service import OrderExecutionService
 from app.utils.db_errors import is_db_unavailable
 from app.utils.logger import DatabaseUnavailableLogFilter
-
-from fakes.broker import FakeBroker
-from fakes.market import FreezeMarket
 
 SECRET = "hunter2-secret"
 DOWN_BODY = {"error": {"code": "DATABASE_UNAVAILABLE", "message": "Database unavailable"}}
 DOWN_DB_URL = f"postgresql+psycopg2://postgres:{SECRET}@db.invalid:5432/algotrading"
-CLIENT_ORDER_ID = "5c0e3a2f-8b1d-4e6a-9f7c-2d4b6a8e0c13"
 
 
 def _refuse_connection() -> NoReturn:
@@ -69,66 +63,6 @@ def down_client(down_engine: Engine) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
     app.dependency_overrides.clear()
-
-
-def test_paper_order_with_db_down_returns_503_and_leaks_nothing(
-    down_client: TestClient,
-) -> None:
-    response = down_client.post(
-        "/api/trading/order",
-        headers={"x-user-id": "u1"},
-        json={
-            "symbol": "SBIN",
-            "side": "BUY",
-            "quantity": 1,
-            "type": "MARKET",
-            "product": "INTRADAY",
-            "mode": "PAPER",
-        },
-    )
-
-    assert response.status_code == 503
-    assert response.json() == DOWN_BODY
-    assert SECRET not in response.text
-    assert "psycopg2" not in response.text
-
-
-def test_live_order_with_db_down_fails_closed_before_the_broker(
-    down_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    freeze_market: FreezeMarket,
-    fake_broker: FakeBroker,
-) -> None:
-    broker = fake_broker
-    freeze_market(True)
-
-    response = down_client.post(
-        "/api/trading/order",
-        headers={"x-user-id": "u1"},
-        json={
-            "symbol": "SBIN",
-            "side": "BUY",
-            "quantity": 1,
-            "type": "MARKET",
-            "product": "INTRADAY",
-            "mode": "LIVE",
-            "is_live_confirmation_ack": True,
-            "client_order_id": CLIENT_ORDER_ID,
-        },
-    )
-
-    assert response.status_code == 503
-    assert response.json() == DOWN_BODY
-    assert broker.calls == []
-
-
-def test_trading_orders_with_db_down_returns_503_not_an_empty_list(
-    down_client: TestClient,
-) -> None:
-    response = down_client.get("/api/trading/orders")
-
-    assert response.status_code == 503
-    assert response.json() == DOWN_BODY
 
 
 def test_health_with_db_down_reports_down_without_driver_text(
@@ -273,87 +207,3 @@ def test_log_filter_drops_traceback_and_throttles_per_site() -> None:
     )
     assert len(lines) == 2
     assert lines[1].startswith("ERROR Other failure\nTraceback (most recent call last):")
-
-
-def test_live_submit_exception_returns_fixed_message_and_stores_no_broker_text(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service = OrderExecutionService()
-    broker = FakeBroker(place_reply=RuntimeError(f"fyers socket reset {SECRET}"))
-    service._broker = broker
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
-
-    result = service.place_order(
-        {
-            "symbol": "SBIN",
-            "side": "BUY",
-            "quantity": 2,
-            "type": "MARKET",
-            "user_id": "u-leak",
-            "client_order_id": CLIENT_ORDER_ID,
-        },
-        db_session,
-        mode="LIVE",
-    )
-
-    # The call may have reached the broker: unconfirmed, never rejected, no exception text.
-    stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-leak").one()
-    assert result == {
-        "status": "SUBMIT_UNCONFIRMED",
-        "order_id": stored.internal_id,
-        "message": (
-            "Order sent but not confirmed by the broker. Check the broker orderbook before "
-            "placing it again."
-        ),
-        "client_order_id": CLIENT_ORDER_ID,
-        "duplicate": False,
-    }
-    assert broker.count("place_order") == 1
-    assert (stored.status, stored.reject_reason) == ("SUBMIT_UNCONFIRMED", None)
-    db_session.delete(stored)
-    db_session.commit()
-
-
-def test_db_lost_after_broker_accepts_raises_and_logs_the_unsaved_status(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    service = OrderExecutionService()
-    broker = FakeBroker(place_message="ok")
-    service._broker = broker
-    monkeypatch.setattr(service, "_run_live_risk_checks", lambda params, db: (None, []))
-    real_commit = db_session.commit
-    commits: list[int] = []
-
-    def commit_then_lose_connection() -> None:
-        # The PENDING_SUBMIT row saves before the broker call; the update after it does not.
-        commits.append(1)
-        if len(commits) > 1:
-            raise _connection_refused()
-        real_commit()
-
-    monkeypatch.setattr(db_session, "commit", commit_then_lose_connection)
-
-    with pytest.raises(OperationalError):
-        service.place_order(
-            {
-                "symbol": "SBIN",
-                "side": "BUY",
-                "quantity": 1,
-                "type": "MARKET",
-                "user_id": "u-lost",
-                "client_order_id": CLIENT_ORDER_ID,
-            },
-            db_session,
-            mode="LIVE",
-        )
-    monkeypatch.undo()
-
-    assert broker.count("place_order") == 1
-    assert (
-        f"LIVE order B-1 (client_order_id {CLIENT_ORDER_ID}) accepted by broker but its "
-        "status was not saved; the row stays PENDING_SUBMIT"
-    ) in [r.getMessage() for r in caplog.records]
-    stored = db_session.query(LiveOrder).filter(LiveOrder.user_id == "u-lost").one()
-    assert (stored.status, stored.client_order_id) == ("PENDING_SUBMIT", CLIENT_ORDER_ID)
-    db_session.delete(stored)
-    db_session.commit()

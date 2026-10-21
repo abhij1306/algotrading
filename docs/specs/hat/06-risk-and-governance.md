@@ -471,13 +471,14 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **Acceptance:**
   - Property: for every input with any required field missing, None or non-finite, the decision is REJECT with reason `missing_input`. Harm: a default of zero or infinity sizes a real order.
 
-#### HAT-RISK-103: Existing risk paths unchanged and independent of HAT
-- **Statement:** Adding `evaluate_signal` does not change the behaviour of the existing terminal and trading risk checks, and since K1 the legacy `RiskManager` imports nothing from `app.hat`.
-- **Source:** PLAN C2.
-- **PR:** 10
-- **Verification:** CONF `risk.existing_suite_green`
+#### HAT-RISK-103: HAT's safety properties are pinned and no manual-trading path exists
+- **Statement:** The Hypothesis properties that keep an order behind HAT's checks (exits never blocked, regime gate, stop required, stale feed, market hours, kill authority, caps, tag and idempotency rules, the broker's fail-closed rules) cannot be edited or weakened to fit a change, and the legacy manual-trading code (risk manager, order execution, position sync, live exit, the order routes and the legacy brokers package) is deleted, so `evaluate_signal` and the Fyers adapter are the only way to an order. [Changed in K4 (owner: no manual trading; D59): it pinned the pre-HAT risk test files and said the legacy `RiskManager` imports nothing from `app.hat`.]
+- **Source:** PLAN C2; cleanup plan K4.
+- **PR:** 10, K4
+- **Verification:** CONF `risk.hat_safety_properties_pinned`, CONF `risk.no_manual_trading_path`
 - **Acceptance:**
-  - Property: the existing risk test modules (`test_risk_fixes.py`, `test_live_trading_safety.py` and the rest of the pre-HAT suite) pass unchanged on the PR that adds `evaluate_signal`. Harm: HAT breaks manual trading safety.
+  - Property: every pinned safety property exists, is a `@given` property, matches its recorded digest and passes. Harm: a safety property is weakened or deleted so a change passes.
+  - Property: none of the legacy manual-trading modules exists and no class named a risk manager, order-execution service or position-sync service is defined. Harm: a second path to a broker order that bypasses HAT's risk decision.
 
 #### HAT-RISK-104: HAT's own kill switches are the only halt
 - **Statement:** HAT's own kill switches (account kill, bot kill, health kill, pause) are the only halt of a HAT entry. The legacy VCP `TRADING_HALTED` flag is not read: `evaluate_signal` takes no database session, `SignalContext` has no halt field and the reason `smarttrader_halt` no longer exists. HAT's `/kill` affects HAT bots only. [Changed in K1 (D59/D60, the legacy is being deleted); it said the VCP flag also blocked HAT entries (OWNER-PENDING, PLAN Q6).]

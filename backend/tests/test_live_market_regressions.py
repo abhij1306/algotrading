@@ -130,22 +130,6 @@ def test_explicit_disconnect_is_not_undone_by_automatic_connect(
     assert len(factory.sockets) == 2
 
 
-def test_broker_uses_current_client_after_relogin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.brokers.plugins import fyers as broker_module
-
-    holder = SimpleNamespace(current=SimpleNamespace(fyers="model-old-token"))
-    monkeypatch.setattr(broker_module, "get_fyers_client", lambda: holder.current)
-    monkeypatch.setattr(fyers_client_module, "get_fyers_client", lambda: holder.current)
-
-    broker = broker_module.FyersBroker()
-    assert broker.client == "model-old-token"
-
-    holder.current = SimpleNamespace(fyers="model-new-token")  # re-login
-    assert broker.client == "model-new-token"
-
-
 def test_reset_fyers_client_drops_class_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fyers_client_module.FyersClient, "_instance", object())
     fyers_client_module.reset_fyers_client()

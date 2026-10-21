@@ -1,21 +1,16 @@
 # Router exports for clean imports in main.py
 
 from . import (
-    activity,
     data_snapshot,
     market,
     market_dashboard,
-    portfolio,
     system_health,
-    terminal,
-    unified,
     universe,
     upload,
     websocket,
 )
 
 __all__ = [
-    "unified",
     "market",
     "market_dashboard",
     "system_health",
@@ -23,7 +18,4 @@ __all__ = [
     "universe",
     "upload",
     "data_snapshot",
-    "portfolio",
-    "terminal",
-    "activity",
 ]

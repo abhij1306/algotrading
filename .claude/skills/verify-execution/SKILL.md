@@ -70,7 +70,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_broker.bad_price_never_sent` A limit or trigger price that is NaN, infinite, zero, negative or not a number is a definite rejection with no SDK call, and a good price is sent exactly. Harm: a non-finite price passes a positivity check and reaches the exchange.
 - `PBT fyers_broker.bad_gtt_price_never_sent` A GTT place or modify with a non-finite or non-positive price is refused before the SDK. Harm: a stop is placed with a nonsense price.
 - `PBT fyers_broker.breakers_independent` Brokers built without a breaker get their own; two given the same breaker share it. Harm: a failure recorded through one class shadows another's (the legacy class-level state).
-- `CONF ops.one_login_one_token_store` The login service, the session default and the legacy re-export use HAT's one `token_store`; the legacy client, broker and symbol master subclass HAT's; the legacy login router is gone; the HAT router has exactly the four login routes. Harm: a second login or token copy drifts from the first.
+- `CONF ops.one_login_one_token_store` The login service and the session default use HAT's one `token_store`; the legacy client and symbol master subclass HAT's; the legacy token-store re-export, the `brokers` package and the login router are gone; the HAT router has exactly the four login routes. Harm: a second login or token copy drifts from the first.
 
 ## Run
 
@@ -152,13 +152,14 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `ddae500467150a6b8d8f5007b3ffc7df58a64fe7`
-Covered digest: `4fe9f6799a75e5f13416d301b5c3393bd6937a5eb304794e4f401b8e28d387b2`
+Sync commit: `0e4fd97e0e947c65d99dfe5dfab827d4038dd4eb`
+Covered digest: `c08ce2e31e1c6172e896d7d4591c82899d31602d3df0028294fbdcfa893ba5de`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- K4 deleted the legacy `FyersBroker` plugin and `app/brokers`, the `services/fyers/token_store.py` re-export and the DEV_MODE switch (HAT never honoured it), and trimmed `FakeBroker` to the methods the adapter calls (the lenient reads, the tag lookup, `ltp` and `working` state went). `ops.one_login_one_token_store` now asserts the deleted modules stay deleted.
 - K2 moved the Fyers broker, session, login and token store into `app/hat/execution` and replaced the legacy suites that tested them (`test_fyers_token_store`, `test_fyers_auth_flow`, `test_fyers_client_validate_token`, `test_auth_status_cache`) with the properties above. `fyers_adapter_wraps_existing` and `ops__single_fyers_secret_store` were rewritten for the new files (the SDK only in `fyers_session.py` and `fyers_auth.py`; credential words only in `fyers_auth.py`, `fyers_tokens.py`, `fyers_session.py`) and keep their synthetic-offender checks.
 - An order reply that is neither ok nor an explicit error is now `SUBMIT_UNCONFIRMED` (the legacy order path read it as a rejection): a tightening, as is refusing NaN and infinite prices.
 - `fyers_session.expired_validation_no_call` needs both expiry guards removed to fail: the `fyers` property and `validate_token` each stop an expired token, so one alone is redundant by design.
@@ -821,8 +822,12 @@ E    +      where <app.hat.execution.fyers_broker.CircuitBreaker object at 0x7f2
 Break: The legacy `FyersClient` is a class of its own again.
 
 ```
+tests/hat/conformance/test_conf_broker.py F                              [100%]
+tests/hat/conformance/test_conf_broker.py:250: in test_ops__one_login_one_token_store
 E   assert None
-E    +  where None = <function search at 0x7f77df10c670>('^class FyersClient\\(FyersSession\\)', '"""\nLegacy Fyers client: the process singleton over HAT\'s `FyersSession`.\n\nHAT owns the session (credentials from... are loaded on next access."""\n    global _fyers_client\n    _fyers_client = None\n    FyersClient._instance = None\n', re.MULTILINE)
-E    +    where <function search at 0x7f77df10c670> = re.search
-E    +    and   '"""\nLegacy Fyers client: the process singleton over HAT\'s `FyersSession`.\n\nHAT owns the session (credentials from... are loaded on next access."""\n    global _fyers_client\n    _fyers_client = None\n    FyersClient._instance = None\n' = <function test_ops__one_login_one_token_store.<locals>.source at 0x7f77db5421f0>('services/fyers_client.py')
+E    +  where None = <function search at 0x7fad557d8670>('^class FyersClient\\(FyersSession\\)', '"""\nLegacy Fyers client: the process singleton over HAT\'s `FyersSession`.\n\nHAT owns the session (credentials from... a
+E    +    where <function search at 0x7fad557d8670> = re.search
+E    +    and   '"""\nLegacy Fyers client: the process singleton over HAT\'s `FyersSession`.\n\nHAT owns the session (credentials from... are loaded on next access."""\n    global _fyers_client\n    _fyers_client = None\
+E    +    and   re.MULTILINE = re.M
+FAILED tests/hat/conformance/test_conf_broker.py::test_ops__one_login_one_token_store
 ```

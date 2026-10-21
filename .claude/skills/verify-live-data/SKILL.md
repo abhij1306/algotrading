@@ -44,7 +44,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
 - `CONF imports.no_second_websocket` No module under `app.hat` imports (statically, or by name through `importlib` or `__import__`) a broker data-socket or WebSocket library, and the single tick input is `add_tick_listener`. Harm: a second socket breaks the broker session and disconnects SmartTrader's feed.
 - `CONF single_feed_import_rule` HAT imports neither the live service module nor the provider session; live data arrives only through the listener hook and the `"hat"` registry owner. Harm: HAT could read or open a feed some other way.
-- `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `FakeBroker`, `RiskManager` and `LiveMarketService` are the listed legacy copies, and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
+- `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); the only other `LiveMarketService` is the listed legacy copy (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`; a class named `RiskManager` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 
 ## Run
 
@@ -109,8 +109,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
-Covered digest: `8706bd792aaec555a6e37e5a62c62aeb412258bbf0632965de1abdcd6da1ce0c`
+Sync commit: `0e4fd97e0e947c65d99dfe5dfab827d4038dd4eb`
+Covered digest: `d6448851ac40e0aed1835c9a6c461e103e5b3c58663ad634de91b13a09cf7472`
 
 ## Scope changes
 
@@ -487,10 +487,14 @@ FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule 
 Break: appended `class FakeBroker: pass` to `tests/hat/fakes/fyers_sdk.py`.
 
 ```
-tests/hat/conformance/test_conf_authorities.py F
-tests/hat/conformance/test_conf_authorities.py:44: in test_no_duplicate_fakes_or_authorities
-E   AssertionError: ('FakeBroker', ['tests/fakes/broker.py', 'tests/hat/fakes/broker.py', 'tests/hat/fakes/fyers_sdk.py'])
-E   assert ['tests/fakes...fyers_sdk.py'] == ['tests/fakes...es/broker.py']
+tests/hat/conformance/test_conf_authorities.py F                         [100%]
+tests/hat/conformance/test_conf_authorities.py:42: in test_no_duplicate_fakes_or_authorities
+E   AssertionError: ('FakeBroker', ['tests/hat/fakes/broker.py', 'tests/hat/fakes/fyers_sdk.py'])
+E   assert ['tests/hat/f...fyers_sdk.py'] == ['tests/hat/fakes/broker.py']
+E     
+E     Left contains one more item: 'tests/hat/fakes/fyers_sdk.py'
+E     Use -v to get more diff
+FAILED tests/hat/conformance/test_conf_authorities.py::test_no_duplicate_fakes_or_authorities
 ```
 
 ### PBT bars.candidates_never_overwrite_refresh

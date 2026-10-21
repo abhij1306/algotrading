@@ -1,7 +1,7 @@
 """Backend startup script (run from repo root: python backend/start_server.py).
 
 Env: BACKEND_HOST, BACKEND_PORT, BACKEND_RELOAD, BACKEND_ACCESS_LOG, BACKEND_LOG_LEVEL,
-FRAMEWORK_LOG_LEVEL, DEV_MODE.
+FRAMEWORK_LOG_LEVEL.
 """
 
 import copy
@@ -11,8 +11,6 @@ import uvicorn
 from uvicorn.config import LOGGING_CONFIG
 
 from app.main import app
-
-os.environ.setdefault("DEV_MODE", "false")
 
 
 def _env_bool(key: str, default: bool) -> bool:

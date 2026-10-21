@@ -30,15 +30,10 @@ from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError, SmartTraderException  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
 from .routers import (  # noqa: E402
-    activity,
     data_snapshot,
     market,
     market_dashboard,
-    portfolio,
     system_health,
-    terminal,
-    trading,
-    unified,
     universe,
     upload,
     websocket,
@@ -396,7 +391,6 @@ app.add_middleware(
 
 # Register routers
 app.include_router(system_health.router)
-app.include_router(unified.router)
 app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
 app.include_router(market_dashboard.router, prefix="/api")
 app.include_router(hat_fyers_auth.router)
@@ -405,10 +399,6 @@ app.include_router(websocket.router, prefix="/api/websocket", tags=["WebSocket"]
 app.include_router(universe.router, prefix="/api/universe", tags=["Universe"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(data_snapshot.router)
-app.include_router(terminal.router)
-app.include_router(trading.router)
-app.include_router(portfolio.router)
-app.include_router(activity.router)
 
 logger.info("[OK] All routers registered")
 

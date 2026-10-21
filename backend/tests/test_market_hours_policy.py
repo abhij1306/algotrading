@@ -210,13 +210,13 @@ def test_freeze_market_drives_the_module_helpers(freeze_market: FreezeMarket) ->
         return "ran"
 
     clock = freeze_market(False)
-    closed = (market_hours.is_market_hours(), market_hours.is_market_open())
+    closed = market_hours.is_market_open()
     with pytest.raises(HTTPException) as raised:
         guarded()
 
     clock.set(datetime(2026, 10, 20, 15, 30, tzinfo=IST))  # the last open instant
-    opened = (market_hours.is_market_hours(), market_hours.is_market_open(), guarded())
+    opened = (market_hours.is_market_open(), guarded())
 
-    assert closed == (False, (False, "Market closed (Weekend)"))
+    assert closed == (False, "Market closed (Weekend)")
     assert raised.value.status_code == 503
-    assert opened == (True, (True, "Market open"), "ran")
+    assert opened == ((True, "Market open"), "ran")

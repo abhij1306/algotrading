@@ -6,7 +6,6 @@ import {
   getCompactIndexLabel,
   getMarketSectionMeta,
   getStatusBadge,
-  terminalPath,
 } from "../model";
 
 const NIFTY: MarketIndex = {
@@ -82,15 +81,5 @@ describe("applyWatchlistQuotes", () => {
 
   it("leaves an unquoted row as fetched", () => {
     expect(applyWatchlistQuotes([SBIN], { TCS: { ltp: 3900 } })).toEqual([SBIN]);
-  });
-});
-
-describe("terminalPath", () => {
-  it.each([
-    ["SBIN", "/terminal?symbol=SBIN"],
-    ["M&M", "/terminal?symbol=M%26M"],
-    ["NSE:BAJAJ-AUTO-EQ", "/terminal?symbol=NSE%3ABAJAJ-AUTO-EQ"],
-  ])("%s opens %s", (symbol, path) => {
-    expect(terminalPath(symbol)).toBe(path);
   });
 });

@@ -1,7 +1,7 @@
 """The Fyers access-token file: the only code that reads or writes it (HAT-OPS-051).
 
-HAT owns it since K2; the legacy `services/fyers/token_store.py` re-exports it. DEV_MODE has no
-effect here: HAT never skips the token because of a development flag.
+HAT owns it since K2 (K4 deleted the legacy re-export). There is no DEV_MODE switch: nothing skips
+the token because of a development flag.
 
 The file is JSON written by the login flow. Fields read back: ``client_id``, ``access_token``,
 ``fy_id`` and ``expires_at`` (UTC ISO 8601). A Fyers token is valid until the next midnight IST,

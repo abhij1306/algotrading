@@ -2,8 +2,8 @@
 Legacy Fyers client: the process singleton over HAT's `FyersSession`.
 
 HAT owns the session (credentials from the token file, the SDK model, token validation; K2). This
-class adds only what the legacy app uses: the DEV_MODE switch, quotes, history and the thin order
-and book wrappers. K4 and K5 delete it with the legacy features.
+class adds only what the legacy market code uses: quotes and history. It places no orders and reads
+no book (K4). K5b deletes it with the legacy market features.
 """
 
 from collections.abc import Iterable
@@ -14,7 +14,6 @@ from app.hat.execution.fyers_session import FyersSession
 
 from ..utils.logger import get_logger
 from .fyers.quotes import Quote, parse_quotes
-from .fyers.token_store import fyers_client_disabled
 from .symbol_master import symbol_master
 
 # Setup Logging
@@ -64,18 +63,8 @@ class FyersClient(FyersSession):
     def __init__(self) -> None:
         if self._initialized:
             return
-        disabled = fyers_client_disabled()
-        super().__init__(load=not disabled)
-        if disabled:
-            logger.info("[DEV_MODE] Skipping Fyers client initialization")
+        super().__init__()
         self._initialized = True
-
-    def _load_credentials(self) -> None:
-        """Under DEV_MODE no token is ever loaded, so a validation cannot build a model either."""
-        if fyers_client_disabled():
-            self._drop_credentials()
-            return
-        super()._load_credentials()
 
     def quotes(self, symbols: Iterable[str]) -> dict[str, Quote]:
         """Quotes keyed by the requested DB symbol; symbols Fyers has no quote for are absent.
@@ -129,21 +118,6 @@ class FyersClient(FyersSession):
         except Exception as e:
             logger.exception(f"Error fetching history for {symbol}: {e}")
             return {}
-
-    def get_orderbook(self) -> dict[str, Any]:
-        if not self.fyers:
-            return {}
-        return self.fyers.orderbook()
-
-    def get_positions(self) -> dict[str, Any]:
-        if not self.fyers:
-            return {}
-        return self.fyers.positions()
-
-    def place_order(self, data: dict[str, Any]) -> dict[str, Any]:
-        if not self.fyers:
-            return {"s": "error", "message": "Client not connected"}
-        return self.fyers.place_order(data)
 
 
 # Global Accessor - LAZY INITIALIZATION
