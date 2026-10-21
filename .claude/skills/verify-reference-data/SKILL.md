@@ -75,6 +75,7 @@ Checks:
 - `backend/tests/hat/properties/test_calendar.py`
 - `backend/tests/hat/db/test_db_reference_upsert.py`
 - `backend/tests/hat/conformance/test_conf_imports.py`
+- `backend/tests/hat/conformance/test_conf_fixtures.py`
 - `backend/tests/hat/hat_mcp_support.py`
 
 ## Sync commit
@@ -82,7 +83,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `21ddd29b3546424f9d45946ca14bb9f0911371f2`
-Covered digest: `3af1e649639426618675633230b5a2186b7614b2b57536f0390c52c32fe0d9d3`
+Covered digest: `49fe17c5dace1697a34fcb8bf3a55e2a008f8c0ff1dbc3cdb284a41ef8d8430c`
 
 ## Scope changes
 

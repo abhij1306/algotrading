@@ -1,0 +1,79 @@
+"""CONF: the parsers and the client's unwrapping agree with the recorded fixtures (the shapes the
+real servers returned on 21 Oct 2026, and the `[A]` NSE file layouts of HAT-DATA-025..027)."""
+
+from datetime import date, time
+from decimal import Decimal
+
+from hat_mcp_support import ScriptedTransport, fixture_json, fixture_text
+
+from app.hat.data.calendar import parse_nse_holidays
+from app.hat.data.mcp_client import McpClient, McpTransportError, unwrap_result
+from app.hat.data.reference import (
+    ListedSymbol,
+    build_listing_from_mcp,
+    parse_equity_list_csv,
+    parse_industry_csv,
+    parse_price_band_csv,
+)
+
+TRADE_DATE = date(2026, 10, 19)
+
+
+def test_fixtures_equity_list_and_listing() -> None:
+    rows = parse_equity_list_csv(fixture_text("nse_equity_list.csv"))
+    assert {(r.symbol, r.series) for r in rows} == {
+        ("RELIANCE", "EQ"),
+        ("TCS", "EQ"),
+        ("RELIGARE", "EQ"),
+        ("RELINFRA", "BE"),
+    }  # the SME row and the bad-ISIN row are skipped
+    reliance = next(r for r in rows if r.symbol == "RELIANCE")
+    assert reliance.isin == "INE002A01018" and reliance.listed_on == date(1995, 11, 29)
+    assert reliance.face_value == Decimal(10)
+    payload = fixture_json("mcp_cm_equity_stocks_reli.json")
+    transport = ScriptedTransport([payload])
+    client = McpClient(transport, sleep=lambda _s: None)
+    listed = client.equity_stocks("RELI", 500)
+    build = build_listing_from_mcp(
+        [ListedSymbol(str(s["symbol"]), str(s["series"])) for s in listed], rows
+    )
+    assert build.unresolved == [] and len(build.securities) == 3
+
+
+def test_fixtures_bands_industry_holidays() -> None:
+    bands, rejected = parse_price_band_csv(fixture_text("price_band.csv"))
+    assert rejected == 1  # the 15% row
+    assert {(b.symbol, b.band_pct) for b in bands} == {
+        ("RELIANCE", None),
+        ("RELIGARE", Decimal(20)),
+        ("RELINFRA", Decimal(5)),
+        ("TCS", None),
+    }
+    industries = parse_industry_csv(fixture_text("nifty_industry.csv"))
+    assert {(i.symbol, i.industry) for i in industries} == {
+        ("RELIANCE", "Oil Gas & Consumable Fuels"),
+        ("TCS", "Information Technology"),
+    }
+    days, skipped = parse_nse_holidays(fixture_text("nse_holidays.json"))
+    assert skipped == 1
+    assert [(d.day, d.is_trading) for d in days] == [
+        (date(2026, 1, 26), False),
+        (date(2026, 3, 19), False),
+        (date(2026, 11, 8), True),
+    ]
+    assert (days[-1].open_at, days[-1].close_at) == (time(18, 15), time(19, 15))
+
+
+def test_fixtures_mcp_envelopes_and_bulk_quote() -> None:
+    assert unwrap_result(fixture_json("mcp_envelope_ok.json"))["count"] == 1  # type: ignore[index]
+    try:
+        unwrap_result(fixture_json("mcp_envelope_error.json"))
+    except McpTransportError as exc:
+        assert exc.code == "mcp_tool_error" and "internal.example" not in str(exc)
+    else:
+        raise AssertionError("an isError envelope must raise")
+    client = McpClient(ScriptedTransport([fixture_json("mcp_bulk_quote.json")]))
+    ok = client.bulk_quote(["RELIANCE", "TCS"], TRADE_DATE)
+    assert [r["symbol"] for r in ok.rows] == ["RELIANCE", "TCS"] and not ok.mismatched
+    stale = client.bulk_quote(["RELIANCE", "TCS"], date(2026, 10, 20))
+    assert stale.rows == [] and len(stale.mismatched) == 2
