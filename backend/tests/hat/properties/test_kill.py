@@ -1,0 +1,322 @@
+"""PBT kill.* (HAT-SCH-033/034, HAT-RISK-062..065, HAT-DEC-B23..B26): kill-switch state from rows
+and through the real service on SQLite, against an independently written model."""
+
+import uuid
+from datetime import timedelta
+
+import pytest
+from hat_risk_support import AT, D, seed_bot, seed_pending_approval
+from hat_support import memory_engine
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from app.hat.models import HatApproval, HatDailyBotSnapshot, HatEvent, HatKillSwitch
+from app.hat.risk import kill
+from app.hat.risk.controls import (
+    ControlError,
+    evaluate_drawdown_kills,
+    kill_state,
+    pause_bot,
+    rearm_kill,
+    resume_bot,
+    sync_health,
+    trip_kill,
+)
+from app.hat.risk.kill import ARMED, TRIPPED, KillRow
+from app.hat.risk.policy import seed_policy
+
+BOT_A, BOT_B = uuid.uuid4(), uuid.uuid4()
+REASONS = kill.REASONS
+
+
+@st.composite
+def kill_rows(draw: st.DrawFn) -> list[KillRow]:
+    rows = []
+    for _ in range(draw(st.integers(0, 10))):
+        scope = draw(st.sampled_from(("account", "bot")))
+        state = draw(st.sampled_from((TRIPPED, ARMED)))
+        at = AT + timedelta(minutes=draw(st.integers(0, 6)))
+        rows.append(
+            KillRow(
+                scope,
+                BOT_A if scope == "bot" else None,
+                state,
+                at,
+                draw(st.sampled_from(REASONS)),
+                at if state == ARMED else None,
+            )
+        )
+    return rows
+
+
+@given(
+    kill_rows(),
+    st.sampled_from(("account", "bot")),
+    st.one_of(st.none(), st.sampled_from(("risk", "health"))),
+)
+def test_current_state(rows: list, scope: str, channel: str | None) -> None:
+    """A (scope, bot) is tripped exactly when some channel's latest row is a trip: the risk
+    channel (drawdown, manual) and the health channel (data, broker) are read apart so an
+    automatic health re-arm never hides a tripped drawdown or manual kill; with no rows it is
+    armed; on a time tie the trip wins."""
+    bot = BOT_A if scope == "bot" else None
+    mine = [r for r in rows if r.scope == scope]
+    expected = ARMED
+    for name in ("risk", "health") if channel is None else (channel,):
+        group = [r for r in mine if kill.channel_of(r.reason) == name]
+        if not group:
+            continue
+        top = max(r.occurred_at for r in group)
+        if any(r.state == TRIPPED for r in group if r.occurred_at == top):
+            expected = TRIPPED
+    assert kill.current_state(rows, scope, bot, channel) == expected
+
+
+@given(kill_rows())
+def test_current_state_other_key_untouched(rows: list) -> None:
+    """Rows of one bot never change another bot's state, nor the account's."""
+    assert kill.current_state(rows, "bot", BOT_B) == ARMED
+    assert kill.kill_state_of(rows, BOT_B, paused=False).bot_tripped is False
+
+
+# --- the service, as a state machine ---------------------------------------------------------
+
+OPS = st.lists(
+    st.tuples(
+        st.sampled_from(
+            (
+                "trip_bot",
+                "trip_account",
+                "health_fail",
+                "health_ok",
+                "account_health_fail",
+                "account_health_ok",
+                "rearm_bot",
+                "rearm_account",
+                "pause",
+                "resume",
+                "rearm_unconfirmed",
+                "rearm_by_engine",
+            )
+        ),
+        st.integers(0, 1),
+    ),
+    min_size=1,
+    max_size=25,
+)
+
+
+@settings(max_examples=300)
+@given(OPS)
+def test_kill_service_matches_model(ops: list) -> None:
+    """After any sequence of trips, health changes, re-arms, pauses and resumes: a bot is
+    manage-only exactly when the account kill, its own kill, its health kill, the account
+    health kill or its pause says so; a pause or resume never touches a kill; a health pass
+    never re-arms a drawdown or manual kill; a drawdown or manual re-arm needs a user and a
+    second confirmation; every state change appends its event."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        bots = [seed_bot(session), seed_bot(session)]
+        session.commit()
+        risk = {"acct": False, "bot": [False, False]}
+        health = {"acct": False, "bot": [False, False]}
+        paused = [False, False]
+        events = 0
+        clock = AT
+        for op, i in ops:
+            clock += timedelta(minutes=1)
+            bot = bots[i]
+            if op == "trip_bot":
+                row = trip_kill(session, scope="bot", bot_id=bot, reason="drawdown_bot", now=clock)
+                assert (row is not None) is (not risk["bot"][i])
+                events += row is not None
+                risk["bot"][i] = True
+            elif op == "trip_account":
+                row = trip_kill(session, scope="account", bot_id=None, reason="manual", now=clock)
+                assert (row is not None) is (not risk["acct"])
+                events += row is not None
+                risk["acct"] = True
+            elif op in ("health_fail", "health_ok"):
+                row = sync_health(
+                    session,
+                    scope="bot",
+                    bot_id=bot,
+                    failing=op == "health_fail",
+                    reason="data_health",
+                    now=clock,
+                )
+                changed = health["bot"][i] != (op == "health_fail")
+                assert (row is not None) is changed
+                events += row is not None
+                health["bot"][i] = op == "health_fail"
+            elif op in ("account_health_fail", "account_health_ok"):
+                row = sync_health(
+                    session,
+                    scope="account",
+                    bot_id=None,
+                    failing=op == "account_health_fail",
+                    reason="broker_health",
+                    now=clock,
+                )
+                changed = health["acct"] != (op == "account_health_fail")
+                assert (row is not None) is changed
+                events += row is not None
+                health["acct"] = op == "account_health_fail"
+            elif op in ("rearm_bot", "rearm_account"):
+                scope = "bot" if op == "rearm_bot" else "account"
+                row = rearm_kill(
+                    session,
+                    scope=scope,
+                    bot_id=bot if scope == "bot" else None,
+                    confirmed=True,
+                    now=clock,
+                    chat_id=7,
+                )
+                was = risk["bot"][i] if scope == "bot" else risk["acct"]
+                assert (row is not None) is was
+                events += row is not None
+                if scope == "bot":
+                    risk["bot"][i] = False
+                else:
+                    risk["acct"] = False
+            elif op == "rearm_unconfirmed":
+                with pytest.raises(ControlError):
+                    rearm_kill(
+                        session, scope="bot", bot_id=bot, confirmed=False, now=clock, chat_id=7
+                    )
+            elif op == "rearm_by_engine":
+                with pytest.raises(ControlError):
+                    rearm_kill(
+                        session,
+                        scope="bot",
+                        bot_id=bot,
+                        confirmed=True,
+                        now=clock,
+                        chat_id=7,
+                        actor="engine",
+                    )
+            elif op == "pause":
+                changed = pause_bot(session, bot, clock, chat_id=7)
+                assert changed is (not paused[i])
+                events += changed
+                paused[i] = True
+            else:
+                changed = resume_bot(session, bot, clock, chat_id=7)
+                assert changed is paused[i]
+                events += changed
+                paused[i] = False
+            session.commit()
+            for j, other in enumerate(bots):
+                state = kill_state(session, other)
+                assert state.account_tripped == risk["acct"]
+                assert state.bot_tripped == risk["bot"][j]
+                assert state.health_tripped == (health["bot"][j] or health["acct"])
+                assert state.paused == paused[j]
+                assert state.manage_only == (
+                    risk["acct"]
+                    or risk["bot"][j]
+                    or health["bot"][j]
+                    or health["acct"]
+                    or paused[j]
+                )
+        total = len(session.scalars(select(HatEvent)).all())
+        assert total == events
+
+
+@given(
+    st.sampled_from(("account", "bot")),
+    st.sampled_from(("manual", "drawdown_bot", "drawdown_account")),
+)
+def test_trip_cancels_pending_approvals(scope: str, reason: str) -> None:
+    """A drawdown or manual trip ends the undecided approvals it covers (the bot's, or all for
+    the account) as `expired` with `signal.expired`; decided ones and other bots' (for a bot kill)
+    are left; a health trip cancels none."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        a, b = seed_bot(session), seed_bot(session)
+        sa, sb = seed_pending_approval(session, a), seed_pending_approval(session, b)
+        session.commit()
+        trip_kill(session, scope=scope, bot_id=a if scope == "bot" else None, reason=reason, now=AT)
+        session.commit()
+        decisions = {r.signal_id: r.decision for r in session.scalars(select(HatApproval))}
+        assert decisions[sa] == "expired"
+        assert decisions[sb] == ("expired" if scope == "account" else None)
+        expired = [e for e in session.scalars(select(HatEvent)) if e.event_type == "signal.expired"]
+        assert len(expired) == (2 if scope == "account" else 1)
+    with Session(memory_engine()) as session:
+        a = seed_bot(session)
+        s = seed_pending_approval(session, a)
+        trip_kill(session, scope="bot", bot_id=a, reason="data_health", now=AT)
+        session.commit()
+        assert session.get(HatApproval, s).decision is None
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.decimals(min_value=D("60"), max_value=D("140"), places=2),
+            st.decimals(min_value=D("60"), max_value=D("140"), places=2),
+        ),
+        min_size=1,
+        max_size=12,
+    ),
+    st.booleans(),
+)
+def test_drawdown_kills_from_snapshots(equities: list, rearm_first: bool) -> None:
+    """From daily snapshots the account kill trips when the summed equity is 15% under its
+    running peak and a bot kill when that bot is 10% under its own, nothing else trips, and a
+    re-arm is not undone by the snapshots it already saw."""
+    from datetime import date
+
+    policy = seed_policy()
+    engine = memory_engine()
+    with Session(engine) as session:
+        bots = [seed_bot(session), seed_bot(session)]
+        peaks = [D(0), D(0)]
+        account_peak = D(0)
+        expect_bot = [False, False]
+        expect_account = False
+        for day, pair in enumerate(equities):
+            d = date(2026, 3, 2) + timedelta(days=day)
+            account = sum(pair, D(0))
+            account_peak = max(account_peak, account)
+            expect_account |= (account_peak - account) * 100 >= 15 * account_peak
+            for k in range(2):
+                peaks[k] = max(peaks[k], pair[k])
+                expect_bot[k] |= (peaks[k] - pair[k]) * 100 >= 10 * peaks[k]
+                session.add(
+                    HatDailyBotSnapshot(
+                        bot_id=bots[k],
+                        trade_date=d,
+                        equity=pair[k],
+                        equity_peak=peaks[k],
+                        open_risk=D(0),
+                        realized_r=D(0),
+                        exposure_level="L1",
+                        currency="INR",
+                    )
+                )
+        session.commit()
+        now = AT + timedelta(days=400)
+        tripped = evaluate_drawdown_kills(session, policy, now)
+        session.commit()
+        assert ("account" in tripped) is expect_account
+        assert {str(b) for b in bots if str(b) in tripped} == {
+            str(bots[k]) for k in range(2) if expect_bot[k]
+        }
+        if rearm_first and expect_account:
+            rearm_kill(
+                session,
+                scope="account",
+                bot_id=None,
+                confirmed=True,
+                now=now + timedelta(minutes=1),
+                chat_id=1,
+            )
+            session.commit()
+            assert evaluate_drawdown_kills(session, policy, now + timedelta(minutes=2)) == []
+        session.execute(delete(HatKillSwitch))
+        session.execute(delete(HatDailyBotSnapshot))
+        session.commit()

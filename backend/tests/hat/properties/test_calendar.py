@@ -1,16 +1,19 @@
-"""PBT calendar.* (HAT-DATA-027, HAT-OVR-001): a calendar holiday is closed in
+"""PBT calendar.* (HAT-DATA-027, HAT-OVR-001, HAT-SCH-086): a calendar holiday is closed in
 `MarketHoursPolicy` at every instant, a trading day uses its own session, and the engine's
 session comes from market reference data, not constants."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from hat_mcp_support import reference_engine
+from hat_risk_support import CALENDAR, TRADE_DAY, calendar_around
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
 from app.hat.data import calendar as cal
 from app.hat.models import HatMarket
+from app.hat.risk.sessions import SessionState, next_session_open
 from app.utils import market_hours
 from app.utils.clock import FixedClock
 from app.utils.market_hours import IST, MarketHoursPolicy, MarketPhase
@@ -203,3 +206,47 @@ def test_holiday_closed_withdrawn(first: CalSpec, second: CalSpec) -> None:
             assert (
                 cal.upsert_calendar(session, market.id, second[2].values(), replace_span=True) == 0
             )
+
+
+# --- the next session open (HAT-SCH-086, HAT-DEC-B20) ---------------------------------------
+
+session_instants = st.datetimes(
+    min_value=datetime(2026, 10, 10), max_value=datetime(2026, 10, 31), timezones=st.just(IST)
+)
+
+
+@given(session_instants)
+def test_next_session_open(at: datetime) -> None:
+    """The next open is the earliest session open strictly after `at`; it is a trading day's
+    09:15 IST, nothing earlier qualifies, and a calendar with no later session gives None."""
+    found = next_session_open(CALENDAR, at)
+    candidates = [
+        datetime.combine(d, time(9, 15), tzinfo=IST)
+        for d, row in CALENDAR.days.items()
+        if row.is_trading
+    ]
+    later = [c for c in candidates if c > at]
+    assert found == (min(later) if later else None)
+    if found is not None:
+        assert CALENDAR.state(found) is SessionState.OPEN
+        assert found.astimezone(IST).time() == time(9, 15)
+        assert found.astimezone(IST).weekday() < 5
+    assert next_session_open(calendar_around(TRADE_DAY, span=0), at) in (
+        None,
+        datetime.combine(TRADE_DAY, time(9, 15), tzinfo=IST),
+    )
+
+
+@given(session_instants)
+def test_next_session_open_after_a_holiday(at: datetime) -> None:
+    """A holiday row is skipped: with Thursday a holiday, Wednesday evening goes to Friday."""
+    days = dict(CALENDAR.days)
+    thursday = TRADE_DAY + timedelta(days=1)
+    days[thursday] = replace(days[thursday], is_trading=False)  # a holiday keeps its times
+    holidays = type(CALENDAR)(days)
+    evening = datetime.combine(TRADE_DAY, time(20, 0), tzinfo=IST)
+    assert next_session_open(holidays, evening) == datetime.combine(
+        thursday + timedelta(days=1), time(9, 15), tzinfo=IST
+    )
+    found = next_session_open(holidays, at)
+    assert found is None or holidays.state(found) is SessionState.OPEN
