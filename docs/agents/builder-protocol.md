@@ -25,8 +25,9 @@ execution.
 
 1. The PR does what its plan section and spec IDs say, verified as below.
 2. Every CI check passes and the SonarCloud quality gate is OK.
-3. Every real bug found by you, Sonar or CodeAnt (inline comments and PR Risk) is fixed, or
-   answered on the PR with a reason. Cosmetic findings don't block.
+3. Every real bug found by you, Sonar or CodeAnt is fixed. A Sonar or CodeAnt finding (inline
+   comment or PR Risk) you judge not to be a real bug gets a reply saying why. Cosmetic findings
+   don't block.
 
 If you can't get there, end with `BLOCKED #<n>: <reason and what you tried>`.
 
