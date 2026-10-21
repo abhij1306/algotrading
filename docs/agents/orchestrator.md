@@ -87,10 +87,8 @@ gh api graphql -f query='{repository(owner:"abhij1306",name:"algotrading"){pullR
   -q '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|select([.comments.nodes[].author.login]|index("abhij1306")|not)]|length'   # 0
 ```
 
-Also read CodeAnt's "Nitpicks" and "PR Risk" issue comments. Every point needs a reply from the
-builder, and the review-thread check above doesn't see them (a PR once reported ready with six
-unanswered nitpicks, two of them real bugs). If anything fails, send it back:
-`herdr agent prompt prNN "<what failed, what to fix>"`.
+Also check CodeAnt's "PR Risk" comment has a reply. Ignore CodeAnt Nitpicks (owner rule). If
+anything fails, send it back: `herdr agent prompt prNN "<what failed, what to fix>"`.
 
 Merge and clean up:
 

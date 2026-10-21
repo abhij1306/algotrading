@@ -151,36 +151,22 @@ an `aiohttp` that does not build on Python 3.14.
 
 ### Engineering guidelines (from repeated findings)
 
-Each rule below came from a defect or review finding that showed up more than once. When a bug
-class or review finding appears in a second PR, add it here in the PR that fixes it. Agent-process
-mistakes go to `docs/agents/builder-protocol.md` instead.
+Each rule below is a finding that has already recurred across PRs. Write it right the first time.
+When a bug class or review finding shows up in a second PR, add it here in the PR that fixes it.
+Agent-process mistakes go to `docs/agents/builder-protocol.md` instead.
 
-Code:
-- **Confirm after commit.** Never record a side effect (a fired trigger key, a consumed token, a
-  cache entry) before the write it guards has committed. Use pending, then confirm on commit or
-  release on failure, so a failed write is retried. (#107)
-- **No check-then-insert.** Concurrent writers are serialised by a unique constraint or a row
-  lock, not by a SELECT before the INSERT. (#105)
-- **Distinct instants for state changes.** Two changes to the same state must never share a
-  timestamp, or "tripped then recovered" collapses into "still tripped". (#107)
-- **Prices on the tick grid.** Round every computed order or stop price to the instrument's tick,
-  in the direction that keeps it safe. (#105)
-- **Read pinned versions.** Code given a version (universe, config, policy) reads that version's
-  immutable rows, not the current mutable ones. (#105)
-- **Constraints in both places.** A CHECK or constraint added to a model is also added in
-  `ensure_hat_schema`, because `create_all` doesn't alter existing tables. (#105)
-- **Filter before you rank.** Percentiles and ranks are computed over the population that's
-  eligible (members with data on the day), never over a superset. (#105)
-
-Sonar rules that keep recurring, so write them right the first time:
-- S3415: `assert actual == expected`, with the literal or expected value on the right. (#103, #104)
-- S9073: one condition per `assert`, never `assert a and b`. (#105)
-- S3776: cognitive complexity at most 15. Split into helpers as you write. (#105)
-- S1192: a string literal used three or more times becomes a module constant. (#105)
-- S7517: iterate `.items()` when the loop needs both key and value. (#105)
-- Changing a file covered by a `verify-*` skill makes its digest stale. Run
-  `python backend/tests/hat/conformance/hat_conf_skills.py --refresh` before pushing. (#103, #104,
-  #108)
+- S9073 (in every HAT PR so far): one condition per `assert`. Write `assert a` and `assert b`,
+  never `assert a and b` or `assert (x, y) == (p, q)` to test two things.
+- S3776 (#102, #103, #105): cognitive complexity at most 15 per function. Split into helpers as
+  you write, not in review.
+- S3415 (#103, #104): `assert actual == expected`, with the expected value or literal on the right,
+  the same order throughout a file.
+- S3358 (#102, #104): no nested conditional expressions. Use an `if` block or a helper.
+- S5655 (#105, #107): arguments match the callee's annotated types. Don't pass a str where an enum
+  or a different model is declared.
+- Stale verify-skill digests (#103, #104, #108): any change to a file covered by a `verify-*`
+  skill makes its digest stale. Run
+  `python backend/tests/hat/conformance/hat_conf_skills.py --refresh` before every push.
 
 ---
 
