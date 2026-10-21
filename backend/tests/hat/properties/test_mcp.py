@@ -2,10 +2,11 @@
 
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from hat_mcp_support import ScriptedTransport, fixture_json, reference_engine
-from hypothesis import assume, given
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from sqlalchemy import select
 
@@ -129,6 +130,9 @@ def leaks(payload: str, *texts: str) -> bool:
     return any(payload[i : i + 9] in text for text in texts for i in range(len(payload) - 8))
 
 
+@example(
+    payload=Path(mcp_client.__file__).parents[3].as_posix()[-40:], kind="raise"
+)  # a source path is not logged data
 @given(
     payload=payloads,
     kind=st.sampled_from(["raise", "code_text", "tool_error", "http_500", "http_raise"]),
@@ -190,7 +194,14 @@ def test_no_raw_error_text(payload: str, kind: str) -> None:
         root.removeHandler(handler)
         root.setLevel(previous_level)
     assert records, "the call must have logged something for this check to mean anything"
-    logged = [r.getMessage() + repr(r.__dict__) for r in records]
+    # The record's own source location (`pathname`, `filename`, `module`) is not data the client
+    # logged: on a runner it holds the checkout directory ("algotrading"), which a generated
+    # payload can match by chance (found when a new module shifted Hypothesis's string pool).
+    place = {"pathname", "filename", "module"}
+    logged = [
+        r.getMessage() + repr({k: v for k, v in r.__dict__.items() if k not in place})
+        for r in records
+    ]
     assert not leaks(payload, *logged)
 
 
