@@ -26,7 +26,7 @@ A bot version is nine stages evaluated in a fixed order (BL "Configuration model
 - **Statement:** The engine evaluates a bot version's stages in the order universe, regime gate, setup, trigger, entry filters, sizing, stop, exit stack, execution mode, and a symbol reaches a later stage only after passing every earlier one.
 - **Source:** BL "Configuration model"; B3, B4, T12.
 - **PR:** 8, 11
-- **Verification:** PBT `scoring.stage_order`
+- **Verification:** PBT `scoring.stage_order`, PBT `scan.watchlist_gates`
 - **Acceptance:**
   - Property: for every bot config and every generated feature frame, no symbol has a setup result unless it passed the universe stage and the regime gate allowed longs, and no trigger is evaluated for a symbol absent from that day's watchlist (except the episodic-pivot playbook, HAT-BOT-052). Harm: a stock that fails liquidity or regime rules could still become a trade.
   - Property: for every symbol, the stage outputs recorded in `criteria_results` appear in stage order and stop at the first failing stage. Harm: rejection reasons point at the wrong stage and the digest misleads the owner.
@@ -371,8 +371,8 @@ A **playbook** is a named set of setup, trigger, entry filters and stop; a bot c
 #### HAT-BOT-050: A playbook bundles setup, trigger, entry filters and stop
 - **Statement:** A bot holds one or more named playbooks, each with its own setup, trigger, entry filters and stop rule, while regime gate, sizing (risk policy) and exit stack are bot-level and shared.
 - **Source:** BL "Configuration model" (stages 3-5 and 7 repeat as playbooks); BL "Qullamaggie-style bot".
-- **PR:** 8
-- **Verification:** PBT `config.playbook_shape`
+- **PR:** 8, 11
+- **Verification:** PBT `config.playbook_shape`, PBT `trades.shared_bot_cap`
 - **Acceptance:**
   - Property: for every valid config, each playbook has a unique name within the bot and exactly one stop rule, and no playbook carries a regime rule, sizing value or exit stack. Harm: playbooks drift into separate risk or exit behaviour the owner did not approve.
   - Property: for every bot, signals from all playbooks count against the same per-bot caps and capital (06 §3). Harm: two playbooks double the bot's risk budget.

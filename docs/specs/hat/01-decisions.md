@@ -225,7 +225,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 #### HAT-DEC-B11: Regime gate blocks new entries
 - **Statement:** When a bot's strategy regime gate is off, the bot opens no new entries; open positions keep their stops and exits.
 - **Source:** MA (B11); BL "Regime gate (B11, B12)".
-- **PR:** 10, 11
+- **PR:** 10, 11, 15
 - **Verification:** TLA `ExecutionRouter!GateOffNoEntry`
 - **Acceptance:**
   - Property: in every reachable state where a bot's gate is off, no entry signal for that bot is approved, and exit actions are unaffected. Harm: new longs open in a falling market the strategy says to avoid. Detail: 06 §5.

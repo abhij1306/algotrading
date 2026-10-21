@@ -451,3 +451,52 @@ def test_new_bot_mode_shadow(mode: str | None) -> None:
         session.rollback()
     for name in SEED_NAMES:
         assert seed_config(name).execution_mode == "shadow"
+
+
+@settings(max_examples=20)
+@given(st.integers(60, 99))
+def test_trade_keeps_entry_version(price: int) -> None:
+    """HAT-BOT-083: a version promoted after the entry never changes the exit rules of an open
+    trade. The trade entered under a stack whose `close_below_sma` exits below 100; the bot then
+    moves to a version with the stop alone; the trade still closes on that rule, and a trade
+    opened after the move does not. Harm: a promotion silently rewrites the exits of positions
+    already held."""
+    from decimal import Decimal
+
+    from hat.hat_engine_support import exit_stack, open_trade, seed_engine_world, step_trade
+
+    from app.hat.engine import trades
+    from app.hat.models import HatPosition, HatSignal
+
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, exits=exit_stack("trend"))
+        old = open_trade(session, world, world.instruments[0])
+        newer = HatStrategyVersion(
+            id=uuid.uuid4(),
+            strategy_id=world.strategy_id,
+            version=2,
+            status="draft",
+            config={
+                **session.get(HatStrategyVersion, world.version_id).config,
+                "exits": [{"rule": "hard_stop"}],
+            },
+            config_hash="h2",
+        )
+        session.add(newer)
+        session.flush()
+        session.get(HatBot, world.bot_id).live_version_id = newer.id
+        session.flush()
+        new = open_trade(session, world, world.instruments[1])
+        for trade, rules in (
+            (old, ["hard_stop", "move_stop_to_breakeven", "close_below_sma", "time_stop"]),
+            (new, ["hard_stop"]),
+        ):
+            signal = session.get(HatSignal, trade.outcome.signal_id)
+            assert [r.rule for r in trades.exit_rules_of(session, signal)] == rules
+        step_trade(session, old, Decimal(price))
+        step_trade(session, new, Decimal(price))
+        old_pos = session.get(HatPosition, old.outcome.position_id)
+        new_pos = session.get(HatPosition, new.outcome.position_id)
+        # price < 100 is below the old stack's sma(10) = 100, and above the 95 stop for 96..99
+        assert (old_pos.closed_at is not None) is True
+        assert (new_pos.closed_at is not None) == (price <= 95)

@@ -68,7 +68,7 @@ def new_position(stop: Decimal) -> uuid.UUID:
                 current_stop=stop,
                 currency="INR",
                 opened_at=datetime(2026, 1, 1, tzinfo=UTC),
-                state="open",
+                state="Open",
                 rules_fired={},
             )
         )

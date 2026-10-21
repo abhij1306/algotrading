@@ -57,7 +57,7 @@ def check_runtime__signal_unique_concurrent(engine: Engine) -> None:
         " playbook, instrument_id, trade_date, triggered_at, trigger_price, stop_price, qty,"
         " risk_amount, currency, mode, state, risk_decision) VALUES (:id, :bot, :version,"
         " :policy, 'race', :instrument, :day, now(), 100, 95, 1, 5, 'INR', 'shadow',"
-        " 'triggered', '{}')"
+        " 'Triggered', '{}')"
     )
     outcomes: list[str] = []
     first_in = threading.Event()
@@ -395,14 +395,14 @@ def check_governance__stop_only_rises(conn: Connection) -> None:
         lambda: conn.execute(
             update(table)
             .where(table.c.id == position)
-            .values(current_stop=Decimal("99"), state="trailing")
+            .values(current_stop=Decimal("99"), state="PartiallyExited")
         ),
     )
     accepts(
         conn,
         "an update that does not touch the stop",
         lambda: conn.execute(
-            update(table).where(table.c.id == position).values(state="trailing", qty_open=5)
+            update(table).where(table.c.id == position).values(state="PartiallyExited", qty_open=5)
         ),
     )
     rejects(
@@ -410,6 +410,169 @@ def check_governance__stop_only_rises(conn: Connection) -> None:
         "lowering every stop with one statement",
         lambda: conn.execute(update(table).values(current_stop=Decimal("0.0001"))),
     )
+    # A DELETE followed by an INSERT would restart the stop below its old value (invariant 1).
+    doomed = b.position(conn, w, b.signal(conn, w, playbook="doomed"))
+    rejects(
+        conn,
+        "deleting a position",
+        lambda: conn.execute(delete(table).where(table.c.id == doomed)),
+    )
+    kept = conn.execute(select(table.c.id).where(table.c.id == doomed))
+    assert kept.scalar_one_or_none() == doomed, "a refused delete removed the position"
+    rejects(conn, "deleting every position", lambda: conn.execute(delete(table)))
+
+
+SIGNAL_STATES = (
+    "Watchlisted", "Triggered", "AwaitingApproval", "EntryPlaced", "Open", "PartiallyExited",
+    "ExitPending", "Closed", "Rejected", "Expired", "Cancelled",
+)  # fmt: skip
+POSITION_STATES = ("Open", "PartiallyExited", "ExitPending", "Closed")
+BAD_STATES = ("open", "triggered", "OPEN", "trailing", "Stopped", "", " Open")
+
+
+def check_runtime__state_domain(conn: Connection) -> None:
+    """HAT-SCH-059: `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state`
+    one of the four a position can be in; any other word is refused."""
+    w = b.world(conn)
+    for n, state in enumerate(SIGNAL_STATES):
+        accepts(
+            conn,
+            f"signal state {state}",
+            lambda state=state, n=n: b.signal(conn, w, playbook=f"s{n}", state=state),
+        )
+    for n, state in enumerate(BAD_STATES):
+        rejects(
+            conn,
+            f"signal state {state!r}",
+            lambda state=state, n=n: b.signal(conn, w, playbook=f"bad{n}", state=state),
+        )
+    for n, state in enumerate(POSITION_STATES):
+        signal = b.signal(conn, w, playbook=f"p{n}")
+        accepts(
+            conn,
+            f"position state {state}",
+            lambda state=state, signal=signal: b.position(conn, w, signal, state=state),
+        )
+    for n, state in enumerate((*BAD_STATES, "Triggered", "Watchlisted", "Rejected")):
+        signal = b.signal(conn, w, playbook=f"pb{n}")
+        rejects(
+            conn,
+            f"position state {state!r}",
+            lambda state=state, signal=signal: b.position(conn, w, signal, state=state),
+        )
+
+
+def _committed_bot_world(engine: Engine) -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID], uuid.UUID]:
+    """A shadow bot with a live version and a universe of two instruments, committed for real:
+    (bot, user, instruments, risk policy version)."""
+    with engine.begin() as connection:
+        market = b.market(connection)
+        strategy = b.strategy(connection, market)
+        version = b.strategy_version(connection, strategy)
+        account = b.broker_account(connection)
+        instruments = [
+            b.instrument(connection, market, isin=f"INE{n:09d}", symbol=f"PB{n}") for n in (1, 2)
+        ]
+        universe = b.universe(connection, market)
+        uversion = b.universe_version(connection, universe)
+        for instrument in instruments:
+            b.add(
+                connection,
+                m.HatUniverseMember,
+                universe_id=universe,
+                instrument_id=instrument,
+                effective_from=b.TRADE_DAY - timedelta(days=30),
+                reason="constituent",
+            )
+        policy = b.risk_policy(connection, version=int(uuid.uuid4().int % 10**9) + 100)
+        bot = b.bot(
+            connection,
+            strategy,
+            account,
+            execution_mode="shadow",
+            live_version_id=version,
+            universe_version_id=uversion,
+        )
+    return bot, b.USER_ID, instruments, policy
+
+
+def check_runtime__per_bot_serialised(conn: Connection) -> None:
+    """HAT-EXEC-045: two entries of one bot evaluated at the same time cannot both take the last
+    slot. The first holds the bot's lock between its risk decision and its insert; the second
+    must wait for it, then see the first one's position and be rejected for the cap."""
+    from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
+    from sqlalchemy.orm import Session
+
+    from app.hat.engine import trades
+    from app.hat.risk.decision import SignalContext
+    from app.hat.risk.policy import PolicyVersion
+    from app.hat.risk.service import evaluate_signal
+
+    engine = conn.engine
+    bot, _, instruments, policy_id = _committed_bot_world(engine)
+    version = PolicyVersion(
+        policy_id, 1, datetime(2026, 1, 1, tzinfo=UTC), None, policy_with(max_open_positions=1)
+    )
+
+    def request(instrument: uuid.UUID) -> trades.EntryRequest:
+        return trades.EntryRequest(
+            bot_id=bot,
+            playbook="pb",
+            instrument_id=instrument,
+            trade_date=TRADE_DAY,
+            triggered_at=AT,
+            context=valid_ctx(policy_versions=[version]),
+        )
+
+    first_in = threading.Event()
+    release = threading.Event()
+    taken: list[bool] = []
+
+    def hold_between_decision_and_insert(ctx: SignalContext):  # noqa: ANN202
+        decision = evaluate_signal(ctx)
+        first_in.set()
+        release.wait(10)
+        return decision
+
+    def worker(instrument: uuid.UUID, hold: bool) -> None:
+        if not hold:
+            first_in.wait(5)
+        with Session(engine) as session:
+            decide = hold_between_decision_and_insert if hold else evaluate_signal
+            outcome = trades.open_entry(session, request(instrument), decide=decide)
+            session.commit()
+            taken.append(outcome.position_id is not None)
+
+    holder = threading.Thread(target=worker, args=(instruments[0], True))
+    racer = threading.Thread(target=worker, args=(instruments[1], False))
+    try:
+        holder.start()
+        racer.start()
+        deadline = time.monotonic() + 5
+        waiting = text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+        while time.monotonic() < deadline and racer.is_alive():
+            with engine.connect() as probe:
+                if probe.execute(waiting).scalar_one() >= 1:
+                    break
+            time.sleep(0.05)  # noqa: ASYNC251
+        release.set()
+        holder.join(10)
+        racer.join(10)
+        with engine.connect() as probe:
+            held = probe.execute(
+                text("SELECT count(*) FROM hat_position WHERE bot_id = :bot"), {"bot": bot}
+            ).scalar_one()
+        assert sorted(taken) == [False, True], taken
+        assert held == 1, f"{held} positions for a bot whose cap is 1"
+    finally:
+        release.set()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal, hat_bot"
+                    " CASCADE"
+                )
+            )
 
 
 # --- event log (HAT-SCH-060, 061, 066, 068) -------------------------------------------------

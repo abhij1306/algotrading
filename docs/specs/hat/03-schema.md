@@ -719,6 +719,15 @@ Every signal records the exact strategy version and risk-policy version that pro
   - Property: every status value outside the set raises, and in every reachable execution a broker `place_order` for a tag happens only after a committed `hat_order` row with that tag and status `pending` exists. Harm: a crash after the broker call leaves a live order HAT does not know about.
 - **[OWNER-PENDING]** Status set: default `pending, placed, unconfirmed, partially_filled, filled, cancelled, rejected, expired` (docs silent; derived from the event catalogue and the `SUBMIT_UNCONFIRMED` handling); owner to confirm.
 
+#### HAT-SCH-059: Trade states are the eleven lifecycle states
+- **Statement:** `hat_signal.state` is one of the 11 lifecycle states of 07 §4 and `hat_position.state` one of Open, PartiallyExited, ExitPending, Closed; the database rejects any other text.
+- **Source:** 07 §4 (D18, Q16); SCH "Runtime" (`state`).
+- **PR:** 11
+- **Verification:** DB `runtime.state_domain`
+- **Acceptance:**
+  - Property: an insert or update giving a signal or position a state outside its set raises. Harm: a misspelt state strands a trade that no rule reads.
+- **Note:** a bot's entries are evaluated and inserted in one transaction under a Postgres advisory lock keyed by the bot (HAT-EXEC-045); the database check `runtime.per_bot_serialised` runs two such transactions at once and requires that they cannot both take the last position slot.
+
 ## §6 Event log
 
 One append-only table records every decision, by the engine or by the user. State tables are updated in the same transaction as the event (SCH "Event log"). DDL (SCH SQL, verbatim):
@@ -1006,12 +1015,12 @@ create trigger hat_position_stop_guard
   - Property: for every version with status in {backtested, shadow, live, retired} and every new config value, an UPDATE of `config` raises and the stored config and `config_hash` are unchanged; for a `draft` row it succeeds. With the trigger dropped (broken variant) the check fails. Harm: a live strategy changes under open trades and signals no longer match the version they cite.
 
 #### HAT-SCH-081: `current_stop` can only rise
-- **Statement:** The `hat_position_stop_guard` trigger rejects any UPDATE that lowers `hat_position.current_stop`.
+- **Statement:** The `hat_position_stop_guard` trigger rejects any UPDATE that lowers `hat_position.current_stop`, and the `hat_position_no_delete_guard` trigger rejects any DELETE of a position, so a delete and re-insert cannot restart the stop lower.
 - **Source:** SCH "Runtime" (trigger SQL); BL "Invariants" (1: a stop is never moved further from price).
-- **PR:** 3
+- **PR:** 3, 11
 - **Verification:** DB `governance.stop_only_rises`, TLA `StopPlacement!StopOnlyTightens`
 - **Acceptance:**
-  - Property: for every position and every pair (old, new) of stop values, an UPDATE setting `current_stop = new` raises if new < old and succeeds if new ≥ old; with the trigger dropped (broken variant) the check fails. Harm: a bug or a manual edit widens a stop and turns a planned 0.25% loss into a larger one.
+  - Property: for every position and every pair (old, new) of stop values, an UPDATE setting `current_stop = new` raises if new < old and succeeds if new ≥ old; and every DELETE of a position raises; with either trigger dropped (broken variant) the check fails. Harm: a bug or a manual edit widens a stop and turns a planned 0.25% loss into a larger one.
 
 #### HAT-SCH-082: One live version per strategy and per universe
 - **Statement:** Partial unique indexes allow at most one `live` row per `strategy_id` in `hat_strategy_version` and per `universe_id` in `hat_universe_version`.

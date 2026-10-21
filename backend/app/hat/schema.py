@@ -108,6 +108,15 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
+# A position is never deleted: a DELETE followed by an INSERT would restart `current_stop` below
+# its old value and slip past the trigger above (invariant 1, HAT-SCH-081).
+_POSITION_NO_DELETE_FN = """
+CREATE OR REPLACE FUNCTION hat_position_never_deleted() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'position % cannot be deleted', OLD.id;
+END $$ LANGUAGE plpgsql
+"""
+
 # The event log is append-only (HAT-SCH-061, HAT-DEC-I15).
 _EVENT_APPEND_ONLY_FN = """
 CREATE OR REPLACE FUNCTION hat_event_is_append_only() RETURNS trigger AS $$
@@ -141,6 +150,12 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
 CREATE OR REPLACE TRIGGER hat_position_stop_guard
   BEFORE UPDATE OF current_stop ON hat_position
   FOR EACH ROW EXECUTE FUNCTION hat_stop_only_tightens()
+""",
+    _POSITION_NO_DELETE_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_position_no_delete_guard
+  BEFORE DELETE ON hat_position
+  FOR EACH ROW EXECUTE FUNCTION hat_position_never_deleted()
 """,
     """
 CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published

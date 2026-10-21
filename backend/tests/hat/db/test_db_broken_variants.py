@@ -20,6 +20,30 @@ from app.hat.schema import PG_DDL
 pytestmark = pytest.mark.postgres
 
 Break = Callable[[Connection], None]
+UNDO: list[Callable[[], None]] = []  # code-level breaks register how to put the code back
+
+
+def _patch_trades(attribute: str, replacement: Callable[..., object]) -> None:
+    from app.hat.engine import trades
+
+    original = getattr(trades, attribute)
+    setattr(trades, attribute, replacement)
+    UNDO.append(lambda: setattr(trades, attribute, original))
+
+
+def no_bot_lock(_conn: Connection) -> None:
+    """The code, not the database, is broken: `lock_bot` does nothing."""
+    _patch_trades("lock_bot", lambda *_args, **_kwargs: None)
+
+
+def per_call_bot_lock(_conn: Connection) -> None:
+    """The lock is keyed by something unique to each call, so two entries never share it."""
+    import uuid
+
+    from app.hat.engine import trades
+
+    real = trades.lock_bot
+    _patch_trades("lock_bot", lambda session, _bot_id: real(session, uuid.uuid4()))
 
 
 def sql(*statements: str) -> Break:
@@ -346,6 +370,18 @@ VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
             stop_function("NEW.current_stop < OLD.current_stop - 1"),
         ),
         ("function allows every move", stop_function("false")),
+        ("delete guard dropped", sql("DROP TRIGGER hat_position_no_delete_guard ON hat_position")),
+    ],
+    "runtime.state_domain": [
+        ("signal state CHECK dropped", sql(drop_constraint("hat_signal", "ck_hat_signal_state"))),
+        (
+            "position state CHECK dropped",
+            sql(drop_constraint("hat_position", "ck_hat_position_state")),
+        ),
+    ],
+    "runtime.per_bot_serialised": [
+        ("the bot lock is a no-op", no_bot_lock),
+        ("the bot lock is keyed per call", per_call_bot_lock),
     ],
     "events.append_only": [
         ("trigger dropped", sql("DROP TRIGGER hat_event_no_update ON hat_event")),
@@ -388,9 +424,13 @@ def test_check_fails_when_rule_is_broken(
 ) -> None:
     name = "check_" + rule.replace(".", "__")
     check = getattr(rules, name, None) or getattr(runtime_rules, name)
-    apply(conn)
-    with pytest.raises(AssertionError):
-        check(conn)
+    try:
+        apply(conn)
+        with pytest.raises(AssertionError):
+            check(conn)
+    finally:
+        while UNDO:
+            UNDO.pop()()
     _ = label
 
 

@@ -198,7 +198,7 @@ def seed_pending_approval(session: Session, bot_id: uuid.UUID) -> uuid.UUID:
         risk_amount=D(50),
         currency="INR",
         mode="confirm",
-        state="triggered",
+        state="Triggered",
         risk_decision={},
     )
     session.add(signal)

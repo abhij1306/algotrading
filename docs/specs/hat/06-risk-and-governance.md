@@ -190,7 +190,7 @@ The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portf
 #### HAT-RISK-050: Gate off blocks new entries only
 - **Statement:** When a bot's regime gate is off, no new entry is accepted; open positions keep their stops and exits.
 - **Source:** BL "Regime gate (B11, B12)"; B11.
-- **PR:** 10, 11
+- **PR:** 10, 11, 15
 - **Verification:** PBT `caps.regime_gate_blocks_entries`, TLA `ExecutionRouter!GateOffNoEntry`
 - **Acceptance:**
   - Property: for every bot state with gate = off, every entry decision is REJECT with reason `regime_gate`, and every exit or stop action is unaffected. Harm: the bot buys into a market its own rule forbids, or abandons stops.

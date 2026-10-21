@@ -51,3 +51,13 @@ def test_ops__snapshot_unique(conn: Connection) -> None:
 @pytest.mark.postgres
 def test_governance__stop_only_rises(conn: Connection) -> None:
     rules.check_governance__stop_only_rises(conn)
+
+
+@pytest.mark.postgres
+def test_runtime__state_domain(conn: Connection) -> None:
+    rules.check_runtime__state_domain(conn)
+
+
+@pytest.mark.postgres
+def test_runtime__per_bot_serialised(conn: Connection) -> None:
+    rules.check_runtime__per_bot_serialised(conn)

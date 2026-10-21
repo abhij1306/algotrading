@@ -115,7 +115,7 @@ to an artefact that exists.
 | HAT-DEC-B8 | [01](01-decisions.md) | 14, 15 | PBT `criteria.trigger_conjunction` |
 | HAT-DEC-B9 | [01](01-decisions.md) | 14, 15 | PBT `bars.opening_range_fixed` |
 | HAT-DEC-B10 | [01](01-decisions.md) | 14, 15 | PBT `announcements.match_window` |
-| HAT-DEC-B11 | [01](01-decisions.md) | 10, 11 | TLA `ExecutionRouter!GateOffNoEntry` |
+| HAT-DEC-B11 | [01](01-decisions.md) | 10, 11, 15 | TLA `ExecutionRouter!GateOffNoEntry` |
 | HAT-DEC-B12 | [01](01-decisions.md) | 10, 16 | TLA `ExecutionRouter!GateOffNoEntry`, CONF `no_override_command` |
 | HAT-DEC-B13 | [01](01-decisions.md) | 10 | PBT `sizing.risk_bounded` |
 | HAT-DEC-B14 | [01](01-decisions.md) | 10 | CONF `initial_risk_policy_seed` |
@@ -273,6 +273,7 @@ to an artefact that exists.
 | HAT-SCH-056 | [03](03-schema.md) | 3, 16 | PBT `telegram.token_never_stored` |
 | HAT-SCH-057 | [03](03-schema.md) | 3, 11 | DB `runtime.trade_result_once`, TLA `TradeLifecycle!ResultOnClose` |
 | HAT-SCH-058 | [03](03-schema.md) | 3, 13 | DB `runtime.order_status_check`, TLA `OrderReconciliation!PersistBeforeCall` |
+| HAT-SCH-059 | [03](03-schema.md) | 11 | DB `runtime.state_domain` |
 | HAT-SCH-060 | [03](03-schema.md) | 3 | CONF `schema.event_columns`, DB `events.partitioned` |
 | HAT-SCH-061 | [03](03-schema.md) | 3 | DB `events.append_only` |
 | HAT-SCH-062 | [03](03-schema.md) | 3 | PBT `events.atomic_with_state` |
@@ -288,7 +289,7 @@ to an artefact that exists.
 | HAT-SCH-073 | [03](03-schema.md) | 3, 10 | DB `ops.snapshot_unique` |
 | HAT-SCH-074 | [03](03-schema.md) | 3, 16 | PBT `telegram.every_command_logged` |
 | HAT-SCH-080 | [03](03-schema.md) | 2 | DB `governance.version_config_immutable` |
-| HAT-SCH-081 | [03](03-schema.md) | 3 | DB `governance.stop_only_rises`, TLA `StopPlacement!StopOnlyTightens` |
+| HAT-SCH-081 | [03](03-schema.md) | 3, 11 | DB `governance.stop_only_rises`, TLA `StopPlacement!StopOnlyTightens` |
 | HAT-SCH-082 | [03](03-schema.md) | 2 | DB `governance.one_live_version` |
 | HAT-SCH-083 | [03](03-schema.md) | 2, 9 | DB `governance.live_requires_evidence`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-SCH-084 | [03](03-schema.md) | 2 | DB `governance.risk_increase_cooling_off`, PBT `risk_policy.cooling_off` |
@@ -304,7 +305,7 @@ to an artefact that exists.
 | HAT-SCH-104 | [03](03-schema.md) | 2 | CONF `schema.sqlite_create_all` |
 | HAT-SCH-105 | [03](03-schema.md) | 2, 17 | CONF `runtime.refuses_sqlite` |
 | HAT-SCH-106 | [03](03-schema.md) | 2, 3 | CONF `schema.prefix_and_boundary` |
-| HAT-CRIT-010 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `scoring.stage_order` |
+| HAT-CRIT-010 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `scoring.stage_order`, PBT `scan.watchlist_gates` |
 | HAT-CRIT-011 | [04](04-criteria-and-bots.md) | 8 | PBT `config.stage_slots` |
 | HAT-CRIT-020 | [04](04-criteria-and-bots.md) | 8 | PBT `config.instance_fields`, CONF `criterion_instance_schema` |
 | HAT-CRIT-021 | [04](04-criteria-and-bots.md) | 8 | PBT `config.invalid_never_saves`, CONF `criterion_type_registry` |
@@ -336,7 +337,7 @@ to an artefact that exists.
 | HAT-CRIT-120 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.neglect_contract` |
 | HAT-CRIT-121 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.adtr_filter_contract` |
 | HAT-CRIT-122 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied` |
-| HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8 | PBT `config.playbook_shape` |
+| HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `config.playbook_shape`, PBT `trades.shared_bot_cap` |
 | HAT-BOT-051 | [04](04-criteria-and-bots.md) | 8, 15 | DB `runtime.signal_unique_per_day`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15 | PBT `criteria.ep_candidate_bands` |
 | HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `regime.strategy_rules` |
@@ -356,7 +357,7 @@ to an artefact that exists.
 | HAT-PORT-020 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `governance.universe_version_immutable`, DB `governance.one_live_version` |
 | HAT-PORT-021 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `universe.point_in_time_members` |
 | HAT-PORT-022 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `universe.include_exclude` |
-| HAT-PORT-023 | [05](05-portfolio-regime-allocation.md) | 9, 11 | PBT `universe.leave_no_force_sell` |
+| HAT-PORT-023 | [05](05-portfolio-regime-allocation.md) | 9, 11 | PBT `universe.leave_no_force_sell`, PBT `scan.no_row_for_removed` |
 | HAT-PORT-030 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `RegimeConfirmation!ThreeDayRule`, PBT `regime.three_day_confirmation` |
 | HAT-PORT-031 | [05](05-portfolio-regime-allocation.md) | 6, 9 | PBT `regime.inputs` |
 | HAT-PORT-032 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `regime.classification_total` |
@@ -395,7 +396,7 @@ to an artefact that exists.
 | HAT-RISK-040 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.ladder_transitions` |
 | HAT-RISK-041 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.level_applies` |
 | HAT-RISK-042 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.virtual_ignored` |
-| HAT-RISK-050 | [06](06-risk-and-governance.md) | 10, 11 | PBT `caps.regime_gate_blocks_entries`, TLA `ExecutionRouter!GateOffNoEntry` |
+| HAT-RISK-050 | [06](06-risk-and-governance.md) | 10, 11, 15 | PBT `caps.regime_gate_blocks_entries`, TLA `ExecutionRouter!GateOffNoEntry` |
 | HAT-RISK-051 | [06](06-risk-and-governance.md) | 11, 15 | TLA `ExecutionRouter!GateFreshBeforeFirstEntry` |
 | HAT-RISK-052 | [06](06-risk-and-governance.md) | 10, 16 | CONF `risk.no_gate_override_path`, TLA `ExecutionRouter!GateOffNoEntry` |
 | HAT-RISK-060 | [06](06-risk-and-governance.md) | 10 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
@@ -440,11 +441,12 @@ to an artefact that exists.
 | HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow` |
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |
-| HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions` |
+| HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec` |
 | HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds` |
 | HAT-EXEC-042 | [07](07-execution-and-brokers.md) | 3, 11 | TLA `TradeLifecycle!StateMatchesLog`, PBT `exits.replay_reproduces_state` |
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
+| HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.final_contraction_low` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
