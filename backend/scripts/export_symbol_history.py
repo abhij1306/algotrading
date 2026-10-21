@@ -4,7 +4,7 @@ The legacy models and the table's other users are deleted; HAT rebuilds symbol r
 data (`app.hat.data.instruments.seed_symbol_history` takes an injected record source). Run this
 once against the old database to keep the rows, then feed the CSV to that seed if wanted:
 
-    python scripts/export_symbol_history.py --out symbol_history.csv
+    python scripts/export_symbol_history.py --name symbol_history.csv
 
 It only reads. If the table does not exist the script says so and writes nothing.
 """
@@ -39,9 +39,13 @@ COLUMNS = (
 )
 
 
-def export(out: Path) -> int:
-    """Write every row to `out` (oldest effective date first); return the row count, or -1 when
-    the table is missing."""
+def export(name: str) -> int:
+    """Write every row to the file `name` in the current directory (oldest effective date
+    first); return the row count, or -1 when the table is missing. `name` is a bare file name:
+    a path (a separator or `..`) is refused."""
+    out = Path.cwd() / name
+    if Path(name).name != name or name in {"", ".", ".."}:
+        raise ValueError("--name is a file name in the current directory, not a path")
     if TABLE not in inspect(engine).get_table_names():
         return -1
     present = {column["name"] for column in inspect(engine).get_columns(TABLE)}
@@ -59,14 +63,14 @@ def export(out: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, default=Path("symbol_history.csv"))
+    parser.add_argument("--name", default="symbol_history.csv")
     args = parser.parse_args()
-    count = export(args.out)
+    count = export(args.name)
     if count < 0:
         target = engine.url.render_as_string(hide_password=True)
         print(f"No {TABLE} table in {target}; nothing written.")
         return 1
-    print(f"Wrote {count} rows to {args.out}")
+    print(f"Wrote {count} rows to {args.name}")
     return 0
 
 
