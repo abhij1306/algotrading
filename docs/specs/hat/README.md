@@ -460,7 +460,7 @@ to an artefact that exists.
 | HAT-EXEC-071 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fire_once` |
 | HAT-EXEC-072 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fraction_arithmetic` |
 | HAT-EXEC-073 | [07](07-execution-and-brokers.md) | 11, 15 | PBT `exits.rule_semantics` |
-| HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15 | TLA `JobScheduler!ExitsCloseInWindow` |
+| HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15 | TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close` |
 | HAT-BRK-080 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.interface_methods`, CONF `brk.import_boundary` |
 | HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.broker_errors_fail_closed` |
 | HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16 | TLA `ExecutionRouter!NoEntryWithoutSession` |

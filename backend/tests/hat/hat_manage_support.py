@@ -64,6 +64,7 @@ class ManageRig:
         *,
         exits: list[dict[str, Any]] | None = None,
         clock: Callable[[], datetime] | None = None,
+        ticker: Callable[[], float] | None = None,
     ) -> None:
         self.session = session
         self.world: World = seed_engine_world(session, mode="auto", instruments=1, exits=exits)
@@ -117,6 +118,7 @@ class ManageRig:
             calendar=CALENDAR,
             notifier=self.notifier,
             clock=clock,
+            **({"ticker": ticker} if ticker is not None else {}),
         )
         self._trades = 0
 

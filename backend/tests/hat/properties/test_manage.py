@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError
+from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
     ALERT_GTT_SWAP_FAILED,
@@ -366,6 +367,40 @@ def test_real_exits_never_blocked(kill: str, path: list[Decimal]) -> None:
 
 
 # ---------------------------------------------------------------------------------------
+# HAT-EXEC-074: no sale reaches the broker from 15:30 on, however long the run takes
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=25, deadline=None)
+@given(start=st.integers(min_value=0, max_value=9), took=st.integers(min_value=0, max_value=10))
+def test_no_sale_after_close(start: int, took: int) -> None:
+    """HAT-EXEC-074, HAT-DEC-B18: a sale is checked against the time it is sent at, not the
+    time its run started: a run that starts at 15:2x and reaches the sale `took` minutes later
+    sends it only before 15:30, else raises `exit.not_placed` and leaves the broker stop
+    resting. With no clock injected, the time sent is the run's start plus the monotonic time
+    it has taken. Harm: a slow close run sends market orders after the close."""
+    readings = iter([0.0])  # the run's start, then every later reading `took` minutes on
+
+    def ticker() -> float:
+        return next(readings, took * 60.0)
+
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session, exits=exit_stack("partials"), ticker=ticker)
+        position = _opened(rig, at(10, 40))
+        [stop] = rig.stops(position.id)
+        began = at(15, 20 + start)
+        view = exits.ExitView(price=D(position.avg_entry) * D("1.4"), days_held=1)
+        readings = iter([0.0])
+        rig.manager.on_price(session, position.id, view, began)
+        sold = [a for n, a in rig.fake.calls if n == "place_order" and a["type"] == "MARKET"]
+        in_time = 20 + start + took < 30
+        assert bool(sold) == in_time
+        if not in_time:
+            assert ALERT_EXIT_NOT_PLACED in rig.codes()
+            assert [row.id for row in rig.stops(position.id)] == [stop.id]
+
+
+# ---------------------------------------------------------------------------------------
 # 07 §4: an entry the broker ends unfilled ends its signal; nothing is protected
 # ---------------------------------------------------------------------------------------
 
@@ -379,7 +414,7 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
     """07 §4, HAT-EXEC-041: an entry the broker ends with nothing filled ends its signal:
     Cancelled when it was cancelled or expired at the close, Rejected when the exchange rejected
     it after the broker took it; one whose send answer was lost and that is first found already
-    ended ends Rejected at the session end. No position opens and no stop is placed. Harm: a
+    ended ends Rejected when it is adopted. No position opens and no stop is placed. Harm: a
     dead entry keeps its signal in EntryPlaced or Triggered, holding one of the bot's slots."""
     status, state = ENDINGS[ending]
     with Session(memory_engine()) as session:
@@ -391,8 +426,7 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
         for book in rig.fake.book:
             book["status"] = status
         start = len(rig.fake.calls)
-        rig.sync(at(15, 35))
-        rig.manager.end_session(session, rig.account_id, at(15, 40))
+        rig.sync(at(14, 0))  # adopted, or moved, by the sync that first sees it ended
         signal = session.get(HatSignal, outcome.signal_id)
         assert signal is not None
         session.refresh(signal)

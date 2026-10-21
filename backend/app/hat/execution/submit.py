@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..engine import lifecycle
+from ..engine import lifecycle, trades
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatOrder, HatPosition, HatSignal
@@ -74,6 +74,8 @@ EVENT_ORDER_REJECTED = "order.rejected"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
 _ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
+# The reason a signal ends Rejected when its entry is first found already ended, unfilled.
+ENTRY_NOT_FILLED = "entry_not_filled"
 
 
 class OrderRefusedError(HatError):
@@ -176,7 +178,8 @@ def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:
 def adopt_broker_order(
     session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
 ) -> None:
-    """Record a broker order found by tag on its row (no commit)."""
+    """Record a broker order found by tag on its row (no commit). An entry first found already
+    ended with nothing filled ends its signal at once (07 §4)."""
     first_knowledge = row.status in ("pending", "unconfirmed")
     row.broker_order_id = found.order_id
     row.status = found.status
@@ -184,17 +187,41 @@ def adopt_broker_order(
         row.placed_at = utc_now()
     if not first_knowledge:
         return
-    if found.status in _PLACED_STATES:
+    if found.status in _PLACED_STATES or (row.purpose == ENTRY and found.filled_qty > 0):
+        # An entry that filled in part before it ended was placed: its fills open the position.
         _event(session, row, bot_id, _placed_event(row))
     elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
-        # An entry first found already ended: its signal never reached EntryPlaced, so no
-        # lifecycle step applies here (a non-final rejection carries none); the session end
-        # rejects the signal (`TradeManager.end_session`, `entry_not_filled`).
-        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
+        _end_adopted_entry(session, row, found, bot_id)
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED)
     elif found.status == "cancelled":
         _event(session, row, bot_id, "order.cancelled")
+
+
+def _end_adopted_entry(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """An entry first found already cancelled, expired or rejected, nothing filled. In
+    EntryPlaced its signal ends as a broker update would end it; before that (the send's answer
+    was lost, so the signal is still Triggered) the order records a non-final rejection carrying
+    the broker status (no lifecycle step) and the signal ends Rejected `entry_not_filled`."""
+    signal = session.get(HatSignal, row.signal_id)
+    if signal is not None and signal.state == lifecycle.ENTRY_PLACED:
+        _entry_ended(session, row, found, bot_id)
+        return
+    _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
+    if row.signal_id is not None:
+        trades.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now())
+
+
+def _entry_ended(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled."""
+    if found.status in ("cancelled", "expired"):
+        _event(session, row, bot_id, "order.cancelled")
+    elif found.status == "rejected":
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
 
 
 def record_broker_status(
@@ -209,12 +236,8 @@ def record_broker_status(
     if found.status == row.status:
         return False
     row.status = found.status
-    if row.purpose != ENTRY or found.filled_qty != 0:
-        return True
-    if found.status in ("cancelled", "expired"):
-        _event(session, row, bot_id, "order.cancelled")
-    elif found.status == "rejected":
-        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
+    if row.purpose == ENTRY and found.filled_qty == 0:
+        _entry_ended(session, row, found, bot_id)
     return True
 
 

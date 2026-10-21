@@ -18,9 +18,8 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
-  DAY limit cannot fill after the close. An entry first found already rejected, expired or
-  cancelled with nothing filled (adopted by tag while its signal was still Triggered) ends its
-  signal Rejected with `entry_not_filled`.
+  DAY limit cannot fill after the close. (An entry first found already ended is settled when it
+  is adopted: `submit.adopt_broker_order`.)
 
 A sale is retried once after a rejection with the next tag, and at most two rejected sales of one
 purpose are sent per signal (HAT-OPS-032); then `exit.not_placed` is raised and the broker stop
@@ -33,13 +32,14 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
+from time import monotonic
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..engine import exits, lifecycle, live_trades, trades
-from ..models import HatBot, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..engine import exits, live_trades, trades
+from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, trade_date_of
@@ -84,7 +84,6 @@ MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 ALERT_SALE_REJECTED = "order.rejected"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ENTRY_NOT_FOUND = "entry_not_found"
-ENTRY_NOT_FILLED = "entry_not_filled"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -126,6 +125,7 @@ class TradeManager:
         calendar: SessionCalendar | None,
         notifier: Notifier | None = None,
         clock: Callable[[], datetime] | None = None,
+        ticker: Callable[[], float] = monotonic,
     ) -> None:
         self._broker = broker
         self._guard = guard
@@ -134,7 +134,10 @@ class TradeManager:
         self._fills = fills
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
-        self._clock = clock  # the time a sale is sent at; without it, the caller's `now`
+        # The time a sale is sent at: `clock` when given, else the caller's `now` plus the time
+        # the run has taken so far (`ticker`, monotonic seconds).
+        self._clock = clock
+        self._ticker = ticker
 
     # --- reading ------------------------------------------------------------------------------
 
@@ -178,7 +181,15 @@ class TradeManager:
         self, session: Session, position_id: uuid.UUID, view: exits.ExitView, now: datetime
     ) -> exits.Evaluation:
         """Run the live rules of one real position on a price event and carry them out."""
-        return self._evaluate(session, position_id, view, "live", now)
+        return self._evaluate(session, position_id, view, "live", now, self._sending_clock(now))
+
+    def _sending_clock(self, now: datetime) -> Callable[[], datetime]:
+        """The clock a run reads at each sale: a close run that started at 15:24 and is still
+        sending at 15:30 sends nothing more (HAT-EXEC-074)."""
+        if self._clock is not None:
+            return self._clock
+        start = self._ticker()
+        return lambda: now + timedelta(seconds=self._ticker() - start)
 
     def _evaluate(
         self,
@@ -187,19 +198,25 @@ class TradeManager:
         view: exits.ExitView,
         phase: exits.Phase,
         now: datetime,
+        sending: Callable[[], datetime],
     ) -> exits.Evaluation:
         result = live_trades.evaluate_real_position(session, position_id, view, phase, now)
         session.commit()
         if result.new_stop is not None:
             self._desk.follow(session, position_id, now)
         for action in result.actions:
-            self._sell(session, position_id, action, now)
+            self._sell(session, position_id, action, now, sending)
         return result
 
     # --- sales --------------------------------------------------------------------------------
 
     def _sell(
-        self, session: Session, position_id: uuid.UUID, action: exits.ExitAction, now: datetime
+        self,
+        session: Session,
+        position_id: uuid.UUID,
+        action: exits.ExitAction,
+        now: datetime,
+        sending: Callable[[], datetime],
     ) -> SendOutcome | None:
         position = session.get(HatPosition, position_id)
         if position is None:
@@ -223,7 +240,7 @@ class TradeManager:
         qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
         # Checked at the moment of sending: a close job that started at 15:24 still sends
         # nothing from 15:30 on (HAT-EXEC-074).
-        if not self._orders_allowed(self._clock() if self._clock is not None else now):
+        if not self._orders_allowed(sending()):
             self._not_placed(signal, position, "market_closed", now)
             return None
         if not self._reconciled(session, bot.broker_account_id):
@@ -351,9 +368,10 @@ class TradeManager:
         if not in_close_window(now) or not self._orders_allowed(now):
             report.refused = "outside_close_window"
             return report
+        sending = self._sending_clock(now)
         for position in self.open_positions(session, account_id, real_only=False):
             try:
-                self._close_one(session, position, views, now, report)
+                self._close_one(session, position, views, now, sending, report)
             except Exception:
                 # One position's failure leaves the others evaluated; the job fails and its
                 # retry runs again (fired rules and the evaluation record are not repeated).
@@ -368,6 +386,7 @@ class TradeManager:
         position: HatPosition,
         views: ViewSource,
         now: datetime,
+        sending: Callable[[], datetime],
         report: CloseReport,
     ) -> None:
         view = views(session, position)
@@ -377,7 +396,7 @@ class TradeManager:
             result = trades.evaluate_position(session, position.id, view, "close", now)
             session.commit()
         else:
-            result = self._evaluate(session, position.id, view, "close", now)
+            result = self._evaluate(session, position.id, view, "close", now, sending)
             report.sales += len(result.actions)
         report.evaluated += 1
         day = trade_date_of(now)
@@ -436,7 +455,6 @@ class TradeManager:
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
         never sent is cancelled with it. Returns the number of signals ended. Nothing is ended
         when the book cannot be read."""
-        ended = self._end_unfilled(session, account_id, now)
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -448,40 +466,17 @@ class TradeManager:
             )
         )
         if not rows:
-            return ended
+            return 0
         try:
             book = {o.tag for o in self._broker.orders()}
         except BrokerUnavailableError:
-            return ended
+            return 0
+        ended = 0
         for row in rows:
             if row.tag in book:
                 continue  # the next sync adopts it
             row.status = "cancelled" if row.placed_at is None else "expired"
             if trades.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now):
-                ended += 1
-            session.commit()
-        return ended
-
-    @staticmethod
-    def _end_unfilled(session: Session, account_id: uuid.UUID, now: datetime) -> int:
-        """Entries adopted already ended at the broker with no fill while their signal was still
-        Triggered: no later broker update moves such a signal, so it ends here."""
-        filled = select(HatFill.id).where(HatFill.order_id == HatOrder.id).exists()
-        signal_ids = session.scalars(
-            select(HatOrder.signal_id)
-            .join(HatSignal, HatSignal.id == HatOrder.signal_id)
-            .where(
-                HatOrder.broker_account_id == account_id,
-                HatOrder.purpose == ENTRY,
-                HatOrder.is_virtual.is_(False),
-                HatOrder.status.in_(("rejected", "expired", "cancelled")),
-                HatSignal.state == lifecycle.TRIGGERED,
-                ~filled,
-            )
-        ).all()
-        ended = 0
-        for signal_id in signal_ids:
-            if trades.reject_signal(session, signal_id, ENTRY_NOT_FILLED, now):
                 ended += 1
             session.commit()
         return ended

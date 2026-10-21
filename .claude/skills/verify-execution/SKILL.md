@@ -122,7 +122,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.swap_leaves_no_gap` Whatever the broker answers to the GTT (and its retry), `gtt.swap` cancels the intraday stop only after a confirmed GTT; otherwise the intraday stop keeps working, `gtt.swap_failed` is raised and the job fails to be retried; a day stop the broker will not cancel fails the swap too. Harm: the day stop is cancelled first and the position spends the night unprotected.
 - `PBT manage.verify_covers` The nightly verify refreshes a GTT the broker confirms to the current stop (`gtt.refreshed`); one it does not confirm is alerted (`gtt.missing`), cancelled at the broker and in HAT's book, and placed again; when the cancel fails, the broker is unreachable, the fills cannot be read or HAT's GTT row was never confirmed, `gtt.unverified` is raised and no GTT is modified or placed. Harm: a GTT that triggered or expired goes unnoticed and the position opens the next day without a stop.
 - `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause; HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
-- `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) at the session end; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
+- `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
+- `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
 - `PBT manage.gtt_trigger_handled` A GTT that triggers and fills only in part reduces the position and is neither resized nor doubled while its sale may still sell the rest; once that sale ends short, `gtt.unfilled` is raised once and the shares left get a new stop for exactly their quantity. Harm: a second stop under a working sale sells the shares twice, or the rest stays unprotected.
 - `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
 
@@ -254,7 +255,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `64b45e65ac13bd5dec2f46e229adaa95e4d2d9b123284596abead30e7c703a4c`
+Covered digest: `136b15947ef2783a4f60e40fa3ec98f530b91c662c6000cc5c561f4983fa2500`
 
 ## Scope changes
 
@@ -286,7 +287,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The router properties found two bugs, fixed here: an approval written with an IST timestamp read back on SQLite five and a half hours late (approval times are now stored in UTC), and a veto trade counted as one of the bot's slots and stop-outs (`trades.bot_snapshot` and `portfolio.service.trade_results` now leave veto trades out).
 - `order.rejected` drives the lifecycle step to Rejected only with `final: true` (15c sends it); the router ends a twice-rejected entry with `signal.rejected` (stage `route`) from Triggered. `CONF lifecycle_transitions_match_spec` still compares the table.
 
-- PR 15c: the `manage.*` properties run one auto bot with one instrument on SQLite with the tick fixed at 0.05 (the tick rule is `stops.tick_size_slabs`); prices of a sale or a stop come from the real code, fills are written into `FakeBroker`'s trade and order books in the Fyers row format. `manage.real_fill_protected` has an `@example` for a stop refused twice (the generator reaches it, but rarely). `manage.real_exits_never_blocked` compares the broker calls of the same price path with and without a kill or pause rather than an independent oracle of the exit stack (the stack's semantics are `exits.*`). Writing the properties found three bugs, fixed here: a stop placed by a fill after 15:25 was an intraday order that would expire at the close after the swap had run (now a GTT; also found by `StopPlacement!AlwaysProtected`), a stop the broker refused twice was never retried in the session (the sync now protects every open real position without a working stop), and a GTT placed by a fill raised `gtt.swap_failed` instead of `stop.not_placed`. The pre-push review then found and fixed: verify re-placing a GTT over one that may still rest (it now cancels first, or alerts `gtt.unverified`), a swap reported done when a day-stop cancel failed, a partly filled GTT resized under its own working sale, an entry the exchange rejected after placement left in EntryPlaced, a sale sent while the broker stop still covered all the shares (`StopDesk.make_room`), unbounded same-day resends after rejections, and one failing position stopping `exits.close` for the rest. CodeAnt then found (fixed in the review round): a refused resize never sent again, the verify modifying GTTs when the fills could not be read, and an entry first found already ended leaving its signal in Triggered (its `order.cancelled` adoption raised `LifecycleStateError` and stopped the sync, found by `manage.entry_ended_by_broker`). `lifecycle.step_of`: an `order.cancelled` moves state only for an entry, and an `order.filled` with `exit_triggered` stands for the exit placed (07 §4); the lifecycle and trade properties were re-run and pass.
+- PR 15c: the `manage.*` properties run one auto bot with one instrument on SQLite with the tick fixed at 0.05 (the tick rule is `stops.tick_size_slabs`); prices of a sale or a stop come from the real code, fills are written into `FakeBroker`'s trade and order books in the Fyers row format. `manage.real_fill_protected` has an `@example` for a stop refused twice (the generator reaches it, but rarely). `manage.real_exits_never_blocked` compares the broker calls of the same price path with and without a kill or pause rather than an independent oracle of the exit stack (the stack's semantics are `exits.*`). Writing the properties found three bugs, fixed here: a stop placed by a fill after 15:25 was an intraday order that would expire at the close after the swap had run (now a GTT; also found by `StopPlacement!AlwaysProtected`), a stop the broker refused twice was never retried in the session (the sync now protects every open real position without a working stop), and a GTT placed by a fill raised `gtt.swap_failed` instead of `stop.not_placed`. The pre-push review then found and fixed: verify re-placing a GTT over one that may still rest (it now cancels first, or alerts `gtt.unverified`), a swap reported done when a day-stop cancel failed, a partly filled GTT resized under its own working sale, an entry the exchange rejected after placement left in EntryPlaced, a sale sent while the broker stop still covered all the shares (`StopDesk.make_room`), unbounded same-day resends after rejections, and one failing position stopping `exits.close` for the rest. CodeAnt then found (fixed in the review round): a refused resize never sent again, the verify modifying GTTs when the fills could not be read, and an entry first found already ended leaving its signal in Triggered (its `order.cancelled` adoption raised `LifecycleStateError` and stopped the sync, found by `manage.entry_ended_by_broker`; it now ends at adoption). A sale's 15:30 check read the run's start time when no clock was injected (now the start plus the monotonic time taken; `manage.no_sale_after_close`). `lifecycle.step_of`: an `order.cancelled` moves state only for an entry, and an `order.filled` with `exit_triggered` stands for the exit placed (07 §4); the lifecycle and trade properties were re-run and pass.
 
 ## Scratch breaks
 
@@ -1637,6 +1638,15 @@ E   assert False
 E   Failing test case: test_real_exits_never_blocked(
 ```
 
+### PBT manage.no_sale_after_close
+
+Break: in `backend/app/hat/execution/manage.py`, `_sending_clock` returns the run's start time for every sale.
+
+```
+E   AssertionError: assert True == False
+E   Failing test case: test_no_sale_after_close(
+```
+
 ### PBT manage.entry_ended_by_broker
 
 Break: in `backend/app/hat/execution/submit.py`, `record_broker_status` records the exchange rejection without `final=True`.
@@ -1646,7 +1656,7 @@ E   AssertionError: assert 'EntryPlaced' == 'Rejected'
 E   Failing test case: test_entry_ended_by_broker(
 ```
 
-Break: `TradeManager.end_session` no longer ends entries adopted already ended.
+Break: in `backend/app/hat/execution/submit.py`, `_end_adopted_entry` records the rejection but no longer ends the signal.
 
 ```
 E   AssertionError: assert 'Triggered' == 'Rejected'
