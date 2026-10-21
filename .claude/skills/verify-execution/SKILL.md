@@ -71,6 +71,21 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_broker.bad_gtt_price_never_sent` A GTT place or modify with a non-finite or non-positive price is refused before the SDK. Harm: a stop is placed with a nonsense price.
 - `PBT fyers_broker.breakers_independent` Brokers built without a breaker get their own; two given the same breaker share it. Harm: a failure recorded through one class shadows another's (the legacy class-level state).
 - `CONF ops.one_login_one_token_store` The login service and the session default use HAT's one `token_store`; the legacy client and symbol master subclass HAT's; the legacy token-store re-export, the `brokers` package and the login router are gone; the HAT router has exactly the four login routes. Harm: a second login or token copy drifts from the first.
+- `TLA TradeLifecycle!OnlyAllowedTransitions` Every step of every trade is a row of the transition table of 07 §4 (a trade is never Open without an entry fill, never Closed without ExitPending). Harm: a trade reaches an impossible state and is mismanaged.
+- `TLA TradeLifecycle!EndingsTerminal` No step follows Closed, Rejected, Expired or Cancelled. Harm: a closed or rejected trade re-opens and holds risk budget.
+- `TLA TradeLifecycle!EventuallyEnds` Under weak fairness a Watchlisted trade reaches Open or an ending, and a trade whose full exit fired reaches Closed. Harm: pending signals linger and an exit that fired leaves a position open.
+- `TLA TradeLifecycle!StateMatchesLog` The stored state is always the fold of the trade's logged steps over the table (every transition appends its event in the same transaction). Harm: a state that cannot be rebuilt from the log hides a missed event.
+- `TLA TradeLifecycle!ShadowSameMachine` A virtual trade is entered and closed through the same steps as a real one (order placed, ExitPending, closed). Harm: shadow results come from a different machine than live ones and prove nothing about live.
+- `TLA TradeLifecycle!ResultOnClose` A Closed trade always has its trade result (written in the closing transaction). Harm: a closed trade without a result is missing from R, expectancy and the daily-loss and stop-out counters.
+- `TLA TradeLifecycle!VersionPinned` The exit rules a trade reads are those of the strategy version it entered under, even after a promotion. Harm: a promotion silently rewrites the exits of positions already held.
+- `TLA TradeLifecycle!PerBotCapHolds` With the bot's lock held between the risk decision and the insert, a bot never holds more position slots than its cap. Harm: two entries of one bot evaluated at once both take the last slot.
+- `CONF lifecycle_transitions_match_spec` The states, endings and (from, to) pairs of `lifecycle.TRANSITIONS` equal the table in 07 §4, row for row, and `TRADE_STATES` equals the 11 states. Harm: the machine that runs is not the machine the owner approved.
+- `PBT exits.replay_reproduces_state` After every step of a shadow trade the state stored on the signal and position equals the fold of its events over the table. Harm: a state that cannot be rebuilt from the log hides a missed event.
+- `PBT exits.shadow_rows_virtual` A shadow trade driven from signal to close writes only virtual orders, fills and positions with no broker ids and no fees, the broker records zero calls, the quantities add up and a closed position has one result whose R is its P&L over the initial risk. Harm: a shadow row that looks real can be reconciled against, and sold at, the broker.
+- `PBT trades.shared_bot_cap` However entries are spread over a bot's playbooks the accepted ones never exceed the bot's position cap, and one is rejected exactly when the cap is full (the cap is the bot's, not the playbook's). Harm: each playbook gets its own cap and the bot holds a multiple of what the policy allows.
+- `PBT config.trade_keeps_entry_version` After the bot moves to a newer strategy version an open trade still evaluates the exit rules of the version it entered under, and a trade opened after the move uses the new ones. Harm: a promotion silently rewrites the exits of positions already held.
+- `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
+- `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 
 ## Run
 
@@ -78,6 +93,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 export JAVA_HOME=/path/to/jdk   # Java 17+ (Temurin 21 is what CI uses)
 verification/tla/run.sh OrderReconciliation            # the model must pass
 verification/tla/run.sh --broken OrderReconciliation   # each variant must fail with its EXPECT line
+verification/tla/run.sh TradeLifecycle                # the model must pass
+verification/tla/run.sh --broken TradeLifecycle       # each variant must fail with its EXPECT line
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_tags.py tests/hat/properties/test_broker.py \
   tests/hat/properties/test_stops.py tests/hat/properties/test_ops.py -q --no-cov
@@ -85,6 +102,12 @@ CI=1 python -m pytest tests/hat/properties/test_fyers_tokens.py tests/hat/proper
   tests/hat/properties/test_fyers_auth.py tests/hat/properties/test_fyers_auth_routes.py \
   tests/hat/properties/test_fyers_broker.py -q --no-cov
 python -m pytest tests/hat/conformance/test_conf_broker.py -q --no-cov
+CI=1 python -m pytest tests/hat/properties/test_exits.py tests/hat/properties/test_trades.py -q --no-cov
+CI=1 python -m pytest tests/hat/properties/test_config.py -k trade_keeps_entry_version -q --no-cov
+python -m pytest tests/hat/conformance/test_conf_lifecycle.py -q --no-cov
+# the DB checks need a throwaway Postgres whose database name ends in _test
+SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
+  python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or state_domain"
 ```
 
 All adapter checks run on `FakeBroker` or a recording stand-in for the Fyers SDK. No check calls Fyers, and none needs a credential.
@@ -148,12 +171,24 @@ Checks:
 - `backend/tests/hat/properties/test_fyers_auth_routes.py`
 - `backend/tests/hat/properties/test_fyers_broker.py`
 
+Trade lifecycle (PR 11):
+- `verification/tla/TradeLifecycle.tla` and `verification/tla/TradeLifecycle.cfg`
+- `verification/tla/broken/TradeLifecycle__no_lock.cfg`, `verification/tla/broken/TradeLifecycle__state_without_event.cfg`, `verification/tla/broken/TradeLifecycle__skip_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__virtual_skips_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__reopen.cfg`, `verification/tla/broken/TradeLifecycle__result_late.cfg`, `verification/tla/broken/TradeLifecycle__exits_use_live.cfg`, `verification/tla/broken/TradeLifecycle__exit_stalls.cfg`
+- `backend/app/hat/engine/trades.py`
+- `backend/app/hat/engine/lifecycle.py`
+- `backend/app/hat/models/runtime.py`
+- `backend/tests/hat/properties/test_trades.py`
+- `backend/tests/hat/properties/test_exits.py`
+- `backend/tests/hat/conformance/test_conf_lifecycle.py`
+- `backend/tests/hat/db/hat_db_runtime.py`
+- `backend/tests/hat/db/test_db_broken_variants.py`
+
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `9a5404164a3d58a920875d8f1a97e577f83a831606ba408d7b159196f1b5dc03`
+Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
+Covered digest: `4febb13e7bcd3bfed0768eb5520f137e238cf33cef932881643e3a8c2e83aea9`
 
 ## Scope changes
 
@@ -174,6 +209,9 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - K3 edited `test_conf_broker.py`: `brk.import_boundary` lets `app.hat.data.provider.fyers_websocket` (the data socket module, HAT-OVR-006) import the SDK socket `fyers_apiv3.FyersWebsocket` and nothing else, with a synthetic offender showing any other data module still fails; `fyers_adapter_wraps_existing` adds that module to the SDK importers and `ops.single_fyers_secret_store` to the token readers. The REST model, GTT and secret rules are unchanged for every other module.
 - PR 8 extended `CONF mvp_seed_scope` (`test_conf_broker.py`) with the seeded strategies, markets and owner (HAT-OVR-002); the broker half is unchanged. Its second scratch break is recorded in `verify-criteria`.
 
+- PR 11 added `TradeLifecycle` and the shadow engine; `TLA TradeLifecycle!TypeOK` is the one property without a broken variant. The model puts the entry's Triggered and EntryPlaced steps inside one commit (Watchlisted to Open or Rejected), so AwaitingApproval and the confirm and auto paths are checked only as rows of the table (`CONF lifecycle_transitions_match_spec`), not as model actions: they are PR 15.
+- `DB runtime.per_bot_serialised` commits real rows and empties `hat_event` and the runtime tables with TRUNCATE afterwards (the event log refuses DELETE). Its broken variants are code breaks (`lock_bot` a no-op, or keyed per call), registered in `test_db_broken_variants.py` with an undo list.
+- `evaluate_position` and `open_entry` refuse a real position or a confirm or auto bot (`position_not_virtual`, `mode_not_shadow`); the router (PR 15) owns them. A virtual trade's continuation after a confirm skip is PR 15.
 
 ## Scratch breaks
 
@@ -843,4 +881,160 @@ tests/hat/conformance/test_conf_broker.py F
 E   AssertionError: assert not True
 E    +  where True = exists()
 E    +    where exists = ((PosixPath('.../backend/app') / 'services') / 'fyers_client.py').exists
+```
+
+### TLA TradeLifecycle!OnlyAllowedTransitions
+
+Break: broken variant `TradeLifecycle__skip_exit_pending.cfg` (`BrokenMode = "skip_exit_pending"`): a full exit closes the trade without placing the exit order.
+
+```
+Error: Invariant OnlyAllowedTransitions is violated.
+State 4: Commit line 134, col 5 to line 142, col 78 of module TradeLi
+State 5: FireExit line 158, col 5 to line 162, col 30 of module Trade
+State 6: PlaceExit line 179, col 5 to line 188, col 80 of module Trad
+```
+
+### TLA TradeLifecycle!EndingsTerminal
+
+Break: broken variant `TradeLifecycle__reopen.cfg` (`BrokenMode = "reopen"`): a closed trade takes a further step.
+
+```
+Error: Invariant EndingsTerminal is violated.
+State 5: PlaceExit line 179, col 5 to line 188, col 80 of module Trad
+State 6: FillExit line 193, col 5 to line 197, col 91 of module Trade
+State 7: Reopen line 212, col 5 to line 216, col 30 of module TradeLi
+```
+
+### TLA TradeLifecycle!EventuallyEnds
+
+Break: broken variant `TradeLifecycle__exit_stalls.cfg` (`BrokenMode = "exit_stalls"`): a placed exit order never fills.
+
+```
+Error: Temporal properties were violated.
+State 6: FireExit line 158, col 5 to line 162, col 30 of module Trade
+State 7: PlaceExit line 179, col 5 to line 188, col 80 of module Trad
+State 8: Stuttering
+```
+
+### TLA TradeLifecycle!StateMatchesLog
+
+Break: broken variant `TradeLifecycle__state_without_event.cfg` (`BrokenMode = "state_without_event"`): the session end changes the state and writes no event.
+
+```
+Error: Invariant StateMatchesLog is violated.
+State 1: Initial predicate>
+State 2: Expire line 147, col 5 to line 154, col 30 of module TradeLi
+```
+
+### TLA TradeLifecycle!ShadowSameMachine
+
+Break: broken variant `TradeLifecycle__virtual_skips_exit_pending.cfg` (`BrokenMode = "virtual_skips_exit_pending"`): a virtual trade closes without the exit step a real one takes.
+
+```
+Error: Invariant ShadowSameMachine is violated.
+State 4: Commit line 134, col 5 to line 142, col 78 of module TradeLi
+State 5: FireExit line 158, col 5 to line 162, col 30 of module Trade
+State 6: PlaceExit line 179, col 5 to line 188, col 80 of module Trad
+```
+
+### TLA TradeLifecycle!ResultOnClose
+
+Break: broken variant `TradeLifecycle__result_late.cfg` (`BrokenMode = "result_late"`): the trade result is written in a later transaction than the close.
+
+```
+Error: Invariant ResultOnClose is violated.
+State 4: FireExit line 158, col 5 to line 162, col 30 of module Trade
+State 5: PlaceExit line 179, col 5 to line 188, col 80 of module Trad
+State 6: FillExit line 193, col 5 to line 197, col 91 of module Trade
+```
+
+### TLA TradeLifecycle!VersionPinned
+
+Break: broken variant `TradeLifecycle__exits_use_live.cfg` (`BrokenMode = "exits_use_live"`): exit rules are read from the bot's live version after a promotion.
+
+```
+Error: Invariant VersionPinned is violated.
+State 3: Commit line 134, col 5 to line 142, col 78 of module TradeLi
+State 4: Promote line 220, col 5 to line 223, col 30 of module TradeL
+State 5: PartialExit line 167, col 5 to line 174, col 78 of module Tr
+```
+
+### TLA TradeLifecycle!PerBotCapHolds
+
+Break: broken variant `TradeLifecycle__no_lock.cfg` (`BrokenMode = "no_lock"`): two entries of one bot evaluate without its lock and both take the last slot.
+
+```
+Error: Invariant PerBotCapHolds is violated.
+State 4: Evaluate line 122, col 5 to line 129, col 83 of module Trade
+State 5: Commit line 134, col 5 to line 142, col 78 of module TradeLi
+State 6: Commit line 134, col 5 to line 142, col 78 of module TradeLi
+```
+
+### CONF lifecycle_transitions_match_spec
+
+Break: in `backend/app/hat/engine/lifecycle.py`: the code lets Open close without ExitPending.
+
+```
+E   AssertionError: assert {('AwaitingAp... 'Open'), ...} == {('AwaitingAp... 'Open'), ...}
+FAILED tests/hat/conformance/test_conf_lifecycle.py::test_lifecycle_transitions_match_spec
+============================== 1 failed in 0.22s ===============================
+```
+
+### PBT exits.replay_reproduces_state
+
+Break: in `backend/app/hat/engine/trades.py`: a step is logged but the signal's stored state does not move.
+
+```
+FAILED tests/hat/properties/test_exits.py::test_replay_reproduces_state - app [cut]
+============================== 1 failed in 26.59s ==============================
+```
+
+### PBT exits.shadow_rows_virtual
+
+Break: in `backend/app/hat/engine/trades.py`: the shadow engine writes a real-looking order row.
+
+```
+E   assert ([<app.hat.models.runtime.HatOrder object at 0x7f1f83655a90>, <app.hat.models.runtime.HatOrder object at 0x7f1f83681a90>] and False)
+FAILED tests/hat/properties/test_exits.py::test_shadow_rows_virtual - assert  [cut]
+============================== 1 failed in 29.97s ==============================
+```
+
+### PBT trades.shared_bot_cap
+
+Break: in `backend/app/hat/engine/trades.py`: the snapshot the caps read has no open positions.
+
+```
+E   AssertionError: assert 5 == 4
+FAILED tests/hat/properties/test_trades.py::test_shared_bot_cap - AssertionEr [cut]
+============================== 1 failed in 2.16s ===============================
+```
+
+### PBT config.trade_keeps_entry_version
+
+Break: in `backend/app/hat/engine/trades.py`: the exit rules are read from the bot's live version, not the trade's.
+
+```
+E   AssertionError: assert ['hard_stop'] == ['hard_stop',..., 'time_stop']
+FAILED tests/hat/properties/test_config.py::test_trade_keeps_entry_version -  [cut]
+============================== 1 failed in 6.74s ===============================
+```
+
+### DB runtime.per_bot_serialised
+
+Break: in `backend/app/hat/engine/trades.py`: `lock_bot` takes no lock.
+
+```
+E   AssertionError: [True, True]
+FAILED tests/hat/db/test_db_runtime.py::test_runtime__per_bot_serialised - As [cut]
+============================== 1 failed in 0.52s ===============================
+```
+
+### DB runtime.state_domain
+
+Break: in `backend/app/hat/models/runtime.py`: the signal state CHECK also admits the old lowercase `open`.
+
+```
+E   AssertionError: the database accepted: signal state 'open'
+FAILED tests/hat/db/test_db_runtime.py::test_runtime__state_domain - Assertio [cut]
+============================== 1 failed in 0.18s ===============================
 ```

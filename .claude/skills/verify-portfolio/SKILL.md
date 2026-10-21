@@ -20,6 +20,7 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
 - `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
+- `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value one session earlier; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
 
 ## Run
 
@@ -78,13 +79,14 @@ Checks:
 - `backend/tests/hat/properties/test_allocator.py`
 - `backend/tests/hat/properties/test_lifecycle.py`
 - `backend/tests/hat/conformance/test_conf_portfolio.py`
+- `backend/app/hat/engine/regime_gate.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `59b373d5a9b45a53e440921847fbd7b8dc602525`
-Covered digest: `2e069160f9f7365a0b0de4d75350336a728361cbec2518be1da9f5366461007e`
+Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
+Covered digest: `271032f0b0cd402bdbe2801a2a4182aa320e7b42efb9a7d384bb01babdd82927`
 
 ## Scope changes
 
@@ -983,4 +985,14 @@ E   assert not [('from', 'app.hat.engine.portfolio.service', 'service')]
 E    +  where [('from', 'app.hat.engine.portfolio.service', 'service')] = <built-in method findall of re.Pattern object at 0x186c2d10>('"""The nightly allocator (05 §5, HAT-PORT-050..056) as a pure fu
 E    +    where <built-in method findall of re.Pattern object at 0x186c2d10> = re.compile('^\\s*(from|import)\\s+(sqlalchemy|app\\.brokers|app\\.database|app\\.hat\\.models|app\\.hat\\.execution|app\\
 FAILED tests/hat/conformance/test_conf_portfolio.py::test_portfolio_rules_are_pure
+```
+
+### PBT regime.strategy_rules
+
+Break: in `backend/app/hat/engine/regime_gate.py`: close_above_sma_and_rising accepts a close equal to its SMA.
+
+```
+E   AssertionError: assert True is False
+FAILED tests/hat/properties/test_regime.py::test_strategy_rules - AssertionEr [cut]
+============================== 1 failed in 0.57s ===============================
 ```

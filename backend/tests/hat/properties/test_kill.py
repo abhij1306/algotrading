@@ -416,7 +416,7 @@ def test_reallocation_does_not_hide_a_loss(
             currency="INR",
             opened_at=datetime(2026, 3, 1, tzinfo=IST),
             closed_at=datetime.combine(second, time(10, 0), tzinfo=IST),
-            state="closed",
+            state="Closed",
             rules_fired={},
         )
         session.add(position)

@@ -413,7 +413,7 @@ def test_trade_results_ignore_later_trades(trades: list, cutoff: int) -> None:
                 currency="INR",
                 opened_at=base - timedelta(days=1),
                 closed_at=base + timedelta(days=offset),
-                state="closed",
+                state="Closed",
                 rules_fired={},
             )
             session.add(position)

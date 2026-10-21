@@ -66,8 +66,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `304232f8c442bee75c2525bb316a41fc31cb89a1`
-Covered digest: `0000000000000000000000000000000000000000000000000000000000000000`
+Sync commit: `6641fe64f07decf27dcfd0556df69043d0bf2a73`
+Covered digest: `f5cbb17c55cb76ed4257d94d4eca069fd5e1372b75a886e026544df9ecef7130`
 
 ## Scope changes
 
@@ -75,7 +75,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - The tick is `DEFAULT_TICK = 0.05` for every instrument until PR 15 reads it from the instrument; the properties run on 0.01, 0.05, 0.1 and 1.
 - `TLA StopPlacement!StopOnlyTightens` (HAT-RISK-070, HAT-SCH-081) is not built: the model describes the stop order at the broker and belongs to PR 15 with the router. It stays in `KNOWN_GAPS`.
-- `exits.veto_score` (HAT-EXEC-075) is not built: the veto belongs to the live path of PR 15.
+- `exits.veto_score` (HAT-EXEC-130) is not built: the veto score belongs to PRs 15 and 16.
 - Exits of a real position are the router's (PR 15); `evaluate_position` refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 
@@ -88,7 +88,7 @@ One recorded break per check (HAT-VER-072): the real code was changed as describ
 Break: in `backend/app/hat/engine/stops.py`: the buffer is added to the low instead of taken off it.
 
 ```
-FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Excep...
+FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Excep [cut]
 ============================== 1 failed in 0.20s ===============================
 ```
 
@@ -97,8 +97,8 @@ FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Excep...
 Break: in `backend/app/hat/engine/stops.py`: the buffer ticks go above the day's low instead of below it.
 
 ```
-FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup: ...
-============================== 1 failed in 0.33s ===============================
+FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup:  [cut]
+============================== 1 failed in 0.20s ===============================
 ```
 
 ### PBT stops.custom_rules
@@ -107,7 +107,7 @@ Break: in `backend/app/hat/engine/stops.py`: atr_multiple rounds the stop up a t
 
 ```
 E   AssertionError: assert (None is not None)
-FAILED tests/hat/properties/test_stops.py::test_custom_rules - AssertionError...
+FAILED tests/hat/properties/test_stops.py::test_custom_rules - AssertionError [cut]
 ============================== 1 failed in 0.19s ===============================
 ```
 
@@ -116,8 +116,8 @@ FAILED tests/hat/properties/test_stops.py::test_custom_rules - AssertionError...
 Break: in `backend/app/hat/engine/exits.py`: a full exit gives way when a partial fires on the same evaluation.
 
 ```
-FAILED tests/hat/properties/test_exits.py::test_full_beats_partial - Exceptio...
-============================== 1 failed in 0.57s ===============================
+FAILED tests/hat/properties/test_exits.py::test_full_beats_partial - Exceptio [cut]
+============================== 1 failed in 11.37s ==============================
 ```
 
 ### PBT exits.fire_once
@@ -126,8 +126,8 @@ Break: in `backend/app/hat/engine/exits.py`: a rule that already fired is evalua
 
 ```
 E   AssertionError: assert not ({'1:partial_at_r'} & frozenset({'1:partial_at_r'}))
-FAILED tests/hat/properties/test_exits.py::test_fire_once - AssertionError: a...
-============================== 1 failed in 0.51s ===============================
+FAILED tests/hat/properties/test_exits.py::test_fire_once - AssertionError: a [cut]
+============================== 1 failed in 5.29s ===============================
 ```
 
 ### PBT exits.fraction_arithmetic
@@ -136,8 +136,8 @@ Break: in `backend/app/hat/engine/exits.py`: a fraction below one share rounds t
 
 ```
 E   assert 0 == 1
-FAILED tests/hat/properties/test_exits.py::test_fraction_arithmetic - assert ...
-============================== 1 failed in 0.40s ===============================
+FAILED tests/hat/properties/test_exits.py::test_fraction_arithmetic - assert  [cut]
+============================== 1 failed in 0.43s ===============================
 ```
 
 ### PBT exits.rule_semantics
@@ -146,8 +146,8 @@ Break: in `backend/app/hat/engine/exits.py`: partial_after_days waits one day mo
 
 ```
 E   assert False == True
-FAILED tests/hat/properties/test_exits.py::test_rule_semantics[4] - assert Fa...
-========================= 1 failed, 4 passed in 1.37s ==========================
+FAILED tests/hat/properties/test_exits.py::test_rule_semantics[4] - assert Fa [cut]
+========================= 1 failed, 4 passed in 6.99s ==========================
 ```
 
 ### PBT exits.never_lowers_stop
@@ -156,8 +156,8 @@ Break: in `backend/app/hat/engine/exits.py`: `apply` takes a lower stop from a r
 
 ```
 E   AssertionError: assert Decimal('8.9') == Decimal('9.9')
-FAILED tests/hat/properties/test_exits.py::test_never_lowers_stop - Assertion...
-============================== 1 failed in 0.54s ===============================
+FAILED tests/hat/properties/test_exits.py::test_never_lowers_stop - Assertion [cut]
+============================== 1 failed in 5.87s ===============================
 ```
 
 ### DB governance.stop_only_rises
@@ -166,7 +166,7 @@ Break: in `backend/app/hat/schema.py`: the delete guard lets the delete through.
 
 ```
 E   AssertionError: the database accepted: deleting a position
-FAILED tests/hat/db/test_db_runtime.py::test_governance__stop_only_rises - As...
-============================== 1 failed in 0.22s ===============================
+FAILED tests/hat/db/test_db_runtime.py::test_governance__stop_only_rises - As [cut]
+============================== 1 failed in 0.30s ===============================
 ```
 
