@@ -597,7 +597,8 @@ def check_governance__version_config_immutable(conn: Connection) -> None:
         row = conn.execute(
             select(table.c.config, table.c.config_hash).where(table.c.id == version)
         ).one()
-        assert row.config == {"a": 1} and row.config_hash == "h", f"{status} config changed"
+        assert row.config == {"a": 1}, f"{status} config changed"
+        assert row.config_hash == "h", f"{status} config hash changed"
         accepts(
             conn,
             f"a non-config update of a {status} version",
@@ -637,7 +638,8 @@ def check_governance__universe_version_immutable(conn: Connection) -> None:
         stored = conn.execute(
             select(table.c.definition, table.c.config_hash).where(table.c.id == version)
         ).one()
-        assert stored.definition == {"members": []} and stored.config_hash == "h"
+        assert stored.definition == {"members": []}
+        assert stored.config_hash == "h"
 
 
 def check_governance__one_live_version(conn: Connection) -> None:

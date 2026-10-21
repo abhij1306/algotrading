@@ -380,8 +380,11 @@ def _bar(
     run_id: uuid.UUID,
     traded_value: Decimal | None = None,
 ) -> BarRow:
-    assert c.open is not None and c.high is not None and c.low is not None  # row_ok held
-    assert c.close is not None and c.volume is not None
+    assert c.open is not None
+    assert c.high is not None
+    assert c.low is not None
+    assert c.close is not None
+    assert c.volume is not None
     return BarRow(
         member.instrument_id,
         member.isin,
@@ -495,7 +498,10 @@ def index_rows_from_mcp(rows: Iterable[Mapping[str, object]]) -> list[IndexRow]:
         if not isinstance(name, str) or not name.strip() or any(v is None for v in values):
             continue
         o, h, low, c = values
-        assert o is not None and h is not None and low is not None and c is not None
+        assert o is not None
+        assert h is not None
+        assert low is not None
+        assert c is not None
         found.setdefault(name.strip().upper(), IndexRow(name.strip().upper(), o, h, low, c))
     return list(found.values())
 
