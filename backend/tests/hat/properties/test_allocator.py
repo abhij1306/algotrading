@@ -90,8 +90,8 @@ def test_formula_and_bounds(
         live = s.lifecycle_state == "live" and not s.health.probation
         assert (r.health_mult == 0) or live
         if not live:
-            assert r.health_mult == 0
-            assert r.final_weight == 0
+            assert not r.health_mult
+            assert not r.final_weight
         assert 0 <= r.final_weight <= product_of(r)
         if hi <= 1:
             assert r.final_weight <= r.base_weight
