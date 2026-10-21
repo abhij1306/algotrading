@@ -7,9 +7,9 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
+import pytest
 import yaml
 from hat_conf_skills import (
     PLACEHOLDER,
@@ -293,12 +293,10 @@ def test_ci_verification_job() -> None:
     assert "--ignore=tests/hat/conformance" in backend
 
 
-def test_ci_property_shards_cover_every_file() -> None:
+def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """HAT-VER-060: the property matrix is a partition of tests/hat/properties: every file is in
     exactly one shard, so a new property file can never run nowhere."""
-    scripts = str(REPO_ROOT / "scripts")
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "scripts"))
     from ci_property_shards import shard_files
 
     matrix = _ci_jobs()["verification-properties"]["strategy"]["matrix"]["shard"]
