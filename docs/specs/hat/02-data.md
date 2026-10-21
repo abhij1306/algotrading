@@ -93,7 +93,7 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
   - Property: when the MCP refresh fails, the CSV fallback produces the same instrument keys for the same listing. Harm: the master goes stale for a week.
 
 #### HAT-DATA-024: Fyers broker symbols round-trip through symbol_master
-- **Statement:** `hat_broker_symbol` rows for Fyers are produced with `symbol_master.to_fyers` and refreshed on adapter start; unique (broker, broker_symbol).
+- **Statement:** `hat_broker_symbol` rows for Fyers are produced with `symbol_master.to_fyers` (HAT's own `app/hat/data/symbols.py` since K2) and refreshed on adapter start; unique (broker, broker_symbol). The adapter's instrument list is read from these rows (`fyers_instruments`): active instruments only, never an index. [Reworded in K2; the legacy `symbol_master.known_symbols` returned only indices.]
 - **Source:** DS "Reference data" (broker symbol map); SCH (`hat_broker_symbol`); OWN-20OCT (direct Fyers adapter, no OpenAlgo mapping).
 - **PR:** 4
 - **Verification:** PBT `reference.fyers_symbol_roundtrip`, DB `reference.broker_symbol_unique`

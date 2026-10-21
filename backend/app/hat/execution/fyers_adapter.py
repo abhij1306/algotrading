@@ -1,9 +1,10 @@
 """The Fyers adapter behind `HatBroker` (HAT-DEC-BD2, HAT-BRK-081, -090, -091; 07 §9).
 
-It wraps the tested `FyersBroker` (place, modify, cancel, the circuit breaker, the guarded
-timeout, `SUBMIT_UNCONFIRMED`), `FyersClient` (is the SDK model usable) and `FyersAuthService`
-(login link and code exchange), plus the GTT calls `FyersBroker` makes through the fyers SDK.
-It never touches the SDK, a token file or an environment variable itself (HAT-OPS-051).
+It wraps `FyersBroker` (place, modify, cancel, the circuit breaker, the guarded timeout,
+`SUBMIT_UNCONFIRMED`, and the GTT calls it makes through the Fyers SDK), `FyersSession` (is the
+SDK model usable) and `FyersAuthService` (login link and code exchange), all in this package
+(K2). It never touches the SDK, a token file or an environment variable itself (HAT-OPS-051).
+The instrument list comes from `hat_instrument` and `hat_broker_symbol`.
 
 Every intent becomes one exact Fyers payload with product CNC; an invalid intent raises
 `InvalidIntentError` before any broker call. Reads fail closed: when the broker cannot answer they
@@ -18,17 +19,7 @@ from collections.abc import Callable, Iterable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.brokers.base import BrokerUnavailableError as LegacyUnavailableError
-from app.brokers.plugins.fyers import (
-    BROKER_CIRCUIT_OPEN,
-    CLIENT_NOT_INITIALIZED,
-    SUBMIT_UNCONFIRMED,
-    FyersBroker,
-)
-from app.services.fyers.auth_flow import FyersAuthError, FyersAuthService, get_fyers_auth
-from app.services.fyers.token_store import TokenStoreError
-from app.services.fyers_client import FyersClient, get_fyers_client
-from app.services.symbol_master import symbol_master
+from app.hat.data.symbols import symbol_master
 
 from .broker import (
     CODE_INVALID_INTENT,
@@ -56,6 +47,17 @@ from .broker import (
     SessionStatus,
     Side,
 )
+from .fyers_auth import FyersAuthError, FyersAuthService, get_fyers_auth
+from .fyers_broker import (
+    BROKER_CIRCUIT_OPEN,
+    CLIENT_NOT_INITIALIZED,
+    PROCESS_BREAKER,
+    SUBMIT_UNCONFIRMED,
+    FyersBroker,
+    FyersUnavailableError,
+)
+from .fyers_session import FyersSession, get_fyers_session
+from .fyers_tokens import TokenStoreError
 from .tags import TAG_LENGTH, is_hat_tag
 
 __all__ = [
@@ -182,22 +184,33 @@ def _place_result(reply: object) -> tuple[str, str | None, str]:
     return "rejected", None, CODE_REJECTED
 
 
+def _stored_instruments() -> list[tuple[str, str]]:
+    """(database symbol, Fyers symbol) of the active instruments with a Fyers mapping, read from
+    `hat_instrument` and `hat_broker_symbol`."""
+    from app.database import SessionLocal  # deferred: importing it connects the engine
+    from app.hat.data.instruments import fyers_instruments
+
+    with SessionLocal() as session:
+        return fyers_instruments(session)
+
+
 class FyersHatBroker:
-    """`HatBroker` over the existing Fyers client stack. Constructor arguments exist so tests
-    inject `FakeBroker` (never a real SDK); production passes none."""
+    """`HatBroker` over the Fyers stack in this package. Constructor arguments exist so tests
+    inject `FakeBroker` (never a real SDK); production passes none and shares one circuit
+    breaker across every adapter in the process."""
 
     def __init__(
         self,
         broker: FyersBroker | None = None,
         *,
-        client: Callable[[], FyersClient] = get_fyers_client,
+        client: Callable[[], FyersSession] = get_fyers_session,
         auth: Callable[[], FyersAuthService] = get_fyers_auth,
-        symbols: Callable[[], Iterable[str]] | None = None,
+        instruments: Callable[[], Iterable[tuple[str, str]]] | None = None,
     ) -> None:
-        self._broker = broker if broker is not None else FyersBroker()
+        self._broker = broker if broker is not None else FyersBroker(breaker=PROCESS_BREAKER)
         self._client = client
         self._auth = auth
-        self._symbols = symbols if symbols is not None else symbol_master.known_symbols
+        self._instruments = instruments if instruments is not None else _stored_instruments
         self._seen: dict[str, tuple[str, int]] = {}
         self._seen_lock = threading.Lock()
 
@@ -238,8 +251,17 @@ class FyersHatBroker:
 
     # --- writes ---------------------------------------------------------------------------
 
-    @staticmethod
-    def _order_payload(intent: OrderIntent) -> dict[str, Any]:
+    def _fyers_symbol(self, symbol: str) -> str:
+        """The Fyers symbol orders for `symbol` go out under: the stored broker symbol (`-BE` for a
+        trade-for-trade stock), else the converted `-EQ` one."""
+        try:
+            stored = dict(self._instruments()).get(symbol_master.to_db(symbol))
+        except Exception:
+            logger.warning("Stored Fyers symbols unreadable; converting %s", symbol)
+            stored = None
+        return stored or symbol_master.to_fyers(symbol)
+
+    def _order_payload(self, intent: OrderIntent) -> dict[str, Any]:
         """The order dict `FyersBroker.place_order` turns into the SDK payload. Raises
         InvalidIntentError for anything the adapter will not send."""
         try:
@@ -258,7 +280,7 @@ class FyersHatBroker:
             ):
                 raise InvalidOperation
             order: dict[str, Any] = {
-                "symbol": symbol_master.to_fyers(intent.symbol),
+                "symbol": self._fyers_symbol(intent.symbol),
                 "quantity": intent.qty,
                 "side": side.value.upper(),
                 "type": order_type.value,
@@ -333,7 +355,7 @@ class FyersHatBroker:
                 raise InvalidOperation
             trigger, limit = self._gtt_prices(request.trigger_price, request.limit_price)
             gtt = {
-                "symbol": symbol_master.to_fyers(request.symbol),
+                "symbol": self._fyers_symbol(request.symbol),
                 "quantity": request.qty,
                 "side": "SELL",
                 "product": "CNC",
@@ -370,7 +392,7 @@ class FyersHatBroker:
         """Fetch and parse; any failure is a fixed-code BrokerUnavailableError."""
         try:
             raw = fetch()
-        except (LegacyUnavailableError, BrokerUnavailableError):
+        except (FyersUnavailableError, BrokerUnavailableError):
             logger.warning("Fyers read unavailable")
             raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
         except Exception:
@@ -464,10 +486,9 @@ class FyersHatBroker:
         )
 
     def instruments(self) -> list[Instrument]:
-        def parse(symbols: Iterable[str]) -> list[Instrument]:
-            return [Instrument(s, symbol_master.to_fyers(s)) for s in symbols]
-
-        return self._read(self._symbols, parse)
+        return self._read(
+            self._instruments, lambda pairs: [Instrument(sym, fyers) for sym, fyers in pairs]
+        )
 
     def order_updates(self) -> list[OrderUpdate]:
         """Orders whose status or filled quantity changed since the last successful poll."""
@@ -483,5 +504,5 @@ class FyersHatBroker:
 
 
 def build_fyers_broker() -> FyersHatBroker:
-    """The production adapter: the process-wide Fyers broker, client and auth service."""
+    """The production adapter: the process-wide session, auth service and circuit breaker."""
     return FyersHatBroker()

@@ -12,13 +12,12 @@ from decimal import Decimal
 
 import pytest
 from hat.fakes.broker import FakeBroker, rejected, unconfirmed
-from hat.fakes.fyers_sdk import RecordingSdk
+from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
 
-from app.brokers.plugins.fyers import BROKER_CIRCUIT_OPEN, FYERS_ORDER_TAG_PATTERN
 from app.hat.execution.broker import (
     BrokerOrder,
     BrokerUnavailableError,
@@ -30,7 +29,8 @@ from app.hat.execution.broker import (
     SessionStatus,
     Side,
 )
-from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, map_fyers_status
+from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, map_fyers_status
+from app.hat.execution.fyers_broker import BROKER_CIRCUIT_OPEN, FYERS_ORDER_TAG_PATTERN
 from app.hat.execution.reconcile import Mismatch, find_mismatches
 from app.hat.execution.submit import (
     OrderRefusedError,
@@ -233,6 +233,26 @@ def test_fyers_payload_mapping(intent: OrderIntent) -> None:
     }
 
 
+@given(valid_intents(), st.sampled_from(["EQ", "BE"]), st.booleans())
+def test_order_goes_out_under_the_stored_broker_symbol(
+    intent: OrderIntent, series: str, readable: bool
+) -> None:
+    """HAT-DATA-024, HAT-BRK-090: an order is sent under the broker symbol stored for its
+    instrument (`-BE` for a trade-for-trade stock), and under the converted `-EQ` symbol when the
+    stored symbols cannot be read."""
+    sdk = RecordingSdk()
+    stored = f"NSE:{intent.symbol}-{series}"
+
+    def source() -> list[tuple[str, str]]:
+        if not readable:
+            raise RuntimeError("database down")
+        return [(intent.symbol, stored)]
+
+    result = FyersHatBroker(broker_over(sdk), instruments=source).place_order(intent)
+    assert result.status == "placed"
+    assert sdk.calls[0][1]["symbol"] == (stored if readable else SYMBOLS[intent.symbol])
+
+
 bad_values = st.sampled_from([0, -1, None, True, 1.5, "10", Decimal("NaN"), Decimal("Infinity")])
 
 
@@ -391,7 +411,7 @@ def test_broker_errors_fail_closed(kind: str, read: str) -> None:
 def adapter_over_fake(fake: FakeBroker):  # noqa: ANN201
     from app.hat.execution.fyers_adapter import FyersHatBroker
 
-    return FyersHatBroker(fake, symbols=lambda: list(SYMBOLS))  # type: ignore[arg-type]
+    return FyersHatBroker(fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
 
 
 @given(st.sampled_from(["circuit", "reject", "unconfirmed", "raises"]), valid_intents())

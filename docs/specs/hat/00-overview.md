@@ -128,10 +128,10 @@ condensed; PR numbers refer to the plan's PR list.
 | --- | --- | --- | --- |
 | Live ticks and subscriptions | R + M (tick-listener hook) | `services/live_market_service.py`, `services/subscription_registry.py` | 14 |
 | Market hours, clock | N (HAT-owned copies since K1; the holiday calendar from `hat_trading_calendar` builds the policy, nothing is installed process-wide, no `DEV_MODE`) | `app/hat/data/sessions.py`, `app/hat/clock.py` (copied from `utils/market_hours.py`, `utils/clock.py`) | 4, K1 |
-| Symbols | R | `services/symbol_master.py` | 4 |
+| Symbols | N (HAT-owned conversion since K2; the legacy `SymbolMaster` inherits it and keeps only options, futures and metadata) | `app/hat/data/symbols.py` | 4, K2 |
 | Risk authority | N (`evaluate_signal` in HAT since K1; the legacy `RiskManager` no longer imports HAT) | `app/hat/risk/service.py` | 10, K1 |
 | Order intent, Decimal money | R + N (`to_decimal` / `to_money` copied into HAT since K1) | `services/execution/intent.py`, `app/hat/money.py` | 10, 13, K1 |
-| Broker | R + N (HAT interface, GTT) | `brokers/plugins/fyers.py` (`FyersBroker`), `FyersClient`, `services/fyers/auth_flow.py` | 13 |
+| Broker | N (HAT interface, GTT; the Fyers broker, session, login and token store moved into HAT in K2, the legacy classes inherit them until K4 and K5) | `app/hat/execution/fyers_broker.py`, `fyers_session.py`, `fyers_auth.py`, `fyers_tokens.py`, `app/hat/api/fyers_auth.py` | 13, K2 |
 | VCP detector | M (polars port) | `services/vcp/pattern.py` | 8 |
 | Backtest metrics | N (copied into HAT in K1; the VCP detector's frozen outputs are in `tests/hat/fixtures/vcp_oracle.json`) | `app/hat/backtest/metrics.py` | 12, K1 |
 | Bhavcopy parsing ideas | M | `data_platform/pipelines/phase1_build.py`, `backend/scripts/load_bhavcopy.py` | 5 |

@@ -23,12 +23,6 @@ PERMANENT = {"app.base"}
 # must equal what is imported today: a new entry is a new coupling (refused), and a module that
 # is no longer imported must be removed from here, so the list only shrinks.
 PENDING = {
-    "app.brokers.base": "K2",
-    "app.brokers.plugins.fyers": "K2",
-    "app.services.fyers.auth_flow": "K2",
-    "app.services.fyers.token_store": "K2",
-    "app.services.fyers_client": "K2",
-    "app.services.symbol_master": "K2",
     "app.services.live.data_socket": "K3",
     "app.services.live.provider_session": "K3",
     "app.services.live_market_service": "K3",
@@ -48,7 +42,17 @@ SHIMS = {
     "utils/clock.py",
     "services/bhavcopy_text.py",
     "services/execution/paper_book.py",
+    # K2: the Fyers stack. Each inherits or re-exports HAT's version and adds only legacy-only code.
+    "brokers/base.py",
+    "brokers/plugins/fyers.py",
+    "services/fyers/auth_flow.py",
+    "services/fyers/token_store.py",
+    "services/fyers_client.py",
+    "services/symbol_master.py",
 }
+# Legacy modules that import HAT to wire it in: `database.py` (schema upkeep) and `main.py` (it
+# registers HAT's routes and the legacy hooks on HAT's Fyers login).
+WIRING = {"database.py", "main.py"}
 
 # Modules a HAT suite must never load, however it reaches them: the app, the routers and the
 # singletons of the manual-trading side.
@@ -132,13 +136,13 @@ def test_imports__hat_decoupled_from_legacy() -> None:
 
 
 def test_imports__legacy_does_not_import_hat() -> None:
-    """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep) and
-    the re-export shims of the helpers HAT now owns (SHIMS, each deleted with the legacy code)
-    import HAT. The legacy risk manager, routers and services do not."""
+    """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep),
+    `app.main` (wiring) and the re-export shims of the helpers HAT now owns (SHIMS, each deleted
+    with the legacy code) import HAT. The legacy risk manager, routers and services do not."""
     offenders = []
     for path in sorted(APP_ROOT.rglob("*.py")):
         rel = path.relative_to(APP_ROOT).as_posix()
-        if rel.startswith("hat/") or rel == "database.py" or rel in SHIMS:
+        if rel.startswith("hat/") or rel in WIRING or rel in SHIMS:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []

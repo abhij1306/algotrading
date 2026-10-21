@@ -1,24 +1,19 @@
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict
 
+from app.hat.execution.fyers_broker import (
+    FundsReply,
+    FyersUnavailableError,
+    OrderReply,
+    PositionReply,
+)
+
 # --- Standardized Schemas ---
 
 
-class OrderResponse(TypedDict):
-    order_id: str
-    status: str
-    message: str
-    details: dict[str, Any] | None
-
-
-class Position(TypedDict):
-    symbol: str
-    side: str  # LONG/SHORT
-    quantity: int
-    entry_price: float
-    current_price: float
-    pnl: float
-    product_type: str
+# HAT owns these shapes (K2); the legacy names stay until K4 deletes this package.
+OrderResponse = OrderReply
+Position = PositionReply
 
 
 class WorkingOrder(TypedDict):
@@ -30,14 +25,8 @@ class WorkingOrder(TypedDict):
     product_type: str
 
 
-class BrokerFunds(TypedDict):
-    available: float
-    used: float
-    total: float
-
-
-class BrokerUnavailableError(Exception):
-    """Raised when the broker client is missing or a broker read call fails."""
+BrokerFunds = FundsReply
+BrokerUnavailableError = FyersUnavailableError
 
 
 class IBroker(ABC):

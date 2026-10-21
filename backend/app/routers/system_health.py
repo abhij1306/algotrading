@@ -61,7 +61,9 @@ def system_health_check(
 
     if health["fyers"] == "TOKEN_EXPIRED":
         status = "DEGRADED"
-        recommendations.append("Fyers access token expired. Re-authenticate at /api/auth/fyers")
+        recommendations.append(
+            "Fyers access token expired. Re-authenticate at /api/hat/auth/fyers/url"
+        )
     elif health["fyers"] != "OK":
         status = "DEGRADED"
         recommendations.append("Fyers API unavailable. Screener will use cached data only.")

@@ -16,13 +16,20 @@ SCOPE:
 This module only converts and validates symbol formats. It has no knowledge of
 index membership: use ``index_universe_loader`` (which depends on this module,
 never the other way round) for constituents, membership and company metadata.
+
+HAT owns the conversion itself (``app.hat.data.symbols.SymbolMaster``: ``to_db``, ``to_fyers``
+and the patterns, aliases and index map they use). This legacy class inherits it and adds only
+what the legacy app uses: ``get_info`` and its cache, the ISIN
+format. K5 deletes it with the legacy features.
 """
 
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
 from enum import Enum
+
+from app.hat.data.symbols import INDEX_SYMBOLS as FYERS_INDEX_TICKERS
+from app.hat.data.symbols import SymbolMaster as HatSymbolMaster
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +67,7 @@ class SymbolInfo:
         # Special handling for indices in Fyers format
         if self.series == "INDEX":
             # Check if there's a special Fyers mapping for this index
-            fyers_ticker = SymbolMaster.FYERS_INDEX_MAPPING.get(self.ticker, self.ticker)
+            fyers_ticker = FYERS_INDEX_TICKERS.get(self.ticker, self.ticker)
             return f"{self.exchange}:{fyers_ticker}-INDEX"
         return f"{self.exchange}:{self.ticker}-{self.series}"
 
@@ -70,7 +77,7 @@ class SymbolInfo:
         return self.ticker
 
 
-class SymbolMaster:
+class SymbolMaster(HatSymbolMaster):
     """
     Symbol Master Service
 
@@ -78,11 +85,6 @@ class SymbolMaster:
     Inspired by OpenAlgo's unified API layer.
     """
 
-    # Regex patterns (ported from SymbolMapper)
-    FYERS_PATTERN = re.compile(
-        r"^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$", re.IGNORECASE
-    )
-    DB_PATTERN = re.compile(r"^[A-Z0-9&\.\-]{1,20}$")
     ISIN_PATTERN = re.compile(r"^[A-Z]{2}\d{10}[A-Z0-9]{2}$", re.ASCII)
 
     # Exchange prefixes
@@ -107,45 +109,6 @@ class SymbolMaster:
         "NIFTYBANK": "NIFTY Bank Sector Index",
         "NIFTYPHARMA": "NIFTY Pharma Sector Index",
         "NIFTYMETAL": "NIFTY Metal Sector Index",
-    }
-
-    # Display/input aliases normalized to DB format
-    SYMBOL_ALIASES = {
-        "NIFTY": "NIFTY50",
-        "NIFTY 50": "NIFTY50",
-        "NIFTY50": "NIFTY50",
-        "NIFTY BANK": "BANKNIFTY",
-        "BANK NIFTY": "BANKNIFTY",
-        "BANKNIFTY": "BANKNIFTY",
-        "NIFTYBANK": "BANKNIFTY",
-        "NIFTY IT": "NIFTYIT",
-        "INDIA VIX": "INDIAVIX",
-        "S&P BSE SENSEX": "SENSEX",
-        "SENSEX": "SENSEX",
-        # Corporate-action ticker migration aliases.
-        "LTIM": "LTM",
-    }
-
-    # Fyers index symbol mapping (DB format -> Fyers ticker)
-    # Some indices have different names in Fyers
-    FYERS_INDEX_MAPPING = {
-        "NIFTY50": "NIFTY50",
-        "SENSEX": "SENSEX",
-        "BANKNIFTY": "NIFTYBANK",  # Fyers uses NIFTYBANK not BANKNIFTY
-        "FINNIFTY": "FINNIFTY",
-        "MIDCPNIFTY": "MIDCPNIFTY",
-        "NIFTYNEXT50": "NIFTYNEXT50",
-        "NIFTY100": "NIFTY100",
-        "NIFTY200": "NIFTY200",
-        "NIFTY500": "NIFTY500",
-        "NIFTYIT": "NIFTYIT",
-        "NIFTYAUTO": "NIFTYAUTO",
-        "NIFTYREALTY": "NIFTYREALTY",
-        "INDIAVIX": "INDIAVIX",
-        # Sector indices (same in Fyers)
-        "NIFTYBANK": "NIFTYBANK",
-        "NIFTYPHARMA": "NIFTYPHARMA",
-        "NIFTYMETAL": "NIFTYMETAL",
     }
 
     # Lot size and tick size overrides (OpenAlgo practice)
@@ -179,10 +142,6 @@ class SymbolMaster:
                 tick_size=metadata.get("tick_size", 0.05),
             )
 
-    def known_symbols(self) -> list[str]:
-        """The tickers this master knows (database format), sorted."""
-        return sorted(self._cache)
-
     def to_provider(self, symbol: str, provider: str = "fyers", exchange: str = "NSE") -> str:
         """
         Convert symbol to a specific provider's format.
@@ -203,208 +162,6 @@ class SymbolMaster:
         # Add more providers here as needed (Zerodha, AngelOne, etc.)
         # Fallback to DB format if provider not recognized
         return info.db_format
-
-    def to_fyers_option(self, underlying: str, expiry: date, strike: float, opt_type: str) -> str:
-        """
-        Convert to Fyers option symbol format.
-
-        Args:
-            underlying: Symbol ticker (e.g., NIFTY, SBIN)
-            expiry: Expiry date
-            strike: Strike price
-            opt_type: CE or PE
-
-        Returns:
-            Fyers symbol string
-        """
-        underlying = underlying.upper()
-        opt_type = opt_type.upper()
-        strike = int(strike)
-
-        yy = str(expiry.year)[-2:]
-        mmm = expiry.strftime("%b").upper()
-
-        # Determine if Monthly or Weekly format should be used.
-        # Fyers convention:
-        # Monthly contracts (last Thurs of month) use MMM format.
-        # Weekly contracts use M/O/N/D + DD format.
-
-        # However, determining "last Thursday" accurately requires a holiday calendar.
-        # For this implementation, we will try to infer or default to Weekly format
-        # unless it is explicitly a Month-end expiry.
-        # Ideally, we should have an explicit flag.
-        # For now, we will assume:
-        # If the day > 24, it MIGHT be monthly.
-        # Let's rely on a helper or just support the Weekly format for everything?
-        # No, Fyers enforces the format.
-
-        # SIMPLE HEURISTIC for Phase 1:
-        # We will use the WEEKLY format for everything except if we detect it's likely a monthly.
-        # Actually, let's implement both and let the user/service decide?
-        # No, SymbolMaster should be definitive.
-
-        # Better approach: Check if date equals last Thursday?
-        # Let's import a utility if available. If not, implementing a simple last-thursday check.
-
-        def get_last_thursday(year: int, month: int) -> date:
-            import calendar
-
-            c = calendar.monthcalendar(year, month)
-            # c is list of weeks, each week is list of 7 days (0 if not in month)
-            # Thursday is index 3
-            last_thursday = 0
-            for week in c:
-                if week[3] != 0:
-                    last_thursday = week[3]
-            return date(year, month, last_thursday)
-
-        last_thurs = get_last_thursday(expiry.year, expiry.month)
-
-        # If expiry matches last thursday, use Monthly format
-        # Note: Handling holidays (if last Thurs is holiday, expiry is Wed)
-        # is tricky without a calendar.
-        # But Fyers usually sticks to the contract spec.
-        # Let's try matching exact date.
-
-        is_monthly = expiry == last_thurs
-
-        # Handle exceptions/holidays crudely: if expiry is Wed and last Thurs is tomorrow?
-        # Keeping it simple: If > 24th and close to month end, assume monthly?
-        # Let's Stick to exact Last Thursday match for now.
-
-        if is_monthly:
-            # NSE:NIFTY25FEB22500CE
-            return f"NSE:{underlying}{yy}{mmm}{strike}{opt_type}"
-        else:
-            # NSE:NIFTY2520622500CE
-            # Month codes: 1-9, O, N, D
-            month = expiry.month
-            if month == 10:
-                m_code = "O"
-            elif month == 11:
-                m_code = "N"
-            elif month == 12:
-                m_code = "D"
-            else:
-                m_code = str(month)
-
-            dd = f"{expiry.day:02d}"
-            return f"NSE:{underlying}{yy}{m_code}{dd}{strike}{opt_type}"
-
-    def to_fyers_future(self, underlying: str, expiry: date) -> str:
-        """
-        Convert to Fyers future symbol format.
-        Format: NSE:{TICKER}{YY}{MMM}FUT
-        """
-        underlying = underlying.upper()
-        yy = str(expiry.year)[-2:]
-        mmm = expiry.strftime("%b").upper()
-        return f"NSE:{underlying}{yy}{mmm}FUT"
-
-    def parse_option_symbol(self, fyers_symbol: str) -> dict:
-        """
-        Parse a Fyers option symbol into components.
-        example: NSE:NIFTY2520622500CE
-        """
-        try:
-            # Remove NSE: prefix
-            clean_symbol = fyers_symbol.replace("NSE:", "").replace("BSE:", "")
-
-            # Try Monthly Regex: TAATASTEEL 25 FEB 100 CE
-            # REGEX: ^([A-Z0-9]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$
-            m_match = re.match(r"^([A-Z0-9]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$", clean_symbol)
-            if m_match:
-                und, yy, mmm, strike, otype = m_match.groups()
-                return {
-                    "underlying": und,
-                    "expiry_str": f"{yy}-{mmm}",
-                    "strike": float(strike),
-                    "option_type": otype,
-                    "format": "MONTHLY",
-                }
-
-            # Try Weekly Regex: NIFTY 25 2 06 22500 CE
-            # REGEX: ^([A-Z0-9]+)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$
-            w_match = re.match(r"^([A-Z0-9]+)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$", clean_symbol)
-            if w_match:
-                und, yy, m, dd, strike, otype = w_match.groups()
-                return {
-                    "underlying": und,
-                    "expiry_str": f"{yy}-{m}-{dd}",  # Raw codes
-                    "strike": float(strike),
-                    "option_type": otype,
-                    "format": "WEEKLY",
-                }
-
-            return {}
-        except Exception:
-            return {}
-
-    def to_fyers(self, symbol: str) -> str:
-        """Alias for to_provider(symbol, 'fyers')"""
-        if not self.is_valid(symbol, SymbolFormat.DB_FORMAT) and not self.is_valid(
-            symbol, SymbolFormat.FYERS_FORMAT
-        ):
-            raise ValueError(f"Invalid symbol format: {symbol}")
-        return self.to_provider(symbol, "fyers")
-
-    def to_db(self, symbol: str) -> str:
-        """
-        Convert any format to DB format (canonical ticker).
-
-        Examples:
-            "NSE:SBIN-EQ" -> "SBIN"
-            "NSE:NIFTY50" -> "NIFTY50"
-            "SBIN" -> "SBIN"
-        """
-        if not symbol:
-            return ""
-
-        symbol = symbol.strip().upper()
-        alias_match = self.SYMBOL_ALIASES.get(symbol)
-        if alias_match:
-            return alias_match
-
-        # 1. Try Fyers format parsing (robust regex)
-        # FYERS_PATTERN = re.compile(
-        #     r'^([A-Z]+):([A-Z0-9&\.]+)(-(EQ|BL|GS|DR|V|DL|IL|INDEX))?$', re.IGNORECASE
-        # )
-        match = self.FYERS_PATTERN.match(symbol)
-        if match:
-            # groups: (exchange, ticker, -series, series)
-            ticker = match.group(2)
-            return self.SYMBOL_ALIASES.get(ticker, ticker)
-
-        # 2. Try simple Fyers format parsing (fallback)
-        if ":" in symbol:
-            parts = symbol.split(":")
-            if len(parts) > 1:
-                ticker_part = parts[1]
-                # Remove common suffixes
-                for suffix in [
-                    "-EQ",
-                    "-INDEX",
-                    "-BE",
-                    "-BZ",
-                    "-BL",
-                    "-GS",
-                    "-DR",
-                    "-V",
-                    "-DL",
-                    "-IL",
-                ]:
-                    if ticker_part.endswith(suffix):
-                        ticker = ticker_part[: -len(suffix)]
-                        return self.SYMBOL_ALIASES.get(ticker, ticker)
-                return self.SYMBOL_ALIASES.get(ticker_part, ticker_part)
-
-        # 3. ISIN - would need database lookup (not implemented here)
-
-        # 4. Already in DB format?
-        if self.DB_PATTERN.match(symbol):
-            return self.SYMBOL_ALIASES.get(symbol, symbol)
-
-        return symbol
 
     def to_display(self, symbol: str) -> str:
         """Convert any format to display format."""
@@ -455,9 +212,9 @@ class SymbolMaster:
 
         symbol = symbol.strip().upper()
         if fmt == SymbolFormat.DB_FORMAT:
-            return bool(self.DB_PATTERN.match(symbol))
+            return self.is_db_format(symbol)
         elif fmt == SymbolFormat.FYERS_FORMAT:
-            return bool(self.FYERS_PATTERN.match(symbol))
+            return self.is_fyers_format(symbol)
         elif fmt == SymbolFormat.ISIN_FORMAT:
             return bool(self.ISIN_PATTERN.match(symbol))
         return False
@@ -469,14 +226,6 @@ class SymbolMaster:
     def batch_to_db(self, symbols: list[str]) -> list[str]:
         """Convert multiple symbols to DB format"""
         return [self.to_db(s) for s in symbols]
-
-    def _is_fyers_format(self, symbol: str) -> bool:
-        """Check if symbol is in Fyers format (NSE:SBIN-EQ)"""
-        return bool(re.match(r"^[A-Z]+:[A-Z0-9_&-]+-[A-Z]+$", symbol))
-
-    def _is_valid_ticker(self, ticker: str) -> bool:
-        """Check if ticker is valid (alphanumeric, uppercase, include & and -)"""
-        return bool(re.match(r"^[A-Z0-9_&-]+$", ticker)) and len(ticker) <= 20
 
     def refresh_cache(self) -> None:
         """Clear cache and reload symbol master."""

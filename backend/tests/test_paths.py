@@ -4,9 +4,10 @@ from pathlib import Path
 
 from app import paths
 from app.data_repository import _INTRADAY_FALLBACK_ROOT
+from app.hat.execution import fyers_auth, fyers_session
+from app.hat.execution.fyers_tokens import token_store
 from app.routers import upload
-from app.services import fyers_client, index_universe_loader
-from app.services.fyers.token_store import token_store
+from app.services import index_universe_loader
 from app.services.snapshots import get_snapshot_store
 from app.utils import logger
 
@@ -54,5 +55,6 @@ def test_token_and_log_files_resolve_under_the_repository_root() -> None:
     token = REPO_ROOT / "fyers" / "config" / "access_token.json"
 
     assert token_store.path == token
-    assert fyers_client.token_store is token_store
+    assert fyers_session.token_store is token_store
+    assert fyers_auth.fyers_auth.store is token_store
     assert logger.LOG_DIR == REPO_ROOT / "logs"

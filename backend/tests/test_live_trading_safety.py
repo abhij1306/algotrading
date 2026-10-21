@@ -11,6 +11,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.brokers.plugins.fyers import FyersBroker
+from app.hat.execution.fyers_broker import PROCESS_BREAKER
 from app.models.live_order import LiveOrder
 from app.models.live_position import LivePosition
 from app.services import order_execution_service as oes_module
@@ -67,16 +68,15 @@ class FakeClientBroker(FyersBroker):
     client: Any = None  # shadows FyersBroker.client so tests can assign it
 
     def __init__(self, client: FakeFyersClient | None) -> None:
+        super().__init__()
         self.client = client
 
 
 @pytest.fixture(autouse=True)
 def reset_circuit_breaker() -> Generator[None, None, None]:
-    for broker_cls in (FyersBroker, FakeClientBroker):
-        broker_cls._record_success()
+    PROCESS_BREAKER.record_success()
     yield
-    for broker_cls in (FyersBroker, FakeClientBroker):
-        broker_cls._record_success()
+    PROCESS_BREAKER.record_success()
 
 
 def make_broker(client: FakeFyersClient | None) -> FyersBroker:

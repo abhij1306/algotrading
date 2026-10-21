@@ -124,8 +124,11 @@ def find_column(content: str, match_start: int) -> int:
 
 
 def _is_exempt(filepath: Path) -> bool:
-    """symbol_master.py, this checker, and test files (which may test the violations)."""
+    """The symbol converters (symbol_master.py, hat/data/symbols.py), this checker, and test files
+    (which may test the violations)."""
     if filepath.name in {"symbol_master.py", "check_symbol_format.py"}:
+        return True
+    if filepath.name == "symbols.py" and "hat" in filepath.parts:
         return True
     if filepath.name.startswith("test_") or "tests" in filepath.parts:
         return True

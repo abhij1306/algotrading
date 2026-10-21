@@ -552,12 +552,12 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: every HAT source file lives under `backend/app/hat/` (plus the agreed hooks in existing modules named in 00 §4). Harm: HAT code spreads through SmartTrader and cannot be reviewed or extracted as one unit.
 
 #### HAT-DEC-BD2: Direct Fyers adapter behind HAT's own broker interface
-- **Statement:** Orders go through HAT's `HatBroker` interface, implemented by a direct Fyers adapter that reuses the tested `FyersBroker`/`FyersClient`.
+- **Statement:** Orders go through HAT's `HatBroker` interface, implemented by a direct Fyers adapter over HAT's own `FyersBroker` (circuit breaker, guarded timeout, unconfirmed-submit handling), `FyersSession` and `FyersAuthService` in `app/hat/execution/`; the legacy classes inherit from them. [Reworded in K2; it said the adapter reuses the legacy `FyersBroker`/`FyersClient`.]
 - **Source:** OWN-20OCT; PLAN C5.
 - **PR:** 13
 - **Verification:** CONF `fyers_adapter_wraps_existing`
 - **Acceptance:**
-  - Property: the Fyers adapter calls the Fyers SDK only through `FyersBroker`/`FyersClient` (plus the GTT calls the SDK exposes), never through a second client. Harm: the circuit breaker, timeouts and unconfirmed-submit handling of the tested client are bypassed.
+  - Property: the Fyers adapter calls the Fyers SDK only through HAT's `FyersBroker`, `FyersSession` and `FyersAuthService` (the GTT calls included), imports nothing from `app.brokers`, and never builds a second client. Harm: the circuit breaker, timeouts and unconfirmed-submit handling of the tested client are bypassed.
 
 #### HAT-DEC-BD3: No OpenAlgo in the MVP
 - **Statement:** OpenAlgo is not deployed or called in the MVP; `hat_broker_account.openalgo_ref` stays as a nullable column.

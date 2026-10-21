@@ -28,6 +28,12 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `CONF imports.engine_data_sources` The only MCP server names in HAT code are `nse-bhavcopy` and `cm-market`, and engine, risk and execution modules reach no research or chat MCP client. Harm: an unvetted source changes which stocks are scanned.
 - `CONF imports.mcp_transport_only` `McpClient` takes an `McpTransport`; only `HttpTransport` in `mcp_client.py` opens a connection, and no other HAT module addresses an MCP endpoint. Harm: a hidden network path calls real NSE from tests.
 - `CONF mcp_endpoints_allowlist` The client can be configured only with the two vetted servers; the env variables are exactly the two the ops spec lists. Harm: unverified third-party data reaches a scan.
+- `PBT symbols.total_and_valid` For any text `to_db` never raises and is idempotent, and `to_fyers` raises `ValueError` or returns a well-formed Fyers symbol that converts back to the same ticker (hyphenated tickers like BAJAJ-AUTO included). Harm: a malformed symbol reaches an order.
+- `PBT symbols.equity_roundtrip` A database ticker in any accepted format converts to the same `NSE:<ticker>-EQ` and back, and a -BE symbol names the same stock. Harm: an order is sent for another stock.
+- `PBT symbols.index_series` An index ticker is always an `-INDEX` symbol (BSE for SENSEX), with the Fyers name from the table, never `-EQ`. Harm: an index is traded as a stock or the wrong index is read.
+- `PBT symbols.aliases_resolve` Every alias or rename (LTIM to LTM, NIFTY BANK) resolves, in any case and padding, to one stable ticker. Harm: a renamed stock splits into two histories.
+- `PBT symbols.conversion_pure` The answer for a symbol never depends on other calls or on the instance: no state between conversions. Harm: a hidden cache or counter changes a conversion.
+- `PBT reference.broker_instrument_list` The instruments the Fyers adapter reports are exactly the active instruments with a Fyers row, sorted, as (symbol, Fyers symbol); no index, delisted stock, other broker's row or unmapped symbol is in it. Harm: the adapter reports only indices (the legacy `known_symbols` bug) or a delisted stock.
 
 ## Run
 
@@ -63,10 +69,11 @@ Everything runs offline: the transports are `ScriptedTransport` and `ListingServ
 Code under check:
 - `backend/app/hat/data/mcp_client.py`: `McpClient`, `HttpTransport`, `unwrap_result`, `batches`, `backoff_delay`
 - `backend/app/hat/data/reference.py`: `page_listing`, `parse_equity_list_csv`, `build_listing_from_mcp`, `build_listing_from_csv`, `parse_price_band_csv`, `band_from_circuit_limits`, `parse_industry_csv`
-- `backend/app/hat/data/instruments.py`: `upsert_instruments`, `apply_symbol_change`, `resolve_symbol`, `seed_symbol_history`, `refresh_fyers_symbols`, `load_price_bands`, `current_band`, `load_industries`, `current_industry`
+- `backend/app/hat/data/instruments.py`: `fyers_instruments`, `upsert_instruments`, `apply_symbol_change`, `resolve_symbol`, `seed_symbol_history`, `refresh_fyers_symbols`, `load_price_bands`, `current_band`, `load_industries`, `current_industry`
 - `backend/app/hat/data/calendar.py`: `parse_nse_holidays`, `upsert_calendar`, `MarketCalendar`, `trading_days`
 - `backend/app/hat/data/reference_jobs.py`: `reference_weekly`, `bands_nightly`, `calendar_refresh`
 - `backend/app/hat/data/sessions.py`: `MarketHoursPolicy.phase`, `MarketPhase`
+- `backend/app/hat/data/symbols.py`
 
 Checks:
 - `backend/tests/hat/properties/test_mcp.py`
@@ -77,17 +84,20 @@ Checks:
 - `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
 - `backend/tests/hat/hat_mcp_support.py`
+- `backend/tests/hat/properties/test_symbols.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `bd89183746bcd4b305c0b15bbf86260091bd602d`
-Covered digest: `c5dbcc312fd871e9958d2bd7bda0fef1c1720543ce1731b0e510c84c0fb1803f`
+Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
+Covered digest: `cc6f446f958bd1a4b47a52b8f0576a36bc06b610bebf5999ff2a09bff7a8b114`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
+
+- K2 moved symbol conversion into `app/hat/data/symbols.py` (stateless; no `known_symbols`). `symbols.aliases_resolve` also checks that a spaced alias (`NIFTY BANK`) converts through `to_fyers` (found in review). `symbols.total_and_valid` found that a hyphenated ticker written as a Fyers symbol (`NSE:BAJAJ-AUTO-EQ`) was refused, and `FYERS_PATTERN` now accepts a hyphen in the ticker and the -BE and -BZ series. `reference.broker_instrument_list` replaces the legacy index-only instrument list with `hat_instrument` joined to `hat_broker_symbol`.
 
 
 - `McpClient` gained `corporate_actions`, `stock_history` and `index_history` (PR 5, HAT-DATA-094..096). Their checks live in `verify-data` (`history_build.mcp_*`, the history CONF fixtures test); the unwrapping and error rules shared with the other client methods are still checked here.
@@ -464,4 +474,70 @@ Break: HttpTransport accepts any server name.
 tests/hat/conformance/test_conf_imports.py F
 tests/hat/conformance/test_conf_imports.py:108: in test_mcp_endpoints_allowlist
 E Failed: DID NOT RAISE McpConfigError
+```
+
+### PBT symbols.total_and_valid
+
+Break: A Fyers ticker cannot hold a hyphen (`NSE:BAJAJ-AUTO-EQ` fails).
+
+```
+E   AssertionError: assert None
+E    +  where None = <built-in method match of re.Pattern object at 0x1975c590>('NSE:--EQ')
+E    +    where <built-in method match of re.Pattern object at 0x1975c590> = re.compile('^([A-Z]+):([A-Z0-9&\\.]+)(-(EQ|BE|BZ|BL|GS|DR|V|DL|IL|INDEX))?$', re.IGNORECASE).match
+E   Failing explicit example: test_conversion_is_total_and_valid(
+```
+
+### PBT symbols.equity_roundtrip
+
+Break: An equity named TCS converts to a -BE symbol.
+
+```
+E   AssertionError: assert 'NSE:TCS-BE' == 'NSE:TCS-EQ'
+E     
+E     - NSE:TCS-EQ
+E     ?          -
+```
+
+### PBT symbols.index_series
+
+Break: An index keeps its database name instead of the Fyers name.
+
+```
+E   AssertionError: assert 'NSE:BANKNIFTY-INDEX' == 'NSE:NIFTYBANK-INDEX'
+E     
+E     - NSE:NIFTYBANK-INDEX
+E     ?          ----
+```
+
+### PBT symbols.aliases_resolve
+
+Break: The LTIM rename is removed from the alias table.
+
+```
+E   KeyError: 'LTIM'
+E   Failing test case: test_aliases_resolve_to_one_ticker(
+E       # The test always failed when commented parts were varied together.
+E       alias='BANK NIFTY',  # or any other generated value
+```
+
+### PBT symbols.conversion_pure
+
+Break: `to_db` stops converting after 400 calls (hidden state).
+
+```
+E   AssertionError: assert (None or '0\na' == '0\nA'
+E    +  where None = <function fullmatch at 0x7ff4e2981590>('\\S.*\\S|\\S?', '0\na')
+E    +    where <function fullmatch at 0x7ff4e2981590> = re.fullmatch
+E     
+```
+
+### PBT reference.broker_instrument_list
+
+Break: Delisted instruments stay in the Fyers instrument list.
+
+```
+E   AssertionError: assert [('SYM00', 'NSE:SYM00-EQ')] == []
+E     
+E     Left contains one more item: ('SYM00', 'NSE:SYM00-EQ')
+E     
 ```

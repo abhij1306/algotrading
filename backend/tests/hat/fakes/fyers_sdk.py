@@ -1,13 +1,17 @@
-"""A recording stand-in for the Fyers SDK model, and the real `FyersBroker` over it.
+"""Recording stand-ins for the Fyers SDK: the model (`FyersModel`) that takes orders and answers
+reads, the session (`SessionModel`) that trades an auth code for a token, and the real HAT
+`FyersBroker` over the model.
 
-HAT's own copy of the fakes it needs (K1): nothing here is imported from the legacy test suite.
+HAT's own copy of the fakes it needs (K1, repointed in K2): nothing here is imported from the legacy
+test suite, and nothing reaches the real SDK or the network.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from app.brokers.plugins.fyers import FyersBroker
+from app.hat.execution.fyers_broker import CircuitBreaker, FyersBroker
 
 
 class RecordingSdk:
@@ -58,23 +62,35 @@ class RecordingSdk:
     def positions(self) -> Any:  # noqa: ANN401
         return self._answer("positions", None)
 
-    def gtt_orderbook(self) -> Any:  # noqa: ANN401
-        return self._answer("gtt_orderbook", None)
+    def get_profile(self) -> Any:  # noqa: ANN401
+        return self._answer("get_profile", None)
 
 
-class SdkBackedBroker(FyersBroker):
-    """The real `FyersBroker` over a `RecordingSdk` instead of the singleton client."""
-
-    def __init__(self, sdk: RecordingSdk) -> None:
-        self._sdk = sdk
-
-    @property
-    def client(self) -> Any:  # noqa: ANN401
-        return self._sdk
+def broker_over(sdk: RecordingSdk) -> FyersBroker:
+    """The real `FyersBroker` over `sdk`, with a breaker of its own (so no state leaks between
+    examples)."""
+    return FyersBroker(lambda: sdk, breaker=CircuitBreaker())
 
 
-def reset_circuit() -> None:
-    """The breaker is class state, and a failure recorded through the subclass shadows the
-    base class's value: put both back to closed between examples."""
-    FyersBroker._record_success()
-    SdkBackedBroker._record_success()
+class RecordingSession:
+    """A fake fyers_apiv3 SessionModel for the login flow. `reply` is what `generate_token`
+    returns (or raises, when it is an exception); every constructor argument, the auth code it was
+    given and the number of exchanges are recorded."""
+
+    def __init__(self, reply: Any = None, **kwargs: str) -> None:  # noqa: ANN401 - raw SDK JSON
+        self.kwargs = kwargs
+        self.reply = reply
+        self.auth_code: str | None = None
+        self.exchanges = 0
+
+    def generate_authcode(self) -> str:
+        return f"https://login.example.test/?client_id={self.kwargs.get('client_id')}"
+
+    def set_token(self, auth_code: str) -> None:
+        self.auth_code = auth_code
+
+    def generate_token(self) -> Mapping[str, Any]:
+        self.exchanges += 1
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return self.reply

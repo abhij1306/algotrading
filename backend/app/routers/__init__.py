@@ -2,7 +2,6 @@
 
 from . import (
     activity,
-    auth,
     data_snapshot,
     market,
     market_dashboard,
@@ -19,7 +18,6 @@ __all__ = [
     "unified",
     "market",
     "market_dashboard",
-    "auth",
     "system_health",
     "websocket",
     "universe",

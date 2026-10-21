@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.brokers.plugins.fyers import FyersBroker
+from app.hat.execution.fyers_broker import PROCESS_BREAKER
 from app.models.live_order import LiveOrder
 from app.services import order_execution_service as oes
 from app.services.execution.intent import (
@@ -298,10 +299,9 @@ class RecordingFyersClient:
 
 
 class RecordingBroker(FyersBroker):
-    client: Any = None  # shadows FyersBroker.client so the test can assign it
-
     def __init__(self, client: RecordingFyersClient) -> None:
-        self.client = client
+        super().__init__()
+        self._client_source = lambda: client
 
 
 @pytest.mark.parametrize(
@@ -317,7 +317,7 @@ class RecordingBroker(FyersBroker):
     ],
 )
 def test_every_product_reaches_fyers_as_itself(product_type: str, sent: str) -> None:
-    RecordingBroker._record_success()
+    PROCESS_BREAKER.record_success()
     client = RecordingFyersClient()
     service = oes.OrderExecutionService()
     service._broker = RecordingBroker(client)

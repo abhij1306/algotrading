@@ -109,8 +109,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `bd89183746bcd4b305c0b15bbf86260091bd602d`
-Covered digest: `fdb5fc627d65d0c6335e4f0d8e1737c237f90fe978148114259a02c531fad8f3`
+Sync commit: `4879f00ed73b3322f98c87ea4fe1295d37d0778e`
+Covered digest: `8706bd792aaec555a6e37e5a62c62aeb412258bbf0632965de1abdcd6da1ce0c`
 
 ## Scope changes
 
@@ -123,6 +123,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `announcements.text_never_gates` draws text of at most 10 characters, at most 8 stored items, 40 examples and has no shrink phase: a broken variant fails on almost every example and shrinking over arbitrary text grew without bound. The failing example is still printed, unminimised. Database engines are disposed as examples go.
 - Pre-open field names (`indicative_open_price`, `pre_open_price`) and the RSS field names and URLs are `[A]`, built from recorded fixtures only.
 - `bars.history_matches_builder` (HAT-DATA-119) belongs to PR 12 and is not checked here.
+- K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
 
 ## Scratch breaks
 
