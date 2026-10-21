@@ -13,8 +13,9 @@ from fractions import Fraction
 from pathlib import Path
 
 import pytest
+from hat_ingest_support import TRADE_DAY, Quote, make_world, store_previous, symbols_of
 from hat_support import memory_engine
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ from app.hat.data.corporate_actions import (
     parse_action_text,
     stored_factors,
 )
+from app.hat.data.ingest import flag_symbol, run_ingest
 from app.hat.data.ratios import split_pair_ints
 from app.hat.data.store import (
     FACTOR_MAX,
@@ -368,3 +370,61 @@ def test_upsert_idempotent_mcp_rows(rows: list[dict]) -> None:
     assert len(result.unparsed) == sum(1 for r in rows if r["adjustmentFactor"] <= 0)
     assert all(r.factor > 0 for r in result.records)
     assert factor_to_decimal(Fraction(2, 3)) == Decimal("0.666666666667")
+
+
+# --- PR 7: which symbols get a lookup (HAT-DATA-050, 051) ------------------------------------
+
+optional_price = st.one_of(st.none(), st.decimals(min_value="0", max_value="500", places=2))
+
+
+@settings(max_examples=300)
+@example(stored=Decimal(100), prev=Decimal(100), close=Decimal(121), in_rss=False)
+@example(stored=Decimal(100), prev=Decimal(100), close=Decimal(79), in_rss=False)
+@example(stored=Decimal(100), prev=Decimal(100), close=Decimal(120), in_rss=False)
+@example(stored=Decimal(100), prev=Decimal(100), close=Decimal(110), in_rss=False)
+@given(
+    stored=optional_price,
+    prev=optional_price,
+    close=st.decimals(min_value="0.05", max_value="500", places=2),
+    in_rss=st.booleans(),
+)
+def test_flag_rule(
+    stored: Decimal | None, prev: Decimal | None, close: Decimal, in_rss: bool
+) -> None:
+    """For every stored close, fetched prev_close, close and RSS membership, a symbol is flagged
+    iff prev_close differs from the stored close (a missing side counts as different), or the day's
+    move is over 20% of a positive prev_close (exact fractions), or the RSS names it."""
+    moved = (
+        prev is not None
+        and prev > 0
+        and abs(Fraction(close) - Fraction(prev)) > Fraction(1, 5) * Fraction(prev)
+    )
+    assert flag_symbol(stored, prev, close, in_rss) == (in_rss or prev != stored or moved)
+
+
+@settings(max_examples=15)
+@given(
+    n=st.integers(1, 12),
+    data=st.data(),
+)
+def test_lookup_only_flagged(n: int, data: st.DataObject) -> None:
+    """For every universe where some symbols have a changed prev_close, a big move or an RSS
+    entry, the nightly ingest calls `get_corporate_actions` for exactly those symbols, once each,
+    and for no other."""
+    names = [s for s, _, _ in symbols_of(n)]
+    changed = data.draw(st.sets(st.sampled_from(names)))
+    moved = data.draw(st.sets(st.sampled_from(names)))
+    rss = data.draw(st.sets(st.sampled_from(names)))
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(n))
+        store_previous(world, dict.fromkeys(names, Decimal(100)), TRADE_DAY - timedelta(days=1))
+        for symbol in names:
+            world.nse.quotes[symbol] = Quote(
+                close=Decimal(130 if symbol in moved else 100),
+                prev_close=Decimal(99 if symbol in changed else 100),
+            )
+        world.nse.default = Quote()
+        world.rss = set(rss)
+        run_ingest(world.deps(), TRADE_DAY, uuid7())
+        looked_up = [a["symbol"] for a in world.nse.tools("get_corporate_actions")]
+    assert sorted(looked_up) == sorted(changed | moved | rss)

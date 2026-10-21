@@ -72,7 +72,7 @@ errors.
 
 ## §3 TLA+ models
 
-The nine models. Each one is small, describes the design at the level of the code's atomic steps, and
+The ten models. Each one is small, describes the design at the level of the code's atomic steps, and
 names the code location of every action. A later PR may split a model, but may not add a model
 outside this list without updating this section.
 
@@ -84,7 +84,8 @@ outside this list without updating this section.
 | `StopPlacement` | Stop only tightens; intraday SL on every real fill; GTT swap around 15:25 leaves no unprotected gap; nightly GTT verify | 13, 15 | 07 §5-§6, 03 §5 |
 | `OrderReconciliation` | Persist PENDING before the broker call; tag idempotency; unconfirmed submit resolved by tag; reconcile before the first order; a rejected order is retried at most once | 13, 15 | 07 §10-§11 |
 | `KillSwitch` | Account, bot, manual and health switches; manage-only blocks entries and never exits; manual re-arm vs automatic re-arm for health | 10 | 06 §6 |
-| `JobScheduler` | At most one success per (job, trade_date); a failed job can be retried; the daily cycle order; the 18:00-22:00 poll and the 22:00 fallback | 2, 7, 17 | 10 §2-§3, 02 §4 |
+| `JobScheduler` | At most one success per (job, trade_date); a failed job can be retried; the intraday order | 2, 14, 15, 17 | 10 §2-§3 |
+| `NightlyPipeline` | The 18:00-22:00 poll and the 22:00 fallback; the nightly chain order; no scan on no data or a failed gate; exits independent of the chain (split out of `JobScheduler` in PR 7) | 7, 17 | 10 §3, 02 §4, §6 |
 | `RegimeConfirmation` | The confirmed regime state changes only after 3 consecutive days in the new state | 9 | 05 §3 |
 | `SleeveLifecycle` | research, backtested, shadow, live, probation, retired: only guarded transitions; regime never changes lifecycle state | 9, 12 | 05 §6 |
 
@@ -179,7 +180,7 @@ Each critical area gets a skill an agent can follow cold, mid-change, without le
 | `.claude/skills/verify-execution/SKILL.md` | `ExecutionRouter`, `OrderReconciliation`, `ApprovalToken`, `TradeLifecycle`; PBT `tags`, `telegram` |
 | `.claude/skills/verify-stops/SKILL.md` | `StopPlacement`; DB `governance.stop_only_rises`; PBT `stops`, `exits` |
 | `.claude/skills/verify-risk/SKILL.md` | `KillSwitch`; PBT `sizing`, `caps`, `exposure` |
-| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
+| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`, `NightlyPipeline`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
 | `.claude/skills/verify-governance/SKILL.md` | DB `governance`, `reference`, `portfolio`, `migration` checks; PBT `ids`, `time`, `config`, `risk_policy`; CONF `schema`, boundaries |
 | `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `ingest` |
 | `.claude/skills/verify-live-data/SKILL.md` | The tick hook, 5-minute bars, staleness, pre-open gap capture, the 09:16 gap scan and announcements: PBT `bars` (live), `gapscan`, `announcements`; CONF `imports.no_second_websocket`, `single_feed_import_rule` |

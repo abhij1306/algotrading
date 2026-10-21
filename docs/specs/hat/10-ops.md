@@ -45,7 +45,7 @@ there is no OpenAlgo process; the broker layer is the in-process Fyers adapter.
 - **Statement:** Exit evaluation and protective stops run whether or not the nightly ingest, gate, features or scans succeeded.
 - **Source:** MA "Runtime" ("Exits and protective stops never depend on the nightly pipeline"), "Failure handling".
 - **PR:** 17
-- **Verification:** TLA `JobScheduler!ExitsIndependentOfPipeline`
+- **Verification:** TLA `NightlyPipeline!ExitsIndependentOfPipeline`
 - **Acceptance:**
   - Property: in every behaviour where any nightly job fails or never runs, the live exit monitor, `exits.close` and `gtt.swap` still run on schedule for every open position. Harm: a data outage leaves open positions without exits or overnight stops.
 
@@ -135,7 +135,7 @@ Jobs (PLAN §4.3):
 - **Statement:** After a successful ingest, the nightly jobs run in the order `quality.gate` → `ca.adjust` → `features` → `regime` → `allocate` → `scan` → `watchlist.digest`, each only after its predecessor succeeded for the same trade date.
 - **Source:** MA "Daily cycle" step 7; DS "Nightly ingest" steps 5–9; PLAN §4.3.
 - **PR:** 17
-- **Verification:** TLA `JobScheduler!NightlyPipelineOrder`
+- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`
 - **Acceptance:**
   - Property: in every behaviour, a job of the pipeline starts for trade date d only after every earlier job of the pipeline has status `succeeded` for d. Harm: scans run on unadjusted prices or stale features and produce wrong watchlists.
   - Property: if `quality.gate` fails for d, no `scan` runs for d and every bot is manage-only for new entries. Harm: the bot trades on data the gate rejected.
@@ -144,7 +144,7 @@ Jobs (PLAN §4.3):
 - **Statement:** From 18:00 IST the ingest probes every 10 minutes until the bulk-quote date equals the trade date; at 22:00 it falls back to the bhavcopy download; if that also yields nothing, scans are skipped, an alert is sent and bots stay manage-only.
 - **Source:** MA "Daily cycle" steps 7–8; DS "Nightly ingest" step 1; I1.
 - **PR:** 7 (logic), 17 (wiring)
-- **Verification:** TLA `JobScheduler!FallbackAt2200`
+- **Verification:** TLA `NightlyPipeline!FallbackAt2200`
 - **Acceptance:**
   - Property: in every behaviour, either MCP data for d is accepted before 22:00 IST, or the bhavcopy fallback is attempted at 22:00; and if both yield nothing, eventually a health alert is sent, no scan runs for d, and every bot is manage-only for new entries. Harm: the system waits forever or scans on yesterday's data.
   - Property: consecutive probes are at least 10 minutes apart and none starts before 18:00 IST. Harm: hammering the MCP server risks throttling or a terms breach.
@@ -181,7 +181,7 @@ MA "Failure handling" (verbatim):
 - **Statement:** Missing data or a failed quality gate stops new scans and new entries, while exits and stops continue.
 - **Source:** MA "Failure handling"; BL "Kill switches" (data health check fails → affected bots manage-only; re-arm automatic when healthy); I14.
 - **PR:** 7, 10
-- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `JobScheduler!ExitsIndependentOfPipeline`
+- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `NightlyPipeline!ExitsIndependentOfPipeline`
 - **Acceptance:**
   - Property: in every state where the data-health check for the current trade date is failing, no entry order is placed and every exit rule still fires; once the check passes again the health manage-only state clears without manual action. Harm: trading on bad data, or positions abandoned because data failed.
 

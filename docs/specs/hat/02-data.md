@@ -207,7 +207,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **Statement:** From 18:00 the ingest probes `get_bulk_quote(["RELIANCE"])` every 10 minutes until the returned date equals the trade date; at 22:00 it stops probing and runs the bhavcopy fallback for the day.
 - **Source:** DS "Nightly ingest" step 1; MA "Daily cycle" steps 7–8; I1.
 - **PR:** 7
-- **Verification:** TLA `JobScheduler!FallbackAt2200`, PBT `ingest.probe_schedule`
+- **Verification:** TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.probe_schedule`
 - **Acceptance:**
   - Property: in every run, the full fetch starts only after a probe returned date = trade date; consecutive probes are 10 minutes apart; no probe is issued at or after 22:00. Harm: the fetch stores the previous day's prices, or hammers the server.
   - Property: in every run, the bhavcopy fallback starts if and only if 22:00 is reached with no matching probe, and it runs at most once per trade date. Harm: a late MCP day is never ingested, or two sources write the same day.
@@ -237,12 +237,12 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
   - Property: for every sequence of ingest runs, retries and fallbacks for one trade date, at most one committed raw partition exists for that date and its content never changes after commit. Harm: history mutates under backtests and adjusted prices can no longer be reproduced.
 
 #### HAT-DATA-044: Index snapshot and breadth are stored nightly
-- **Statement:** The nightly ingest stores the `get_index_snapshot` levels (including NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX) to `index_daily` and the `get_market_breadth` result for the regime engine.
+- **Statement:** The nightly ingest stores the `get_index_snapshot` levels (including NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX) to `index_daily` and the `get_market_breadth` advance/decline record to `market_breadth/date=d` (counted from our own bars, `source = derived`, when the MCP has none) for the regime engine.
 - **Source:** DS "Source map" (index levels and India VIX; market breadth); BL "Regime engine v1" (inputs); PLAN PR 7.
 - **PR:** 7
-- **Verification:** PBT `ingest.index_snapshot_stored`
+- **Verification:** PBT `ingest.index_snapshot_stored`, PBT `ingest.nightly_index_breadth`
 - **Acceptance:**
-  - Property: for every successful ingest of trade date d, `index_daily/date=d` contains one row per returned index with OHLC, including NIFTY 500 and India VIX, and the breadth record for d exists; if either is missing the run does not report success. Harm: the regime engine classifies the market on stale inputs and scales capital wrongly.
+  - Property: for every successful ingest of trade date d, `index_daily/date=d` contains one row per returned index with OHLC, including NIFTY 500 and India VIX, and `market_breadth/date=d` has its one row; if either is missing the run does not report success. Harm: the regime engine classifies the market on stale inputs and scales capital wrongly.
 
 #### HAT-DATA-045: Each ingest run ends with exactly one outcome event
 - **Statement:** Every ingest run records exactly one of `ingest.completed` or `ingest.failed`, in the same transaction as its `hat_job_run` status.
@@ -256,7 +256,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **Statement:** After ingest, the steps run in the order quality gate → corporate-action adjustment → features → regime → allocate → scan → watchlist digest, and a step runs only when its predecessor succeeded for that trade date.
 - **Source:** MA "Daily cycle" step 7; DS "Nightly ingest" steps 7–9; PLAN §4.3 (job order).
 - **PR:** 7, 17
-- **Verification:** TLA `JobScheduler!NightlyPipelineOrder`
+- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`
 - **Acceptance:**
   - Property: in every reachable schedule, including restarts and retries, no step of the chain is marked successful for trade date d before every earlier step is successful for d. Harm: scans run on unadjusted or ungated data and publish wrong watchlists.
 
@@ -264,7 +264,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **Statement:** If neither the MCP nor the bhavcopy fallback yields data for the trade date, scans are skipped, an alert is sent and bots stay manage-only.
 - **Source:** MA "Daily cycle" step 8; MA "Failure handling" ("Data missing or fails the quality gate → no new scans; exits and stops continue").
 - **PR:** 7
-- **Verification:** TLA `JobScheduler!NoDataNoScan`, TLA `KillSwitch!ExitsContinue`
+- **Verification:** TLA `NightlyPipeline!NoDataNoScan`, TLA `KillSwitch!ExitsContinue`
 - **Acceptance:**
   - Property: in every reachable state where trade date d has no committed raw partition, no scan for d succeeds, every bot is manage-only for the next session, and stop and exit processing for open positions continues. Harm: the engine trades on yesterday's watchlist, or stops protecting open positions because a data job failed.
 
@@ -275,6 +275,14 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **Verification:** PBT `ingest.call_budget`
 - **Acceptance:**
   - Property: for every universe of N symbols with F flagged, excluding retries, the number of MCP calls in a run is at most ⌈N / 50⌉ + (probe calls) + (index and breadth calls) + F. Harm: per-symbol calls (~3,100 to repair a day) exhaust rate limits and push the scan past the evening window.
+
+#### HAT-DATA-049: Symbol renames are rebuilt from the stored bars
+- **Statement:** HAT reads no legacy symbol table. A symbol that changes for one (ISIN, series) between two days of `bars_daily_raw` is a rename, effective on the first day of the new symbol; the renames feed `hat_instrument_symbol_history` through the `renames` source of `reference.weekly`.
+- **Source:** Owner decision D68 (Q30): renames are rebuilt from NSE data in PR 7; DS "Historical data build" step 3 (symbol changes resolved through ISIN).
+- **PR:** 7
+- **Verification:** PBT `ingest.renames_from_nse_data`
+- **Acceptance:**
+  - Property: for every history of bars in which each (ISIN, series) trades under a sequence of symbols, the derived renames, once seeded, make every (symbol, date) seen in the bars resolve to the instrument that traded it, with non-overlapping intervals, and seeding twice changes nothing. Harm: an old symbol in a 2015 bhavcopy is attached to the wrong company, or a rename splits one stock's history.
 
 ## §5 Corporate actions and the adjusted view
 
@@ -386,7 +394,7 @@ The nightly data-quality gate (I14) blocks scans when the day's data is not trus
 - **Statement:** A FAIL blocks that date's scans, puts bots manage-only through the data-health kill state (automatic re-arm when healthy) and sends a Telegram alert; exits and stops continue.
 - **Source:** DS "Nightly ingest" step 7; BL "Kill switches" ("Data or broker health check fails → affected bots manage-only; re-arm automatic when healthy"); MA "Failure handling".
 - **PR:** 7, 10
-- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `JobScheduler!NoScanAfterGateFail`
+- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`
 - **Acceptance:**
   - Property: in every reachable state where the gate for d is FAIL, no `watchlist.published` event exists for d and no entry order is created until a later gate passes, while exit and stop actions remain enabled. Harm: bad data creates entries, or a data failure leaves open positions unmanaged.
   - Property: in every reachable state, the data-health kill state clears automatically when the next gate passes, and only then. Harm: bots stay idle forever after one bad night, or resume on a still-failing feed.
@@ -505,6 +513,7 @@ Root: `HAT_DATA_ROOT = DATA_ROOT / "hat"` (env-overridable, gitignored; PLAN C9)
 | `bars_5m/` | `date=` | instrument_id, bar_start, open, high, low, close, volume | Live bar builder, Fyers history |
 | `index_daily/` | `date=` | index_name, open, high, low, close | Nightly ingest |
 | `breadth_daily/` | `date=` | universe_size, with_sma50, above_sma50, breadth_pct | Nightly features job |
+| `market_breadth/` | `date=` | total_stocks, advances, declines, unchanged, ad_ratio, volume, source | Nightly ingest |
 | `raw/` | by file | raw bhavcopy zips, untouched | Historical build, fallback |
 | `backtests/run_id=…/trades.parquet` | run | backtest trades (09) | Backtest |
 

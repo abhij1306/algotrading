@@ -46,6 +46,7 @@ DATASET_BARS = "bars_daily_raw"
 DATASET_INDEX = "index_daily"
 DATASET_FEATURES = "features_daily"  # written by data/features.py (HAT-DATA-070)
 DATASET_BREADTH = "breadth_daily"  # one row per day (HAT-DATA-076)
+DATASET_MARKET_BREADTH = "market_breadth"  # advances and declines, one row per day (HAT-DATA-044)
 RAW_DIR = "raw"
 SOURCES = frozenset({"bhavcopy", "mcp"})  # adjusted values have no source: they are never stored
 
@@ -107,11 +108,23 @@ BREADTH_SCHEMA = pa.schema(
         ("breadth_pct", pa.float64()),
     ]
 )
+MARKET_BREADTH_SCHEMA = pa.schema(
+    [
+        ("total_stocks", pa.int64()),
+        ("advances", pa.int64()),
+        ("declines", pa.int64()),
+        ("unchanged", pa.int64()),
+        ("ad_ratio", pa.float64()),
+        ("volume", pa.int64()),
+        ("source", pa.string()),
+    ]
+)
 DATASET_SCHEMAS = {
     DATASET_BARS: BAR_SCHEMA,
     DATASET_INDEX: INDEX_SCHEMA,
     DATASET_FEATURES: FEATURES_SCHEMA,
     DATASET_BREADTH: BREADTH_SCHEMA,
+    DATASET_MARKET_BREADTH: MARKET_BREADTH_SCHEMA,
 }
 
 PART_GLOB = "part-*.parquet"
@@ -143,7 +156,7 @@ class BarRow:
     high: Decimal
     low: Decimal
     close: Decimal
-    prev_close: Decimal
+    prev_close: Decimal | None
     volume: int
     traded_value: Decimal | None
     source: str
@@ -386,7 +399,7 @@ class DataStore:
         `table`, which must have exactly the dataset's schema. Writing the same table again
         rewrites the same file (HAT-DATA-082)."""
         if (
-            dataset not in (DATASET_FEATURES, DATASET_BREADTH)
+            dataset not in (DATASET_FEATURES, DATASET_BREADTH, DATASET_MARKET_BREADTH)
             or table.schema != DATASET_SCHEMAS[dataset]
         ):
             raise StoreError("store_bad_schema")
