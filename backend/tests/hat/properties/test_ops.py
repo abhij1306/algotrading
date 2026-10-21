@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.errors import HatConfigError
+from app.hat.execution.session import BACKOFF_CAP_SECONDS, SessionWatch, backoff_delay
 from app.hat.logs import CONTEXT_KEYS, JsonFormatter
 from app.hat.models import HatJobRun
 from app.hat.ops.jobs import (
@@ -268,3 +269,44 @@ def test_job_error_codes_are_stable_codes(code: str) -> None:
     stored = JobError(code).code
     assert ERROR_CODE.fullmatch(stored)
     assert stored == code or stored == DEFAULT_ERROR_CODE
+
+
+# HAT-OPS-031 (PR 13: the session side): backoff and the one alert per outage
+
+
+@given(st.lists(st.tuples(st.integers(min_value=0, max_value=400), st.booleans()), max_size=40))
+def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
+    """HAT-OPS-031: for every sequence of status checks, one `broker.session_lost` alert is due
+    per outage, only once the outage has lasted 2 minutes, and retry delays never decrease
+    within an outage (1 s, doubling, capped at 30 s)."""
+    watch = SessionWatch()
+    start = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
+    now = start
+    down_since: datetime | None = None
+    alerts = 0
+    delays: list[int] = []
+    for gap, live in steps:
+        now += timedelta(seconds=gap)
+        step = watch.observe(now, live)
+        if live:
+            assert step.retry_in is None
+            assert not step.alert
+            down_since, alerts, delays = None, 0, []
+            continue
+        down_since = down_since or now
+        assert step.retry_in is not None
+        assert 1 <= step.retry_in <= BACKOFF_CAP_SECONDS
+        delays.append(step.retry_in)
+        assert delays == sorted(delays)
+        if step.alert:
+            alerts += 1
+            assert now - down_since >= timedelta(minutes=2)
+        assert alerts <= 1
+        if now - down_since >= timedelta(minutes=2):
+            assert alerts == 1  # due as soon as an outage of 2 minutes has been observed
+
+
+@given(st.integers(min_value=-5, max_value=200))
+def test_backoff_delay_is_monotone_and_capped(attempt: int) -> None:
+    assert 1 <= backoff_delay(attempt) <= 30
+    assert backoff_delay(attempt) <= backoff_delay(attempt + 1)

@@ -179,6 +179,10 @@ class SymbolMaster:
                 tick_size=metadata.get("tick_size", 0.05),
             )
 
+    def known_symbols(self) -> list[str]:
+        """The tickers this master knows (database format), sorted."""
+        return sorted(self._cache)
+
     def to_provider(self, symbol: str, provider: str = "fyers", exchange: str = "NSE") -> str:
         """
         Convert symbol to a specific provider's format.

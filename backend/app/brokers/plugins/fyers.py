@@ -37,6 +37,8 @@ LIMIT_PRICED_ORDER_TYPES = {"LIMIT", "SL"}
 # inside the documented limit with room to spare.
 FYERS_ORDER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9]{1,20}$")
 ORDER_TAG_PREFIX = "ST"
+# Product types the Fyers GTT endpoint accepts.
+GTT_PRODUCTS = {"CNC", "MARGIN", "MTF"}
 # Fyers orderbook statuses for an order that can still fill: 4 = transit, 6 = pending.
 FYERS_WORKING_ORDER_STATUSES = {4, 6}
 # Fyers orderbook status -> our order status; working states (4, 6) read as SUBMITTED.
@@ -402,6 +404,164 @@ class FyersBroker(IBroker):
             fallback={"orderBook": []},
         )
         return response.get("orderBook", [])
+
+    def _read_ok(self, operation: str, call: Callable[[], object]) -> dict[str, Any]:
+        """A Fyers read that must have answered `{"s": "ok"}`.
+
+        Raises BrokerUnavailableError when the client is missing, the call timed out or raised,
+        the circuit is open, or the reply is not ok, so a caller never reads an outage as an
+        empty book (trading-safety rule 7). The error text is fixed, never the broker's own.
+        """
+        if not self.client:
+            raise BrokerUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
+        response = self._call_with_guard(operation, call, timeout_sec=2.0, fallback=None)
+        if not isinstance(response, dict) or response.get("s") != "ok":
+            raise BrokerUnavailableError(f"Fyers {operation} request failed")
+        return response
+
+    def fetch_orderbook(self) -> list[dict[str, Any]]:
+        """Today's orderbook rows as Fyers returns them; raises when it cannot be read."""
+        return list(
+            self._read_ok("orderbook", lambda: self.client.orderbook()).get("orderBook") or []
+        )
+
+    def fetch_tradebook(self) -> list[dict[str, Any]]:
+        """Today's trades; raises when the tradebook cannot be read."""
+        return list(
+            self._read_ok("tradebook", lambda: self.client.tradebook()).get("tradeBook") or []
+        )
+
+    def fetch_holdings(self) -> list[dict[str, Any]]:
+        """Demat holdings; raises when they cannot be read."""
+        return list(self._read_ok("holdings", lambda: self.client.holdings()).get("holdings") or [])
+
+    def fetch_funds(self) -> BrokerFunds:
+        """Funds; raises when they cannot be read (get_funds answers zeros instead)."""
+        available, used, total = self._parse_funds_response(
+            self._read_ok("funds", lambda: self.client.funds())
+        )
+        return BrokerFunds(available=available, used=used, total=total)
+
+    def fetch_gtt_orders(self) -> list[dict[str, Any]]:
+        """The GTT orderbook; raises when it cannot be read."""
+        return list(
+            self._read_ok("gtt_orderbook", lambda: self.client.gtt_orderbook()).get("orderBook")
+            or []
+        )
+
+    @staticmethod
+    def _gtt_refusal(side: object, product: str, trigger: float, limit_price: float) -> str | None:
+        if side not in {"BUY", "SELL"}:
+            return "Invalid order side. Expected BUY or SELL."
+        if product not in GTT_PRODUCTS:
+            return "Invalid GTT product. Expected CNC, MARGIN or MTF."
+        if trigger <= 0 or limit_price <= 0:
+            return "A GTT order requires a positive trigger and limit price."
+        return None
+
+    def place_gtt(self, gtt: dict[str, Any]) -> OrderResponse:
+        """Place a single-leg GTT order.
+
+        gtt: {symbol (Fyers format), quantity, side, product, trigger_price, price}. The SDK
+        payload is `{side, symbol, productType, orderInfo: {leg1: {price, triggerPrice, qty}}}`.
+        Like place_order, a lost answer is SUBMIT_UNCONFIRMED, never a rejection.
+        """
+        side = gtt.get("side")
+        product = str(gtt.get("product") or "").upper()
+        trigger = safe_float(gtt.get("trigger_price"), 0.0)
+        limit_price = safe_float(gtt.get("price"), 0.0)
+        reason = self._gtt_refusal(side, product, trigger, limit_price)
+        if reason is not None:
+            return OrderResponse(order_id="", status="REJECTED", message=reason, details=None)
+        if not self.client:
+            return OrderResponse(
+                order_id="",
+                status="REJECTED",
+                message=f"Fyers {CLIENT_NOT_INITIALIZED}. Please Login.",
+                details=None,
+            )
+        if self._circuit_open():
+            return OrderResponse(
+                order_id="", status="REJECTED", message=BROKER_CIRCUIT_OPEN, details=None
+            )
+        data = {
+            "side": 1 if side == "BUY" else -1,
+            "symbol": gtt["symbol"],
+            "productType": product,
+            "orderInfo": {
+                "leg1": {"price": limit_price, "triggerPrice": trigger, "qty": gtt["quantity"]}
+            },
+        }
+        unconfirmed = OrderResponse(
+            order_id="", status=SUBMIT_UNCONFIRMED, message=BROKER_ORDER_UNCONFIRMED, details=None
+        )
+        no_reply: dict[str, Any] = {}
+        try:
+            response = self._call_with_guard(
+                "place_gtt",
+                lambda: self.client.place_gtt_order(data=data),
+                timeout_sec=1.5,
+                fallback=no_reply,
+            )
+        except Exception:
+            logger.exception("Fyers place_gtt failed")
+            return unconfirmed
+        if response is no_reply or not isinstance(response, dict):
+            return unconfirmed
+        if response.get("s") == "ok":
+            gtt_id = response.get("id")
+            if not gtt_id:
+                logger.error("Fyers accepted a GTT order without returning its id")
+                return unconfirmed
+            return OrderResponse(
+                order_id=str(gtt_id),
+                status="SUBMITTED",
+                message=response.get("message", "GTT Placed"),
+                details=response,
+            )
+        if response.get("s") != "error":
+            # Neither ok nor an explicit rejection: the GTT may have landed.
+            logger.error("Fyers GTT reply was neither ok nor an error")
+            return unconfirmed
+        return OrderResponse(
+            order_id="",
+            status="REJECTED",
+            message=response.get("message", "Fyers rejected GTT order"),
+            details=response,
+        )
+
+    def modify_gtt(self, gtt_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Modify a GTT order. params: {quantity, price, trigger_price} after the change."""
+        if not self.client:
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
+        trigger = safe_float(params.get("trigger_price"), 0.0)
+        limit_price = safe_float(params.get("price"), 0.0)
+        if trigger <= 0 or limit_price <= 0:
+            return {
+                "status": "REJECTED",
+                "message": "A GTT order requires a positive trigger and limit price.",
+            }
+        leg: dict[str, Any] = {"price": limit_price, "triggerPrice": trigger}
+        if params.get("quantity") is not None:
+            leg["qty"] = params["quantity"]
+        data = {"id": gtt_id, "orderInfo": {"leg1": leg}}
+        return self._call_with_guard(
+            "modify_gtt",
+            lambda: self.client.modify_gtt_order(data=data),
+            timeout_sec=1.5,
+            fallback={"s": "error", "message": "Fyers modify timeout/unavailable"},
+        )
+
+    def cancel_gtt(self, gtt_id: str) -> dict[str, Any]:
+        if not self.client:
+            return {"status": "ERROR", "message": CLIENT_NOT_INITIALIZED}
+        data = {"id": gtt_id}
+        return self._call_with_guard(
+            "cancel_gtt",
+            lambda: self.client.cancel_gtt_order(data=data),
+            timeout_sec=1.5,
+            fallback={"s": "error", "message": "Fyers cancel timeout/unavailable"},
+        )
 
     def get_working_orders(self) -> list[WorkingOrder]:
         """Orders still working at the broker, with their unfilled quantity.
