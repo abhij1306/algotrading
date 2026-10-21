@@ -29,6 +29,7 @@ from app.hat.data.corporate_actions import (
     parse_action_text,
     stored_factors,
 )
+from app.hat.data.ratios import split_pair_ints
 from app.hat.data.store import (
     FACTOR_MAX,
     FACTOR_MIN,
@@ -40,7 +41,6 @@ from app.hat.data.store import (
 )
 from app.hat.ids import uuid7
 from app.hat.models import HatCorporateAction, HatInstrument, HatMarket
-from app.services.bhavcopy_text import split_pair_ints
 
 START = date(2024, 1, 1)
 DAYS = weekdays(START, START + timedelta(days=30))[:14]

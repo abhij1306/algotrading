@@ -45,7 +45,7 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 
 ## §2 Router
 
-The router receives a signal only after `RiskManager.evaluate_signal` returned ACCEPT (06 §10) and routes it by the bot's effective mode.
+The router receives a signal only after `evaluate_signal` returned ACCEPT (06 §10) and routes it by the bot's effective mode.
 
 #### HAT-EXEC-020: One risk check, three routes
 - **Statement:** The router routes an accepted signal to the virtual fill engine (shadow), an approval (confirm) or a real order (auto), and nothing else.

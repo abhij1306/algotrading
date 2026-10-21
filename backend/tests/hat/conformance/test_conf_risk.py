@@ -200,8 +200,9 @@ def _calls_and_imports(path: Path) -> set[str]:
 
 
 def test_risk__single_sizing_path() -> None:
-    """HAT-RISK-100: `size_position` is called in one place, the decision of the risk manager;
-    no other module of the application sizes a position or imports the sizing module."""
+    """HAT-RISK-100: `size_position` is called in one place, the decision behind `evaluate_signal`;
+    no other module of the application sizes a position or imports the sizing module, and
+    `evaluate_signal` lives in HAT's `risk/service.py`, not in the legacy risk manager."""
     users = []
     for path in APP_ROOT.rglob("*.py"):
         if path.name == "sizing.py" and path.parent.name == "risk":
@@ -210,8 +211,11 @@ def test_risk__single_sizing_path() -> None:
         if names & {"size_position", "SizingInputs"}:
             users.append(path.relative_to(APP_ROOT).as_posix())
     assert users == ["hat/risk/decision.py"]
+    service = (APP_ROOT / "hat" / "risk" / "service.py").read_text(encoding="utf-8")
+    assert re.search(r"^def evaluate_signal\(", service, re.MULTILINE)
+    assert "decide(" in service
     manager = (APP_ROOT / "services" / "risk_manager.py").read_text(encoding="utf-8")
-    assert "evaluate_signal" in manager
+    assert "evaluate_signal" not in manager
     assert "size_position" not in manager
 
 
@@ -221,17 +225,14 @@ OVERRIDE_WORDS = re.compile(
 
 
 def test_risk__no_gate_override_path() -> None:
-    """HAT-RISK-052: no function of the risk modules or of `evaluate_signal` takes or names an
-    override, bypass or force switch, so the regime gate and the kills have no way around them."""
-    paths = list((APP_ROOT / "hat" / "risk").glob("*.py")) + [
-        APP_ROOT / "services" / "risk_manager.py"
-    ]
+    """HAT-RISK-052: no function of the risk modules (`evaluate_signal` included) takes or names
+    an override, bypass or force switch, so the regime gate and the kills have no way around
+    them."""
+    paths = list((APP_ROOT / "hat" / "risk").glob("*.py"))
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if path.name == "risk_manager.py" and node.name != "evaluate_signal":
-                    continue
                 args = [a.arg for a in node.args.args + node.args.kwonlyargs]
                 assert not any(OVERRIDE_WORDS.search(a) for a in args), (path.name, node.name)
                 assert not OVERRIDE_WORDS.search(node.name), (path.name, node.name)
@@ -279,9 +280,9 @@ def test_risk__existing_suite_green() -> None:
 
 
 def test_risk__manager_reads_no_hat_state() -> None:
-    """HAT-RISK-103: the SmartTrader checks of `RiskManager` do not depend on HAT rows: the manager
-    imports only the pure HAT risk modules (never the services that read kill, pause or policy
-    tables), and the existing exit checks name no HAT object."""
+    """HAT-RISK-103: the SmartTrader checks of `RiskManager` do not depend on HAT at all: the
+    manager imports nothing from `app.hat` (the risk inversion of K1), and the existing exit checks
+    name no HAT object."""
     path = APP_ROOT / "services" / "risk_manager.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     hat_imports = {
@@ -289,15 +290,32 @@ def test_risk__manager_reads_no_hat_state() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
         and node.module
-        and re.match(r"(app\.)?hat\.", node.module)  # absolute or relative (`..hat.risk`)
+        and re.match(r"(app\.|\.+)?hat(\.|$)", node.module)  # absolute or relative (`..hat.risk`)
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if re.match(r"(app\.)?hat(\.|$)", alias.name)
     }
-    assert hat_imports
-    assert not {name.removeprefix("app.") for name in hat_imports} & {
-        "hat.risk.controls",
-        "hat.risk.policy_service",
-    }
+    assert hat_imports == set()
     existing = {"pre_trade_check", "pre_exit_check", "exit_order_check", "_check_market_hours"}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in existing:
             source = ast.unparse(node)
             assert not re.search(r"\bhat\b|kill|HAT", source), node.name
+
+
+def test_risk__no_legacy_halt_read() -> None:
+    """HAT-RISK-104: no module of `app/hat` names the VCP halt flag (`TRADING_HALTED`,
+    `smarttrader_halt*`) or reads the legacy `system_config` table, so HAT's own kill switches are
+    the only halt of an entry."""
+    banned = re.compile(
+        r"TRADING_HALTED|smarttrader_halt|SystemConfig|system_config", re.IGNORECASE
+    )
+    offenders = [
+        (path.relative_to(APP_ROOT).as_posix(), match.group(0))
+        for path in sorted((APP_ROOT / "hat").rglob("*.py"))
+        for match in banned.finditer(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []

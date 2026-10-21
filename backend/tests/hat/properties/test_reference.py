@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.data import instruments as inst
+from app.hat.data.instruments import SymbolRename
 from app.hat.data.mcp_client import McpClient
 from app.hat.data.reference import (
     BAND_VALUES,
@@ -41,7 +42,6 @@ from app.hat.models import (
     HatInstrumentSymbolHistory,
 )
 from app.hat.ops.jobs import session_factory_for
-from app.models.symbol_history import SymbolChangeType, SymbolHistory
 from app.services.symbol_master import symbol_master
 
 START = date(2026, 1, 5)
@@ -194,23 +194,16 @@ def test_symbol_history_resolves(steps: list[list[Security]]) -> None:
 def test_symbol_history_resolves_seed_idempotent(
     chain: list[str], gaps: list[int], listed_offset: int
 ) -> None:
-    """Seeding from the legacy `symbol_history` is idempotent (running it twice yields the same
+    """Seeding from an injected rename source is idempotent (running it twice yields the same
     rows), keeps the intervals disjoint, and resolves each old symbol on its own dates."""
     session, market_id = new_db()
     changes = []
+    renames: list[SymbolRename] = []
     day = date(2012, 1, 1)
     for old, new, gap in zip(chain, chain[1:], gaps, strict=False):
         day += timedelta(days=gap)
         changes.append((old, new, day))
-        session.add(
-            SymbolHistory(
-                old_symbol=old,
-                new_symbol=new,
-                change_type=SymbolChangeType.SYMBOL_CHANGE,
-                effective_from=day,
-                isin="INE000000001",
-            )
-        )
+        renames.append(SymbolRename(old, new, day, "INE000000001"))
     current = chain[-1]
     first_seen = changes[-1][2] + timedelta(days=listed_offset)
     inst.upsert_instruments(
@@ -219,7 +212,7 @@ def test_symbol_history_resolves_seed_idempotent(
         [security("INE000000001", "EQ", current, listed_on=first_seen)],
         today=max(first_seen, changes[-1][2]),
     )
-    inst.seed_symbol_history(session, market_id)
+    inst.seed_symbol_history(session, market_id, renames)
 
     def snapshot() -> list[tuple[str, date, date | None]]:
         return sorted(
@@ -228,7 +221,7 @@ def test_symbol_history_resolves_seed_idempotent(
         )
 
     once = snapshot()
-    assert inst.seed_symbol_history(session, market_id) == 0
+    assert inst.seed_symbol_history(session, market_id, renames) == 0
     assert snapshot() == once
     check_history_disjoint(session)
     instrument = session.scalar(select(HatInstrument))

@@ -1,7 +1,9 @@
 """PBT caps.* (HAT-RISK-030..035, 050, 060/061, 070..076, 100..104; HAT-GOV-090/091/093/094):
 the caps, invariants, kill thresholds and policy-change rules, on the real
-`RiskManager.evaluate_signal` and the pure rules it composes. Money is Decimal."""
+`app.hat.risk.service.evaluate_signal` and the pure rules it composes. Money is Decimal."""
 
+import dataclasses
+import inspect
 import os
 import uuid
 from datetime import UTC, datetime, time, timedelta
@@ -13,7 +15,6 @@ from hat_risk_support import (
     AT,
     BOT,
     CALENDAR,
-    MANAGER,
     OTHER_BOT,
     S1,
     S2,
@@ -33,6 +34,7 @@ from hypothesis import strategies as st
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.hat.data.sessions import IST
 from app.hat.models import HatEvent, HatRiskPolicyVersion
 from app.hat.risk import kill
 from app.hat.risk.decision import REASON_CODES, Reason, RiskDecision, SignalContext
@@ -57,9 +59,9 @@ from app.hat.risk.policy_service import (
     request_policy_change,
     seed_initial_policy,
 )
+from app.hat.risk.service import evaluate_signal
 from app.hat.risk.sessions import SessionDay
 from app.hat.settings import load_settings
-from app.utils.market_hours import IST
 
 SEED = seed_policy()
 BIG = D(10**12)
@@ -453,24 +455,57 @@ def test_max_chase_always(
         assert decision.accepted, decision.reason
 
 
-# --- HAT-RISK-104: the VCP halt ---
+# --- HAT-RISK-104: HAT's own kill switches are the halt ---
 
 
-@given(st.booleans())
-def test_vcp_halt_blocks_hat(halted: bool) -> None:
-    """With `TRADING_HALTED` set, every HAT entry is rejected with `smarttrader_halt`; and when the
-    caller leaves the flag unset the manager reads it from `system_config`."""
-    from app.models import SystemConfig
+@given(st.booleans(), st.booleans(), st.booleans(), st.booleans())
+def test_hat_kill_is_authority(account: bool, bot: bool, health: bool, paused: bool) -> None:
+    """An entry is halted by HAT's own kill state and by nothing else: for every combination of
+    the account kill, the bot kill, the health kill and the pause, the entry is rejected with the
+    first tripped switch's reason, and accepted when none is tripped. The decision reads no legacy
+    halt flag: the context has no such field and `evaluate_signal` takes no database session."""
+    decision = decide(valid_ctx(kill=KillState(account, bot, health, paused)))
+    expected = next(
+        (
+            reason
+            for tripped, reason in (
+                (account, Reason.KILL_ACCOUNT),
+                (bot, Reason.KILL_BOT),
+                (health, Reason.KILL_HEALTH),
+                (paused, Reason.BOT_PAUSED),
+            )
+            if tripped
+        ),
+        None,
+    )
+    assert decision.reason == expected
+    assert decision.accepted is (expected is None)
+    assert not any("halt" in f.name for f in dataclasses.fields(SignalContext))
+    assert set(inspect.signature(evaluate_signal).parameters) == {"ctx", "hours", "band_pct"}
 
-    decision = decide(valid_ctx(smarttrader_halted=halted))
-    assert decision.reason == (Reason.SMARTTRADER_HALT if halted else None)
-    engine = memory_engine(SystemConfig)
-    with Session(engine) as session:
-        session.add(SystemConfig(key="TRADING_HALTED", value="true" if halted else "false"))
-        session.commit()
-        read = MANAGER.evaluate_signal(valid_ctx(smarttrader_halted=None), db=session)
-        assert (read.reason == Reason.SMARTTRADER_HALT) is halted
-        assert decide(valid_ctx(smarttrader_halted=None)).reason == Reason.MISSING_INPUT
+
+# --- the price band (HAT-RISK-100, HAT-RISK-101) ---
+
+
+@given(
+    money("1", "5000"),
+    st.decimals(min_value=D("0.01"), max_value=D("2.5"), places=4),
+)
+def test_price_band(ltp: Decimal, ratio: Decimal) -> None:
+    """An entry whose price is more than 20% from the last price is rejected with
+    `price_out_of_band`, and one within 20% (the edge included) is not; no live price is a
+    `missing_input`. Money is Decimal, so the edge is exact."""
+    entry = (ltp * ratio).quantize(D("0.01"))
+    if entry < 1:
+        return
+    decision = decide(
+        valid_ctx(entry_price=entry, ltp=ltp, trigger_level=entry, stop_price=entry * D("0.99"))
+    )
+    if abs(entry - ltp) * 100 > 20 * ltp:
+        assert decision.reason == Reason.PRICE_OUT_OF_BAND
+    else:
+        assert decision.accepted, decision.reason
+    assert decide(valid_ctx(ltp=D(0))).reason == Reason.MISSING_INPUT
 
 
 # --- HAT-RISK-101/102: total, typed, fail closed ---
@@ -531,7 +566,6 @@ OTHER_REQUIRED = (
     "gate_on",
     "feed_stale",
     "quality_failed",
-    "smarttrader_halted",
     "kill",
     "calendar",
 )

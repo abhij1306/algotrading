@@ -3,7 +3,7 @@ uses (HAT-DATA-052, 053, 054, 055, 094; HAT-DEC-B27).
 
 A factor multiplies prices before the ex-date (a 1:2 split is 0.5). Sources, in the order they
 win on a conflict: the MCP's structured `adjustmentFactor`, then NSE's archive CSV text parsed
-with the helper shared with phase 1 (`app.services.bhavcopy_text`). A stored action is never
+with HAT's own text helpers (`app.hat.data.ratios`). A stored action is never
 changed by a later load: a different factor for a stored key is reported as a conflict.
 """
 
@@ -20,7 +20,7 @@ from fractions import Fraction
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.services.bhavcopy_text import find_bonus_ratio, split_pair_numbers
+from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
 
 from ..models import HatCorporateAction
 from .store import ActionFactor

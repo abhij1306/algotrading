@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from app.utils.clock import require_aware
+from app.hat.clock import require_aware
 
 from .errors import HatError
 from .models import HatEvent

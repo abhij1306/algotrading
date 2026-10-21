@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from hat_exec_support import SYMBOLS, RecordingSdk, adapter_over, exec_env, live_session
+from hat.fakes.broker import FakeBroker, rejected, unconfirmed
+from hat.fakes.fyers_sdk import RecordingSdk
+from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
@@ -48,8 +50,6 @@ from app.hat.execution.tags import (
 )
 from app.hat.ids import Uuid7Generator, uuid7
 from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES
-
-from fakes.broker import FakeBroker, rejected, unconfirmed
 
 PURPOSES = st.sampled_from(sorted(PURPOSE_LETTERS))
 SEQUENCES = st.integers(min_value=0, max_value=MAX_SEQUENCE)

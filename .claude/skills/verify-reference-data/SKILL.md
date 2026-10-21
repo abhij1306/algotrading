@@ -16,12 +16,13 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `PBT ingest.date_mismatch_rejected` A bulk-quote row is kept only if its date is the trade date; every other row (another, missing or unreadable date) is in the mismatch report, and every requested symbol is kept, mismatched or missing. Harm: yesterday's prices are stored as today's.
 - `PBT reference.instrument_identity_stable` Over any sequence of weekly refreshes with renames, name and face-value changes an instrument's id never changes and no two rows share (market, ISIN, series); repeating a refresh changes nothing. Harm: a rename splits one stock's history into two instruments.
 - `PBT reference.delisted_never_deleted` A disappearing instrument stays, inactive with `delisted_on` set, and the row count never decreases; a symbol the source lists but the CSV has no row for (`still_listed`) is not delisted. Harm: backtests become survivorship-biased.
-- `PBT reference.symbol_history_resolves` Symbol intervals of an instrument never overlap, every held symbol has a history row, a (symbol, date) resolves to at most one instrument (the covering one), and seeding from legacy `symbol_history` (applied latest change first) is idempotent. Harm: an old symbol in a 2015 bhavcopy attaches to the wrong company.
+- `PBT reference.symbol_history_resolves` Symbol intervals of an instrument never overlap, every held symbol has a history row, a (symbol, date) resolves to at most one instrument (the covering one), and seeding from an injected rename source (applied latest change first; HAT reads no legacy table) is idempotent. Harm: an old symbol in a 2015 bhavcopy attaches to the wrong company.
 - `PBT reference.prefix_paging_complete` Prefix paging yields every listed symbol exactly once, a page at the 500-row cap is split again, and the CSV fallback gives the same instrument keys as the MCP path. Harm: truncated pages drop stocks from the universe.
 - `PBT reference.fyers_symbol_roundtrip` Fyers rows exist only for -EQ symbols (an index symbol never stands for a stock); every Fyers row maps back through `symbol_master.to_db` to the instrument's NSE symbol, no two instruments share one, and a symbol that does not round-trip (an alias such as LTIM) is reported and given no row. Harm: an order for one stock goes out under another's symbol.
 - `PBT reference.current_band` The band in force on a date is the row with the greatest `effective_from` on or before it (null = no band), always 2, 5, 10, 20 or null; the circuit-limit fallback detects exactly the band the limits imply. Harm: an EP candidate in a 5% band is treated as gap-eligible.
 - `PBT reference.current_industry` The industry in force is the latest row on or before the date, and an instrument with none is reported, never given a shared one. Harm: the per-industry cap is bypassed.
-- `PBT calendar.holiday_closed` A date with `is_trading = false` is closed in `MarketHoursPolicy` at every instant (built from the calendar and installed process-wide, so a bare policy and `DEFAULT_POLICY` also refuse it), a trading date follows its own session, a holiday withdrawn from a refreshed snapshot is reopened, bare weekdays use the installed `hat_market` hours, and the scheduler's trading days equal the dates with `is_trading = true`. Harm: orders attempted on an exchange holiday.
+- `PBT calendar.holiday_closed` A date with `is_trading = false` is closed in the `MarketHoursPolicy` built from the calendar at every instant, a trading date follows its own session, a holiday withdrawn from a refreshed snapshot is reopened, and the scheduler's trading days equal the dates with `is_trading = true`. Harm: orders attempted on an exchange holiday.
+- `PBT calendar.policy_has_no_process_state` A policy is its own calendar and nothing else (no installed global, no `DEV_MODE`): building one from a loaded calendar never changes a bare policy, which is closed only at weekends and outside 09:15 to 15:30 whatever was loaded elsewhere. Harm: one test, job or caller's holidays leak into another's market hours.
 - `PBT calendar.session_from_reference_data` The session the engine uses on any date equals the `hat_trading_calendar` row, or the `hat_market` default on a normal weekday, never a constant. Harm: hard-coded NSE hours place a P2 market's orders at the wrong time.
 - `DB reference.refresh_on_postgres` On real Postgres a refresh with renames, delisting and a broker symbol moving between instruments never trips the unique keys. Harm: the weekly refresh fails half-way and leaves the master stale.
 - `CONF imports.engine_data_sources` The only MCP server names in HAT code are `nse-bhavcopy` and `cm-market`, and engine, risk and execution modules reach no research or chat MCP client. Harm: an unvetted source changes which stocks are scanned.
@@ -63,9 +64,9 @@ Code under check:
 - `backend/app/hat/data/mcp_client.py`: `McpClient`, `HttpTransport`, `unwrap_result`, `batches`, `backoff_delay`
 - `backend/app/hat/data/reference.py`: `page_listing`, `parse_equity_list_csv`, `build_listing_from_mcp`, `build_listing_from_csv`, `parse_price_band_csv`, `band_from_circuit_limits`, `parse_industry_csv`
 - `backend/app/hat/data/instruments.py`: `upsert_instruments`, `apply_symbol_change`, `resolve_symbol`, `seed_symbol_history`, `refresh_fyers_symbols`, `load_price_bands`, `current_band`, `load_industries`, `current_industry`
-- `backend/app/hat/data/calendar.py`: `parse_nse_holidays`, `upsert_calendar`, `MarketCalendar`, `trading_days`, `install_from_session`
+- `backend/app/hat/data/calendar.py`: `parse_nse_holidays`, `upsert_calendar`, `MarketCalendar`, `trading_days`
 - `backend/app/hat/data/reference_jobs.py`: `reference_weekly`, `bands_nightly`, `calendar_refresh`
-- `backend/app/utils/market_hours.py`: `MarketHoursPolicy.phase`, `install_calendar`
+- `backend/app/hat/data/sessions.py`: `MarketHoursPolicy.phase`, `MarketPhase`
 
 Checks:
 - `backend/tests/hat/properties/test_mcp.py`
@@ -81,8 +82,8 @@ Checks:
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
-Sync commit: `2b487610c574410445216175176c3cc53be03a46`
-Covered digest: `d02b5dc46d97f9b84ae956c6497bdefe98fc153028cc86305e56e9ccc219ebb3`
+Sync commit: `742e0f09885017e4b63ac0050f2ac4dc9f7a6cff`
+Covered digest: `b65c66fdaa97cf982968a0c81a7d1f0e99664e13b579df9885988d186a1c21db`
 
 ## Scope changes
 
@@ -254,15 +255,16 @@ E sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint fail
 E [SQL: INSERT INTO hat_instrument_symbol_history (instrument_id, symbol, valid_from, valid_to) VALUES (?, ?, ?, ?)]
 ```
 
-Second break: legacy renames are applied earliest first.
+Second break: renames are applied earliest first.
 
 ```
 tests/hat/properties/test_reference.py F
 tests/hat/properties/test_reference.py:190: in test_symbol_history_resolves_seed_idempotent
-tests/hat/properties/test_reference.py:240: in test_symbol_history_resolves_seed_idempotent
-E assert None is not None
-E Failing test case: test_symbol_history_resolves_seed_idempotent(
-E chain=['AAA', 'BBB', 'CCC'],
+tests/hat/properties/test_reference.py:233: in test_symbol_history_resolves_seed_idempotent
+E   assert None is not None
+E   Failing test case: test_symbol_history_resolves_seed_idempotent(
+E       chain=['AAA', 'BBB', 'CCC'],
+E       gaps=[1, 1, 1, 1],
 ```
 
 ### PBT reference.prefix_paging_complete
@@ -369,17 +371,6 @@ Break: holidays are not passed to the policy.
 tests/hat/properties/test_calendar.py F
 ```
 
-Second break: the installed calendar is ignored.
-
-```
-tests/hat/properties/test_calendar.py F
-tests/hat/properties/test_calendar.py:109: in test_holiday_closed_installed_calendar
-tests/hat/properties/test_calendar.py:129: in test_holiday_closed_installed_calendar
-E assert not True
-E Failing test case: test_holiday_closed_installed_calendar(
-E spec=(datetime.time(0, 0),
-```
-
 Second break: a holiday row still has a session.
 
 ```
@@ -402,15 +393,17 @@ E Extra items in the left set:
 E datetime.date(2026, 1, 20)
 ```
 
-Second break: the installed calendar's default hours are ignored.
+### PBT calendar.policy_has_no_process_state
+
+Break: `MarketHoursPolicy` reads a module-level holiday set that `MarketCalendar.policy()` fills (a process-global leak).
 
 ```
 tests/hat/properties/test_calendar.py F
-tests/hat/properties/test_calendar.py:109: in test_holiday_closed_installed_calendar
-tests/hat/properties/test_calendar.py:125: in test_holiday_closed_installed_calendar
-E assert False == True
-E Failing test case: test_holiday_closed_installed_calendar(
-E spec=(datetime.time(0, 0),
+tests/hat/properties/test_calendar.py:117: in test_policy_has_no_process_state
+tests/hat/properties/test_calendar.py:130: in test_policy_has_no_process_state
+E   AssertionError: (datetime.date(2026, 1, 1), datetime.time(9, 15))
+E   assert False == True
+E    +  where False = is_open(datetime.datetime(2026, 1, 1, 3, 45, tzinfo=datetime.timezone.utc))
 ```
 
 ### PBT calendar.session_from_reference_data

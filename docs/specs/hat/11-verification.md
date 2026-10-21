@@ -183,6 +183,7 @@ Each critical area gets a skill an agent can follow cold, mid-change, without le
 | `.claude/skills/verify-governance/SKILL.md` | DB `governance`, `reference`, `portfolio`, `migration` checks; PBT `ids`, `time`, `config`, `risk_policy`; CONF `schema`, boundaries |
 | `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `ingest` |
 | `.claude/skills/verify-live-data/SKILL.md` | The tick hook, 5-minute bars, staleness, pre-open gap capture, the 09:16 gap scan and announcements: PBT `bars` (live), `gapscan`, `announcements`; CONF `imports.no_second_websocket`, `single_feed_import_rule` |
+| `.claude/skills/verify-standalone/SKILL.md` | The decoupling from legacy code and the owned copies: PBT `metrics`; CONF `imports.hat_decoupled_from_legacy`, `hat_suites_boot_no_legacy_app`, `legacy_does_not_import_hat`, `fixtures.vcp_oracle_frozen` |
 | `.claude/skills/verify-portfolio/SKILL.md` | `RegimeConfirmation`, `SleeveLifecycle`; PBT `allocator`, `health`, `regime`, `costs`, `dsr`, `criteria`, `scoring`, `config` |
 
 #### HAT-VER-070: Each verify skill is complete and registers

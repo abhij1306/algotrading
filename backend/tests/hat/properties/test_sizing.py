@@ -1,5 +1,5 @@
 """PBT sizing.* (HAT-RISK-010/020/021/022, HAT-DEC-B13): the position-size formula on the real
-`size_position` and `RiskManager.evaluate_signal`. Money is Decimal; floats are refused."""
+`size_position` and `evaluate_signal`. Money is Decimal; floats are refused."""
 
 import uuid
 from datetime import timedelta

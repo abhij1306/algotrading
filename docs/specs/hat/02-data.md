@@ -81,7 +81,7 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 - **Verification:** PBT `reference.symbol_history_resolves`
 - **Acceptance:**
   - Property: for every sequence of renames, the validity intervals [valid_from, valid_to) of one instrument's symbol rows never overlap, and for every (symbol, date) the resolver returns at most one instrument, namely the one whose row covers that date. Harm: an old symbol in a 2015 bhavcopy is attached to the wrong company.
-  - Property: seeding from the existing `symbol_master`/`symbol_history` is idempotent: running it twice yields the same rows. Harm: duplicate history rows make symbol resolution ambiguous.
+  - Property: seeding from an injected rename source (HAT reads no legacy table) is idempotent: running it twice yields the same rows. Harm: duplicate history rows make symbol resolution ambiguous.
 
 #### HAT-DATA-023: Weekly equity list refresh is complete
 - **Statement:** The instrument master is refreshed weekly from `cm_get_equity_stocks`, prefix-paged A–Z (≤ 500 per call), with the NSE equity list CSV as fallback.
@@ -119,12 +119,12 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 - **[A]** Industry field location: default from the NSE equity list; validated on the first download (DS "Verify").
 
 #### HAT-DATA-027: Trading calendar drives market hours
-- **Statement:** NSE holidays load into `hat_trading_calendar` (yearly + on change, broker holiday API as fallback) and feed `market_hours.DEFAULT_POLICY.holidays` at startup.
+- **Statement:** NSE holidays load into `hat_trading_calendar` (yearly + on change, broker holiday API as fallback) and HAT's `MarketHoursPolicy` (`app/hat/data/sessions.py`) is built from the loaded calendar (`MarketCalendar.policy`). Nothing is installed process-wide and there is no `DEV_MODE` bypass. [Changed in K1; it fed the legacy `market_hours.DEFAULT_POLICY`.]
 - **Source:** DS "Source map" and "Reference data"; SCH (`hat_trading_calendar`); PLAN C7.
 - **PR:** 4
 - **Verification:** PBT `calendar.holiday_closed`
 - **Acceptance:**
-  - Property: for every date with `is_trading = false` in `hat_trading_calendar`, `MarketHoursPolicy` reports the market closed at every instant of that date, so every order path (HAT and SmartTrader) refuses it; for every date with `is_trading = true`, the session is `open_at`–`close_at`. Harm: orders are attempted on an exchange holiday, or the scheduler runs scans for a day with no data.
+  - Property: for every date with `is_trading = false` in `hat_trading_calendar`, `MarketHoursPolicy` reports the market closed at every instant of that date, so every HAT order path refuses it; for every date with `is_trading = true`, the session is `open_at`–`close_at`. Harm: orders are attempted on an exchange holiday, or the scheduler runs scans for a day with no data.
   - Property: for every calendar, the scheduler's set of trading days equals the set of dates with `is_trading = true`. Harm: jobs run on holidays or skip trading days.
 
 ## §3 NSE MCP client

@@ -1,5 +1,6 @@
 """NSE trading calendar: parse the holiday list, store it in `hat_trading_calendar`, and feed
-`market_hours` so every order path refuses a holiday (HAT-DATA-027, HAT-OVR-001, C7).
+the `MarketHoursPolicy` the HAT engine reads (HAT-DATA-027, HAT-OVR-001, C7). The policy is built
+from a loaded calendar and passed to its users; nothing installs it process-wide.
 
 No HTTP here: the holiday text comes from a recorded file or a caller-supplied source.
 """
@@ -13,11 +14,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import Engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.utils.clock import SYSTEM_CLOCK, Clock
-from app.utils.market_hours import IST, MarketHoursPolicy, install_calendar
+from app.hat.clock import SYSTEM_CLOCK, Clock
+from app.hat.data.sessions import IST, MarketHoursPolicy
 
 from ..models import HatMarket, HatTradingCalendar
 from ..time import as_utc
@@ -220,20 +221,3 @@ def load_calendar(session: Session, market_code: str = "NSE") -> MarketCalendar 
         close_at = as_utc(row.close_at).astimezone(IST).time() if row.close_at else None
         rows[row.day] = CalendarDay(row.day, row.is_trading, open_at, close_at, row.note)
     return MarketCalendar(market.session_open, market.session_close, rows)
-
-
-def install_from_session(session: Session, market_code: str = "NSE") -> int:
-    """Feed the stored calendar to `market_hours` (C7); returns the number of holidays."""
-    calendar = load_calendar(session, market_code)
-    if calendar is None:
-        return 0
-    install_calendar(
-        calendar.holidays(), calendar.sessions(), calendar.session_open, calendar.session_close
-    )
-    return len(calendar.holidays())
-
-
-def install_from_engine(engine: Engine, market_code: str = "NSE") -> int:
-    """The startup hook: install the stored calendar, using a short-lived session."""
-    with Session(engine) as session:
-        return install_from_session(session, market_code)
