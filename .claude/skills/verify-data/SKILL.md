@@ -98,6 +98,7 @@ Covered digest: `0`
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- A cumulative factor outside [1e-9, 100) is refused with `store_factor_range` (the view holds factors as decimal(20,18)); `adjusted_view_idempotent` skips such worlds, and `test_cumulative_factor_out_of_range_is_refused` pins the refusal. Several compounded reverse splits could reach it: a follow-up if real data does.
 - The adjusted-view exactness properties draw factors with finite decimal reciprocals: factors are stored to 18 places and their reciprocals (for volume) to 12, so an arbitrary rational factor is exact for prices but not for volume. Real factors (splits, bonuses) are ratios of small integers.
 - The old CM (`cmDDMMMYYYYbhav.csv`) and UDiFF column lists are `[A]`, written from the published layouts and shared fixtures, not from a real download; the first real run validates them.
 - The MCP normaliser for nightly bars is PR 7's; `ingest.sources_same_schema` covers the shared writer that both sources use.

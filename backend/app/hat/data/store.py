@@ -77,6 +77,8 @@ DATASET_SCHEMAS = {DATASET_BARS: BAR_SCHEMA, DATASET_INDEX: INDEX_SCHEMA}
 
 FACTOR_PLACES = 18  # cumulative factors are stored as decimal(20, 18)
 INVERSE_PLACES = 12  # and their reciprocals, for volume, as decimal(24, 12)
+FACTOR_MIN = Decimal("1e-9")  # a cumulative factor outside [1e-9, 100) cannot be held exactly
+FACTOR_MAX = Decimal(100)  # (a stock needs several reverse splits to get anywhere near it)
 _PRICE_QUANTUM = Decimal("0.0001")
 
 
@@ -216,6 +218,8 @@ def cumulative_segments(
                 product = Decimal(1)
                 for later in days[i:]:
                     product *= per_day[later]
+                if not FACTOR_MIN <= product < FACTOR_MAX:
+                    raise StoreError("store_factor_range")  # would overflow the view's decimals
                 factor = product.quantize(Decimal(1).scaleb(-FACTOR_PLACES), ROUND_HALF_EVEN)
                 inverse = (Decimal(1) / product).quantize(
                     Decimal(1).scaleb(-INVERSE_PLACES), ROUND_HALF_EVEN

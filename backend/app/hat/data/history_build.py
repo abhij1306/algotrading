@@ -22,7 +22,6 @@ import argparse
 import csv
 import io
 import logging
-import os
 import random
 import sys
 import time
@@ -37,6 +36,7 @@ from sqlalchemy import select
 
 from ..ids import uuid7
 from ..ops.jobs import JobError, JobResult
+from ..settings import process_env
 from .bhavcopy import (
     BhavRow,
     BuildState,
@@ -484,7 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
             (r.id, r.symbol)
             for r in session.execute(select(HatInstrument.id, HatInstrument.symbol))
         ]
-    client = client_from_env(os.environ)
+    client = client_from_env(process_env())
 
     def load_actions_from_mcp() -> tuple[list[ActionRecord], int]:
         assert client is not None

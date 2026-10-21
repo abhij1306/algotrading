@@ -12,8 +12,9 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 from pathlib import Path
 
+import pytest
 from hat_support import memory_engine
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,7 +29,13 @@ from app.hat.data.corporate_actions import (
     parse_action_text,
     stored_factors,
 )
-from app.hat.data.store import ActionFactor, BarRow, DataStore
+from app.hat.data.store import (
+    ActionFactor,
+    BarRow,
+    DataStore,
+    StoreError,
+    cumulative_segments,
+)
 from app.hat.ids import uuid7
 from app.hat.models import HatCorporateAction, HatInstrument, HatMarket
 
@@ -181,9 +188,24 @@ def test_adjusted_view_idempotent(world: tuple) -> None:
         store = DataStore(Path(tmp))
         _write(store, bars)
         sql = "SELECT * FROM bars_daily_adj ORDER BY instrument_id, date"
-        one = store.connect(actions).execute(sql).fetchall()
+        try:
+            one = store.connect(actions).execute(sql).fetchall()
+        except StoreError:
+            assume(False)  # a cumulative factor beyond the stored range is refused, not wrapped
         two = store.connect(actions).execute(sql).fetchall()
     assert one == two
+
+
+@given(n=st.integers(2, 6), reverse=st.integers(10, 60))
+def test_cumulative_factor_out_of_range_is_refused(n: int, reverse: int) -> None:
+    """Reverse splits compounding past the stored range raise instead of overflowing the view."""
+    iid = uuid.uuid4()
+    actions = [ActionFactor(iid, date(2020 + i, 1, 1), Decimal(reverse)) for i in range(n)]
+    if Decimal(reverse) ** n >= 100:
+        with pytest.raises(StoreError):
+            cumulative_segments(actions)
+    else:
+        assert cumulative_segments(actions)
 
 
 _A = st.integers(2, 1000)

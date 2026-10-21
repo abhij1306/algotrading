@@ -180,9 +180,7 @@ def test_build_offline_unresolved_security_is_reported() -> None:
         assert store.read_bars(day).height == 0
 
 
-
-
-# --- the MCP history wrappers (HAT-DATA-094, 095, 096) ---------------------------------------------
+# --- the MCP history wrappers (HAT-DATA-094, 095, 096) ---------------------------------------
 
 SERIES_DAYS = weekdays(date(2021, 1, 1), date(2023, 6, 30))
 
