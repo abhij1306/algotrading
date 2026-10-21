@@ -41,7 +41,8 @@ class Factory:
         self.models: list[Model] = []
 
     def __call__(self, *, client_id: str, token: str, log_path: str) -> Model:
-        assert client_id and token
+        assert client_id
+        assert token
         model = Model(token, self.script)
         self.models.append(model)
         return model

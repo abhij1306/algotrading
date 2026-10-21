@@ -97,7 +97,8 @@ def test_a_failed_exchange_fails_closed(reply: object, code: str) -> None:
         assert harness.service.status().connected is False
     for text in shown:
         assert code not in text
-        assert SECRET not in text and MARKER not in text
+        assert SECRET not in text
+        assert MARKER not in text
 
 
 @given(reply=GOOD, code=codes)
@@ -134,7 +135,7 @@ def test_a_save_failure_writes_nothing_and_runs_no_hook(reply: dict[str, Any], c
         with mock.patch("os.replace", side_effect=OSError("disk full")):
             with pytest.raises(TokenStoreError):
                 harness.service.exchange(code)
-        assert store.path.read_bytes() == before
+        assert before == store.path.read_bytes()
         assert harness.events == []
         assert listing(store) == [store.path.name]
 
