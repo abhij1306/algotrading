@@ -1,11 +1,13 @@
 ---
 name: verify-data
-description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, and the index history load. Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, backend/app/hat/data/ratios.py, the history methods of mcp_client.py, or the data build sections of docs/specs/hat/02-data.md.
+description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, the index history load, and the daily features (polars indicators, percentiles, breadth, the incremental `features` job). Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, features.py, backend/app/hat/data/ratios.py, the history methods of mcp_client.py, or the data build and features sections of docs/specs/hat/02-data.md.
 ---
 
 # verify-data
 
 Checks that the 2010-to-today build writes each trading day once, in the right format era, with exact prices; that Parquet files are written atomically and raw files never change; that the adjusted view equals raw prices times the product of later factors, exactly; that corporate actions load once however many sources and reruns bring them; and that the build is idempotent and resumable. Specs: `docs/specs/hat/02-data.md` §8, §9 (HAT-DATA-011 source schema, 052..055, 080..085, 090..097), `01-decisions.md` (T6, B27, I2), `00-overview.md` (HAT-OVR-052).
+
+The features half (PR 6) checks that every feature of date d uses bars up to d only and equals its §7 definition on adjusted bars; that `rs_pct`, `mom_rank` and breadth are the specified percentiles and counts; that a split changes no feature; that an incremental run equals a full rebuild; and that the job is idempotent. Specs: `02-data.md` §7 (HAT-DATA-070..078), `01-decisions.md` (T11).
 
 ## Properties
 
@@ -35,6 +37,21 @@ Checks that the 2010-to-today build writes each trading day once, in the right f
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
 - `CONF store.data_root` The store root is `app.paths.HAT_DATA_ROOT`, defined only there, and raw names cannot leave it. Harm: data written outside the data volume.
 - `CONF store.layout` Every Parquet file sits in `<dataset>/date=YYYY-MM-DD/`. Harm: DuckDB partition pruning and the views miss files.
+- `PBT features.no_lookahead` Features and breadth of every date d are identical after any bar dated after d is changed, dropped, or more bars are appended (any universe, gaps, ties). Harm: backtests use future data and report edge live trading cannot have.
+- `PBT features.formulas` SMA 10/20/50/150/200, 52-week high and low, ADR20, ADTR20, ADV20, turnover20 and ret21/63/126/252 equal a direct Fraction evaluation of the §7 definitions within 1e-9 relative, and are null exactly when the window is not full, over histories with gaps, short and long series. Harm: a wrong ADV or ADTR changes position size and entry filters on every trade.
+- `PBT features.turnover_input` A bar's turnover input is close x volume when its traded value is null and the traded value when it is not, bar by bar. Harm: the 10 crore liquidity filter admits illiquid stocks.
+- `PBT features.split_invariant` A split stored with its factor, with raw prices before the ex-date divided by it, leaves every price feature, return and percentile of every date as in the unsplit series. Harm: every split looks like a crash and corrupts RS ranks.
+- `PBT features.rs_pct` On every date rs_pct is null outside the universe or below 253 bars, else 100 x average rank / count in [0, 100] of 0.4 r3 + 0.2 r6 + 0.2 r9 + 0.2 r12, and a strictly greater weighted return never has a smaller rs_pct (ties share the average rank). Harm: the RS filter admits laggards or rejects leaders.
+- `PBT features.mom_rank` mom_rank is the largest universe percentile of ret21, ret63 and ret126 on the date, in [0, 100]; null only when none exists or the instrument is outside the universe. Harm: the momentum filter selects the wrong stocks.
+- `PBT features.breadth` Per date, breadth percent is 100 x |close above SMA50| / |SMA50 not null| over the universe, in [0, 100], with exact counts; a flat price is not above its own mean despite float noise. Harm: the regime engine misreads breadth.
+- `PBT features.breadth_without_sma50` A universe in which no stock has 50 bars gives null breadth on every date, in the frame and the stored partition, never zero or an error. Harm: a zero breadth reads as a collapse and moves sleeves.
+- `PBT features.batching_changes_nothing` Computing a few instruments at a time and dropping early dates (the memory bounds of the full rebuild) gives exactly the one-shot features and breadth. Harm: the full rebuild differs from the nightly run.
+- `PBT features.load_lookback` For every instrument, including ones that stopped trading for longer than the slice read, the loader returns the rows of the requested dates plus exactly the lookback rows before them, equal to `bars_daily` (latest run per day), bounded or not. Harm: features of the first dates of a run are null or wrong, and incremental differs from full.
+- `PBT features.incremental_equals_full` Runs through successive cut dates, with a corporate action arriving part-way and any chunk size, leave the same features and breadth for every date as one full rebuild. Harm: live features drift from backtest features.
+- `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
+- `PBT features.pandas_equivalence` SMA50/150/200 equal `stage2_metrics`' averages and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
+- `CONF features.schema` Every written features partition has exactly the §7 columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
+- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters (none). Harm: two indicator implementations diverge.
 
 ## Run
 
@@ -43,7 +60,7 @@ cd backend
 # every pytest, Hypothesis or data command runs under the 2 GB memory cap
 CAP="systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet"
 CI=1 $CAP python -m pytest tests/hat/properties/test_store.py tests/hat/properties/test_corporate_actions.py \
-  tests/hat/properties/test_bhavcopy.py tests/hat/properties/test_history_build.py tests/hat/properties/test_ingest.py -q --no-cov
+  tests/hat/properties/test_bhavcopy.py tests/hat/properties/test_history_build.py tests/hat/properties/test_ingest.py tests/hat/properties/test_features.py -q --no-cov
 $CAP python -m pytest tests/hat/conformance -q --no-cov
 # the database check needs Postgres (a throwaway database whose name ends in _test):
 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTRADER_PG_TESTS=1 \
@@ -59,6 +76,10 @@ No check touches the network: the downloader, the MCP client and the validation 
 - A failing `bhavcopy.parsers_agree` means one of the two file layouts is read differently. The old CM and UDiFF column lists are `[A]` until the first real download validates them: compare against a real file before changing a parser to satisfy a fake.
 - A failing `store.*` check names the file or partition. Never fix it by loosening the check: atomic writes, immutable raw files and one latest run per (instrument, date) are what backtests rely on.
 - A `DB` failure on the loader says what the database accepted or refused; the table is `hat_corporate_action` and its key is in `models/`.
+- A failing `features.formulas` names the instrument, date and feature. Check the window convention first: a window is the last N rows of that instrument's own bars (a day without a bar is no row), null unless full. A real bug is in `_per_instrument` in `features.py`; a modelling error is a change in the spec's definition (change the spec table, then the naive reference in `test_features.py`).
+- A failing `features.no_lookahead` or `features.incremental_equals_full` is always real: some value of date d read a later row, or a run loaded the wrong rows. Look at `load_bars`, the `shift` and `rolling` expressions, and the action digest in `run_features`. Never loosen the comparison. Float values compare within 1e-9 relative because a rolling mean's last bits depend on where its frame starts (about 1e-14); rank columns and counts compare exactly.
+- A failing `features.pandas_equivalence` is expected where the definitions differ (see Scope changes); it is real when SMAs or the weighted-return rating differ. The pandas code is legacy: where it conflicts with the spec the spec wins (owner rule D59), so record a difference instead of matching it.
+- A failing `features.breadth` on a flat price means the margin against float noise (`ABOVE_MARGIN`) was changed.
 
 ## Updating
 
@@ -66,6 +87,8 @@ No check touches the network: the downloader, the MCP client and the validation 
 - A new dataset: add its schema and partition rule to `store.py` and the spec's dataset table; `CONF store.layout` covers every Parquet file the store writes.
 - A new corporate-action kind: add its wording template to `test_corporate_actions.py` and the parser together.
 - After re-confirming everything, update the sync commit and digest: `python backend/tests/hat/conformance/hat_conf_skills.py verify-data` prints the digest.
+- A new or changed feature: change the §7 table, `store.FEATURE_NAMES`, `_per_instrument` and the naive reference in `test_features.py` together; `CONF features.schema` fails until the spec and the schema agree. Bump nothing else: the next run rebuilds with `--full`.
+- Full-history rebuild: `python -m app.hat.data.features --full` (needs the database for the corporate actions). Measured on synthetic data, 3,000 instruments x 2,500 dates (7.5M rows), chunks of 63 dates, 500 instruments per batch: 180 seconds, peak 1.4 GB, under the 2 GB cap; the 4,150 dates of 2010 to today are expected to take about 5 to 6 minutes. A nightly run of one date takes about a second plus the lookback read.
 
 ## Coverage
 
@@ -76,6 +99,7 @@ Code under check:
 - `backend/app/hat/data/corporate_actions.py`
 - `backend/app/hat/data/history_build.py`
 - `backend/app/hat/data/mcp_client.py`
+- `backend/app/hat/data/features.py`
 
 Checks:
 - `backend/tests/hat/hat_bhav_support.py`
@@ -86,6 +110,9 @@ Checks:
 - `backend/tests/hat/properties/test_ingest.py`
 - `backend/tests/hat/conformance/test_conf_store.py`
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
+- `backend/tests/hat/properties/test_features.py`
+- `backend/tests/hat/conformance/test_conf_features.py`
+- `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/db/test_db_corporate_actions.py`
 
 ## Sync commit
@@ -107,6 +134,13 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Smallcap 250's first date is `[A]` (default 2010-01-01); a gap is reported, not hidden.
 - The index archive CSV parser (`parse_index_archive_csv`) is covered by unit examples only, as MCP is the primary source for index history.
 - History-only securities register as inactive instruments with their symbol as name; renames across history are not recorded until a weekly refresh (follow-up).
+- Features: windows are over each instrument's own rows, and the generated histories include gaps (a day without a bar), short series, ties and a cloned instrument; the store-based properties (`split_invariant`, `incremental_equals_full`, `job_idempotent`) run 8 examples each with 253 to 330 bars, because each writes one Parquet file per day.
+- Features are float64: the spec's "exact for Decimal inputs" is checked against an exact Fraction evaluation within 1e-9 relative, and the first-run frames are not byte-compared across different frame starts (a re-run after a crash gives the same values within 1e-9, not the same bytes; a re-run with nothing to do writes nothing).
+- A close counts as above its SMA50 only when it exceeds it by more than a relative 1e-12 (`ABOVE_MARGIN`); the property compares with the exact comparison on generated prices (paise), where the two always agree.
+- Differences from the legacy pandas `compute_rs_map` and `stage2_metrics`, recorded and not matched (owner rule D59): `rs_pct` is a 0-100 float (average rank / n x 100), the pandas rating an integer 0-99 (the same rank x 99, rounded); `high_52w` and `low_52w` use the day's high and low, pandas uses closes (so `high_52w >= pandas high_52`); features cover instruments with fewer than 253 bars (null where a window is not full), pandas leaves them out. `features.pandas_equivalence` checks the parts that agree.
+- Instruments outside the universe get null `rs_pct` and `mom_rank`; the universe is one static set per run (point-in-time membership arrives with PR 9).
+- The advance/decline ratio of HAT-DATA-076 comes from `get_market_breadth` in the nightly ingest (PR 7), not from the features job.
+- A correction of bars of an already featured date is not detected: the caller runs with `full`.
 
 ## Scratch breaks
 
@@ -514,3 +548,246 @@ E     ?   ^^
 E     + day=2024-05-06
 ```
 
+### PBT features.no_lookahead
+
+Break: every rolling mean is read one row ahead (bars up to d+1).
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:214: in test_no_lookahead
+tests/hat/properties/test_features.py:247: in test_no_lookahead
+E   AssertionError: features of dates <= 2020-01-14 changed by change
+E   assert '323c180ddf29f880' == '803b4b8ce3be480d'
+E     - 803b4b8ce3be480d
+E     + 323c180ddf29f880
+```
+
+### PBT features.formulas
+
+Break: the moving-average window is one row short.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:323: in test_formulas
+tests/hat/properties/test_features.py:333: in test_formulas
+E   AssertionError: ('i00', datetime.date(2020, 1, 14), 'sma10', 4763.652222222223, None)
+E   assert False
+E    +  where False = close_to(4763.652222222223, None)
+E   Failing test case: test_formulas(
+```
+
+### PBT features.turnover_input
+
+Break: close x volume is preferred over the stored traded value.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:343: in test_turnover_input
+tests/hat/properties/test_features.py:358: in test_turnover_input
+E   assert False
+E    +  where False = close_to(15514473282.02, Fraction(9180342389, 2000))
+E    +    where Fraction(9180342389, 2000) = _mean([Fraction(660166469, 100), Fraction(272736993, 100), Fraction(57996629, 20), Fraction(12808287, 4), Fraction(330630123,
+E   Failing test case: test_turnover_input(
+```
+
+### PBT features.split_invariant
+
+Break: the loader reads raw bars instead of the adjusted view.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:724: in test_split_invariant
+tests/hat/properties/test_features.py:767: in test_split_invariant
+E   AssertionError: features of 2020-01-15 jump at the split
+E   assert False
+E    +  where False = same_features(shape: (3, 18)\n┌───────────────┬──────────┬───────┬───────┬───┬────────┬────────┬────────┬──────────┐\n│ instrument_id ...  ┆ null   
+E   Failing test case: test_split_invariant(
+```
+
+### PBT features.rs_pct
+
+Break: the 3 and 6 month weights are swapped.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:396: in test_rs_pct
+tests/hat/properties/test_features.py:420: in test_rs_pct
+E   AssertionError: ('i01', datetime.date(2020, 9, 14), 66.66666666666667, 33.333333333333336)
+E   assert False
+E    +  where False = <built-in function isclose>(66.66666666666667, 33.333333333333336, rel_tol=1e-12, abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+```
+
+Second break: ties take the minimum rank, not the average.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:396: in test_rs_pct
+tests/hat/properties/test_features.py:420: in test_rs_pct
+E   AssertionError: ('i00', datetime.date(2020, 9, 14), 50.0, 75.0)
+E   assert False
+E    +  where False = <built-in function isclose>(50.0, 75.0, rel_tol=1e-12, abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+```
+
+### PBT features.mom_rank
+
+Break: the smallest percentile instead of the largest.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:428: in test_mom_rank
+tests/hat/properties/test_features.py:456: in test_mom_rank
+E   AssertionError: ('i00', datetime.date(2020, 3, 9))
+E   assert False
+E    +  where False = <built-in function isclose>(50.0, 100.0, rel_tol=1e-12, abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+```
+
+### PBT features.breadth
+
+Break: the denominator is the whole universe, not the members with an SMA50.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:463: in test_breadth
+tests/hat/properties/test_features.py:495: in test_breadth
+E   assert False
+E    +  where False = <built-in function isclose>(50.0, ((100 * 1) / 1), rel_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+E   Failing test case: test_breadth(
+```
+
+### PBT features.breadth_without_sma50
+
+Break: breadth is 0 when no member has an SMA50.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:499: in test_breadth_without_sma50
+tests/hat/properties/test_features.py:505: in test_breadth_without_sma50
+E   AssertionError: assert 0 == 1
+E    +  where 0 = null_count()
+E    +    where null_count = shape: (1,)\nSeries: 'breadth_pct' [f64]\n[\n	0.0\n].null_count
+E    +  and   1 = shape: (1, 5)\n┌────────────┬───────────────┬────────────┬─────────────┬─────────────┐\n│ date       ┆ universe_size ┆ w...     ┆ 0          ┆ 0        
+```
+
+### PBT features.batching_changes_nothing
+
+Break: the first requested date is dropped.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:252: in test_batching_changes_nothing
+tests/hat/properties/test_features.py:261: in test_batching_changes_nothing
+E   AssertionError: assert '9ad8226f9cbcddcb' == '698256d6970c1d8f'
+E     - 698256d6970c1d8f
+E     + 9ad8226f9cbcddcb
+E   Failing test case: test_batching_changes_nothing(
+```
+
+### PBT features.load_lookback
+
+Break: no deeper read for instruments with a short slice.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:597: in test_load_lookback
+tests/hat/properties/test_features.py:670: in test_load_lookback
+E   AssertionError: assert {('i0', datet...(2020, 1, 8))} == {('i0', datet..., 1, 8)), ...}
+E     Extra items in the right set:
+E     ('i1', datetime.date(2020, 1, 6))
+E     ('i3', datetime.date(2020, 1, 6))
+```
+
+### PBT features.incremental_equals_full
+
+Break: the lookback is 251 rows.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:688: in test_incremental_equals_full
+tests/hat/properties/test_features.py:714: in test_incremental_equals_full
+E   AssertionError: features of 2020-09-15 differ
+E   assert False
+E    +  where False = same_features(shape: (1, 18)\n┌───────────────┬──────────┬───────────┬───────────┬───┬──────────┬────────┬────────┬──────────┐\n│ inst... ┆ null   ┆
+E   Failing test case: test_incremental_equals_full(
+```
+
+Second break: a change in the corporate actions does not force a full rebuild.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:688: in test_incremental_equals_full
+tests/hat/properties/test_features.py:714: in test_incremental_equals_full
+E   AssertionError: features of 2020-02-04 differ
+E   assert False
+E    +  where False = same_features(shape: (1, 18)\n┌───────────────┬──────────┬───────┬───────┬───┬────────┬────────┬────────┬──────────┐\n│ instrument_id ...  ┆ null   
+E   Failing test case: test_incremental_equals_full(
+```
+
+### PBT features.job_idempotent
+
+Break: a partition file is named by a random id, so re-runs leave different files.
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:783: in test_job_idempotent
+tests/hat/properties/test_features.py:821: in test_job_idempotent
+E   AssertionError: assert dict_keys(['b...32d.parquet']) == dict_keys(['b...d41.parquet'])
+E     Full diff:
+E     - dict_keys(['breadth_daily/date=2020-01-06/part-breadth.parquet', 'breadth_daily/date=2020-01-07/part-breadth.parquet', 'breadth_daily/date=2020-01-08/part-breadth
+E     + dict_keys(['breadth_daily/date=2020-01-06/part-breadth.parquet', 'breadth_daily/date=2020-01-07/part-breadth.parquet', 'breadth_daily/date=2020-01-08/part-breadth
+```
+
+Second break: a date counts as done when only its features file exists (a crash between the features and breadth writes is never repaired).
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:783: in test_job_idempotent
+tests/hat/properties/test_features.py:821: in test_job_idempotent
+E   AssertionError: assert dict_keys(['b...res.parquet']) == dict_keys(['b...res.parquet'])
+E     Full diff:
+E     - dict_keys(['breadth_daily/date=2020-01-06/part-breadth.parquet', 'breadth_daily/date=2020-01-07/part-breadth.parquet', 'breadth_daily/date=2020-01-08/part-breadth
+E     ?                                                                                                                       --------------------------------------------
+```
+
+### PBT features.pandas_equivalence
+
+Break: weights swapped (the pandas rating no longer matches).
+
+```
+tests/hat/properties/test_features.py F
+tests/hat/properties/test_features.py:834: in test_pandas_equivalence
+tests/hat/properties/test_features.py:869: in test_pandas_equivalence
+E   AssertionError: ('i0', 50, 99)
+E   assert (50 == 99 or (True and 49 == 1))
+E    +  where 49 = abs((50 - 99))
+E   Failing test case: test_pandas_equivalence(
+```
+
+### CONF features.schema
+
+Break: the `mom_rank` column is dropped from the schema.
+
+```
+tests/hat/conformance/test_conf_features.py F
+tests/hat/conformance/test_conf_features.py:69: in test_features__schema
+E   AssertionError: assert ['instrument_...'sma200', ...] == ['instrument_...'sma200', ...]
+E     Right contains one more item: 'mom_rank'
+E     Full diff:
+E       [
+```
+
+### CONF imports.hat_polars_only
+
+Break: `features.py` imports pandas.
+
+```
+tests/hat/conformance/test_conf_imports.py F
+tests/hat/conformance/test_conf_imports.py:146: in test_imports__hat_polars_only
+E   AssertionError: assert {'data/features.py': 'pandas'} == {}
+E     Left contains 1 more item:
+E     {'data/features.py': 'pandas'}
+E     Full diff:
+```
