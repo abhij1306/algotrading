@@ -436,9 +436,13 @@ def test_broker_status_mapping_is_total(code: object, filled: object, qty: objec
     know is `unconfirmed` (it blocks a retry until looked up), never filled or cancelled."""
     status = map_fyers_status(code, filled, qty)
     assert status in ORDER_STATUSES
-    if isinstance(code, bool) or not isinstance(code, int) or code not in {1, 2, 4, 5, 6, 7}:
-        if not isinstance(code, float) or code != code or code in (float("inf"), float("-inf")):
-            assert status == "unconfirmed"
+    known = {1, 2, 4, 5, 6, 7}
+    if isinstance(code, bool) or not isinstance(code, (int, float)):
+        assert status == "unconfirmed"
+    elif isinstance(code, float) and not code.is_integer():  # fractions, NaN, infinities
+        assert status == "unconfirmed"
+    elif int(code) not in known:
+        assert status == "unconfirmed"
 
 
 @given(st.integers(min_value=1, max_value=10_000), st.integers(min_value=0, max_value=10_000))
@@ -604,6 +608,8 @@ class OrderSubmission(RuleBasedStateMachine):
         # The row exists from reserve_order on, before the first broker call (fresh session read).
         from app.hat.models import HatOrder
 
+        # Roll back first: only a committed row survives, so a flushed-only row fails here.
+        self.env.session.rollback()
         rows = self.env.session.query(HatOrder).filter(HatOrder.tag == self.tag).count()
         assert rows == 1 or not self.fake.calls_named("place_order")
 

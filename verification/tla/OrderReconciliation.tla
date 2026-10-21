@@ -125,8 +125,10 @@ Reserve(t, p) ==
     /\ row[t] = "none"
     /\ \/ t = 0
        \/ /\ t > 0
-          /\ row[t - 1] = "rejected" \/ (BrokenMode = "retry_new_tag" /\ row[t - 1] = "unconfirmed")
-          /\ retries < MaxRetries \/ BrokenMode = "unlimited_retry"
+          /\ \/ row[t - 1] = "rejected"
+             \/ (BrokenMode = "retry_new_tag" /\ row[t - 1] = "unconfirmed")
+          /\ \/ retries < MaxRetries
+             \/ BrokenMode = "unlimited_retry"
     /\ row' = [row EXCEPT ![t] = "pending"]
     /\ product' = [product EXCEPT ![t] = p]
     /\ retries' = IF t > 0 THEN retries + 1 ELSE retries

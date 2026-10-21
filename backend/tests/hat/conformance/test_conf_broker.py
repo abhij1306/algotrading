@@ -3,7 +3,6 @@ HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-051)."""
 
 import inspect
 import re
-import typing
 from pathlib import Path
 
 from hat_conf_model import hat_tables
@@ -31,7 +30,12 @@ def _spec_methods() -> set[str]:
 
 
 def _protocol_methods() -> set[str]:
-    return set(typing.get_protocol_members(HatBroker))
+    # typing.get_protocol_members needs Python 3.13; the project supports 3.11 and up.
+    return {
+        name
+        for name, member in vars(HatBroker).items()
+        if not name.startswith("_") and callable(member)
+    }
 
 
 def test_brk__interface_methods() -> None:

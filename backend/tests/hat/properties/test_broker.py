@@ -250,7 +250,7 @@ def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
         method()
 
 
-def test_decimal_funds_and_exact_positions() -> None:
+def test_decimal_funds() -> None:
     env = exec_env()
     env.fake.available = 12345.5
     funds = env.broker.funds()

@@ -148,8 +148,10 @@ def reserve_order(session: Session, request: OrderRequest, *, retries: int = 3) 
         try:
             session.commit()
         except IntegrityError:
-            session.rollback()  # a concurrent reserve took this sequence: count again
-            continue
+            session.rollback()
+            if session.execute(select(HatOrder.id).where(HatOrder.tag == tag)).first() is None:
+                raise OrderRefusedError("reservation_failed") from None  # not a tag race
+            continue  # a concurrent reserve took this sequence: count again
         return tag
     raise OrderRefusedError("tag_conflict")
 

@@ -378,7 +378,7 @@ class FyersHatBroker:
             raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
         try:
             return parse(raw)
-        except (KeyError, ValueError, TypeError, InvalidOperation, AttributeError):
+        except (KeyError, ValueError, TypeError, InvalidOperation, AttributeError, OverflowError):
             logger.exception("Fyers reply could not be read")
             raise BrokerUnavailableError(CODE_INVALID_RESPONSE) from None
 

@@ -11,6 +11,7 @@ on a live account (PLAN Q8), so the MVP runs shadow only until then.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 
@@ -51,6 +52,9 @@ class ModeRefusedError(HatError):
     """A mode change the account's capabilities do not allow."""
 
 
+_ONBOARD_LOCK = threading.Lock()
+
+
 def onboard_account(
     session: Session, broker: HatBroker, *, user_id: uuid.UUID, broker_name: str, account_ref: str
 ) -> HatBrokerAccount:
@@ -58,6 +62,13 @@ def onboard_account(
     holdings were all fetched, else `failed`. Re-running for the same account updates it."""
     if broker_name not in ADAPTER_FACTORIES:
         raise OnboardingError("unsupported broker")
+    with _ONBOARD_LOCK:  # one lookup-then-insert at a time in this process
+        return _onboard(session, broker, user_id, broker_name, account_ref)
+
+
+def _onboard(
+    session: Session, broker: HatBroker, user_id: uuid.UUID, broker_name: str, account_ref: str
+) -> HatBrokerAccount:
     account = session.execute(
         select(HatBrokerAccount).where(
             HatBrokerAccount.user_id == user_id,

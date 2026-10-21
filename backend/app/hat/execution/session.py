@@ -59,10 +59,14 @@ class SessionOwner:
         if self._released:
             raise SessionOwnedError("this session owner was released")
         with self._calls:
+            if self._released:
+                raise SessionOwnedError("this session owner was released")
             return fn()
 
     def release(self) -> None:
-        self._released = True
+        """Wait for the call in flight (queued calls then refuse), then give the session up."""
+        with self._calls:
+            self._released = True
         self._registry.release(self)
 
 
