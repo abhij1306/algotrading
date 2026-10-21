@@ -76,7 +76,8 @@ def test_event_and_state_atomic(runs: list[tuple[str, str]]) -> None:
             events = check.scalars(
                 select(HatEvent.event_type).where(HatEvent.aggregate_id == run_id)
             ).all()
-        expected_counts = (1, 1) if job in committed else (0, 0)
-        assert (rows, len(events)) == expected_counts
+        stored = 1 if job in committed else 0
+        assert rows == stored
+        assert len(events) == stored
         if job in committed:
             assert events == [committed[job]]
