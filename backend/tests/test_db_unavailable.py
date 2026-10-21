@@ -143,8 +143,10 @@ def test_startup_with_hat_enabled_refuses_a_down_database(
     monkeypatch.setattr(database, "engine", down_engine)
     monkeypatch.setenv("HAT_ENABLED", "true")
 
+    init_database = app_main._init_database()
+
     with pytest.raises(DatabaseUnavailableError):
-        asyncio.run(app_main._init_database())
+        asyncio.run(init_database)
 
 
 @pytest.mark.parametrize(

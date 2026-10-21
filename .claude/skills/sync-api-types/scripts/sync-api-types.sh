@@ -16,7 +16,7 @@ if [ -z "$py" ]; then
   main="$(git -C "$repo" worktree list --porcelain | sed -n '1s/^worktree //p')"
   for base in "$repo" "$main"; do
     for candidate in "$base/venv/bin/python" "$base/venv/Scripts/python.exe"; do
-      if [ -x "$candidate" ]; then py="$candidate"; break 2; fi
+      if [[ -x "$candidate" ]]; then py="$candidate"; break 2; fi
     done
   done
 fi

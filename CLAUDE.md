@@ -129,7 +129,10 @@ cd backend
 python -m pytest tests/hat/conformance -q            # CONF checks, no database needed
 CI=1 python -m pytest tests/hat/properties/<file> -q # Hypothesis properties under the CI profile
 python -m pytest -n auto --ignore=tests/hat/properties --ignore=tests/hat/conformance
-verification/tla/run.sh                              # from the repo root: the TLC models
+
+# the TLC models, from the repo root
+cd ..
+verification/tla/run.sh
 ```
 
 Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything. Put long

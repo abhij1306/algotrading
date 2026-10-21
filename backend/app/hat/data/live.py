@@ -2,10 +2,10 @@
 
 HAT reads ticks from its own live feed (`feed.py`) and never opens a socket of its own
 (HAT-DATA-110, HAT-OVR-006): `LiveData.attach` registers `on_tick` with the feed's
-`add_tick_listener`, and that is the only tick input. The hook runs on the event-loop thread, so
-everything here that touches state runs on that thread; the periodic `run` loop is a task on the
-same loop, and the
-blocking work (the Parquet write, the event insert) is handed to a worker thread.
+`add_tick_listener`, and that is the only tick input. PR 17 does the attaching in the lifespan;
+until then nothing constructs `LiveData`. The hook runs on the event-loop thread, so everything
+here that touches state runs on that thread; the periodic `run` loop is a task on the same loop,
+and the blocking work (the Parquet write, the event insert) is handed to a worker thread.
 
 Nothing here runs unless HAT is enabled: the wiring (PR 17) builds a `LiveData` only when
 `HAT_ENABLED` is true, so with HAT off the feed has no listener and behaves exactly as before.

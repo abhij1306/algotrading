@@ -18,7 +18,7 @@ find_python() {
   main="$(git -C "$root" worktree list --porcelain | sed -n '1s/^worktree //p')"
   for base in "$root" "$main"; do
     for candidate in "$base/venv/bin/python" "$base/venv/Scripts/python.exe"; do
-      if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+      if [[ -x "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
     done
   done
   return 1
@@ -29,7 +29,7 @@ find_python() {
 if [[ "$file" == *.py && ( -n "$backend_rel" || ( -n "$root_rel" && -z "$frontend_rel" ) ) ]]; then
   py="$(find_python)" || exit 0
   "$py" -m ruff --version > /dev/null 2>&1 || exit 0
-  if [ -n "$backend_rel" ]; then
+  if [[ -n "$backend_rel" ]]; then
     workdir="$root/backend"; target="$backend_rel"; repo_path="backend/$backend_rel"
   else
     workdir="$root"; target="$root_rel"; repo_path="$root_rel"

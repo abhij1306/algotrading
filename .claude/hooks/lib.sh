@@ -3,7 +3,9 @@
 
 # Print tool_input.file_path from the hook JSON on stdin, with forward slashes.
 hook_file_path() {
-  python3 -c '
+  local py
+  py="$(command -v python3 || command -v python)" || return 0
+  "$py" -c '
 import json, sys
 try:
     path = (json.load(sys.stdin).get("tool_input") or {}).get("file_path") or ""
