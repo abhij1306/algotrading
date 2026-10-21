@@ -98,7 +98,8 @@ def stale_skills() -> list[tuple[Path, str, str]]:
 
 def main(args: list[str]) -> int:
     """`<skill>` prints its digest; `--stale` lists stale skills (exit 1 if any); `--refresh`
-    rewrites their recorded digests and names them, so their verification can be re-confirmed."""
+    rewrites their recorded digests and names them. Refresh only after rerunning each stale
+    skill's checks and confirming its text still matches the code (builder-protocol.md)."""
     if args and args[0] in ("--stale", "--refresh"):
         stale = stale_skills()
         for path, old, new in stale:

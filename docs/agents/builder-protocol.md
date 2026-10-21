@@ -49,11 +49,12 @@ breaks is a finding: fix the code, never weaken the property.
   locally. Before that first push, run a fresh-context review of the whole diff (`/code-review`)
   and fix what it finds; that is where CodeAnt's real bugs get caught early. After the push, wait
   until CI, Sonar and CodeAnt have all finished, then fix everything in one commit.
-- **Pre-push check**, from the worktree root:
-  `python backend/tests/hat/conformance/hat_conf_skills.py --refresh` (refreshes verify-skill
-  digests), `ruff format --check .`, `ruff check .`, then from `backend/` the test files you
-  touched plus `tests/hat/conformance`, `-m postgres` files if you touched schema, and
-  `pnpm check` if you touched the frontend. CI runs everything else.
+- **Pre-push check**, from the worktree root: `ruff format --check .`, `ruff check .`, then from
+  `backend/` the test files you touched plus `tests/hat/conformance`, `-m postgres` files if you
+  touched schema, and `pnpm check` if you touched the frontend. CI runs everything else.
+  Last, `python backend/tests/hat/conformance/hat_conf_skills.py --stale` names the `verify-*`
+  skills whose covered files you changed: run each one's Run command, make sure its Properties
+  and Coverage still describe the code, and only then record it with `--refresh`.
 - **Tests while iterating:** run the one test you are working on, default Hypothesis profile.
   The CI profile, TLC and break runs go once, at the end, in the background.
 - **Context:** keep `HANDOFF.md` in your worktree current (goal, done, next, open findings) so a
@@ -63,8 +64,8 @@ breaks is a finding: fix the code, never weaken the property.
 - **Waiting:** wait on CI with `gh pr checks <n> --watch` under `run_in_background`; never
   foreground `sleep`, never `pgrep -f` loops (they match themselves and never end).
 - **Rebase** only when the orchestrator says you're next to merge: rebase onto `origin/main`,
-  keep both sides in shared files (`MERGED_PRS`, `LATER`, verify skills), `--refresh` the digests,
-  rerun the pre-push check, `git push --force-with-lease`, report READY again.
+  keep both sides in shared files (`MERGED_PRS`, `LATER`, verify skills), rerun the pre-push
+  check (including the `--stale` step), `git push --force-with-lease`, report READY again.
 
 ## PR
 

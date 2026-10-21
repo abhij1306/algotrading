@@ -35,14 +35,16 @@ A folder-trust prompt on first start (`agent_not_ready`): `herdr agent send-keys
 
 ## Watch
 
-Watch each builder in the background and react the moment it ends a turn with
-`READY TO MERGE #` or `BLOCKED #`; a builder idling on you is the costliest wait there is.
+Watch each builder in the background and react the moment it ends a turn with `READY TO MERGE #`
+or `BLOCKED #`; a builder idling on you is the costliest wait there is. Start the watch after
+sending a prompt; the first check catches a builder that already finished, and the short pause
+lets it pick the prompt up so an old report line isn't read as new.
 
 ```bash
-n=prNN; while true; do
+n=prNN; sleep 30; while true; do
+  herdr agent read $n --source recent-unwrapped --lines 15 | grep -E 'READY TO MERGE #|BLOCKED #' && break
   herdr agent wait $n --until working --timeout 3600000 >/dev/null 2>&1
   herdr agent wait $n --until idle --until done --until blocked --timeout 14400000 >/dev/null 2>&1
-  herdr agent read $n --source recent-unwrapped --lines 15 | grep -E 'READY TO MERGE #|BLOCKED #' && break
 done
 ```
 
