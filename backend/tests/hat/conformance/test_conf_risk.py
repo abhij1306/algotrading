@@ -308,8 +308,11 @@ SAFETY_DIGESTS = {
     "test_a_timeout_is_looked_up_before_any_retry": (
         "4b50acb1d6e3570be4df3eeee09e32b431a950f8cd0acbfd6f8dafa536d0d8bd"
     ),
+    # Re-pinned in PR 24 (owner decision D118, trading-safety rules 5 and 7 reworded): the
+    # reconciliation gate holds entries only, so a stop or a sale must now pass while the trade
+    # date is not reconciled; every other refusal is unchanged.
     "test_refusals_happen_before_the_broker": (
-        "8cfe106ff44db97239b37b2c032f969ddde05a564415422f43fc7296763e9b8a"
+        "37d5904fb0319c25bc548b5c0381aab09f4bf40bd1e7fa822acc41adfea54750"
     ),
     "test_nothing_is_sent_while_the_circuit_is_open": (
         "56c22d14f1156f34bf3893a3d34265da99af6a590d6c4eab9dab33635e00b300"

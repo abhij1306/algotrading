@@ -27,8 +27,8 @@ purpose are sent per signal (HAT-OPS-032); then `exit.not_placed` is raised and 
 keeps protecting the position. A rejection the broker sends after taking the sale counts the same
 (`FillSync`, HAT-EXEC-075). A sale whose answer was lost is looked up by its tag before the
 position is sold again (HAT-EXEC-065): found, it is adopted; absent after a good read, it ends
-`expired` and its rules fire again, so it never blocks the position's later sales. Nothing is sent
-before the session's reconciliation.
+`expired` and its rules fire again, so it never blocks the position's later sales. No sale, stop
+or fill sync waits for a reconciliation: a failed one blocks new entries only (D118).
 """
 
 from __future__ import annotations
@@ -64,7 +64,6 @@ from .protect import (
     VERIFIED,
     StopDesk,
 )
-from .reconcile import ReconciliationService
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -156,7 +155,6 @@ class TradeManager:
         self,
         broker: HatBroker,
         guard: ExecutionGuard,
-        reconciler: ReconciliationService,
         desk: StopDesk,
         fills: FillSync,
         *,
@@ -169,7 +167,6 @@ class TradeManager:
     ) -> None:
         self._broker = broker
         self._guard = guard
-        self._reconciler = reconciler
         self._desk = desk
         self._fills = fills
         self._calendar = calendar
@@ -226,16 +223,6 @@ class TradeManager:
     def _orders_allowed(self, now: datetime) -> bool:
         open_now = self._calendar is not None and self._calendar.state(now) is SessionState.OPEN
         return open_now and now.astimezone(IST).time() < ORDERS_UNTIL
-
-    def _reconciled(self, session: Session, account_id: uuid.UUID) -> bool:
-        """HAT-BRK-110: nothing is sent before this session's reconciliation."""
-        if self._guard.reconciled:
-            return True
-        try:
-            self._reconciler.run(session, account_id)
-        except BrokerUnavailableError:
-            return False
-        return self._guard.reconciled
 
     # --- live price events --------------------------------------------------------------------
 
@@ -382,9 +369,6 @@ class TradeManager:
         # nothing from 15:30 on (HAT-EXEC-074).
         if not self._orders_allowed(sending()):
             self._not_placed(signal, position, "market_closed", now)
-            return None
-        if not self._reconciled(session, bot.broker_account_id):
-            self._not_placed(signal, position, "not_reconciled", now)
             return None
         if rejected_sales(session, signal.id, purpose, now) >= MAX_SALE_REJECTIONS:
             return None  # refused twice today and alerted then; tried again the next session
@@ -598,9 +582,6 @@ class TradeManager:
     def swap_stops(self, session: Session, account_id: uuid.UUID, now: datetime) -> StopsReport:
         """The `gtt.swap` job body: every open real position's intraday stop becomes a GTT."""
         report = StopsReport()
-        if not self._reconciled(session, account_id):
-            report.failed = [p.id for p in self.open_positions(session, account_id)]
-            return report
         for position in self.open_positions(session, account_id):
             outcome = self._desk.swap(session, position.id, now)
             if outcome == SWAPPED:
@@ -611,11 +592,9 @@ class TradeManager:
 
     def sync(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport | None:
         """Bring down to its stop the broker stop of any position a split or bonus rescaled,
-        then read the broker's fills into HAT's book (after this session's reconciliation). The
+        then read the broker's fills into HAT's book (never waiting for a reconciliation). The
         trigger moves first: the fill sync resizes a stop to the open quantity at its trigger, and
         a full-size stop at the old trigger would sell the position at the open."""
-        if not self._reconciled(session, account_id):
-            return None
         self._follow_rescales(session, account_id, now)
         try:
             return self._fills.run(session, account_id, now)
@@ -639,7 +618,7 @@ class TradeManager:
         """The `gtt.verify` job body (HAT-EXEC-063, HAT-OPS-024): the broker's fills first, then
         every open real position's GTT refreshed, or alerted and placed again."""
         report = StopsReport()
-        # Fills unread (unreconciled, or the book unreadable): the open quantities may be stale,
+        # Fills unread (the trade book unreadable): the open quantities may be stale,
         # so no GTT is modified or placed; each position is alerted `gtt.unverified`.
         fresh = self.sync(session, account_id, now) is not None
         for position in self.open_positions(session, account_id):

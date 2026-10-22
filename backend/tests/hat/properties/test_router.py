@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
+from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
@@ -25,7 +25,7 @@ from hypothesis import strategies as st
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.hat.daily.accounts import Desks
+from app.hat.daily.accounts import RECONCILE_FAILED, Desks
 from app.hat.daily.live import stale_feed
 from app.hat.daily.production import one_login_each
 from app.hat.data.staleness import StalenessMonitor
@@ -119,7 +119,7 @@ class Rig:
         broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.broker = broker
-        self.guard = ExecutionGuard(reconciled=reconciled)
+        self.guard = guard_on(TRADE_DAY, reconciled=reconciled)
         self.notifier = RecordingNotifier()
         reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
         self.router = ExecutionRouter(broker, self.guard, reconciler, self.notifier)
@@ -465,7 +465,7 @@ def test_reconcile_before_first_order(foreign_ht: bool, unreadable: bool) -> Non
             assert ALERT_ENTRY_NOT_PLACED in rig.codes()
         else:
             assert len(rig.places()) == 1
-            assert rig.guard.reconciled
+            assert rig.guard.reconciled_today()
             assert signal.state == lifecycle.ENTRY_PLACED
 
 
@@ -483,7 +483,7 @@ class GuardSpy:
         return getattr(self._broker, name)
 
     def _read(self, name: str) -> object:
-        self.seen.append(self._guard.refusal(self._bot_id, uuid.uuid4(), is_entry=False))
+        self.seen.append(self._guard.refusal(self._bot_id, uuid.uuid4(), is_entry=True))
         return getattr(self._broker, name)()
 
     def orders(self) -> object:
@@ -499,11 +499,10 @@ class GuardSpy:
 @settings(max_examples=20, deadline=None)
 @given(st.integers(min_value=1, max_value=3), st.booleans())
 def test_routine_reconcile_keeps_gate(runs: int, unreadable: bool) -> None:
-    """HAT-BRK-110, `OrderReconciliation` (`reconciled`: a reconciliation succeeded in this
-    process lifetime): once the session reconciled, the periodic re-runs, readable or not, never
-    close the order gate while they read the book, and a run that cannot read the book leaves it
-    open. Harm: an entry or a sale on another thread lands inside the five-minutely read, is
-    refused `not_reconciled`, and the entry is lost or the position is left without its stop."""
+    """HAT-BRK-110, `OrderReconciliation`: once the trade date reconciled, the periodic re-runs,
+    readable or not, never close the entry gate while they read the book, and a run that cannot
+    read the book leaves it open. Harm: an entry on another thread lands inside the five-minutely
+    read, is refused `not_reconciled`, and is lost."""
     with Session(memory_engine()) as session:
         rig = Rig(session, mode=modes.AUTO)
         spy = GuardSpy(rig.broker, rig.guard, rig.world.bot_id)
@@ -517,7 +516,141 @@ def test_routine_reconcile_keeps_gate(runs: int, unreadable: bool) -> None:
                 pass
         assert spy.seen
         assert set(spy.seen) == {None}
-        assert rig.guard.reconciled
+        assert rig.guard.reconciled_today()
+
+
+class InterleavedBook:
+    """The adapter, running a whole second reconciliation (`then`) right after the first run's
+    order-book read: two runs on different threads finishing out of order."""
+
+    def __init__(self, broker: FyersHatBroker, then: Callable[[], None]) -> None:
+        self._broker = broker
+        self._then: Callable[[], None] | None = then
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._broker, name)
+
+    def orders(self) -> object:
+        book = self._broker.orders()
+        then, self._then = self._then, None
+        if then is not None:
+            then()
+        return book
+
+
+def _foreign_ht_row() -> dict[str, object]:
+    return {
+        "id": "B-X",
+        "symbol": "NSE:SBIN-EQ",
+        "qty": 1,
+        "filledQty": 0,
+        "status": 6,
+        "side": 1,
+        "type": 1,
+        "productType": "CNC",
+        "orderTag": encode_tag(uuid.uuid4(), ENTRY, 0),
+        "limitPrice": 100.0,
+    }
+
+
+@settings(max_examples=10, deadline=None)
+@given(st.booleans(), st.booleans())
+def test_older_read_never_overrides_newer(first_unknown: bool, second_unknown: bool) -> None:
+    """HAT-BRK-111: when a reconciliation that read the book earlier finishes after one that
+    read it later, the later read's result stays in force: an older clean book never clears a
+    newer mismatch, and an older mismatch never re-blocks after a newer clean book. Harm: the
+    router's run and the periodic run race, and entries open over a book with an unknown HT
+    order."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        rig.fake.orders = [_foreign_ht_row()] if first_unknown else []
+
+        def second_run() -> None:
+            rig.fake.orders = [_foreign_ht_row()] if second_unknown else []
+            with Session(session.get_bind()) as other:
+                ReconciliationService(rig.broker, rig.guard).run(other, rig.account_id)
+
+        first = ReconciliationService(InterleavedBook(rig.broker, second_run), rig.guard)  # type: ignore[arg-type]
+        first.run(session, rig.account_id)
+        refusal = rig.guard.refusal(rig.world.bot_id, rig.account_id, is_entry=True)
+        assert (refusal == "reconcile_mismatch") == second_unknown
+        assert refusal in (None, "reconcile_mismatch")
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    st.lists(
+        st.tuples(st.integers(min_value=0, max_value=2), st.booleans()), min_size=1, max_size=6
+    )
+)
+@example([(0, True), (1, False)])
+@example([(0, False), (0, True)])
+def test_entry_gate_keyed_by_trade_date(runs: list[tuple[int, bool]]) -> None:
+    """HAT-BRK-110, -111, D118: an entry is accepted on a trade date only after a successful
+    reconciliation of that date (a success on an earlier date opens nothing), and a failed run
+    after it never closes the gate; a stop or a sale is never refused by the reconciliation
+    state. Each step moves the clock on by 0..2 trade dates and runs a reconciliation that reads
+    the book or cannot. Harm: yesterday's success opens today's entries over a book HAT has not
+    matched, or an unreadable book keeps a stop or a sale from reaching the broker."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        day = [TRADE_DAY]
+        guard = ExecutionGuard(today=lambda: day[0])
+        reconciler = ReconciliationService(rig.broker, guard)
+        book = rig.fake.orders
+        succeeded: set[object] = set()
+        for skip, readable in runs:
+            day[0] += timedelta(days=skip)
+            rig.fake.orders = book if readable else ConnectionError("down")
+            try:
+                reconciler.run(session, rig.account_id)
+                succeeded.add(day[0])
+            except BrokerUnavailableError:
+                pass
+            entry = guard.refusal(rig.world.bot_id, rig.account_id, is_entry=True)
+            assert (entry is None) == (day[0] in succeeded)
+            assert guard.refusal(rig.world.bot_id, rig.account_id, is_entry=False) is None
+
+
+@settings(max_examples=20, deadline=None)
+@given(
+    st.lists(
+        st.tuples(st.integers(min_value=0, max_value=1), st.booleans()), min_size=1, max_size=6
+    )
+)
+def test_failed_first_reconcile_alerts_once_per_date(runs: list[tuple[int, bool]]) -> None:
+    """D118: a reconciliation that fails before the trade date's first success raises one
+    `reconcile.failed` health alert for that date, however many runs fail; a failure after the
+    date's success raises none. Harm: the owner never learns the account cannot open entries,
+    or the chat is flooded every five minutes."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        day = [TRADE_DAY]
+        notifier = RecordingNotifier()
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            notifier,
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+            today=lambda: day[0],
+        )
+        book = rig.fake.orders
+        expected: set[object] = set()
+        succeeded: set[object] = set()
+        for skip, readable in runs:
+            day[0] += timedelta(days=skip)
+            rig.fake.orders = book if readable else ConnectionError("down")
+            if readable:
+                succeeded.add(day[0])
+            elif day[0] not in succeeded:
+                expected.add(day[0])
+            desks.reconcile_all(datetime.combine(day[0], AT.astimezone(IST).time(), tzinfo=IST))
+        desks.release()
+        failed = [alert for alert in notifier.alerts if alert[0] == RECONCILE_FAILED]
+        assert sorted(d for _, d, _ in failed) == sorted(expected)
 
 
 class _NoHealth:
@@ -567,7 +700,11 @@ def test_resumed_entry_waits_for_feed(earlier: bool, late: bool, heard: bool, ag
             calendar=lambda: CALENDAR,
             tick_for=lambda _s, _p: None,
         )
+        reads = len(rig.fake.calls)
         desks.recover(now)
+        # the restart runs the fill sync (which re-protects any fill) after the reconciliation
+        # whether or not it succeeded: two order-book reads, the reconciliation's and the sync's
+        assert [name for name, _ in rig.fake.calls[reads:]].count("fetch_orderbook") == 2
         desks.resume_entries(now, check, lambda: stale_feed(monitor, now))
         assert rig.places() == []  # no tick heard since the start: the feed reads as stale
         if heard:

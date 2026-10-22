@@ -9,8 +9,9 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from hat.fakes.broker import accepted, rejected, unconfirmed
-from hat_engine_support import exit_stack
+from hat_engine_support import TRADE_DAY, exit_stack
 from hat_exec_support import SYMBOLS
 from hat_manage_support import TICK, ManageRig, at
 from hat_support import memory_engine
@@ -458,24 +459,57 @@ def _event_count(session: Session, row: HatOrder, kind: str) -> int:
 # ---------------------------------------------------------------------------------------
 
 KILLS = st.sampled_from(["none", "account", "bot", "pause"])
+# The reconciliation state the fill sync and the exits meet (D118): today's success, none ever,
+# only yesterday's, today's success then a run that cannot read the book, or a mismatch.
+RECONCILED = st.sampled_from(["today", "never", "yesterday", "failed", "mismatch"])
+
+
+def _reconciled_as(rig: ManageRig, session: Session, state: str) -> None:
+    if state == "never":
+        rig.guard.reconciled_for = None
+    elif state == "yesterday":
+        rig.guard.reconciled_for = TRADE_DAY - timedelta(days=1)
+    elif state == "failed":
+        book = rig.fake.orders
+        rig.fake.orders = ConnectionError("down")
+        with pytest.raises(BrokerUnavailableError):
+            rig.reconciler.run(session, rig.account_id)
+        rig.fake.orders = book
+    elif state == "mismatch":
+        rig.guard.blocked_accounts.add(rig.account_id)
+        rig.guard.blocked_bots.add(rig.world.bot_id)
 
 
 @settings(max_examples=25, deadline=None)
 @given(
     kill=KILLS,
+    reconciled=RECONCILED,
     path=st.lists(st.decimals(min_value=90, max_value=140, places=1), min_size=1, max_size=6),
 )
-def test_real_exits_never_blocked(kill: str, path: list[Decimal]) -> None:
-    """06 §6, HAT-EXEC-070, HAT-DEC-B17: a real position's live exits come from the same exit
-    stack as a shadow position's, and are sent as MARKET SELL CNC orders whatever kill switch or
-    pause is on: the broker sees the same sales with and without one. The hard stop is left to
-    the broker stop resting under the position. Harm: a tripped kill switch traps a position
-    that its exits should sell, or HAT sells twice at the stop."""
-    sales: dict[str, list[tuple[str, int]]] = {}
-    for variant in ("none", kill):
+@example(kill="none", reconciled="never", path=[D(139)])
+@example(kill="none", reconciled="yesterday", path=[D(95)])
+def test_real_exits_never_blocked(kill: str, reconciled: str, path: list[Decimal]) -> None:
+    """06 §6, HAT-EXEC-070, HAT-DEC-B17, D118: a real position's live exits come from the same
+    exit stack as a shadow position's, and are sent as MARKET SELL CNC orders whatever kill
+    switch or pause is on and whatever the reconciliation state (none today, only yesterday's, a
+    failed run, a mismatch): the broker sees the same stop and sales as with today's success
+    and no switch. The hard stop is left to the broker stop resting under the position. Harm: a
+    tripped kill switch or an unreadable order book traps a position that its exits should
+    sell, leaves a new fill without its stop, or HAT sells twice at the stop."""
+    sales: list[list[tuple[str, int]]] = []
+    for variant, state in (("none", "today"), (kill, reconciled)):
         with Session(memory_engine()) as session:
             rig = ManageRig(session, exits=exit_stack("partials"))
-            position = _opened(rig, at(10, 40))
+            outcome = rig.enter(at(10, 30))
+            row = rig.entry_row(outcome.signal_id)
+            assert row is not None
+            rig.fill(row, row.qty, D(row.price))
+            _reconciled_as(rig, session, state)
+            rig.sync(at(10, 40))
+            position = rig.position(outcome.signal_id)
+            assert position is not None
+            [stop] = rig.stops(position.id)  # the new fill rests on its stop
+            assert stop.qty == position.qty_open
             if variant == "pause":
                 assert controls.pause_bot(session, rig.world.bot_id, at(10, 45), chat_id=7)
             elif variant != "none":
@@ -505,8 +539,8 @@ def test_real_exits_never_blocked(kill: str, path: list[Decimal]) -> None:
             orders = [args for name, args in calls if name == "place_order"]
             assert all(o["side"] == "SELL" and o["product"] == "CNC" for o in orders)
             assert all(o["type"] == "MARKET" for o in orders)
-            sales[variant] = [(o["type"], o["quantity"]) for o in orders]
-    assert sales[kill] == sales["none"]
+            sales.append([(o["type"], o["quantity"]) for o in orders])
+    assert sales[1] == sales[0]
 
 
 # ---------------------------------------------------------------------------------------

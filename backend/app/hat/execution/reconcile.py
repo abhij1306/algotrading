@@ -1,17 +1,20 @@
 """Reconciliation of the broker's book with HAT's (HAT-BRK-110, -111, -112; HAT-OPS-003; 07 §11).
 
 On startup, before the first order of a session, and periodically, the broker's HT-tagged orders
-and the positions it holds are matched to `hat_order` and `hat_position`. Nothing is placed until a
-reconciliation has succeeded (`ExecutionGuard.reconciled`). A mismatch never auto-closes or
-auto-adopts a position: it blocks new entries for the affected bot (the whole account when the
-bot cannot be told) and raises one alert per mismatch, while exits and stops keep running. Orders
-tagged by the terminal (`ST`) or untagged are out of scope. The model is
+and the positions it holds are matched to `hat_order` and `hat_position`. No entry is placed on a
+trade date until a reconciliation of that date has succeeded (`ExecutionGuard.reconciled_for`);
+stops and sales never wait for it (D118). A mismatch never auto-closes or auto-adopts a position:
+it blocks new entries for the affected bot (the whole account when the bot cannot be told) and
+raises one alert per mismatch, while exits and stops keep running. Orders tagged by the terminal
+(`ST`) or untagged are out of scope: such a row the adapter cannot read is skipped and counted,
+with one `reconcile.unreadable_row` health alert per trade date. The model is
 `verification/tla/OrderReconciliation.tla`.
 
-Delivery positions: the broker shows a same-day CNC buy in positions and a settled one in
-holdings. The quantity compared is the larger of the two per symbol (a same-day buy that appears
-in both is not counted twice); a partial overlap reads as a mismatch, which fails closed.
-[verify] on a live account (owner step, PLAN Q8).
+Delivery positions: the broker shows a settled delivery in holdings and today's CNC trades as a
+signed net position. The quantity compared is the holding plus today's signed net CNC quantity
+per symbol (MX-F8): a buy today adds, a sale today of a holding subtracts, so a holding sold in
+full reads as 0. A same-day buy shown in both would count twice and read as a mismatch, which
+fails closed. [verify] on a live account (owner step, PLAN Q8).
 """
 
 from __future__ import annotations
@@ -71,18 +74,14 @@ class HatPositionView:
 def broker_quantities(
     positions: Iterable[BrokerPosition], holdings: Iterable[BrokerHolding]
 ) -> dict[str, int]:
-    """Quantity held per symbol: the larger of the CNC position and the holding."""
-    in_positions: dict[str, int] = defaultdict(int)
+    """Quantity held per symbol: the holding plus today's signed net CNC position."""
+    held: dict[str, int] = defaultdict(int)
     for position in positions:
         if position.product == "CNC":
-            in_positions[position.symbol] += position.qty
-    in_holdings: dict[str, int] = defaultdict(int)
+            held[position.symbol] += position.qty
     for holding in holdings:
-        in_holdings[holding.symbol] += holding.qty
-    return {
-        symbol: max(in_positions.get(symbol, 0), in_holdings.get(symbol, 0))
-        for symbol in {*in_positions, *in_holdings}
-    }
+        held[holding.symbol] += holding.qty
+    return dict(held)
 
 
 def find_mismatches(
@@ -130,7 +129,8 @@ def find_mismatches(
 class ReconcileReport:
     mismatches: list[Mismatch]
     adopted: list[str]  # tags of pending or unconfirmed orders found at the broker
-    alerts: int  # new alerts raised by this run
+    alerts: int  # new mismatch alerts raised by this run
+    skipped_rows: int = 0  # order rows outside HAT's scope that could not be read
 
 
 AlertSink = Callable[[Mismatch], None]
@@ -141,6 +141,7 @@ def _log_alert(mismatch: Mismatch) -> None:
 
 
 MISMATCH_ALERT = "reconcile.mismatch"
+UNREADABLE_ROW_ALERT = "reconcile.unreadable_row"
 
 
 def _today() -> date:
@@ -166,20 +167,29 @@ class ReconciliationService:
     """Run it at startup and then periodically; it owns the one-alert-per-mismatch memory."""
 
     def __init__(
-        self, broker: HatBroker, guard: ExecutionGuard, alert: AlertSink = _log_alert
+        self,
+        broker: HatBroker,
+        guard: ExecutionGuard,
+        alert: AlertSink = _log_alert,
+        notifier: Notifier | None = None,
     ) -> None:
         self._broker = broker
         self._guard = guard
         self._alert = alert
+        self._notifier = notifier
         self._alerted: set[tuple[str, str, uuid.UUID | None]] = set()
+        self._unreadable_alerted_on: date | None = None
 
     def run(self, session: Session, account_id: uuid.UUID) -> ReconcileReport:
         """Reconcile one broker account. Raises BrokerUnavailableError when the broker cannot be
-        read, leaving the guard as it was: a session not yet reconciled places nothing, and a
-        routine re-run never closes the gate under orders on other threads (a reconciliation
-        succeeded in this process lifetime, `OrderReconciliation`). A start or a new session
-        clears the guard first (`ExecutionGuard.begin_session`)."""
+        read, leaving the guard as it was: a trade date not yet reconciled places no entry, and a
+        routine re-run never closes the gate a success of the same date opened. A success opens
+        the entries of the guard's trade date (`ExecutionGuard.update`)."""
+        day = self._guard.today()  # the date of the book read, not of the run's end
+        read = self._guard.begin_read()
         orders = self._broker.orders()
+        skipped = orders.skipped
+        self._alert_unreadable(day, skipped)
         quantities = broker_quantities(self._broker.positions(), self._broker.holdings())
         by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}
 
@@ -244,6 +254,17 @@ class ReconciliationService:
             self._alert(mismatch)
         self._alerted = current  # a mismatch that clears and returns alerts again
         self._guard.update(
-            reconciled=True, blocked_bots=blocked_bots, blocked_accounts=blocked_accounts
+            read=read, day=day, blocked_bots=blocked_bots, blocked_accounts=blocked_accounts
         )
-        return ReconcileReport(mismatches=mismatches, adopted=adopted, alerts=len(fresh))
+        return ReconcileReport(
+            mismatches=mismatches, adopted=adopted, alerts=len(fresh), skipped_rows=skipped
+        )
+
+    def _alert_unreadable(self, day: date, skipped: int) -> None:
+        """One `reconcile.unreadable_row` health alert per trade date with a skipped row."""
+        if skipped == 0 or self._unreadable_alerted_on == day:
+            return
+        self._unreadable_alerted_on = day
+        logger.warning("reconcile skipped %d unreadable order rows", skipped)
+        if self._notifier is not None:
+            self._notifier.alert(UNREADABLE_ROW_ALERT, day, {"rows": skipped})

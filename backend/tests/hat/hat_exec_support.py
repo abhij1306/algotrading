@@ -84,7 +84,7 @@ def exec_env(
     session.add(account)
     session.commit()
     fake = fake if fake is not None else FakeBroker()
-    guard = ExecutionGuard(reconciled=reconciled)
+    guard = guard_on(SESSION_DAY, reconciled=reconciled)
     return ExecEnv(
         session=session,
         account_id=account.id,
@@ -125,6 +125,11 @@ __all__ = [
 
 
 SESSION_DAY = date(2026, 10, 21)  # the trade day of the rigs (a Wednesday)
+
+
+def guard_on(day: date, *, reconciled: bool = True) -> ExecutionGuard:
+    """A guard whose trade date is `day`, reconciled for that date or not."""
+    return ExecutionGuard(reconciled_for=day if reconciled else None, today=lambda: day)
 
 
 def seed_live_sessions(

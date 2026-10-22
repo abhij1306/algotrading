@@ -42,6 +42,7 @@ __all__ = [
     "HatBroker",
     "Instrument",
     "InvalidIntentError",
+    "OrderBook",
     "OrderIntent",
     "OrderType",
     "OrderUpdate",
@@ -194,6 +195,13 @@ class BrokerOrder:
     product: str
 
 
+class OrderBook(list[BrokerOrder]):
+    """The broker's order book as read: the readable rows, plus how many rows of orders outside
+    HAT's scope (no HT tag) could not be read and were skipped (D118)."""
+
+    skipped: int = 0
+
+
 @dataclass(frozen=True)
 class BrokerGtt:
     """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. GTTs carry
@@ -288,7 +296,7 @@ class HatBroker(Protocol):
 
     def gtts(self) -> list[BrokerGtt]: ...
 
-    def orders(self) -> list[BrokerOrder]: ...
+    def orders(self) -> OrderBook: ...
 
     def trades(self) -> list[BrokerTrade]: ...
 

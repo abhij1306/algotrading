@@ -15,6 +15,7 @@ import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
+from hat_support import memory_engine
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
@@ -29,6 +30,7 @@ from app.hat.execution.broker import (
     GttModify,
     GttRequest,
     InvalidIntentError,
+    OrderBook,
     OrderIntent,
     OrderType,
     SessionStatus,
@@ -36,7 +38,13 @@ from app.hat.execution.broker import (
 )
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, map_fyers_status
 from app.hat.execution.fyers_broker import BROKER_CIRCUIT_OPEN, FYERS_ORDER_TAG_PATTERN
-from app.hat.execution.reconcile import Mismatch, find_mismatches
+from app.hat.execution.reconcile import (
+    UNREADABLE_ROW_ALERT,
+    Mismatch,
+    ReconciliationService,
+    broker_quantities,
+    find_mismatches,
+)
 from app.hat.execution.submit import (
     OrderRefusedError,
     reserve_order,
@@ -55,6 +63,7 @@ from app.hat.execution.tags import (
 )
 from app.hat.ids import Uuid7Generator, uuid7
 from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES, HatOrder
+from app.hat.notify import RecordingNotifier
 
 PURPOSES = st.sampled_from(sorted(PURPOSE_LETTERS))
 SEQUENCES = st.integers(min_value=0, max_value=MAX_SEQUENCE)
@@ -386,7 +395,9 @@ def _failing_fake(kind: str) -> FakeBroker:
         fake.available = error
     elif kind == "garbage":
         row = {"id": SECRET}  # a row missing every other field
-        fake.orders, fake.tradebook, fake.holdings = [row], [row], [row]
+        fake.tradebook, fake.holdings = [row], [row]
+        # an untagged order row that cannot be read is skipped (D118); an HT-tagged one fails
+        fake.orders = [{**row, "orderTag": encode_tag(uuid.UUID(int=7), "entry", 0)}]
         fake.positions = [{"symbol": SECRET}]
         fake.available = {"available": SECRET, "used": 0, "total": 0}
     return fake
@@ -528,6 +539,134 @@ def test_reconcile_scope(ht, foreign, known, quantities_) -> None:  # noqa: ANN0
     assert run(ht_orders + foreign_orders) == run(ht_orders)
     assert run(foreign_orders + ht_orders) == run(ht_orders)
     assert run(foreign_orders) == []
+
+
+def _fyers_row(tag: str | None, symbol: str, n: int) -> dict[str, object]:
+    return {
+        "id": f"B-{n}",
+        "symbol": SYMBOLS[symbol],
+        "qty": 1,
+        "filledQty": 0,
+        "status": 6,
+        "side": 1,
+        "type": 1,
+        "productType": "CNC",
+        "orderTag": tag,
+        "limitPrice": 100.0,
+    }
+
+
+def _broken(row: dict[str, object], breakage: str) -> object:
+    """A row the adapter cannot read: a key missing, a field it cannot parse, or no mapping."""
+    if breakage == "not_a_row":
+        return "garbage"
+    broken = dict(row)
+    if breakage.startswith("no_"):
+        del broken[breakage[3:]]
+    elif breakage == "side":
+        broken["side"] = 0
+    else:
+        broken["qty"] = "many"
+    return broken
+
+
+BREAKAGES = st.sampled_from(["no_id", "no_qty", "no_symbol", "no_side", "side", "qty", "not_a_row"])
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    rows=st.lists(
+        st.one_of(
+            st.tuples(st.just("good"), st.one_of(tags_, foreign_tags), st.just("")),
+            st.tuples(st.just("bad"), foreign_tags, BREAKAGES),
+        ),
+        max_size=8,
+    ),
+    ht_broken=st.one_of(st.none(), st.tuples(tags_, BREAKAGES.filter(lambda b: b != "not_a_row"))),
+    runs=st.integers(min_value=1, max_value=3),
+)
+@example(rows=[("bad", None, "side")], ht_broken=None, runs=2)
+@example(
+    rows=[("good", None, "")], ht_broken=(encode_tag(uuid.UUID(int=1), "entry", 0), "qty"), runs=1
+)
+def test_unreadable_foreign_rows_skipped(rows, ht_broken, runs) -> None:  # noqa: ANN001
+    """HAT-BRK-112, D118 (MX-F5): an order row without an HT tag that cannot be read is skipped
+    and counted, and the rest of the book is read; the reconciliation reports the count and
+    raises one `reconcile.unreadable_row` health alert per trade date. An HT-tagged row that
+    cannot be read fails the whole read. Harm: one manual order HAT does not own fails every
+    reconciliation of the day, or an HT order HAT cannot read is silently missed."""
+    env = exec_env()
+    book: list[object] = []
+    readable: list[str] = []
+    for n, (kind, tag, breakage) in enumerate(rows):
+        row = _fyers_row(tag, "SBIN", n)
+        book.append(row if kind == "good" else _broken(row, breakage))
+        if kind == "good":
+            readable.append(f"B-{n}")
+    skipped = len(book) - len(readable)
+    if ht_broken is not None:
+        book.append(_broken(_fyers_row(ht_broken[0], "SBIN", len(book)), ht_broken[1]))
+    env.fake.orders = book  # type: ignore[assignment]
+    notifier = RecordingNotifier()
+    reconciler = ReconciliationService(env.broker, env.guard, notifier=notifier)
+    with Session(memory_engine()) as session:
+        for _ in range(runs):
+            if ht_broken is not None:
+                with pytest.raises(BrokerUnavailableError):
+                    env.broker.orders()
+                with pytest.raises(BrokerUnavailableError):
+                    reconciler.run(session, env.account_id)
+                continue
+            orders = env.broker.orders()
+            assert [o.order_id for o in orders] == readable
+            assert isinstance(orders, OrderBook)
+            assert orders.skipped == skipped
+            assert reconciler.run(session, env.account_id).skipped_rows == skipped
+    alerts = [a for a in notifier.alerts if a[0] == UNREADABLE_ROW_ALERT]
+    if ht_broken is None and skipped:
+        assert alerts == [(UNREADABLE_ROW_ALERT, env.guard.today(), {"rows": skipped})]
+    else:
+        assert alerts == []
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    holding=st.integers(min_value=0, max_value=200),
+    bought=st.integers(min_value=0, max_value=200),
+    sold=st.integers(min_value=0, max_value=400),
+    intraday=st.integers(min_value=-50, max_value=50),
+)
+@example(holding=0, bought=10, sold=0, intraday=0)  # bought today
+@example(holding=0, bought=10, sold=10, intraday=0)  # bought and sold today
+@example(holding=100, bought=0, sold=100, intraday=0)  # a holding sold in full today
+@example(holding=100, bought=0, sold=40, intraday=0)  # part of a holding sold today
+def test_held_quantity_nets_today(holding: int, bought: int, sold: int, intraday: int) -> None:
+    """07 §11, MX-F8: the quantity reconciled per symbol is the holding plus today's signed net
+    CNC position, read through the adapter: a buy today adds, a sale today of a holding
+    subtracts (a holding sold in full reads as 0) and an intraday position is not counted.
+    [verify] the holdings and positions shapes on a live account. Harm: a holding a GTT sold
+    today still reads as held, so a HAT book that missed the sale passes (fail open), or one
+    that saw it blocks the account."""
+    sold = min(sold, holding + bought)
+    net = bought - sold
+    env = exec_env()
+    env.fake.holdings = (
+        [{"symbol": SYMBOLS["SBIN"], "quantity": holding, "costPrice": 100.0}] if holding else []
+    )
+    env.fake.positions = [
+        {
+            "symbol": SYMBOLS["SBIN"],
+            "quantity": abs(qty),
+            "side": "LONG" if qty >= 0 else "SHORT",
+            "entry_price": 100.0,
+            "product_type": product,
+        }
+        for qty, product in ((net, "CNC"), (intraday, "INTRADAY"))
+        if qty or bought
+    ]
+    held = broker_quantities(env.broker.positions(), env.broker.holdings())
+    assert held.get("SBIN", 0) == holding + bought - sold
+    assert held.get("SBIN", 0) >= 0
 
 
 # --- persist before call, idempotent on tag, unconfirmed resolved by tag --------------------
@@ -733,9 +872,10 @@ refusal_cases = st.fixed_dictionaries(
 
 @given(refusal_cases)
 def test_refusals_happen_before_the_broker(case: dict) -> None:
-    """HAT-BRK-092/-110/-111, HAT-DEC-T14: an order is placed only for an active account, after a
-    reconciliation this session, with no mismatch against the bot (entries), and a live session
-    (entries); every refusal leaves the broker uncalled and the row pending."""
+    """HAT-BRK-092/-110/-111, HAT-DEC-T14, D118: an order is placed only for an active account;
+    an entry also needs a reconciliation of this trade date, no mismatch against the bot and a
+    live session, while a stop or a sale is never refused by the reconciliation state. Every
+    refusal leaves the broker uncalled and the row pending."""
     env = exec_env(
         account_status="active" if case["account_active"] else "pending",
         reconciled=case["reconciled"],
@@ -748,10 +888,9 @@ def test_refusals_happen_before_the_broker(case: dict) -> None:
     signal = uuid7()
     tag = reserve_order(env.session, env.request(signal, case["purpose"]))
     is_entry = case["purpose"] == "entry"
-    allowed = (
-        case["account_active"]
-        and case["reconciled"]
-        and (not is_entry or (not case["blocked"] and status is SessionStatus.LIVE))
+    allowed = case["account_active"] and (
+        not is_entry
+        or (case["reconciled"] and not case["blocked"] and status is SessionStatus.LIVE)
     )
     if allowed:
         out = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
