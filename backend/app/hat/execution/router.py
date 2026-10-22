@@ -87,7 +87,6 @@ MAX_ENTRY_REJECTIONS = 2
 ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 ALERT_ENTRY_UNRESOLVED = "entry.unresolved"  # HAT-BRK-102: never sent again, left to the sync
-NO_GTT = NO_GTT_DELIVERY
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
@@ -146,7 +145,7 @@ def _gtt_refusal(session: Session, account_id: uuid.UUID, broker: HatBroker) -> 
     if account is None or not real_orders_allowed(
         account.status, account.capabilities or {}, broker.capabilities().gtt_delivery
     ):
-        return NO_GTT
+        return NO_GTT_DELIVERY
     return None
 
 

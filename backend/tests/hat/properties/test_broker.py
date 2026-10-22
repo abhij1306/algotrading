@@ -264,7 +264,10 @@ def test_an_owner_serialises_its_broker_calls() -> None:
 
 
 CHECKS = st.lists(
-    st.tuples(st.sampled_from([SessionStatus.LIVE, SessionStatus.EXPIRED]), st.booleans()),
+    st.tuples(
+        st.sampled_from([SessionStatus.LIVE, SessionStatus.EXPIRED]),
+        st.sampled_from(["gtt", "no_gtt", "fails"]),
+    ),
     min_size=1,
     max_size=6,
 )
@@ -272,12 +275,14 @@ CHECKS = st.lists(
 
 @settings(max_examples=40, deadline=None)
 @given(st.sampled_from(["empty", "gtt", "no_gtt"]), CHECKS)
-def test_live_check_refreshes_capabilities(stored: str, checks: list) -> None:
-    """HAT-BRK-092, HAT-EXEC-012: every live session check rewrites the account's stored
-    capabilities to the adapter's (a check of a session that is not live leaves them), and
-    each rewrite that changes them records one `broker.capabilities_changed`. Harm: a flip of
-    the adapter's GTT value never reaches an existing account, or a revoked one keeps routing
-    real orders from a stale row."""
+def test_session_check_refreshes_capabilities(stored: str, checks: list) -> None:
+    """HAT-BRK-092, HAT-EXEC-012: every session check rewrites the account's stored
+    capabilities to the adapter's (a local value: the session need not be live), each rewrite
+    that changes them records one `broker.capabilities_changed` naming the GTT value before and
+    after and the changed keys, and an adapter that fails to answer leaves the stored value and
+    never undoes the session row. Harm: a flip of the adapter's GTT value never reaches an
+    existing account, a revoked one keeps routing real orders from a stale row, or a failed
+    refresh loses the day's login."""
     from datetime import date
 
     from hat_exec_support import GTT_READY
@@ -299,27 +304,38 @@ def test_live_check_refreshes_capabilities(stored: str, checks: list) -> None:
 
     class Broker:
         status = SessionStatus.LIVE
-        gtt = True
+        answer = "gtt"
 
         def session_status(self) -> SessionStatus:
             return self.status
 
         def capabilities(self) -> Capabilities:
-            return replace(GTT_READY, gtt_delivery=self.gtt)
+            if self.answer == "fails":
+                raise RuntimeError("adapter down")
+            return replace(GTT_READY, gtt_delivery=self.answer == "gtt")
 
     broker = Broker()
-    expected, changes = start, 0
-    for n, (status, gtt) in enumerate(checks):
-        broker.status, broker.gtt = status, gtt
-        record_session(session, broker, account.id, date(2026, 10, 21 + n % 2))  # type: ignore[arg-type]
-        if status is SessionStatus.LIVE:
+    expected, changes = start, []
+    for n, (status, answer) in enumerate(checks):
+        broker.status, broker.answer = status, answer
+        day = date(2026, 10, 21 + n % 2)
+        record_session(session, broker, account.id, day)  # type: ignore[arg-type]
+        assert session.get(HatBrokerSession, (account.id, day)).status == status.value
+        if answer != "fails":
             current = broker.capabilities().to_json()
-            changes += current != expected
+            if current != expected:
+                changes.append((current.get("gtt_delivery") is True, expected))
             expected = current
         session.refresh(account)
         assert account.capabilities == expected
     events = [e for e in session.query(HatEvent) if e.event_type == "broker.capabilities_changed"]
-    assert len(events) == changes
+    assert len(events) == len(changes)
+    for event, (gtt, before) in zip(events, changes, strict=True):
+        assert event.payload["gtt_delivery"] == ("true" if gtt else "false")
+        assert event.payload["was_gtt_delivery"] == (
+            "true" if before.get("gtt_delivery") is True else "false"
+        )
+        assert event.payload["changed"]
 
 
 def test_record_session_writes_the_morning_login() -> None:

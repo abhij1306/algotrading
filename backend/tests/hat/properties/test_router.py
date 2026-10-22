@@ -771,7 +771,7 @@ class OverlapSpy:
 
     def __getattr__(self, name: str) -> object:
         attribute = getattr(self._broker, name)
-        if not callable(attribute):
+        if not callable(attribute) or name == "capabilities":  # a local value, not a call
             return attribute
 
         def call(*args: object, **kwargs: object) -> object:
@@ -830,10 +830,7 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desks.watch_sessions(AT)
         desks.release()
     assert spy.most == 1
-    # the row and the outage watch see one read; a live check also reads the adapter's
-    # capabilities (HAT-BRK-092), a local value, through the owner like every call
-    assert spy.calls.count("session_status") == 1
-    assert set(spy.calls) <= {"session_status", "capabilities"}
+    assert spy.calls == ["session_status"]  # the row and the outage watch see one read
 
 
 def _fill_entry(fake: FakeBroker, order: dict) -> None:
@@ -1042,6 +1039,46 @@ def test_a_stored_capability_never_enables_a_real_entry(stored: bool, live: bool
             assert session.scalar(select(func.count()).select_from(HatOrder)) == 0
         if not stored:
             assert outcome.mode == modes.SHADOW
+
+
+@settings(max_examples=20, deadline=None)
+@given(stored=st.booleans(), live=st.booleans())
+def test_desks_start_with_the_adapters_capabilities(stored: bool, live: bool) -> None:
+    """HAT-BRK-092, HAT-EXEC-012: building the desks rewrites each account's stored
+    capabilities to its adapter's before any routing reads them, so the first signal after a
+    start routes by the adapter's GTT value: auto when it reports GTT, shadow when it does not,
+    whatever the row said. Harm: a stale row sends confirm cards or auto entries the placement
+    then refuses, or keeps a revoked account out of shadow until its first session check; a
+    placement's capability read waits behind a slow broker call."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO, gtt=stored, live_gtt=live)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        desk = desks.by_account[rig.account_id]
+        read: list[object] = []
+
+        def in_flight() -> None:  # a broker call holds the owner; the capability read is local
+            reader = threading.Thread(target=lambda: read.append(desk.broker.capabilities()))
+            reader.start()
+            reader.join(timeout=2)
+            assert read, "the capability read waited for a broker call in flight"
+
+        desk.owner.call(in_flight)
+        desks.release()
+        account = session.get(HatBrokerAccount, rig.account_id)
+        assert account is not None
+        session.refresh(account)
+        assert account.capabilities["gtt_delivery"] is live
+        outcome = rig.route()
+        assert outcome.mode == (modes.AUTO if live else modes.SHADOW)
+        assert len(rig.places()) == (1 if live else 0)
 
 
 PAUSED = "paused"

@@ -469,7 +469,7 @@ to an artefact that exists.
 | HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16 | TLA `ExecutionRouter!NoEntryWithoutSession` |
 | HAT-BRK-090 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.fyers_payload_mapping` |
 | HAT-BRK-091 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.fyers_capabilities` |
-| HAT-BRK-092 | [07](07-execution-and-brokers.md) | 13, 29 | TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.live_check_refreshes_capabilities` |
+| HAT-BRK-092 | [07](07-execution-and-brokers.md) | 13, 29 | TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.session_check_refreshes_capabilities`, PBT `router.desks_start_with_the_adapters_capabilities` |
 | HAT-BRK-100 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.shape_and_roundtrip`, DB `runtime.order_tag_unique` |
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13, 28 | TLA `OrderReconciliation!UnconfirmedResolvedByTag`, TLA `OrderReconciliation!AtMostOneEntryPerSignal`, TLA `OrderReconciliation!LostEntryAdopted`, PBT `tags.a_timeout_is_looked_up_before_any_retry`, PBT `tags.idempotent_order_submission`, PBT `router.unresolved_entry_is_alerted_not_resent` |

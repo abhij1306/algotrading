@@ -10,6 +10,7 @@ minutes. Backoff: exponential from 1 s, capped at 30 s [OWNER-PENDING default].
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -34,7 +35,10 @@ __all__ = [
     "SessionWatch",
     "backoff_delay",
     "record_session",
+    "refresh_capabilities",
 ]
+
+logger = logging.getLogger(__name__)
 
 ALERT_AFTER = timedelta(minutes=2)
 BACKOFF_CAP_SECONDS = 30
@@ -157,8 +161,6 @@ def record_session(
             actor="broker",
             payload={"status": status.value},
         )
-    if status is SessionStatus.LIVE:
-        _refresh_capabilities(session, broker, account_id)
     if lost_alert:
         record(
             session,
@@ -169,29 +171,45 @@ def record_session(
             payload={"status": status.value},
         )
     session.commit()
+    refresh_capabilities(session, broker, account_id)  # after the row: a failure never undoes it
     return status
 
 
-def _refresh_capabilities(session: Session, broker: HatBroker, account_id: uuid.UUID) -> None:
-    """HAT-BRK-092: the stored capabilities are the adapter's, rewritten at every live session
-    check, so a flip of the adapter's value reaches the account by the next check, and a change
-    is recorded as `broker.capabilities_changed` (no commit; the caller commits)."""
-    account = session.get(HatBrokerAccount, account_id)
-    if account is None:
-        return
-    current = broker.capabilities().to_json()
-    previous = account.capabilities or {}
-    if previous == current:
-        return
-    account.capabilities = current
-    record(
-        session,
-        aggregate_type="session",
-        aggregate_id=account_id,
-        event_type="broker.capabilities_changed",
-        actor="broker",
-        payload={
-            "gtt_delivery": current.get("gtt_delivery"),
-            "was_gtt_delivery": previous.get("gtt_delivery"),
-        },
-    )
+def refresh_capabilities(session: Session, broker: HatBroker, account_id: uuid.UUID) -> bool:
+    """HAT-BRK-092: rewrite the account's stored capabilities from the adapter's (a local value,
+    no broker call) and commit; a change records `broker.capabilities_changed`, which the relay
+    sends as a health alert. True when they changed. A failure is logged and rolled back alone,
+    so it never undoes the caller's session row."""
+    try:
+        account = session.get(HatBrokerAccount, account_id)
+        if account is None:
+            return False
+        current = broker.capabilities().to_json()
+        previous = account.capabilities or {}
+        if previous == current:
+            return False
+        account.capabilities = current
+        record(
+            session,
+            aggregate_type="session",
+            aggregate_id=account_id,
+            event_type="broker.capabilities_changed",
+            actor="broker",
+            payload={
+                "gtt_delivery": _flag(current.get("gtt_delivery")),
+                "was_gtt_delivery": _flag(previous.get("gtt_delivery")),
+                "changed": sorted(
+                    k for k in current.keys() | previous.keys() if current.get(k) != previous.get(k)
+                ),
+            },
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("capabilities of account %s not refreshed", account_id)
+        return False
+    return True
+
+
+def _flag(value: object) -> str:
+    return "true" if value is True else "false"

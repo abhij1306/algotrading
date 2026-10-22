@@ -10,8 +10,9 @@ sends at most one message per event:
   it reaches the chat only in the 15:35 rejection digest (HAT-EXEC-043).
 - `order.filled`, `exit.partial`, `position.closed` and `stop.moved` of a real order or
   position: price, qty and R so far.
-- `quality.failed`, `feed.stale`, `broker.session_lost` and `order.rejected`: a health alert
-  (T15). The `Notifier` leaves these codes to the relay, so each failure is one alert.
+- `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` (the
+  adapter's GTT for delivery reached the account, HAT-BRK-092) and `order.rejected`: a health
+  alert (T15). The `Notifier` leaves these codes to the relay, so each failure is one alert.
 
 An event is relayed only once it is `RELAY_LAG` old, so a transaction that took a lower id and
 committed a little later is still seen in order. An id the cursor passes without seeing it (a
@@ -64,7 +65,15 @@ logger = logging.getLogger(__name__)
 
 RELAY_LAG = timedelta(seconds=5)
 POSITION_EVENTS = frozenset({"order.filled", "exit.partial", "position.closed", "stop.moved"})
-HEALTH_EVENTS = frozenset({"quality.failed", "feed.stale", "broker.session_lost", "order.rejected"})
+HEALTH_EVENTS = frozenset(
+    {
+        "quality.failed",
+        "feed.stale",
+        "broker.session_lost",
+        "broker.capabilities_changed",
+        "order.rejected",
+    }
+)
 TRIGGERED = "signal.triggered"
 _BATCH = 100
 GAP_WAIT = timedelta(hours=1)
