@@ -375,7 +375,7 @@ class HatRuntime:
         if self.trading(trade_date_of(now)):
             steps += [
                 ("sessions", MINUTE, lambda: self._watch_sessions(now)),
-                ("sync", MINUTE, lambda: self.desks.sync_all(now)),
+                ("sync", timedelta(0), lambda: self.desks.sync_due(now)),
                 ("expire", MINUTE, lambda: self.desks.expire_all(now)),
                 ("reconcile", RECONCILE_EVERY, lambda: self.desks.reconcile_all(now)),
                 (

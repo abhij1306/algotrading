@@ -102,7 +102,7 @@ TLA+ model and runner:
 Code under check:
 - `backend/app/hat/ops/jobs.py`: `run_job`, `_claim`, `_finish`, `recover_interrupted`, `error_code`
 - `backend/app/hat/ops/scheduler.py`: `runs_on`, `due`, `HatScheduler.tick`, `HatScheduler.due_jobs` (the calendar, the `until` window, `after` and `retry_after`)
-- `backend/app/hat/daily/runtime.py`: `HatRuntime.start` (the enabled and Postgres gates), `daily_jobs`, `HatRuntime.periodic`
+- `backend/app/hat/daily/runtime.py`: `HatRuntime.start` (the enabled and Postgres gates), `daily_jobs`, `HatRuntime.periodic` (the `sync` step runs every pass; `Desks.sync_due` picks the accounts, PR 26)
 - `backend/app/hat/daily/intraday.py`, `backend/app/hat/daily/nightly.py`, `backend/app/hat/daily/accounts.py`, `backend/app/hat/daily/live.py`, `backend/app/hat/daily/market.py`: the job bodies of the daily cycle
 - `backend/app/hat/ops/trade_jobs.py`: `trade_jobs` (`exits.close`, `gtt.swap`, `gtt.verify`)
 - `backend/app/hat/execution/manage.py`: `TradeManager.close_exits`, `TradeManager._sell` (the 15:30 check at sending)
@@ -138,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `119623af20cf1cc235e082edace2d0e3a29a74478da91a8d7d1a6325226ba541`
+Covered digest: `a962062249972a6a6394431b2bfe55b594f94f74367a267b166cfd748e5e996f`
 
 ## Scope changes
 

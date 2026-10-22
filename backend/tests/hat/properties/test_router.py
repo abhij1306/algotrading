@@ -783,7 +783,7 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desk = desks.by_account[rig.account_id]
         work = (
             lambda: desks.reconcile_all(AT),
-            lambda: desks.sync_all(AT),
+            lambda: desks.sync_due(AT),
             lambda: desks.watch_sessions(AT),
             lambda: desk.broker.funds(),
         )
@@ -802,6 +802,78 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desks.release()
     assert spy.most == 1
     assert spy.calls == ["session_status"]  # the row and the outage watch see one read
+
+
+def _fill_entry(fake: FakeBroker, order: dict) -> None:
+    """The broker fills the whole entry: its book row and its trade."""
+    [row] = [r for r in fake.book if r["orderTag"] == order["order_tag"]]
+    row.update(filledQty=row["qty"], status=2)
+    fake.tradebook = [
+        {
+            "tradeNumber": "T-1",
+            "orderNumber": row["id"],
+            "orderTag": row["orderTag"],
+            "symbol": row["symbol"],
+            "side": 1,
+            "tradedQty": row["qty"],
+            "tradePrice": float(order["price"]),
+        }
+    ]
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    st.lists(st.integers(min_value=1, max_value=15), min_size=2, max_size=30),
+    st.integers(min_value=0, max_value=29),
+    st.integers(min_value=0, max_value=29),
+    st.booleans(),
+)
+@example(gaps=[1] * 20, placed=2, filled=10, earlier=False)
+@example(gaps=[1] * 20, placed=0, filled=29, earlier=True)
+def test_fill_sync_cadence(gaps: list[int], placed: int, filled: int, earlier: bool) -> None:
+    """HAT-EXEC-060 (review 2026-10-22 item 1): the periodic passes, `gaps` loop steps of 5 s
+    apart, read an account's fills at every pass while a real entry of today's signals may still
+    fill (from the pass after it is sent until the pass that reads its fill), and otherwise (an
+    entry of the previous session still shown working included) at the first pass and then once
+    a minute. Harm: an entry filled just after a sync sits a minute at
+    the broker with no stop."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        now, last, working, seen = AT, None, False, False
+        signal_id = None
+        for n, gap in enumerate(gaps):
+            now += timedelta(seconds=5 * gap)
+            if n == placed:
+                signal_id = rig.route(at=now).signal_id
+                working = len(rig.places()) == 1
+                if earlier:  # the entry of the previous session, still shown working
+                    rig.signal(signal_id).trade_date = TRADE_DAY - timedelta(days=1)
+                    session.commit()
+                    working = False
+            if working and n >= placed + filled:
+                _fill_entry(rig.fake, rig.places()[0])
+            reads = rig.fake.count("fetch_tradebook")
+            desks.sync_due(now)
+            synced = rig.fake.count("fetch_tradebook") > reads
+            assert synced == (working or last is None or now - last >= timedelta(minutes=1))
+            if synced:
+                last = now
+                if working and n >= placed + filled:
+                    working, seen = False, True
+                    [position] = rig.positions(signal_id)
+                    assert position.qty_open > 0  # the fill landed (and is protected)
+        desks.release()
+    if placed + filled < len(gaps) and not earlier:
+        assert seen
 
 
 @settings(max_examples=40, deadline=None)

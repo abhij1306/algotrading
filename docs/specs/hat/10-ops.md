@@ -145,8 +145,9 @@ table.
 | `gtt.verify:<account>` | trading | 23:00 | | | 15c |
 
 Periodic steps of the runtime (not `hat_job_run` jobs; each step logs and survives its own
-failure): the broker-session check, fill sync and approval expiry every minute, reconciliation
-every 5 minutes, the calendar read every 10 minutes, the live exit rules of the shadow positions
+failure): the broker-session check and approval expiry every minute, the fill sync every minute
+and every 5 seconds while a real entry of the day works (HAT-EXEC-060), reconciliation every 5
+minutes, the calendar read every 10 minutes, the live exit rules of the shadow positions
 every 5 seconds while the market is open, and `announcements.poll` at its own interval (every 2
 minutes 07:30–15:30, else 15). The pre-open gap capture (09:00–09:08) is done by the feed listener
 (`LiveData`), not a job. `history.build` is a one-off CLI (PR 5).

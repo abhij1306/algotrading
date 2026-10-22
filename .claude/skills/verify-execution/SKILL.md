@@ -150,6 +150,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.unreadable_foreign_rows_skipped` An order row without an HT tag that the adapter cannot read (a missing key, an unreadable side or quantity, not a mapping) is skipped and counted (`OrderBook.skipped`, `ReconcileReport.skipped_rows`) and the rest of the book is read, with one `reconcile.unreadable_row` alert per trade date; an HT-tagged row that cannot be read fails the read and the reconciliation. Harm: one manual order fails every reconciliation of the day, or an HT order HAT cannot read is missed.
 - `PBT tags.held_quantity_nets_today` Through the adapter, the quantity reconciled per symbol is the holding plus today's signed net CNC position, an intraday position not counted; `@example`s for a buy today, a buy and sale today, a holding sold in full and in part (MX-F8). Harm: a holding a GTT sold today reads as held (fail open), or a correct HAT book blocks the account.
 - `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`); the restart runs the fill sync whether or not its reconciliation succeeded (D118). Harm: an entry goes out on a stale price, twice, or a day late.
+- `PBT router.fill_sync_cadence` `Desks.sync_due` reads an account's fills at every periodic step while a real entry of the day's signals may still fill (`fills.entry_working`), and otherwise at the first pass and then once a minute; an entry of an earlier session still shown working does not speed it up (HAT-EXEC-060). Harm: an entry filled just after a sync sits up to a minute at the broker with no stop.
 - `PBT router.desk_calls_serialised` Every broker call of an account's desk goes through its session owner, so no two overlap, and a session check reads `session_status` once and records that same status. Harm: concurrent sends race the reconciliation gate, and the recorded session status disagrees with the one that raised the alert.
 - `PBT router.one_login_per_broker` Two active accounts of one broker refuse the start with `HatConfigError`; one per broker builds. Harm: two accounts share one login and the same funds count twice in the allocation equity.
 
@@ -281,7 +282,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `af24f8d76d6472de03ab33adc909654fea1d9f74c5e5e274c1671ca4f71376af`
+Covered digest: `dea4c156f67231ede55413a5245e3f48bb23528d995497c75fbd91073c198580`
 
 ## Scope changes
 
@@ -321,6 +322,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 19 (audit 2026-10-22 money-safety-execution F4, tests-hat F1): `open_entry` hands the decision `owner_slots`, the slots of every bot of the owner on every broker account (each slot carries its own bot, so the per-bot caps in `decide` keep filtering to the bot's own), and takes `lock_owner` after `lock_bot` and after the duplicate check. The scope is the owner, not one broker account, because total equity sums every bot's allocation (`daily/live.py`). Only an entry adds open risk: the other slot writers (fills, Take, skip, expiry, stop raises, exits) hold only the bot's lock and can only keep or shrink a slot, so a stale read over-counts; `_slots` reads the pending signals before the positions so that a fill landing between the two reads is counted twice, never missed (CodeAnt). `bot_snapshot` (the bot's own slots) is unchanged for its other callers. `hat_engine_support.add_bot` adds a second bot of the owner on another broker account. The per-bot DB breaks now also remove the owner lock (above). Nothing was narrowed.
 - PR 23 (live checks 2026-10-22): Fyers code -16 raises `FyersSessionExpiredError` (a `FyersUnavailableError`, so every read still fails closed); `session_status` makes one profile read when the token file says live (only -16 turns it EXPIRED; an outage leaves it LIVE as before); `FyersAuthService` reads the profile after a login (on its own small pool, 5 s timeout, checked by the shared `profile_data`) only with a `model_factory` (the process instance passes the SDK model, tests a `RecordingSdk`, so no test can reach Fyers). The login fixtures lost the `fy_id` they had put in the token reply, which Fyers does not send. `FakeBroker` gained `profile` and `get_profile`.
 - PR 24 (audit 2026-10-22 money-safety-execution F5, F8; D118): `ExecutionGuard` keys the gate by trade date (`reconciled_for`, `today`; `begin_session` and the boolean `reconciled` are gone) and gates entries only; `TradeManager` no longer takes the reconciler (its sales, `gtt.swap` and the fill sync never wait for a reconciliation). The rigs build their guard with `hat_exec_support.guard_on(day)`, a fixed trade date. `tags.refusals_before_the_broker` now expects a stop or a sale to pass while the date is not reconciled, and `tags.broker_errors_fail_closed`'s garbage order row carries an HT tag (an untagged unreadable row is now skipped, not a failure). `OrderReconciliation` is unchanged: its orders are entries, and a new trade date is the router property. Nothing was narrowed.
+- PR 26 (design review 2026-10-22 item 1): the periodic `sync` step runs every pass and `Desks.sync_due` decides per account (every step while `entry_working`, else `FILL_SYNC_EVERY`, one minute); `Desks.sync_all` is gone (`router.desk_calls_serialised` drives `sync_due`). The models still take a broker fill and HAT reading it as one step; `router.fill_sync_cadence` checks the time between them. An order socket was not added (HAT-OVR-006 allows one broker socket, the data socket). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -2153,6 +2155,36 @@ Break: `AccountDesk.check_session` drops `status=status`, so `record_session` re
 
 ```
 E   AssertionError: assert ['session_status', 'session_status'] == ['session_status']
+```
+
+### PBT router.fill_sync_cadence
+
+Break: `Desks.sync_due` ignores a working entry (`if quiet:`), the pre-PR 26 cadence.
+
+```
+E   assert False == ((True))
+E   Failing explicit example: test_fill_sync_cadence(
+E       gaps=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+E       placed=2,
+E       filled=10,
+E       earlier=False,
+```
+
+Break: `entry_working` drops the trade-date filter, so an entry of the previous session still shown working syncs every step.
+
+```
+E   AssertionError: assert True == ((False or datetime.datetime(2026, 10, 21, 10, 30, 5, ...) is None or (... - ...) >= datetime.timedelta(seconds=60)))
+E   Failing explicit example: test_fill_sync_cadence(
+E       placed=0,
+E       filled=29,
+E       earlier=True,
+```
+
+Break: `entry_working` always returns True (every step, every account).
+
+```
+E   AssertionError: assert True == ((False or datetime.datetime(2026, 10, 21, 10, 30, 5, ...) is None or (... - ...) >= datetime.timedelta(seconds=60)))
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
 ```
 
 ### PBT router.one_login_per_broker

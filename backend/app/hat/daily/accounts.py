@@ -7,6 +7,9 @@ router (signing approval cards with the Telegram signer), the stop desk, the fil
 `TradeManager`. The live exits, the close job, the GTT jobs and the Telegram flatten all use the
 same `TradeManager`, whose per-position sale lock serialises their sales.
 
+`sync_due` reads an account's fills every periodic step while one of its real entries works, and
+once a minute otherwise, so an entry fill gets its broker stop within one step (HAT-EXEC-060).
+
 `recover` is the restart order of HAT-OPS-003: reconcile each account and read its fills (which
 re-protects a fill without a working stop and re-sends a lost stop by tag). The auto entries a
 crash left in Triggered are placed again by `resume_entries`, only once the live feed is fresh
@@ -32,7 +35,7 @@ from ..clock import Clock
 from ..engine.lifecycle import TRIGGERED
 from ..engine.trades import TokenIssuer
 from ..execution.broker import HatBroker, SessionStatus
-from ..execution.fills import FillSync
+from ..execution.fills import FillSync, entry_working
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
 from ..execution.modes import AUTO
@@ -63,6 +66,7 @@ END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
 RECONCILE_FAILED = "reconcile.failed"
 ACTIVE = "active"
+FILL_SYNC_EVERY = timedelta(minutes=1)  # with no entry working (10-ops §3)
 
 BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
 TickFor = Callable[[Session, HatPosition], Decimal | None]
@@ -102,6 +106,7 @@ class AccountDesk:
     notifier: Notifier = field(default_factory=LogNotifier)
     watch: SessionWatch = field(default_factory=SessionWatch)
     failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
+    synced_at: datetime | None = None  # the last fill sync `Desks.sync_due` started
 
     def check_session(self, session: Session, now: datetime) -> bool:
         """Write today's `hat_broker_session` from one read of the broker's status (the router
@@ -279,10 +284,16 @@ class Desks:
 
     # --- the periodic steps -------------------------------------------------------------------
 
-    def sync_all(self, now: datetime) -> None:
-        """Read each account's fills (every new fill is protected at once)."""
+    def sync_due(self, now: datetime) -> None:
+        """The periodic fill sync: each account whose real entry works (`entry_working`) at
+        every step, every other account once a minute (HAT-EXEC-060)."""
         for account_id, desk in self.by_account.items():
             with self._session_factory() as session:
+                last = desk.synced_at
+                quiet = last is not None and now - last < FILL_SYNC_EVERY
+                if quiet and not entry_working(session, account_id, now):
+                    continue
+                desk.synced_at = now
                 desk.manager.sync(session, account_id, now)
 
     def expire_all(self, now: datetime) -> int:
