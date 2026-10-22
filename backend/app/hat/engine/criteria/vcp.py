@@ -223,6 +223,19 @@ def _dryup(base: _Base, final: Contraction) -> Decimal | None:
     return mean_final / mean_avg
 
 
+def _levels(
+    base: _Base, contractions: Sequence[Contraction], based: bool
+) -> tuple[Decimal, Decimal] | None:
+    """(pivot, low): the final contraction's high and low, or under `base_high` the base's
+    highest high and the last contraction's low (the base's lowest low without one); None when
+    that low is not below the pivot (a flat base)."""
+    if not based:
+        return contractions[-1].high, contractions[-1].low
+    pivot = dec(max(base.highs))
+    floor = contractions[-1].low if contractions else dec(min(base.lows))
+    return (pivot, floor) if floor < pivot else None
+
+
 def _extras(
     base: _Base,
     contractions: Sequence[Contraction],
@@ -276,23 +289,14 @@ def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
     based = params.pivot_source == "base_high"
     if fault is not None and not based:
         return verdict(False, fault[1], fault[0])
+    levels = _levels(base, contractions, based)
+    if levels is None:
+        return verdict(False, max(base.highs), "flat_base")
     score = 0.0
     if fault is None and dryup is not None:
-        score = vcp_score(
-            len(contractions),
-            float(max(ratios, default=Decimal(0))),
-            float(depths[-1]),
-            float(dryup),
-            params,
-        )
-    if based:
-        pivot = dec(max(base.highs))
-        floor = contractions[-1].low if contractions else dec(min(base.lows))
-        if floor >= pivot:
-            return verdict(False, float(pivot), "flat_base")
-    else:
-        pivot, floor = contractions[-1].high, contractions[-1].low
-    extras = _extras(base, contractions, (pivot, floor), dryup)
+        worst = float(max(ratios, default=Decimal(0)))
+        score = vcp_score(len(contractions), worst, float(depths[-1]), float(dryup), params)
+    extras = _extras(base, contractions, levels, dryup)
     if based:
         extras["pattern"] = "ok" if fault is None else fault[0]
     return CriterionResult(True, score, float(len(contractions)), REASON_OK, extras)
