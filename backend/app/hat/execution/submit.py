@@ -26,7 +26,11 @@ enough (`find_gtt`: by its tag, else by its shape; `adopt_gtt`, `end_lost_order`
 A sale the broker took and then ended without selling all of it (rejected, cancelled, expired)
 records `order.rejected` and fires its exit rules again (`hat_order.rule_ids`), so the next
 evaluation retries it under the next tag (HAT-EXEC-075); `rejected_sales` counts both kinds of
-rejection toward the two a session allows (HAT-OPS-032).
+rejection toward the two a session allows (HAT-OPS-032). A market sale HAT itself cancelled to send
+it again fresh (`mark_resend`, PR 48: under market price protection a market sale can rest as a
+protected limit) is not a rejection: it records `order.cancelled` (code `sale_resend`, with the
+order type and price the broker's book showed) when HAT asks, and when it ends its rules fire
+again without `order.rejected`.
 
 Each commit below is one atomic step of the model in `verification/tla/OrderReconciliation.tla`.
 """
@@ -43,11 +47,12 @@ from decimal import Decimal
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.expression import Exists
 
 from ..engine import lifecycle, live_trades, trades
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount, HatOrder, HatPosition, HatSignal
+from ..models import HatBrokerAccount, HatEvent, HatOrder, HatPosition, HatSignal
 from ..time import trade_date_of, utc_now
 from .broker import (
     CODE_INVALID_INTENT,
@@ -82,8 +87,12 @@ __all__ = [
     "adopt_broker_order",
     "adopt_gtt",
     "end_lost_order",
+    "RESEND",
     "find_gtt",
+    "mark_resend",
     "record_broker_status",
+    "resend_requested",
+    "resends",
     "rejected_sales",
     "reserve_order",
     "resolve_by_tag",
@@ -96,6 +105,10 @@ ACCOUNT_ACTIVE = "active"
 ENTRY = "entry"
 GTT_PURPOSE = "stop_gtt"
 EVENT_ORDER_REJECTED = "order.rejected"
+EVENT_ORDER_CANCELLED = "order.cancelled"
+# The code of the `order.cancelled` HAT records when it cancels a resting market sale to send it
+# again fresh (PR 48); such a sale's end is not a rejection.
+RESEND = "sale_resend"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
 _ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
@@ -260,7 +273,7 @@ def adopt_broker_order(
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED)
     elif found.status == "cancelled":
-        _event(session, row, bot_id, "order.cancelled")
+        _event(session, row, bot_id, EVENT_ORDER_CANCELLED)
 
 
 def _end_adopted_entry(
@@ -284,7 +297,7 @@ def _entry_ended(
 ) -> None:
     """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled."""
     if found.status in ("cancelled", "expired"):
-        _event(session, row, bot_id, "order.cancelled")
+        _event(session, row, bot_id, EVENT_ORDER_CANCELLED)
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
 
@@ -321,8 +334,10 @@ def _sale_not_sold(
     broker status (relayed as the health alert), and its rules fired again so the next evaluation
     sells again under the next tag. A partial exit that sold some shares keeps its rules fired
     (firing it again would sell its fraction twice); a full exit sells whatever is left."""
-    code = "exchange_rejected" if found.status == "rejected" else found.status
-    _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=code)
+    resent = found.status == "cancelled" and resend_requested(session, row)
+    if not resent:  # HAT cancelled it to send it again (PR 48): not a rejection
+        code = "exchange_rejected" if found.status == "rejected" else found.status
+        _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=code)
     if row.purpose != "exit_partial" or found.filled_qty == 0:
         _fire_again(session, row)
 
@@ -372,9 +387,23 @@ def adopt_gtt(session: Session, row: HatOrder, gtt: BrokerGtt, bot_id: uuid.UUID
     _event(session, row, bot_id, _placed_event(row))
 
 
+def _resend_event() -> Exists:
+    """The `order.cancelled` (code `sale_resend`) of the order row in the enclosing query."""
+    return (
+        select(HatEvent.id)
+        .where(
+            HatEvent.aggregate_id == HatOrder.id,
+            HatEvent.event_type == EVENT_ORDER_CANCELLED,
+            HatEvent.payload["code"].as_string() == RESEND,
+        )
+        .exists()
+    )
+
+
 def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
     """Sales of `purpose` for the signal the broker rejected today, at once or after taking them
-    (ended short with its order id). A lost sale that never landed is not a rejection."""
+    (ended short with its order id). A lost sale that never landed is not a rejection, nor is one
+    HAT cancelled to send it again (`mark_resend`, PR 48)."""
     start, end = trades._day_bounds(trade_date_of(now))
     count = session.scalar(
         select(func.count())
@@ -387,6 +416,7 @@ def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: da
                 and_(
                     HatOrder.status.in_(("cancelled", "expired")),
                     HatOrder.broker_order_id.is_not(None),
+                    ~_resend_event(),
                 ),
             ),
             HatOrder.placed_at >= start,
@@ -394,6 +424,60 @@ def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: da
         )
     )
     return int(count or 0)
+
+
+def resends(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
+    """Sales of `purpose` for the signal sent today that HAT cancelled to send again fresh
+    (PR 48): each is one miss of a market sale that rested unfilled."""
+    start, end = trades._day_bounds(trade_date_of(now))
+    count = session.scalar(
+        select(func.count())
+        .select_from(HatOrder)
+        .where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == purpose,
+            HatOrder.placed_at >= start,
+            HatOrder.placed_at < end,
+            _resend_event(),
+        )
+    )
+    return int(count or 0)
+
+
+def resend_requested(session: Session, row: HatOrder) -> bool:
+    """Whether HAT asked the broker to cancel this sale to send it again (`mark_resend`)."""
+    payloads = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.aggregate_id == row.id, HatEvent.event_type == EVENT_ORDER_CANCELLED
+        )
+    )
+    return any((payload or {}).get("code") == RESEND for payload in payloads)
+
+
+def mark_resend(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """Record (no commit) that HAT asked the broker to cancel the resting market sale `row` to
+    send it again (PR 48): `order.cancelled` with code `sale_resend` and the order type and price
+    the broker's book showed for it (under market price protection, the protected limit)."""
+    record(
+        session,
+        aggregate_type="order",
+        aggregate_id=row.id,
+        event_type=EVENT_ORDER_CANCELLED,
+        actor="engine",
+        payload={
+            "tag": row.tag,
+            "purpose": row.purpose,
+            "broker_order_id": row.broker_order_id,
+            "code": RESEND,
+            "book_order_type": None if found.order_type is None else found.order_type.value,
+            "book_price": None if found.price is None else str(found.price),
+            "filled_qty": found.filled_qty,
+        },
+        correlation_id=row.signal_id,
+        bot_id=bot_id,
+    )
 
 
 def _placed_event(row: HatOrder) -> str:

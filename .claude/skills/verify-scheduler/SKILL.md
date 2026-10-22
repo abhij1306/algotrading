@@ -147,12 +147,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `5e61221f9bb2d2a3ee7cc34ebdc0304818a89f104923ca3aecc3dcaf54b11808`
+Covered digest: `d7a1d25bbcc567b1a75e49f8557e275e02f1158f9e5f6bfe12db0657eb440490`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 48: `daily/accounts.py:Desks` and `daily/runtime.py` pass the sale band and the `HAT_MPP_RESEND`/`HAT_MPP_PAGE_AFTER` settings to the fill sync and the trade manager (`verify-execution`'s `mpp.*`). No job or schedule changed.
 - `ops.job_run_recording` runs 60 state-machine examples of 40 steps rather than the profile's 500 examples: each step is a database transaction on a real SQLite engine, and 500 sequences would exceed the 15-minute job budget. The invariants are not weakened.
 - `JobScheduler` models one key (job, trade_date) because keys are independent rows under one unique index; two callers and three calls each stand for "any number" of racers (bounds in the model header).
 - The model counts recorded successes, not body executions: a crash between the body and its recording is the `Restart` action and re-runs the body (see "Bug or model error", known window).

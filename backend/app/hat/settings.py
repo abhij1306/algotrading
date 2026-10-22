@@ -6,6 +6,9 @@ once the O2(b) live check confirms how the broker treats a GTT on an ex-date (HA
 `HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY` (PR 50, HAT-BRK-082) are the broker
 call budget: defaults 8, 180 and 5,000 (the Standard plan counts every call); `_PER_DAY` 0 or
 `off` is no day cap, and an unreadable value is the default.
+`HAT_MPP_RESEND` (PR 48) defaults to false: a market sale resting unfilled under market price
+protection is cancelled and sent again fresh only once the O2(c) live check confirms how the
+broker shows such a sale; `HAT_MPP_PAGE_AFTER` is the misses before the owner is paged (default 3).
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ class HatSettings:
     broker_calls_per_second: int = 8
     broker_calls_per_minute: int = 180
     broker_calls_per_day: int | None = 5000
+    mpp_resend: bool = False
+    mpp_page_after: int = 3
 
 
 def _is_true(raw: str | None) -> bool:
@@ -70,6 +75,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         broker_calls_per_second=_calls(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8) or 8,
         broker_calls_per_minute=_calls(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180) or 180,
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
+        mpp_resend=_is_true(source.get("HAT_MPP_RESEND")),
+        mpp_page_after=_calls(source.get("HAT_MPP_PAGE_AFTER"), 3) or 3,
     )
 
 

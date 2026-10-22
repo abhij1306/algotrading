@@ -794,6 +794,17 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 3. Decide whether to keep it at Fyers yourself or `/flatten` it. The alert repeats until it is
    closed.
 
+### Sale unfilled
+
+1. Alert: URGENT `sale.unfilled` (PR 48, HAT-EXEC-075) with a code: `sale_resting` (a market sale
+   was sent again `HAT_MPP_PAGE_AFTER` times under market price protection and still rests, only
+   with `HAT_MPP_RESEND` on), `lower_circuit_locked` (the last trade is at the lower circuit: the
+   sale waits in the queue and is not sent again while locked) or `band_limit` (a sale refused
+   twice went once more as a limit at the day's lower circuit price).
+2. Check the Fyers order book for the sale and the price band. A locked stock may not trade all
+   day; the sale stays in the queue and expires at the close, and the next session sells again.
+3. Decide whether to `/flatten` (it waits for a working sale) or sell yourself at Fyers.
+
 ### Failed nightly job
 
 1. Alert or `/status` shows a failed job. List today's runs:

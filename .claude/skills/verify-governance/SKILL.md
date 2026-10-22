@@ -92,12 +92,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `59f5b371cf18a9dab7dfa18408b69f8c806e066331a790e76d15efee8f62a322`
+Covered digest: `abde9d4cc6c858318b5ae45cd16e5ea27fe669ce5094358884729eacc320eca7`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 48: `HatSettings` gains `mpp_resend` (`HAT_MPP_RESEND`, default off) and `mpp_page_after` (`HAT_MPP_PAGE_AFTER`, default 3); their parse is checked by `verify-execution`'s `mpp.resend_flag_parsed`. No governance check changed.
 - PR 10 extended `risk/policy.py` (the policy record, direction classification and the evidence gate) without touching `cooling_off_satisfied` or `require_cooling_off`; the new rules are checked by `verify-risk`.
 - The cooling-off CHECK in the database uses `interval '168 hours'` instead of `'7 days'`: a day interval depends on the session time zone around daylight-saving changes, 168 hours does not. The property is unchanged (seven days).
 - The strategy and universe version triggers also forbid moving a published version back to `draft`, and forbid changing `config_hash` or `definition`: without this, config immutability could be bypassed by flipping status first. This widens the check.

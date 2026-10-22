@@ -83,6 +83,7 @@ from .live import (
     LivePrices,
     LiveRoute,
     PriceBook,
+    SaleBands,
     ShadowExits,
     stale_feed,
 )
@@ -276,6 +277,9 @@ class HatRuntime:
             calendar=self.calendar,
             tick_for=lambda _s, p: self.book.day(trade_date_of(self._now())).tick(p.instrument_id),
             today=lambda: trade_date_of(self._now()),
+            band=SaleBands(self.prices, self.book),
+            resend=self.settings.mpp_resend,
+            page_after=self.settings.mpp_page_after,
         )
         feed_stale = self._feed_stale
         self.live_prices = LivePrices(self.prices, self.book, clock)

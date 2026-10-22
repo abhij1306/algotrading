@@ -150,6 +150,12 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.ex_date_gtt_replaced` (PR 47, HAT-EXEC-145) For every stored action (dividend, notice, split) with ex-date around the check day, every assumed book shape of a broker-cancelled GTT (`fixtures/fyers_gtt_ex_date_assumed.json`) and a GTT accepted or refused, `check_ex_date_gtts` ends a GTT the book no longer holds (`gtt.missing`, `gtt_cancelled_by_broker`) and places it again (a refusal does not fail the run: the intraday stop goes out from 09:15), leaves a resting one alone, fails with `gtt.unverified` and sends nothing on an unreadable book, waits for a split's rescale, and reads no position without an action today or the next session. Harm: Fyers cancels the GTT before a dividend and the position opens the ex-date unprotected.
 - `PBT manage.ex_date_check_serialised` (PR 47, HAT-EXEC-145) For both assumed shapes of a cancelled GTT, the fill sync's protect or the nightly verify reaching the position on another thread between the check ending the old GTT and placing the new waits on the position's stop lock: exactly one GTT is placed. Harm: two GTT sales over the same shares.
 - `PBT manage.series_change_remapped` (PR 47, HAT-EXEC-146) For every successor (none, BE mapped or unmapped, renamed, another ISIN), a series change gives no exit view, one URGENT `position.series_changed` at the morning check and at the nightly verify, and a re-placed GTT under the successor's Fyers symbol: one the broker cancelled, and one still listed under the old symbol, cancelled first (at the morning check, or at the nightly verify when the check is off; a refused cancel at the check fails the run with `gtt.unverified`, at the verify it is refreshed); a GTT placed after the change is left resting; an unmapped successor gets no stop sent (`series_unmapped`) and its old GTT left; otherwise nothing. Harm: every order under the old `-EQ` symbol is refused and exit rules run on stopped prices.
+- `PBT mpp.resting_market_sale_resent` (PR 48, HAT-EXEC-075) For every assumed order-book shape of a protected market sale (`fixtures/fyers_mpp_sale_assumed.json`), number of misses (1 to 4), part fills and `resend` on or off, the fill sync records the book's price on the sale's row; with `resend` on a market sale still resting a minute after its send (not before) is cancelled with `order.cancelled` (code `sale_resend`, the book's type and price), and once the book shows it ended one fresh market sale of what is open goes out under the next tag; no miss records `order.rejected`, raises `exit.not_placed` or counts in `rejected_sales`; URGENT `sale.unfilled` (`sale_resting`) is raised once, at the `page_after`th miss; with `resend` off nothing is cancelled. Harm: a stop-loss sale sits below a stale protection band all session, or a re-send sells the shares twice.
+- `PBT mpp.lower_circuit_lock_holds_the_sale` (PR 48, HAT-EXEC-075) For every run of lower-circuit lock readings and book shape, a resting market sale is not cancelled while the band reads locked, `sale.unfilled` (`lower_circuit_locked`) is raised once, and it is cancelled at the first reading that is not a lock. Harm: a locked sale loses its place in the queue every minute, or the owner is not told.
+- `PBT mpp.rejected_twice_goes_at_the_band` (PR 48, HAT-EXEC-075) For a sale refused twice (at once, or by the broker after it took it), with the lower band known or not, and the band sale accepted or refused, exactly one LIMIT SELL at the band for the open quantity follows when the band is known, with one `sale.unfilled` (`band_limit`); after it nothing more goes that session; without a band nothing follows. Harm: a stop-loss sale refused twice leaves the position unsold all session.
+- `PBT mpp.gtt_market_sale_asked_again` (PR 48, HAT-EXEC-066) For every number of syncs and lock readings, a triggered GTT's sale the book already shows at the market but still resting is asked `{order_type: MARKET}` again at each sync it is not locked when `resend` is on (paged once at the `page_after`th ask the broker accepts; a refused ask is not counted, a lock alerted once), and not at all when off. Harm: the triggered stop's sale sits below a stale protection band all session.
+- `PBT mpp.no_cancel_without_a_resend` (PR 48, HAT-EXEC-075, CodeAnt) For every sync time from 15:28 to 15:30:30, a resting market sale is cancelled only when its re-send a minute later still falls before the 15:30 order cutoff. Harm: a sale cancelled at 15:29:30 cannot be sent again and the exit is lost for the session.
+- `PBT mpp.resend_flag_parsed` (PR 48) `HAT_MPP_RESEND` is on exactly for a true value, and `HAT_MPP_PAGE_AFTER` is a positive whole number, else 3. Harm: the re-send of an unconfirmed book shape is on by default, or a typo never pages.
 - `PBT fyers_broker.budget_windows_hold` (PR 50, HAT-BRK-082) For every per-second, per-minute and per-day limit and every sequence of reads, writes, 429 pauses and day changes on a fake clock, `CallBudget.take` grants no more calls than each limit in any window, grants a read only within `READ_SHARE` of each window (at least one call) and of the day (no minimum: a day cap of 1 is a write's), grants nothing inside a pause (at most `MAX_PAUSE`), refuses only for one of those reasons, and grants a refused call asked again after the wait it was told (none once the day is spent). Harm: a burst of syncs and the 15:25 swap exceed Fyers' limits and every write, stops included, is refused.
 - `PBT fyers_broker.throttled_call_not_sent` (PR 50, HAT-BRK-082) For every adapter operation (an SL-M stop, GTT place, modify and cancel, the order and GTT books), a call the budget cannot grant is not sent, and one Fyers answers HTTP 429 (JSON body or not, any `Retry-After`) is sent once: a read fails closed and a write is refused with `broker_rate_limited`, the breaker counts nothing, and a 429 pauses the budget for its Retry-After (`THROTTLE_PAUSE` when absent or unreadable). Harm: a throttled stop reads as a rejection and burns its tag's sequence, or a busy broker opens the circuit.
 - `PBT fyers_broker.writes_go_ahead_of_reads` (PR 50, HAT-BRK-082) For every adapter operation, once reads have spent their share of the minute a write is still sent and a read is refused unsent; and while a write waits for a call (`acquire`), a read is not granted the call the window frees. Harm: the fill sync's reads take the calls a stop placement waits for.
@@ -216,6 +222,7 @@ CI=1 python -m pytest tests/hat/properties/test_config.py -k trade_keeps_entry_v
 python -m pytest tests/hat/conformance/test_conf_lifecycle.py -q --no-cov
 CI=1 python -m pytest tests/hat/properties/test_router.py -q --no-cov   # the router on FakeBroker
 CI=1 python -m pytest tests/hat/properties/test_manage.py -q --no-cov   # fills, broker stops, exits
+CI=1 python -m pytest tests/hat/properties/test_mpp.py -q --no-cov      # sales under market price protection (PR 48)
 # the DB checks need a throwaway Postgres whose database name ends in _test
 SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
   python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or owner_serialised or publish_serialised or state_domain"
@@ -323,18 +330,21 @@ Live trade management (PR 15c):
 - `backend/tests/hat/properties/test_manage.py`
 - `backend/app/hat/execution/series.py`
 - `backend/tests/hat/fixtures/fyers_gtt_ex_date_assumed.json`
+- `backend/tests/hat/properties/test_mpp.py`
+- `backend/tests/hat/fixtures/fyers_mpp_sale_assumed.json`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `fcba6eae2df8b6cb33b1fb935cf5e584f470dbee2cbb8cd443f1d84c278f83c3`
+Covered digest: `f3c4ab1747703ee908db9ee70ca0adb481b61e22a9d071df7379553b07a09898`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
@@ -3496,4 +3506,224 @@ Break: (PR 50, CodeAnt) no breaker check after the budget wait.
     | Failed: DID NOT RAISE BrokerUnavailableError
     | AssertionError: assert True is False
     | AssertionError: assert [('place_orde...e': -1, ...})] == []
+```
+
+### PBT mpp.resting_market_sale_resent
+
+Break: (PR 48) in `backend/app/hat/execution/submit.py`, `rejected_sales` counts a sale HAT cancelled to send again (`~_resend_event()` removed), so the third miss hits the two-rejection limit.
+
+```
+E   assert [] == [499]
+E     
+E     Right contains one more item: 499
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_sale_not_sold` records `order.rejected` for a sale HAT cancelled to send again (`if not resent:` became `if True:`).
+
+```
+E   AssertionError: assert 2 == 0
+E    +  where 2 = _events(<sqlalchemy.orm.session.Session object at 0x7f191d58d450>, [<app.hat.models.runtime.HatOrder object at 0x7f191d7974d0>, <app.hat.models.runtime.HatOrder object at 0x7f191d797020>, <app.hat.models.runtime.HatOrder object at 0x7f191d7972f0>], 'order.rejected')
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_resting_market_sale_resent(
+E       shape='shown_as_limit',
+```
+
+Break: (PR 48) in `backend/app/hat/execution/fills.py`, `_sales` reports a market sale as resting at once (the `RESTING_AFTER` check removed).
+
+```
+E   AssertionError: assert ['B-3'] == []
+E     
+E     Left contains one more item: 'B-3'
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_record_book_price` (called by `_sales`) does not record the book's price on the sale's row.
+
+```
+E   TypeError: conversion from NoneType to Decimal is not supported
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_resting_market_sale_resent(
+E       shape='shown_as_limit',
+E       misses=2,
+```
+
+Break: (PR 48) in `submit.py`, `mark_resend` records no book order type.
+
+```
+E   AssertionError: assert None == 'LIMIT'
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_resting_market_sale_resent(
+E       shape='shown_as_limit',
+E       misses=2,
+```
+
+Break: (PR 48) in `backend/app/hat/execution/manage.py`, `_resend_sales` never calls `_send_again`.
+
+```
+E   assert [] == [499]
+E     
+E     Right contains one more item: 499
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_resend_sales` cancels resting sales with `resend` off.
+
+```
+E   AssertionError: assert ['B-3'] == []
+E     
+E     Left contains one more item: 'B-3'
+E     
+E     Full diff:
+```
+
+Break: (PR 48) in `fills.py`, `page_missed` pages at every miss from the `page_after`th (`>=`).
+
+```
+E   AssertionError: assert 2 == 1
+E    +  where 2 = len([{'bot_id': '3d487dee-2d48-4e7e-bdb2-c45fd883d354', 'signal_id': '01a16561-eaad-71e3-b5d6-437d37f6cb33', 'position_id'...6561-eaad-71e3-b5d6-437d37f6cb33', 'position_id': '01a16561-eabc-7604-bcf1-31d3880d0d0c', 'code': 'sale_resting', ...}])
+E    +    where [{'bot_id': '3d487dee-2d48-4e7e-bdb2-c45fd883d354', 'signal_id': '01a16561-eaad-71e3-b5d6-437d37f6cb33', 'position_id'...6561-eaad-71e3-b5d6-437d37f6cb33', 'position_id': '01a16561-eabc-7604-bcf1-31d3880d0d0c', 'code': 'sale_resting', ...}] = _alerts(<hat_manage_support.ManageRig object at 0x7fdc65129bf0>, 'sale_resting')
+E   Failing test case: test_resting_market_sale_resent(
+E       # The test always failed when commented parts were varied together.
+```
+
+Break: (PR 48) in `backend/app/hat/telegram/render.py`, `sale.unfilled` is not in `URGENT_ALERTS`.
+
+```
+E   AssertionError: assert 'sale.unfilled' in frozenset({'corporate_action.unhandled', 'fill.excess', 'gtt.unfilled', 'gtt.unverified', 'position.series_changed'})
+E   (note: 2 other explicit examples also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_resting_market_sale_resent(
+E       shape='market_plain',
+E       misses=1,
+```
+
+### PBT mpp.lower_circuit_lock_holds_the_sale
+
+Break: (PR 48) in `manage.py`, `_cancel_resting` cancels a sale while its instrument is locked at the lower circuit.
+
+```
+E   AssertionError: assert ['B-3'] == []
+E     
+E     Left contains one more item: 'B-3'
+E     
+E     Full diff:
+```
+
+Break: (PR 48) in `fills.py`, `alert_locked` does not remember the alerted sale, so the lock is alerted at every sync.
+
+```
+E   AssertionError: assert 2 == 1
+E    +  where 2 = len([{'bot_id': 'c3362e09-ee8b-4e20-935e-9d527793ebe5', 'signal_id': '01a16562-1b5f-73ea-8c1d-0ab6e67634eb', 'position_id'...2-1b5f-73ea-8c1d-0ab6e67634eb', 'position_id': '01a16562-1b72-71c6-ad81-f354822b6c6f', 'code': 'lower_circuit_locked'}])
+E    +    where [{'bot_id': 'c3362e09-ee8b-4e20-935e-9d527793ebe5', 'signal_id': '01a16562-1b5f-73ea-8c1d-0ab6e67634eb', 'position_id'...2-1b5f-73ea-8c1d-0ab6e67634eb', 'position_id': '01a16562-1b72-71c6-ad81-f354822b6c6f', 'code': 'lower_circuit_locked'}] = _alerts(<hat_manage_support.ManageRig object at 0x7f25ec3581a0>, 'lower_circuit_locked')
+E   Failing explicit example: test_lower_circuit_lock_holds_the_sale(
+E       locks=[True, True, False],
+```
+
+### PBT mpp.rejected_twice_goes_at_the_band
+
+Break: (PR 48) in `manage.py`, `_band_sale` sends the limit at the request's price, not the lower band.
+
+```
+E   AssertionError: assert [] == [('SELL', 500...mal('80.00'))]
+E     
+E     Right contains one more item: ('SELL', 500, Decimal('80.00'))
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_sell_locked` sends a band limit after every rejection from the second on (the `rejected == MAX_SALE_REJECTIONS` test removed).
+
+```
+E   AssertionError: assert [{'symbol': '...'LIMIT', ...}] == []
+E     
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'SELL', 'type': 'LIMIT', ...}
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_send_sale` does not go to the band once its attempts are spent (`if attempts is None:` became `if False:`).
+
+```
+E   AssertionError: assert [] == [('SELL', 500...mal('80.00'))]
+E     
+E     Right contains one more item: ('SELL', 500, Decimal('80.00'))
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_band_sale` alerts under another code than `band_limit`.
+
+```
+E   AssertionError: assert 0 == 1
+E    +  where 0 = len([])
+E    +    where [] = _alerts(<hat_manage_support.ManageRig object at 0x7fb2912d3e00>, 'band_limit')
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_rejected_twice_goes_at_the_band(
+```
+
+### PBT mpp.gtt_market_sale_asked_again
+
+Break: (PR 48) in `fills.py`, a triggered GTT's market sale still resting is never asked again (`if self._resend:` became `if False:`).
+
+```
+E   AssertionError: assert [] == [('modify_ord...: 'MARKET'}))]
+E     
+E     Right contains one more item: ('modify_order', ('X-1', {'order_type': 'MARKET'}))
+E     
+E     Full diff:
+```
+
+Break: (PR 48) `_remarket` asks again while the instrument is locked at the lower circuit.
+
+```
+E   AssertionError: assert [('modify_ord...: 'MARKET'}))] == [('modify_ord...: 'MARKET'}))]
+E     
+E     Left contains 2 more items, first extra item: ('modify_order', ('X-1', {'order_type': 'MARKET'}))
+E     
+E     Full diff:
+```
+
+### PBT mpp.resend_flag_parsed
+
+Break: (PR 48) in `backend/app/hat/settings.py`, `HAT_MPP_RESEND` is on unless `0`.
+
+```
+E   AssertionError: assert True == ((None is not None))
+E    +  where True = HatSettings(enabled=False, user_id=UUID('00000000-0000-7000-8000-000000000001'), data_root=PosixPath('/data/workspace/..., broker_calls_per_second=8, broker_calls_per_minute=180, broker_calls_per_day=5000, mpp_resend=True, mpp_page_after=3).mpp_resend
+E   Failing explicit example: test_resend_flag_parsed(
+E       resend=None,
+E       page=None,
+```
+
+Break: (PR 48) `HAT_MPP_PAGE_AFTER` is not read (always 3).
+
+```
+E   AssertionError: assert 3 == 1
+E    +  where 3 = HatSettings(enabled=False, user_id=UUID('00000000-0000-7000-8000-000000000001'), data_root=PosixPath('/data/workspace/... broker_calls_per_second=8, broker_calls_per_minute=180, broker_calls_per_day=5000, mpp_resend=False, mpp_page_after=3).mpp_page_after
+E   Failing test case: test_resend_flag_parsed(
+E       resend=None,  # or any other generated value
+E       page='1',
+```
+
+### PBT mpp.no_cancel_without_a_resend
+
+Break: (PR 48, CodeAnt) in `backend/app/hat/execution/manage.py`, `_cancel_resting` ignores the order cutoff (`if not self._orders_allowed(now + RESTING_AFTER):` became `if False:`).
+
+```
+E   AssertionError: assert ['B-3'] == []
+E   Failing explicit example: test_no_cancel_without_a_resend(
+E       seconds=60,
+E       shape='market_protected',
+```
+
+Break: (PR 48, CodeAnt) `_cancel_resting` checks the cutoff at the sync, not at the re-send a minute later.
+
+```
+E   AssertionError: assert ['B-3'] == []
+E   Failing explicit example: test_no_cancel_without_a_resend(
+E       seconds=60,
+E       shape='market_protected',
 ```
