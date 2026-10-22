@@ -113,6 +113,23 @@ def _price(raw: object) -> Decimal:
     return value
 
 
+def _epoch(raw: object) -> datetime:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise MinuteHistoryError("history_bad_candle")
+    try:
+        return datetime.fromtimestamp(raw, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise MinuteHistoryError("history_bad_candle") from exc
+
+
+def _volume(raw: object) -> int:
+    if isinstance(raw, float) and raw.is_integer():
+        raw = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise MinuteHistoryError("history_bad_candle")
+    return raw
+
+
 def parse_candles(raw: Iterable[Sequence[object]]) -> list[MinuteCandle]:
     """Candles from the history response's `candles` ([epoch seconds, open, high, low, close,
     volume] each), oldest first. A malformed or inconsistent candle raises; nothing is guessed."""
@@ -120,20 +137,11 @@ def parse_candles(raw: Iterable[Sequence[object]]) -> list[MinuteCandle]:
     for row in raw:
         if not isinstance(row, list | tuple) or len(row) != 6:
             raise MinuteHistoryError("history_bad_candle")
-        if isinstance(row[0], bool) or not isinstance(row[0], int):
-            raise MinuteHistoryError("history_bad_candle")
-        volume = row[5]
-        if isinstance(volume, float) and volume.is_integer():
-            volume = int(volume)
-        if isinstance(volume, bool) or not isinstance(volume, int) or volume < 0:
-            raise MinuteHistoryError("history_bad_candle")
+        at = _epoch(row[0])
+        volume = _volume(row[5])
         open_, high, low, close = (_price(v) for v in row[1:5])
         if not low <= min(open_, close) <= max(open_, close) <= high:
             raise MinuteHistoryError("history_bad_candle")
-        try:
-            at = datetime.fromtimestamp(row[0], tz=UTC)
-        except (OverflowError, OSError, ValueError) as exc:
-            raise MinuteHistoryError("history_bad_candle") from exc
         found[at] = MinuteCandle(at, open_, high, low, close, volume)
     return [found[at] for at in sorted(found)]
 
@@ -417,30 +425,44 @@ def _load_symbol(
         last = min(end, first + timedelta(days=limits.chunk_days - 1))
         response = pacer.call(history, _request(symbol, first, last))
         if not isinstance(response, Mapping):
-            raise MinuteHistoryError("history_failed")
+            raise MinuteHistoryError("history_bad_answer")  # not a refusal: the symbol only
         if response.get("s") != "ok" and _plan_refused(response):
-            if report.clamps >= limits.max_clamps:
-                raise MinuteHistoryError("history_plan_limit")
-            report.clamps += 1
-            floor = pacer.today() - timedelta(days=limits.plan_days)
-            first = max(first + timedelta(days=1), floor)
-            start = first
-            if progress.available_from is None or first > progress.available_from:
-                progress.available_from = first
-                progress.save()
-            report.available_from = progress.available_from
+            first = start = _clamp(pacer, limits, progress, report, first)
             continue
-        if response.get("s") not in ("ok", "no_data"):
-            raise MinuteHistoryError("history_failed")
-        raw = response.get("candles") or []
-        if not isinstance(raw, list):
-            raise MinuteHistoryError("history_bad_candle")
-        if len(raw) > limits.candle_cap:
-            raise MinuteHistoryError("history_too_many_candles")
-        candles = [c for c in parse_candles(raw) if first <= trade_date_of(c.at) <= last]
-        bars.extend(aggregate(symbol, candles))
+        bars.extend(_bars_of(symbol, response, limits, first, last))
         first = last + timedelta(days=1)
     return start, bars
+
+
+def _clamp(
+    pacer: CallPacer, limits: HistoryLimits, progress: Progress, report: HistoryReport, first: date
+) -> date:
+    """The next first date after a refusal for the plan's depth: where the plan serves, or a
+    day later when that was refused too; `history_plan_limit` after `max_clamps` refusals."""
+    if report.clamps >= limits.max_clamps:
+        raise MinuteHistoryError("history_plan_limit")
+    report.clamps += 1
+    first = max(first + timedelta(days=1), pacer.today() - timedelta(days=limits.plan_days))
+    if progress.available_from is None or first > progress.available_from:
+        progress.available_from = first
+        progress.save()
+    report.available_from = progress.available_from
+    return first
+
+
+def _bars_of(
+    symbol: str, response: Mapping[str, object], limits: HistoryLimits, first: date, last: date
+) -> list[Bar]:
+    """The 5-minute bars of one answer for `first..last`; a refusal or a bad answer raises."""
+    if response.get("s") not in ("ok", "no_data"):
+        raise MinuteHistoryError("history_failed")
+    raw = response.get("candles") or []
+    if not isinstance(raw, list):
+        raise MinuteHistoryError("history_bad_candle")
+    if len(raw) > limits.candle_cap:
+        raise MinuteHistoryError("history_too_many_candles")
+    candles = [c for c in parse_candles(raw) if first <= trade_date_of(c.at) <= last]
+    return aggregate(symbol, candles)
 
 
 def load_minute_history(
@@ -486,29 +508,49 @@ def load_minute_history(
         if resume and progress.covers(symbol, first, end):
             report.skipped += 1
             continue
-        try:
-            first, bars = _load_symbol(history, pacer, limits, progress, report, symbol, first, end)
-        except MinuteHistoryError as exc:
-            if exc.code in _RUN_STOPS:
-                report.stopped = exc.code
-                break
+        code = _attempt(
+            history, store, instruments[symbol], pacer, limits, progress, report, symbol, first, end
+        )
+        if code in _RUN_STOPS:
+            report.stopped = code
+            break
+        # only refused calls in a row point at a dead session; a symbol's bad data does not
+        in_row = in_row + 1 if code == "history_failed" else 0
+        if in_row >= limits.failures_in_row:
+            report.stopped = "history_failed"
+            break
+    return report
+
+
+def _attempt(
+    history: HistoryCall,
+    store: BarStore,
+    instrument_id: uuid.UUID | str,
+    pacer: CallPacer,
+    limits: HistoryLimits,
+    progress: Progress,
+    report: HistoryReport,
+    symbol: str,
+    first: date,
+    end: date,
+) -> str | None:
+    """Load and write one symbol; None when it loaded, else the code it failed with (a symbol
+    failure is recorded, a run stop is left to the caller)."""
+    try:
+        first, bars = _load_symbol(history, pacer, limits, progress, report, symbol, first, end)
+    except MinuteHistoryError as exc:
+        if exc.code not in _RUN_STOPS:
             report.failed[symbol] = progress.failed[symbol] = exc.code
             progress.save()
-            # only refused calls in a row point at a dead session; a symbol's bad data does not
-            in_row = in_row + 1 if exc.code == "history_failed" else 0
-            if in_row >= limits.failures_in_row:
-                report.stopped = "history_failed"
-                break
-            continue
-        finally:
-            report.calls = pacer.made
-        in_row = 0
-        report.rows += store.write(bars, {symbol: instruments[symbol]})
-        report.days[symbol] = len({trade_date_of(b.start) for b in bars})
-        progress.done[symbol] = (first, end)
-        progress.failed.pop(symbol, None)
-        progress.save()
-    return report
+        return exc.code
+    finally:
+        report.calls = pacer.made
+    report.rows += store.write(bars, {symbol: instrument_id})
+    report.days[symbol] = len({trade_date_of(b.start) for b in bars})
+    progress.done[symbol] = (first, end)
+    progress.failed.pop(symbol, None)
+    progress.save()
+    return None
 
 
 # --- the trading universe and the command line ----------------------------------------------

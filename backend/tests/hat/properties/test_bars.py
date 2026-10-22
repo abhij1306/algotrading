@@ -1559,6 +1559,7 @@ def _want(symbol: str, raw: list[list[Any]], instrument: str, start: date, end: 
     garbage=st.sampled_from(
         [None, [None], [{}], ["x"], [[1, 2]], [[10**20, 1.0, 1.0, 1.0, 1.0, 0]], [[0, 1.0, 1.0]]]
     ),
+    envelope=st.sampled_from([None, [], "error", 0]),
 )
 @settings(deadline=None)
 def test_minute_history_aggregates_to_5m(
@@ -1569,13 +1570,15 @@ def test_minute_history_aggregates_to_5m(
     failing: str | None,
     cap: int,
     garbage: list[Any] | None,
+    envelope: object,
 ) -> None:
     """The loader asks for 1-minute candles in consecutive chunks of at most `chunk_days`
     covering the period, and writes each symbol's builder bars as soon as it loads: a symbol
     whose call fails, or whose answer holds more candles than the cap, is reported with a fixed
     code (no broker text) and has nothing written, while every other symbol, before or after it,
     is stored. A garbage candle row (not a list, too short, an impossible epoch) fails its symbol
-    with `history_bad_candle`, never the run."""
+    with `history_bad_candle`, and an answer that is not a mapping fails its symbol with
+    `history_bad_answer`, never the run, however many in a row."""
     start = DAY + timedelta(days=first)
     end = start + timedelta(days=span)
     symbols = {s: str(uuid4()) for s in ("NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ")}
@@ -1634,6 +1637,15 @@ def test_minute_history_aggregates_to_5m(
             key=lambda r: (r.bar_start, r.instrument_id),
         )
         assert _stored(store, start, end) == want
+
+        # an answer that is not a mapping at all fails its symbol only, and a run of them is
+        # not a dead session: every symbol is tried
+        bare = BarStore(Path(root) / "bare")
+        enveloped = load_minute_history(
+            lambda _request: envelope, bare, symbols, start, end, limits=limits
+        )
+        assert enveloped.stopped is None
+        assert enveloped.failed == dict.fromkeys(symbols, "history_bad_answer")
 
 
 @given(
