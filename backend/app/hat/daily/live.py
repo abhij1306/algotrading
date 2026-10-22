@@ -220,7 +220,9 @@ def _open_notional(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decima
 class LiveContexts:
     """The `ContextSource` of live entries. Equity is the sleeve's allocation capital plus its
     realised P&L (06 §2) in the bot's mode; free cash is the broker's available funds for a real
-    entry and the sleeve's equity less its open virtual positions for a shadow one."""
+    entry and the sleeve's equity less its open virtual positions for a shadow one. A virtual
+    entry of a Shadow or Probation sleeve (weight 0) is sized from its nominal allocation
+    (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real entry never is."""
 
     def __init__(
         self,
@@ -253,12 +255,19 @@ class LiveContexts:
         if bot is None or allocation is None:
             return base  # no allocation: the risk check rejects for the missing input
         virtual = bot_mode(session, bot, at, calendar) == SHADOW
-        capital = Decimal(allocation.capital)
+        # a Shadow or Probation sleeve has weight 0; its virtual entries use the nominal
+        # allocation, health 1, and the book they are capped against counts it (HAT-PORT-050)
+        nominal = virtual and allocation.virtual_capital is not None
+        capital = Decimal(allocation.virtual_capital if nominal else allocation.capital)
+        risk_pct = Decimal(allocation.virtual_risk_pct if nominal else allocation.risk_pct)
         equity = capital + _realised(session, bot_id, virtual)
+        book = (
+            func.coalesce(HatAllocationDaily.virtual_capital, HatAllocationDaily.capital)
+            if virtual
+            else HatAllocationDaily.capital
+        )
         total = session.scalar(
-            select(func.sum(HatAllocationDaily.capital)).where(
-                HatAllocationDaily.trade_date == allocation.trade_date
-            )
+            select(func.sum(book)).where(HatAllocationDaily.trade_date == allocation.trade_date)
         )
         cash = (
             equity - _open_notional(session, bot_id, True)
@@ -268,9 +277,9 @@ class LiveContexts:
         return copy.replace(
             base,
             equity=equity,
-            allocation_risk_pct=Decimal(allocation.risk_pct),
+            allocation_risk_pct=risk_pct,
             regime_mult=Decimal(allocation.regime_mult),
-            health_mult=Decimal(allocation.health_mult),
+            health_mult=Decimal(1) if nominal else Decimal(allocation.health_mult),
             total_equity=None if total is None else Decimal(total),
             free_cash=cash,
         )

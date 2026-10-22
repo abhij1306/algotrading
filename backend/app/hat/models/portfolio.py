@@ -138,6 +138,9 @@ class HatAllocationDaily(Base):
     capital = Column(Money, nullable=False)
     risk_pct = Column(Ratio, nullable=False)
     currency = Column(Currency, nullable=False)
+    # the nominal allocation of a Shadow or Probation sleeve's virtual entries (HAT-PORT-050)
+    virtual_capital = Column(Money)
+    virtual_risk_pct = Column(Ratio)
 
 
 class HatFundamental(Base):

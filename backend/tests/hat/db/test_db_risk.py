@@ -67,7 +67,7 @@ def test_risk__policy_service_rows_pass_the_database(conn: Connection) -> None:
             proposed=policy_with(risk_pct="0.0030"),
             calendar=calendar,
             requested_at=EVENING,
-            evidence=lambda _s, _u: EVIDENCE,
+            evidence=lambda _s, _u, _at: EVIDENCE,
             chat_id=1,
         )
         apply_due_versions(session, user, EVENING + timedelta(days=30))
@@ -103,7 +103,7 @@ def test_risk__policy_service_without_cooling_off_is_rejected(
                 proposed=proposed,
                 calendar=calendar,
                 requested_at=EVENING,
-                evidence=lambda _s, _u: EVIDENCE,
+                evidence=lambda _s, _u, _at: EVIDENCE,
                 chat_id=1,
             )
 

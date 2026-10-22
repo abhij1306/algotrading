@@ -44,7 +44,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.trial_counting` A family's trial count is the number of runs recorded for it, failed ones included; it never falls and other families never change it (HAT-BT-030). Harm: discarded variants are forgotten and the DSR under-corrects for luck.
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
-- `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's closed trades in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
+- `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 
 ## Run
 
@@ -104,7 +104,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `f81d9a9e1693a84d39c0fc00935679f60bb42800b1013e7e2c58f4fbd701d806`
+Covered digest: `adef3c13ad158cb6f9fa5bdc629ccdbbd93e94f3cbfeee738a6983854ef46e9e`
 
 ## Scope changes
 
@@ -122,6 +122,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `backtest.no_lookahead` mutates bars and index closes after d; features are derived from the bars by `compute_features`, so they follow. Corporate actions and membership changes after d are covered by the adjusted view (`verify-data`) and `backtest.survivorship_free`.
 - The run-level properties use 12 examples (a run takes about a second); the pure ones use the profile's count.
 - The published DSR example is checked at the paper's printed 4 places plus 1e-6 against an independent computation of the same formula, since the paper prints only 4 places.
+- PR 34 (design review 2026-10-22 item 9): `runs.gate_evidence` takes the request time `at` and counts only the trades closed at or after the `effective_from` of the policy version in force then (`effective_version`), so each step up needs its own 50 trades. `policy_service.EvidenceSource` gains `at` (`request_policy_change` passes `requested_at`); `test_caps`' fixed evidence lambdas take it. `dsr.gate_evidence` draws a policy step (versions 1, 2 in force at a drawn minute, 3 pending) or none. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -660,4 +661,16 @@ tests/hat/properties/test_dsr.py:375: in test_gate_evidence
 tests/hat/properties/test_dsr.py:433: in test_gate_evidence
     assert _numbers(got) == _numbers(want)
 E   AssertionError: assert {'live_trades...imal('0.005')} == {'live_trades...33333333333')}
+```
+
+Break (PR 34): `gate_evidence` counts every closed trade, whatever version is in force (main before PR 34).
+
+```
+E   AssertionError: assert {'live_trades...000000'), ...} == {'live_trades...ecimal('0.5')}
+```
+
+Break (PR 34): the newest version is taken even while it is pending.
+
+```
+E   AssertionError: assert {'live_trades...ecimal('0.5')} == {'live_trades...ecimal('0.5')}
 ```

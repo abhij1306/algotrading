@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `8d7700cd6ad4f05df1ae087ce876ec87d81d62c6087df5dc1d5003d88c9e4590`
+Covered digest: `1f898b31a5868ffa3addf41b526ef405806014fcd4fc93ce4081bfc1ea5adbbd`
 
 ## Scope changes
 
@@ -112,6 +112,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 43 added `settings.operator_settings()` (loads `.env`, then `load_settings()`) for the command lines; `load_settings` is unchanged. Its checks are `verify-data`'s `store.cli_root_after_env` and `history_build.cli_root_and_report` and `verify-live-data`'s `minute_history_cli.root_and_report`; no check here was narrowed.
 - PR 16 added `time.day_bounds` (the UTC window of an IST trade date), now used by `engine/trades.py` and the Telegram reads and reports instead of three copies; no check was narrowed.
 - PR 33 added the `hat_quality_quarantine` table (`models/ops.py`; 03 §7, HAT-SCH-070): `schema.backtest_ops_columns` now covers nine ops tables and `schema.sqlite_create_all` expects 43 tables. Its `released_by` CHECK is new; the quarantine itself is checked by `verify-data`. Nothing was narrowed.
+- PR 34 (design review item 8a, HAT-PORT-050): `hat_allocation_daily` gains the nullable `virtual_capital` and `virtual_risk_pct` (03 §portfolio); an existing Postgres database gets them from `ensure_hat_columns`. Checked by `verify-portfolio`'s allocator properties. Nothing was narrowed.
 
 ## Scratch breaks
 

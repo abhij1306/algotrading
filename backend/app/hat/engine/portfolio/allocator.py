@@ -10,6 +10,11 @@ from one sleeve is given to another: what is left is cash. Money is `Decimal` th
 
 When a cap binds, `final_weight` is below `base x regime_mult x health_mult`; otherwise the
 product holds exactly (row by row, HAT-PORT-050).
+
+A Shadow or Probation sleeve keeps weight 0 but gets a nominal allocation for its virtual
+entries (design review 2026-10-22 item 8): `virtual_capital = base x regime_mult x equity` and
+`virtual_risk_pct = risk_pct x regime_mult`, health taken as 1. It is never capped and never
+reaches a real entry; every other sleeve has none.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from .health import Health
 
 SMOOTHING_STEP = Decimal("0.25")  # [A] HAT-PORT-054
 LIVE = "live"
+VIRTUAL_STATES = frozenset({"shadow", "probation"})  # sized nominally for virtual entries
 _PRECISION = 120  # wide enough that no product of stored amounts is rounded
 _WEIGHT_PLACES = Decimal("1E-12")
 _MONEY_PLACES = Decimal("0.0001")
@@ -83,6 +89,8 @@ class Allocation:
     final_weight: Decimal
     capital: Decimal
     risk_pct: Decimal
+    virtual_capital: Decimal | None = None
+    virtual_risk_pct: Decimal | None = None
 
 
 def _scale_down(weights: list[Decimal], limit: Decimal) -> list[Decimal]:
@@ -133,6 +141,7 @@ def allocate(
     with localcontext() as ctx:
         ctx.prec = _PRECISION
         for (s, base, regime, health, _), final in zip(rows, weights, strict=True):
+            nominal = s.lifecycle_state in VIRTUAL_STATES
             out.append(
                 Allocation(
                     bot_id=s.bot_id,
@@ -142,6 +151,12 @@ def allocate(
                     final_weight=final,
                     capital=(final * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN),
                     risk_pct=policy.risk_pct * regime * health,
+                    virtual_capital=(base * regime * total_equity).quantize(
+                        _MONEY_PLACES, rounding=ROUND_DOWN
+                    )
+                    if nominal
+                    else None,
+                    virtual_risk_pct=policy.risk_pct * regime if nominal else None,
                 )
             )
     return out

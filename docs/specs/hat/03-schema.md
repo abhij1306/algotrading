@@ -469,6 +469,8 @@ Sleeves, universes, regime and daily weights. `hat_bot` is the sleeve (§3). `ha
 | capital | numeric(18,4) | |
 | risk_pct | numeric | |
 | currency | char(3) | |
+| virtual_capital | numeric(18,4) null | the nominal capital of a Shadow or Probation sleeve's virtual entries (HAT-PORT-050); null for every other sleeve |
+| virtual_risk_pct | numeric null | the nominal risk per trade of those entries |
 
 **`hat_fundamental`**: created empty in the MVP (P2); screeners read only rows with `filed_at` ≤ the evaluation date.
 

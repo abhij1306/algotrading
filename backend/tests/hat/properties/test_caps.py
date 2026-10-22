@@ -811,7 +811,7 @@ def test_policy_change_emits_event(steps: list) -> None:
                     requested_at=datetime.combine(
                         clock.astimezone(IST).date(), EVENING, tzinfo=IST
                     ),
-                    evidence=lambda _s, _u: PASSING,
+                    evidence=lambda _s, _u, _at: PASSING,
                     chat_id=1,
                 )
                 requests += 1
@@ -879,7 +879,7 @@ def test_policy_change_inside_session_or_without_evidence_is_refused(kind: str) 
                     proposed=proposed,
                     calendar=short_calendar,
                     requested_at=evening,
-                    evidence=lambda _s, _u: PASSING,
+                    evidence=lambda _s, _u, _at: PASSING,
                     chat_id=1,
                 )
             asked = session.scalars(
