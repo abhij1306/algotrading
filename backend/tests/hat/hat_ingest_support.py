@@ -30,6 +30,7 @@ from app.hat.models import (
     HatKillSwitch,
     HatMarket,
     HatQualityCheck,
+    HatQualityQuarantine,
 )
 from app.hat.notify import RecordingNotifier
 from app.hat.time import IST
@@ -43,6 +44,7 @@ TABLES = (
     HatQualityCheck,
     HatKillSwitch,
     HatCorporateAction,
+    HatQualityQuarantine,
 )
 INDEX_ROWS = [
     {"indexName": "NIFTY 50", "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0},

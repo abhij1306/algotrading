@@ -25,7 +25,7 @@ verification can check.
 | [00-overview.md](00-overview.md) | Scope and phases, glossary, module boundaries and import rules, reuse map, conflict resolutions C1-C12, non-goals | HAT-OVR |
 | [01-decisions.md](01-decisions.md) | Decisions T1-T16, B1-B27 (revised B1/B2/B12), I1-I17, PL1-PL5, build decisions of 20 Oct | HAT-DEC-&lt;code&gt; |
 | [02-data.md](02-data.md) | Source map, reference data, NSE MCP client, nightly ingest, corporate actions, quality gate, features, Parquet/DuckDB, historical build, announcements, live bars, gap scan | HAT-DATA |
-| [03-schema.md](03-schema.md) | The 42 tables, event log and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
+| [03-schema.md](03-schema.md) | The 43 tables, event log and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
 | [04-criteria-and-bots.md](04-criteria-and-bots.md) | Nine-stage model, criterion instances, scoring, the 24 criterion types, playbooks, S1 and S2 default configs, versioning | HAT-CRIT, HAT-BOT |
 | [05-portfolio-regime-allocation.md](05-portfolio-regime-allocation.md) | Sleeves, universes, regime v1, health multiplier, allocator, sleeve lifecycle, regime v2 (P2) | HAT-PORT |
 | [06-risk-and-governance.md](06-risk-and-governance.md) | Risk policy, sizing, caps, progressive exposure, regime gate, kill switches, invariants, governance, the risk authority (`evaluate_signal`) | HAT-RISK, HAT-GOV |
@@ -182,7 +182,7 @@ to an artefact that exists.
 | HAT-DATA-043 | [02](02-data.md) | 7, 17 | PBT `ingest.raw_write_once`, TLA `JobScheduler!AtMostOnceSuccess`, PBT `ingest.checks_kept_for_retry` |
 | HAT-DATA-044 | [02](02-data.md) | 7 | PBT `ingest.index_snapshot_stored`, PBT `ingest.nightly_index_breadth` |
 | HAT-DATA-045 | [02](02-data.md) | 7 | PBT `ingest.outcome_event` |
-| HAT-DATA-046 | [02](02-data.md) | 7, 17 | TLA `NightlyPipeline!NightlyPipelineOrder` |
+| HAT-DATA-046 | [02](02-data.md) | 7, 17, 33 | TLA `NightlyPipeline!NightlyPipelineOrder` |
 | HAT-DATA-047 | [02](02-data.md) | 7 | TLA `NightlyPipeline!NoDataNoScan`, TLA `KillSwitch!ExitsContinue` |
 | HAT-DATA-048 | [02](02-data.md) | 7 | PBT `ingest.call_budget` |
 | HAT-DATA-049 | [02](02-data.md) | 7 | PBT `ingest.renames_from_nse_data` |
@@ -194,7 +194,7 @@ to an artefact that exists.
 | HAT-DATA-055 | [02](02-data.md) | 5 | PBT `corporate_actions.factor_parse` |
 | HAT-DATA-060 | [02](02-data.md) | 7 | PBT `quality_gate.coverage_threshold`, TLA `KillSwitch!DataHealthManageOnly` |
 | HAT-DATA-061 | [02](02-data.md) | 7 | PBT `quality_gate.ohlc_zero_tolerance` |
-| HAT-DATA-062 | [02](02-data.md) | 7 | PBT `quality_gate.big_moves_explained` |
+| HAT-DATA-062 | [02](02-data.md) | 7, 33 | PBT `quality_gate.big_moves_explained`, PBT `quality_gate.quarantine_one_mover`, PBT `quality_gate.quarantine_cap`, PBT `quality_gate.quarantine_release` |
 | HAT-DATA-063 | [02](02-data.md) | 7 | PBT `quality_gate.index_snapshot_present` |
 | HAT-DATA-064 | [02](02-data.md) | 7 | PBT `quality_gate.rows_written` |
 | HAT-DATA-065 | [02](02-data.md) | 7, 10, 17 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `quality_gate.rows_written` |
@@ -284,7 +284,7 @@ to an artefact that exists.
 | HAT-SCH-066 | [03](03-schema.md) | 3, 17 | DB `events.partitions_ahead`, DB `events.partitions_job` |
 | HAT-SCH-067 | [03](03-schema.md) | 3 | PBT `events.ids_increasing` |
 | HAT-SCH-068 | [03](03-schema.md) | 3 | DB `events.append_only` |
-| HAT-SCH-070 | [03](03-schema.md) | 2, 3, 16 | CONF `schema.backtest_ops_columns` |
+| HAT-SCH-070 | [03](03-schema.md) | 2, 3, 16, 33 | CONF `schema.backtest_ops_columns` |
 | HAT-SCH-071 | [03](03-schema.md) | 3, 12 | DB `ops.family_key_not_null` |
 | HAT-SCH-072 | [03](03-schema.md) | 2 | DB `ops.job_run_unique`, TLA `JobScheduler!AtMostOnceSuccess` |
 | HAT-SCH-073 | [03](03-schema.md) | 3, 10 | DB `ops.snapshot_unique` |
@@ -406,7 +406,7 @@ to an artefact that exists.
 | HAT-RISK-063 | [06](06-risk-and-governance.md) | 10, 14, 17, 30 | TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`, PBT `router.broker_health_follows_the_session` |
 | HAT-RISK-064 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!NoAutoRearm` |
 | HAT-RISK-065 | [06](06-risk-and-governance.md) | 10, 15 | TLA `KillSwitch!ExitsContinue` |
-| HAT-RISK-066 | [06](06-risk-and-governance.md) | 9 | PBT `kill.reallocation_is_not_drawdown` |
+| HAT-RISK-066 | [06](06-risk-and-governance.md) | 9, 33 | PBT `kill.reallocation_is_not_drawdown`, PBT `kill.snapshot_latest_allocation` |
 | HAT-RISK-070 | [06](06-risk-and-governance.md) | 3, 10, 11 | TLA `StopPlacement!StopOnlyTightens`, DB `governance.stop_only_rises`, PBT `exits.never_lowers_stop` |
 | HAT-RISK-071 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_add_to_loser` |
 | HAT-RISK-072 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_pyramiding` |
@@ -537,7 +537,7 @@ to an artefact that exists.
 | HAT-OPS-012 | [10](10-ops.md) | 17 | PBT `ops.calendar_skip` |
 | HAT-OPS-013 | [10](10-ops.md) | 2 | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-020 | [10](10-ops.md) | 17 | CONF `ops.job_registry` |
-| HAT-OPS-021 | [10](10-ops.md) | 17 | TLA `NightlyPipeline!NightlyPipelineOrder`, PBT `ops.entry_inputs_fail_closed` |
+| HAT-OPS-021 | [10](10-ops.md) | 17, 33 | TLA `NightlyPipeline!NightlyPipelineOrder`, TLA `NightlyPipeline!AdjustIndependentOfGate`, TLA `NightlyPipeline!SnapshotEveryNight`, PBT `ops.entry_inputs_fail_closed` |
 | HAT-OPS-022 | [10](10-ops.md) | 7 (logic), 17 (wiring) | TLA `NightlyPipeline!FallbackAt2200` |
 | HAT-OPS-023 | [10](10-ops.md) | 14, 15 (logic), 17 (wiring) | TLA `DailyCycle!IntradayOrder`, PBT `router.entry_needs_live_session`, CONF `ops.route_matches_protocol` |
 | HAT-OPS-024 | [10](10-ops.md) | 15 (logic), 17 (wiring) | TLA `StopPlacement!NightlyVerifyCovers` |

@@ -36,7 +36,10 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT corporate_actions.lookup_only_flagged` The nightly ingest looks corporate actions up for exactly the flagged symbols, once each. Harm: thousands of needless calls, or a split missed.
 - `PBT quality_gate.coverage_threshold` Coverage passes iff stored/universe >= 0.99 by exact arithmetic (an empty universe never passes). Harm: a night with a hole in the market is scanned.
 - `PBT quality_gate.ohlc_zero_tolerance` One fetched row that broke a row check fails the ohlc check. Harm: bad prices reach the scans.
-- `PBT quality_gate.big_moves_explained` The big-moves check fails iff a mover over 20% has neither a corporate action on the day nor a place on the exclusion list; scans never see an excluded instrument. Harm: an unadjusted split triggers signals.
+- `PBT quality_gate.big_moves_explained` A mover over 20% with neither a corporate action on the day nor a place on the exclusion list is unexplained; the big-moves check fails iff the unexplained are more than 1% of the active universe, and on a pass they join the day's exclusion list; scans never see an excluded instrument. Harm: an unadjusted split triggers signals, or one odd stock blocks the whole market.
+- `PBT quality_gate.quarantine_one_mover` Up to 1% of the universe unexplained: each mover is quarantined from the trade date, excluded from the day's scans and alerted once with its symbol, also when a gate failing another check is retried. Harm: the owner never learns a stock left the scans, or is alerted every 10 minutes.
+- `PBT quality_gate.quarantine_cap` More than 1% unexplained fails the gate (health kill, one `quality.failed`) and quarantines nothing. Harm: a bad file quarantines a slice of the market.
+- `PBT quality_gate.quarantine_release` Against a model over quarantines, corporate actions, owner clears and gate reads: a quarantine stands until a corporate action with ex-date `since` is stored (released by the next gate read) or the owner clears its symbol; the real gate then excludes exactly the standing ones. Harm: a quarantined stock comes back unadjusted, or never comes back.
 - `PBT quality_gate.index_snapshot_present` The index check passes iff NIFTY 500 and India VIX are both stored. Harm: the regime runs without its inputs.
 - `PBT quality_gate.rows_written` The gate writes exactly four check rows, PASS iff all pass; a FAIL writes one `quality.failed` and one alert (a retry failing the same checks writes and sends no second one), fails the job and leaves the data-health kill tripped; only a passing gate clears it. Harm: bots trade on a bad day, or stay blocked after a good one.
 - `PBT bhavcopy.format_by_date` Every weekday from 2010-01-01 to today (boundaries 5 and 8 Jul 2024 included) maps to the old URL up to 5 Jul 2024 and the UDiFF URL from 8 Jul 2024; weekends have none. Harm: the backfill requests files that do not exist.
@@ -121,6 +124,7 @@ Code under check:
 - `backend/app/hat/data/mcp_client.py`
 - `backend/app/hat/data/ingest.py`
 - `backend/app/hat/data/quality.py`
+- `backend/app/hat/data/quarantine.py`
 - `backend/app/hat/data/renames.py`
 - `backend/app/hat/data/features.py`
 - `backend/app/hat/data/run_report.py`
@@ -148,7 +152,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `6c4b90d844088e13e07a2161b1dfd39a18b9c242ec248c8400e3f1781bd38a05`
+Covered digest: `a060c3c1f7b022da29cf61ea21412151dca90cf2133cc8560ce0df71dec7c9a3`
 
 ## Scope changes
 
@@ -175,6 +179,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). PR 23: the live run of 2026-10-22 confirmed the index layout and found breadth in snake_case (`total_volume`, `total_stocks`, `ad_ratio`); `breadth_from_mcp` reads `total_volume` and the `Nse` and day-rig fixtures send the recorded reply. When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
 - PR 42 added `history_build.cli_passes_calendar_holidays`, the first check that runs `main`: it patches only its boundaries (`app.database.SessionLocal` with an in-memory SQLite calendar, `DataStore`, `http_fetcher`, `client_from_env`) and records the real `run_history_build` report; name lookups and sockets are blocked and recorded, and the property asserts none was attempted. Nothing was narrowed.
 - PR 43 (PR 41 follow-ups 1 and 7): the command lines take their settings from `operator_settings()` (loads `.env` first) and hand its root to their stores, and `history_build` appends its summary to `history_build/report-YYYY-MM-DD.txt` (`run_report.save_report`). `DataStore` no longer has a default root (`app.paths.HAT_DATA_ROOT`): nothing but the old `store.data_root` check used it, which now checks the settings' default instead. The PR 42 property no longer patches `DataStore`: it shares `_drive_main` with `history_build.cli_root_and_report` and runs in a scratch root from the environment. `CONF store.cli_root_after_env` is a source check: it does not run `features` or the backtest, whose `main` needs a real database. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). The report file is named by the wall clock's IST day, so the properties match it by pattern. Nothing was narrowed.
+- PR 33 (design review item 12): the gate fills the exclusion list itself (the quarantine), so `big_moves_explained` no longer treats it as an owner-chosen input; it draws universe sizes 0 to 1100, and the end-to-end gate properties use 100 to 300 instruments (1% of fewer than 100 is no mover at all). `big_moves_end_to_end` and `quarantine_*` run 10 to 12 examples (one database and store each); `quarantine_release` runs 40 sequences of up to 14 steps over three instruments and four earlier days. A passing gate is never run again for its day (one success per job and day), so the retry of `quarantine_one_mover` is a gate failing another check (India VIX not stored). The gate still measures moves on raw close against `prev_close`, not on adjusted prices as the HAT-DATA-062 property words it (unchanged from PR 7; follow-up). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1180,4 +1185,56 @@ Break: only `gate_body` alerts on every retry (`if news:` to `if True:`).
 ```
 E   AssertionError: assert 3 == 1
 E    +  where 3 = len(alerts)
+```
+
+Break: (PR 33) the cap ignored: any unexplained mover fails the check (`passed = not unexplained`). Fails `big_moves_explained`, `big_moves_end_to_end` and `quarantine_one_mover`.
+
+```
+E   AssertionError: assert False == (Fraction(1, 1) <= Fraction(1, 1))
+E    +  where False = Check(name='big_moves', passed=False, detail={'moved': 1, 'unexplained': ['1'], 'excluded': [], 'cap_percent': 1}).passed
+```
+
+### PBT quality_gate.quarantine_one_mover
+
+Break: (PR 33) `gate_body` does not insert the quarantine (the `quarantine(session, new, trade_date, now)` call removed).
+
+```
+E   AssertionError: assert set() == {('01a16355-3...0, 20), True)}
+E     Extra items in the right set:
+E     ('01a16355-3381-7697-866a-428ed46ff1d8', datetime.date(2026, 10, 20), True)
+```
+
+Break: (PR 33) standing quarantines not excluded (`excluded=skipped | standing` to `excluded=skipped`): a retry of a gate failing another check alerts the mover again. Also fails `quarantine_release`.
+
+```
+E   AssertionError: assert [('01a16355-6...70', 'S0000')] == [('01a16355-6...70', 'S0000')]
+E     Left contains 2 more items, first extra item: ('01a16355-6b52-7684-8c6c-d0900f08c470', 'S0000')
+```
+
+### PBT quality_gate.quarantine_cap
+
+Break: (PR 33) movers quarantined above the cap too (`if moves.passed:` to `if True:` in `gate_body`); the retry then passes, the quarantined movers being excluded.
+
+```
+    | AssertionError: assert {('01a16356-e...0, 20), True)} == set()
+    | AssertionError: assert not True
+```
+
+### PBT quality_gate.quarantine_release
+
+Break: (PR 33) no release on a corporate action (`if action is not None:` to `if False:` in `standing_quarantine`).
+
+```
+E   AssertionError: assert {'01a16355-57...eab55b6e8a38'} == set()
+E     Extra items in the left set:
+E     '01a16355-57a9-770b-8a10-eab55b6e8a38'
+```
+
+Break: (PR 33) `clear` matches the symbol as typed (`symbol.strip().upper()` to `symbol`).
+
+```
+E   assert 0 == 1
+E    +  where 1 = len([(1, datetime.date(2026, 10, 17))])
+E   Failing explicit example: test_quarantine_release(
+E       ops=[('quarantine', 1, 3), ('clear', 1, 1)],
 ```

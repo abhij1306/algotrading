@@ -1,10 +1,11 @@
 """PBT quality_gate.* (HAT-DATA-060..065, HAT-DEC-I14): the nightly quality gate's four checks
-(coverage, OHLC, big moves, index snapshot), the rows and events it writes, and the health kill
-it trips and clears. Pure checks plus the real ingest and gate over an in-memory database and a
-temporary store; no network."""
+(coverage, OHLC, big moves, index snapshot), the rows and events it writes, the health kill it
+trips and clears, and the quarantine of unexplained big movers (PR 33). Pure checks plus the
+real ingest and gate over an in-memory database and a temporary store; no network."""
 
 import tempfile
-from datetime import timedelta
+from collections.abc import Collection
+from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
 
@@ -24,15 +25,28 @@ from sqlalchemy import select
 from app.hat.data.ingest import ingest_body, outcome_recorder
 from app.hat.data.quality import (
     CHECK_NAMES,
+    CODE_FAILED,
+    CODE_QUARANTINED,
     JOB_QUALITY,
+    RELEASED_BY_ACTION,
+    RELEASED_BY_OWNER,
     big_moves_check,
     coverage_check,
     excluded_for,
     gate_body,
     index_snapshot_check,
+    quarantine,
     scan_universe,
+    standing_quarantine,
 )
-from app.hat.models import HatCorporateAction, HatEvent, HatJobRun, HatQualityCheck
+from app.hat.data.quarantine import clear, open_quarantines
+from app.hat.models import (
+    HatCorporateAction,
+    HatEvent,
+    HatJobRun,
+    HatQualityCheck,
+    HatQualityQuarantine,
+)
 from app.hat.ops.jobs import run_job
 from app.hat.risk.controls import kill_rows, sync_health
 from app.hat.risk.kill import TRIPPED, current_state
@@ -107,63 +121,259 @@ def test_ohlc_zero_tolerance(bad: set[int], n: int) -> None:
         assert (_rows(world)["ohlc"] == "FAIL") == bool(bad)
 
 
-@settings(max_examples=40)
+def _action(world: World, symbol: str, day: date) -> None:
+    with world.factory() as session:
+        session.add(
+            HatCorporateAction(
+                instrument_id=world.ids[f"{symbol}:EQ"],
+                ex_date=day,
+                action_type="split",
+                adjustment_factor=Decimal("0.5"),
+                raw_text="split",
+                source="nse_mcp",
+            )
+        )
+        session.commit()
+
+
+def _night(world: World, size: int, movers: Collection[int]) -> None:
+    """A stored flat day before TRADE_DAY, then the trade day's quotes with `movers` up 50%."""
+    names = [s for s, _, _ in symbols_of(size)]
+    store_previous(world, dict.fromkeys(names, Decimal(100)), DAY_BEFORE)
+    for i in movers:
+        world.nse.quotes[names[i]] = Quote(close=Decimal(150), prev_close=Decimal(100))
+
+
+def _quarantined(world: World) -> set[tuple[str, date, bool]]:
+    with world.factory() as session:
+        return {
+            (str(q.instrument_id), q.since, q.released_at is None)
+            for q in session.scalars(select(HatQualityQuarantine))
+        }
+
+
+def _quarantine_alerts(world: World) -> list[tuple[str, str]]:
+    return [
+        (str(d["instrument"]), str(d["symbol"]))
+        for code, _day, d in world.notifier.alerts
+        if code == CODE_QUARANTINED
+    ]
+
+
+@settings(max_examples=60)
 @given(
     moved=st.sets(st.integers(0, 9)),
     explained=st.sets(st.integers(0, 9)),
     excluded=st.sets(st.integers(0, 9)),
     universe=st.sets(st.integers(0, 9)),
+    size=st.integers(0, 1100),
 )
+@example(moved={1}, explained=set(), excluded=set(), universe=set(), size=100)
+@example(moved={1, 2}, explained=set(), excluded=set(), universe=set(), size=199)
+@example(moved={1, 2}, explained=set(), excluded=set(), universe=set(), size=200)
 def test_big_moves_explained(
-    moved: set[int], explained: set[int], excluded: set[int], universe: set[int]
+    moved: set[int], explained: set[int], excluded: set[int], universe: set[int], size: int
 ) -> None:
-    """For every set of instruments that moved over 20%, those with a corporate action on the day
-    and those excluded, the check fails iff some mover is neither explained nor excluded; and a
-    scan sees the universe less the excluded, never an excluded one."""
-    check = big_moves_check(moved, explained, excluded)
-    assert check.passed == (moved <= (explained | excluded))
-    assert set(check.detail["unexplained"]) == {str(k) for k in moved - explained - excluded}
-    scanned = scan_universe(sorted(universe), excluded)
-    assert set(scanned) == universe - excluded
-    assert not set(scanned) & excluded
+    """HAT-DATA-062 (PR 33). For every set of instruments that moved over 20%, those with a
+    corporate action on the day, those already excluded and every active-universe size N: the
+    unexplained are the movers neither explained nor excluded; the check fails iff they are more
+    than 1% of N (one of 100 passes, two of 199 fail, two of 200 pass); the day's exclusion list
+    is the excluded plus, on a pass only, the unexplained; and a scan sees the universe less the
+    exclusion list, never an excluded one."""
+    check = big_moves_check(moved, explained, excluded, size)
+    unexplained = moved - explained - excluded
+    assert set(check.detail["unexplained"]) == {str(k) for k in unexplained}
+    assert check.passed == (Fraction(len(unexplained)) <= Fraction(size, 100))
+    out = excluded | (unexplained if check.passed else set())
+    assert set(check.detail["excluded"]) == {str(k) for k in out}
+    scanned = scan_universe(sorted(universe), out)
+    assert set(scanned) == universe - out
+    assert not set(scanned) & out
 
 
 @settings(max_examples=12)
 @given(
-    movers=st.sets(st.integers(0, 5)),
-    explained=st.sets(st.integers(0, 5)),
-    excluded=st.sets(st.integers(0, 5)),
+    size=st.integers(100, 250),
+    movers=st.sets(st.integers(0, 4)),
+    explained=st.sets(st.integers(0, 4)),
+    excluded=st.sets(st.integers(0, 6)),
 )
-def test_big_moves_end_to_end(movers: set[int], explained: set[int], excluded: set[int]) -> None:
-    """The same rule over stored bars and corporate actions: the gate's big_moves check fails iff
-    a mover has no corporate action on the trade date and is not excluded; excluded movers are
-    recorded for the day's scans."""
-    names = [s for s, _, _ in symbols_of(6)]
+@example(size=100, movers={0}, explained=set(), excluded=set())
+@example(size=100, movers={0, 1}, explained=set(), excluded=set())
+@example(size=200, movers={0, 1}, explained=set(), excluded={5})
+def test_big_moves_end_to_end(
+    size: int, movers: set[int], explained: set[int], excluded: set[int]
+) -> None:
+    """The same rule over stored bars and corporate actions: for every universe of 100 to 250
+    instruments, the gate's big_moves check fails iff the movers with no corporate action on the
+    trade date that are not excluded are more than 1% of it, and the day's scans exclude the
+    given instruments plus, on a pass, those movers."""
+    names = [s for s, _, _ in symbols_of(size)]
     with tempfile.TemporaryDirectory() as tmp:
-        world = make_world(tmp, symbols_of(6))
-        store_previous(world, dict.fromkeys(names, Decimal(100)), DAY_BEFORE)
-        for i in movers:
-            world.nse.quotes[names[i]] = Quote(close=Decimal(150), prev_close=Decimal(100))
-        with world.factory() as session:
-            for i in explained:
-                session.add(
-                    HatCorporateAction(
-                        instrument_id=world.ids[f"{names[i]}:EQ"],
-                        ex_date=TRADE_DAY,
-                        action_type="split",
-                        adjustment_factor=Decimal("0.5"),
-                        raw_text="split",
-                        source="nse_mcp",
-                    )
-                )
-            session.commit()
-        ids = [str(world.ids[f"{names[i]}:EQ"]) for i in sorted(excluded)]
+        world = make_world(tmp, symbols_of(size))
+        _night(world, size, movers)
+        for i in explained:
+            _action(world, names[i], TRADE_DAY)
+        ids = [str(world.ids[f"{names[i]}:EQ"]) for i in range(size)]
         _ingest(world)
-        _gate(world, tuple(ids))
+        _gate(world, tuple(ids[i] for i in sorted(excluded)))
         with world.factory() as session:
             skipped = excluded_for(session, TRADE_DAY)
-    assert (_rows(world)["big_moves"] == "PASS") == (movers <= (explained | excluded))
-    assert skipped == {i for i in ids if i in {str(world.ids[f"{names[k]}:EQ"]) for k in movers}}
+    unexplained = movers - explained - excluded
+    passed = len(unexplained) * 100 <= size
+    assert (_rows(world)["big_moves"] == "PASS") == passed
+    assert skipped == {ids[i] for i in excluded | (unexplained if passed else set())}
+
+
+@settings(max_examples=12)
+@given(
+    size=st.integers(100, 300),
+    wanted=st.integers(1, 3),
+    no_vix=st.booleans(),
+    retries=st.integers(0, 2),
+)
+@example(size=100, wanted=1, no_vix=False, retries=0)
+@example(size=100, wanted=1, no_vix=True, retries=2)
+@example(size=300, wanted=3, no_vix=True, retries=1)
+def test_quarantine_one_mover(size: int, wanted: int, no_vix: bool, retries: int) -> None:
+    """HAT-DATA-062 (PR 33, design review item 12): for every universe of N instruments and up to
+    1% of it moving over 20% with no corporate action, the big_moves check passes and the gate
+    passes unless another check fails (India VIX not stored); each mover is quarantined from the
+    trade date, is on the day's exclusion list and is alerted exactly once with its symbol,
+    however often a failing gate is retried (a retry finds it standing). A passing gate is not
+    run again (one success per job and day)."""
+    movers = set(range(min(wanted, size // 100)))
+    names = [s for s, _, _ in symbols_of(size)]
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(size))
+        _night(world, size, movers)
+        _ingest(world)
+        if no_vix:
+            read = world.store.read_index
+            world.store.read_index = lambda day: [  # type: ignore[method-assign]
+                r for r in read(day) if r.index_name.upper() != "INDIA VIX"
+            ]
+        results = [_gate(world) for _ in range(retries + 1)]
+        with world.factory() as session:
+            skipped = excluded_for(session, TRADE_DAY)
+        quarantined = _quarantined(world)
+        alerts = _quarantine_alerts(world)
+        failed = [a for a in world.notifier.alerts if a[0] == CODE_FAILED]
+        tripped = _health_tripped(world)
+    ids = {i: str(world.ids[f"{names[i]}:EQ"]) for i in movers}
+    assert _rows(world)["big_moves"] == "PASS"
+    assert results == [not no_vix] * (retries + 1)
+    assert len(failed) == int(no_vix)
+    assert tripped == no_vix
+    assert quarantined == {(ids[i], TRADE_DAY, True) for i in movers}
+    assert skipped == set(ids.values())
+    assert sorted(alerts) == sorted((ids[i], names[i]) for i in movers)
+
+
+@settings(max_examples=10)
+@given(size=st.integers(100, 300), over=st.integers(1, 2), retries=st.integers(0, 1))
+@example(size=100, over=1, retries=0)
+@example(size=299, over=1, retries=1)
+def test_quarantine_cap(size: int, over: int, retries: int) -> None:
+    """HAT-DATA-062 (PR 33): for every universe of N instruments and more than 1% of it moving
+    over 20% unexplained (2 of 100, 3 of 299), the gate fails the big_moves check, trips the
+    health kill and alerts `quality.failed` once; nothing is quarantined, alerted as quarantined
+    or added to the day's exclusion list, also on a retry."""
+    movers = set(range(size // 100 + over))
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(size))
+        _night(world, size, movers)
+        _ingest(world)
+        results = [_gate(world) for _ in range(retries + 1)]
+        with world.factory() as session:
+            skipped = excluded_for(session, TRADE_DAY)
+        quarantined = _quarantined(world)
+        alerts = _quarantine_alerts(world)
+        failed = [a for a in world.notifier.alerts if a[0] == CODE_FAILED]
+        tripped = _health_tripped(world)
+    assert not any(results)
+    assert _rows(world)["big_moves"] == "FAIL"
+    assert tripped
+    assert len(failed) == 1
+    assert quarantined == set()
+    assert alerts == []
+    assert skipped == set()
+
+
+OPS = st.lists(
+    st.tuples(
+        st.sampled_from(("quarantine", "action", "clear", "check")),
+        st.integers(0, 2),  # instrument
+        st.integers(1, 4),  # days before TRADE_DAY
+    ),
+    max_size=14,
+)
+
+
+@settings(max_examples=40)
+@given(ops=OPS)
+@example(ops=[("quarantine", 0, 2), ("check", 0, 1)])
+@example(ops=[("quarantine", 0, 2), ("action", 0, 2)])
+@example(ops=[("quarantine", 0, 2), ("action", 0, 3)])
+@example(ops=[("quarantine", 1, 3), ("clear", 1, 1)])
+def test_quarantine_release(ops: list[tuple[str, int, int]]) -> None:
+    """HAT-DATA-062 (PR 33): for every sequence of quarantines, stored corporate actions, owner
+    clears and gate reads over earlier days, against a model: a quarantine stands on a later day
+    iff no corporate action with ex-date `since` was stored for its instrument and the owner did
+    not clear it (a corporate action on another date does not release it); a gate read releases
+    those with their action (`corporate_action`), `clear` the open ones of its symbol (`owner`),
+    and a quarantine is never reopened. Then the real gate of TRADE_DAY, with no mover, excludes
+    exactly the standing ones from that day's scans."""
+    names = [s for s, _, _ in symbols_of(3)]
+    rows: dict[tuple[int, date], str | None] = {}  # open: None, else who released it
+    actions: set[tuple[int, date]] = set()
+
+    def standing(day: date) -> set[int]:
+        out = set()
+        for (i, since), by in rows.items():
+            if by is None and since <= day:
+                if (i, since) in actions:
+                    rows[(i, since)] = RELEASED_BY_ACTION
+                else:
+                    out.add(i)
+        return out
+
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(3))
+        key = {i: str(world.ids[f"{names[i]}:EQ"]) for i in range(3)}
+        for op, i, back in ops:
+            day = TRADE_DAY - timedelta(days=back)
+            now = day_at(19, day=day)
+            with world.factory() as session:
+                if op == "quarantine":
+                    quarantine(session, [key[i]], day, now)
+                    rows.setdefault((i, day), None)
+                elif op == "clear":
+                    released = clear(session, names[i].lower(), now)
+                    model = [k for k, by in rows.items() if k[0] == i and by is None]
+                    assert released == len(model)
+                    rows.update(dict.fromkeys(model, RELEASED_BY_OWNER))
+                elif op == "check":
+                    got = standing_quarantine(session, day, now)
+                    assert got == {key[k] for k in standing(day)}
+                elif (i, day) not in actions:
+                    _action(world, names[i], day)
+                    actions.add((i, day))
+                session.commit()
+            with world.factory() as session:
+                stored = {
+                    (str(q.instrument_id), q.since): q.released_by
+                    for q in session.scalars(select(HatQualityQuarantine))
+                }
+            assert stored == {(key[k], since): by for (k, since), by in rows.items()}
+        _night(world, 3, ())
+        _ingest(world)
+        assert _gate(world)
+        with world.factory() as session:
+            skipped = excluded_for(session, TRADE_DAY)
+            listed = {str(q.instrument_id) for q in open_quarantines(session)}
+    assert skipped == {key[k] for k in standing(TRADE_DAY)}
+    assert listed == skipped
 
 
 @given(

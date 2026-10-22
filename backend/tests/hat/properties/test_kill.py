@@ -460,3 +460,45 @@ def test_reallocation_does_not_hide_a_loss(
         assert (str(bot) in tripped) is breach
         assert snap.equity_peak >= new_capital
         assert snap.equity_peak <= new_capital + D("0.0001")  # restated, not the old 100%
+
+
+@given(
+    st.dictionaries(st.integers(0, 9), CAPITAL, max_size=6),
+    st.lists(st.integers(0, 9), min_size=1, max_size=4),
+)
+def test_snapshot_latest_allocation(allocations: dict[int, Decimal], days: list[int]) -> None:
+    """HAT-RISK-066 (PR 33): `snapshot.bots` runs on its own time, not after `allocate`. For every
+    set of allocation nights and snapshot days (in any order, repeated or not), the snapshot of
+    day d exists iff the bot has an allocation on or before d, and with no trade results its
+    equity is the capital of the latest such allocation: a night without its own allocation (a
+    failed gate) is still measured on the capital in force."""
+    from datetime import date
+
+    from app.hat.models import HatAllocationDaily
+
+    first = date(2026, 3, 2)
+    engine = memory_engine()
+    with Session(engine) as session:
+        bot = seed_bot(session)
+        for offset, capital in allocations.items():
+            session.add(
+                HatAllocationDaily(
+                    trade_date=first + timedelta(days=offset),
+                    bot_id=bot,
+                    base_weight=D("0.5"),
+                    regime_mult=D(1),
+                    health_mult=D(1),
+                    final_weight=D("0.5"),
+                    capital=capital,
+                    risk_pct=D("0.0025"),
+                    currency="INR",
+                )
+            )
+        session.flush()
+        for offset in days:
+            snapshot_bots(session, first + timedelta(days=offset))
+            snap = session.get(HatDailyBotSnapshot, (bot, first + timedelta(days=offset)))
+            earlier = [k for k in allocations if k <= offset]
+            assert (snap is not None) == bool(earlier)
+            if earlier:
+                assert snap.equity == allocations[max(earlier)]

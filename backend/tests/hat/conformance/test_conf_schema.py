@@ -61,6 +61,7 @@ GROUPS = {
         "hat_broker_session",
         "hat_job_run",
         "hat_quality_check",
+        "hat_quality_quarantine",
         "hat_telegram_message",
         "hat_command_log",
         "hat_telegram_cursor",
@@ -428,7 +429,7 @@ def test_schema__sqlite_create_all() -> None:
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 42
+    assert len(MODEL) == 43
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}

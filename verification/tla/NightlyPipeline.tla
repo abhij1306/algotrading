@@ -2,11 +2,13 @@
 (***************************************************************************)
 (* The nightly ingest window and the pipeline behind it (10 §3, 02 §4,    *)
 (* §6): probe from 18:00 every 10 minutes, fetch only after a matching     *)
-(* probe, the bhavcopy fallback at 22:00, then quality gate, corporate-    *)
-(* action adjustment, features, regime, allocate, scan and watchlist       *)
-(* digest in that order. Split out of JobScheduler in PR 7: the claim      *)
-(* protocol and this chain are independent, and their product would not    *)
-(* be checkable in a few seconds.                                          *)
+(* probe, the bhavcopy fallback at 22:00, then quality gate, features,     *)
+(* regime, allocate, scan and watchlist digest in that order, with the     *)
+(* corporate-action adjustment after the ingest whatever the gate decides  *)
+(* and before features (PR 33), and the bot snapshot (drawdown kills) on   *)
+(* its own, waiting on no step (PR 33). Split out of JobScheduler in PR   *)
+(* 7: the claim protocol and this chain are independent, and their product *)
+(* would not be checkable in a few seconds.                                *)
 (*                                                                         *)
 (* Bounds: Cut = 3 ten-minute slots between 18:00 (slot 0) and the 22:00  *)
 (*   cutoff (slot Cut), standing for the 24 real slots; BrokenMode names   *)
@@ -20,12 +22,16 @@
 (*   arbitrary slot or never; a fetch or the fallback may succeed or fail; *)
 (*   a probe that fails counts as "not yet"; the clock only moves forward  *)
 (*   and a probe, fetch or exit that can run eventually does (weak         *)
-(*   fairness), while a pipeline step is never forced to run; exits and    *)
-(*   stops are driven by live prices, not by this chain.                   *)
+(*   fairness), while a pipeline step is never forced to run, except that  *)
+(*   the adjustment eventually succeeds once the day is ingested (its      *)
+(*   lookups never fail it; it is retried) and the snapshot eventually     *)
+(*   runs (weak fairness on both); exits and stops are driven by live      *)
+(*   prices, not by this chain.                                            *)
 (*                                                                         *)
 (* Properties: FallbackAt2200, NoDataNoScan, NoScanAfterGateFail,          *)
 (*   NightlyPipelineOrder (invariants) and IngestDecides,                  *)
-(*   ExitsIndependentOfPipeline (temporal).                                *)
+(*   ExitsIndependentOfPipeline, AdjustIndependentOfGate,                  *)
+(*   SnapshotEveryNight (temporal).                                        *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -34,7 +40,8 @@ CONSTANTS Cut, BrokenMode
 ASSUME BrokenMode \in {"none", "probe_twice", "probe_at_cutoff", "fetch_without_match",
                        "fallback_always", "no_fallback", "nodata_no_kill",
                        "nodata_no_alert", "skip_order", "scan_ignores_gate",
-                       "gate_fail_no_kill", "exit_needs_pipeline"}
+                       "gate_fail_no_kill", "exit_needs_pipeline", "adjust_needs_gate",
+                       "snapshot_needs_allocate"}
 
 Steps == 1..7
 
@@ -52,10 +59,11 @@ VARIABLES
     alerted,       \* a health alert was raised
     st,            \* per pipeline step: none | succeeded | failed
     exitDue,       \* an exit rule has fired for the open position
-    exitUsed       \* the exit has fallen due once
+    exitUsed,      \* the exit has fallen due once
+    snapDone       \* snapshot.bots has measured the drawdown kills for the day
 
 vars == <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe, fallbackRuns,
-          rawCommits, healthKill, alerted, st, exitDue, exitUsed>>
+          rawCommits, healthKill, alerted, st, exitDue, exitUsed, snapDone>>
 
 Init ==
     /\ now = 0
@@ -72,6 +80,7 @@ Init ==
     /\ st = [k \in Steps |-> "none"]
     /\ exitDue = FALSE
     /\ exitUsed = FALSE
+    /\ snapDone = FALSE
 
 \* code: backend/app/hat/data/ingest.py:wait_for_data  (the clock reaches the next 10-minute slot)
 Tick ==
@@ -79,14 +88,14 @@ Tick ==
     /\ now' = now + 1
     /\ probesInSlot' = 0
     /\ UNCHANGED <<mcpReady, phase, matched, fetchStarted, lastProbe, fallbackRuns, rawCommits,
-                   healthKill, alerted, st, exitDue, exitUsed>>
+                   healthKill, alerted, st, exitDue, exitUsed, snapDone>>
 
 \* code: backend/app/hat/data/ingest.py:_probe  (the server starts answering with the trade date)
 McpBecomesReady ==
     /\ ~mcpReady
     /\ mcpReady' = TRUE
     /\ UNCHANGED <<now, phase, matched, fetchStarted, probesInSlot, lastProbe, fallbackRuns,
-                   rawCommits, healthKill, alerted, st, exitDue, exitUsed>>
+                   rawCommits, healthKill, alerted, st, exitDue, exitUsed, snapDone>>
 
 \* code: backend/app/hat/data/ingest.py:wait_for_data  (one probe: at most one per slot, none at
 \* or after the cutoff)
@@ -102,7 +111,7 @@ Probe ==
           ELSE /\ matched' = matched
                /\ phase' = phase
     /\ UNCHANGED <<now, mcpReady, fetchStarted, fallbackRuns, rawCommits, healthKill, alerted,
-                   st, exitDue, exitUsed>>
+                   st, exitDue, exitUsed, snapDone>>
 
 \* code: backend/app/hat/data/ingest.py:_fetch_mcp  (the full fetch and the raw write, or a
 \* failed fetch that fails the run, trips the health kill and alerts)
@@ -117,7 +126,7 @@ Fetch ==
           /\ alerted' = (IF BrokenMode = "nodata_no_alert" THEN alerted ELSE TRUE)
           /\ UNCHANGED rawCommits
     /\ UNCHANGED <<now, mcpReady, matched, probesInSlot, lastProbe, fallbackRuns, st, exitDue,
-                   exitUsed>>
+                   exitUsed, snapDone>>
 
 \* code: backend/app/hat/data/ingest.py:bhavcopy_day  (22:00 with no matching probe: the bhavcopy
 \* download, at most once; it commits the day or finds nothing, which fails the run)
@@ -135,7 +144,7 @@ Fallback ==
           /\ alerted' = (IF BrokenMode = "nodata_no_alert" THEN alerted ELSE TRUE)
           /\ UNCHANGED rawCommits
     /\ UNCHANGED <<now, mcpReady, matched, fetchStarted, probesInSlot, lastProbe, st, exitDue,
-                   exitUsed>>
+                   exitUsed, snapDone>>
 
 \* code: backend/app/hat/data/quality.py:gate_body  (step 1: a pass clears the data-health kill; a
 \* fail commits its rows, trips the kill and alerts, in one transaction)
@@ -149,19 +158,37 @@ Gate ==
           /\ healthKill' = (IF BrokenMode = "gate_fail_no_kill" THEN healthKill ELSE TRUE)
           /\ alerted' = TRUE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
-                   fallbackRuns, rawCommits, exitDue, exitUsed>>
+                   fallbackRuns, rawCommits, exitDue, exitUsed, snapDone>>
 
-\* code: backend/app/hat/ops/scheduler.py:due  (steps 2 to 7: a step is registered `after` the one
-\* before it, so it starts only after that one succeeded; a succeeded step never runs again)
-LaterStep(k) ==
+\* What a step waits for (backend/app/hat/daily/nightly.py:nightly_jobs, PR 33): the adjustment
+\* only the ingested day; features the gate and the adjustment; every later step the one before.
+Ready(k) ==
+    CASE k = 2 -> phase = "ingested" /\ (BrokenMode # "adjust_needs_gate" \/ st[1] = "succeeded")
+      [] k = 3 -> st[1] = "succeeded" /\ st[2] = "succeeded"
+      [] OTHER -> st[k - 1] = "succeeded"
+
+\* code: backend/app/hat/ops/scheduler.py:due  (steps 2 to 7: a step is registered `after` the
+\* steps it waits for, so it starts only after they succeeded; a succeeded step never runs again)
+Step(k, r) ==
     /\ k \in 2..7
     /\ st[k] # "succeeded"
     /\ IF BrokenMode = "skip_order" \/ (BrokenMode = "scan_ignores_gate" /\ k = 6)
           THEN phase = "ingested"
-          ELSE st[k - 1] = "succeeded"
-    /\ \E r \in {"succeeded", "failed"} : st' = [st EXCEPT ![k] = r]
+          ELSE Ready(k)
+    /\ st' = [st EXCEPT ![k] = r]
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
-                   fallbackRuns, rawCommits, healthKill, alerted, exitDue, exitUsed>>
+                   fallbackRuns, rawCommits, healthKill, alerted, exitDue, exitUsed, snapDone>>
+
+LaterStep(k) == \E r \in {"succeeded", "failed"} : Step(k, r)
+
+\* code: backend/app/hat/daily/nightly.py:Nightly.snapshot  (snapshot.bots at 23:30 on the latest
+\* allocation on or before the day: it waits on no step, PR 33)
+Snapshot ==
+    /\ ~snapDone
+    /\ BrokenMode # "snapshot_needs_allocate" \/ st[5] = "succeeded"
+    /\ snapDone' = TRUE
+    /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
+                   fallbackRuns, rawCommits, healthKill, alerted, st, exitDue, exitUsed>>
 
 \* code: backend/app/hat/risk/decision.py:_exit_decision  (a price-driven exit rule fires, once)
 ExitBecomesDue ==
@@ -169,7 +196,7 @@ ExitBecomesDue ==
     /\ exitDue' = TRUE
     /\ exitUsed' = TRUE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
-                   fallbackRuns, rawCommits, healthKill, alerted, st>>
+                   fallbackRuns, rawCommits, healthKill, alerted, st, snapDone>>
 
 \* code: backend/app/hat/risk/decision.py:_exit_decision  (the exit is sent: it reads no pipeline state)
 ExitSend ==
@@ -177,7 +204,7 @@ ExitSend ==
     /\ BrokenMode # "exit_needs_pipeline" \/ st[7] = "succeeded"
     /\ exitDue' = FALSE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
-                   fallbackRuns, rawCommits, healthKill, alerted, st, exitUsed>>
+                   fallbackRuns, rawCommits, healthKill, alerted, st, exitUsed, snapDone>>
 
 Next ==
     \/ Tick
@@ -189,6 +216,7 @@ Next ==
     \/ \E k \in Steps : LaterStep(k)
     \/ ExitBecomesDue
     \/ ExitSend
+    \/ Snapshot
 
 Spec ==
     /\ Init
@@ -198,6 +226,8 @@ Spec ==
     /\ WF_vars(Fetch)
     /\ WF_vars(Fallback)
     /\ WF_vars(ExitSend)
+    /\ WF_vars(Step(2, "succeeded"))
+    /\ WF_vars(Snapshot)
 
 TypeOK ==
     /\ now \in 0..Cut
@@ -234,12 +264,22 @@ NoScanAfterGateFail ==
     /\ st[1] = "failed" => (healthKill /\ st[6] # "succeeded")
     /\ st[6] = "succeeded" => st[1] = "succeeded"
 
-\* No step succeeds before every earlier step has, and the first needs the day ingested.
+\* No step succeeds before the steps it waits for have: the gate and the adjustment need the day
+\* ingested, features both of them, and every later step the one before it.
 NightlyPipelineOrder ==
-    /\ \A k \in 2..7 : st[k] = "succeeded" => st[k - 1] = "succeeded"
+    /\ \A k \in 4..7 : st[k] = "succeeded" => st[k - 1] = "succeeded"
+    /\ st[3] = "succeeded" => (st[1] = "succeeded" /\ st[2] = "succeeded")
+    /\ st[2] = "succeeded" => phase = "ingested"
     /\ st[1] = "succeeded" => phase = "ingested"
 
 \* A fired exit is sent whatever state the pipeline is in.
 ExitsIndependentOfPipeline == exitDue ~> ~exitDue
+
+\* An ingested day gets its corporate-action adjustment (the next session's actions of held
+\* instruments looked up) even when the gate fails.
+AdjustIndependentOfGate == (phase = "ingested") ~> (st[2] = "succeeded")
+
+\* The drawdown kills are measured every night, whatever the ingest and the gate did.
+SnapshotEveryNight == <>snapDone
 ==============================================================================
 \* Checked by: verification/tla/run.sh NightlyPipeline

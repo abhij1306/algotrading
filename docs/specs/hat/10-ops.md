@@ -100,7 +100,7 @@ MA "Daily cycle":
 4. **09:20**: first 5-min bar closes; opening-range highs fixed.
 5. **09:20–15:20**: triggers fire; risk manager decides; orders routed per execution mode; stop placed on fill.
 6. **15:20–15:25**: moving-average exits evaluated on live price; orders sent.
-7. **~18:00 onward**: poll NSE MCP until the bulk-quote date equals today; then quality gate → corporate-action adjustment → features → scans → Telegram watchlist.
+7. **~18:00 onward**: poll NSE MCP until the bulk-quote date equals today; then corporate-action adjustment, and quality gate → features (after both) → scans → Telegram watchlist.
 8. **22:00 cutoff**: still no data → fall back to NSE bhavcopy download; still nothing → skip scans, alert, bots stay manage-only.
 9. **Nightly**: confirm a GTT stop exists for every open position.
 
@@ -135,11 +135,11 @@ table.
 | `ingest.nightly` (probe 18:00, poll 10 min, 22:00 bhavcopy fallback) | trading | 18:00 | | | 7 |
 | `exits.close_gaps` | trading | 18:00 | | `ingest.nightly` | 15c |
 | `quality.gate` | trading | 18:00 | | `ingest.nightly` | 7 |
-| `ca.adjust` (and the next session's actions of held and watchlisted instruments, HAT-EXEC-140) | trading | 18:00 | | `quality.gate` | 6, 21 |
-| `features` | trading | 18:00 | | `ca.adjust` | 6 |
+| `ca.adjust` (and the next session's actions of held and watchlisted instruments, HAT-EXEC-140) | trading | 18:00 | | `ingest.nightly` | 6, 21, 33 |
+| `features` | trading | 18:00 | | `quality.gate`, `ca.adjust` | 6, 33 |
 | `regime` | trading | 18:00 | | `features` | 11 |
 | `allocate` | trading | 18:00 | | `regime` | 11 |
-| `snapshot.bots` (`hat_daily_bot_snapshot`, drawdowns → kill/health) | trading | 18:00 | | `allocate` | 10 |
+| `snapshot.bots` (`hat_daily_bot_snapshot`, drawdowns → kill/health, on the latest allocation on or before the day) | trading | 23:30 | | | 10, 33 |
 | `scan` | trading | 18:00 | | `allocate` | 9 |
 | `watchlist.digest` | trading | 18:00 | | `scan` | 16 |
 | `gtt.verify:<account>` | trading | 23:00 | | | 15c |
@@ -162,8 +162,14 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
   and the morning jobs that are not (`telegram.login_prompt`, `gapscan`) have windows.
 - A `gtt.verify` run that fails at 23:xx is retried every 10 minutes until midnight IST only; the
   next night's run covers every open position again.
-- `snapshot.bots` runs nightly after `allocate` (it needs the day's allocation capital), and
-  `exits.close_gaps` after `ingest.nightly` (it needs the official closes).
+- `snapshot.bots` runs at 23:30 and waits on no job (PR 33): it measures the drawdown kills on
+  the latest allocation on or before the day, so a failed gate or a failed `allocate` does not
+  leave the kills unmeasured. A restart after midnight does not run the missed snapshot (it has
+  no `after`, so it is not carried past midnight); the next night's snapshot measures again.
+  `exits.close_gaps` runs after `ingest.nightly` (it needs the official closes).
+- `ca.adjust` runs after `ingest.nightly`, not after the gate (PR 33): the next session's
+  corporate actions of held instruments are looked up even on a day the gate fails, and
+  `features` waits on both.
 - The nightly chain belongs to the trade date it started on. A chained job without a window (one
   with `after`, such as `quality.gate`, `scan` or `allocate`) whose date has passed still starts
   for that date until 08:30 IST the next day, before `live.prepare` reads the night's watchlist
@@ -192,7 +198,9 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
 - An entry on day d reads the allocation `allocate` made on the previous trading day; when that
   night's allocation is missing (for example the broker funds could not be read) entries fail
   closed rather than trade on an older weight or an unmeasured drawdown (`snapshot.bots` runs
-  after `allocate` and measures the drawdown kills on that allocation).
+  at 23:30, after `allocate` normally finishes, and measures the drawdown kills on the latest
+  allocation on or before the day; an `allocate` that ends after 23:30 is not re-measured
+  until the next night).
 - `allocate` takes total equity from the broker funds read when it runs (the sum over active
   accounts; unavailable funds fail the job with `equity_unavailable`). The 05 default reads them
   at session start, but the allocation for the next session is made the evening before
@@ -230,13 +238,15 @@ database enforces); its breaks are recorded in `verify-scheduler`.
   - Property: the set of registered `(job, days, time, until, after)` rows equals the job table of this section, with times in `Asia/Kolkata`. Harm: a missing or mistimed job (for example `gtt.swap`) leaves positions unprotected overnight.
 
 #### HAT-OPS-021: Nightly pipeline order
-- **Statement:** After a successful ingest, the nightly jobs run in the order `quality.gate` → `ca.adjust` → `features` → `regime` → `allocate` → `scan` → `watchlist.digest`, each only after its predecessor succeeded for the same trade date.
-- **Source:** MA "Daily cycle" step 7; DS "Nightly ingest" steps 5–9; PLAN §4.3.
-- **PR:** 17
-- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`, PBT `ops.entry_inputs_fail_closed`
+- **Statement:** After a successful ingest, the nightly jobs run in the order `quality.gate` → `features` → `regime` → `allocate` → `scan` → `watchlist.digest`, each only after its predecessor succeeded for the same trade date; `ca.adjust` runs after the ingest whatever the gate decides, and `features` also waits for it. `snapshot.bots` waits on no job of the chain.
+- **Source:** MA "Daily cycle" step 7; DS "Nightly ingest" steps 5–9; PLAN §4.3; design review 2026-10-22 item 12.
+- **PR:** 17, 33
+- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`, TLA `NightlyPipeline!AdjustIndependentOfGate`, TLA `NightlyPipeline!SnapshotEveryNight`, PBT `ops.entry_inputs_fail_closed`
 - **Acceptance:**
   - Property: in every behaviour, a job of the pipeline starts for trade date d only after every earlier job of the pipeline has status `succeeded` for d. Harm: scans run on unadjusted prices or stale features and produce wrong watchlists.
   - Property: if `quality.gate` fails for d, no `scan` runs for d and every bot is manage-only for new entries. Harm: the bot trades on data the gate rejected.
+  - Property: in every behaviour where d is ingested, `ca.adjust` eventually succeeds for d, whatever `quality.gate` decides, and `snapshot.bots` runs every night. Harm: a failed gate hides the next session's split of a held stock, or leaves a drawdown kill unmeasured.
+- **Changed (PR 33):** PR 17 chained `ca.adjust` after the gate and `snapshot.bots` after `allocate`, so a failed gate also skipped the corporate-action lookup and the drawdown measurement.
 
 #### HAT-OPS-022: Ingest polling and the 22:00 fallback
 - **Statement:** From 18:00 IST the ingest probes every 10 minutes until the bulk-quote date equals the trade date; at 22:00 it falls back to the bhavcopy download; if that also yields nothing, scans are skipped, an alert is sent and bots stay manage-only.
@@ -581,8 +591,21 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    10 minutes after each failed run while it is still that date (a chained job such as the gate
    until 08:30 the next morning); a retry that fails the same checks sends no second alert. Once
    the gate passes, the health kill clears on
-   its own and the chain (ca.adjust, features, regime, allocate, scan, watchlist) continues.
+   its own and the chain (features, regime, allocate, scan, watchlist) continues; `ca.adjust`
+   does not wait for the gate.
 4. Do not re-arm by hand: a data-health kill re-arms automatically when the check passes.
+
+### Alert: `quality.quarantined`
+
+1. One stock moved more than 20% with no stored corporate action. The gate passed; the stock is
+   out of every scan from that day on (HAT-DATA-062). The other stocks scan as usual.
+2. Look for the reason: a split or bonus not yet loaded, or real news. `python -m
+   app.hat.data.quarantine list` shows every open quarantine.
+3. A corporate action with that ex-date, once stored, releases the quarantine at the next gate.
+   For real news (no corporate action), clear it once you are satisfied the price is right:
+   `python -m app.hat.data.quarantine clear SYMBOL`. The stock is back in the next night's scans.
+4. More than 1% of the universe unexplained in one day fails the gate instead (`quality.failed`,
+   check `big_moves`); nothing is quarantined. Treat it as a bad data file, as above.
 
 ### Failure: 22:00 fallback fails
 

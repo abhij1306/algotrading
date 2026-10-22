@@ -478,17 +478,25 @@ def _snapshot_peak(
 def snapshot_bots(session: Session, trade_date: date) -> JobResult:
     """`snapshot.bots` (HAT-OPS): write one `hat_daily_bot_snapshot` per bot for `trade_date`.
 
-    Equity = the sleeve's allocation capital for the date + its cumulative realised P&L
+    Equity = the sleeve's allocation capital + its cumulative realised P&L
     (06 §2: "allocation + realised P&L"); the peak is the largest equity seen so far, restated
     for any change of allocation capital so a planned reallocation never reads as a loss
     (HAT-RISK-066, `_snapshot_peak`); open risk
     is the sum of (entry - stop) x qty over its open real positions. Idempotent: a rerun for the
     same date rewrites the same row, so a crash after the body and before the success is
-    recorded does no harm. Bots with no allocation row for the date are skipped.
+    recorded does no harm. The capital is the bot's latest allocation on or before the date
+    (PR 33): the job runs on its own time, not after `allocate`, so a night whose quality gate
+    failed (no allocation for the date) still measures the drawdown kills on the capital in
+    force. Bots never allocated are skipped.
     """
     rows = 0
     for bot in session.scalars(select(HatBot)).all():
-        allocation = session.get(HatAllocationDaily, (trade_date, bot.id))
+        allocation = session.scalar(
+            select(HatAllocationDaily)
+            .where(HatAllocationDaily.bot_id == bot.id, HatAllocationDaily.trade_date <= trade_date)
+            .order_by(HatAllocationDaily.trade_date.desc())
+            .limit(1)
+        )
         if allocation is None:
             continue
         realized = sum(

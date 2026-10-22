@@ -901,6 +901,18 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 | status | text | PASS, FAIL |
 | detail | jsonb | |
 
+**`hat_quality_quarantine`**: PK (instrument_id, since); an instrument the quality gate keeps out
+of the scans after an unexplained move over 20% (PR 33, HAT-DATA-062). Open while `released_at`
+is null.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| instrument_id | uuid FK hat_instrument | |
+| since | date | trade date of the move |
+| quarantined_at | timestamptz | |
+| released_at | timestamptz null | |
+| released_by | text null | corporate_action, owner |
+
 **`hat_telegram_message`**: links cards to signals.
 
 | Column | Type | Notes |
@@ -948,12 +960,12 @@ cursor: `updates` holds the next `getUpdates` offset (HAT-TG-011) and `events` t
 | currency | char(3) | |
 
 #### HAT-SCH-070: Backtest and ops tables have exactly the specified columns
-- **Statement:** The eight tables in §7 exist with the columns, types and keys shown; `hat_job_run` and `hat_quality_check` arrive in PR 2, `hat_telegram_cursor` in PR 16, the others in PR 3.
+- **Statement:** The nine tables in §7 exist with the columns, types and keys shown; `hat_job_run` and `hat_quality_check` arrive in PR 2, `hat_telegram_cursor` in PR 16, `hat_quality_quarantine` in PR 33, the others in PR 3.
 - **Source:** SCH "Backtest and ops tables (7)"; PLAN §4.2.
-- **PR:** 2, 3, 16
+- **PR:** 2, 3, 16, 33
 - **Verification:** CONF `schema.backtest_ops_columns`
 - **Acceptance:**
-  - Property: for each of the eight tables, the reflected column set, types, nullability, PK and uniques equal §7. Harm: job idempotency, gate results or kill-switch inputs cannot be stored.
+  - Property: for each of the nine tables, the reflected column set, types, nullability, PK and uniques equal §7. Harm: job idempotency, gate results or kill-switch inputs cannot be stored.
 
 #### HAT-SCH-071: Every backtest run belongs to a family
 - **Statement:** `hat_backtest_run.family_key` (strategy × universe) is not null, so every run counts as a trial of its family.
@@ -1144,7 +1156,7 @@ The repo has no Alembic: `app/database.py:init_db()` runs `Base.metadata.create_
 - **PR:** 2
 - **Verification:** CONF `schema.portable_types`, CONF `schema.sqlite_create_all`
 - **Acceptance:**
-  - Property: every column of every HAT model uses a type from the §10 table, and `Base.metadata.create_all` on an empty SQLite database succeeds and creates all 42 tables. Harm: the existing test suite (1510 tests) breaks or Postgres-only types leak into SQLite.
+  - Property: every column of every HAT model uses a type from the §10 table, and `Base.metadata.create_all` on an empty SQLite database succeeds and creates all 43 tables (42 until PR 33 added `hat_quality_quarantine`). Harm: the existing test suite (1510 tests) breaks or Postgres-only types leak into SQLite.
 
 #### HAT-SCH-101: `ensure_hat_schema` adds the Postgres-only DDL idempotently
 - **Statement:** `app/hat/schema.py: ensure_hat_schema(bind)` is called from `init_db()` after `create_all`; it is idempotent, does nothing on SQLite, and creates or replaces the trigger functions and triggers (`CREATE OR REPLACE TRIGGER`, Postgres ≥ 14), the interval CHECKs and the event partitions.

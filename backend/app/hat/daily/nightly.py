@@ -98,10 +98,12 @@ EVENTS_PARTITIONS = "events.partitions"
 RETENTION_PURGE = "retention.purge"
 
 # The pipeline of HAT-OPS-021, in order: each job starts once the one before it succeeded.
+# `ca.adjust` is not in it (PR 33): it runs after the ingest whatever the gate decides, so the
+# next session's corporate actions of held instruments are always looked up, and `features`
+# waits for both it and the gate.
 NIGHTLY_CHAIN = (
     INGEST_NIGHTLY,
     JOB_QUALITY,
-    CA_ADJUST,
     FEATURES,
     REGIME_JOB,
     ALLOCATE_JOB,
@@ -112,6 +114,9 @@ NIGHTLY_CHAIN = (
 logger = logging.getLogger(__name__)
 
 INGEST_AT = time(18, 0)  # the first probe (HAT-OPS-022); the body waits until 22:00 at most
+# `snapshot.bots` waits on no job (PR 33): the drawdown kills are measured every trading night,
+# on the latest allocation on or before the day, after the chain has normally finished.
+SNAPSHOT_AT = time(23, 30)
 CALENDAR_AT = time(7, 0)  # daily: a changed holiday list is picked up the same morning
 BANDS_AT = time(7, 45)  # before the pre-open: the bands in force today
 RESCALE_AT = time(8, 40)  # before `live.prepare` and the 09:00 pre-open (HAT-EXEC-141)
@@ -395,7 +400,6 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
     n = Nightly(deps)
     chain = (
         (JOB_QUALITY, n.quality_gate),
-        (CA_ADJUST, n.ca_adjust),
         (FEATURES, n.features),
         (REGIME_JOB, n.regime),
         (ALLOCATE_JOB, n.allocate),
@@ -403,7 +407,12 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
         (WATCHLIST_DIGEST, n.watchlist_digest),
     )
     pipeline = tuple(
-        ScheduledJob(name, INGEST_AT, body, after=(NIGHTLY_CHAIN[i],))
+        ScheduledJob(
+            name,
+            INGEST_AT,
+            body,
+            after=(NIGHTLY_CHAIN[i], CA_ADJUST) if name == FEATURES else (NIGHTLY_CHAIN[i],),
+        )
         for i, (name, body) in enumerate(chain)
     )
     return (
@@ -414,8 +423,9 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
             retry_after=INGEST_RETRY,
             on_finish=n.ingest_finished,
         ),
+        ScheduledJob(CA_ADJUST, INGEST_AT, n.ca_adjust, after=(INGEST_NIGHTLY,)),
         *pipeline,
-        ScheduledJob(SNAPSHOT_BOTS, INGEST_AT, n.snapshot, after=(ALLOCATE_JOB,)),
+        ScheduledJob(SNAPSHOT_BOTS, SNAPSHOT_AT, n.snapshot),
         ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
         ScheduledJob(CALENDAR_REFRESH, CALENDAR_AT, n.calendar, days=Days.EVERY),
         ScheduledJob(
