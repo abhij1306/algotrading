@@ -38,6 +38,7 @@ from app.hat.execution.protect import (
     STOP_GTT,
     broker_trigger,
 )
+from app.hat.execution.tags import encode_tag
 from app.hat.models import HatCorporateAction, HatEvent, HatOrder, HatPosition, HatSignal
 from app.hat.risk import controls
 
@@ -621,22 +622,48 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
 # ---------------------------------------------------------------------------------------
 
 
+# How a triggered GTT's sale may show the GTT's tag in the order and trade books: none (as Fyers
+# was assumed to before GTTs were tagged), bare, as the GTT book shows it, or with Fyers' "<n>:"
+# prefix ([verify on a live account] which, if any, Fyers uses), or the mark Fyers gives an
+# untagged GTT ("2:GTTUntagged"), which is no tag.
+CHILD_TAGS = st.sampled_from([None, "untagged", "bare", "gtt", "numbered"])
+
+
+def _child_tag(gtt: HatOrder, shape: str | None) -> str | None:
+    if shape == "other":  # another GTT's tag: some other signal's stop, not this one's
+        return f"1:GTT{encode_tag(uuid.UUID(int=99), 'stop_gtt', 0)}"
+    if shape == "untagged":
+        return "2:GTTUntagged"
+    prefix = {None: None, "bare": "", "gtt": "GTT", "numbered": "1:GTT"}[shape]
+    return None if prefix is None else f"{prefix}{gtt.tag}"
+
+
 @settings(max_examples=20, deadline=None)
-@given(part=st.floats(min_value=0.1, max_value=0.9), ended=st.booleans())
-def test_gtt_trigger_handled(part: float, ended: bool) -> None:
+@given(
+    part=st.floats(min_value=0.1, max_value=0.9),
+    ended=st.booleans(),
+    child=CHILD_TAGS,
+    stray=st.booleans(),
+)
+@example(part=0.5, ended=True, child="bare", stray=True)
+def test_gtt_trigger_handled(part: float, ended: bool, child: str | None, stray: bool) -> None:
     """HAT-EXEC-062, -066, HAT-DEC-B17: a GTT that triggered and filled only in part is not
     resized or doubled while its sale may still sell the rest (the only write is asking that sale
     to go at the market); once that sale ends short, `gtt.unfilled` is raised and the shares left
-    get a new stop for exactly their quantity. Harm: a second stop under a sale still working
-    sells the shares twice, or the rest stays unprotected."""
+    get a new stop for exactly their quantity. The sale is the GTT's whether it carries the GTT's
+    tag (bare or as Fyers shows a GTT's) or none; another untagged sale on the symbol that ended
+    (`stray`, not at the GTT's quantity) changes nothing. Harm: a second stop under a sale still
+    working sells the shares twice, the rest stays unprotected, or an unrelated cancelled sale
+    ends the GTT and a second stop is placed while it still rests."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
         position = _opened(rig, at(16, 0))
         [gtt] = rig.stops(position.id)
         sold = max(1, int(gtt.qty * part))
+        tag = _child_tag(gtt, child)
         order = {
             "id": "X-1",
-            "orderTag": None,
+            "orderTag": tag,
             "symbol": SYMBOLS["SBIN"],
             "side": -1,
             "qty": gtt.qty,
@@ -646,13 +673,15 @@ def test_gtt_trigger_handled(part: float, ended: bool) -> None:
             "type": 1,
             "limitPrice": float(gtt.price),
         }
-        rig.fake.orders = [order]
+        # someone else's untagged sale on the symbol, cancelled unfilled
+        other = {**order, "id": "X-9", "orderTag": None, "qty": gtt.qty + 1, "filledQty": 0}
+        rig.fake.orders = [order, {**other, "status": 1}] if stray else [order]
         rig.fake.tradebook = [
             *rig.fake.tradebook,  # type: ignore[misc]
             {
                 "tradeNumber": "T-G1",
                 "orderNumber": "X-1",
-                "orderTag": None,
+                "orderTag": tag,
                 "symbol": SYMBOLS["SBIN"],
                 "side": -1,
                 "tradedQty": sold,
@@ -690,21 +719,33 @@ def _gtt_alerts(rig: ManageRig, code: str) -> int:
     fills=st.booleans(),
     exits=st.booleans(),
     foreign=st.booleans(),
+    child=st.one_of(CHILD_TAGS, st.just("other")),
 )
-@example(part=0.0, refusals=0, syncs=2, fills=True, exits=True, foreign=False)
-@example(part=0.5, refusals=3, syncs=4, fills=False, exits=True, foreign=False)
-@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True)
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=True, foreign=False, child=None)
+@example(part=0.5, refusals=3, syncs=4, fills=False, exits=True, foreign=False, child=None)
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True, child=None)
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True, child="numbered")
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=False, child="other")
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=False, child="untagged")
 def test_gtt_resting_marketed(
-    part: float, refusals: int, syncs: int, fills: bool, exits: bool, foreign: bool
+    part: float,
+    refusals: int,
+    syncs: int,
+    fills: bool,
+    exits: bool,
+    foreign: bool,
+    child: str | None,
 ) -> None:
     """HAT-EXEC-066, HAT-EXEC-062: a GTT that triggered while the price was below its limit
     leaves its limit sale working at the broker. The fill sync records `gtt.triggered` and raises
     `gtt.unfilled` (code `gtt_triggered_resting`) once, and asks the broker to make that order a
     market sale (exactly `{order_type: MARKET}` on the order's id) at every sync until the book
     shows it as one; a refused conversion is alerted once and asked again at the next sync. A
-    sale first seen is left a minute to fill at its limit, and an untagged sale at another price
-    is not the GTT's and is never touched. No other order, stop or GTT is sent while the sale
-    works (a flatten waits for it, a raised stop leaves the triggered GTT where it is); once it
+    sale first seen is left a minute to fill at its limit. A sale under the GTT's tag (bare or as
+    Fyers shows a GTT's) is the GTT's at any price; an untagged sale at another price, or one
+    under another GTT's tag, is not the GTT's and is never touched. No other order, stop or GTT
+    is sent while the sale works (a flatten waits for it, a raised stop leaves the triggered GTT
+    where it is); once it
     fills the position closes with no stop left, and a trigger of an earlier day whose sale the
     book no longer shows holds no exit back. Harm: the stop triggered and the shares sit unsold
     below the limit all session while the price keeps falling, a second sale or stop sells the
@@ -714,9 +755,12 @@ def test_gtt_resting_marketed(
         position = _opened(rig, at(16, 0))
         [gtt] = rig.stops(position.id)
         sold = int(gtt.qty * part)
+        tag = _child_tag(gtt, child)
+        # not the GTT's: another GTT's tag, or untagged at another price than the GTT's limit
+        not_ours = child == "other" or (foreign and child in (None, "untagged"))
         order = {
             "id": "X-1",
-            "orderTag": None,
+            "orderTag": tag,
             "symbol": SYMBOLS["SBIN"],
             "side": -1,
             "qty": gtt.qty,
@@ -733,7 +777,7 @@ def test_gtt_resting_marketed(
                 {
                     "tradeNumber": "T-G1",
                     "orderNumber": "X-1",
-                    "orderTag": None,
+                    "orderTag": tag,
                     "symbol": SYMBOLS["SBIN"],
                     "side": -1,
                     "tradedQty": sold,
@@ -746,7 +790,7 @@ def test_gtt_resting_marketed(
         rig.sync(at(9, 15) + timedelta(days=1))  # first sight: it may still fill at its limit
         assert _writes_since(rig, start) == []
         assert _event_count(session, gtt, EVENT_GTT_TRIGGERED) == 0
-        if foreign:  # not the GTT's sale: never touched, never alerted
+        if not_ours:  # not the GTT's sale: never touched, never alerted
             for n in range(syncs):
                 rig.sync(at(9, 16 + n) + timedelta(days=1))
             assert _writes_since(rig, start) == []
@@ -780,7 +824,7 @@ def test_gtt_resting_marketed(
             {
                 "tradeNumber": "T-G2",
                 "orderNumber": "X-1",
-                "orderTag": None,
+                "orderTag": tag,
                 "symbol": SYMBOLS["SBIN"],
                 "side": -1,
                 "tradedQty": gtt.qty - sold,

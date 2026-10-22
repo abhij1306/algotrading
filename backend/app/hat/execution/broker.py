@@ -21,10 +21,12 @@ from ..errors import HatError
 __all__ = [
     "CODE_INVALID_INTENT",
     "CODE_OK",
+    "CODE_RATE_LIMITED",
     "CODE_REJECTED",
     "CODE_SESSION_EXPIRED",
     "CODE_UNAVAILABLE",
     "CODE_UNCONFIRMED",
+    "CODES_NOT_SENT",
     "AckResult",
     "BrokerError",
     "BrokerFunds",
@@ -55,8 +57,14 @@ CODE_OK = "ok"
 CODE_REJECTED = "broker_rejected"
 CODE_UNAVAILABLE = "broker_unavailable"
 CODE_SESSION_EXPIRED = "broker_session_expired"  # the broker refused the token: log in again
+# the broker refused the call because the plan's daily requests are spent (Fyers -360): not an
+# outage, and no call succeeds until the next day
+CODE_RATE_LIMITED = "broker_rate_limited"
 CODE_UNCONFIRMED = "submit_unconfirmed"
 CODE_INVALID_INTENT = "invalid_intent"
+# a write refused with one of these was not acted on by the broker (no circuit, no client, or the
+# day's requests spent): not a rejection, so it burns no retry and is tried again later
+CODES_NOT_SENT = frozenset({CODE_UNAVAILABLE, CODE_RATE_LIMITED})
 
 
 class BrokerError(HatError):
@@ -158,7 +166,7 @@ class AckResult:
 @dataclass(frozen=True)
 class GttRequest:
     """A protective sell-stop for delivery: triggers at `trigger_price`, then a limit order
-    at `limit_price`."""
+    at `limit_price`. `tag` is the stop's HT tag, which the broker shows on the GTT."""
 
     symbol: str
     qty: int
@@ -166,6 +174,7 @@ class GttRequest:
     limit_price: Decimal
     product: str = "CNC"
     side: Side = Side.SELL
+    tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +204,9 @@ class BrokerOrder:
     product: str
     order_type: OrderType | None = None  # None when the broker's code is unknown
     price: Decimal | None = None  # the limit price; None for an order without one
+    # The HT tag of the GTT this order is the sale of, when one of HAT's GTTs triggered into it
+    # (its `tag` is None then: it is the GTT's child, not an order HAT placed).
+    gtt_tag: str | None = None
 
 
 class OrderBook(list[BrokerOrder]):
@@ -206,14 +218,18 @@ class OrderBook(list[BrokerOrder]):
 
 @dataclass(frozen=True)
 class BrokerGtt:
-    """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. GTTs carry
-    no tag: HAT tells its own from the symbol, side, quantity and trigger it sent."""
+    """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. `tag` is the
+    HT tag of one of HAT's GTTs it was placed with, else None; `foreign` marks one shown under
+    some other tag (manual, or another purpose's): HAT tells its own by the tag, an untagged one
+    by the symbol, side, quantity and trigger it sent, and never adopts a foreign one."""
 
     gtt_id: str
     symbol: str  # database symbol
     side: Side
     qty: int
     trigger_price: Decimal
+    tag: str | None = None
+    foreign: bool = False
 
 
 @dataclass(frozen=True)
@@ -226,6 +242,7 @@ class BrokerTrade:
     qty: int
     price: Decimal
     traded_at: datetime | None
+    gtt_tag: str | None = None  # as BrokerOrder.gtt_tag
 
 
 @dataclass(frozen=True)

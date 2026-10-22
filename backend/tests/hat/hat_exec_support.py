@@ -26,8 +26,9 @@ from app.hat.time import utc_now
 
 USER = uuid.UUID("00000000-0000-7000-8000-000000000001")
 SYMBOLS = {"SBIN": "NSE:SBIN-EQ", "RELIANCE": "NSE:RELIANCE-EQ", "M&M": "NSE:M&M-EQ"}
-# The adapter's capabilities once GTT for delivery is verified: the rigs that place real entries
-# store them on the account and build the adapter with them (HAT-EXEC-012, HAT-BRK-092).
+# The adapter's capabilities with GTT for delivery (verified live in PR 25): the rigs that place
+# real entries store them on the account and build the adapter with them, and `replace` them to
+# turn it off (HAT-EXEC-012, HAT-BRK-092).
 GTT_READY = replace(FYERS_CAPABILITIES, gtt_delivery=True)
 
 

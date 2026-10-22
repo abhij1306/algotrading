@@ -3,12 +3,14 @@ execution mode (HAT-BRK-080, -091, HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-
 HAT-EXEC-011)."""
 
 import inspect
+import json
 import re
 import uuid
 from pathlib import Path
 
 import pytest
 import yaml
+from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 from hat_conf_spec import SPEC_DIR
@@ -19,6 +21,7 @@ from app.hat.engine.strategy.versions import VersionError, create_bot
 from app.hat.execution import accounts, modes
 from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
@@ -117,23 +120,25 @@ def test_brk__import_boundary() -> None:
 
 
 def test_brk__fyers_capabilities() -> None:
-    """HAT-BRK-091: in the MVP build the adapter reports tag length 20, a static IP requirement
-    and no GTT for delivery (until the owner verifies it on a live account)."""
+    """HAT-BRK-091: the adapter reports tag length 20, a static IP requirement and GTT for
+    delivery (verified on the live account on 2026-10-22, `fyers_live_writes.json`)."""
     capabilities = FyersHatBroker(broker=object()).capabilities()  # type: ignore[arg-type]
     assert capabilities == FYERS_CAPABILITIES
     assert capabilities.tag_max_len == 20
     assert capabilities.static_ip_required is True
-    assert capabilities.gtt_delivery is False
+    assert capabilities.gtt_delivery is True
     assert capabilities.products == ("CNC",)
-    assert capabilities.to_json()["gtt_delivery"] is False
+    assert capabilities.to_json()["gtt_delivery"] is True
 
 
-# The only HAT modules that may import the Fyers SDK (HAT-DEC-BD2), and the one that may call its
-# GTT endpoints. Every other module reaches Fyers through them.
+# The only HAT modules that may import the Fyers SDK, each with the one SDK module it may import
+# (HAT-DEC-BD2), and the one that may call its GTT endpoints. Every other module reaches Fyers
+# through them. The SDK's HTTP client (`fyersModel`: orders, GTTs, history, quotes and the login
+# exchange) is imported only by `fyers_ipv4`, which installs the IPv4-only hook first
+# (HAT-BRK-093); the session and the login service take it from `fyers_ipv4.sdk()`.
 SDK_IMPORTERS = {
-    "execution/fyers_session.py",
-    "execution/fyers_auth.py",
-    "data/provider/fyers_websocket.py",
+    "execution/fyers_ipv4.py": "fyersModel",
+    "data/provider/fyers_websocket.py": "FyersWebsocket",
 }
 GTT_CALLERS = {"execution/fyers_broker.py"}
 SDK_GTT_CALLS = ("place_gtt_order", "modify_gtt_order", "cancel_gtt_order", "gtt_orderbook")
@@ -144,9 +149,9 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
     allowed to."""
     offenders = []
     for rel, text in sorted(files.items()):
-        if rel not in SDK_IMPORTERS and re.search(
-            r"^\s*(import|from)\s+fyers_apiv3", text, re.MULTILINE
-        ):
+        imports = re.findall(r"^\s*(?:import|from)\s+fyers_apiv3\b.*$", text, re.MULTILINE)
+        allowed = SDK_IMPORTERS.get(rel)
+        if any(allowed is None or not re.search(rf"\b{allowed}\b", line) for line in imports):
             offenders.append(f"{rel}: imports the SDK")
         if rel not in GTT_CALLERS:
             offenders.extend(f"{rel}: {call}" for call in SDK_GTT_CALLS if call in text)
@@ -156,11 +161,12 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
 
 
 def test_fyers_adapter_wraps_existing() -> None:
-    """HAT-DEC-BD2: the adapter reaches the Fyers SDK only through FyersBroker, FyersSession and
-    FyersAuthService (K2: all in `app/hat/execution`); the SDK is imported only by the session, the
-    login service and the data socket module (K3), its GTT calls are made only by the broker, and
-    nothing under app/hat imports the legacy `app.brokers` (the checker is shown to catch
-    offenders)."""
+    """HAT-DEC-BD2, HAT-BRK-093: the adapter reaches the Fyers SDK only through FyersBroker,
+    FyersSession and FyersAuthService (K2: all in `app/hat/execution`); the SDK's HTTP client is
+    imported only by `fyers_ipv4`, after it installs the IPv4 hook, and taken from there by the
+    session and the login service; the data socket module imports only the websocket (K3); its
+    GTT calls are made only by the broker, and nothing under app/hat imports the legacy
+    `app.brokers` (the checker is shown to catch offenders)."""
     adapter = (HAT_ROOT / "execution" / "fyers_adapter.py").read_text(encoding="utf-8")
     for name in ("FyersBroker", "FyersSession", "FyersAuthService"):
         assert re.search(rf"^\s+{name},?$|import .*{name}", adapter, re.MULTILINE), name
@@ -170,11 +176,21 @@ def test_fyers_adapter_wraps_existing() -> None:
     }
     assert _sdk_offenders(files) == []
     assert "place_gtt_order" in files["execution/fyers_broker.py"]
-    assert "import fyersModel" in files["execution/fyers_session.py"]
+    ipv4 = files["execution/fyers_ipv4.py"]
+    sdk = ipv4[ipv4.index("def sdk(") :]
+    assert sdk.index("install()") < sdk.index("from fyers_apiv3 import fyersModel")
+    for rel in ("execution/fyers_session.py", "execution/fyers_auth.py"):
+        assert "from .fyers_ipv4 import sdk" in files[rel], rel
     # the checker can fail
     assert _sdk_offenders({"execution/gtt.py": "import fyers_apiv3\n"}) == [
         "execution/gtt.py: imports the SDK"
     ]
+    assert _sdk_offenders(
+        {"execution/fyers_session.py": "from fyers_apiv3 import fyersModel\n"}
+    ) == ["execution/fyers_session.py: imports the SDK"]
+    assert _sdk_offenders(
+        {"data/provider/fyers_websocket.py": "    from fyers_apiv3 import fyersModel\n"}
+    ) == ["data/provider/fyers_websocket.py: imports the SDK"]
     assert _sdk_offenders({"data/x.py": "client.place_gtt_order(data)\n"}) == [
         "data/x.py: place_gtt_order"
     ]
@@ -376,3 +392,80 @@ def test_exec__default_mode_shadow() -> None:
             )
             == modes.SHADOW
         )
+
+
+WRITES_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fyers_live_writes.json"
+# A PAN (5 letters, 4 digits, a letter), Fyers' "C-" RMS client code, an IPv4 address
+_ACCOUNT_IDS = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b|\bC-[A-Z0-9]{5,}|\b\d{1,3}(\.\d{1,3}){3}\b")
+
+
+def _recorded() -> list[dict]:
+    return json.loads(WRITES_FIXTURE.read_text(encoding="utf-8"))["calls"]
+
+
+def test_brk__recorded_writes() -> None:
+    """HAT-BRK-090, -091, -103, MX-F6: the Fyers write replies recorded live on 2026-10-22 hold:
+    the GTT place payload the broker builds for the recorded request is the one Fyers accepted
+    (`orderTag` included); the place, modify and cancel replies read as placed and ok; the GTT
+    book rows (live keys `tran_side`, `product_type`, `ordertag` "1:GTT<tag>" or "2:GTTUntagged")
+    read as resting GTTs with their tag, and cancelled ones are left out; two orders under one
+    tag were both accepted with ids and both refused by RMS (MX-F6: Fyers does not enforce tag
+    uniqueness), and each reads as a rejection. The fixture carries no account id (masked)."""
+    calls = _recorded()
+    text = WRITES_FIXTURE.read_text(encoding="utf-8")
+    assert [m.group(0) for m in _ACCOUNT_IDS.finditer(text)] == ["XXXXX0000X"] * text.count(
+        "XXXXX0000X"
+    )
+    by = lambda name: [c for c in calls if c["method"] == name]  # noqa: E731
+    [untagged, tagged] = by("place_gtt_order")
+    assert tagged["args"]["orderTag"] == "HATTEST1"
+    assert "orderTag" not in untagged["args"]
+    for call in (untagged, tagged):
+        sdk = RecordingSdk(call["reply"])
+        leg = call["args"]["orderInfo"]["leg1"]
+        reply = broker_over(sdk).place_gtt(
+            {
+                "symbol": call["args"]["symbol"],
+                "quantity": leg["qty"],
+                "side": "SELL",
+                "product": "CNC",
+                "trigger_price": leg["triggerPrice"],
+                "price": leg["price"],
+                "order_tag": call["args"].get("orderTag"),
+            }
+        )
+        assert sdk.calls == [("place_gtt_order", call["args"])]
+        assert (reply["status"], reply["order_id"]) == ("SUBMITTED", call["reply"]["id"])
+    adapter = FyersHatBroker(broker_over(RecordingSdk()), instruments=lambda: [])
+    for name in ("modify_gtt_order", "cancel_gtt_order"):
+        assert all(c["reply"]["s"] == "ok" for c in by(name))
+    # the GTT book: the tag Fyers shows, put on a HAT tag
+    tag = encode_tag(uuid.UUID(int=25), "stop_gtt", 0)
+    books = [c["reply"]["orderBook"] for c in by("gtt_orderbook")]
+    shown = {row["ordertag"] for book in books for row in book}
+    assert shown == {"2:GTTUntagged", "1:GTTHATTEST1"}
+    for book in books:
+        rows = [{**r, "ordertag": r["ordertag"].replace("HATTEST1", tag)} for r in book]
+        read = adapter._read(lambda rows=rows: rows, lambda rs: list(map(adapter._gtt_row, rs)))
+        for row, gtt in zip(rows, read, strict=True):
+            if row["ord_status"] == 1:  # cancelled
+                assert gtt is None
+                continue
+            assert gtt is not None
+            assert gtt.side.value == "sell"
+            assert gtt.qty == row["qty"]
+            assert gtt.tag == (tag if "GTT" + tag in row["ordertag"] else None)
+    # MX-F6: one tag, two orders, both accepted with an id and refused by RMS
+    [first, second] = by("place_order")
+    assert first["args"] == second["args"]
+    assert first["args"]["orderTag"] == "HATTEST2"
+    assert first["reply"]["id"] != second["reply"]["id"]
+    for call in (first, second):
+        assert call["reply"]["s"] == "error"
+        assert call["reply"]["id"]
+    book = by("orderbook")[-1]["reply"]["orderBook"]
+    assert sorted(r["id"] for r in book) == sorted(c["reply"]["id"] for c in (first, second))
+    orders = adapter._order_book(book)
+    assert {(o.tag, o.status) for o in orders} == {("HATTEST2", "rejected")}
+    assert len(orders) == 2
+    assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))

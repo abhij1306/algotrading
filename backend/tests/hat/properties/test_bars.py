@@ -1729,6 +1729,41 @@ def test_minute_history_budget(
         assert sum(stored.calls.values()) == spent + len(instants)
 
 
+# The reply Fyers gives once the plan's daily requests are spent (the message the owner saw).
+RATE_LIMITED = {"s": "error", "code": -360, "message": "Standard plan limit of 5,000 requests/day"}
+
+
+@given(raw=minute_candles(days=3), limit=st.integers(0, 14))
+@settings(deadline=None)
+def test_minute_history_rate_limit_stops_run(raw: list[list[Any]], limit: int) -> None:
+    """Once Fyers answers -360 (the plan's daily requests spent), the run stops at that call with
+    `history_rate_limited`, not `history_failed`, and asks nothing more: the symbol it stopped on
+    is neither failed nor done (a resume asks for it again), every symbol loaded before it is
+    stored and done, and no broker text is kept."""
+    start, end = DAY, DAY + timedelta(days=2)
+    symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(4)}
+    asked: list[dict[str, str]] = []
+    inner = _fake_history(dict.fromkeys(symbols, raw), asked)
+
+    def history(request: dict[str, str]) -> dict[str, Any]:
+        return RATE_LIMITED if len(asked) >= limit else inner(request)
+
+    limits = HistoryLimits(chunk_days=1, per_minute=10**6)
+    with tempfile.TemporaryDirectory() as root:
+        path = Path(root) / "progress.json"
+        progress = Progress.load(path)
+        report = load_minute_history(
+            history, BarStore(Path(root)), symbols, start, end, limits=limits, progress=progress
+        )
+        loaded = list(symbols)[: limit // 3]
+        assert report.calls == min(limit + 1, 3 * len(symbols))
+        assert report.stopped == ("history_rate_limited" if limit < 3 * len(symbols) else None)
+        assert not report.failed
+        assert set(Progress.load(path).done) == set(loaded)
+        assert set(report.days) == set(loaded)
+        assert "5,000" not in path.read_text()
+
+
 @given(
     raw=minute_candles(days=3),
     budget=st.integers(0, 12),

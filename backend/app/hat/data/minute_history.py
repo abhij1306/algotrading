@@ -78,9 +78,12 @@ _MINUTE = timedelta(minutes=1)
 _PLACES = Decimal("0.0001")
 _WINDOW = timedelta(minutes=1)  # the per-minute call budget's window
 _PLAN_REFUSAL = "historical data available for your plan"
-# Codes that end the run (the rest fail one symbol): the day's call budget is spent, or the plan
-# keeps refusing the period.
-_RUN_STOPS = frozenset({"history_daily_limit", "history_plan_limit"})
+# Fyers' answer once the app has spent its plan's daily requests ("Standard plan limit of 5,000
+# requests/day"): every call fails until the next day, so it ends the run (HAT-BRK-082).
+_FYERS_RATE_LIMITED = -360
+# Codes that end the run (the rest fail one symbol): the day's call budget is spent (by our count
+# or by Fyers'), or the plan keeps refusing the period.
+_RUN_STOPS = frozenset({"history_daily_limit", "history_rate_limited", "history_plan_limit"})
 PROGRESS_FILE = Path("minute_history") / "progress.json"  # under the HAT data root
 
 HistoryCall = Callable[[dict[str, str]], Mapping[str, object]]
@@ -431,6 +434,8 @@ def _load_symbol(
         response = pacer.call(history, _request(symbol, first, last))
         if not isinstance(response, Mapping):
             raise MinuteHistoryError("history_bad_answer")  # not a refusal: the symbol only
+        if response.get("s") != "ok" and response.get("code") == _FYERS_RATE_LIMITED:
+            raise MinuteHistoryError("history_rate_limited")
         if response.get("s") != "ok" and _plan_refused(response):
             first = start = _clamp(pacer, limits, progress, report, first)
             continue

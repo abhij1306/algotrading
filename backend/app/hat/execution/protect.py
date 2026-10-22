@@ -27,9 +27,10 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
   settled against the broker once `settle_after` has passed since it was sent (a request still
-  in flight could land later): a GTT against the broker's GTT book by symbol, quantity and
-  trigger (GTTs carry no tag), a day stop by its tag. Found, it is adopted as placed; absent
-  after a good read, it never landed: it ends `expired` and the position is protected again.
+  in flight could land later): a GTT against the broker's GTT book by its tag (else, for a GTT
+  shown untagged, by symbol, quantity and trigger: `submit.find_gtt`), a day stop by its tag.
+  Found, it is adopted as placed; absent after a good read, it never landed: it ends `expired`
+  and the position is protected again.
   While a stop's outcome is unknown it never holds a sale back (`make_room` skips it: a resting
   CNC stop makes the broker refuse the sale, the safe way round).
 
@@ -59,7 +60,15 @@ from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
-from .broker import AckResult, BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
+from .broker import (
+    CODES_NOT_SENT,
+    AckResult,
+    BrokerUnavailableError,
+    GttModify,
+    HatBroker,
+    OrderType,
+    Side,
+)
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .submit import (
@@ -502,7 +511,8 @@ class StopDesk:
             return PROTECTED if covered else FAILED  # a refused resize is alerted
         # A stop reserved and never sent is sent; a day stop whose answer was lost is looked up
         # by its tag and sent again only when absent, once it is old enough (still in flight
-        # otherwise). A lost GTT that settling left is never sent again (it has no tag).
+        # otherwise). A lost GTT that settling left is never sent again: the GTT book may lag one
+        # that landed.
         ready = [
             row
             for row in working
@@ -632,7 +642,7 @@ class StopDesk:
             ):
                 continue
             ack = self._broker.cancel_order(row.broker_order_id)
-            if ack.ok or ack.code != BROKER_UNAVAILABLE:
+            if ack.ok or ack.code not in CODES_NOT_SENT:
                 self._entry_cancels.add(row.id)
             if not ack.ok:
                 logger.warning("entry %s remainder not cancelled (%s)", row.tag, ack.code)
@@ -842,11 +852,7 @@ class StopDesk:
                 return VERIFIED
             # A GTT kept above the new tick's floor is never replaced by a lower one: told, and
             # left resting.
-            if (
-                keep
-                or ack.code == BROKER_UNAVAILABLE
-                or not self._cancel(session, target, row, now)
-            ):
+            if keep or ack.code in CODES_NOT_SENT or not self._cancel(session, target, row, now):
                 # The old GTT may still rest at the broker: a second one could sell the same
                 # shares twice. Told, and nothing is placed.
                 self._alert(ALERT_GTT_UNVERIFIED, target, now, ack.code)

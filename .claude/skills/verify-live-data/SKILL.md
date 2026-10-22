@@ -36,6 +36,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), and across a second run started right after the first with a fresh pacer on the saved progress, no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
 - `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume` (and given the next day's shifted period, which the resume replaces with the stopped run's), leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
 - `PBT bars.minute_history_plan_clamp` A fake plan that refuses (-50, `data.range_from` "exceeds the historical data available for your plan") any range before a floor 0..2 days after `today - plan_days`: a start 0..3 days before the floor is clamped to exactly the floor (saved in the progress), within `max_clamps`, and every symbol is loaded from there; a -50 with another reason is a symbol failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
+- `PBT bars.minute_history_rate_limit_stops_run` Once Fyers answers -360 (the plan's daily requests spent), the run stops at that call with `history_rate_limited`, not `history_failed`, and asks nothing more: the symbol it stopped on is neither failed nor done (a resume asks for it again), every symbol loaded before it is stored and done, and no broker text is kept (HAT-BRK-082). Harm: a spent quota marks every remaining symbol failed and the run keeps spending calls the plan refuses.
 - `PBT minute_history_cli.root_and_report` Driving `main` with `HAT_DATA_ROOT` set only in `.env`, only in the environment, in both, or blank in the environment over a `.env` value, 0 to 3 symbols, every call refused or answered `no_data`, and any count of members without a Fyers symbol: the lock, progress and report land only under the root that rule gives, `minute_history/report-YYYY-MM-DD.txt` ends with exactly the coverage report printed, `main` exits 1 exactly when the run stopped or a symbol failed (with a budget that never runs out, only refused symbols do either), and nothing reaches the network. Harm: a three-day download writes to the repo's `data_system/hat/` instead of the data volume, or its coverage is lost with the terminal.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed, with the listing's open (PR 22: the gapper is not subscribed yet, so the feed has no open of it). Harm: impossible gaps are chased or valid EP candidates never watched.
@@ -147,13 +148,14 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `e357f7beec80880f25955f578fdc40e076c21a51c387cc46641214b8b4a1cd32`
+Covered digest: `f25fcf874ade4b3098246bb3bbc1c43680f518e3cbfdd1d6fee9527c74b62c35`
 
 ## Scope changes
 
 - PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
 - PR 43 (PR 41 follow-ups 1 and 7): the command line takes its root from `operator_settings()` (loads `.env` first) and appends its coverage report to `minute_history/report-YYYY-MM-DD.txt` under that root. `minute_history_cli.root_and_report` drives `main` in its own file, because `main` reads the wall clock (the period ends yesterday; the report is named by the day) and `test_bars.py` promises no property reads one; the report is matched by pattern. Name lookups and sockets are blocked and recorded. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). Nothing was narrowed.
 - PR 41 (owner decision D131) made the download runnable on the Fyers Standard plan: per-symbol writes replace PR 12's all-or-nothing (the old CodeAnt break below is retired with it), with a call pacer, resumable progress and the plan-limit clamp; `BarStore.write` now carries the untouched rows of a day as Arrow data (`bars.persisted_equals_live` guards it). The plan's refusal text is from the audit 2026-10-22 live checks ("Fyers history depth"); a recording of the exact response is a follow-up.
+- PR 25 (HAT-BRK-082): Fyers -360 stops a minute-history run (`_FYERS_RATE_LIMITED`, `history_rate_limited` in `_RUN_STOPS`). The -360 reply was not recorded live; the code is matched on `code` alone. Nothing was narrowed.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
@@ -1241,6 +1243,26 @@ E   Failing test case: test_minute_history_plan_clamp(
 E       # The test always failed when commented parts were varied together.
 E       raw=[],  # or any other generated value
 E       late=0,  # or any other generated value
+```
+
+### PBT bars.minute_history_rate_limit_stops_run
+
+Break: (PR 25) in `backend/app/hat/data/minute_history.py`, a -360 reply raises `history_failed` instead of `history_rate_limited` (a Hypothesis exception group of two failures).
+
+```
+    | AssertionError: assert None == 'history_rate_limited'
+    | Failing test case: test_minute_history_rate_limit_stops_run(
+    | AssertionError: assert 3 == 1
+    | Failing test case: test_minute_history_rate_limit_stops_run(
+```
+
+Second break (PR 25): `history_rate_limited` removed from `_RUN_STOPS`, so the run goes on to the next symbol.
+
+```
+    | AssertionError: assert None == 'history_rate_limited'
+    | Failing test case: test_minute_history_rate_limit_stops_run(
+    | AssertionError: assert 4 == 1
+    | Failing test case: test_minute_history_rate_limit_stops_run(
 ```
 
 ### PBT bars.restore_matches_live

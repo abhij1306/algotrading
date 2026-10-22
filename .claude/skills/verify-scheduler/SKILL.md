@@ -146,7 +146,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `5a1002d01f78e9626c6008e44027de3fde615ab4b6326d1ad4e7af269bd30fb1`
+Covered digest: `e8b7563c99e3a5ab8e7386606a34c29fd565051803920a862e9a04318dcdba6b`
 
 ## Scope changes
 
@@ -157,6 +157,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The model counts recorded successes, not body executions: a crash between the body and its recording is the `Restart` action and re-runs the body (see "Bug or model error", known window).
 - `TypeOK` has no broken variant: it is a type-correctness invariant, not a promise.
 - PR 3 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` now includes 3; `KNOWN_GAPS` gained two TLA names that belong to PR 13 and PR 15 (see `verify-events`); the DB-check coverage test accepts `events.partitions_ahead` through its own broken-ensure variants; the catalog comparison orders by name and definition.
+- PR 25 updated `test_conf_verification.py`: `MERGED_PRS` now includes 25; `KNOWN_GAPS` unchanged. Nothing was narrowed.
 - PR 13 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` includes 13; `KNOWN_GAPS` lost `TLA OrderReconciliation!AtMostOneEntryPerSignal` and gained `TLA ExecutionRouter!AutoNeedsGtt` (see `verify-execution`); `test_ops.py` gained `test_session_backoff_alert` and `test_backoff_delay_is_monotone_and_capped`.
 - PR 6 updated `test_conf_verification.py`: `MERGED_PRS` now includes 6; `KNOWN_GAPS` unchanged.
 - PR 10 updated `test_conf_verification.py` without narrowing any check: `MERGED_PRS` now includes 10, and `KNOWN_GAPS` gained two ExecutionRouter TLA names that belong to PR 15 (see `verify-risk`).

@@ -38,9 +38,11 @@ __all__ = [
     "CircuitBreaker",
     "FundsReply",
     "FyersBroker",
+    "FyersRateLimitedError",
     "FyersSessionExpiredError",
     "FyersUnavailableError",
     "checked_reply",
+    "rate_limited",
     "profile_data",
     "OrderReply",
     "PositionReply",
@@ -113,12 +115,36 @@ class FyersSessionExpiredError(FyersUnavailableError):
     login brings it back. Still a failed read (an unreadable book, never an empty one)."""
 
 
+# Fyers answers every call with code -360 ("Standard plan limit of 5,000 requests/day") once the
+# app has spent its plan's daily requests, as a normal error reply: nothing succeeds until the
+# next day.
+FYERS_CODE_RATE_LIMITED = -360
+
+
+class FyersRateLimitedError(FyersUnavailableError):
+    """Fyers refused the call because the plan's daily requests are spent (code -360): not an
+    outage, and no call succeeds until the next day. Still a failed read (an unreadable book,
+    never an empty one)."""
+
+
+def rate_limited(response: object) -> bool:
+    """Whether `response` is Fyers' -360 refusal (the plan's daily requests spent)."""
+    return (
+        isinstance(response, dict)
+        and response.get("s") != "ok"
+        and response.get("code") == FYERS_CODE_RATE_LIMITED
+    )
+
+
 def checked_reply(operation: str, response: object) -> dict[str, Any]:
     """`response` when it is an ok Fyers reply; FyersSessionExpiredError for code -16,
-    FyersUnavailableError for anything else. The error text is fixed, never the broker's."""
+    FyersRateLimitedError for code -360, FyersUnavailableError for anything else. The error
+    text is fixed, never the broker's."""
     if not isinstance(response, dict) or response.get("s") != "ok":
         if isinstance(response, dict) and response.get("code") == FYERS_CODE_TOKEN_REJECTED:
             raise FyersSessionExpiredError(f"Fyers {operation} session expired")
+        if rate_limited(response):
+            raise FyersRateLimitedError(f"Fyers {operation} daily request limit reached")
         raise FyersUnavailableError(f"Fyers {operation} request failed")
     return response
 
@@ -415,8 +441,13 @@ class FyersBroker:
 
     def place_gtt(self, gtt: dict[str, Any]) -> OrderReply:
         """Place a single-leg GTT order. gtt: {symbol (Fyers format), quantity, side, product,
-        trigger_price, price}. The SDK payload is `{side, symbol, productType, orderInfo: {leg1:
-        {price, triggerPrice, qty}}}`. Like place_order, a lost answer is SUBMIT_UNCONFIRMED."""
+        trigger_price, price, order_tag (optional)}. The SDK payload is `{side, symbol,
+        productType, orderInfo: {leg1: {price, triggerPrice, qty}}, orderTag}` (the tag only when
+        given; Fyers shows it on the GTT book row as `ordertag` "<n>:GTT<tag>", recorded
+        2026-10-22). Like place_order, a lost answer is SUBMIT_UNCONFIRMED."""
+        tag_fields, tag_rejection = _order_tag_fields(gtt.get("order_tag"))
+        if tag_rejection is not None:
+            return tag_rejection
         side = gtt.get("side")
         product = str(gtt.get("product") or "").upper()
         trigger = _float(gtt.get("trigger_price"))
@@ -435,6 +466,7 @@ class FyersBroker:
             "orderInfo": {
                 "leg1": {"price": limit_price, "triggerPrice": trigger, "qty": gtt["quantity"]}
             },
+            **tag_fields,
         }
         return self._send("place_gtt", lambda: self.client.place_gtt_order(data=data), "GTT Placed")
 

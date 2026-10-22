@@ -3,13 +3,19 @@ per instance, nothing is sent while it is open, only an explicit Fyers error is 
 garbled or id-less answer is SUBMIT_UNCONFIRMED), and no price that is not a finite positive number
 reaches the SDK. Runs on the real `FyersBroker` over a recording SDK stand-in."""
 
+import json
 import math
+import uuid
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from hat.fakes.fyers_sdk import READ_LISTS, RecordingSdk, broker_over
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from app.hat.execution.broker import GttRequest, OrderIntent, OrderType, Side
+from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     SUBMIT_UNCONFIRMED,
@@ -17,6 +23,7 @@ from app.hat.execution.fyers_broker import (
     FyersBroker,
     FyersUnavailableError,
 )
+from app.hat.execution.tags import encode_tag
 
 ORDER = {"symbol": "NSE:TCS-EQ", "quantity": 5, "side": "BUY", "type": "MARKET", "product": "CNC"}
 GTT = {"symbol": "NSE:TCS-EQ", "quantity": 5, "side": "SELL", "product": "CNC",
@@ -144,6 +151,57 @@ def test_only_an_explicit_error_is_a_rejection(place: str, reply: object) -> Non
         "SUBMITTED" if confirmed else "REJECTED" if explicit_error else SUBMIT_UNCONFIRMED
     )
     assert (result["order_id"] != "") == confirmed
+    assert len(sdk.calls) == 1
+
+
+# The reply Fyers gave a limit buy outside the circuit band (recorded 2026-10-22): an explicit
+# error that still carries the ids of the order it created and refused (RMS, status 5).
+REFUSED_WITH_ID = next(
+    call["reply"]
+    for call in json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "fyers_live_writes.json").read_text("utf-8")
+    )["calls"]
+    if call["method"] == "place_order"
+)
+
+
+@given(
+    place=st.sampled_from(["place_order", "place_gtt", "adapter_order", "adapter_gtt"]),
+    order_id=st.text(alphabet="0123456789", min_size=1, max_size=16),
+    code=st.integers(-1000, -1),
+    message=st.text(max_size=40),
+)
+@example(place="place_order", order_id="26102200316678", code=-99, message="")
+@NO_DEADLINE
+def test_a_rejection_with_an_id_stays_rejected(
+    place: str, order_id: str, code: int, message: str
+) -> None:
+    """HAT-BRK-081: an explicit error stays a rejection though it carries the id of the order
+    Fyers created and refused (`id`, `id_fyers`, as recorded for an RMS refusal): the broker
+    answers REJECTED with no order id, and the adapter `rejected` with no broker id, never placed
+    or unconfirmed. Harm: a refused order read as placed leaves the signal waiting on an order
+    that never fills, or a refused stop read as resting leaves the position unprotected."""
+    reply = {**REFUSED_WITH_ID, "id": order_id, "code": code, "message": message}
+    sdk = ScriptedSdk(reply)
+    broker = broker_over(sdk)
+    if place.startswith("adapter"):
+        adapter = FyersHatBroker(broker, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+        if place == "adapter_order":
+            tag = encode_tag(uuid.UUID(int=4), "entry", 0)
+            result = adapter.place_order(OrderIntent("TCS", Side.BUY, 5, OrderType.MARKET, tag))
+            assert (result.status, result.broker_order_id) == ("rejected", None)
+        else:
+            tag = encode_tag(uuid.UUID(int=4), "stop_gtt", 0)
+            gtt = adapter.place_gtt_stop(
+                GttRequest("TCS", 5, Decimal("100"), Decimal("99"), tag=tag)
+            )
+            assert (gtt.status, gtt.gtt_id) == ("rejected", None)
+        assert len(sdk.calls) == 1
+        return
+    result = (
+        broker.place_order(dict(ORDER)) if place == "place_order" else broker.place_gtt(dict(GTT))
+    )
+    assert (result["status"], result["order_id"]) == ("REJECTED", "")
     assert len(sdk.calls) == 1
 
 

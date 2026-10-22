@@ -141,9 +141,9 @@ def credentials_from_env() -> FyersCredentials:
 
 
 def _sdk_session(**kwargs: str) -> Session:
-    from fyers_apiv3 import fyersModel
+    from .fyers_ipv4 import sdk  # the login exchange leaves over IPv4 too (HAT-BRK-093)
 
-    return fyersModel.SessionModel(**kwargs)
+    return sdk().SessionModel(**kwargs)
 
 
 class FyersAuthService:
