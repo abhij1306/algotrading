@@ -14,6 +14,10 @@
 (* answer can be lost (it may or may not have landed): it is settled       *)
 (* against the broker's GTT book (adopted when there, else ended and the   *)
 (* position protected again), and until then it never holds a sale back.  *)
+(* The entry is a DAY limit that can fill in parts: once a sale empties    *)
+(* the position, the rest of the entry is cancelled, and the position      *)
+(* closes only when the broker shows the entry ended; a part that fills    *)
+(* first (the cancel too late) is held and protected (F2).                 *)
 (*                                                                         *)
 (* Bounds: MaxQty = 2 entry fills (a partial fill, then the rest); MaxStop *)
 (*   = 3 stop levels (the stop rises at most twice); sessions repeat       *)
@@ -30,14 +34,18 @@
 (*   is not modelled (resizing is proved by PBT manage.real_fill_protected *)
 (*   on the real code); the scheduler runs gtt.swap before the close and   *)
 (*   gtt.verify at night (weak fairness), and time passes (weak fairness); *)
-(*   a day stop is a stop-market order, so when it triggers it fills.      *)
+(*   a day stop is a stop-market order, so when it triggers it fills; a    *)
+(*   sale sells the quantity HAT holds; the cancel of the entry remainder  *)
+(*   is asked in the step of the sale that empties the position (for a     *)
+(*   stop fill, the sync's protect right after it), and the broker ends    *)
+(*   the entry eventually (the cancel, or the DAY expiry at the close).    *)
 (*                                                                         *)
 (*   The GTT book can be read eventually (weak fairness on Settle).        *)
 (*                                                                         *)
 (* Properties: StopAfterFill, AlwaysProtected, BrokerStopMatchesCurrent,   *)
 (*   NoUnprotectedGap, NightlyVerifyCovers, StopOnlyTightens,              *)
-(*   LostNeverBlocksSale (invariants) and GttUnfilledAlerted,              *)
-(*   LostGttSettled (temporal).                                            *)
+(*   LostNeverBlocksSale, SharesTracked, RestCancelledOnExit (invariants)  *)
+(*   and GttUnfilledAlerted, LostGttSettled, EmptiedCloses (temporal).     *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -45,7 +53,8 @@ CONSTANTS MaxQty, MaxStop, BrokenMode
 
 ASSUME BrokenMode \in {"none", "act_before_stop", "no_protect", "place_above",
                        "cancel_first", "verify_skips_missing", "reset_on_follow",
-                       "no_unfilled_alert", "never_settle", "lost_blocks_sale"}
+                       "no_unfilled_alert", "never_settle", "lost_blocks_sale",
+                       "close_with_rest", "keep_rest", "no_close_step"}
 
 Phases == {"open", "swap", "after", "night"}
 InSession == {"open", "swap"}
@@ -72,11 +81,16 @@ VARIABLES
     nightAlert,     \* tonight's verify alerted the position
     replaceTried,   \* tonight's verify tried to place a new GTT
     lostGtt,        \* HAT's book holds a GTT whose placement answer was lost (no broker id)
-    saleRefused     \* an exit sale was held back by a stop of unknown outcome
+    saleRefused,    \* an exit sale was held back by a stop of unknown outcome
+    bqty,           \* the shares the broker holds for the position (its fills less its sales)
+    rest,           \* the entry order still works at the broker (part of it may still fill)
+    exited,         \* a sale has emptied the position at least once
+    cancelAsked     \* HAT asked the broker to cancel the rest of the entry
 
 vars == <<qty, closed, cur, day, gtt, phase, pc, acted, alerted, lastPx, lowered,
           cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
-          lostGtt, saleRefused>>
+          lostGtt, saleRefused, bqty, rest, exited, cancelAsked>>
+entryVars == <<bqty, rest, exited, cancelAsked>>
 
 Held == ~closed /\ qty > 0
 Protected == day.st = "working" \/ gtt.st = "working"
@@ -118,23 +132,61 @@ Init ==
     /\ replaceTried = FALSE
     /\ lostGtt = FALSE
     /\ saleRefused = FALSE
+    /\ bqty = 0
+    /\ rest = TRUE
+    /\ exited = FALSE
+    /\ cancelAsked = FALSE
 
 \* A HAT action on the position other than its stop work: in the real code it waits for the
 \* stop work of a fill (broken variant "act_before_stop": it does not).
 MayAct == pc = "idle" \/ BrokenMode = "act_before_stop"
 NoteAct == acted' = (acted \/ pc = "protecting")
 
-\* code: backend/app/hat/execution/fills.py:FillSync._apply  (an entry fill is recorded, then its
-\* stop work runs: the position is `protecting` until it has)
+\* code: backend/app/hat/execution/fills.py:FillSync._apply  (the broker fills part of the entry;
+\* the fill is recorded, then its stop work runs: the position is `protecting` until it has. The
+\* last share ends the entry order. A fill of a position already closed is refused and alerted
+\* (fill.refused), which only the broken variant "close_with_rest" can reach)
 EntryFill ==
     /\ phase \in InSession
-    /\ ~closed
-    /\ qty < MaxQty
-    /\ qty' = qty + 1
-    /\ pc' = IF BrokenMode = "no_protect" THEN pc ELSE "protecting"
-    /\ UNCHANGED <<closed, cur, day, gtt, phase, acted, alerted, lastPx, lowered,
+    /\ rest
+    /\ bqty < MaxQty
+    /\ bqty' = bqty + 1
+    /\ rest' = (bqty + 1 < MaxQty)
+    /\ IF closed
+          THEN /\ alerted' = TRUE
+               /\ UNCHANGED <<qty, pc>>
+          ELSE /\ qty' = qty + 1
+               /\ pc' = IF BrokenMode = "no_protect" THEN pc ELSE "protecting"
+               /\ UNCHANGED alerted
+    /\ UNCHANGED <<closed, cur, day, gtt, phase, acted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
-                   lostGtt, saleRefused>>
+                   lostGtt, saleRefused, exited, cancelAsked>>
+
+\* A sale that sells every share HAT holds (a stop fill, an exit or a flatten): the broker's
+\* shares drop by as many, the rest of the entry is asked to be cancelled (broken variant
+\* "keep_rest": it is not, the main code before PR 20), and the position closes only when no entry
+\* order still works (broken variant "close_with_rest": at once, the main code before PR 20).
+\* code: backend/app/hat/engine/live_trades.py:apply_exit_fill, protect.py:StopDesk.cancel_entry
+SellAll ==
+    /\ qty' = 0
+    /\ bqty' = bqty - qty
+    /\ exited' = TRUE
+    /\ cancelAsked' = (cancelAsked \/ BrokenMode # "keep_rest")
+    /\ closed' = (BrokenMode = "close_with_rest" \/ ~rest)
+    /\ UNCHANGED rest
+
+\* code: backend/app/hat/execution/fills.py:FillSync.run step 7, live_trades.close_if_emptied
+\* (the broker ends the entry order: the cancel HAT asked for, or the DAY limit expiring at the
+\* close; an emptied position then closes; broken variant "no_close_step": the sync never closes
+\* it)
+EntryEnds ==
+    /\ rest
+    /\ cancelAsked \/ phase \in {"after", "night"}
+    /\ rest' = FALSE
+    /\ closed' = (closed \/ (exited /\ qty = 0 /\ BrokenMode # "no_close_step"))
+    /\ UNCHANGED <<qty, cur, day, gtt, phase, pc, acted, alerted, lastPx, lowered,
+                   cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
+                   lostGtt, saleRefused, bqty, exited, cancelAsked>>
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.protect  (a resting stop is resized; with
 \* none, a day stop in the session before 15:25 or a GTT from then on; a failure is alerted; a
@@ -163,6 +215,7 @@ Protect ==
                         /\ UNCHANGED <<day, gtt, lastPx, lowered, swapFailed, lostGtt>>
     /\ UNCHANGED <<qty, closed, cur, phase, acted, cancelledEarly, swapTried,
                    verifyDone, nightAlert, replaceTried, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/fills.py:FillSync._unprotected  (a held position HAT's book
 \* shows without a working stop, after an alerted failure, is protected again by the next sync)
@@ -174,6 +227,7 @@ Reprotect ==
     /\ UNCHANGED <<qty, closed, cur, day, gtt, phase, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/engine/live_trades.py:evaluate_real_position  (a live rule raises
 \* current_stop; the database refuses a lower one)
@@ -187,6 +241,7 @@ RaiseStop ==
     /\ UNCHANGED <<qty, closed, day, gtt, phase, pc, alerted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
                    saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* The price a follow modifies a stop to (broken variant "reset_on_follow": back to the
 \* initial stop).
@@ -210,6 +265,7 @@ Follow ==
     /\ NoteAct
     /\ UNCHANGED <<qty, closed, cur, phase, pc, cancelledEarly, swapTried, swapFailed,
                    verifyDone, nightAlert, replaceTried, lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.swap  (the GTT first; a failed GTT leaves
 \* the day stop working and is alerted; the job tries again a minute later, after the close too)
@@ -244,6 +300,7 @@ SwapPlaceGtt ==
     /\ NoteAct
     /\ UNCHANGED <<qty, closed, cur, day, phase, pc, cancelledEarly, verifyDone, nightAlert,
                    replaceTried, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/protect.py:StopDesk._cancel  (the day stop is cancelled once
 \* the GTT is confirmed; broken variant "cancel_first": before)
@@ -258,21 +315,25 @@ SwapCancelDay ==
     /\ NoteAct
     /\ UNCHANGED <<qty, closed, cur, gtt, phase, pc, alerted, lastPx, lowered, swapTried,
                    swapFailed, verifyDone, nightAlert, replaceTried, lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/ops/scheduler.py:HatScheduler.due_jobs  (time passes; at the close the
 \* broker expires any day stop; a new session starts a new night)
 Clock ==
     \/ /\ phase = "open"
        /\ phase' = "swap"
-       /\ UNCHANGED <<day, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
+       /\ UNCHANGED <<day, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "swap"
        /\ swapTried \/ ~Held
        /\ phase' = "after"
        /\ day' = None
+       \* the sync sees the expired day stop and protects a held position again
+       \* (fills.py:FillSync._statuses): a late entry fill after the swap may rest on it alone
+       /\ pc' = IF Held /\ day.st = "working" /\ gtt.st = "none" THEN "protecting" ELSE pc
        /\ UNCHANGED <<swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "after"
        /\ phase' = "night"
-       /\ UNCHANGED <<day, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
+       /\ UNCHANGED <<day, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "night"
        /\ verifyDone \/ ~Held
        /\ phase' = "open"
@@ -281,9 +342,10 @@ Clock ==
        /\ verifyDone' = FALSE
        /\ nightAlert' = FALSE
        /\ replaceTried' = FALSE
-       /\ day' = day
-    /\ UNCHANGED <<qty, closed, cur, gtt, pc, acted, alerted, lastPx, lowered, cancelledEarly,
+       /\ UNCHANGED <<day, pc>>
+    /\ UNCHANGED <<qty, closed, cur, gtt, acted, alerted, lastPx, lowered, cancelledEarly,
                    lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/fills.py:FillSync._apply_gtt_trade  (the GTT triggered and its
 \* limit order filled: the position is sold)
@@ -291,8 +353,7 @@ GttFills ==
     /\ phase \in InSession
     /\ Held
     /\ gtt.st = "working"
-    /\ closed' = TRUE
-    /\ qty' = 0
+    /\ SellAll
     /\ gtt' = None
     /\ UNCHANGED <<cur, day, phase, pc, acted, alerted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
@@ -304,8 +365,7 @@ DayStopFills ==
     /\ phase \in InSession
     /\ Held
     /\ day.st = "working"
-    /\ closed' = TRUE
-    /\ qty' = 0
+    /\ SellAll
     /\ day' = None
     /\ UNCHANGED <<cur, gtt, phase, pc, acted, alerted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
@@ -321,6 +381,7 @@ GttTriggersUnfilled ==
     /\ UNCHANGED <<qty, closed, cur, day, phase, pc, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/fills.py:FillSync._gtt_unfilled  (the sync sees the untagged
 \* sell that ended unfilled: alert, end the GTT, protect again)
@@ -333,11 +394,12 @@ SeeUnfilled ==
     /\ UNCHANGED <<qty, closed, cur, day, phase, acted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
                    saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.cancel_all  (a sold position's resting
-\* stops are cancelled)
+\* stops are cancelled, once it holds no shares even while its entry still works)
 CancelAfterSale ==
-    /\ closed
+    /\ ~Held
     /\ ~lostGtt
     /\ (day.st = "working" \/ gtt.st = "working")
     /\ day' = None
@@ -345,6 +407,7 @@ CancelAfterSale ==
     /\ UNCHANGED <<qty, closed, cur, phase, pc, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/protect.py:StopDesk._settle  (a GTT whose answer was lost is
 \* looked up in the broker's GTT book: there, it is adopted; absent, it never landed: the row
@@ -358,6 +421,7 @@ Settle ==
     /\ UNCHANGED <<qty, closed, cur, day, gtt, phase, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    saleRefused>>
+    /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/manage.py:TradeManager._sell_locked  (an exit sale in the
 \* session: make_room cancels the resting stops HAT knows and skips one whose answer is still
@@ -370,9 +434,8 @@ Sell ==
     /\ NoteAct
     /\ IF lostGtt /\ BrokenMode = "lost_blocks_sale"
           THEN /\ saleRefused' = TRUE
-               /\ UNCHANGED <<qty, closed, day, gtt>>
-          ELSE /\ closed' = TRUE
-               /\ qty' = 0
+               /\ UNCHANGED <<qty, closed, day, gtt, entryVars>>
+          ELSE /\ SellAll
                /\ day' = None
                /\ gtt' = IF lostGtt THEN gtt ELSE None
                /\ UNCHANGED saleRefused
@@ -414,17 +477,19 @@ Verify ==
                             /\ UNCHANGED <<lastPx, lowered>>
     /\ UNCHANGED <<qty, closed, cur, day, phase, pc, cancelledEarly, swapTried, swapFailed,
                    saleRefused>>
+    /\ UNCHANGED entryVars
 
 Next ==
     \/ EntryFill \/ Protect \/ Reprotect \/ RaiseStop \/ Follow \/ SwapPlaceGtt \/ SwapCancelDay
     \/ Clock \/ GttFills \/ DayStopFills \/ GttTriggersUnfilled \/ SeeUnfilled
-    \/ CancelAfterSale \/ Settle \/ Sell \/ Verify
+    \/ CancelAfterSale \/ Settle \/ Sell \/ Verify \/ EntryEnds
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ WF_vars(Protect) /\ WF_vars(SwapPlaceGtt) /\ WF_vars(SwapCancelDay)
     /\ WF_vars(Clock) /\ WF_vars(SeeUnfilled) /\ WF_vars(Verify) /\ WF_vars(Settle)
+    /\ WF_vars(EntryEnds)
 
 TypeOK ==
     /\ qty \in 0..MaxQty
@@ -437,6 +502,10 @@ TypeOK ==
     /\ lastPx \in Prices
     /\ lostGtt \in BOOLEAN
     /\ saleRefused \in BOOLEAN
+    /\ bqty \in 0..MaxQty
+    /\ rest \in BOOLEAN
+    /\ exited \in BOOLEAN
+    /\ cancelAsked \in BOOLEAN
 
 \* HAT-EXEC-060: after a real entry fill, its broker stop is placed (or resized) before any other
 \* action on the position.
@@ -481,4 +550,15 @@ LostGttSettled == (lostGtt /\ Held) ~> (~lostGtt \/ ~Held)
 
 \* HAT-EXEC-065: a stop whose outcome is unknown never holds an exit sale back.
 LostNeverBlocksSale == ~saleRefused
+
+\* HAT-EXEC-060, HAT-DEC-B17 (F2): HAT holds exactly the shares the broker holds, so none is
+\* left untracked (and unprotected, AlwaysProtected) by a part of the entry that filled late.
+SharesTracked == bqty = qty
+
+\* F2: once a sale has emptied the position, the rest of a still-working entry has been asked to
+\* be cancelled (it holds no risk budget and buys no shares HAT is selling).
+RestCancelledOnExit == (exited /\ rest /\ qty = 0) => cancelAsked
+
+\* F2: a position its sales emptied eventually closes, unless a late part of the entry is held.
+EmptiedCloses == (exited /\ qty = 0 /\ ~closed) ~> (closed \/ qty > 0)
 ==============================================================================

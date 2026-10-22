@@ -10,9 +10,13 @@ are sent by `execution/manage.py`.
 - An entry fill opens the real position (EntryPlaced -> Open) at the fill price with the signal's
   stop, or adds to it (a partial fill; the average entry is weighted).
 - An exit fill sells from it: a partial sale (`exit.partial`), or the last share
-  (`position.closed` and the trade result). The first fill of a broker stop is the stop
-  triggering: its `order.filled` carries `exit_triggered` and stands for the exit order placed
-  (ExitPending), as does any fill that empties a position no full exit order was placed for.
+  (`position.closed` and the trade result). While the entry order still works at the broker (a
+  part-filled DAY limit), the emptied position stays open at quantity 0: the stop desk cancels
+  the remainder; a late fill of it adds to the position, is protected like any entry fill and
+  fires again the rules of the sale that emptied it; `close_if_emptied` closes the position once
+  the broker shows the entry ended (F2). The first fill of a broker stop is the stop triggering:
+  its `order.filled` carries `exit_triggered` and stands for the exit order placed (ExitPending),
+  as does any fill that empties a position no full exit order was placed for.
 - `evaluate_real_position` runs the same `exits.evaluate` as the shadow engine (T12). It raises
   the stop and marks fired the rules that sell nothing; a rule that sells is marked fired by
   `mark_fired` once its order went out, so a sale the broker refused is evaluated again.
@@ -34,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..ids import uuid7
 from ..models import HatEvent, HatFill, HatOrder, HatPosition, HatSignal
+from ..time import as_utc, trade_date_of
 from . import exits, lifecycle
 from .botlock import lock_bot
 from .trades import (
@@ -58,6 +63,8 @@ __all__ = [
     "BrokerFill",
     "apply_entry_fill",
     "apply_exit_fill",
+    "close_if_emptied",
+    "entry_working",
     "evaluate_real_position",
     "mark_fired",
     "unmark_fired",
@@ -76,6 +83,8 @@ CLOSE_EVALUATED = "exit.close_evaluated"
 CLOSE_GAP = "exit.close_gap"
 CLOSE_RULE = "close_below_sma"
 _OPEN_STATES = (lifecycle.OPEN, lifecycle.PARTIALLY_EXITED)
+# An entry order the broker may still fill (`protect.WORKING`; the engine does not import it).
+_ENTRY_WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
 
@@ -168,9 +177,10 @@ def _fill_payload(order: HatOrder, fill: BrokerFill) -> dict[str, object]:
 def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> HatPosition | None:
     """Record one broker trade of a real entry order: the first opens the position at the fill
     price with the signal's stop (EntryPlaced -> Open), a later one adds to it. None when this
-    broker trade is already recorded. Raises TradeError for a fill the lifecycle cannot take
-    (the signal never reached EntryPlaced, or its position already closed); the caller rolls
-    back and reconciliation reports the broker's position."""
+    broker trade is already recorded. A fill after the position's sales emptied it, while the
+    entry still worked, adds to it the same way. Raises TradeError for a fill the lifecycle
+    cannot take (the signal never reached EntryPlaced, or its position already closed); the
+    caller rolls back and reconciliation reports the broker's position."""
     _check_fill(fill)
     order, signal = _locked_order(session, order_id)
     if order.purpose != ENTRY:
@@ -193,12 +203,21 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
         now=fill.at,
     )
     if position is not None:
-        held = position.qty_open
-        total = held + fill.qty
+        if position.qty_open == 0:
+            _fire_again_late(session, position)
+        # The average of every entry fill recorded (this one included), rounded once: weighted by
+        # the shares bought, not those still held, so a sale before this fill (or one that
+        # emptied the position) leaves the entry price as it was.
+        bought = session.execute(
+            select(HatFill.qty, HatFill.price)
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .where(HatOrder.signal_id == signal.id, HatOrder.purpose == ENTRY)
+        ).all()
         position.avg_entry = (
-            (Decimal(position.avg_entry) * held + fill.price * fill.qty) / total
+            sum((Decimal(price) * qty for qty, price in bought), _ZERO)
+            / sum(qty for qty, _ in bought)
         ).quantize(_PRICE_PLACES)
-        position.qty_open = total
+        position.qty_open += fill.qty
         order.position_id = position.id
         session.flush()
         return position
@@ -295,7 +314,7 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
     )
     position.qty_open = remaining
     rule = _exit_rule_of(session, order)
-    if remaining > 0:
+    if remaining > 0 or entry_working(session, signal.id, fill.at):
         if order.purpose == "exit_partial" and signal.state in _OPEN_STATES:
             _emit(
                 session,
@@ -309,19 +328,91 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
             )
         session.flush()
         return position
-    position.closed_at = fill.at
+    _close(session, signal, position, rule, fill.price, fill.at)
+    return position
+
+
+def _close(
+    session: Session,
+    signal: HatSignal,
+    position: HatPosition,
+    rule: str,
+    price: Decimal,
+    at: datetime,
+) -> None:
+    position.closed_at = at
     _emit(
         session,
         signal,
         "position.closed",
         aggregate_type="position",
         aggregate_id=position.id,
-        payload={"price": str(fill.price), "rule": rule},
-        now=fill.at,
+        payload={"price": str(price), "rule": rule},
+        now=at,
         position=position,
     )
-    _write_result(session, signal, position, rule, fill.at, high=None, low=None)
+    _write_result(session, signal, position, rule, at, high=None, low=None)
     session.flush()
+
+
+def entry_working(session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
+    """The signal's real entry order may still fill at the broker: sent on `now`'s trade date
+    and not seen ended. A DAY limit sent on an earlier date expired at that close, even when no
+    sync read its last status."""
+    sent = session.scalars(
+        select(HatOrder.placed_at).where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == ENTRY,
+            HatOrder.is_virtual.is_(False),
+            HatOrder.status.in_(_ENTRY_WORKING),
+            HatOrder.placed_at.is_not(None),
+        )
+    )
+    today = trade_date_of(as_utc(now))
+    return any(trade_date_of(as_utc(at)) >= today for at in sent)
+
+
+def _fire_again_late(session: Session, position: HatPosition) -> None:
+    """A late entry fill of an emptied position: the rules of the exit sale that emptied it fire
+    again, so the next evaluation sells these shares too (a broker stop protects them now)."""
+    rule_ids = session.scalars(
+        select(HatOrder.rule_ids)
+        .join(HatFill, HatFill.order_id == HatOrder.id)
+        .where(HatOrder.position_id == position.id, HatOrder.purpose.in_(EXIT_PURPOSES))
+        .order_by(HatFill.filled_at.desc(), HatFill.id.desc())
+        .limit(1)
+    ).first()
+    if rule_ids:
+        gone = set(rule_ids)
+        position.rules_fired = [rid for rid in (position.rules_fired or []) if rid not in gone]
+
+
+def close_if_emptied(session: Session, position_id: uuid.UUID, now: datetime) -> HatPosition | None:
+    """Close a real position its sales emptied while its entry still worked, once the entry has
+    ended at the broker (or its trade date passed): `position.closed` and the trade result at
+    its last sale's price, rule and time. None when the position is not such a one (shares
+    open, the entry still working, already closed, or never sold)."""
+    position = _locked_real_position(session, position_id)
+    signal = session.get(HatSignal, position.signal_id)
+    if signal is None or position.closed_at is not None or position.qty_open > 0:
+        return None
+    if entry_working(session, signal.id, now):
+        return None
+    last = session.execute(
+        select(HatOrder, HatFill)
+        .join(HatFill, HatFill.order_id == HatOrder.id)
+        .where(
+            HatOrder.position_id == position.id,
+            HatOrder.purpose.in_((*EXIT_PURPOSES, *STOP_PURPOSES)),
+        )
+        .order_by(HatFill.filled_at.desc(), HatFill.id.desc())
+        .limit(1)
+    ).first()
+    if last is None:
+        return None
+    order, fill = last
+    rule = _exit_rule_of(session, order)
+    _close(session, signal, position, rule, Decimal(fill.price), as_utc(fill.filled_at))
     return position
 
 

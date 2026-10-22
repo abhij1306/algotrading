@@ -28,6 +28,9 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `TLA StopPlacement!GttUnfilledAlerted` A GTT that triggered without a fill under a held position is eventually alerted, by the sync in the session or by the nightly verify. Harm: the owner believes a position is protected after its stop failed to fill.
 - `TLA StopPlacement!LostGttSettled` A GTT whose placement answer was lost is eventually settled (adopted when it rests at the broker, ended when it does not) while the position is held. Harm: a lost answer leaves the position with no stop HAT will place, night after night.
 - `TLA StopPlacement!LostNeverBlocksSale` A sale due on a held position is never refused because a GTT's answer is still unsure. Harm: a stop-loss exit is frozen while the price falls.
+- `TLA StopPlacement!SharesTracked` HAT's open quantity always equals the shares the broker holds for the position, also when part of a DAY limit entry fills after a stop fill, an exit or a flatten emptied the position (the position stays open until the broker shows the entry ended). Harm: shares bought after HAT closed the position sit at the broker untracked and with no stop.
+- `TLA StopPlacement!RestCancelledOnExit` Once a sale has emptied the position, the rest of a still-working entry has been asked to be cancelled. Harm: the remainder holds risk budget no cap counts and buys shares HAT is selling.
+- `TLA StopPlacement!EmptiedCloses` A position its sales emptied eventually closes (the broker ends the entry: the cancel, or the DAY expiry at the close), unless a late part of the entry is held. Harm: an emptied position stays open for ever and holds its slot.
 - `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
 - `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact (HAT-EXEC-131).
 
@@ -55,7 +58,7 @@ No check calls a broker or the exchange; the shadow engine properties in `test_e
 - The oracles are written apart from the code: stops with `Fraction`, the firing conditions of the exit rules in `expected_sells` and `expected_phase` in `test_exits.py`. If the two disagree, read the spec text (07 §5, §7) before deciding which is wrong.
 - Stops are rounded down to the instrument's real tick (`data/ticks.py`, HAT-EXEC-053; `StopInputs.tick` is required, there is no default); a lower stop is never tighter than the formula. The custom rules follow the same rounding.
 - `regime_exit` needs no price of its own: it fires on the index at night. `evaluate_position` refuses an exit with no price (`exit_without_price`) before writing anything.
-- A `StopPlacement` counterexample names its actions; each has a `\* code:` comment naming the function it stands for (`StopDesk.protect`, `follow`, `swap`, `_cancel`, `verify`, `cancel_all`; `FillSync._apply`, `_unprotected`, `_gtt_unfilled`; `live_trades.evaluate_real_position`). Replay the steps against that code before deciding whether the code or the model is wrong. HAT's view of a GTT that triggered without a fill is still "working" (`Booked`), as it is in the code until the sync or the verify sees the order that ended short.
+- A `StopPlacement` counterexample names its actions; each has a `\* code:` comment naming the function it stands for (`StopDesk.protect`, `follow`, `swap`, `_cancel`, `verify`, `cancel_all`, `cancel_entry`; `FillSync._apply`, `_unprotected`, `_gtt_unfilled`, `run`; `live_trades.evaluate_real_position`, `apply_exit_fill`, `close_if_emptied`). Replay the steps against that code before deciding whether the code or the model is wrong. HAT's view of a GTT that triggered without a fill is still "working" (`Booked`), as it is in the code until the sync or the verify sees the order that ended short.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
 ## Updating
@@ -94,13 +97,16 @@ Checks:
 - `verification/tla/broken/StopPlacement__no_unfilled_alert.cfg`
 - `verification/tla/broken/StopPlacement__never_settle.cfg`
 - `verification/tla/broken/StopPlacement__lost_blocks_sale.cfg`
+- `verification/tla/broken/StopPlacement__close_with_rest.cfg`
+- `verification/tla/broken/StopPlacement__keep_rest.cfg`
+- `verification/tla/broken/StopPlacement__no_close_step.cfg`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `19bde4d5ce645c353084882115937175309e0bee4ed8dd05e8ee23eb948464f1`
+Covered digest: `d91c3737a559db0fcc55426060057266ab94c5115f620cc2df2c791de744d73e`
 
 ## Scope changes
 
@@ -108,6 +114,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
 - PR 15c built `StopPlacement` and removed `TLA StopPlacement!StopOnlyTightens` from `KNOWN_GAPS`. The model has one real position, at most two entry fills and three stop levels; it does not model the quantity a stop covers (resizing is checked by `manage.real_fill_protected` on the real code) nor the GTT's limit price (`stops.gtt_limit_offset`). `AlwaysProtected` allows the window between a fill and its stop work, a failure that was alerted, and an unseen unfilled GTT (then `GttUnfilledAlerted` holds). `NightlyVerifyCovers` accepts an alert in place of a GTT (the broker could not be reached, or the new GTT failed). `TypeOK` has no broken variant.
+- PR 20 (audit 2026-10-22 F2) added the broker's shares (`bqty`), the working entry (`rest`), `exited` and `cancelAsked`: a sale that empties the position closes it only when no entry works, and `EntryFill` can follow it. The cancel of the remainder is asked in the sale's own step (for a stop fill the code asks it in the protect that follows the fill in the same sync); a cancel that comes too late is the interleaving of `EntryFill` before `EntryEnds`. A day stop that expires at the close under a held position with no GTT (reachable once a late fill after the swap rests on the day stop alone) puts the position back to `protecting`, as `FillSync._statuses` does with an ended stop. `EmptiedCloses` relies on the broker ending the entry (weak fairness on `EntryEnds`: the cancel, else the DAY expiry).
 - Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
@@ -365,6 +372,54 @@ State 14: <Clock ...>
 State 15: <Verify ...>
 State 16: <Clock ...>
 ```
+
+### TLA StopPlacement!SharesTracked
+
+Break: the variant `close_with_rest`: a sale that empties the position closes it at once and a later entry fill is refused (the pre-PR 20 `apply_exit_fill` and `apply_entry_fill`).
+
+```
+Error: Invariant SharesTracked is violated.
+State 1: <Initial predicate>
+State 2: <EntryFill ...>
+State 3: <Protect ...>
+State 4: <DayStopFills ...>
+State 5: <EntryFill ...>
+```
+
+### TLA StopPlacement!RestCancelledOnExit
+
+Break: the variant `keep_rest`: no sale asks the broker to cancel the rest of the entry (the pre-PR 20 code).
+
+```
+Error: Invariant RestCancelledOnExit is violated.
+State 1: <Initial predicate>
+State 2: <EntryFill ...>
+State 3: <Protect ...>
+State 4: <DayStopFills ...>
+```
+
+### TLA StopPlacement!EmptiedCloses
+
+Break: the variant `no_close_step`: the sync never closes an emptied position once its entry ended (`FillSync.run` without step 7).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial predicate>
+State 2: <EntryFill ...>
+State 3: <Protect ...>
+State 4: <RaiseStop ...>
+State 5: <RaiseStop ...>
+State 6: <Follow ...>
+State 7: <Follow ...>
+State 8: <DayStopFills ...>
+State 9: <EntryEnds ...>
+State 10: <Clock ...>
+State 11: <Clock ...>
+State 12: <Clock ...>
+Back to state 9: <Clock ...>
+```
+
+Break: `Spec` without `WF_vars(EntryEnds)` (the broker never ends the entry) also violates it.
 
 ### TLA StopPlacement!LostNeverBlocksSale
 

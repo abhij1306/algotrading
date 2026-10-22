@@ -22,7 +22,11 @@ book raises and nothing is written) and then, for one broker account:
    `order.cancelled` event, so the alert is raised once;
 6. protects again every open real position of the account that has no stop the broker
    confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
-   settled by `StopDesk.protect`; each sync tries again).
+   settled by `StopDesk.protect`; each sync tries again);
+7. closes each position its sales emptied while its entry still worked, once the broker's book
+   shows the entry ended or its trade date passed (`live_trades.close_if_emptied`); while it
+   still works, the cancel of its remainder is asked unless it was already (F2). A late fill of
+   the remainder lands on the open position in step 2 and is protected like any entry fill.
 
 Each fill and its stop work commit as separate steps (the model's atomic steps, StopPlacement).
 """
@@ -130,7 +134,21 @@ class FillSync:
             # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
             # once settled, a stop that landed is cancelled, so it never rests under no shares.
             self._desk.cancel_all(session, position_id, now)
+        for position_id in self._emptied(session, account_id):
+            self._close_emptied(session, position_id, now)
         return report
+
+    def _close_emptied(self, session: Session, position_id: uuid.UUID, now: datetime) -> None:
+        """Step 7 for one position (one failing leaves the others closed)."""
+        try:
+            if live_trades.close_if_emptied(session, position_id, now) is None:
+                session.rollback()
+                self._desk.cancel_entry(session, position_id)  # unless already asked
+            else:
+                session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("emptied position %s not closed", position_id)
 
     # --- 1. adoption ----------------------------------------------------------------------------
 
@@ -399,6 +417,22 @@ class FillSync:
                     or_(HatPosition.closed_at.is_not(None), HatPosition.qty_open <= 0),
                 )
                 .distinct()
+            )
+        )
+
+    @staticmethod
+    def _emptied(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
+        """Open real positions of the account that hold no shares (sold while the entry worked)."""
+        return list(
+            session.scalars(
+                select(HatPosition.id)
+                .join(HatBot, HatBot.id == HatPosition.bot_id)
+                .where(
+                    HatBot.broker_account_id == account_id,
+                    HatPosition.is_virtual.is_(False),
+                    HatPosition.closed_at.is_(None),
+                    HatPosition.qty_open <= 0,
+                )
             )
         )
 

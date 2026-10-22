@@ -58,7 +58,8 @@ class ManageRig:
     """One auto bot on one broker account: the router, the stop desk, the fill sync and the trade
     manager, all over the Fyers adapter and `FakeBroker`. A lost answer is settled at the next
     look (`settle_after` 0) unless a property sets the wait; the settle reads the wall clock
-    moved on by `elapsed`."""
+    moved on by `elapsed`. `tick` is the instrument's tick the stop desk reads (a property may
+    change it between calls)."""
 
     def __init__(
         self,
@@ -71,6 +72,7 @@ class ManageRig:
     ) -> None:
         self.session = session
         self.elapsed = timedelta(0)
+        self.tick = TICK
         self.world: World = seed_engine_world(session, mode="auto", instruments=1, exits=exits)
         bot = session.get(HatBot, self.world.bot_id)
         assert bot is not None
@@ -110,7 +112,7 @@ class ManageRig:
         self.desk = StopDesk(
             broker,
             self.guard,
-            tick_for=lambda _session, _position: TICK,
+            tick_for=lambda _session, _position: self.tick,
             calendar=CALENDAR,
             notifier=self.notifier,
             settle_after=settle_after,
