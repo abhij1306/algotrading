@@ -17,6 +17,24 @@ from typing import Any
 
 from app.hat.execution.fyers_tokens import TokenStore
 
+# Fyers replies recorded live on 2026-10-22 (PII redacted): the -16 answers to a bad token and an
+# ok profile, whose `fy_id` is the user id.
+LIVE_REPLIES: dict[str, dict[str, Any]] = json.loads(
+    (Path(__file__).parent / "fixtures" / "fyers_live_replies.json").read_text(encoding="utf-8")
+)
+
+
+def profile_ok(user_id: str) -> dict[str, Any]:
+    """The recorded ok profile reply for `user_id`."""
+    reply = LIVE_REPLIES["profile_ok"]
+    return {**reply, "data": {**reply["data"], "fy_id": user_id}}
+
+
+def token_reply(token: str) -> dict[str, Any]:
+    """A `generate_token` reply as Fyers documents it: no user id in it."""
+    return {"s": "ok", "code": 200, "message": "", "access_token": token, "refresh_token": "R"}
+
+
 T0 = datetime(2026, 10, 21, 4, 30, tzinfo=UTC)  # 10:00 IST on a Wednesday
 
 

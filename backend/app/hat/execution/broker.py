@@ -22,6 +22,7 @@ __all__ = [
     "CODE_INVALID_INTENT",
     "CODE_OK",
     "CODE_REJECTED",
+    "CODE_SESSION_EXPIRED",
     "CODE_UNAVAILABLE",
     "CODE_UNCONFIRMED",
     "AckResult",
@@ -52,6 +53,7 @@ __all__ = [
 CODE_OK = "ok"
 CODE_REJECTED = "broker_rejected"
 CODE_UNAVAILABLE = "broker_unavailable"
+CODE_SESSION_EXPIRED = "broker_session_expired"  # the broker refused the token: log in again
 CODE_UNCONFIRMED = "submit_unconfirmed"
 CODE_INVALID_INTENT = "invalid_intent"
 

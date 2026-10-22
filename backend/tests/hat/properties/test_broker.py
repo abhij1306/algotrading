@@ -6,7 +6,9 @@ from decimal import Decimal
 
 import pytest
 from hat.fakes.broker import FakeBroker
+from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, USER, adapter_over, exec_env
+from hat_fyers_support import LIVE_REPLIES
 from hat_support import memory_engine
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -22,8 +24,13 @@ from app.hat.execution.accounts import (
     onboard_account,
     request_mode,
 )
-from app.hat.execution.broker import BrokerUnavailableError, SessionStatus
-from app.hat.execution.fyers_adapter import FyersHatBroker, map_session
+from app.hat.execution.broker import (
+    CODE_SESSION_EXPIRED,
+    CODE_UNAVAILABLE,
+    BrokerUnavailableError,
+    SessionStatus,
+)
+from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
@@ -136,6 +143,54 @@ def test_adapter_session_status_never_raises(
     )
     status = broker.session_status()
     assert (status is SessionStatus.LIVE) == (connected is True and has_model)
+
+
+REFUSED = [  # the -16 replies Fyers sent for a bad token, recorded 2026-10-22
+    LIVE_REPLIES["funds_invalid_token"],
+    LIVE_REPLIES["profile_invalid_token"],
+    LIVE_REPLIES["orderbook_invalid_token"],
+]
+OUTAGES = [
+    {"s": "error", "code": -1, "message": "Something went wrong"},
+    {"s": "error", "code": 500, "message": "Internal server error"},
+    RuntimeError("connection reset"),
+]
+
+
+@given(
+    reply=st.sampled_from([*REFUSED, *OUTAGES]),
+    read=st.sampled_from(["funds", "positions", "holdings", "orders", "trades", "gtts"]),
+    wait=st.sampled_from([0.0, 29.9, 30.0, 300.0]),
+)
+def test_token_refused_is_session_expired(reply: object, read: str, wait: float) -> None:
+    """HAT-BRK-082, HAT-OPS-031: whenever Fyers answers code -16 (a bad, expired or revoked
+    token), the session reads EXPIRED though the token file is still in date, and a read fails
+    with `broker_session_expired`, so the outage watch alerts and asks for a login; any other
+    failure is an outage: the read fails with `broker_unavailable` and the session stays LIVE.
+    The profile is read at most once per token per 30 s window."""
+    sdk, now, model = RecordingSdk(reply), [0.0], [object()]  # a new token builds a new model
+    adapter = FyersHatBroker(
+        broker_over(sdk),
+        client=lambda: type("C", (), {"fyers": model[0]})(),  # type: ignore[arg-type,return-value]
+        auth=lambda: _Auth(True),  # type: ignore[arg-type,return-value]
+        instruments=lambda: [],
+        clock=lambda: now[0],
+    )
+    refused = reply in REFUSED
+    expected = SessionStatus.EXPIRED if refused else SessionStatus.LIVE
+    profiles = lambda: sum(name == "get_profile" for name, _ in sdk.calls)  # noqa: E731
+    assert adapter.session_status() is expected
+    now[0] += wait
+    assert adapter.session_status() is expected
+    # one profile read per token per check window: none more within it, one more after it or
+    # for a new token
+    assert profiles() == (2 if wait >= TOKEN_CHECK_SECONDS else 1)
+    model[0] = object()
+    adapter.session_status()
+    assert profiles() == (3 if wait >= TOKEN_CHECK_SECONDS else 2)
+    with pytest.raises(BrokerUnavailableError) as caught:
+        getattr(adapter, read)()
+    assert caught.value.code == (CODE_SESSION_EXPIRED if refused else CODE_UNAVAILABLE)
 
 
 @given(st.lists(st.tuples(st.integers(0, 2), st.sampled_from(["acquire", "release"])), max_size=30))

@@ -24,10 +24,12 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from .fyers_session import reset_fyers_session
+from .fyers_broker import profile_data
+from .fyers_session import reset_fyers_session, sdk_model
 from .fyers_tokens import TokenStore, token_store
 
 __all__ = [
@@ -50,6 +52,9 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 STATUS_CACHE_SECONDS = 30.0
+PROFILE_TIMEOUT_SECONDS = 5.0
+# the profile read after a login runs here, so a hung SDK call cannot hold the login request
+_PROFILE_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fyers-profile")
 _SESSION_STATE = "fyers_api_state"
 AUTH_CODE_REJECTED = "Fyers rejected the auth code. Please log in again."
 LOGIN_FAILED = "Fyers login failed. Please try again."
@@ -141,9 +146,11 @@ class FyersAuthService:
         credentials: Callable[[], FyersCredentials] = credentials_from_env,
         on_token_change: Callable[[], None] = reset_fyers_session,
         clock: Callable[[], float] = time.monotonic,
+        model_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.store = store
         self._session_factory = session_factory
+        self._model_factory = model_factory
         self._credentials = credentials
         self._clock = clock
         self._hooks: dict[Event, list[Callable[[], None]]] = {
@@ -202,6 +209,26 @@ class FyersAuthService:
             raise TokenRejectedError(AUTH_CODE_REJECTED)
         return reply
 
+    def _profile_user_id(self, client_id: str, access_token: str) -> str | None:
+        """The Fyers user id (`fy_id`) from the profile of a new token. The token reply carries
+        none, so without this the login status has no user id. None when there is no model
+        factory or the profile cannot be read in PROFILE_TIMEOUT_SECONDS; the login stands either
+        way. The reply is checked as every profile read is (`profile_data`)."""
+        if self._model_factory is None:
+            return None
+        try:
+            model = self._model_factory(client_id=client_id, token=access_token, log_path="")
+            reply = _PROFILE_POOL.submit(model.get_profile).result(timeout=PROFILE_TIMEOUT_SECONDS)
+            profile = profile_data(reply)
+        except Exception as error:
+            logger.warning("Fyers profile after login failed: %s", type(error).__name__)
+            return None
+        user_id = profile.get("fy_id")
+        if not isinstance(user_id, str) or not user_id:
+            logger.warning("Fyers profile after login has no user id")
+            return None
+        return user_id
+
     def exchange(self, auth_code: str) -> FyersStatus:
         """Trade an auth code for a token, save it, and point the process at it.
 
@@ -219,6 +246,10 @@ class FyersAuthService:
             # Only the reply's status code is logged; its message may echo request data.
             logger.warning("Fyers rejected the auth code (code %s)", reply.get("code"))
             raise TokenRejectedError(AUTH_CODE_REJECTED)
+
+        user_id = self._profile_user_id(creds.client_id, access_token)
+        if user_id is not None:
+            reply = {**reply, "fy_id": user_id}
 
         # Save and logout are serialised: a logout that ran while Fyers was answering wins, so
         # this login cannot write the token back after the user logged out.
@@ -246,7 +277,7 @@ class FyersAuthService:
         if token is None or not token.is_usable():
             status = FyersStatus(connected=False, user_id=None)
         else:
-            status = FyersStatus(connected=True, user_id=token.user_id or "")
+            status = FyersStatus(connected=True, user_id=token.user_id)
         self._cached_status = status
         self._cached_at = now
         return status
@@ -268,7 +299,7 @@ class FyersAuthService:
         self._run_hooks("token_change")
 
 
-fyers_auth = FyersAuthService(token_store)
+fyers_auth = FyersAuthService(token_store, model_factory=sdk_model)
 """The process-wide login flow over the default token file."""
 
 

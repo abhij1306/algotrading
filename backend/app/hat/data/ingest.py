@@ -478,7 +478,7 @@ def breadth_from_mcp(fields: Mapping[str, object]) -> dict[str, Any] | None:
         "declines": declines,
         "unchanged": unchanged,
         "ad_ratio": ad_ratio,
-        "volume": _count(fields, "totalVolume", "volume") or 0,
+        "volume": _count(fields, "total_volume", "totalVolume", "volume") or 0,
         "source": SOURCE_MCP,
     }
 

@@ -8,8 +8,8 @@ from unittest import mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from hat.fakes.fyers_sdk import RecordingSession
-from hat_fyers_support import captured_logs, token_store
+from hat.fakes.fyers_sdk import RecordingSdk, RecordingSession
+from hat_fyers_support import captured_logs, profile_ok, token_reply, token_store
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -63,6 +63,7 @@ def client_for(store: TokenStore, reply: object, creds: bool = True) -> TestClie
         session_factory=factory,
         credentials=credentials,
         on_token_change=lambda: None,
+        model_factory=lambda **_kwargs: RecordingSdk(profile_ok("XA1234")),
     )
     app = FastAPI()
     app.include_router(routes.router)
@@ -111,7 +112,7 @@ def test_a_good_exchange_is_connected_at_once_and_never_shows_the_token(
 ) -> None:
     """After a good exchange `status` is connected with the user id, `disconnect` flips it back, and
     the token never appears in a response or a log line."""
-    reply: dict[str, Any] = {"s": "ok", "access_token": token, "fy_id": "XA1234"}
+    reply: dict[str, Any] = token_reply(token)  # the user id comes from the profile
     with captured_logs() as logs, token_store() as store:
         client = client_for(store, reply)
         base = routes.router.prefix
@@ -148,7 +149,7 @@ def test_a_token_file_that_cannot_be_read_or_saved_is_a_fixed_error(token: str, 
     """A token path that cannot be read gives `status` the fixed error text, and a save that fails
     gives the fixed store message; neither shows a path, the token or the code, and nothing is
     written."""
-    reply = {"s": "ok", "access_token": token, "fy_id": "XA1234"}
+    reply = token_reply(token)
     with captured_logs() as logs, token_store() as store:
         client = client_for(store, reply)
         base = routes.router.prefix

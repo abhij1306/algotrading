@@ -452,12 +452,13 @@ HAT's own contract (`app/hat/execution/broker.py`, protocol `HatBroker`); I7. No
   - Property: for every place, a circuit breaker that opens between the caller's check and the send answers a definite rejection, never a lost answer. Harm: an order that never left is chased as unconfirmed and its position frozen.
 
 #### HAT-BRK-082: Broker session handling
-- **Statement:** Session drops are retried with backoff, alerted after 2 minutes, and no entry is placed while the session is not live; `hat_broker_session` tracks the morning login.
-- **Source:** MA "Failure handling" (Broker session drops); MA "Daily cycle" step 1; SCH `hat_broker_session`; T8, T14.
-- **PR:** 13, 16
-- **Verification:** TLA `ExecutionRouter!NoEntryWithoutSession`
+- **Statement:** Session drops are retried with backoff, alerted after 2 minutes, and no entry is placed while the session is not live; `hat_broker_session` tracks the morning login. A token the broker itself refuses is an expired session, not an outage: for Fyers, code -16 ("Could not authenticate the user", "Token is Invalid or Expired") on any read raises `FyersSessionExpiredError`, the read fails with `broker_session_expired`, and `session_status` (one profile read per token per 30 s when the token file is in date) reports `expired`, so the outage watch alerts and the 09:05 prompt asks for a login; any other failed read is an outage (`broker_unavailable`) and leaves the status as the token file says. The login reads the user id (`fy_id`) from the account's profile (at most 5 s, the reply checked as every profile read), since the token reply carries none; the login status reports it, or none when the profile could not be read. [Changed in PR 23 after the live checks of 2026-10-22: -16 read as an outage and a revoked token read live.]
+- **Source:** MA "Failure handling" (Broker session drops); MA "Daily cycle" step 1; SCH `hat_broker_session`; T8, T14; live checks 2026-10-22.
+- **PR:** 13, 16, 23
+- **Verification:** TLA `ExecutionRouter!NoEntryWithoutSession`, PBT `broker.token_refused_is_session_expired`, PBT `fyers_auth.good_exchange_order`
 - **Acceptance:**
   - Property: in every reachable state, no real entry order is placed while the account's session status is not live; and if the session stays lost for 2 minutes, `broker.session_lost` and a health alert are eventually emitted. Harm: orders fail mid-flight or the user is not told the bot is blind.
+  - Property: for every broker reply of code -16 the session status is `expired` and every read fails with `broker_session_expired`, and for every other failure the status is unchanged and reads fail with `broker_unavailable`. Harm: a revoked token reads as an outage and nobody is asked to log in.
 
 ## §9 Fyers adapter
 

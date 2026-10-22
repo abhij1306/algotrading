@@ -11,6 +11,7 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `PBT mcp.retry_bounded` On the real `McpClient.call`, any sequence of transport failures makes at most 4 attempts (1 + 3 retries), waits strictly longer before each retry, and ends in a typed `McpError` rather than an empty result; a configuration error is never retried and keeps its `mcp_config` code. Harm: unbounded retries stall the nightly window, or an empty result passes as a holiday.
 - `PBT mcp.call_logged` Every attempt (success, retry or failure) writes exactly one `CallRecord` with tool, symbol count and returned date or failure code, and the `hat_job_run.calls` a job records equals the attempts. Harm: a short or stale pull cannot be diagnosed.
 - `PBT mcp.no_raw_error_text` For any error payload a transport raises, returns as a tool error or sends in an HTTP 500, no `McpError` message, repr, cause chain or log line holds a substring of it longer than 8 characters. Harm: internal URLs or tokens reach an alert, API response or Telegram.
+- `PBT mcp.session_handshake` On a fake endpoint that behaves as the live NSE servers did on 2026-10-22 (400 for a request outside an initialized session, 404 for a lost one) and answers with the recorded replies, `HttpTransport` opens a session (`initialize`, `notifications/initialized`, `Mcp-Session-Id`) before its first call and sends every call on it, never drawing a 400, and starts the handshake once more when a replica 404s one of its steps; a call whose session is lost is sent once more on a new session and returns the recorded reply, one lost twice fails with `mcp_transport` and the session is dropped; a session is kept until lost. Harm: every live MCP call fails (the bare `tools/call` of PR 4) or a third of them do (the replica 404s).
 - `PBT ingest.batches_le_50` `batches` partitions any list in order into batches of at most 50 (exactly 50 but the last; 63 for 3,121 symbols), also `ingest.batches_of_50`. Harm: oversize calls are rejected and stocks go missing.
 - `PBT ingest.concurrency_bounded` For any workload and interleaving the calls in flight seen by the transport never exceed the limit (default 4). Harm: the server throttles the client and the night's data is late.
 - `PBT ingest.date_mismatch_rejected` A bulk-quote row is kept only if its date is the trade date; every other row (another, missing or unreadable date) is in the mismatch report, and every requested symbol is kept, mismatched or missing. Harm: yesterday's prices are stored as today's.
@@ -91,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `dcab64c75ffa166c9d533e69099c77f3418042d0fa15ff235c635379d21c5f97`
+Covered digest: `f0b8fe2b2fe203e9210b64371b006982e18e9122624632658476ba24d5c55198`
 
 ## Scope changes
 
@@ -113,9 +114,24 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 7 moved the three MCP ingest properties (`batches_le_50`, `concurrency_bounded`, `date_mismatch_rejected`) from `test_ingest_mcp.py` into `test_ingest.py`, unchanged, so that every `ingest.*` check lives in one file; `McpClient` gained `probe`, `index_snapshot` and `market_breadth` (see `verify-data`).
 
+- PR 23 (live checks 2026-10-22): `HttpTransport` speaks streamable HTTP with a session, after the live servers refused the bare `tools/call`. `CONF imports.mcp_transport_only` now looks for the deferred `requests` import in the whole `HttpTransport` class (it moved from `call` to `_post_raw`). `mcp.session_handshake` drives `HttpTransport` directly (not through `McpClient`): the client's retries are `mcp.retry_bounded`'s. The success envelope (text content) is the PR 4 recorded one; the live tool results are the recorded replies.
+
 ## Scratch breaks
 
 Each check was shown to catch a deliberate break in the real code (HAT-VER-072), then the break was removed and the check returned to passing.
+
+### PBT mcp.session_handshake
+
+Break: (PR 23, each tried alone) main's bare `tools/call`; no resend on 404; the resend reuses the lost session; a session lost twice is kept.
+
+Also: one handshake try only (`HANDSHAKE_TRIES = 1`): 1 failed.
+
+```
+main:               E   assert 0 == 2
+no resend:          E   AssertionError: assert 1 == 2
+stale session:      E   AssertionError: assert 's1' != 's1'
+kept after 2 losses: 1 failed (handshake count)
+```
 
 ### PBT mcp.retry_bounded
 

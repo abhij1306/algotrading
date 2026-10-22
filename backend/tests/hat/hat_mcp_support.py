@@ -162,3 +162,81 @@ def equity_list_csv(securities: Sequence[Security]) -> str:
         name = s.name.replace(",", " ")
         lines.append(f"{s.symbol},{name},{s.series},{stamp},10,1,{s.isin},{s.face_value}")
     return "\n".join(lines) + "\n"
+
+
+class StreamableServer:
+    """A fake NSE MCP endpoint behaving as the live ones did on 2026-10-22: a request without a
+    session it opened and initialized answers 400 (the bare `tools/call` the old client sent), a
+    session is opened by `initialize` (id in the `mcp-session-id` reply header) and readied by
+    `notifications/initialized` (which answers 404 when `lose_handshake` says another replica
+    took it), and a `tools/call` whose session `lose` says another replica holds answers 404 and
+    forgets it. Tool results are the recorded replies, as text content."""
+
+    def __init__(
+        self,
+        replies: Mapping[str, object],
+        lose: Callable[[], bool],
+        lose_handshake: Callable[[], bool] = lambda: False,
+    ) -> None:
+        self.replies = dict(replies)
+        self.lose = lose
+        self.lose_handshake = lose_handshake  # a handshake step answered by another replica
+        self.handshake_404s = 0
+        self.opened: list[str] = []
+        self.handshakes = 0
+        self.lost: set[str] = set()
+        self.ready: set[str] = set()
+        self.calls: list[tuple[str, int]] = []  # (session id, status) of every tools/call
+        self.bad_requests = 0
+        self._lock = threading.Lock()
+
+    class Response:
+        def __init__(
+            self, status: int, text: str = "", headers: dict[str, str] | None = None
+        ) -> None:
+            self.status_code, self.text, self.headers = status, text, headers or {}
+
+    def post(
+        self, _url: str, *, json: Mapping[str, Any], headers: Mapping[str, str], **_k: object
+    ) -> StreamableServer.Response:
+        with self._lock:
+            return self._answer(json, headers.get("Mcp-Session-Id"))
+
+    def _answer(self, body: Mapping[str, Any], session: str | None) -> StreamableServer.Response:
+        method = body.get("method")
+        if method == "initialize":
+            self.handshakes += 1
+            opened = f"s{self.handshakes}"
+            self.opened.append(opened)
+            result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}}
+            envelope = {"jsonrpc": "2.0", "id": body["id"], "result": result}
+            return self.Response(200, json_text(envelope), {"mcp-session-id": opened})
+        if session in self.lost:  # the live servers answer a forgotten session with 404
+            self.calls.append((session, 404))
+            return self.Response(404)
+        if session not in self.opened:
+            self.bad_requests += 1
+            return self.Response(400, '{"cause":null,"stackTrace":[]}')
+        if method == "notifications/initialized":
+            if self.lose_handshake():
+                self.opened.remove(session)
+                self.handshake_404s += 1
+                return self.Response(404)
+            self.ready.add(session)
+            return self.Response(202)
+        if method != "tools/call" or session not in self.ready:
+            self.bad_requests += 1
+            return self.Response(400, '{"cause":null,"stackTrace":[]}')
+        if self.lose():
+            self.opened.remove(session)
+            self.lost.add(session)
+            self.calls.append((session, 404))
+            return self.Response(404)
+        self.calls.append((session, 200))
+        text = json_text(self.replies[body["params"]["name"]])
+        result = {"content": [{"type": "text", "text": text}], "isError": False}
+        return self.Response(200, json_text({"jsonrpc": "2.0", "id": body["id"], "result": result}))
+
+
+def json_text(value: object) -> str:
+    return json.dumps(value)

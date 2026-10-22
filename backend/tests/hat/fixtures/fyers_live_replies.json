@@ -1,0 +1,37 @@
+{
+ "funds_invalid_token": {
+  "code": -16,
+  "message": "Could not authenticate the user",
+  "s": "error"
+ },
+ "profile_invalid_token": {
+  "s": "error",
+  "code": -16,
+  "message": "Token is Invalid or Expired"
+ },
+ "orderbook_invalid_token": {
+  "code": -16,
+  "message": "Could not authenticate the user",
+  "s": "error"
+ },
+ "profile_ok": {
+  "s": "ok",
+  "code": 200,
+  "message": "",
+  "data": {
+   "fy_id": "XA00000",
+   "name": "[PII-REDACTED]",
+   "image": null,
+   "display_name": null,
+   "pin_change_date": "04-06-2025 19:30:21",
+   "email_id": "[PII-REDACTED]",
+   "pwd_change_date": null,
+   "PAN": "[PII-REDACTED]",
+   "mobile_number": "[PII-REDACTED]",
+   "totp": false,
+   "pwd_to_expire": 90,
+   "ddpi_enabled": false,
+   "mtf_enabled": false
+  }
+ }
+}

@@ -700,7 +700,8 @@ def test_nightly_index_breadth(index: str, breadth: str) -> None:
     """For every answer of the index and breadth calls, the run succeeds if and only if the
     index rows of the trade date, with NIFTY 500 and India VIX among them, are stored, one row
     per returned index; on success the day's one breadth row exists (the server's when it
-    answered for the trade date, counted from our bars otherwise)."""
+    answered for the trade date, every field of its recorded snake_case reply kept, counted from
+    our bars otherwise)."""
     rows = list(INDEX_ROWS)
     if index == "no_vix":
         rows = rows[:2]
@@ -733,6 +734,11 @@ def test_nightly_index_breadth(index: str, breadth: str) -> None:
     assert report.index_rows == 3
     assert market.height == 1
     assert market["source"][0] == ("mcp" if breadth == "ok" else "derived")
+    if breadth == "ok":  # the live server's snake_case reply is stored as it was sent
+        sent = nse.breadth or {}
+        assert market["volume"][0] == sent["total_volume"]
+        assert market["total_stocks"][0] == sent["total_stocks"]
+        assert market["ad_ratio"][0] == sent["ad_ratio"]
 
 
 @settings(max_examples=20)

@@ -526,7 +526,7 @@ class DayMcp:
         ]
         return {
             "date": day.isoformat(),
-            "totalStocks": len(moves),
+            "total_stocks": len(moves),
             "advances": sum(1 for m in moves if m > 0),
             "declines": sum(1 for m in moves if m < 0),
             "unchanged": sum(1 for m in moves if m == 0),

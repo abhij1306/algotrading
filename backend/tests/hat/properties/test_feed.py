@@ -678,7 +678,7 @@ class AuthMachine(RuleBasedStateMachine):
     def login(self) -> None:
         self.logins += 1
         token = f"TKN{self.logins:04d}abcdef0123456789"
-        self.reply = {"s": "ok", "code": 200, "access_token": token, "fy_id": "XA1234"}
+        self.reply = {"s": "ok", "code": 200, "access_token": token}
         self.service.exchange("AUTHCODE0123456789")
         assert self.feed.explicitly_disconnected is False
         if self.feed.connection_allowed():

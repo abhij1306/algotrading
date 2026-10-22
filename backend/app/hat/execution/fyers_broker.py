@@ -38,7 +38,10 @@ __all__ = [
     "CircuitBreaker",
     "FundsReply",
     "FyersBroker",
+    "FyersSessionExpiredError",
     "FyersUnavailableError",
+    "checked_reply",
+    "profile_data",
     "OrderReply",
     "PositionReply",
 ]
@@ -98,6 +101,34 @@ class FundsReply(TypedDict):
 
 class FyersUnavailableError(Exception):
     """The broker client is missing or a read call failed (an outage, never an empty book)."""
+
+
+# Fyers answers a bad, expired or revoked token with code -16 ("Could not authenticate the user",
+# "Token is Invalid or Expired"), as a normal reply, not an exception (recorded 2026-10-22).
+FYERS_CODE_TOKEN_REJECTED = -16
+
+
+class FyersSessionExpiredError(FyersUnavailableError):
+    """Fyers refused the token (code -16): the session expired or was revoked, so only a new
+    login brings it back. Still a failed read (an unreadable book, never an empty one)."""
+
+
+def checked_reply(operation: str, response: object) -> dict[str, Any]:
+    """`response` when it is an ok Fyers reply; FyersSessionExpiredError for code -16,
+    FyersUnavailableError for anything else. The error text is fixed, never the broker's."""
+    if not isinstance(response, dict) or response.get("s") != "ok":
+        if isinstance(response, dict) and response.get("code") == FYERS_CODE_TOKEN_REJECTED:
+            raise FyersSessionExpiredError(f"Fyers {operation} session expired")
+        raise FyersUnavailableError(f"Fyers {operation} request failed")
+    return response
+
+
+def profile_data(response: object) -> dict[str, Any]:
+    """The `data` of an ok profile reply (as `checked_reply` fails otherwise)."""
+    data = checked_reply("profile", response).get("data")
+    if not isinstance(data, dict):
+        raise FyersUnavailableError("Fyers profile request failed")
+    return data
 
 
 def _float(value: object, default: float = 0.0) -> float:
@@ -442,14 +473,23 @@ class FyersBroker:
 
         Raises FyersUnavailableError when the client is missing, the call timed out or raised, the
         circuit is open, or the reply is not ok, so a caller never reads an outage as an empty book
-        (trading-safety rule 7). The error text is fixed, never the broker's own.
+        (trading-safety rule 7); FyersSessionExpiredError, a subclass, when Fyers refused the token
+        (code -16). The error text is fixed, never the broker's own.
         """
         if not self.client:
             raise FyersUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
         response = self._call_with_guard(operation, call, timeout_sec=2.0, fallback=None)
-        if not isinstance(response, dict) or response.get("s") != "ok":
-            raise FyersUnavailableError(f"Fyers {operation} request failed")
-        return response
+        return checked_reply(operation, response)
+
+    def get_profile(self) -> dict[str, Any]:
+        """The account profile (`data`: `fy_id`, the Fyers user id, and the rest); raises
+        FyersSessionExpiredError when Fyers refuses the token, FyersUnavailableError otherwise."""
+        if not self.client:
+            raise FyersUnavailableError(f"Fyers {CLIENT_NOT_INITIALIZED}")
+        reply = self._call_with_guard(
+            "profile", lambda: self.client.get_profile(), timeout_sec=2.0, fallback=None
+        )
+        return profile_data(reply)
 
     def _read_list(self, operation: str, call: Callable[[], object], key: str) -> list[Any]:
         """The list under `key` of an ok read. An ok reply without that list (missing, null,

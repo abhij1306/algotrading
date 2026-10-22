@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterable
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -24,6 +25,7 @@ from app.hat.data.symbols import symbol_master
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_REJECTED,
+    CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
     CODE_UNCONFIRMED,
     AckResult,
@@ -55,6 +57,7 @@ from .fyers_broker import (
     PROCESS_BREAKER,
     SUBMIT_UNCONFIRMED,
     FyersBroker,
+    FyersSessionExpiredError,
     FyersUnavailableError,
 )
 from .fyers_session import FyersSession, get_fyers_session
@@ -128,6 +131,9 @@ def map_fyers_status(code: object, filled_qty: object = 0, qty: object = 0) -> s
         if done > 0:
             return "partially_filled"
     return mapped
+
+
+TOKEN_CHECK_SECONDS = 30.0  # how long one profile check of a token stands (as the login status)
 
 
 def map_session(*, connected: bool, has_client: bool, store_error: bool) -> SessionStatus:
@@ -212,6 +218,7 @@ class FyersHatBroker:
         client: Callable[[], FyersSession] = get_fyers_session,
         auth: Callable[[], FyersAuthService] = get_fyers_auth,
         instruments: Callable[[], Iterable[tuple[str, str]]] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._broker = broker if broker is not None else FyersBroker(breaker=PROCESS_BREAKER)
         self._client = client
@@ -219,6 +226,10 @@ class FyersHatBroker:
         self._instruments = instruments if instruments is not None else _stored_instruments
         self._seen: dict[str, tuple[str, int]] = {}
         self._seen_lock = threading.Lock()
+        self._clock = clock
+        # the last profile check: (SDK model it checked, refused, when); see `_token_refused`
+        self._token_check: tuple[object, bool, float] | None = None
+        self._token_check_lock = threading.Lock()
 
     # --- capabilities and session ---------------------------------------------------------
 
@@ -244,16 +255,45 @@ class FyersHatBroker:
         except Exception:
             logger.exception("Fyers login failed")
             raise BrokerLoginError("login_failed") from None
+        with self._token_check_lock:
+            self._token_check = None  # the new token is checked afresh
         return self.session_status()
 
     def session_status(self) -> SessionStatus:
         try:
             connected = self._auth().status().connected
-            has_client = self._client().fyers is not None
+            model = self._client().fyers
+            has_client = model is not None
         except Exception:
             logger.exception("Fyers session status unreadable")
             return map_session(connected=False, has_client=False, store_error=True)
-        return map_session(connected=connected, has_client=has_client, store_error=False)
+        status = map_session(connected=connected, has_client=has_client, store_error=False)
+        if status is SessionStatus.LIVE and self._token_refused(model):
+            return SessionStatus.EXPIRED
+        return status
+
+    def _token_refused(self, model: object) -> bool:
+        """Whether Fyers itself refuses the saved token (code -16 on a profile read): a token
+        revoked or expired at the broker reads expired though the token file has not expired.
+        Any other failure of the check is an outage, not a lost session: the status stays as the
+        token file says, and every read still fails closed. One profile read per SDK model (a new
+        token builds a new one; the adapter never reads the token) per TOKEN_CHECK_SECONDS, so
+        the session watch and the entry checks add no load, or breaker failures, of their own."""
+        with self._token_check_lock:
+            now = self._clock()
+            check = self._token_check
+            if check is not None and check[0] is model and now - check[2] < TOKEN_CHECK_SECONDS:
+                return check[1]
+            refused = False
+            try:
+                self._broker.get_profile()
+            except FyersSessionExpiredError:
+                logger.warning("Fyers refused the saved token; log in again")
+                refused = True
+            except Exception:
+                logger.debug("Fyers session check unavailable", exc_info=True)
+            self._token_check = (model, refused, now)
+            return refused
 
     # --- writes ---------------------------------------------------------------------------
 
@@ -441,9 +481,13 @@ class FyersHatBroker:
 
     @staticmethod
     def _read(fetch: Callable[[], Any], parse: Callable[[Any], Any]) -> Any:  # noqa: ANN401
-        """Fetch and parse; any failure is a fixed-code BrokerUnavailableError."""
+        """Fetch and parse; any failure is a fixed-code BrokerUnavailableError
+        (`broker_session_expired` when Fyers refused the token)."""
         try:
             raw = fetch()
+        except FyersSessionExpiredError:
+            logger.warning("Fyers refused the token on a read")
+            raise BrokerUnavailableError(CODE_SESSION_EXPIRED) from None
         except (FyersUnavailableError, BrokerUnavailableError):
             logger.warning("Fyers read unavailable")
             raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
