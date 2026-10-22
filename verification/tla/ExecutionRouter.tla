@@ -42,7 +42,13 @@
 (*   GateOffNoEntry, ModeDomain, LongOnly, AutoNeedsGtt,                   *)
 (*   NoAddToOpenPosition, ModeChangeNextSession, NoEntryWithoutSession,    *)
 (*   RejectNoCard, UserCannotRaiseRisk (invariants) and                    *)
-(*   ApprovalsDecided, ExitsComplete (temporal).                           *)
+(*   ApprovalsDecided, ExitsComplete, EntriesSettled (temporal).           *)
+(*                                                                         *)
+(* PR 52 (audit T-F7): a signal commits before its entry is placed (an     *)
+(* auto signal in Triggered; a Take's decision, then its placement), and   *)
+(* the process can die in between (Crash). Place and PlaceTaken stand for  *)
+(* the live call and for the restart's resume (Desks.resume_entries), so   *)
+(* they are weakly fair; with no resume a crashed one waits for ever.      *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -55,16 +61,18 @@ ASSUME BrokenMode \in {"none", "confirm_places_now", "shadow_calls_broker",
                        "any_mode", "short_entry", "no_gtt_gate", "pyramid", "apply_now",
                        "no_expiry_sweep", "exits_wait", "place_unchecked",
                        "no_session_check", "card_on_reject", "user_resizes",
-                       "user_creates_entry"}
+                       "user_creates_entry", "no_resume"}
 
 Signals == 1..NSignals
 Modes == {"shadow", "confirm", "auto"}
 Asked == IF BrokenMode = "any_mode" THEN Modes \cup {"live"} ELSE Modes
 
-SigStates == {"idle", "rejected", "triggered", "awaiting", "placed", "virtual", "veto", "ended",
-              "closed"}
+SigStates == {"idle", "rejected", "triggered", "awaiting", "taken", "placed", "virtual", "veto",
+              "ended", "closed"}
 \* The states that hold the bot's slot on the instrument (a veto trade holds none).
-Holding == {"triggered", "awaiting", "placed", "virtual"}
+Holding == {"triggered", "awaiting", "taken", "placed", "virtual"}
+\* Committed and waiting for the entry to be placed (an auto signal, a passed Take).
+Unplaced == {"triggered", "taken"}
 
 VARIABLES
     phase,       \* the calendar session: closed | open
@@ -86,11 +94,15 @@ VARIABLES
     midChange,   \* ghost: the mode in force changed during a session
     live,        \* the account's broker session is live
     msg,         \* per signal: the relay sent its card or shadow message
-    userRisk     \* ghost: a user action from the chat set a size or created an entry
+    userRisk,    \* ghost: a user action from the chat set a size or created an entry
+    lost         \* per signal: its process died after it committed, before its placement
 
 tgVars == <<live, msg, userRisk>>
+\* Everything but `lost`, which only Crash, Place and PlaceTaken change.
+routerVars == <<phase, mode, queued, gtt, stale, gate, chased, sig, smode, card, expired, stop,
+                exitDue, badEntry, badOrder, exitAsked, midChange, live, msg, userRisk>>
 vars == <<phase, mode, queued, gtt, stale, gate, chased, sig, smode, card, expired, stop,
-          exitDue, badEntry, badOrder, exitAsked, midChange, live, msg, userRisk>>
+          exitDue, badEntry, badOrder, exitAsked, midChange, live, msg, userRisk, lost>>
 
 Init ==
     /\ phase = "closed"
@@ -113,6 +125,7 @@ Init ==
     /\ live \in BOOLEAN
     /\ msg = [s \in Signals |-> FALSE]
     /\ userRisk = FALSE
+    /\ lost = [s \in Signals |-> FALSE]
 
 \* The effective mode (modes.bot_mode / effective_mode): confirm and auto need GTT.
 Effective ==
@@ -184,17 +197,32 @@ PlaceLive ==
        /\ gtt \/ BrokenMode = "no_gtt_gate"
        /\ live \/ BrokenMode = "no_session_check"
 
+\* A process that dies after it committed may not place. Without the restart's resume
+\* (BrokenMode "no_resume") nothing places it after that.
+Resumable(s) == ~lost[s] \/ BrokenMode # "no_resume"
+
 \* code: backend/app/hat/execution/router.py:place_entry  (after the signal committed and the
 \* bot's lock was released: the real entry is sent when the conditions still allow it, else the
-\* signal ends Rejected; the LIMIT price fixed at the trigger bounds the chase)
+\* signal ends Rejected; the LIMIT price fixed at the trigger bounds the chase. After a crash
+\* the restart's resume (daily/accounts.py:Desks.resume_entries) runs it, or the next trade
+\* date's sweep ends the signal: router.expire)
 Place(s) ==
     /\ sig[s] = "triggered"
+    /\ Resumable(s)
     /\ sig' = [sig EXCEPT ![s] = IF PlaceLive THEN "placed" ELSE "rejected"]
     /\ badOrder' = IF PlaceLive THEN badOrder \cup (OrderFaults(s, smode[s]) \ {"chased"})
                                  ELSE badOrder
+    /\ lost' = [lost EXCEPT ![s] = FALSE]
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, card, expired, stop,
                    exitDue, badEntry, exitAsked, midChange>>
     /\ UNCHANGED tgVars
+
+\* code: backend/app/hat/execution/router.py:_place_committed  (the process dies, or the
+\* placement raises, after the signal or the Take committed and before the entry is placed)
+Crash(s) ==
+    /\ sig[s] \in Unplaced /\ ~lost[s]
+    /\ lost' = [lost EXCEPT ![s] = TRUE]
+    /\ UNCHANGED routerVars
 
 \* code: backend/app/hat/risk/service.py:evaluate_signal  (a refused trigger ends Rejected)
 Reject(s) ==
@@ -214,18 +242,32 @@ TakeLive ==
     /\ gate = "on" \/ BrokenMode = "take_ignores_gate"
     /\ gtt \/ BrokenMode = "no_gtt_gate"
 
-\* code: backend/app/hat/execution/router.py:take  (before expiry: the live conditions and the
-\* max-chase re-check pass and the real entry is placed at the size the risk check fixed, or
-\* the signal ends Rejected; a size the user asked for is never read)
+\* code: backend/app/hat/engine/approvals.py:take  (the decision, committed first: before expiry,
+\* the live conditions and the max-chase re-check pass and the card is taken, or the signal ends
+\* Rejected; a size the user asked for is never read)
 Take(s, userSize) ==
     /\ card[s] = "open" /\ ~expired[s]
     /\ card' = [card EXCEPT ![s] = "taken"]
     /\ LET ok == TakeLive /\ (~chased \/ BrokenMode = "take_skips_chase")
-       IN /\ sig' = [sig EXCEPT ![s] = IF ok THEN "placed" ELSE "rejected"]
-          /\ badOrder' = IF ok THEN badOrder \cup OrderFaults(s, smode[s]) ELSE badOrder
+       IN /\ sig' = [sig EXCEPT ![s] = IF ok THEN "taken" ELSE "rejected"]
+          /\ badEntry' = IF ok /\ chased THEN badEntry \cup {"chased"} ELSE badEntry
           /\ userRisk' = (userRisk \/ (ok /\ userSize /\ BrokenMode = "user_resizes"))
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, expired, stop, exitDue,
-                   badEntry, exitAsked, midChange, live, msg>>
+                   badOrder, exitAsked, midChange, live, msg>>
+
+\* code: backend/app/hat/execution/router.py:take -> place_entry  (the passed Take's entry is
+\* placed at the size the risk check fixed when the live conditions still allow it, else the
+\* signal ends Rejected; after a crash the restart's resume runs it)
+PlaceTaken(s) ==
+    /\ sig[s] = "taken"
+    /\ Resumable(s)
+    /\ sig' = [sig EXCEPT ![s] = IF TakeLive THEN "placed" ELSE "rejected"]
+    /\ badOrder' = IF TakeLive THEN badOrder \cup (OrderFaults(s, smode[s]) \ {"chased"})
+                                ELSE badOrder
+    /\ lost' = [lost EXCEPT ![s] = FALSE]
+    /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, card, expired, stop,
+                   exitDue, badEntry, exitAsked, midChange>>
+    /\ UNCHANGED tgVars
 
 \* The signal's state once its card is skipped or expired: the veto trade, opened in the same
 \* transaction (trades.open_veto_trade).
@@ -377,18 +419,25 @@ UserEntry(s) ==
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, card, expired, exitDue,
                    badEntry, badOrder, exitAsked, midChange, live, msg>>
 
-Next ==
+\* Every step but Crash, Place and PlaceTaken keeps `lost`.
+RouterNext ==
     \/ SessionOpen \/ SessionClose \/ GateRefresh \/ FeedFlip \/ GttFlip \/ PriceMove
     \/ SessionFlip
     \/ \E m \in Asked : RequestMode(m)
     \/ \E s \in Signals :
-          Route(s) \/ Reject(s) \/ Place(s) \/ (\E u \in BOOLEAN : Take(s, u)) \/ Skip(s)
+          Route(s) \/ Reject(s) \/ (\E u \in BOOLEAN : Take(s, u)) \/ Skip(s)
           \/ Tick(s) \/ Expire(s) \/ ExitDue(s) \/ ExitSend(s) \/ Relay(s) \/ UserEntry(s)
+
+Next ==
+    \/ (RouterNext /\ UNCHANGED lost)
+    \/ \E s \in Signals : Place(s) \/ PlaceTaken(s) \/ Crash(s)
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
-    /\ \A s \in Signals : WF_vars(Tick(s)) /\ WF_vars(Expire(s)) /\ WF_vars(ExitSend(s))
+    /\ \A s \in Signals :
+          WF_routerVars(Tick(s)) /\ WF_routerVars(Expire(s)) /\ WF_routerVars(ExitSend(s))
+    /\ \A s \in Signals : WF_vars(Place(s)) /\ WF_vars(PlaceTaken(s))
 
 TypeOK ==
     /\ phase \in {"closed", "open"}
@@ -401,6 +450,7 @@ TypeOK ==
     /\ exitDue \in [Signals -> BOOLEAN]
     /\ live \in BOOLEAN
     /\ msg \in [Signals -> BOOLEAN]
+    /\ lost \in [Signals -> BOOLEAN]
 
 \* Each routed signal took the route of the mode it was routed by: shadow a virtual position,
 \* confirm a card (a real order only after a Take), auto a real order.
@@ -410,6 +460,7 @@ RouteByMode ==
          /\ sig[s] = "virtual" => smode[s] = "shadow"
          /\ sig[s] = "awaiting" => smode[s] = "confirm" /\ card[s] = "open"
          /\ sig[s] = "placed" /\ smode[s] = "confirm" => card[s] = "taken"
+         /\ sig[s] = "taken" => smode[s] = "confirm" /\ card[s] = "taken"
          /\ card[s] # "none" => smode[s] = "confirm"
 
 \* A shadow signal never reaches the broker.
@@ -472,6 +523,10 @@ UserCannotRaiseRisk == ~userRisk
 
 \* Every card is decided: taken, skipped or expired.
 ApprovalsDecided == \A s \in Signals : [](sig[s] = "awaiting" => <>(sig[s] # "awaiting"))
+
+\* Every committed entry is placed or ended: a crash between a signal's (or a Take's) commit
+\* and its placement never leaves it waiting, holding its slot (PR 52, audit T-F7).
+EntriesSettled == \A s \in Signals : [](sig[s] \in Unplaced => <>(sig[s] \notin Unplaced))
 
 \* An exit that is due is eventually sent, in every mode.
 ExitsComplete == \A s \in Signals : [](exitDue[s] => <>(sig[s] = "closed"))

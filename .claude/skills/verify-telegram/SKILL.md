@@ -118,12 +118,13 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `b3ce3b46d19dac95b190c8edb79755c71c47b1ecc1a9157856ebc37bbc1e8bcf`
+Covered digest: `3060abe6d0a34bb77a9699725d749b8ab21a92c0149ad49a7c60a56a962fbaa8`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 52: `ExecutionRouter.tla` splits a Take into the decision (to the new state `taken`) and its placement (`PlaceTaken`, which re-reads the session, hours, feed, gate and GTT; the max-chase re-check stays on the decision), and adds `Crash` (`verify-execution`'s `EntriesSettled`). `NoEntryWithoutSession`, `RejectNoCard` and `UserCannotRaiseRisk` pass unchanged and their broken variants still fail. No Telegram code changed.
 - PR 48: `sale.unfilled` is URGENT (`URGENT_ALERTS`), checked by `verify-execution`'s `mpp.resting_market_sale_resent` (break recorded there). No Telegram check changed.
 - PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
 - PR 30 (design review item 5, HAT-TG-021): the 09:05 reprompt is URGENT when the logged-out accounts hold real open positions (`reads.open_real_positions`, `render.login_text(open_positions=)`); the head line carries it, so the link lines after it are unchanged. `telegram.login_prompt_links` draws real, virtual and closed positions on the first account.

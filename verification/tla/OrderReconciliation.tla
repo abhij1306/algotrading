@@ -125,7 +125,9 @@ ReleaseSession(o) ==
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
 \* code: backend/app/hat/execution/submit.py:reserve_order  (insert the PENDING row and commit,
-\* before any broker call; tag t>0 is the one retry, allowed only after tag t-1 was rejected)
+\* before any broker call; tag t>0 is the one retry, allowed only after tag t-1 was rejected.
+\* `retries` survives Restart because the code counts the stored rejected rows before each new
+\* tag: router._send_entry, `_entry_rejections`, PR 52, audit T-F4)
 Reserve(t, p) ==
     /\ row[t] = "none"
     /\ \/ t = 0

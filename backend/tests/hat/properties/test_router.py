@@ -11,7 +11,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -20,20 +19,24 @@ from hat_engine_support import (
     AT,
     TRADE_DAY,
     USER,
-    World,
     add_bot,
     request_for,
-    seed_engine_world,
 )
 from hat_exec_support import (
-    GTT_READY,
-    SYMBOLS,
     confirm_gates,
-    guard_on,
-    live_session,
-    seed_live_sessions,
 )
 from hat_risk_support import CALENDAR
+from hat_router_support import (
+    LIVE,
+    TICKERS,
+    Crash,
+    PlacementError,
+    Rig,
+    at_day,
+    crash_after,
+    desks_for,
+    restart,
+)
 from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
@@ -54,11 +57,12 @@ from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_broker import FyersRateLimitedError
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.protect import STOP_DAY, STOP_GTT, UNSURE, WORKING
-from app.hat.execution.reconcile import ReconciliationService, notifier_sink
+from app.hat.execution.reconcile import ReconciliationService
 from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
     ALERT_ENTRY_UNRESOLVED,
     ALERT_ORDER_REJECTED,
+    MAX_ENTRY_REJECTIONS,
     PRICE_AT_OR_BELOW_STOP,
     SESSION_NOT_LIVE,
     SIGNAL_EXPIRED,
@@ -74,8 +78,6 @@ from app.hat.models import (
     HatBrokerAccount,
     HatBrokerSession,
     HatEvent,
-    HatInstrument,
-    HatMarket,
     HatModeChange,
     HatOrder,
     HatPosition,
@@ -89,106 +91,6 @@ from app.hat.time import IST, trade_date_of
 
 D = Decimal
 MODE = st.sampled_from(modes.MODES)
-LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
-LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
-_TICKERS = tuple(SYMBOLS)
-
-
-class Rig:
-    """One bot on one broker account, the adapter over `FakeBroker`, and the router."""
-
-    def __init__(
-        self,
-        session: Session,
-        *,
-        mode: str,
-        gtt: bool = True,
-        reconciled: bool = True,
-        fake: FakeBroker | None = None,
-        live_gtt: bool | None = None,  # the adapter's GTT now; `gtt` (the stored one) when None
-        ddpi: bool = True,
-        weights: bool = True,
-        confidence: str | None = modes.HIGH,  # the label the router routes auto by (D149)
-    ) -> None:
-        self.session = session
-        self.confidence = confidence
-        self.world: World = seed_engine_world(session, mode=mode, instruments=2)
-        bot = session.get(HatBot, self.world.bot_id)
-        assert bot is not None
-        self.account_id = bot.broker_account_id
-        market_id = session.scalar(select(HatMarket.id))
-        session.add(
-            HatBrokerAccount(
-                id=self.account_id,
-                user_id=USER,
-                broker="fyers",
-                account_ref="X0001",
-                capabilities=replace(GTT_READY, gtt_delivery=gtt).to_json(),
-                status="active",
-            )
-        )
-        for n, instrument in enumerate(self.world.instruments):
-            session.add(
-                HatInstrument(
-                    id=instrument,
-                    market_id=market_id,
-                    isin=f"INE{n:09d}",
-                    series="EQ",
-                    symbol=_TICKERS[n],
-                    name=_TICKERS[n],
-                    face_value=D(1),
-                    active=True,
-                )
-            )
-        seed_live_sessions(session, self.account_id)
-        session.flush()
-        confirm_gates(session, self.account_id, USER, ddpi=ddpi, weights=weights)
-        session.commit()
-        self.fake = fake if fake is not None else FakeBroker()
-        broker = FyersHatBroker(
-            self.fake,  # type: ignore[arg-type]
-            instruments=lambda: list(SYMBOLS.items()),
-            capabilities=replace(GTT_READY, gtt_delivery=gtt if live_gtt is None else live_gtt),
-        )
-        live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
-        self.broker = broker
-        self.guard = guard_on(TRADE_DAY, reconciled=reconciled)
-        self.notifier = RecordingNotifier()
-        reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
-        self.router = ExecutionRouter(broker, self.guard, reconciler, self.notifier)
-
-    def route(
-        self,
-        instrument: int = 0,
-        at: datetime = AT,
-        check: PlacementCheck = LIVE,
-        **ctx: object,
-    ) -> trades.EntryOutcome:
-        request = request_for(self.world, self.world.instruments[instrument], **ctx)
-        return self.router.route(
-            self.session,
-            trades.EntryRequest(**{**vars(request), "triggered_at": at}),
-            now=at,
-            check=check,
-            confidence=self.confidence,
-        )
-
-    def signal(self, signal_id: uuid.UUID) -> HatSignal:
-        row = self.session.get(HatSignal, signal_id)
-        assert row is not None
-        self.session.refresh(row)
-        return row
-
-    def places(self) -> list[dict]:
-        return self.fake.calls_named("place_order")
-
-    def codes(self) -> list[str]:
-        return [code for code, _, _ in self.notifier.alerts]
-
-    def positions(self, signal_id: uuid.UUID) -> list[HatPosition]:
-        return list(
-            self.session.scalars(select(HatPosition).where(HatPosition.signal_id == signal_id))
-        )
 
 
 def _rejected_reason(session: Session, signal_id: uuid.UUID) -> str:
@@ -242,8 +144,10 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
     quantity at the engine's entry price, after the session's reconciliation, when the live
     conditions read at placement allow it, and otherwise ends Rejected with the reason and
     sends nothing. A routed signal without a position holds a slot valued at its planned entry
-    price. Harm: a shadow or unapproved signal places a real order, auto buys after the market
-    closed or the feed went stale, or the open risk of a pending entry is understated."""
+    price. The outcome `route` returns carries the signal's state after placement and the
+    shadow position's id. Harm: a shadow or unapproved signal places a real order, auto buys
+    after the market closed or the feed went stale, the open risk of a pending entry is
+    understated, or the caller acts on a stale outcome."""
     reason, check = conditions
     with Session(memory_engine()) as session:
         rig = Rig(session, mode=mode, gtt=gtt, reconciled=False)
@@ -252,12 +156,14 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
         effective = mode if gtt else modes.SHADOW
         signal = rig.signal(outcome.signal_id)
         assert outcome.mode == signal.mode == effective
+        assert outcome.state == signal.state  # the state after placement, not the trigger's
         assert signal.qty > 0
         assert trades.replay_state(session, signal.id) == signal.state
         if effective == modes.SHADOW:
             assert rig.fake.calls == []
             [position] = rig.positions(signal.id)
             assert position.is_virtual
+            assert outcome.position_id == position.id
             assert signal.state == lifecycle.OPEN
         elif effective == modes.CONFIRM:
             assert rig.fake.calls == []
@@ -1246,7 +1152,7 @@ def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
                 side=Side.BUY,
                 qty=signal.qty,
                 order_type=OrderType.LIMIT,
-                symbol=_TICKERS[0],
+                symbol=TICKERS[0],
                 price=trades.entry_price_of(session, signal),
             )
             tag = reserve_order(session, entry)
@@ -1467,3 +1373,331 @@ def test_open_settles_mode_changes(
             assert row.applied_at is not None
             assert kinds == ["mode.applied"]
         assert modes.requested_mode(session, bot, AT) == after
+
+
+# --- crash safety (PR 52, audit T-F4, T-F7) ---------------------------------------------------
+
+
+def _left_stranded(session: Session, signal_id: uuid.UUID) -> bool:
+    """The signal still waits to be placed with no entry order that may be working (a row
+    reserved with no attempt stamped provably never reached the broker, so it does not count)."""
+    signal = session.get(HatSignal, signal_id)
+    assert signal is not None
+    session.refresh(signal)
+    if signal.state not in (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL):
+        return False
+    if signal.state == lifecycle.AWAITING_APPROVAL:
+        approval = session.get(HatApproval, signal_id)
+        if approval is None or approval.decision != "take":
+            return False  # an undecided card: the sweep's
+    working = session.scalar(
+        select(func.count())
+        .select_from(HatOrder)
+        .where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == ENTRY,
+            HatOrder.status.in_(("pending", "unconfirmed", "placed", "partially_filled")),
+            (HatOrder.status != "pending") | HatOrder.placed_at.is_not(None),
+        )
+    )
+    return not working
+
+
+@settings(max_examples=60, deadline=None)
+@example(
+    path="auto", replies=[False, False], k=9, error="crash", again=0
+)  # after the 2nd rejection
+@example(
+    path="take", replies=[True, True], k=1, error="crash", again=0
+)  # after the Take's decision
+@example(
+    path="auto", replies=[True, True], k=1, error="crash", again=0
+)  # after the trigger's commit
+@example(path="take", replies=[False, True], k=1, error="raise", again=0)
+@example(path="take", replies=[True, True], k=1, error="crash", again=1)  # the resume fails once
+@given(
+    path=st.sampled_from(("auto", "take")),
+    replies=st.lists(st.booleans(), min_size=2, max_size=2),
+    k=st.integers(min_value=1, max_value=12),
+    error=st.sampled_from(("crash", "raise")),
+    again=st.integers(min_value=0, max_value=3),
+)
+def test_crash_resumes_entry_once(
+    path: str, replies: list[bool], k: int, error: str, again: int
+) -> None:
+    """HAT-OPS-003, HAT-EXEC-023 (PR 52, audit T-F4, T-F7): an auto entry, or a Take, whose
+    process dies (or whose placement raises) right after any commit or broker call is, after the
+    restart's recovery and resume (run twice), placed or ended exactly once: at most two entry
+    orders under distinct tags (a crash after the second rejection never sends a third), at most
+    one the broker took, and the signal never left waiting with no order that may be working;
+    when the first resume pass itself raises after its `again`-th step, a later pass places it.
+    Harm: a restart sends a third entry, buys twice, or leaves a taken signal holding its slot and
+    open risk for good."""
+    fake = FakeBroker()
+    fake.script(
+        "place_order",
+        *(
+            accepted(f"B-{n}") if ok else rejected("Insufficient funds")
+            for n, ok in enumerate(replies)
+        ),
+    )
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO if path == "auto" else modes.CONFIRM, fake=fake)
+        live = desks_for(engine, rig)
+        live.recover(AT)  # the live process started (and reconciled) before the trigger
+        rig.router = live.by_account[rig.account_id].router
+        rig.guard = live.by_account[rig.account_id].guard
+        signal_id = None if path == "auto" else rig.route().signal_id
+        failure = Crash if error == "crash" else PlacementError
+        try:
+            with crash_after(k, fake, failure):
+                if path == "auto":
+                    rig.route()
+                else:
+                    assert signal_id is not None
+                    signal = rig.signal(signal_id)
+                    rig.router.take(
+                        session,
+                        signal_id,
+                        price=D(signal.trigger_price),
+                        locked_upper_circuit=False,
+                        now=AT,
+                        chat_id=7,
+                        check=LIVE,
+                    )
+        except (Crash, PlacementError):
+            session.rollback()
+        if signal_id is None:
+            signal_id = session.scalar(select(HatSignal.id))
+        assert signal_id is not None
+        session.close()
+        desks = restart(engine, rig, AT, None if error == "crash" else live, again)
+        sent = rig.places()
+        assert len(sent) <= MAX_ENTRY_REJECTIONS
+        assert len({order["order_tag"] for order in sent}) == len(sent)
+        took = [n for n in range(len(sent)) if n >= len(replies) or replies[n]]
+        assert len(took) <= 1
+        with Session(engine) as fresh:
+            assert not _left_stranded(fresh, signal_id)
+            state = fresh.get(HatSignal, signal_id).state  # type: ignore[union-attr]
+            assert trades.replay_state(fresh, signal_id) == state
+        desks.release()
+        live.release()
+
+
+def _snapshot(session: Session) -> tuple[object, ...]:
+    """Everything a sweep can change: signals, cards, positions, orders and the event log."""
+    session.expire_all()
+    return (
+        sorted(session.execute(select(HatSignal.id, HatSignal.state)).all()),
+        sorted(session.execute(select(HatApproval.signal_id, HatApproval.decision)).all()),
+        sorted(
+            session.execute(
+                select(HatPosition.signal_id, HatPosition.is_virtual, HatPosition.qty_open)
+            ).all()
+        ),
+        sorted(session.execute(select(HatOrder.tag, HatOrder.status)).all()),
+        session.scalar(select(func.count()).select_from(HatEvent)),
+    )
+
+
+SWEEP_ACTIONS = st.lists(
+    st.tuples(
+        st.sampled_from(("sweep", "take", "skip", "take_crashed", "place")),
+        st.integers(0, 1),
+        st.integers(0, 600),
+    ),
+    min_size=1,
+    max_size=8,
+)
+
+
+@settings(max_examples=40, deadline=None)
+@example(actions=[("take_crashed", 0, 10), ("sweep", 0, 400)], sweeps=2)
+@example(actions=[("sweep", 0, 300), ("take", 1, 310)], sweeps=3)
+@example(actions=[("place", 0, 10), ("take_crashed", 1, 20), ("sweep", 0, 400)], sweeps=2)
+@given(actions=SWEEP_ACTIONS, sweeps=st.integers(min_value=2, max_value=4))
+def test_sweep_idempotent(actions: list[tuple[str, int, int]], sweeps: int) -> None:
+    """HAT-EXEC-030, HAT-EXEC-032 (PR 52, audit T-F15, T-F7): for every interleaving of Takes,
+    Skips, Takes whose placement crashed, re-driven placements and sweeps over two cards, running
+    the approval sweep any number of times at one moment gives the state one sweep gives; no card
+    yields more than one entry order and a re-driven placement never buys a card not taken; once
+    the 5 minutes are up every card is decided; and the next trade date's sweep ends a Take left
+    unplaced Rejected (`signal_expired`) with no order, so no signal holds a slot past its day.
+    Harm: a repeated or overlapping sweep opens a second veto trade or a second order, or a
+    stranded Take holds a slot and open risk for good."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.CONFIRM)
+        ids = [rig.route(instrument=n).signal_id for n in range(2)]
+        for action, n, after_s in sorted(actions, key=lambda a: a[2]):
+            now = AT + timedelta(seconds=after_s)
+            signal = rig.signal(ids[n])
+            if action == "skip":
+                rig.router.skip(session, ids[n], now=now, chat_id=7)
+            elif action == "place":  # a resume's re-drive: places only a passed Take
+                approval = session.get(HatApproval, ids[n])
+                undecided = approval is not None and approval.decision is None
+                before = len(rig.places())
+                rig.router.place_entry(session, ids[n], now=now, check=LIVE)
+                if undecided:
+                    assert len(rig.places()) == before
+            elif action == "sweep":
+                rig.router.expire(session, now)
+                once = _snapshot(session)
+                for _ in range(sweeps - 1):
+                    rig.router.expire(session, now)
+                assert _snapshot(session) == once
+            else:
+                try:
+                    with crash_after(1 if action == "take_crashed" else 0, rig.fake):
+                        rig.router.take(
+                            session,
+                            ids[n],
+                            price=D(signal.trigger_price),
+                            locked_upper_circuit=False,
+                            now=now,
+                            chat_id=7,
+                            check=LIVE,
+                        )
+                except Crash:
+                    session.rollback()
+        for signal_id in ids:
+            entries = session.scalar(
+                select(func.count())
+                .select_from(HatOrder)
+                .where(HatOrder.signal_id == signal_id, HatOrder.purpose == ENTRY)
+            )
+            assert entries <= 1
+        assert len(rig.places()) <= 2
+        late = AT + timedelta(minutes=10)
+        rig.router.expire(session, late)
+        for signal_id in ids:
+            state = rig.signal(signal_id).state
+            approval = session.get(HatApproval, signal_id)
+            assert approval is not None
+            assert approval.decision is not None  # every card decided after its 5 minutes
+            if approval.decision == "take":  # placed, or still to be re-driven today
+                assert state in (lifecycle.ENTRY_PLACED, lifecycle.AWAITING_APPROVAL)
+            else:
+                assert state != lifecycle.AWAITING_APPROVAL
+        tomorrow = CALENDAR.next_trading_day(TRADE_DAY)
+        assert tomorrow is not None
+        nxt = at_day(tomorrow)
+        rig.router.expire(session, nxt)
+        settled = _snapshot(session)
+        for _ in range(sweeps - 1):
+            rig.router.expire(session, nxt)
+        assert _snapshot(session) == settled
+        for signal_id in ids:
+            # nothing waits past its day: placed, or ended (no slot held)
+            assert rig.signal(signal_id).state not in (
+                lifecycle.TRIGGERED,
+                lifecycle.AWAITING_APPROVAL,
+            )
+
+
+@settings(max_examples=30, deadline=None)
+@example(k=1, order=("sweep",), path="auto")  # Triggered, no order
+@example(k=2, order=("sweep", "restart"), path="auto")  # an entry reserved, never sent
+@example(k=2, order=("sweep",), path="auto")  # the sweep alone cancels the unsent row
+@example(k=1, order=("restart", "sweep"), path="take")
+@given(
+    k=st.integers(min_value=1, max_value=6),
+    order=st.lists(st.sampled_from(("sweep", "restart")), min_size=1, max_size=3),
+    path=st.sampled_from(("auto", "take")),
+)
+def test_stranded_entry_ends_next_day(k: int, order: list[str], path: str) -> None:
+    """HAT-OPS-003, HAT-EXEC-030 (PR 52, audit T-F7): an auto entry or a Take whose process died
+    after its k-th step and never came back that day is, on a later trade date, never placed:
+    the sweep or the restart's resume (in any order, any number of times) ends it Rejected
+    `signal_expired`, cancelling an entry order reserved and never sent, while one that may have
+    reached the broker is left to reconciliation; nothing more reaches the broker and no signal
+    waits with no order. Harm: yesterday's price, size and risk decision are bought today, or a
+    stranded signal holds a slot and open risk for good."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO if path == "auto" else modes.CONFIRM)
+        signal_id = None if path == "auto" else rig.route().signal_id
+        try:
+            with crash_after(k, rig.fake):
+                if path == "auto":
+                    rig.route()
+                else:
+                    assert signal_id is not None
+                    rig.router.take(
+                        session,
+                        signal_id,
+                        price=D(rig.signal(signal_id).trigger_price),
+                        locked_upper_circuit=False,
+                        now=AT,
+                        chat_id=7,
+                        check=LIVE,
+                    )
+        except Crash:
+            session.rollback()
+        signal_id = signal_id or session.scalar(select(HatSignal.id))
+        assert signal_id is not None
+        sent = len(rig.places())
+        tomorrow = CALENDAR.next_trading_day(TRADE_DAY)
+        assert tomorrow is not None
+        nxt = at_day(tomorrow)
+        for step in order:
+            if step == "sweep":
+                rig.router.expire(session, nxt)
+            else:
+                restart(engine, rig, nxt).release()
+        assert len(rig.places()) == sent  # nothing more reaches the broker
+        assert not _left_stranded(session, signal_id)
+        state = rig.signal(signal_id).state
+        if state == lifecycle.REJECTED:
+            assert _rejected_reason(session, signal_id) == SIGNAL_EXPIRED
+        settled = _snapshot(session)
+        rig.router.expire(session, nxt)
+        assert _snapshot(session) == settled
+
+
+@settings(max_examples=10, deadline=None)
+@example(bad=0)
+@given(bad=st.integers(min_value=0, max_value=1))
+def test_sweep_survives_a_bad_signal(bad: int) -> None:
+    """HAT-EXEC-030 (PR 52): when ending one stranded entry raises (a database error on that
+    signal), the sweep goes on: every other earlier-day stranded entry ends Rejected
+    `signal_expired`, the failing one is left as it was (no order), and the next sweep, once it
+    no longer fails, ends it. Harm: one bad row stops the sweep every minute and every stranded
+    signal after it holds its slot for good."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        for n in range(2):  # two auto entries, each left in Triggered by a crash at its commit
+            try:
+                with crash_after(1, rig.fake):
+                    rig.route(instrument=n)
+            except Crash:
+                session.rollback()
+        ids = sorted(session.scalars(select(HatSignal.id)).all())
+        assert len(ids) == 2
+        failing = ids[bad]
+        real_reject = trades.reject_signal
+
+        def reject(s: Session, signal_id: uuid.UUID, *args: object, **kwargs: object) -> bool:
+            if signal_id == failing:
+                raise RuntimeError("database error")
+            return real_reject(s, signal_id, *args, **kwargs)  # type: ignore[arg-type]
+
+        tomorrow = CALENDAR.next_trading_day(TRADE_DAY)
+        assert tomorrow is not None
+        with mock.patch.object(trades, "reject_signal", reject):
+            rig.router.expire(session, at_day(tomorrow))
+        assert rig.places() == []
+        for signal_id in ids:
+            state = rig.signal(signal_id).state
+            if signal_id == failing:
+                assert state == lifecycle.TRIGGERED
+            else:
+                assert state == lifecycle.REJECTED
+                assert _rejected_reason(session, signal_id) == SIGNAL_EXPIRED
+        rig.router.expire(session, at_day(tomorrow))
+        assert rig.signal(failing).state == lifecycle.REJECTED
+        assert not any(_left_stranded(session, signal_id) for signal_id in ids)
