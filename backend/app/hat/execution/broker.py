@@ -162,7 +162,7 @@ class AckResult:
 @dataclass(frozen=True)
 class GttRequest:
     """A protective sell-stop for delivery: triggers at `trigger_price`, then a limit order
-    at `limit_price`."""
+    at `limit_price`. `tag` is the stop's HT tag, which the broker shows on the GTT."""
 
     symbol: str
     qty: int
@@ -170,6 +170,7 @@ class GttRequest:
     limit_price: Decimal
     product: str = "CNC"
     side: Side = Side.SELL
+    tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,9 @@ class BrokerOrder:
     product: str
     order_type: OrderType | None = None  # None when the broker's code is unknown
     price: Decimal | None = None  # the limit price; None for an order without one
+    # The HT tag of the GTT this order is the sale of, when one of HAT's GTTs triggered into it
+    # (its `tag` is None then: it is the GTT's child, not an order HAT placed).
+    gtt_tag: str | None = None
 
 
 class OrderBook(list[BrokerOrder]):
@@ -210,14 +214,17 @@ class OrderBook(list[BrokerOrder]):
 
 @dataclass(frozen=True)
 class BrokerGtt:
-    """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. GTTs carry
-    no tag: HAT tells its own from the symbol, side, quantity and trigger it sent."""
+    """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. `tag` is the
+    HT tag it was placed with, None for a GTT without one (placed untagged, or a foreign tag):
+    HAT tells its own by the tag, and an untagged one by the symbol, side, quantity and
+    trigger it sent."""
 
     gtt_id: str
     symbol: str  # database symbol
     side: Side
     qty: int
     trigger_price: Decimal
+    tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +237,7 @@ class BrokerTrade:
     qty: int
     price: Decimal
     traded_at: datetime | None
+    gtt_tag: str | None = None  # as BrokerOrder.gtt_tag
 
 
 @dataclass(frozen=True)

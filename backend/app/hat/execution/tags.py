@@ -37,6 +37,7 @@ __all__ = [
     "TagExhaustedError",
     "decode_tag",
     "encode_tag",
+    "is_gtt_tag",
     "is_hat_tag",
     "signal_fragment",
 ]
@@ -106,6 +107,11 @@ def encode_tag(signal_id: uuid.UUID, purpose: str, sequence: int) -> str:
 def is_hat_tag(tag: object) -> bool:
     """True for a string of exactly the HAT tag shape (what reconciliation considers)."""
     return isinstance(tag, str) and TAG_PATTERN.fullmatch(tag) is not None
+
+
+def is_gtt_tag(tag: object) -> bool:
+    """True for a HAT tag of a GTT stop (purpose `stop_gtt`)."""
+    return is_hat_tag(tag) and tag[2] == PURPOSE_LETTERS["stop_gtt"]  # type: ignore[index]
 
 
 def decode_tag(tag: str) -> DecodedTag:

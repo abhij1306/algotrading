@@ -223,7 +223,13 @@ WRITES = {
     ),
     "cancel_order": lambda b: b.cancel_order("26102200316678"),
     "place_gtt_stop": lambda b: b.place_gtt_stop(
-        GttRequest("SBIN", 3, Decimal("95"), Decimal("94.5"))
+        GttRequest(
+            "SBIN",
+            3,
+            Decimal("95"),
+            Decimal("94.5"),
+            tag=encode_tag(uuid.UUID(int=7), "stop_gtt", 0),
+        )
     ),
     "modify_gtt": lambda b: b.modify_gtt(
         GttModify("26102200000001", 3, Decimal("96"), Decimal("95.5"))

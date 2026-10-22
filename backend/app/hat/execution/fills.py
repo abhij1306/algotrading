@@ -9,15 +9,18 @@ book raises and nothing is written) and then, for one broker account:
    `apply_exit_fill`) and has the `StopDesk` protect the position at once: an entry fill gets its
    broker stop before anything else touches the position (HAT-EXEC-060), a sale resizes the stop,
    and the last sale cancels it;
-3. attributes an untagged SELL trade on the symbol of the one position with a working GTT to that
-   GTT, since Fyers GTTs carry no tag [verify on a live account]; a broker trade id is recorded
-   once across all orders, so an old trade never closes a newer position;
+3. attributes the SELL trade of a triggered GTT to that GTT: one under the GTT's own tag
+   (`gtt_tag`: the adapter reads a row under one of HAT's GTT tags as that GTT's sale; whether
+   Fyers puts the tag on the sale is [verify on a live account]) to the working GTT with that
+   tag, and an untagged one to the GTT of the one open position on its symbol; a broker trade id
+   is recorded once across all orders, so an old trade never closes a newer position;
 4. moves order statuses (`submit.record_broker_status`): an entry that ended unfilled ends its
    signal Cancelled; a day stop that expired leaves its position to be protected again; a sale
    the broker took and then ended short records `order.rejected` and fires its rules again, so the
    next evaluation retries it once; its second rejection raises `exit.not_placed` (HAT-EXEC-075);
-5. raises `gtt.unfilled` for an untagged SELL order on such a symbol that ended (cancelled,
-   rejected, expired) short of its quantity: the GTT triggered and did not fill (07 §6 step 3).
+5. raises `gtt.unfilled` for such a GTT's SELL order (by its tag, or untagged on its symbol) that
+   ended (cancelled, rejected, expired) short of its quantity: the GTT triggered and did not fill
+   (07 §6 step 3).
    The GTT is ended and the position protected again. The broker order id is kept on the
    `order.cancelled` event, so the alert is raised once; while the GTT's own sale (at its limit
    price and quantity) still works short of its quantity a minute after it was first seen (the
@@ -129,6 +132,25 @@ def watch_closely(session: Session, account_id: uuid.UUID, now: datetime) -> boo
     return any(session.scalar(query.limit(1)) is not None for query in (entry, stop))
 
 
+@dataclass(frozen=True)
+class _WorkingGtts:
+    """The working GTTs of an account's open real positions: by tag (with its symbol), and by
+    symbol for each symbol only one of them is on (two GTTs on one symbol cannot be told apart
+    by an untagged sale, so neither is attributed one)."""
+
+    by_tag: dict[str, tuple[HatOrder, str]]
+    by_symbol: dict[str, HatOrder]
+
+    def of(self, item: BrokerOrder | BrokerTrade) -> HatOrder | None:
+        """The GTT a broker sale is the child of: the one under its `gtt_tag` on its symbol;
+        for an untagged sale, the one GTT on its symbol; None for anything else (an order HAT
+        placed, a foreign one, a GTT tag HAT has no working GTT under)."""
+        if item.gtt_tag is not None:
+            found = self.by_tag.get(item.gtt_tag)
+            return found[0] if found is not None and found[1] == item.symbol else None
+        return self.by_symbol.get(item.symbol) if item.tag is None else None
+
+
 @dataclass
 class SyncReport:
     fills: int = 0
@@ -173,15 +195,19 @@ class FillSync:
                 self._apply(session, row, trade, now, report)
         gtts = self._working_gtts(session, account_id)
         for trade in trades:
-            if trade.tag is None and trade.side is Side.SELL and trade.symbol in gtts:
-                self._apply_gtt_trade(session, gtts[trade.symbol], trade, now, report)
+            gtt = gtts.of(trade)
+            if gtt is not None and trade.side is Side.SELL:
+                self._apply_gtt_trade(session, gtt, trade, now, report)
         self._statuses(session, rows, book, now, report)
         gtts = self._working_gtts(session, account_id)
         for order in orders:
-            if self._unfilled_trigger(order, gtts):
-                self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
-            elif self._resting_trigger(session, order, gtts):
-                self._gtt_resting(session, gtts[order.symbol], order, now, report)
+            gtt = gtts.of(order)
+            if gtt is None:
+                continue
+            if self._unfilled_trigger(order):
+                self._gtt_unfilled(session, gtt, order, now, report)
+            elif self._resting_trigger(session, order, gtt):
+                self._gtt_resting(session, gtt, order, now, report)
         # a sale that filled or left the book before it counted as resting is forgotten
         working = {order.order_id for order in orders}
         self._working_since = {
@@ -329,9 +355,8 @@ class FillSync:
         self._notifier.alert(ALERT_FILL_REFUSED, trade_date_of(now), {"tag": row.tag, "code": code})
 
     @staticmethod
-    def _working_gtts(session: Session, account_id: uuid.UUID) -> dict[str, HatOrder]:
-        """Symbol -> the working GTT of the one open real position on it (a symbol two open
-        positions share cannot be told apart, so neither is attributed)."""
+    def _working_gtts(session: Session, account_id: uuid.UUID) -> _WorkingGtts:
+        """The working GTTs of the account's open real positions."""
         found: dict[str, list[HatOrder]] = defaultdict(list)
         rows = session.execute(
             select(HatOrder, HatInstrument.symbol)
@@ -347,7 +372,10 @@ class FillSync:
         ).all()
         for row, symbol in rows:
             found[symbol].append(row)
-        return {symbol: items[0] for symbol, items in found.items() if len(items) == 1}
+        return _WorkingGtts(
+            {row.tag: (row, symbol) for row, symbol in rows},
+            {symbol: items[0] for symbol, items in found.items() if len(items) == 1},
+        )
 
     def _apply_gtt_trade(
         self,
@@ -410,11 +438,10 @@ class FillSync:
     # --- 5. a GTT that triggered without a fill -------------------------------------------------
 
     @staticmethod
-    def _unfilled_trigger(order: BrokerOrder, gtts: dict[str, HatOrder]) -> bool:
+    def _unfilled_trigger(order: BrokerOrder) -> bool:
+        """A GTT's sale (`_WorkingGtts.of` found its GTT) that ended short of its quantity."""
         return (
-            order.tag is None
-            and order.side is Side.SELL
-            and order.symbol in gtts
+            order.side is Side.SELL
             and order.status in _ENDED_SHORT
             and order.filled_qty < order.qty
         )
@@ -481,22 +508,21 @@ class FillSync:
 
     # --- 5b. a GTT that triggered and whose sale rests unfilled ----------------------------------
 
-    def _resting_trigger(
-        self, session: Session, order: BrokerOrder, gtts: dict[str, HatOrder]
-    ) -> bool:
-        """The GTT's own sale, still working short of its quantity: untagged, a CNC SELL of the
-        GTT's quantity at the GTT's limit price (once marked, by its broker order id: a market
-        sale has no limit price). Any other untagged order is not HAT's and is left alone."""
-        gtt = gtts.get(order.symbol)
+    def _resting_trigger(self, session: Session, order: BrokerOrder, gtt: HatOrder) -> bool:
+        """The GTT's own sale, still working short of its quantity: a CNC SELL under the GTT's
+        tag, or an untagged CNC SELL of the GTT's quantity at the GTT's limit price (once marked,
+        by its broker order id: a market sale has no limit price). Any other untagged order is
+        not HAT's and is left alone."""
         if (
-            gtt is None
-            or order.tag is not None
-            or order.side is not Side.SELL
+            order.side is not Side.SELL
             or order.product != "CNC"
             or order.status not in LIVE
             or order.filled_qty >= order.qty
-            or order.qty != gtt.qty
         ):
+            return False
+        if order.gtt_tag is not None:
+            return True  # `_WorkingGtts.of` matched it to this GTT by its tag
+        if order.qty != gtt.qty:
             return False
         limit = Decimal(gtt.price) if gtt.price is not None else None
         return (limit is not None and order.price == limit) or self._trigger_seen(

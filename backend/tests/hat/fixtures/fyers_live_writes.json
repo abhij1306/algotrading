@@ -1,0 +1,589 @@
+{
+  "_note": "Fyers write replies recorded live on 2026-10-22 (SBIN, no fill): a GTT placed untagged, modified, a GTT placed with orderTag HATTEST1, two limit buys under one tag both refused by RMS with an id, both GTTs cancelled, and cancel of the refused orders. Client id, PAN and the RMS client code are masked.",
+  "ltp": 963.5,
+  "calls": [
+    {
+      "method": "place_gtt_order",
+      "args": {
+        "side": -1,
+        "symbol": "NSE:SBIN-EQ",
+        "productType": "CNC",
+        "orderInfo": {
+          "leg1": {
+            "price": 616.65,
+            "triggerPrice": 626.25,
+            "qty": 1
+          }
+        }
+      },
+      "reply": {
+        "code": 1101,
+        "message": "Successfully placed order",
+        "s": "ok",
+        "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+        "id": "26102200000948"
+      }
+    },
+    {
+      "method": "gtt_orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+            "id": "26102200000948",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 6,
+            "precision": 2,
+            "price_limit": 616.65,
+            "price2_limit": 0,
+            "price_trigger": 626.25,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "2:GTTUntagged",
+            "report_type": "NEW",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:40",
+            "create_time_epoch": 1792650100,
+            "oms_msg": "GTT/OCO order placed successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          }
+        ]
+      }
+    },
+    {
+      "method": "modify_gtt_order",
+      "args": {
+        "id": "26102200000948",
+        "orderInfo": {
+          "leg1": {
+            "price": 597.35,
+            "triggerPrice": 607.0,
+            "qty": 1
+          }
+        }
+      },
+      "reply": {
+        "code": 1102,
+        "message": "Successfully modified order",
+        "s": "ok",
+        "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+        "id": "26102200000948"
+      }
+    },
+    {
+      "method": "gtt_orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+            "id": "26102200000948",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 6,
+            "precision": 2,
+            "price_limit": 597.35,
+            "price2_limit": 0,
+            "price_trigger": 607,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "2:GTTUntagged",
+            "report_type": "NEW",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:40",
+            "create_time_epoch": 1792650100,
+            "oms_msg": "GTT/OCO order placed successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          }
+        ]
+      }
+    },
+    {
+      "method": "place_gtt_order",
+      "args": {
+        "side": -1,
+        "symbol": "NSE:SBIN-EQ",
+        "productType": "CNC",
+        "orderInfo": {
+          "leg1": {
+            "price": 578.1,
+            "triggerPrice": 587.75,
+            "qty": 1
+          }
+        },
+        "orderTag": "HATTEST1"
+      },
+      "reply": {
+        "code": 1101,
+        "message": "Successfully placed order",
+        "s": "ok",
+        "id_fyers": "a0c65b25-41c0-435c-a469-7a084241f10c",
+        "id": "26102200000949"
+      }
+    },
+    {
+      "method": "gtt_orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "a0c65b25-41c0-435c-a469-7a084241f10c",
+            "id": "26102200000949",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 6,
+            "precision": 2,
+            "price_limit": 578.1,
+            "price2_limit": 0,
+            "price_trigger": 587.75,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "1:GTTHATTEST1",
+            "report_type": "NEW",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:41",
+            "create_time_epoch": 1792650101,
+            "oms_msg": "GTT/OCO order placed successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          },
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+            "id": "26102200000948",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 6,
+            "precision": 2,
+            "price_limit": 597.35,
+            "price2_limit": 0,
+            "price_trigger": 607,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "2:GTTUntagged",
+            "report_type": "NEW",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:40",
+            "create_time_epoch": 1792650100,
+            "oms_msg": "GTT/OCO order placed successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          }
+        ]
+      }
+    },
+    {
+      "method": "place_order",
+      "args": {
+        "symbol": "NSE:SBIN-EQ",
+        "qty": 1,
+        "type": 1,
+        "side": 1,
+        "productType": "CNC",
+        "limitPrice": 770.8,
+        "stopPrice": 0,
+        "validity": "DAY",
+        "disclosedQty": 0,
+        "offlineOrder": false,
+        "orderTag": "HATTEST2"
+      },
+      "reply": {
+        "code": -99,
+        "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+        "s": "error",
+        "id_fyers": "bef73236-db69-4e7f-985a-2b6e4cc0826f",
+        "id": "26102200316678"
+      }
+    },
+    {
+      "method": "place_order",
+      "args": {
+        "symbol": "NSE:SBIN-EQ",
+        "qty": 1,
+        "type": 1,
+        "side": 1,
+        "productType": "CNC",
+        "limitPrice": 770.8,
+        "stopPrice": 0,
+        "validity": "DAY",
+        "disclosedQty": 0,
+        "offlineOrder": false,
+        "orderTag": "HATTEST2"
+      },
+      "reply": {
+        "code": -99,
+        "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+        "s": "error",
+        "id_fyers": "48107777-f870-4aa8-866b-bfdc380336bc",
+        "id": "26102200316686"
+      }
+    },
+    {
+      "method": "orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "clientId": "XX0000",
+            "exchange": 10,
+            "fyToken": "10100000003045",
+            "id": "26102200316686",
+            "id_fyers": "48107777-f870-4aa8-866b-bfdc380336bc",
+            "instrument": 0,
+            "offlineOrder": false,
+            "source": "API",
+            "status": 5,
+            "type": 1,
+            "pan": "XXXXX0000X",
+            "limitPrice": 770.8,
+            "productType": "CNC",
+            "qty": 1,
+            "disclosedQty": 0,
+            "remainingQuantity": 0,
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "description": "STATE BANK OF INDIA",
+            "ex_sym": "SBIN",
+            "orderDateTime": "22-Oct-2026 11:51:42",
+            "side": 1,
+            "orderValidity": "DAY",
+            "stopPrice": 0,
+            "tradedPrice": 0,
+            "filledQty": 0,
+            "exchOrdId": "",
+            "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+            "ch": 0.2,
+            "chp": 0.020768431983385256,
+            "lp": 963.2,
+            "orderNumStatus": "26102200316686:5",
+            "slNo": 1,
+            "orderTag": "1:HATTEST2",
+            "takeProfit": 0,
+            "stopLoss": 0
+          },
+          {
+            "clientId": "XX0000",
+            "exchange": 10,
+            "fyToken": "10100000003045",
+            "id": "26102200316678",
+            "id_fyers": "bef73236-db69-4e7f-985a-2b6e4cc0826f",
+            "instrument": 0,
+            "offlineOrder": false,
+            "source": "API",
+            "status": 5,
+            "type": 1,
+            "pan": "XXXXX0000X",
+            "limitPrice": 770.8,
+            "productType": "CNC",
+            "qty": 1,
+            "disclosedQty": 0,
+            "remainingQuantity": 0,
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "description": "STATE BANK OF INDIA",
+            "ex_sym": "SBIN",
+            "orderDateTime": "22-Oct-2026 11:51:42",
+            "side": 1,
+            "orderValidity": "DAY",
+            "stopPrice": 0,
+            "tradedPrice": 0,
+            "filledQty": 0,
+            "exchOrdId": "",
+            "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+            "ch": 0.2,
+            "chp": 0.020768431983385256,
+            "lp": 963.2,
+            "orderNumStatus": "26102200316678:5",
+            "slNo": 2,
+            "orderTag": "1:HATTEST2",
+            "takeProfit": 0,
+            "stopLoss": 0
+          }
+        ]
+      }
+    },
+    {
+      "method": "cancel_gtt_order",
+      "args": {
+        "id": "26102200000948"
+      },
+      "reply": {
+        "code": 1103,
+        "message": "Successfully cancelled order",
+        "s": "ok",
+        "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+        "id": "26102200000948"
+      }
+    },
+    {
+      "method": "cancel_gtt_order",
+      "args": {
+        "id": "26102200000949"
+      },
+      "reply": {
+        "code": 1103,
+        "message": "Successfully cancelled order",
+        "s": "ok",
+        "id_fyers": "a0c65b25-41c0-435c-a469-7a084241f10c",
+        "id": "26102200000949"
+      }
+    },
+    {
+      "method": "cancel_order",
+      "args": {
+        "id": "26102200316678"
+      },
+      "reply": {
+        "code": -52,
+        "message": "Not a pending order",
+        "s": "error",
+        "id": "26102200316678"
+      }
+    },
+    {
+      "method": "cancel_order",
+      "args": {
+        "id": "26102200316686"
+      },
+      "reply": {
+        "code": -52,
+        "message": "Not a pending order",
+        "s": "error",
+        "id": "26102200316686"
+      }
+    },
+    {
+      "method": "gtt_orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "bb1b4f60-b5c1-4916-93ec-797311909812",
+            "id": "26102200000948",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 1,
+            "precision": 2,
+            "price_limit": 597.35,
+            "price2_limit": 0,
+            "price_trigger": 607,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "2:GTTUntagged",
+            "report_type": "CANCELLED",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:43",
+            "create_time_epoch": 1792650103,
+            "oms_msg": "GTT/OCO order cancelled successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          },
+          {
+            "client_id": "XX0000",
+            "exchange": 10,
+            "fy_token": "10100000003045",
+            "id_fyers": "a0c65b25-41c0-435c-a469-7a084241f10c",
+            "id": "26102200000949",
+            "instrument": 0,
+            "lot_size": 1,
+            "multiplier": 0,
+            "ord_status": 1,
+            "precision": 2,
+            "price_limit": 578.1,
+            "price2_limit": 0,
+            "price_trigger": 587.75,
+            "price2_trigger": 0,
+            "product_type": "CNC",
+            "qty": 1,
+            "qty2": 0,
+            "ordertag": "1:GTTHATTEST1",
+            "report_type": "CANCELLED",
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "symbol_desc": "STATE BANK OF INDIA",
+            "symbol_exch": "SBIN",
+            "tick_size": 0.05,
+            "tran_side": -1,
+            "gtt_oco_ind": 1,
+            "create_time": "22-Oct-2026 11:51:43",
+            "create_time_epoch": 1792650103,
+            "oms_msg": "GTT/OCO order cancelled successfully.",
+            "ltp_ch": 0,
+            "ltp_chp": 0,
+            "ltp": 0
+          }
+        ]
+      }
+    },
+    {
+      "method": "orderbook",
+      "args": [],
+      "reply": {
+        "code": 200,
+        "message": "",
+        "s": "ok",
+        "orderBook": [
+          {
+            "clientId": "XX0000",
+            "exchange": 10,
+            "fyToken": "10100000003045",
+            "id": "26102200316686",
+            "id_fyers": "48107777-f870-4aa8-866b-bfdc380336bc",
+            "instrument": 0,
+            "offlineOrder": false,
+            "source": "API",
+            "status": 5,
+            "type": 1,
+            "pan": "XXXXX0000X",
+            "limitPrice": 770.8,
+            "productType": "CNC",
+            "qty": 1,
+            "disclosedQty": 0,
+            "remainingQuantity": 0,
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "description": "STATE BANK OF INDIA",
+            "ex_sym": "SBIN",
+            "orderDateTime": "22-Oct-2026 11:51:42",
+            "side": 1,
+            "orderValidity": "DAY",
+            "stopPrice": 0,
+            "tradedPrice": 0,
+            "filledQty": 0,
+            "exchOrdId": "",
+            "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+            "ch": 0,
+            "chp": 0,
+            "lp": 963,
+            "orderNumStatus": "26102200316686:5",
+            "slNo": 1,
+            "orderTag": "1:HATTEST2",
+            "takeProfit": 0,
+            "stopLoss": 0
+          },
+          {
+            "clientId": "XX0000",
+            "exchange": 10,
+            "fyToken": "10100000003045",
+            "id": "26102200316678",
+            "id_fyers": "bef73236-db69-4e7f-985a-2b6e4cc0826f",
+            "instrument": 0,
+            "offlineOrder": false,
+            "source": "API",
+            "status": 5,
+            "type": 1,
+            "pan": "XXXXX0000X",
+            "limitPrice": 770.8,
+            "productType": "CNC",
+            "qty": 1,
+            "disclosedQty": 0,
+            "remainingQuantity": 0,
+            "segment": 10,
+            "symbol": "NSE:SBIN-EQ",
+            "description": "STATE BANK OF INDIA",
+            "ex_sym": "SBIN",
+            "orderDateTime": "22-Oct-2026 11:51:42",
+            "side": 1,
+            "orderValidity": "DAY",
+            "stopPrice": 0,
+            "tradedPrice": 0,
+            "filledQty": 0,
+            "exchOrdId": "",
+            "message": "RED:RULE:{Check circuit limit including square off order}Current:INR 770.80 LowerCircuit:INR 866.70 UpperCircuit:INR 1,059.30:NSE.SBIN-EQ for XX0000 [FYERS_RISK_CUG]",
+            "ch": 0,
+            "chp": 0,
+            "lp": 963,
+            "orderNumStatus": "26102200316678:5",
+            "slNo": 2,
+            "orderTag": "1:HATTEST2",
+            "takeProfit": 0,
+            "stopLoss": 0
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -51,6 +52,7 @@ from app.hat.execution.submit import (
     OrderRefusedError,
     TagBook,
     UnresolvedOrderError,
+    find_gtt,
     reserve_order,
     send_order,
 )
@@ -206,6 +208,11 @@ quantities = st.integers(min_value=1, max_value=100_000)
 db_symbols = st.sampled_from(sorted(SYMBOLS))
 order_types = st.sampled_from(list(OrderType))
 tags_ = st.builds(encode_tag, SIGNALS, PURPOSES, SEQUENCES)
+gtt_tags = st.builds(encode_tag, SIGNALS, st.just("stop_gtt"), SEQUENCES)
+# Tags a GTT is refused with: none, another purpose's HAT tag, a foreign one
+not_gtt_tags = st.one_of(
+    st.none(), tags_.filter(lambda t: decode_tag(t).purpose != "stop_gtt"), st.just("MYSTOP1")
+)
 
 
 @st.composite
@@ -338,19 +345,39 @@ def test_intent_product_cnc(intent: OrderIntent) -> None:
 
 
 @given(
-    db_symbols, quantities, prices, prices, st.text(min_size=1, max_size=8, alphabet="0123456789")
+    db_symbols,
+    quantities,
+    prices,
+    prices,
+    st.text(min_size=1, max_size=8, alphabet="0123456789"),
+    gtt_tags,
+    not_gtt_tags,
 )
-def test_gtt_payloads(symbol: str, qty: int, trigger: Decimal, limit: Decimal, gtt_id: str) -> None:
-    """HAT-BRK-090: the GTT place, modify and cancel payloads are exact, CNC, single-leg."""
+def test_gtt_payloads(
+    symbol: str,
+    qty: int,
+    trigger: Decimal,
+    limit: Decimal,
+    gtt_id: str,
+    tag: str,
+    other: str | None,
+) -> None:
+    """HAT-BRK-090: the GTT place, modify and cancel payloads are exact, CNC, single-leg, and the
+    place carries the stop's HT tag as `orderTag` (Fyers takes a tag on a GTT, recorded
+    2026-10-22); a GTT without a stop_gtt HT tag is refused before any SDK call."""
     sdk = RecordingSdk()
     broker = adapter_over(sdk)
+    with pytest.raises(InvalidIntentError):
+        broker.place_gtt_stop(GttRequest(symbol, qty, trigger, min(limit, trigger), tag=other))
     if limit >= trigger:
-        request = GttRequest(symbol, qty, trigger, limit)
+        request = GttRequest(symbol, qty, trigger, limit, tag=tag)
         with pytest.raises(InvalidIntentError):
             broker.place_gtt_stop(request)
         assert sdk.calls == []
         return
-    assert broker.place_gtt_stop(GttRequest(symbol, qty, trigger, limit)).status == "placed"
+    assert sdk.calls == []
+    placed = broker.place_gtt_stop(GttRequest(symbol, qty, trigger, limit, tag=tag))
+    assert placed.status == "placed"
     assert broker.modify_gtt(GttModify(gtt_id, qty, trigger, limit)).ok
     assert broker.cancel_gtt(gtt_id).ok
     leg = {"price": float(limit), "triggerPrice": float(trigger), "qty": qty}
@@ -362,6 +389,7 @@ def test_gtt_payloads(symbol: str, qty: int, trigger: Decimal, limit: Decimal, g
                 "symbol": SYMBOLS[symbol],
                 "productType": "CNC",
                 "orderInfo": {"leg1": leg},
+                "orderTag": tag,
             },
         ),
         ("modify_gtt_order", {"id": gtt_id, "orderInfo": {"leg1": leg}}),
@@ -372,10 +400,11 @@ def test_gtt_payloads(symbol: str, qty: int, trigger: Decimal, limit: Decimal, g
 def test_gtt_refuses_a_non_cnc_or_non_sell_request() -> None:
     sdk = RecordingSdk()
     broker = adapter_over(sdk)
+    tag = encode_tag(uuid.UUID(int=1), "stop_gtt", 0)
     for request in (
-        GttRequest("SBIN", 1, Decimal(100), Decimal(99), product="MTF"),
-        GttRequest("SBIN", 1, Decimal(100), Decimal(99), side=Side.BUY),
-        GttRequest("SBIN", 0, Decimal(100), Decimal(99)),
+        GttRequest("SBIN", 1, Decimal(100), Decimal(99), product="MTF", tag=tag),
+        GttRequest("SBIN", 1, Decimal(100), Decimal(99), side=Side.BUY, tag=tag),
+        GttRequest("SBIN", 0, Decimal(100), Decimal(99), tag=tag),
     ):
         with pytest.raises(InvalidIntentError):
             broker.place_gtt_stop(request)
@@ -1040,9 +1069,56 @@ def test_a_virtual_order_never_reaches_the_broker() -> None:
     assert env.fake.calls == []
 
 
+@st.composite
+def gtt_books(draw: st.DrawFn) -> tuple[SimpleNamespace, list[BrokerGtt], set[str]]:
+    """A lost stop_gtt row, a GTT book around it (GTTs under its tag, another HAT GTT tag or
+    none, on its symbol or another, of its shape or not) and the GTT ids other rows hold."""
+    tag = draw(gtt_tags)
+    other = draw(gtt_tags.filter(lambda t: t != tag))
+    row = SimpleNamespace(tag=tag, qty=draw(st.integers(1, 3)), trigger_price=Decimal("100"))
+    book = [
+        BrokerGtt(
+            f"G{i}",
+            draw(st.sampled_from(["SBIN", "SBIN", "RELIANCE"])),
+            draw(st.sampled_from([Side.SELL, Side.SELL, Side.BUY])),
+            draw(st.integers(1, 3)),
+            draw(st.sampled_from([Decimal("100"), Decimal("100"), Decimal("99.95")])),
+            draw(st.sampled_from([tag, other, None])),
+        )
+        for i in range(draw(st.integers(0, 6)))
+    ]
+    claimed = {gtt.gtt_id for gtt in book if draw(st.booleans())}
+    return row, book, claimed
+
+
+@given(gtt_books())
+def test_a_lost_gtt_is_found_by_its_tag(
+    book: tuple[SimpleNamespace, list[BrokerGtt], set[str]],
+) -> None:
+    """HAT-EXEC-065, HAT-BRK-090: the GTT a lost stop_gtt answer settles to is one no other row
+    holds on the row's symbol: the one under the row's own tag when the book shows one (at any
+    quantity or trigger), else one shown untagged of exactly the row's side, quantity and
+    trigger; never one under another HAT GTT's tag. Harm: another position's stop is adopted
+    (and later cancelled or moved), leaving that position unprotected."""
+    row, gtts, claimed = book
+    found = find_gtt(gtts, row, "SBIN", claimed)  # type: ignore[arg-type]
+    free = [g for g in gtts if g.gtt_id not in claimed and g.symbol == "SBIN"]
+    own = [g for g in free if g.tag == row.tag]
+    shaped = [
+        g
+        for g in free
+        if g.tag is None
+        and g.side is Side.SELL
+        and g.qty == row.qty
+        and g.trigger_price == row.trigger_price
+    ]
+    assert found == (own[0] if own else shaped[0] if shaped else None)
+
+
 def test_a_pending_gtt_is_not_retried_after_a_lost_answer() -> None:
-    """07 §10: a GTT has no tag at Fyers, so an unconfirmed one cannot be looked up and is not
-    placed again."""
+    """07 §10: an unconfirmed GTT is not placed again, though it carries its tag: Fyers does not
+    enforce tag uniqueness and its GTT book can lag one that landed, so it is settled against the
+    book once old enough (`StopDesk.settle_lost`), never sent again."""
     from app.hat.execution.submit import UnresolvedOrderError
 
     env = exec_env()
@@ -1113,12 +1189,15 @@ def test_a_fractional_status_code_is_unconfirmed(code: float) -> None:
     assert map_fyers_status(code, 0, 0) == "unconfirmed"
 
 
+GTT_TAG = encode_tag(uuid.UUID(int=1), "stop_gtt", 0)
+
+
 @given(st.dictionaries(st.sampled_from(["s", "message", "code"]), st.text(max_size=5), max_size=3))
 def test_a_gtt_reply_that_is_not_an_explicit_answer_is_unconfirmed(reply: dict) -> None:
     """Only `ok` with an id is placed and only an explicit `error` is rejected; any other
     dictionary may have landed."""
     result = adapter_over(RecordingSdk(reply=reply)).place_gtt_stop(
-        GttRequest("SBIN", 1, Decimal("100"), Decimal("99"))
+        GttRequest("SBIN", 1, Decimal("100"), Decimal("99"), tag=GTT_TAG)
     )
     expected = "rejected" if reply.get("s") == "error" else "unconfirmed"
     assert result.status == expected
@@ -1249,8 +1328,26 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
     oco = draw(st.booleans())
     product = draw(st.sampled_from(["CNC", "CNC", "INTRADAY"]))
     shape = draw(GTT_SHAPES)
+    hat_tag = draw(gtt_tags)
+    # how Fyers shows the tag (recorded 2026-10-22): "<n>:GTT<tag>", "<n>:GTTUntagged", absent;
+    # a foreign tag or another purpose's HAT tag is not one of HAT's GTTs
+    shown, tag = draw(
+        st.sampled_from(
+            [
+                (f"1:GTT{hat_tag}", hat_tag),
+                (f"GTT{hat_tag}", hat_tag),
+                (hat_tag, hat_tag),
+                ("2:GTTUntagged", None),
+                (None, None),
+                ("1:GTTMYSTOP", None),
+                (f"1:GTT{encode_tag(uuid.UUID(int=3), 'entry', 0)}", None),
+            ]
+        )
+    )
     leg = {"price": float(trigger) - 1, "triggerPrice": float(trigger), "qty": qty}
-    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], "side": -1, "productType": product}
+    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], "tran_side": -1, "product_type": product}
+    if shown is not None:
+        row["ordertag"] = shown
     if status is not None:
         row["ord_status"] = status
     if shape == "flat":
@@ -1261,7 +1358,7 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
     else:
         row.update(leg1=leg, **({"leg2": dict(leg)} if oco else {}))
     resting = status in (None, 2, 4, 6) and not oco and product == "CNC"
-    expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger) if resting else None
+    expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger, tag) if resting else None
     return row, expected
 
 
@@ -1280,18 +1377,20 @@ def test_the_gtt_book_reads_only_resting_stops(
     rows: list[tuple[dict, BrokerGtt | None]], odd: int | None
 ) -> None:
     """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the single-leg CNC GTTs that rest or
-    have triggered (the flat book fields, `orderInfo.leg1` or `leg1`); a cancelled, rejected or
+    have triggered (the flat book fields, `orderInfo.leg1` or `leg1`; the live keys `tran_side`,
+    `product_type`), each with the stop_gtt HT tag Fyers shows on it ("<n>:GTT<tag>") or None
+    (untagged, a foreign tag, another purpose's HAT tag); a cancelled, rejected or
     expired GTT, an OCO or another product is left out, and a single-leg CNC row with a status
     code it does not know makes the book unreadable. Harm: a lost GTT is matched to one that
     never sold and no longer rests, leaving the position without a stop; or a triggered or
     unknown one is read as gone and a second GTT is placed under shares already sold."""
     book = [row for row, _ in rows]
-    single = {"id": "G0", "symbol": SYMBOLS["SBIN"], "side": -1, "productType": "CNC"}
+    single = {"id": "G0", "symbol": SYMBOLS["SBIN"], "tran_side": -1, "product_type": "CNC"}
     single.update(price_trigger=100.0, qty=1)
     if odd is not None:
         # Someone else's GTT (an OCO, or intraday) with any status is not HAT's to read.
         foreign = [{**single, "gtt_oco_ind": 2, "ord_status": odd}]
-        foreign.append({**single, "productType": "INTRADAY", "ord_status": odd})
+        foreign.append({**single, "product_type": "INTRADAY", "ord_status": odd})
         expected = [g for _, g in rows if g is not None]
         assert adapter_over(GttBookSdk([*book, *foreign])).gtts() == expected
         unknown = adapter_over(GttBookSdk([*book, {**single, "ord_status": odd}]))

@@ -3,12 +3,14 @@ execution mode (HAT-BRK-080, -091, HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-
 HAT-EXEC-011)."""
 
 import inspect
+import json
 import re
 import uuid
 from pathlib import Path
 
 import pytest
 import yaml
+from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 from hat_conf_spec import SPEC_DIR
@@ -19,6 +21,7 @@ from app.hat.engine.strategy.versions import VersionError, create_bot
 from app.hat.execution import accounts, modes
 from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
@@ -389,3 +392,80 @@ def test_exec__default_mode_shadow() -> None:
             )
             == modes.SHADOW
         )
+
+
+WRITES_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fyers_live_writes.json"
+# A PAN (5 letters, 4 digits, a letter), Fyers' "C-" RMS client code, an IPv4 address
+_ACCOUNT_IDS = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b|\bC-[A-Z0-9]{5,}|\b\d{1,3}(\.\d{1,3}){3}\b")
+
+
+def _recorded() -> list[dict]:
+    return json.loads(WRITES_FIXTURE.read_text(encoding="utf-8"))["calls"]
+
+
+def test_brk__recorded_writes() -> None:
+    """HAT-BRK-090, -091, -103, MX-F6: the Fyers write replies recorded live on 2026-10-22 hold:
+    the GTT place payload the broker builds for the recorded request is the one Fyers accepted
+    (`orderTag` included); the place, modify and cancel replies read as placed and ok; the GTT
+    book rows (live keys `tran_side`, `product_type`, `ordertag` "1:GTT<tag>" or "2:GTTUntagged")
+    read as resting GTTs with their tag, and cancelled ones are left out; two orders under one
+    tag were both accepted with ids and both refused by RMS (MX-F6: Fyers does not enforce tag
+    uniqueness), and each reads as a rejection. The fixture carries no account id (masked)."""
+    calls = _recorded()
+    text = WRITES_FIXTURE.read_text(encoding="utf-8")
+    assert [m.group(0) for m in _ACCOUNT_IDS.finditer(text)] == ["XXXXX0000X"] * text.count(
+        "XXXXX0000X"
+    )
+    by = lambda name: [c for c in calls if c["method"] == name]  # noqa: E731
+    [untagged, tagged] = by("place_gtt_order")
+    assert tagged["args"]["orderTag"] == "HATTEST1"
+    assert "orderTag" not in untagged["args"]
+    for call in (untagged, tagged):
+        sdk = RecordingSdk(call["reply"])
+        leg = call["args"]["orderInfo"]["leg1"]
+        reply = broker_over(sdk).place_gtt(
+            {
+                "symbol": call["args"]["symbol"],
+                "quantity": leg["qty"],
+                "side": "SELL",
+                "product": "CNC",
+                "trigger_price": leg["triggerPrice"],
+                "price": leg["price"],
+                "order_tag": call["args"].get("orderTag"),
+            }
+        )
+        assert sdk.calls == [("place_gtt_order", call["args"])]
+        assert (reply["status"], reply["order_id"]) == ("SUBMITTED", call["reply"]["id"])
+    adapter = FyersHatBroker(broker_over(RecordingSdk()), instruments=lambda: [])
+    for name in ("modify_gtt_order", "cancel_gtt_order"):
+        assert all(c["reply"]["s"] == "ok" for c in by(name))
+    # the GTT book: the tag Fyers shows, put on a HAT tag
+    tag = encode_tag(uuid.UUID(int=25), "stop_gtt", 0)
+    books = [c["reply"]["orderBook"] for c in by("gtt_orderbook")]
+    shown = {row["ordertag"] for book in books for row in book}
+    assert shown == {"2:GTTUntagged", "1:GTTHATTEST1"}
+    for book in books:
+        rows = [{**r, "ordertag": r["ordertag"].replace("HATTEST1", tag)} for r in book]
+        read = adapter._read(lambda rows=rows: rows, lambda rs: list(map(adapter._gtt_row, rs)))
+        for row, gtt in zip(rows, read, strict=True):
+            if row["ord_status"] == 1:  # cancelled
+                assert gtt is None
+                continue
+            assert gtt is not None
+            assert gtt.side.value == "sell"
+            assert gtt.qty == row["qty"]
+            assert gtt.tag == (tag if "GTT" + tag in row["ordertag"] else None)
+    # MX-F6: one tag, two orders, both accepted with an id and refused by RMS
+    [first, second] = by("place_order")
+    assert first["args"] == second["args"]
+    assert first["args"]["orderTag"] == "HATTEST2"
+    assert first["reply"]["id"] != second["reply"]["id"]
+    for call in (first, second):
+        assert call["reply"]["s"] == "error"
+        assert call["reply"]["id"]
+    book = by("orderbook")[-1]["reply"]["orderBook"]
+    assert sorted(r["id"] for r in book) == sorted(c["reply"]["id"] for c in (first, second))
+    orders = adapter._order_book(book)
+    assert {(o.tag, o.status) for o in orders} == {("HATTEST2", "rejected")}
+    assert len(orders) == 2
+    assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))

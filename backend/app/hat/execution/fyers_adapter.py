@@ -68,7 +68,7 @@ from .fyers_broker import (
 )
 from .fyers_session import FyersSession, get_fyers_session
 from .fyers_tokens import TokenStoreError
-from .tags import TAG_LENGTH, is_hat_tag
+from .tags import TAG_LENGTH, is_gtt_tag, is_hat_tag
 
 # The Fyers order "type" code back to HAT's order type (`FYERS_ORDER_TYPES` reversed).
 _ORDER_TYPE_OF_CODE = {code: OrderType(name) for name, code in FYERS_ORDER_TYPES.items()}
@@ -200,6 +200,30 @@ def _clean_tag(tag: object) -> str | None:
     """The tag of a broker row without Fyers' optional "<n>:" prefix, else None."""
     text = str(tag or "").split(":")[-1]
     return text or None
+
+
+# Fyers shows a GTT's tag on its book row as "<n>:GTT<tag>" and an untagged GTT's as
+# "<n>:GTTUntagged" (recorded 2026-10-22).
+_GTT_TAG_PREFIX = "GTT"
+
+
+def _gtt_tag(tag: object) -> str | None:
+    """The HT tag of one of HAT's GTTs in a broker row's tag (Fyers' "<n>:" prefix and the "GTT"
+    it puts before a GTT's tag stripped); None for no tag, "GTTUntagged", a foreign tag or a HAT
+    tag of another purpose."""
+    text = _clean_tag(tag)
+    if text is not None and text.startswith(_GTT_TAG_PREFIX):
+        text = text[len(_GTT_TAG_PREFIX) :]
+    return text if is_gtt_tag(text) else None
+
+
+def _row_tags(tag: object) -> tuple[str | None, str | None]:
+    """(tag, gtt_tag) of an order or trade row. A row under one of HAT's GTT tags (bare, or as
+    Fyers shows a GTT's) is the sale that GTT triggered into [verify on a live account: whether
+    and how the child carries the tag], not an order HAT placed: its tag is None and the GTT's
+    is `gtt_tag`."""
+    gtt_tag = _gtt_tag(tag)
+    return (None, gtt_tag) if gtt_tag is not None else (_clean_tag(tag), None)
 
 
 def _ack(reply: object) -> AckResult:
@@ -434,6 +458,8 @@ class FyersHatBroker:
         try:
             if request.product != "CNC" or Side(request.side) is not Side.SELL:
                 raise InvalidOperation
+            if not is_gtt_tag(request.tag):
+                raise InvalidOperation  # every GTT HAT places carries its stop_gtt tag
             if not _is_positive_qty(request.qty):
                 raise InvalidOperation
             trigger, limit = self._gtt_prices(request.trigger_price, request.limit_price)
@@ -444,6 +470,7 @@ class FyersHatBroker:
                 "product": "CNC",
                 "trigger_price": trigger,
                 "price": limit,
+                "order_tag": request.tag,
             }
         except (InvalidOperation, ValueError, TypeError):
             raise InvalidIntentError(CODE_INVALID_INTENT) from None
@@ -473,16 +500,18 @@ class FyersHatBroker:
         (`gtt_oco_ind` 2 or a second leg), a product other than CNC, or a GTT that ended without
         selling (`ord_status` 1 cancelled, 5 rejected, 7 expired). A GTT resting (4 transit,
         6 pending, or no status) or triggered (2) is kept: a lost answer whose GTT has since
-        triggered is adopted, so the fill sync attributes its sale. The single leg is read from
-        the flat `price_trigger`/`qty` fields of the book, or from `orderInfo.leg1` / `leg1`
-        (the shape a GTT is placed with) [verify on a live account]. A single-leg CNC row with
-        a status code it does not know, or whose trigger or quantity cannot be read, raises, so
-        the read fails instead of missing a GTT."""
+        triggered is adopted, so the fill sync attributes its sale. The book's keys are the ones
+        recorded live on 2026-10-22: `tran_side`, `product_type`, `ordertag` ("<n>:GTT<tag>",
+        read as the HT tag of one of HAT's GTTs or None) and the flat `price_trigger`/`qty`; the
+        single leg is also read from `orderInfo.leg1` / `leg1` (the shape a GTT is placed with)
+        [verify on a live account]. A single-leg CNC row with a status code it does not know, or
+        whose side, trigger or quantity cannot be read, raises, so the read fails instead of
+        missing a GTT."""
         info = row.get("orderInfo") or {}
         oco = _whole_number(row.get("gtt_oco_ind")) == _GTT_OCO
         if oco or row.get("leg2") or info.get("leg2"):
             return None
-        product = row.get("productType")
+        product = row.get("product_type")
         if product is not None and product != "CNC":
             return None
         status = row.get("ord_status", row.get("status"))
@@ -502,9 +531,10 @@ class FyersHatBroker:
         return BrokerGtt(
             gtt_id=str(row["id"]),
             symbol=symbol_master.to_db(str(row["symbol"])),
-            side=self._side(row["side"]),
+            side=self._side(row["tran_side"]),
             qty=whole,
             trigger_price=_positive_price(trigger),
+            tag=_gtt_tag(row.get("ordertag")),
         )
 
     def gtts(self) -> list[BrokerGtt]:
@@ -550,9 +580,10 @@ class FyersHatBroker:
     def _order_row(self, row: dict[str, Any]) -> BrokerOrder:
         qty = int(row["qty"])
         filled = int(row.get("filledQty") or 0)
+        tag, gtt_tag = _row_tags(row.get("orderTag"))
         return BrokerOrder(
             order_id=str(row["id"]),
-            tag=_clean_tag(row.get("orderTag")),
+            tag=tag,
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=self._side(row["side"]),
             qty=qty,
@@ -561,19 +592,21 @@ class FyersHatBroker:
             product=str(row.get("productType") or ""),
             order_type=_order_type(row.get("type")),
             price=_book_price(row.get("limitPrice")),
+            gtt_tag=gtt_tag,
         )
 
     def _order_book(self, rows: Iterable[Any]) -> OrderBook:
         """Every row of the book. A row without an HT tag that cannot be read is skipped and
         counted (a manual or foreign order must not fail the whole read, D118); an HT-tagged row
-        that cannot be read raises, so the read fails instead of missing one of HAT's orders."""
+        (one of HAT's GTT sales included) that cannot be read raises, so the read fails instead
+        of missing one of HAT's orders."""
         book = OrderBook()
         for row in rows:
             try:
                 book.append(self._order_row(row))
             except _UNREADABLE:
                 tag = row.get("orderTag") if isinstance(row, dict) else None
-                if is_hat_tag(_clean_tag(tag)):
+                if is_hat_tag(_clean_tag(tag)) or _gtt_tag(tag) is not None:
                     raise
                 book.skipped += 1
         return book
@@ -582,20 +615,22 @@ class FyersHatBroker:
         return self._read(self._broker.fetch_orderbook, self._order_book)
 
     def trades(self) -> list[BrokerTrade]:
+        def trade(r: dict[str, Any]) -> BrokerTrade:
+            tag, gtt_tag = _row_tags(r.get("orderTag"))
+            return BrokerTrade(
+                trade_id=str(r["tradeNumber"]),
+                order_id=str(r["orderNumber"]),
+                tag=tag,
+                symbol=symbol_master.to_db(str(r["symbol"])),
+                side=self._side(r["side"]),
+                qty=int(r["tradedQty"]),
+                price=_positive_price(r["tradePrice"]),
+                traded_at=None,
+                gtt_tag=gtt_tag,
+            )
+
         def parse(rows: list[dict[str, Any]]) -> list[BrokerTrade]:
-            return [
-                BrokerTrade(
-                    trade_id=str(r["tradeNumber"]),
-                    order_id=str(r["orderNumber"]),
-                    tag=_clean_tag(r.get("orderTag")),
-                    symbol=symbol_master.to_db(str(r["symbol"])),
-                    side=self._side(r["side"]),
-                    qty=int(r["tradedQty"]),
-                    price=_positive_price(r["tradePrice"]),
-                    traded_at=None,
-                )
-                for r in rows
-            ]
+            return [trade(r) for r in rows]
 
         return self._read(self._broker.fetch_tradebook, parse)
 

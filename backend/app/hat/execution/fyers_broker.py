@@ -441,8 +441,13 @@ class FyersBroker:
 
     def place_gtt(self, gtt: dict[str, Any]) -> OrderReply:
         """Place a single-leg GTT order. gtt: {symbol (Fyers format), quantity, side, product,
-        trigger_price, price}. The SDK payload is `{side, symbol, productType, orderInfo: {leg1:
-        {price, triggerPrice, qty}}}`. Like place_order, a lost answer is SUBMIT_UNCONFIRMED."""
+        trigger_price, price, order_tag (optional)}. The SDK payload is `{side, symbol,
+        productType, orderInfo: {leg1: {price, triggerPrice, qty}}, orderTag}` (the tag only when
+        given; Fyers shows it on the GTT book row as `ordertag` "<n>:GTT<tag>", recorded
+        2026-10-22). Like place_order, a lost answer is SUBMIT_UNCONFIRMED."""
+        tag_fields, tag_rejection = _order_tag_fields(gtt.get("order_tag"))
+        if tag_rejection is not None:
+            return tag_rejection
         side = gtt.get("side")
         product = str(gtt.get("product") or "").upper()
         trigger = _float(gtt.get("trigger_price"))
@@ -461,6 +466,7 @@ class FyersBroker:
             "orderInfo": {
                 "leg1": {"price": limit_price, "triggerPrice": trigger, "qty": gtt["quantity"]}
             },
+            **tag_fields,
         }
         return self._send("place_gtt", lambda: self.client.place_gtt_order(data=data), "GTT Placed")
 

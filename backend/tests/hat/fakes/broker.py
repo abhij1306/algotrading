@@ -249,13 +249,17 @@ class FakeBroker:
 
     @staticmethod
     def _gtt_row(gtt: dict[str, Any], gtt_id: str) -> dict[str, Any]:
-        """The Fyers GTT book row of a placed GTT: one row per GTT, its leg flat on the row,
-        `ord_status` 6 (pending) and `gtt_oco_ind` 1 (a single GTT)."""
+        """The Fyers GTT book row of a placed GTT, in the shape recorded live on 2026-10-22: one
+        row per GTT, its leg flat on the row, `tran_side`, `product_type`, `ordertag`
+        ("1:GTT<tag>", or "2:GTTUntagged" for a GTT placed without one), `ord_status` 6
+        (pending) and `gtt_oco_ind` 1 (a single GTT)."""
+        tag = gtt.get("order_tag")
         return {
             "id": gtt_id,
             "symbol": gtt["symbol"],
-            "side": 1 if gtt["side"] == "BUY" else -1,
-            "productType": gtt["product"],
+            "tran_side": 1 if gtt["side"] == "BUY" else -1,
+            "product_type": gtt["product"],
+            "ordertag": f"1:GTT{tag}" if tag else "2:GTTUntagged",
             "gtt_oco_ind": 1,
             "ord_status": 6,
             "price_limit": gtt["price"],

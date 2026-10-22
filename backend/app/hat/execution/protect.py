@@ -27,9 +27,10 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
   settled against the broker once `settle_after` has passed since it was sent (a request still
-  in flight could land later): a GTT against the broker's GTT book by symbol, quantity and
-  trigger (GTTs carry no tag), a day stop by its tag. Found, it is adopted as placed; absent
-  after a good read, it never landed: it ends `expired` and the position is protected again.
+  in flight could land later): a GTT against the broker's GTT book by its tag (else, for a GTT
+  shown untagged, by symbol, quantity and trigger: `submit.find_gtt`), a day stop by its tag.
+  Found, it is adopted as placed; absent after a good read, it never landed: it ends `expired`
+  and the position is protected again.
   While a stop's outcome is unknown it never holds a sale back (`make_room` skips it: a resting
   CNC stop makes the broker refuse the sale, the safe way round).
 
@@ -502,7 +503,8 @@ class StopDesk:
             return PROTECTED if covered else FAILED  # a refused resize is alerted
         # A stop reserved and never sent is sent; a day stop whose answer was lost is looked up
         # by its tag and sent again only when absent, once it is old enough (still in flight
-        # otherwise). A lost GTT that settling left is never sent again (it has no tag).
+        # otherwise). A lost GTT that settling left is never sent again: the GTT book may lag one
+        # that landed.
         ready = [
             row
             for row in working

@@ -17,9 +17,11 @@ An order is two steps with the database in between:
 
 Every refusal (account not active, no reconciliation this session, mismatch for the bot, no live
 session, a virtual order, a non-delivery product, a short entry) is raised before the broker is
-called; an intent the adapter refuses (`InvalidIntentError`) is a definite rejection. GTT carries
-no tag at Fyers, so `send_order` never retries an unconfirmed GTT (`UnresolvedOrderError`): the
-`StopDesk` settles it against the broker's GTT book (`find_gtt`, `adopt_gtt`, `end_lost_order`).
+called; an intent the adapter refuses (`InvalidIntentError`) is a definite rejection. A GTT
+carries its stop_gtt tag at Fyers (HAT-BRK-090), but its book can lag a GTT that landed and Fyers
+does not enforce tag uniqueness, so `send_order` never retries an unconfirmed GTT
+(`UnresolvedOrderError`): the `StopDesk` settles it against the broker's GTT book once it is old
+enough (`find_gtt`: by its tag, else by its shape; `adopt_gtt`, `end_lost_order`).
 
 A sale the broker took and then ended without selling all of it (rejected, cancelled, expired)
 records `order.rejected` and fires its exit rules again (`hat_order.rule_ids`), so the next
@@ -341,15 +343,20 @@ def end_lost_order(session: Session, row: HatOrder) -> None:
 def find_gtt(
     gtts: list[BrokerGtt], row: HatOrder, symbol: str, claimed: set[str]
 ) -> BrokerGtt | None:
-    """The broker GTT a stop_gtt row whose answer was lost became: the one on the row's symbol
-    for its quantity and trigger that no other HAT row holds; None when the book has none."""
+    """The broker GTT a stop_gtt row whose answer was lost became, among those no other HAT row
+    holds: the one under the row's tag on its symbol; else one shown without a HAT tag (placed
+    before GTTs were tagged) on the row's symbol for its quantity and trigger; never one under
+    another HAT tag. None when the book has none."""
+    free = [gtt for gtt in gtts if gtt.gtt_id not in claimed and gtt.symbol == symbol]
+    tagged = next((gtt for gtt in free if gtt.tag == row.tag), None)
+    if tagged is not None:
+        return tagged
     trigger = Decimal(row.trigger_price) if row.trigger_price is not None else None
     return next(
         (
             gtt
-            for gtt in gtts
-            if gtt.gtt_id not in claimed
-            and gtt.symbol == symbol
+            for gtt in free
+            if gtt.tag is None
             and gtt.side is Side.SELL
             and gtt.qty == row.qty
             and gtt.trigger_price == trigger
@@ -478,7 +485,8 @@ def _lookup_before_retry(
     returned; None means the book has none and the same tag may be placed again (a stop or a
     sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed."""
     if row.purpose == GTT_PURPOSE:
-        raise UnresolvedOrderError("a GTT has no tag to look up")
+        # settled against the GTT book once old enough (StopDesk.settle_lost), never sent again
+        raise UnresolvedOrderError("a GTT of unknown outcome is settled, never sent again")
     found = resolve_by_tag(broker, tag)
     if found is None:
         if row.purpose == ENTRY:
@@ -502,6 +510,7 @@ def _build_request(
             qty=row.qty,
             trigger_price=row.trigger_price,
             limit_price=gtt_limit_price(row.trigger_price, tick_size),
+            tag=tag,
         )
     return OrderIntent(
         symbol=symbol,
