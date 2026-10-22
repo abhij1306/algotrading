@@ -36,7 +36,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), and across a second run started right after the first with a fresh pacer on the saved progress, no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
 - `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume` (and given the next day's shifted period, which the resume replaces with the stopped run's), leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
 - `PBT bars.minute_history_plan_clamp` A fake plan that refuses (-50, `data.range_from` "exceeds the historical data available for your plan") any range before a floor 0..2 days after `today - plan_days`: a start 0..3 days before the floor is clamped to exactly the floor (saved in the progress), within `max_clamps`, and every symbol is loaded from there; a -50 with another reason is a symbol failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
-- `PBT minute_history_cli.root_and_report` Driving `main` with `HAT_DATA_ROOT` set only in `.env`, only in the environment, in both, or blank in the environment over a `.env` value, 0 to 3 symbols, every call refused or answered `no_data`, and any count of members without a Fyers symbol: the lock, progress and report land only under the root that rule gives, `minute_history/report-YYYY-MM-DD.txt` ends with exactly the coverage report printed, `main` exits 1 exactly when a symbol failed, and nothing reaches the network. Harm: a three-day download writes to the repo's `data_system/hat/` instead of the data volume, or its coverage is lost with the terminal.
+- `PBT minute_history_cli.root_and_report` Driving `main` with `HAT_DATA_ROOT` set only in `.env`, only in the environment, in both, or blank in the environment over a `.env` value, 0 to 3 symbols, every call refused or answered `no_data`, and any count of members without a Fyers symbol: the lock, progress and report land only under the root that rule gives, `minute_history/report-YYYY-MM-DD.txt` ends with exactly the coverage report printed, `main` exits 1 exactly when the run stopped or a symbol failed (with a budget that never runs out, only refused symbols do either), and nothing reaches the network. Harm: a three-day download writes to the repo's `data_system/hat/` instead of the data volume, or its coverage is lost with the terminal.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed, with the listing's open (PR 22: the gapper is not subscribed yet, so the feed has no open of it). Harm: impossible gaps are chased or valid EP candidates never watched.
 - `PBT gapscan.timing_recorded` Every gap-scan run, successful or failed, has a `hat_job_run` row with start and finish, and a run finishing at or after 09:20:00 IST raises an alert. Harm: the EP playbook silently never sees its candidates in time.
@@ -79,7 +79,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 ```bash
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_feed.py tests/hat/properties/test_bars.py tests/hat/properties/test_gapscan.py \
-  tests/hat/properties/test_announcements.py -q --no-cov     # about 40 s under the ci profile
+  tests/hat/properties/test_announcements.py tests/hat/properties/test_minute_history_cli.py -q --no-cov     # about 40 s under the ci profile
 python -m pytest tests/hat/conformance/test_conf_imports.py -q --no-cov
 ```
 
@@ -147,7 +147,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `2b8afd3577ceb9e32a028491b2a9d4788c0a2ab0965f2efa890a12550041d8f8`
+Covered digest: `e357f7beec80880f25955f578fdc40e076c21a51c387cc46641214b8b4a1cd32`
 
 ## Scope changes
 
@@ -183,7 +183,7 @@ Break: (PR 43) `_run` reads `load_settings()` again (the PR 41 order: `.env` not
 
 ```
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
-tests/hat/properties/test_minute_history_cli.py:58: in test_root_and_report
+tests/hat/properties/test_minute_history_cli.py:59: in test_root_and_report
 E   AssertionError: ['.env', 'default/minute_history/progress.json', 'default/minute_history/progress.lock', 'default/minute_history/report-2026-10-22.txt']
 E   assert {'.env', 'default'} == {'.env', 'env_file'}
 ```
@@ -192,7 +192,7 @@ Break: (PR 43) `operator_settings()` no longer loads `.env`.
 
 ```
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
-tests/hat/properties/test_minute_history_cli.py:58: in test_root_and_report
+tests/hat/properties/test_minute_history_cli.py:59: in test_root_and_report
 E   AssertionError: ['.env', 'default/minute_history/progress.json', 'default/minute_history/progress.lock', 'default/minute_history/report-2026-10-22.txt']
 E   assert {'.env', 'default'} == {'.env', 'env_file'}
 ```
@@ -201,7 +201,7 @@ Break: (PR 43) the command line no longer saves its report.
 
 ```
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
-tests/hat/properties/test_minute_history_cli.py:62: in test_root_and_report
+tests/hat/properties/test_minute_history_cli.py:63: in test_root_and_report
 E   AssertionError: ['.env', 'env_file/minute_history/progress.json', 'env_file/minute_history/progress.lock']
 E   assert 0 == 1
 E    +  where 0 = len([])
