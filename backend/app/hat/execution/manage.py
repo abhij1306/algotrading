@@ -111,6 +111,7 @@ FLATTEN = "flatten"
 SETTLED = "settled"
 WAIT = "wait"
 UNREADABLE = "unreadable"
+STALE = "stale"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -363,8 +364,11 @@ class TradeManager:
         if signal is None or bot is None or symbol is None:
             return None
         settled = self._settle_sales(session, position, signal.bot_id)
-        if settled == UNREADABLE:
+        if settled in (UNREADABLE, STALE):
+            # STALE: a lost sale of an earlier session ended without firing its rules again (it
+            # may have sold); the owner is told and this sale goes ahead.
             self._not_placed(signal, position, "sale_unresolved", now)
+        if settled == UNREADABLE:
             return None
         if settled == WAIT or self._desk.exit_working(session, position.id):
             return None  # one sale at a time; the next evaluation sees what it left
@@ -400,7 +404,12 @@ class TradeManager:
         sale lock, so nothing else is sending them): one reserved and never sent is cancelled;
         one sent with its answer lost is looked up by its tag once `settle_after` has passed
         (found: adopted; absent: it never landed, ends `expired` and its rules fire again).
-        SETTLED, WAIT (sent too recently) or UNREADABLE (the order book could not be read)."""
+        One found with shares sold is left to the fill sync, which records its fills with it
+        (the position's open quantity is stale until then). The order book is today's, so a
+        lost sale of an earlier session that it does not hold may have sold: it ends `expired`
+        without firing its rules again. SETTLED, WAIT (sent too recently, or fills not yet
+        recorded), STALE (an earlier session's sale was ended so) or UNREADABLE (the order book
+        could not be read)."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -426,14 +435,27 @@ class TradeManager:
             book = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
             return UNREADABLE
+        outcome = SETTLED
         for row in lost:
             found = book.get(row.tag)
+            if found is not None and found.filled_qty > 0:
+                outcome = WAIT
+                continue
             if found is None:
-                end_lost_order(session, row)
+                earlier = self._earlier_session(row)
+                end_lost_order(session, row, fire_again=not earlier)
+                if earlier and outcome == SETTLED:
+                    outcome = STALE
             else:
                 adopt_broker_order(session, row, found, bot_id)
             session.commit()
-        return SETTLED
+        return outcome
+
+    def _earlier_session(self, row: HatOrder) -> bool:
+        """The order was sent on an earlier trade date than today's (by the wall clock)."""
+        return row.placed_at is not None and trade_date_of(as_utc(row.placed_at)) < trade_date_of(
+            self._wall()
+        )
 
     def _send_sale(
         self,
@@ -637,7 +659,7 @@ class TradeManager:
                 if row.placed_at is None:
                     row.status = "cancelled"
                 else:
-                    end_lost_order(session, row)
+                    end_lost_order(session, row, fire_again=not self._earlier_session(row))
                 session.commit()
                 continue
             row.status = "cancelled" if row.placed_at is None else "expired"

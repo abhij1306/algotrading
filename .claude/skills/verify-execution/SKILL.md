@@ -129,6 +129,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.gtt_trigger_handled` A GTT that triggers and fills only in part reduces the position and is neither resized nor doubled while its sale may still sell the rest; once that sale ends short, `gtt.unfilled` is raised once and the shares left get a new stop for exactly their quantity. Harm: a second stop under a working sale sells the shares twice, or the rest stays unprotected.
 - `PBT manage.lost_answers_never_freeze` For a stop path (lost day stop, lost GTT, refused stop, late fill) and a sale answer (lost and landed, lost and absent, refused, invalid), with the books readable or not and the answer young or settled: an exit or hard stop due is sold once the books can be read and the answer settled, a stop sent with a lost answer is adopted or ended and never doubled, a sale already resting is never sent twice, and an unreadable book alerts instead of acting. Harm: a stop-loss exit is frozen behind a lost answer, or two orders sell the same shares.
 - `PBT manage.async_sale_rejection_retried` A sale the broker accepts and then rejects, cancels or expires short (in full or after a part fill) records `order.rejected`, un-fires its rules unless a partial exit sold some shares, sends one new sale on the next evaluation and alerts `exit.not_placed` on the second rejection with no third sale. Harm: a rule marked fired on a sale that never sold leaves the position open with no alert.
+- `PBT manage.a_settled_answer_never_sells_twice` A lost GTT that landed under a position a sale then closed is cancelled by the first sync after the settle wait; a lost sale the broker filled is left to the fill sync and no second sale goes out before its fills are recorded; a lost sale of an earlier session ends without firing its rule again, is alerted (`sale_unresolved`) and the position can still be sold. Harm: a GTT rests under shares already sold, or a position is sold twice.
+- `PBT tags.a_reserved_tag_is_sent_by_one_sender` Two senders that read the same reserved, never-sent order before either stamped it: one calls the broker, the other sends nothing and reports what the first left. Harm: two stops or two entries for one order.
+- `PBT tags.the_gtt_book_reads_only_resting_stops` `gtts()` lists exactly the active (`ord_status` 4 or 6, or none) single-leg CNC GTTs from the flat book fields, `orderInfo.leg1` or `leg1`; an ended GTT, an OCO or another product is left out and an unknown status code raises. Harm: a lost GTT is matched to one that no longer rests, or one still resting is read as gone.
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
 - `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
@@ -296,7 +299,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15c: the `manage.*` properties run one auto bot with one instrument on SQLite with the tick fixed at 0.05 (the tick rule is `stops.tick_size_slabs`); prices of a sale or a stop come from the real code, fills are written into `FakeBroker`'s trade and order books in the Fyers row format. `manage.real_fill_protected` has an `@example` for a stop refused twice (the generator reaches it, but rarely). `manage.real_exits_never_blocked` compares the broker calls of the same price path with and without a kill or pause rather than an independent oracle of the exit stack (the stack's semantics are `exits.*`). Writing the properties found three bugs, fixed here: a stop placed by a fill after 15:25 was an intraday order that would expire at the close after the swap had run (now a GTT; also found by `StopPlacement!AlwaysProtected`), a stop the broker refused twice was never retried in the session (the sync now protects every open real position without a working stop), and a GTT placed by a fill raised `gtt.swap_failed` instead of `stop.not_placed`. The pre-push review then found and fixed: verify re-placing a GTT over one that may still rest (it now cancels first, or alerts `gtt.unverified`), a swap reported done when a day-stop cancel failed, a partly filled GTT resized under its own working sale, an entry the exchange rejected after placement left in EntryPlaced, a sale sent while the broker stop still covered all the shares (`StopDesk.make_room`), unbounded same-day resends after rejections, and one failing position stopping `exits.close` for the rest. CodeAnt then found (fixed in the review round): a refused resize never sent again, the verify modifying GTTs when the fills could not be read, and an entry first found already ended leaving its signal in Triggered (its `order.cancelled` adoption raised `LifecycleStateError` and stopped the sync, found by `manage.entry_ended_by_broker`; it now ends at adoption). A sale's 15:30 check read the run's start time when no clock was injected (now the start plus the monotonic time taken; `manage.no_sale_after_close`). `lifecycle.step_of`: an `order.cancelled` moves state only for an entry, and an `order.filled` with `exit_triggered` stands for the exit placed (07 §4); the lifecycle and trade properties were re-run and pass.
 - PR 16 built the Telegram half of `ExecutionRouter` (`SessionFlip`, `Relay`, `UserEntry`, a user size on `Take`; `NoEntryWithoutSession`, `RejectNoCard`, `UserCannotRaiseRisk`) and of `ApprovalToken` (`Ask`, `Confirm`; `SecondConfirmRequired`). Those properties, their broken variants and their scratch breaks are recorded in `verify-telegram`; the properties above were re-run against the extended models and pass. `open_entry` now stores the sha256 of the token the router's `issuer` signs (`telegram/tokens.py`) and `EntryOutcome` no longer carries a raw token; `TradeManager.flatten` sells every open real position through the exit path.
 - PR 16 review round: `TradeManager` serialises the sales of one position (`_sale_lock`) and `flatten` continues past a position that fails (`FlattenReport.failed`); `orders_allowed` is public for the Telegram flattener. `test_manage.py` passes unchanged.
-- PR 18 (audit 2026-10-22 money-safety-execution F1-F3, engine-ops F1, tests-hat F3): `HatBroker.gtts()` reads the GTT book (07 §8, so `brk__interface_methods` changed with the spec table); `FakeBroker` keeps GTT book rows in the Fyers shape and `RecordingSdk`'s default read replies now carry their list keys (a reply without one is the case `fyers_broker.an_ok_reply_without_its_list_is_unreadable` drives). `ManageRig` takes `settle_after` (default 0: the rig settles a lost answer at once; `manage.lost_answers_never_freeze` also draws a young answer that must wait). `manage.async_sale_rejection_retried` patches `submit.utc_now` because `rejected_sales` counts the sales placed on the trade day of the wall clock. The hard-stop fallback now counts only a broker-confirmed stop (an unsure one is settled first, and one still unsure no longer holds the sale back: the previous rule froze positions behind lost answers); `manage.real_exits_never_blocked` passes unchanged. Nothing was narrowed.
+- PR 18 (audit 2026-10-22 money-safety-execution F1-F3, engine-ops F1, tests-hat F3): `HatBroker.gtts()` reads the GTT book (07 §8, so `brk__interface_methods` changed with the spec table); `FakeBroker` keeps GTT book rows in the Fyers shape and `RecordingSdk`'s default read replies now carry their list keys (a reply without one is the case `fyers_broker.an_ok_reply_without_its_list_is_unreadable` drives). `ManageRig` takes `settle_after` (default 0: the rig settles a lost answer at once; `manage.lost_answers_never_freeze` also draws a young answer that must wait) and moves the settle's wall clock on by `elapsed`. `FakeBroker`'s GTT book rows take the flat Fyers book shape (`price_trigger`, `qty`, `ord_status`, `gtt_oco_ind`, as OpenAlgo's Fyers mapping reads them) and a cancelled GTT stays in the book with `ord_status` 1 (`resting_gtts()` lists the active ones). The pre-push review found and fixed: a lost GTT left resting under a position a sale closed (the sync now settles and cancels it), two threads sending one reserved stop (`send_order` claims the first attempt), a lost sale found filled followed by a second sale, a lost sale of an earlier session read as never sent, ended or foreign GTT book rows, and a repeated alert while a lost answer is still young. `manage.async_sale_rejection_retried` patches `submit.utc_now` because `rejected_sales` counts the sales placed on the trade day of the wall clock. The hard-stop fallback now counts only a broker-confirmed stop (an unsure one is settled first, and one still unsure no longer holds the sale back: the previous rule froze positions behind lost answers); `manage.real_exits_never_blocked` passes unchanged. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1723,6 +1726,13 @@ Break: in `backend/app/hat/execution/submit.py`, `send_order` no longer catches 
 E   AssertionError: assert ([] or 'invalid' == 'unconfirmed'
 ```
 
+Break: in `backend/app/hat/execution/protect.py`, `protect` alerts a lost stop whose answer is still young.
+
+```
+E   AssertionError: assert 4 == 2
+E    +  where 4 = <built-in method count of list object at 0x...>('stop.not_placed')
+```
+
 ### PBT manage.async_sale_rejection_retried
 
 Break: in `backend/app/hat/execution/submit.py`, a sale the broker ends short is not treated as a rejection.
@@ -1766,4 +1776,53 @@ Break: in `backend/app/hat/execution/modes.py`, `bot_mode` ignores `lifecycle_st
 
 ```
 E   AssertionError: assert 'confirm' == 'shadow'
+```
+
+### PBT manage.a_settled_answer_never_sells_twice
+
+Break: in `backend/app/hat/execution/fills.py`, the sync no longer sweeps closed positions with an unsure stop.
+
+```
+E   AssertionError: assert [{'id': 'GL-1...: 'CNC', ...}] == []
+E   Failing test case: test_a_settled_answer_never_sells_twice(
+E       case='closed_sweep',
+```
+
+Break: in `backend/app/hat/execution/manage.py`, `_settle_sales` adopts a lost sale found with shares sold.
+
+```
+E   AssertionError: assert [{'symbol': '...MARKET', ...}] == []
+E       case='landed_filled',
+```
+
+Break: `_settle_sales` fires the rules of an earlier session's lost sale again.
+
+```
+E   AssertionError: assert {'4:pct_gain_target'} <= set()
+E       case='earlier_session',
+```
+
+### PBT tags.a_reserved_tag_is_sent_by_one_sender
+
+Break: in `backend/app/hat/execution/submit.py`, `send_order` stamps the attempt without the conditional claim.
+
+```
+E   AssertionError: assert 1 == 0
+E    +  where 1 = SendOutcome(tag='HTE0E...', status='placed', broker_order_id='B-2', code='ok', broker_calls=1).broker_calls
+```
+
+### PBT tags.the_gtt_book_reads_only_resting_stops
+
+Break: in `backend/app/hat/execution/fyers_adapter.py`, `_gtt_row` keeps an ended GTT.
+
+```
+E   app.hat.execution.broker.BrokerUnavailableError: broker_response_invalid
+E   Failing test case: test_the_gtt_book_reads_only_resting_stops(
+```
+
+Break: `_gtt_row` keeps an OCO.
+
+```
+E   AssertionError: assert [BrokerGtt(gt...imal('0.05'))] == [BrokerGtt(gt...imal('0.05'))]
+E     Left contains one more item: BrokerGtt(gtt_id='G1', symbol='SBIN', side=<Side.SELL: 'sell'>, qty=1, trigger_price=Decimal('0.05'))
 ```

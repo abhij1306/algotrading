@@ -366,10 +366,17 @@ class StopDesk:
 
     def settle_lost(self, session: Session, position_id: uuid.UUID) -> None:
         """Settle every stop of the position whose answer was lost (see `_settle`)."""
-        target = self._target(session, position_id)
-        self._settle(
-            session, target, [r for r in self.stops_of(session, position_id) if self.lost(r)]
-        )
+        if any(self.lost(row) for row in self.stops_of(session, position_id)):
+            self._settled_stops(session, self._target(session, position_id))
+
+    def _settled_stops(self, session: Session, target: _Target) -> list[HatOrder]:
+        """The position's working stops, after settling those whose answer was lost."""
+        rows = self.stops_of(session, target.position.id)
+        lost = [row for row in rows if self.lost(row)]
+        if not lost:
+            return rows
+        self._settle(session, target, lost)
+        return self.stops_of(session, target.position.id)
 
     def _settle(self, session: Session, target: _Target, rows: list[HatOrder]) -> None:
         """Look the stops in `rows` (each sent, its answer lost) up at the broker once they are
@@ -458,11 +465,12 @@ class StopDesk:
         if lost:
             # A stop whose answer was lost may rest at the broker and could not be settled yet
             # (sent too recently, or the book unreadable): nothing is placed on top of it; the
-            # next sync settles it.
-            gtt = any(row.purpose == STOP_GTT for row in lost)
-            self._alert(
-                ALERT_STOP_NOT_PLACED, target, now, "gtt_unconfirmed" if gtt else "stop_unconfirmed"
-            )
+            # next sync settles it. Only one the settle could not decide is alerted: a young
+            # answer is still in flight and alerting it on every sync would only add noise.
+            if all(self._settled_long_enough(row) for row in lost):
+                gtt = any(row.purpose == STOP_GTT for row in lost)
+                reason = "gtt_unconfirmed" if gtt else "stop_unconfirmed"
+                self._alert(ALERT_STOP_NOT_PLACED, target, now, reason)
             return FAILED
         purpose = STOP_DAY if self._day_stop_time(now) else STOP_GTT
         return PLACED if self._place(session, target, purpose, now) else FAILED
@@ -516,11 +524,8 @@ class StopDesk:
         resting under a sold position could sell shares that are not there). Returns how many
         the broker confirmed cancelled."""
         target = self._target(session, position_id)
-        lost = [row for row in self.stops_of(session, position_id) if self.lost(row)]
-        if lost:
-            self._settle(session, target, lost)  # a lost stop that landed is cancelled too
         cancelled = 0
-        for row in self.stops_of(session, position_id):
+        for row in self._settled_stops(session, target):  # a lost stop that landed is cancelled
             if self._cancel(session, target, row, now):
                 cancelled += 1
         return cancelled
@@ -552,10 +557,7 @@ class StopDesk:
         the next sync. A stop whose answer was lost is settled first; one still unknown is
         skipped (HAT-EXEC-065)."""
         target = self._target(session, position_id)
-        rows = self.stops_of(session, position_id)
-        if any(self.lost(row) for row in rows):
-            self._settle(session, target, [row for row in rows if self.lost(row)])
-            rows = self.stops_of(session, position_id)
+        rows = self._settled_stops(session, target)
         done = True
         for row in rows:
             if row.qty <= keep or self.lost(row):

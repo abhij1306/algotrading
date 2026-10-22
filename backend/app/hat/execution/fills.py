@@ -36,7 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..engine import live_trades
@@ -126,6 +126,10 @@ class FillSync:
         for position_id in self._unprotected(session, account_id) - report.protected:
             self._desk.protect(session, position_id, now)
             report.protected.add(position_id)
+        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
+            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
+            # once settled, a stop that landed is cancelled, so it never rests under no shares.
+            self._desk.cancel_all(session, position_id, now)
         return report
 
     # --- 1. adoption ----------------------------------------------------------------------------
@@ -372,6 +376,31 @@ class FillSync:
         self._desk.protect(session, position.id, now)
 
     # --- 6. positions without a stop ---------------------------------------------------------
+
+    @staticmethod
+    def _closed_with_unsure_stops(session: Session, account_id: uuid.UUID) -> set[uuid.UUID]:
+        """Closed real positions that still have a stop of unknown outcome."""
+        unsure = (
+            select(HatOrder.id)
+            .where(
+                HatOrder.position_id == HatPosition.id,
+                HatOrder.purpose.in_(STOPS),
+                HatOrder.status.in_(UNSURE),
+            )
+            .exists()
+        )
+        return set(
+            session.scalars(
+                select(HatPosition.id)
+                .join(HatBot, HatBot.id == HatPosition.bot_id)
+                .where(
+                    HatBot.broker_account_id == account_id,
+                    HatPosition.is_virtual.is_(False),
+                    or_(HatPosition.closed_at.is_not(None), HatPosition.qty_open <= 0),
+                    unsure,
+                )
+            )
+        )
 
     @staticmethod
     def _unprotected(session: Session, account_id: uuid.UUID) -> set[uuid.UUID]:

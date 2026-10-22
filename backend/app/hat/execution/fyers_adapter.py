@@ -91,6 +91,9 @@ FYERS_CAPABILITIES = Capabilities(
 # which blocks a retry until the order is looked up by tag.
 _FYERS_STATUS = {1: "cancelled", 2: "filled", 4: "placed", 5: "rejected", 6: "placed", 7: "expired"}
 _WORKING = {4, 6}
+# A GTT book row's `ord_status` uses the same codes: 4 and 6 still rest; 1, 2, 5 and 7 ended.
+_GTT_ENDED = {1, 2, 5, 7}
+_GTT_OCO = 2  # `gtt_oco_ind`: 1 a single GTT, 2 an OCO
 
 
 def _whole_number(value: object) -> int | None:
@@ -386,25 +389,49 @@ class FyersHatBroker:
     def cancel_gtt(self, gtt_id: str) -> AckResult:
         return self._write(lambda: self._broker.cancel_gtt(gtt_id))
 
-    def _gtt_row(self, row: dict[str, Any]) -> BrokerGtt:
-        """One GTT book row. Its single leg is read from `orderInfo.leg1` (the shape a GTT is
-        placed with) or a top-level `leg1` [verify on a live account]; a row without one raises,
-        so the read fails instead of missing a GTT."""
-        leg = (row.get("orderInfo") or {}).get("leg1") or row["leg1"]
-        qty = _whole_number(leg["qty"])
-        if qty is None:
+    def _gtt_row(self, row: dict[str, Any]) -> BrokerGtt | None:
+        """One GTT book row, or None for a row that cannot be one of HAT's resting stops: an
+        ended GTT (`ord_status` 1, 2, 5 or 7: cancelled, triggered, rejected, expired; a code
+        other than those and 4 transit or 6 pending raises), an OCO (`gtt_oco_ind` 2 or a second
+        leg) or a product other than CNC. The single leg is read from the flat
+        `price_trigger`/`qty` fields of the book, or from `orderInfo.leg1` / `leg1` (the shape a
+        GTT is placed with) [verify on a live account]. A single-leg CNC row whose trigger or
+        quantity cannot be read raises, so the read fails instead of missing a GTT."""
+        status = row.get("ord_status", row.get("status"))
+        if status is not None:
+            code = _whole_number(status)
+            if code in _GTT_ENDED:
+                return None
+            if code not in _WORKING:
+                raise ValueError("gtt status")
+        if _whole_number(row.get("gtt_oco_ind")) == _GTT_OCO or row.get("leg2"):
+            return None
+        info = row.get("orderInfo") or {}
+        if info.get("leg2"):
+            return None
+        product = row.get("productType")
+        if product is not None and product != "CNC":
+            return None
+        leg = info.get("leg1") or row.get("leg1")
+        trigger, qty = (
+            (leg["triggerPrice"], leg["qty"]) if leg else (row["price_trigger"], row["qty"])
+        )
+        whole = _whole_number(qty)
+        if whole is None:
             raise ValueError("gtt qty")
         return BrokerGtt(
             gtt_id=str(row["id"]),
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=self._side(row["side"]),
-            qty=qty,
-            trigger_price=_positive_price(leg["triggerPrice"]),
+            qty=whole,
+            trigger_price=_positive_price(trigger),
         )
 
     def gtts(self) -> list[BrokerGtt]:
+        """The GTTs resting at the broker (active, single-leg, CNC)."""
         return self._read(
-            self._broker.fetch_gtt_orders, lambda rows: [self._gtt_row(r) for r in rows]
+            self._broker.fetch_gtt_orders,
+            lambda rows: [gtt for gtt in map(self._gtt_row, rows) if gtt is not None],
         )
 
     # --- reads (fail closed) --------------------------------------------------------------

@@ -567,12 +567,17 @@ def test_lost_answers_never_freeze(path: str, gtt: str, sale: str, young: bool) 
             rig.manager.swap_stops(session, rig.account_id, at(15, 26))
         landed = gtt == "unconfirmed_landed"
         if young:
-            # Not settled yet: no second GTT on top of one that may rest at the broker.
+            # Not settled yet: no second GTT on top of one that may rest at the broker, and no
+            # new alert on each sync while its answer may still be in flight.
+            alerts = rig.codes().count(ALERT_STOP_NOT_PLACED)
+            rig.sync(at(15, 27))
+            rig.sync(at(15, 27))
             assert rig.fake.count("place_gtt") == 1
+            assert rig.codes().count(ALERT_STOP_NOT_PLACED) == alerts
         else:
             assert _resting(rig, position)
             assert rig.fake.count("place_gtt") == (1 if landed else 2)
-            assert len(rig.fake.gtts) == 1  # one GTT rests at the broker, never two
+            assert len(rig.fake.resting_gtts()) == 1  # one GTT rests at the broker, never two
             if path == "swap":
                 assert {row.purpose for row in rig.stops(position.id)} == {STOP_GTT}
         if sale == "invalid":
@@ -659,3 +664,86 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
             assert _sold(rig, start) == []
             session.refresh(position)
             assert _resting(rig, position)
+
+
+def _sale_rows(rig: ManageRig, position: HatPosition) -> list[HatOrder]:
+    rows = list(
+        rig.session.scalars(
+            select(HatOrder)
+            .where(
+                HatOrder.position_id == position.id,
+                HatOrder.purpose.in_(("exit_partial", "exit_full", "flatten")),
+            )
+            .order_by(HatOrder.tag)
+        )
+    )
+    for row in rows:
+        rig.session.refresh(row)
+    return rows
+
+
+@settings(max_examples=20, deadline=None)
+@given(
+    case=st.sampled_from(["closed_sweep", "landed_filled", "earlier_session"]),
+    path=st.sampled_from(["late_fill", "swap"]),
+)
+def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
+    """HAT-EXEC-065: settling a lost answer never leaves a second seller behind. A GTT whose
+    answer was lost and that landed, still unsettled when a sale closes the position, is
+    cancelled at the broker by the first sync after the settle wait (`closed_sweep`). A lost
+    sale that the broker filled is left to the fill sync, which records its fills, and no
+    second sale goes out meanwhile (`landed_filled`). A lost sale of an earlier session that
+    today's book does not hold ends without firing its rule again (it may have sold) and is
+    alerted, and the position can still be sold (`earlier_session`). Harm: a GTT rests under
+    shares already sold, or a position is sold twice."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session, exits=exit_stack("partials"), settle_after=timedelta(minutes=1))
+        if case == "closed_sweep":
+            if path == "late_fill":
+                rig.fake.script("place_gtt", unconfirmed(landed=True))
+                position = _opened(rig, at(15, 26))
+            else:
+                position = _opened(rig, at(10, 40))
+                rig.fake.script("place_gtt", unconfirmed(landed=True))
+                rig.manager.swap_stops(session, rig.account_id, at(15, 25))
+            assert len(rig.fake.resting_gtts()) == 1
+            rig.manager.flatten(session, rig.account_id, at(15, 28))
+            [sale] = _sale_rows(rig, position)
+            rig.fill(sale, sale.qty, D(position.avg_entry))
+            rig.sync(at(15, 28))
+            session.refresh(position)
+            assert position.closed_at is not None
+            rig.elapsed = timedelta(minutes=2)
+            rig.sync(at(15, 29))
+            assert rig.fake.resting_gtts() == []
+        elif case == "landed_filled":
+            position = _opened(rig, at(15, 26) if path == "late_fill" else at(10, 40))
+            rig.fake.script("place_order", unconfirmed(landed=True))
+            rig.manager.flatten(session, rig.account_id, at(15, 27))
+            [sale] = _sale_rows(rig, position)
+            rig.fill(sale, sale.qty, D(position.avg_entry))
+            rig.elapsed = timedelta(minutes=2)
+            start = len(rig.fake.calls)
+            rig.manager.flatten(session, rig.account_id, at(15, 28))
+            assert _sold(rig, start) == []
+            rig.sync(at(15, 29))
+            session.refresh(position)
+            assert position.closed_at is not None
+            assert position.qty_open == 0
+        else:
+            position = _opened(rig, at(10, 40))
+            view = exits.ExitView(price=D(position.avg_entry) * D("1.4"), days_held=1)
+            rig.fake.script("place_order", unconfirmed())
+            rig.manager.on_price(session, position.id, view, at(11, 0))
+            [sale] = _sale_rows(rig, position)
+            assert sale.rule_ids
+            rig.elapsed = timedelta(days=4)
+            start = len(rig.fake.calls)
+            rig.manager.flatten(session, rig.account_id, at(11, 5))
+            session.refresh(position)
+            session.refresh(sale)
+            assert sale.status == "expired"
+            assert set(sale.rule_ids) <= set(position.rules_fired or [])
+            reasons = [p["reason"] for c, _, p in rig.notifier.alerts if c == ALERT_EXIT_NOT_PLACED]
+            assert "sale_unresolved" in reasons
+            assert _sold(rig, start)

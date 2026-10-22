@@ -9,16 +9,20 @@ import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
-from hat.fakes.broker import FakeBroker, rejected, unconfirmed
+from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
+from sqlalchemy.orm import Session
 
+from app.hat.execution import submit
 from app.hat.execution.broker import (
+    BrokerGtt,
     BrokerOrder,
     BrokerUnavailableError,
     GttModify,
@@ -901,3 +905,98 @@ def test_several_bots_on_one_symbol_reconcile_against_their_sum() -> None:
 def test_the_purposes_match_the_database_domain() -> None:
     assert set(PURPOSE_LETTERS) == set(ORDER_PURPOSES)
     assert datetime.now(UTC)  # keep the import honest for type checkers
+
+
+# ---------------------------------------------------------------------------------------------
+# HAT-EXEC-065: two senders of one reserved tag; the GTT book read
+# ---------------------------------------------------------------------------------------------
+
+
+@given(answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]))
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+def test_a_reserved_tag_is_sent_by_one_sender(answer: str) -> None:
+    """HAT-BRK-102, HAT-EXEC-065: when two senders read the same reserved, never-sent order
+    before either stamped it (a fill sync and a stop job protecting one position), only the one
+    that stamps the attempt first calls the broker; the other sends nothing and reports what the
+    first left. Harm: two sell stops rest for the same shares, or an entry is bought twice."""
+    env = exec_env()
+    live_session(env)
+    tag = reserve_order(env.session, env.request(uuid7()))
+    other = Session(env.session.get_bind(), expire_on_commit=False)
+    reply = {"accepted": accepted("B-1"), "rejected": rejected("RMS"), "unconfirmed": unconfirmed()}
+    env.fake.script("place_order", reply[answer])
+    build = submit._build_request
+    first: list = []
+
+    def racing(*args: object, **kwargs: object) -> object:
+        if not first:  # the other sender runs between this one's read and its stamp
+            first.append(None)
+            first[0] = send_order(
+                other, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id
+            )
+        return build(*args, **kwargs)
+
+    with patch.object(submit, "_build_request", racing):
+        late = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    assert first[0].broker_calls == 1
+    assert late.broker_calls == 0
+    assert late.status == first[0].status
+    assert env.fake.count("place_order") == 1
+
+
+GTT_SHAPES = st.sampled_from(["flat", "order_info", "leg1"])
+
+
+@st.composite
+def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
+    """A GTT book row and the resting GTT it stands for (None: not one of HAT's resting stops)."""
+    gtt_id = f"G{draw(st.integers(min_value=1, max_value=999))}"
+    qty = draw(st.integers(min_value=1, max_value=500))
+    trigger = Decimal(draw(st.integers(min_value=1, max_value=99999))) / 20
+    status = draw(st.sampled_from([None, 1, 2, 4, 5, 6, 7]))
+    oco = draw(st.booleans())
+    product = draw(st.sampled_from(["CNC", "CNC", "INTRADAY"]))
+    shape = draw(GTT_SHAPES)
+    leg = {"price": float(trigger) - 1, "triggerPrice": float(trigger), "qty": qty}
+    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], "side": -1, "productType": product}
+    if status is not None:
+        row["ord_status"] = status
+    if shape == "flat":
+        row.update(price_limit=leg["price"], price_trigger=leg["triggerPrice"], qty=qty)
+        row["gtt_oco_ind"] = 2 if oco else 1
+    elif shape == "order_info":
+        row["orderInfo"] = {"leg1": leg, **({"leg2": dict(leg)} if oco else {})}
+    else:
+        row.update(leg1=leg, **({"leg2": dict(leg)} if oco else {}))
+    resting = status in (None, 4, 6) and not oco and product == "CNC"
+    expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger) if resting else None
+    return row, expected
+
+
+class GttBookSdk(RecordingSdk):
+    def __init__(self, rows: list[dict]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    def gtt_orderbook(self) -> object:
+        self.calls.append(("gtt_orderbook", None))
+        return {"s": "ok", "code": 200, "orderBook": self.rows}
+
+
+@given(rows=st.lists(gtt_rows(), max_size=6), odd=st.sampled_from([None, 3, 9]))
+def test_the_gtt_book_reads_only_resting_stops(
+    rows: list[tuple[dict, BrokerGtt | None]], odd: int | None
+) -> None:
+    """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the GTTs that can still trigger as
+    HAT's single-leg CNC stops (the flat book fields, `orderInfo.leg1` or `leg1`); a cancelled,
+    triggered, rejected or expired GTT, an OCO or another product is left out, and a status code
+    it does not know makes the book unreadable. Harm: a lost GTT is matched to one that no
+    longer rests, and the position is left without a stop; or an unknown row is read as gone
+    and a second GTT is placed."""
+    book = [row for row, _ in rows]
+    if odd is not None:
+        book.append({**rows[0][0], "ord_status": odd} if rows else {"ord_status": odd})
+        with pytest.raises(BrokerUnavailableError):
+            adapter_over(GttBookSdk(book)).gtts()
+        return
+    assert adapter_over(GttBookSdk(book)).gtts() == [g for _, g in rows if g is not None]

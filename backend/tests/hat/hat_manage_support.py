@@ -38,7 +38,7 @@ from app.hat.models import (
     HatPosition,
 )
 from app.hat.notify import RecordingNotifier
-from app.hat.time import IST
+from app.hat.time import IST, utc_now
 
 __all__ = ["TICK", "ManageRig", "at"]
 
@@ -57,7 +57,8 @@ def at(hour: int, minute: int) -> datetime:
 class ManageRig:
     """One auto bot on one broker account: the router, the stop desk, the fill sync and the trade
     manager, all over the Fyers adapter and `FakeBroker`. A lost answer is settled at the next
-    look (`settle_after` 0) unless a property sets the wait."""
+    look (`settle_after` 0) unless a property sets the wait; the settle reads the wall clock
+    moved on by `elapsed`."""
 
     def __init__(
         self,
@@ -69,6 +70,7 @@ class ManageRig:
         settle_after: timedelta = timedelta(0),
     ) -> None:
         self.session = session
+        self.elapsed = timedelta(0)
         self.world: World = seed_engine_world(session, mode="auto", instruments=1, exits=exits)
         bot = session.get(HatBot, self.world.bot_id)
         assert bot is not None
@@ -111,6 +113,7 @@ class ManageRig:
             calendar=CALENDAR,
             notifier=self.notifier,
             settle_after=settle_after,
+            wall=self.wall,
         )
         self.fills = FillSync(broker, self.desk, self.notifier)
         self.manager = TradeManager(
@@ -123,9 +126,13 @@ class ManageRig:
             notifier=self.notifier,
             clock=clock,
             settle_after=settle_after,
+            wall=self.wall,
             **({"ticker": ticker} if ticker is not None else {}),
         )
         self._trades = 0
+
+    def wall(self) -> datetime:
+        return utc_now() + self.elapsed
 
     # --- the entry and its fills ----------------------------------------------------------------
 
