@@ -12,7 +12,7 @@ universe:
 regime:
   index: NIFTY 500                    # assumption; Nifty Smallcap 250 is the alternative
   rule: sma_fast_above_slow_both_rising
-  params: {fast: 10, slow: 20}
+  params: {fast: 10, slow: 20, rising_days: 3}   # both SMAs above their value 3 sessions earlier (PR 55)
 
 playbooks:
   - name: breakout

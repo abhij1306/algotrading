@@ -342,11 +342,11 @@ to an artefact that exists.
 | HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `config.playbook_shape`, PBT `trades.shared_bot_cap` |
 | HAT-BOT-051 | [04](04-criteria-and-bots.md) | 8, 15 | DB `runtime.signal_unique_per_day`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15 | PBT `criteria.ep_candidate_bands` |
-| HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `regime.strategy_rules` |
+| HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11, 55 | PBT `regime.strategy_rules` |
 | HAT-BOT-060 | [04](04-criteria-and-bots.md) | 8, 54 | CONF `bot_seed_s1_matches_spec` |
 | HAT-BOT-061 | [04](04-criteria-and-bots.md) | 8, 45 | CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_confirm` |
 | HAT-BOT-062 | [04](04-criteria-and-bots.md) | 11 | PBT `stops.final_contraction_low` |
-| HAT-BOT-070 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_s2_matches_spec` |
+| HAT-BOT-070 | [04](04-criteria-and-bots.md) | 8, 55 | CONF `bot_seed_s2_matches_spec` |
 | HAT-BOT-071 | [04](04-criteria-and-bots.md) | 15 | PBT `criteria.level_expression` |
 | HAT-BOT-072 | [04](04-criteria-and-bots.md) | 8, 10 | PBT `config.no_risk_keys`, CONF `risk_policy_seed_bot_limits` |
 | HAT-BOT-080 | [04](04-criteria-and-bots.md) | 2, 8 | PBT `config.save_creates_version`, DB `governance.version_config_immutable` |

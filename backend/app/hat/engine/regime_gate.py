@@ -43,10 +43,10 @@ def close_above_sma_and_rising(closes: Sequence[Decimal], sma: int, rising_days:
 
 
 def sma_fast_above_slow_both_rising(
-    closes: Sequence[Decimal], fast: int, slow: int, rising_days: int = 1
+    closes: Sequence[Decimal], fast: int, slow: int, rising_days: int
 ) -> bool:
     """SMA_fast_t > SMA_slow_t, and both are higher than `rising_days` sessions earlier (the
-    Qullamaggie-style rule; one session by default, an [OWNER-PENDING] choice)."""
+    Qullamaggie-style rule; the config's default is 3, `FastAboveSlow`)."""
     fast_now, slow_now = _sum(closes, fast), _sum(closes, slow)
     fast_before, slow_before = _sum(closes, fast, rising_days), _sum(closes, slow, rising_days)
     if fast_now is None or slow_now is None or fast_before is None or slow_before is None:

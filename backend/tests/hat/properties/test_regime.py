@@ -18,6 +18,7 @@ from app.hat.data.store import BREADTH_SCHEMA, DATASET_BREADTH, DataStore, Index
 from app.hat.engine import regime_gate
 from app.hat.engine.portfolio import jobs, regime, service
 from app.hat.engine.portfolio.regime import RegimeError
+from app.hat.engine.strategy.config import Regime
 from app.hat.models import HatEvent, HatMarket, HatRegimeState
 from app.hat.ops.jobs import JobError
 
@@ -334,17 +335,30 @@ def sma(closes: list[Decimal], n: int, back: int = 0) -> Decimal | None:
 def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None:
     """HAT-BOT-053: close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
     SMA_{t-rising}; sma_fast_above_slow_both_rising is true iff SMA_fast > SMA_slow and both are
-    above their value one session earlier; a series too short for the lookback is false. Harm:
-    the gate lets entries through in a falling market or blocks them in a rising one."""
+    above their value `rising` sessions earlier; a series too short for the lookback is false.
+    Through the config, the fast/slow rule without `rising_days` reads 3 sessions (owner default,
+    PR 55), one with it reads that many, and the configured rule gives what the function gives.
+    Harm: the gate lets entries through in a falling market or blocks them in a rising one, or
+    flips on one down tick."""
     now, before = sma(closes, window), sma(closes, window, rising)
     want = now is not None and before is not None and closes[-1] > now and now > before
     assert regime_gate.close_above_sma_and_rising(closes, window, rising) is want
     fast, slow = window, window + 5
-    f0, f1, s0, s1 = (
-        sma(closes, fast),
-        sma(closes, fast, 1),
-        sma(closes, slow),
-        sma(closes, slow, 1),
+
+    def fast_slow(back: int) -> bool:
+        f0, f1 = sma(closes, fast), sma(closes, fast, back)
+        s0, s1 = sma(closes, slow), sma(closes, slow, back)
+        return None not in (f0, f1, s0, s1) and f0 > s0 and f0 > f1 and s0 > s1  # type: ignore[operator]
+
+    assert regime_gate.sma_fast_above_slow_both_rising(closes, fast, slow, rising) is fast_slow(
+        rising
     )
-    want2 = None not in (f0, f1, s0, s1) and f0 > s0 and f0 > f1 and s0 > s1  # type: ignore[operator]
-    assert regime_gate.sma_fast_above_slow_both_rising(closes, fast, slow) is want2
+    if fast >= 2:
+        for params, back in (
+            ({"fast": fast, "slow": slow}, 3),
+            ({"fast": fast, "slow": slow, "rising_days": rising}, rising),
+        ):
+            regime = Regime(
+                index="NIFTY 500", rule="sma_fast_above_slow_both_rising", params=params
+            )
+            assert regime_gate.regime_allows_longs(regime, closes) is fast_slow(back)
