@@ -212,8 +212,17 @@ def _slots(
     A slot is an open position, or a signal whose entry is triggered, placed or awaiting
     approval and has no position yet. A veto trade (the virtual trade of a skipped or expired
     confirm signal, HAT-EXEC-032) is scored only and holds no slot. A position with no price in
-    `last_prices` is valued at its entry."""
+    `last_prices` is valued at its entry.
+
+    The pending signals are read before the positions: another bot's fill (under that bot's
+    lock only) can turn a pending signal into a position between the two reads, and in this
+    order it is then counted twice, never missed."""
     prices = last_prices or {}
+    pending = session.scalars(
+        select(HatSignal).where(
+            HatSignal.bot_id.in_(bot_ids), HatSignal.state.in_(_SLOT_PENDING_STATES)
+        )
+    ).all()
     slots: list[OpenPosition] = []
     for position in session.scalars(
         select(HatPosition)
@@ -233,11 +242,7 @@ def _slots(
                 is_virtual=position.is_virtual,
             )
         )
-    for signal in session.scalars(
-        select(HatSignal).where(
-            HatSignal.bot_id.in_(bot_ids), HatSignal.state.in_(_SLOT_PENDING_STATES)
-        )
-    ):
+    for signal in pending:
         entry = entry_price_of(session, signal)  # the planned price, not the level broken
         slots.append(
             OpenPosition(

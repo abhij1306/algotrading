@@ -101,7 +101,7 @@ Caps can only shrink or reject an entry; they never apply to exits.
 - **PR:** 10, 19
 - **Verification:** PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised`
 - **Acceptance:**
-  - Property: for every set of open positions and every candidate, the decision is ACCEPT only if Σ(entry − stop)·qty over open real positions plus the candidate's (P_entry − P_stop)·q ≤ 0.03 × total equity; otherwise REJECT with reason `global_open_risk`. Harm: correlated sleeves together risk more than the account can absorb.
+  - Property: for every set of open positions and every candidate, the decision is ACCEPT only if Σ(entry − stop)·qty over the open slots of the entry's mode (real or virtual) plus the candidate's (P_entry − P_stop)·q ≤ 0.03 × total equity; otherwise REJECT with reason `global_open_risk`. Harm: correlated sleeves together risk more than the account can absorb.
   - Property: through `open_entry`, two bots of one owner on different broker accounts, whose triggers interleave in any order, are each rejected with `global_open_risk` exactly when the open risk of both plus the candidate's exceeds the cap, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N × 3%.
   - Property: two real transactions of different bots of one owner, the first holding between its risk decision and its insert, with room for one entry, end with one accepted and one rejected. Harm: both read the snapshot before the other's slot is visible and together exceed the cap.
 
