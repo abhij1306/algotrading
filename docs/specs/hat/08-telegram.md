@@ -25,7 +25,13 @@ too (HAT-TG-011, PR 32): a crash before that commit leaves the offset where it w
 delivers the update again; a crash after it means the update was done. An update delivered
 again after a handler's own earlier commit does not act twice: a Take finds its decision
 recorded (`already_decided`), a second confirmation (`/flatten`, `/arm`, `/mode auto`) finds
-its in-memory nonce gone with the process (`expired`), and `/kill` finds the switches tripped. An update from another chat is logged as `unknown_chat` with no reply and no answer to its
+its in-memory nonce gone with the process (`no_pending_confirmation`), and `/kill` finds the
+switches tripped. A passing database error (`OperationalError`) leaves the offset where it was
+and the poll loop backs off, so the update comes again; any other failure, in the handler or
+before it, is logged as an `error` row and the offset moves past it, so one bad update never
+holds back the ones after it. One window is open (a follow-up in `execution/`): a crash after a
+Take's decision commits and before its entry is placed leaves the decision with no entry, and
+the update delivered again is refused `already_decided`. An update from another chat is logged as `unknown_chat` with no reply and no answer to its
 button. Errors carry fixed codes; no message text, token or HTTP text is logged.
 
 #### HAT-TG-005: Messages from other chats are ignored and logged
@@ -45,12 +51,12 @@ button. Errors carry fixed codes; no message text, token or HTTP text is logged.
   - Property: across the whole `app/hat/telegram` package, no code path calls `setWebhook` or binds a server socket, and the client issues only outbound requests to the Bot API. Harm: an exposed port on the trading box widens the attack surface the design keeps at zero.
 
 #### HAT-TG-011: The offset commits with the handled update; none is dropped or applied twice
-- **Statement:** The offset past an update (`update_id + 1`) commits in the same transaction as the update's `hat_command_log` row and state change, on the error and unknown-chat paths too, and never moves back. After any crash or restart no update is dropped (one whose transaction did not commit is delivered again) and none is applied twice (a handler that committed on its own before the crash, such as a Take's decision or a flatten's orders, refuses the update when it comes again).
+- **Statement:** The offset past an update (`update_id + 1`) commits in the same transaction as the update's `hat_command_log` row and state change, on the error and unknown-chat paths too, and never moves back. A passing database error leaves the offset, so the update comes again after a back-off; any other failure is logged as an `error` row and the offset moves past it. After any crash or restart no update is dropped (one whose transaction did not commit is delivered again) and none is applied twice (a handler that committed on its own before the crash, such as a Take's decision or a flatten's orders, refuses the update when it comes again). Open window: a crash between a Take's decision commit and its entry placement leaves a decision with no entry (follow-up in `execution/`).
 - **Source:** DS "Telegram" (long polling); MA "Runtime" (API + Telegram restarts safely; stateless, reads Postgres); PLAN PR 16 scope (offset persistence); design review 2026-10-22 item 7 (the offset committed before handling dropped an update on a crash, a `/kill` among them).
 - **PR:** 16, 32
 - **Verification:** PBT `telegram.offset_commits_with_update`
 - **Acceptance:**
-  - Property: for every sequence of updates (text commands, messages from other chats, commands whose handler fails, a Take button) and every crash point in the poll loop (before an update runs, at the commit of its log row and offset, after it), polling again until no update is left leaves each text command, stranger and failed handler logged exactly once, the Take placing exactly one entry and accepted at most once, and the offset past the last update. Harm: a dropped `/kill` would not act at all; a replayed `/flatten` confirm or Take button would act twice.
+  - Property: for every sequence of updates (text commands, messages from other chats, commands whose handler fails, updates that fail before a handler runs, commands that meet a passing database error once, a Take button) and every crash point in the poll loop (before an update runs, at the commit of its log row and offset, after it), polling again until no update is left leaves each text command (the retried ones included), stranger and failure logged exactly once, the Take placing exactly one entry and accepted at most once, and the offset past the last update. Harm: a dropped `/kill` would not act at all, and one bad update would hold back every later one; a replayed `/flatten` confirm or Take button would act twice.
 - **Changed (PR 32):** PR 16 committed the offset before handling (at most once), so a crash between the two dropped the update. The handlers are idempotent on a second delivery (see the statement), so the offset now commits with the update (at least once delivered, applied once).
 
 #### HAT-TG-012: Every inbound command is logged

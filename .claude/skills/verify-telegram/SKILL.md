@@ -23,7 +23,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.unknown_command_rejected` Text that is not one of the ten commands with its arguments is refused and changes nothing. Harm: malformed input triggers an action.
 - `PBT telegram.other_bot_ignored` A command addressed to another bot (`/kill@other_bot`) is refused (`other_bot`) with no reply, no state change and no broker call; suffixed with this bot's `getMe` username in any case it acts as the bare command; while `getMe` fails every suffixed command is refused. Harm: a kill, flatten or re-arm meant for another bot in the group acts on this one.
 - `PBT telegram.no_free_text_orders` No text, even a Take button's data typed as a message, places an order or writes an entry `hat_order`. Harm: a typo or a forged message opens a position.
-- `PBT telegram.offset_commits_with_update` Updates mixing text commands, messages from other chats, commands whose handler raises and a Take button, with crashes before an update runs, at the commit of its log row and offset (a handler's own earlier commits stand), or after it, polled again until done: every text command, stranger and failed handler is logged exactly once, the Take places exactly one entry and is accepted at most once (a second delivery is `already_decided`), and the offset ends past the last update. Harm: a dropped `/kill` does not act; a replayed confirmation or Take acts twice.
+- `PBT telegram.offset_commits_with_update` Updates mixing text commands, messages from other chats, commands whose handler raises, updates that fail before a handler runs (`poison`), commands that meet a passing database error once (`flaky`) and a Take button, with crashes before an update runs, at the commit of its log row and offset (a handler's own earlier commits stand), or after it, polled again until done (backing off after the database error): every text command (the retried ones included), stranger and failure is logged exactly once, the Take places exactly one entry and is accepted at most once (a second delivery is `already_decided`), and the offset ends past the last update. Harm: a dropped `/kill` does not act, or one bad update holds every later one back; a replayed confirmation or Take acts twice.
 - `PBT telegram.user_events_attributed` Every event a command or button records has `actor = 'user'` and the chat id, and every accepted change records one. Harm: skips, pauses and flattens are missing from the discipline metrics.
 - `PBT telegram.no_secret_in_output` No message or log record holds the bot token, the approval secret, an issued token or broker error text. Harm: a leaked secret lets an outsider control the bot or forge approvals.
 - `PBT telegram.send_only_to_allowlist` Every `sendMessage` and `editMessageReplyMarkup` goes to the allowlisted chat; another chat is never answered. Harm: trade details and buttons reach someone else.
@@ -71,7 +71,7 @@ No check calls Telegram: `FakeTransport` (`backend/tests/hat/hat_telegram_suppor
 - A failing property prints a falsifying example. Replay it on `TgRig`: `rig.service.handle(text_update(...))` or `button_update(...)`, then read `rig.transport.calls`, `rig.log()` and `rig.places()`.
 - A TLC counterexample names its actions; each has a `\* code:` comment naming the function (`confirm.py:ask` and `take`, `commands.py:_flatten`, `manage.py:flatten`, `relay.py:message_for`, `commands.py:run_command`, `reports.py:login_prompt` and `daily_report`, `ops/scheduler.py:tick`). If the code can take the steps it is a bug; if a guard the model omits stops it, add the guard to the model and say so under "Scope changes".
 - Never weaken a property or shrink a strategy without a reason under "Scope changes".
-- Known windows, kept visible: the confirmation nonces live in memory, so a restart drops a pending Confirm (it must be asked again); since PR 32 the offset commits with the update (HAT-TG-011), so a crash before that commit delivers the update again and the handlers' idempotence keeps it from acting twice.
+- Known windows, kept visible: the confirmation nonces live in memory, so a restart drops a pending Confirm (it must be asked again); since PR 32 the offset commits with the update (HAT-TG-011), so a crash before that commit delivers the update again and the handlers' idempotence keeps it from acting twice. A passing `OperationalError` leaves the offset (the poll loop backs off and the update comes again); any other failure, in the handler or before it (`_give_up` in `poll_once`), is logged as an `error` row and the offset moves past it. Open: a crash between a Take's decision commit and its entry placement leaves a decision with no entry; the update delivered again is refused `already_decided` (an `execution/` follow-up).
 
 ## Updating
 
@@ -117,13 +117,13 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `3a9e073be05200180b0b38e329036a24c2a12978e04c0de52d893e15c02e966d`
+Covered digest: `7e4882725ba783dc79d86fa3934cd9d9ce4952cc752a1908c366c3256475ff44`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
-- PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged.
+- PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
 - PR 16 built this skill. The properties run one bot (confirm unless a property needs auto) on one account over SQLite and `FakeBroker`, with the HTTP layer faked; `SLOW` properties run 15 examples.
 - `telegram.report_content` first routed its refusals on a confirm bot, where the router posts a card and checks only at the Take, so no signal was ever rejected and the digest assertion was vacuous; the scratch break found it. It now routes them on an auto bot, one instrument per refusal (a signal a day per instrument), and asserts as many digest lines as refusals.
 - `telegram.user_events_attributed` and `telegram.send_only_to_allowlist` gained an `@example` each (a confirmed flatten; a Take on a live card, which clears its buttons): in 15 examples the generator reached neither reliably and the scratch breaks went unseen.
@@ -306,7 +306,7 @@ Break: (PR 32) `poll_once` commits the offset past an update on its own before h
     | Failing explicit example: test_offset_commits_with_update(
     |     updates=[(1, 'text'), (1, 'text')],
     |     crashes=[(1, 'before')],
-    | AssertionError: assert 0 == 1
+    | AssertionError: assert 0 == (1 + 0)
     | Failing explicit example: test_offset_commits_with_update(
     |     updates=[(1, 'failing'), (1, 'stranger'), (1, 'text')],
     |     crashes=[(0, 'commit')],
@@ -315,8 +315,8 @@ Break: (PR 32) `poll_once` commits the offset past an update on its own before h
 Break: (PR 32) `handle` moves the offset before running the handler, so a Take's own commit carries it: the Take crashed at the final commit loses its log row and is never delivered again.
 
 ```
-tests/hat/properties/test_telegram.py:635: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:691: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:725: in test_offset_commits_with_update
 E   assert []
 E   Failing explicit example: test_offset_commits_with_update(
 ```
@@ -324,17 +324,36 @@ E   Failing explicit example: test_offset_commits_with_update(
 Break: (PR 32) the error branch logs its row without moving the offset: the failed update comes again on every poll.
 
 ```
-tests/hat/properties/test_telegram.py:635: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:685: in test_offset_commits_with_update
-E   assert 2 == 1
+tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:719: in test_offset_commits_with_update
+E   assert 2 == (1 + 0)
 ```
 
 Break: (PR 32) the unknown-chat refusal does not move the offset.
 
 ```
-tests/hat/properties/test_telegram.py:635: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:686: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:720: in test_offset_commits_with_update
 E   assert 2 == 1
+```
+
+Break: (PR 32) `poll_once` lets an update that fails outside the handler's error branch raise (no `_give_up`): it comes again on every poll and holds back every later update.
+
+```
+tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:709: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:647: in handle
+tests/hat/properties/test_telegram.py:605: in handle
+tests/hat/properties/test_telegram.py:642: in _refuse_stranger
+E   ValueError: the refusal cannot be written
+```
+
+Break: (PR 32) the error branch logs a passing database error (`OperationalError`) as an `error` row and moves the offset, instead of leaving the update to come again.
+
+```
+tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
+tests/hat/properties/test_telegram.py:718: in test_offset_commits_with_update
+E   AssertionError: assert ['u3'] == ['u2', 'u3']
 ```
 
 ### PBT telegram.user_events_attributed

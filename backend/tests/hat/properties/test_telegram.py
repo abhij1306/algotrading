@@ -37,6 +37,7 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import ColumnElement, delete, select
 from sqlalchemy import event as sa_event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
@@ -609,17 +610,37 @@ class CrashingService(TelegramService):
 
 CRASH_POINTS = ("before", "commit", "after")
 # What each update is: a text command, a message from another chat, a command whose handler
-# raises (the error row), or the Take of a card (only the first one drawn; later ones are text).
-KINDS = ("text", "text", "stranger", "failing", "take")
+# raises (the error row), one that fails before any handler runs (`poison`: its refusal cannot
+# be written), one whose first try meets a database error that passes (`flaky`), or the Take of
+# a card (only the first one drawn; later ones are text).
+KINDS = ("text", "text", "stranger", "failing", "poison", "flaky", "take")
 
 
 class FailingService(CrashingService):
-    """Its handler raises an ordinary error for the updates in `failing`."""
+    """Its handler raises an ordinary error for the updates in `failing`, a passing database
+    error on the first try of those in `flaky` (recorded in `flaked`, shared across process
+    lives), and its unknown-chat refusal raises for those in `poison`."""
 
-    def __init__(self, rig: TgRig, crash: tuple[int, str] | None, failing: set[int]) -> None:
+    def __init__(
+        self,
+        rig: TgRig,
+        crash: tuple[int, str] | None,
+        failing: set[int],
+        poison: set[int] = frozenset(),  # type: ignore[assignment]
+        flaky: set[int] = frozenset(),  # type: ignore[assignment]
+        flaked: set[int] | None = None,
+    ) -> None:
         super().__init__(rig, crash)
         self._failing = failing
+        self._poison = poison
+        self._flaky = flaky
+        self._flaked = flaked if flaked is not None else set()
         self._current: int | None = None
+
+    def _refuse_stranger(self, *args: object, **kwargs: object) -> object:  # type: ignore[override]
+        if self._current in self._poison:
+            raise ValueError("the refusal cannot be written")
+        return super()._refuse_stranger(*args, **kwargs)  # type: ignore[arg-type]
 
     def handle(self, update: dict) -> object:  # type: ignore[override]
         self._current = update["update_id"]
@@ -628,6 +649,9 @@ class FailingService(CrashingService):
     def _run(self, *args: object, **kwargs: object) -> tuple[str, str | None, Reply]:  # type: ignore[override]
         if self._current in self._failing:
             raise RuntimeError("handler failed")
+        if self._current in self._flaky and self._current not in self._flaked:
+            self._flaked.add(self._current)
+            raise OperationalError("SELECT 1", {}, Exception("lock timeout"))
         return super()._run(*args, **kwargs)  # type: ignore[arg-type]
 
 
@@ -646,17 +670,20 @@ class FailingService(CrashingService):
 @example(updates=[(1, "take"), (1, "text")], crashes=[(0, "commit")])
 @example(updates=[(1, "text"), (1, "text")], crashes=[(1, "before")])
 @example(updates=[(1, "failing"), (1, "stranger"), (1, "text")], crashes=[(0, "commit")])
+@example(updates=[(1, "poison"), (1, "flaky"), (1, "text")], crashes=[])
 def test_offset_commits_with_update(
     updates: list[tuple[int, str]], crashes: list[tuple[int, str]]
 ) -> None:
     """HAT-TG-011: for every sequence of updates (text commands, messages from other chats,
-    commands whose handler fails, a Take button) and every crash point in the poll loop (before
+    commands whose handler fails, updates that fail before a handler runs, commands that meet a
+    passing database error once, a Take button) and every crash point in the poll loop (before
     an update runs, at the commit of its command-log row and offset, after it), polling again
-    until the queue is done leaves every update logged: each text command, stranger and failed
-    handler exactly once, the Take placing exactly one entry and accepted at most once (a Take
-    whose decision committed before the crash comes back as `already_decided`), and the offset
-    past the last update. Harm: a dropped `/kill` does not act; a replayed `/flatten`
-    confirmation or Take acts twice."""
+    until the queue is done (backing off after a database error) leaves every update logged:
+    each text command (the retried ones included), stranger and failure exactly once, the Take
+    placing exactly one entry and accepted at most once (a Take whose decision committed before
+    the crash comes back as `already_decided`), and the offset past the last update. Harm: a
+    dropped `/kill` does not act, or one bad update holds every later one back; a replayed
+    `/flatten` confirmation or Take acts twice."""
     rig = TgRig()
     ids, kinds = [], {}
     for gap, kind in updates:
@@ -665,25 +692,32 @@ def test_offset_commits_with_update(
     take = card_of(rig, wall_relay(rig))[1] if "take" in kinds.values() else ""
     queued = {
         "text": lambda i: text_update(i, CHAT, f"/watchlist u{i}"),
+        "flaky": lambda i: text_update(i, CHAT, f"/watchlist u{i}"),
         "failing": lambda i: text_update(i, CHAT, f"/watchlist f{i}"),
         "stranger": lambda i: text_update(i, CHAT + 1, f"/watchlist s{i}"),
+        "poison": lambda i: text_update(i, CHAT + 1, f"/watchlist p{i}"),
         "take": lambda i: button_update(i, CHAT, take),
     }
     rig.transport.queued = [queued[kinds[i]](i) for i in ids]
-    failing = {i for i in ids if kinds[i] == "failing"}
+    of = {kind: {i for i in ids if kinds[i] == kind} for kind in KINDS}
+    flaked: set[int] = set()
     plan = [(ids[n % len(ids)], where) for n, where in crashes]
-    for _round in range(len(plan) + 2):
-        service = FailingService(rig, plan.pop(0) if plan else None, failing)
+    for _round in range(len(plan) + len(of["flaky"]) + 2):
+        crash = plan.pop(0) if plan else None
+        service = FailingService(rig, crash, of["failing"], of["poison"], of["flaky"], flaked)
         try:
             service.poll_once(timeout=0)
         except CrashError:
             pass
+        except OperationalError:
+            if crash is not None:
+                plan.insert(0, crash)  # the run backed off before reaching the crash point
     rows = rig.log()
     by_reason = Counter(row.reason for row in rows)
     texts = [row.args for row in rows if row.command not in ("take", "text") and row.args]
-    assert sorted(texts) == sorted(f"u{i}" for i in ids if kinds[i] == "text")
-    assert by_reason["error"] == len(failing)
-    assert by_reason[UNKNOWN_CHAT] == sum(1 for i in ids if kinds[i] == "stranger")
+    assert sorted(texts) == sorted(f"u{i}" for i in of["text"] | of["flaky"])
+    assert by_reason["error"] == len(of["failing"]) + len(of["poison"])
+    assert by_reason[UNKNOWN_CHAT] == len(of["stranger"])
     with rig.factory() as session:
         assert store.cursor(session, store.UPDATES) == ids[-1] + 1
     takes = [row for row in rows if row.command == "take"]

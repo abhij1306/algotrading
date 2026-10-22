@@ -8,8 +8,14 @@ dropped: a crash before that commit leaves the offset where it was and Telegram 
 update again; a crash after it means the update was done. A handler that commits on its own
 before that point (a Take's decision, a flatten's orders) is not applied twice when its update
 comes again: the Take finds the decision recorded (`already_decided`), the `/flatten` and other
-second confirmations find their single-use nonce gone with the process (`expired`), and `/kill`
-finds the switches tripped.
+second confirmations find their single-use nonce gone with the process
+(`no_pending_confirmation`), and `/kill` finds the switches tripped.
+
+An update is never retried forever and never skipped for a passing fault: a database error that
+may pass (`OperationalError`: a lost connection, a lock timeout, a serialization failure) leaves
+the offset where it was, so the update comes again after the back-off; any other failure, inside
+a handler or before one runs (a malformed update, a refusal that cannot be written), is logged
+as an `error` row and the offset moves past it, so one bad update cannot hold back a `/kill`.
 
 `handle` turns one update into exactly one `hat_command_log` row (HAT-TG-012):
 
@@ -36,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..time import utc_now
@@ -146,9 +153,33 @@ class TelegramService:
             if update_id < offset:
                 continue
             offset = update_id + 1
-            self.handle(update)
+            try:
+                self.handle(update)
+            except Exception as exc:
+                if isinstance(exc, OperationalError):
+                    raise  # may pass: the offset stays and the update comes again
+                self._give_up(update_id, exc)
             handled += 1
         return handled
+
+    def _give_up(self, update_id: int, exc: Exception) -> None:
+        """An update `handle` could not get through (a malformed update, a refusal that cannot be
+        written): one `error` row (chat 0, since its chat may be what is malformed) and the
+        offset past it, so the next update runs. A failure here raises: the update stays."""
+        logger.error("telegram update skipped: %s", type(exc).__name__)
+        now = self._clock()
+        with self._factory() as session:
+            store.log_command(
+                session,
+                chat_id=0,
+                command="update",
+                args=None,
+                accepted=False,
+                reason="error",
+                received_at=now,
+            )
+            _advance(session, update_id, now)
+            session.commit()
 
     async def run(self, stop: asyncio.Event) -> None:
         """Poll until `stop` is set, in a worker thread (the client blocks)."""
@@ -190,6 +221,8 @@ class TelegramService:
                 session.commit()
             except Exception as exc:
                 session.rollback()
+                if isinstance(exc, OperationalError):
+                    raise  # may pass: nothing is logged and the offset stays (HAT-TG-011)
                 logger.error("telegram update failed: %s", type(exc).__name__)
                 command, reply = "error", refused("error")
                 store.log_command(
