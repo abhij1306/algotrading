@@ -7,6 +7,7 @@ stand-in for the Fyers SDK model. Nothing reaches a real broker.
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import patch
@@ -48,6 +49,7 @@ from app.hat.execution.reconcile import (
 )
 from app.hat.execution.submit import (
     OrderRefusedError,
+    TagBook,
     UnresolvedOrderError,
     reserve_order,
     send_order,
@@ -863,6 +865,39 @@ def test_a_tag_twice_at_the_broker_blocks_the_account(ht, known) -> None:  # noq
     assert all(m.bot_id is None for m in found)
 
 
+DUPLICATES = st.lists(
+    st.tuples(
+        st.sampled_from(["placed", "filled", "cancelled", "rejected", "expired"]),
+        st.integers(min_value=0, max_value=2),
+    ),
+    min_size=1,
+    max_size=4,
+)
+
+
+@given(tags_, DUPLICATES, st.one_of(st.none(), st.integers(min_value=0, max_value=4)))
+def test_a_duplicated_tag_is_read_one_way(tag: str, orders: list, owned: int | None) -> None:
+    """HAT-BRK-103: of the broker orders under one HT tag, a row that holds a broker order id
+    reads that order only (nothing when the book does not hold it), and a row without one reads
+    the first order the broker has not ended unfilled, or the first when every one is. Harm:
+    a dead duplicate's status ends a live entry's signal, or a live duplicate's fills are
+    refused."""
+    book = [
+        replace(_order(tag, "SBIN"), order_id=f"D-{n}", status=status, filled_qty=filled)
+        for n, (status, filled) in enumerate(orders)
+    ]
+    found = TagBook.of(book).for_row(
+        HatOrder(tag=tag, broker_order_id=None if owned is None else f"D-{owned}")
+    )
+    if owned is not None:
+        assert found is (book[owned] if owned < len(book) else None)
+        return
+    alive = [
+        o for o in book if o.filled_qty or o.status not in ("cancelled", "rejected", "expired")
+    ]
+    assert found is (alive or book)[0]
+
+
 # An ok reply that does not carry the order book list where Fyers documents it.
 KEYLESS_BOOKS = st.sampled_from(
     [
@@ -1154,9 +1189,19 @@ def test_a_reserved_tag_is_sent_by_one_sender(
         return build(*args, **kwargs)
 
     if retry and purpose == "entry":
-        for sender in (env.session, other):
-            with pytest.raises(UnresolvedOrderError):
-                send_order(sender, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        if adopted:  # the sync adopts the tag before this sender looks again
+            row = other.scalar(select(HatOrder).where(HatOrder.tag == tag))
+            assert row is not None
+            row.status, row.broker_order_id = "placed", "B-0"
+            other.commit()
+            late = send_order(
+                env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id
+            )
+            assert (late.status, late.broker_calls) == ("placed", 0)
+        else:
+            for sender in (env.session, other):
+                with pytest.raises(UnresolvedOrderError):
+                    send_order(sender, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
         assert env.fake.count("place_order") == 1
         return
     with patch.object(submit, "_build_request", racing):

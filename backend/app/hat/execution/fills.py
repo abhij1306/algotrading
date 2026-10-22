@@ -270,6 +270,8 @@ class FillSync:
         if position_id is not None:
             # HAT-EXEC-060: the stop comes before any other action on the position.
             self._protect(session, position_id, now, report)
+            if row.purpose == ENTRY:
+                self._check_excess(session, row, trade.qty, now)  # the alert after the stop
 
     def _record(
         self,
@@ -298,8 +300,6 @@ class FillSync:
             return None
         session.commit()
         report.fills += 1
-        if row.purpose == ENTRY:
-            self._check_excess(session, row, trade.qty, now)
         return position.id
 
     def _check_excess(self, session: Session, row: HatOrder, qty: int, now: datetime) -> None:

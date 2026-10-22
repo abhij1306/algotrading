@@ -199,8 +199,9 @@ def _row(session: Session, tag: str) -> HatOrder:
 class TagBook:
     """The broker's order book as HAT's rows read it. Fyers does not enforce tag uniqueness
     (HAT-BRK-103), so one tag may name two orders: a row that holds a broker order id is matched
-    by that id only, and a row without one adopts the first order under its tag, the one
-    `resolve_by_tag` picks, so every reader of one book adopts the same order."""
+    by that id only, and a row without one adopts the first order under its tag that the broker
+    has not ended unfilled (else the first), the one `resolve_by_tag` picks, so every reader of
+    one book adopts the same order and a dead duplicate never ends a live one's signal."""
 
     first: dict[str, BrokerOrder]
     by_id: dict[str, BrokerOrder]
@@ -211,7 +212,9 @@ class TagBook:
         by_id: dict[str, BrokerOrder] = {}
         for order in orders:
             if order.tag is not None and is_hat_tag(order.tag):
-                first.setdefault(order.tag, order)
+                held = first.get(order.tag)
+                if held is None or (_dead(held) and not _dead(order)):
+                    first[order.tag] = order
                 by_id[order.order_id] = order
         return cls(first, by_id)
 
@@ -222,10 +225,14 @@ class TagBook:
         return found if found is not None and found.tag == row.tag else None
 
 
+def _dead(order: BrokerOrder) -> bool:
+    return order.status in ("cancelled", "rejected", "expired") and order.filled_qty == 0
+
+
 def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:
     """The broker's order with `tag`, or None when its order book has none. Raises
     BrokerUnavailableError when the book cannot be read (never "absent" on a failed read)."""
-    return next((o for o in broker.orders() if o.tag == tag), None)
+    return TagBook.of(o for o in broker.orders() if o.tag == tag).first.get(tag)
 
 
 def adopt_broker_order(

@@ -4,7 +4,7 @@ adapter over `FakeBroker`. Nothing reaches a real broker."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -807,7 +807,7 @@ def test_a_second_order_under_one_tag_is_tracked(extra: int, parts: int, syncs: 
     """HAT-BRK-103, HAT-DEC-B17: when the broker holds a second order under an entry's tag (Fyers
     does not enforce tag uniqueness) and it fills, every share is recorded on the position, its
     stop covers them all, and `fill.excess` is raised once, however many partial fills make up
-    the excess and however many syncs follow. Harm:
+    the excess and however many syncs follow, only once the stop covers every share. Harm:
     shares bought twice sit at the broker untracked and with no stop, or the owner never learns
     the position is larger than its risk budget."""
     with Session(memory_engine()) as session:
@@ -831,10 +831,22 @@ def test_a_second_order_under_one_tag_is_tracked(extra: int, parts: int, syncs: 
                 for n in range(parts)
             ),
         ]
+        covered: list[bool] = []
+        alert = rig.notifier.alert
+
+        def checked(code: str, day: date, detail: dict) -> None:
+            if code == ALERT_FILL_EXCESS:
+                session.refresh(position)
+                live = sum(stop.qty for stop in rig.stops(position.id, *LIVE))
+                covered.append(live == position.qty_open)
+            alert(code, day, detail)
+
+        rig.notifier.alert = checked  # type: ignore[method-assign]
         for n in range(syncs):
             rig.sync(at(16, 5 + n))
         session.refresh(position)
         assert position.qty_open == row.qty + extra
+        assert covered == [True]
         assert rig.codes().count(ALERT_FILL_EXCESS) == 1
         live = rig.stops(position.id, *LIVE)
         assert sum(stop.qty for stop in live) == position.qty_open
