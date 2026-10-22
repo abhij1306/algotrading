@@ -180,7 +180,7 @@ SEED_POLICY: dict[str, Any] = {
     "risk_pct": "0.0025",
     "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
     "adv_cap_pct": "0.01",
-    "global_open_risk_pct": "0.03",
+    "global_open_risk_pct": "0.015",
     "max_open_positions": 6,
     "max_positions_per_industry": 2,
     "max_entries_per_day": 3,
@@ -192,10 +192,22 @@ SEED_POLICY: dict[str, Any] = {
         "up_after_wins": 2,
         "down_after_losses": 2,
     },
-    "kill": {"account_drawdown_pct": "0.15", "bot_drawdown_pct": "0.10"},
+    "kill": {"account_drawdown_pct": "0.10", "bot_drawdown_pct": "0.10"},
     "base_weight": {"S1": "0.50", "S2": "0.50"},
     "cluster_cap": "1.00",
     "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
+    "health_bands": {"half_dd": "0.08", "zero_dd": "0.10", "full_mult": "1.0", "half_mult": "0.5"},
+    "weights_confirmed": True,
+}
+
+
+# The PR 10 seed, which D128 withdrew (account kill 15%, global open risk 3%, Probation band
+# 12%) and which left the weights unconfirmed. A policy in force equal to it is replaced at
+# startup by the seed above (`policy_service.supersede_old_seed`, HAT-RISK-011).
+OLD_SEED_POLICY: dict[str, Any] = {
+    **SEED_POLICY,
+    "global_open_risk_pct": "0.03",
+    "kill": {"account_drawdown_pct": "0.15", "bot_drawdown_pct": "0.10"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.12", "full_mult": "1.0", "half_mult": "0.5"},
     "weights_confirmed": False,
 }

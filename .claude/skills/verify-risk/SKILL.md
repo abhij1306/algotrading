@@ -9,7 +9,7 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 
 ## Properties
 
-- `TLA KillSwitch!TripOnDrawdown` An account-level drawdown of 15% (or a bot's 10%) is seen and no kill is set, so the bots keep opening positions through a crash. Harm: the account loses more than the owner's stop-loss for the whole book.
+- `TLA KillSwitch!TripOnDrawdown` An account-level drawdown of 10% (or a bot's 10%; D128, the account was 15% before PR 46) is seen and no kill is set, so the bots keep opening positions through a crash. Harm: the account loses more than the owner's stop-loss for the whole book.
 - `TLA KillSwitch!TripImpliesManageOnly` While the account kill or the bot's own kill is tripped, no entry is placed for that bot. Harm: a kill that does not stop new positions is not a kill.
 - `TLA KillSwitch!KillCancelsApprovals` A drawdown or manual kill ends every approval still waiting for a decision, so a stale Telegram button cannot open a position after the kill. Harm: a confirm tap minutes after a kill places an order.
 - `TLA KillSwitch!DataHealthManageOnly` While the data or broker health check is failing, no entry is placed, even before the stored switch has been updated. Harm: entries on stale or unconfirmed data.
@@ -19,10 +19,11 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 - `TLA KillSwitch!HealthAutoRearm` A health kill clears by itself as soon as the health inputs pass, without a user. Harm: a brief data glitch freezes the bot until someone notices.
 - `TLA KillSwitch!ExitsContinue` Whatever is tripped, paused or failing, a due exit is eventually sent. Harm: a kill or a health failure traps an open position.
 - `PBT sizing.*` On the real `size_position` and the real `evaluate_signal`: the size is exactly the floor of the smallest of the four terms (risk, position share, 20-day volume, cash), in Decimal with no float; the risk taken never exceeds `equity x risk_pct x ladder multiplier`; a wider stop never grows the size and more equity never shrinks it; a zero size is a skip with a named reason; a stop at or above the entry is refused; the regime and health multipliers are applied once (they are already inside the allocation's `risk_pct`); every number comes from the policy version in force at the signal time, so a pending increase never sizes a trade. Harm: a position larger than the owner's risk budget, or one sized with a limit nobody approved.
-- `PBT caps.*` On the real decision: the 3% global open risk, positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, read by the service itself from the backtest runs (none, and so refused, without a completed run), a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
+- `PBT caps.*` On the real decision: the 1.5% global open risk (D128), positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, read by the service itself from the backtest runs (none, and so refused, without a completed run), a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk stream (drawdown, manual together) or of one of its health reasons (`data_health`, `feed_health`, `broker_health`, each its own stream) is a trip, so an automatic health re-arm never hides a tripped drawdown kill nor another source's health trip; another bot's rows never count. On the real service on SQLite, random trips, health changes (the account's from the gate and from the feed apart), re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 15% and a bot at 10% from the summed and per-bot equity. A planned reallocation is not a drawdown (HAT-RISK-066): with no trade results, any sequence of allocation capitals (cuts, rises, nights at zero) trips nothing and leaves no stored peak above its equity, and a cut together with a realised loss trips exactly when the loss reaches the drawdown share of the restated capital; a snapshot of day d is measured on the bot's latest allocation on or before d, and its capital for restating the peak and the account series is the one it used (equity less realised P&L), so an allocation written after it, or a night without one, reads as no loss (PR 33: `snapshot.bots` no longer waits for `allocate`). Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
+- `PBT policy.*` The startup upkeep (`policy_upkeep.ensure_hat_policies`, PR 46) moves each user whose policy in force is the withdrawn PR 10 seed, with nothing pending, to the 06 §1 seed as an `initial` version effective at once, supersedes the old one at that instant and writes both governance events; any other policy, a pending change, no policy and every later run are left exactly as they were (HAT-RISK-011, D128). Harm: an account keeps the 15% kill and 3% cap the owner withdrew and its bots stay in shadow, or the owner's own policy is overwritten.
 - `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, HAT's pinned safety properties (exits, regime gate, stop, staleness, session, kill, caps, tag and fail-closed broker rules) still exist as Hypothesis properties, match their recorded digests and pass, the legacy manual-trading modules are gone, and no HAT module names the legacy VCP halt flag. Harm: a second sizing path, a hidden override, a safety property weakened to fit a change, or a manual-trading path around HAT's risk decision.
 - `DB risk.*` On Postgres, the real policy, kill and snapshot services write rows the database constraints accept (cooling-off span, kill scope, one snapshot per bot and day), and a service that forgets its own rule is refused. Harm: the code and the database disagree about what a legal row is.
 
@@ -71,10 +72,11 @@ Code under check:
 - `backend/app/hat/risk/exposure.py`: `apply_outcome`, `apply_trade`, `max_positions`
 - `backend/app/hat/risk/kill.py`: `current_state`, `kill_state_of`, `drawdown_breached`, `tripped_since`, `account_series`, `rebase_peak`, `adjusted_series`
 - `backend/app/hat/risk/controls.py`: `trip_kill`, `rearm_kill`, `sync_health`, `evaluate_drawdown_kills`, `pause_bot`, `resume_bot`, `queue_mode_change`, `record_closed_trade`, `snapshot_bots`
+- `backend/app/hat/risk/policy_upkeep.py`: `load_versions`, `record_policy_event`, `next_version`, `supersede_old_seed`, `ensure_hat_policies`
 - `backend/app/hat/risk/policy_service.py`: `seed_initial_policy`, `request_policy_change` (its evidence from `backtest_evidence`, `backtest.runs.gate_evidence`), `apply_due_versions`
 - `backend/app/hat/risk/sessions.py`: `SessionCalendar`, `next_session_open`
 - `backend/app/hat/risk/modes.py`: `plan_mode_change`, `effective_mode`
-- `backend/app/hat/risk/policy.py`: `parse_policy`, `SEED_POLICY`, `effective_version`, `classify_direction`, `build_gate_evidence`, `increase_gate_ok`
+- `backend/app/hat/risk/policy.py`: `parse_policy`, `SEED_POLICY`, `OLD_SEED_POLICY`, `effective_version`, `classify_direction`, `build_gate_evidence`, `increase_gate_ok`
 - `backend/app/hat/risk/service.py`: `evaluate_signal`, `price_band_ok`, `market_open_at`
 
 Checks:
@@ -83,6 +85,7 @@ Checks:
 - `backend/tests/hat/properties/test_caps.py`
 - `backend/tests/hat/properties/test_exposure.py`
 - `backend/tests/hat/properties/test_kill.py`
+- `backend/tests/hat/properties/test_policy.py`
 - `backend/tests/hat/properties/test_calendar.py`
 - `backend/tests/hat/properties/test_mode_change.py`
 - `backend/tests/hat/conformance/test_conf_risk.py`
@@ -93,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `b5f76184f8167eca506903c99393f2bbcc3d187e3d0b76fc7945ec7302295a23`
+Covered digest: `2481766a6300b6ca9cad3e0f6f5b2584ee140ee6888416301dc75a90c80cadff`
 
 ## Scope changes
 
@@ -118,6 +121,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 30 (design review item 5): `broker_health` is now tripped and cleared, per bot of the account, by every session check (`AccountDesk.check_session`). Its property, `router.broker_health_follows_the_session`, lives in verify-execution, beside the desks; no risk file changed.
 - PR 33: `snapshot.bots` runs at 23:30 on its own (not after `allocate`) and reads each bot's latest allocation on or before the day; `kill.snapshot_latest_allocation` checks it with no trade results (the realised-P&L part is `reallocation_does_not_hide_a_loss`'s), over nights where `allocate` commits before the snapshot, after it or not at all. An `allocate` that ends after 23:30 is not re-measured until the next night. A snapshot's capital is now its equity less its realised P&L, where it was the allocation row of its date; a snapshot whose bot has no allocation on or before its date still has no known capital, so `drawdown_kills_from_snapshots` (synthetic snapshots, no allocations) is unchanged. Nothing was narrowed.
 - PR 34 (design review item 9, HAT-GOV-091): `policy_service.EvidenceSource` takes the request time; `request_policy_change` passes `requested_at` (the fixed-evidence lambdas of `test_caps` and the Postgres `test_db_risk` take it too), so `runs.gate_evidence` counts only the trades closed since the policy version in force took effect (`dsr.gate_evidence`, in `verify-backtest`). The increase gate itself is unchanged. Nothing was narrowed.
+- PR 46 (D128) re-pinned two safety properties in `test_conf_risk.SAFETY_DIGESTS`: `caps.global_open_risk` (its oracle's cap 3% to 1.5%) and `caps.kill_thresholds` (its oracle's account kill 15% to 10%). Only the numbers changed, to the owner's; each property is as strong as before, and each was seen failing with the old number restored in the seed. `kill.drawdown_kills_from_snapshots`, `trades.global_open_risk_across_bots`, `lifecycle.*` (Probation at 10%) and the DB snapshot and owner-serialised checks took the same numbers. The policy helpers that need no backtest import moved to `risk/policy_upkeep.py`, so `app.database` can run the upkeep at startup without the Telegram text path reaching order code (`policy_service` re-exports `load_versions`). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -616,6 +620,21 @@ E   Failed: DID NOT RAISE GateError
 E   Failing test case: test_policy_change_inside_session_or_without_evidence_is_refused(kind='raise')
 ```
 
+Break: (PR 46) the seed's `global_open_risk_pct` back to 0.03 (`caps.global_open_risk` and its boundary).
+
+```
+E   AssertionError: assert None == <Reason.GLOBAL_OPEN_RISK: 'global_open_risk'>
+E   Failing test case: test_global_open_risk(
+```
+
+Break: (PR 46) the seed's `kill.account_drawdown_pct` back to 0.15 (`caps.kill_thresholds` and its boundary).
+
+```
+E   AssertionError: assert False is True
+E    +  where False = <function tripped_since at 0x7f49d36fe1f0>([...], Decimal('0.15'), None)
+E   Failing test case: test_kill_thresholds(
+```
+
 ### PBT exposure.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -810,6 +829,13 @@ Break: in `backend/app/hat/risk/controls.py` (kill.trip_cancels_approvals, state
 E       # The test always failed when commented parts were varied together. [cut]
 ```
 
+Break: (PR 46) the seed's account kill back to 15% (`kill.drawdown_kills_from_snapshots`).
+
+```
+E   AssertionError: assert ('account' in ['dbaf3a73-5216-4cab-b04c-472a4f8d030f']) is True
+E   Failing test case: test_drawdown_kills_from_snapshots(
+```
+
 ### PBT calendar.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -996,6 +1022,25 @@ Break: (PR 45) in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spe
 E   assert True is False
 ```
 
+Break: (PR 46) in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spec): the seed's global open risk back to 0.03.
+
+```
+E   AssertionError: global_open_risk_pct
+E   assert Decimal('0.03') == Decimal('0.015')
+```
+
+Break: (PR 46) in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spec): the seed's Probation band (`health_bands.zero_dd`) back to 0.12.
+
+```
+E   AssertionError: assert (Decimal('0.0...cimal('0.12')) == (Decimal('0.0...cimal('0.10'))
+```
+
+Break: (PR 46) in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spec): the seed leaves the weights unconfirmed (`weights_confirmed` false).
+
+```
+E   assert False is True
+```
+
 ### DB risk.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -1023,4 +1068,35 @@ E psycopg2.errors.CheckViolation: new row for relation "hat_kill_switch" violate
 E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2f9e1eba-3061-4ad8-99af-0532002ae618, tripped, 2026-10-20 09:00:00+00, manual, null).
 E sqlalchemy.exc.IntegrityError: (psycopg2.errors.CheckViolation) new row for relation "hat_kill_switch" violates check constraint "ck_hat_kill_switch_scope_bot"
 E DETAIL: Failing row contains (01a15ccd-64d8-7018-8f57-4176c9ac77c1, account, 2f9e1eba-3061-4ad8-99af-0532002ae618, tripped, 2026-10-20 09:00:00+00, manual, null).
+```
+
+Break: (PR 46) the seed's account kill back to 15% (`risk.snapshot_job_is_idempotent_and_feeds_the_kill`: the one-bot world's account no longer trips with its bot).
+
+```
+E   AssertionError: assert ['01a16469-74...ed52796500d9'] == ['01a16469-74...9', 'account']
+E     Right contains one more item: 'account'
+```
+
+### PBT policy.*
+
+Break: (PR 46) `supersede_old_seed` ignores a pending version (the owner's queued change is overtaken).
+
+```
+E   assert [1] == [0]
+E     At index 0 diff: 1 != 0
+```
+
+Break: (PR 46) `supersede_old_seed` moves any policy whose weights are unconfirmed, not only the old seed (the owner's own policy is overwritten).
+
+```
+E   assert [2] == [1]
+E     At index 0 diff: 2 != 1
+```
+
+Break: (PR 46) `supersede_old_seed` does not supersede the old version.
+
+```
+E   AttributeError: 'NoneType' object has no attribute 'tzinfo'
+E   Failing explicit example: test_seed_supersedes_old_initial(
+E       states=['old'],
 ```

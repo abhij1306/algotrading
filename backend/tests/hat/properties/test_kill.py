@@ -282,7 +282,7 @@ def test_trip_cancels_pending_approvals(scope: str, reason: str) -> None:
     st.booleans(),
 )
 def test_drawdown_kills_from_snapshots(equities: list, rearm_first: bool) -> None:
-    """From daily snapshots the account kill trips when the summed equity is 15% under its
+    """From daily snapshots the account kill trips when the summed equity is 10% under its
     running peak and a bot kill when that bot is 10% under its own, nothing else trips, and a
     re-arm is not undone by the snapshots it already saw."""
     from datetime import date
@@ -299,7 +299,7 @@ def test_drawdown_kills_from_snapshots(equities: list, rearm_first: bool) -> Non
             d = date(2026, 3, 2) + timedelta(days=day)
             account = sum(pair, D(0))
             account_peak = max(account_peak, account)
-            expect_account |= (account_peak - account) * 100 >= 15 * account_peak
+            expect_account |= (account_peak - account) * 100 >= 10 * account_peak
             for k in range(2):
                 peaks[k] = max(peaks[k], pair[k])
                 expect_bot[k] |= (peaks[k] - pair[k]) * 100 >= 10 * peaks[k]

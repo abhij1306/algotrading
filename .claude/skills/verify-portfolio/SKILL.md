@@ -963,6 +963,12 @@ E        )],
 FAILED tests/hat/properties/test_lifecycle.py::test_trade_results_ignore_later_trades
 ```
 
+Break: (PR 46) the seed's Probation band (`health_bands.zero_dd`) back to 0.12: a sleeve 10% under its peak stays live (`lifecycle.allocation_moves_a_health_zero_sleeve_to_probation`, whose 9% and 10% edges are now `@example`s).
+
+```
+E   AssertionError: assert 'live' == 'probation'
+```
+
 ### CONF portfolio.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.

@@ -105,7 +105,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT config.trade_keeps_entry_version` After the bot moves to a newer strategy version an open trade still evaluates the exit rules of the version it entered under, and a trade opened after the move uses the new ones. Harm: a promotion silently rewrites the exits of positions already held.
 - `DB runtime.publish_serialised` Two real nightly publishes of one bot and day, the first holding inside its scan after its "already published?" read, write one `watchlist.published`; the second waits on the bot's lock and skips. Harm: duplicate watchlist rows and events.
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
-- `PBT trades.global_open_risk_across_bots` (HAT-RISK-030) Two bots of one owner on different broker accounts, triggers interleaved in any order through `open_entry`: a trigger is rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 3% of total equity, is accepted otherwise, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N x 3%.
+- `PBT trades.global_open_risk_across_bots` (HAT-RISK-030; the cap is 1.5% since PR 46, D128) Two bots of one owner on different broker accounts, triggers interleaved in any order through `open_entry`: a trigger is rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 3% of total equity, is accepted otherwise, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N x 3%.
 - `DB runtime.owner_serialised` (HAT-RISK-030) Two real transactions of different bots of one owner (on different broker accounts), the first holding between its risk decision and its insert, with global open-risk room for one entry, end with one accepted and one rejected; the second waits on the owner's advisory lock. Harm: two bots' triggers in one instant both fit on one snapshot and together exceed the cap.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 - `TLA ExecutionRouter!RouteByMode` Each routed signal takes the route of the mode it was routed by: shadow a virtual position, confirm a card (a real order only after a Take), auto a real order. Harm: a signal is routed under the wrong mode.
@@ -317,7 +317,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `3fb8eab25102e406d6907a9bd98b428ff763a6a4690481b24b94891eb7d46a7d`
+Covered digest: `952f6a3111c25103db6bc40dcd6cee939043fcb09e37aa043d44325809f57f93`
 
 ## Scope changes
 
@@ -1725,6 +1725,14 @@ E       order=[0, 1],
 E       room=1,
 E       spare=1,
 FAILED tests/hat/properties/test_trades.py::test_global_open_risk_across_bots
+```
+
+Break: (PR 46) the seed's `global_open_risk_pct` back to 0.03: the second bot's entry fits under the old cap.
+
+```
+E   AssertionError: assert UUID('01a16469-36fd-729b-8546-f2c41c2f730a') is None
+E   Failing test case: test_global_open_risk_across_bots(
+E       order=[1, 1],
 ```
 
 ### DB runtime.owner_serialised

@@ -118,8 +118,8 @@ def test_risk__initial_seed_equals_spec() -> None:
         assert doc[name] == int(_number(row(name))), name
     assert Decimal(doc["kill"]["account_drawdown_pct"]) == _number(row("kill.account_drawdown_pct"))
     assert Decimal(doc["kill"]["bot_drawdown_pct"]) == _number(row("kill.bot_drawdown_pct"))
-    assert doc["weights_confirmed"] is False
-    assert row("weights_confirmed").split("|")[0].strip().startswith("false")
+    assert doc["weights_confirmed"] is True  # 0.50/0.50 and 1.00 confirmed (plan audit §6 item 9)
+    assert row("weights_confirmed").split("|")[0].strip().startswith("true")
     weights = re.findall(r"[0-9.]+", row("base_weight.S1"))[:2]
     assert [Decimal(doc["base_weight"][k]) for k in ("S1", "S2")] == [Decimal(w) for w in weights]
     low, high = re.findall(r"[0-9.]+", row("multiplier_bounds"))[:2]
@@ -152,8 +152,8 @@ def test_risk__initial_seed_equals_spec() -> None:
     health = doc["health_bands"]
     assert (Decimal(health["half_dd"]), Decimal(health["zero_dd"])) == (
         Decimal("0.08"),
-        Decimal("0.12"),
-    )  # "8% / 12% -> 1.0 / 0.5 / 0" (§1, health_bands)
+        Decimal("0.10"),
+    )  # "8% / 10% -> 1.0 / 0.5 / 0" (§1, health_bands; Probation band 10%, D128)
     assert (Decimal(health["full_mult"]), Decimal(health["half_mult"])) == (1, Decimal("0.5"))
     assert parse_policy(doc) == seed_policy()
 
@@ -281,14 +281,16 @@ SAFETY_PROPERTIES = {
 # SHA-256 of `ast.dump` of each pinned property (decorators, strategies and body). Weakening one
 # to fit a change fails here: stop and explain, then re-pin it with the reason in the PR.
 SAFETY_DIGESTS = {
-    "test_global_open_risk": ("92fe9c3555f8047e1ecf28e164591133e5468756482aa6d7ff6487cd41dbe1b3"),
+    # Re-pinned in PR 46 (D128): the oracle's cap 3% -> 1.5%, the same property otherwise.
+    "test_global_open_risk": ("9beb2c6119aa01dbe1e84c2245285a17aebd6163ab3ed52fc25c2ec0bec3d4c5"),
     "test_exits_never_blocked": (
         "8274671f6c65ec6b48cb77db76a0aa5282381752bbfaf64b6be93aa0f4609e7b"
     ),
     "test_regime_gate_blocks_entries": (
         "0c707221de86b481e12f5a96d3317ec48b42c26131c08d61f7b355597be01988"
     ),
-    "test_kill_thresholds": ("92ffcad86db6452ffb72a80ec5f9de4ae9c856233f3e0283041ecaa0faab3116"),
+    # Re-pinned in PR 46 (D128): the oracle's account kill 15% -> 10%, the same property otherwise.
+    "test_kill_thresholds": ("d3bd9c3b3f4976c62b97ff3fa7d173f62e2bb82cdc9e30dde057e5a1ab3a8327"),
     "test_entry_requires_stop": (
         "82c6b69044d9b2c49bb8924cce9b62a3bf12162706983342467a10d11e3068c6"
     ),

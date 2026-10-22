@@ -1,10 +1,16 @@
 """DB checks for the migration mechanism (HAT-SCH-101, HAT-SCH-103)."""
 
+import uuid
+from datetime import UTC, datetime, timedelta
+
 import hat_db_rules as rules
 import pytest
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy.orm import Session
 
 from app.database import init_db, postgres_url_from_env
+from app.hat.models import HatRiskPolicyVersion
+from app.hat.risk.policy import OLD_SEED_POLICY, SEED_POLICY
 from app.hat.schema import ensure_hat_schema
 
 pytestmark = pytest.mark.postgres
@@ -105,3 +111,41 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM hat_job_run WHERE job = 'old'"))
         engine.dispose()
+
+    # An older policy: a user still on the PR 10 seed is moved to the §1 seed.
+    _old_seed_superseded(pg_engine)
+
+
+def _old_seed_superseded(pg_engine: Engine) -> None:
+    """HAT-RISK-011 (PR 46): `init_db()` moves a user still on the PR 10 seed to the §1 seed as an
+    `initial` version: the immutability trigger lets the old row be superseded, the cooling-off
+    CHECK accepts the new one, and a second run writes nothing."""
+    user = uuid.uuid4()
+    past = datetime.now(UTC) - timedelta(days=30)
+    with Session(pg_engine) as session:
+        session.add(
+            HatRiskPolicyVersion(
+                user_id=user,
+                version=1,
+                policy=dict(OLD_SEED_POLICY),
+                direction="initial",
+                requested_at=past,
+                effective_from=past,
+            )
+        )
+        session.commit()
+    # Policy versions cannot be deleted; the user is fresh and the session fixture drops the
+    # HAT tables at the end, so nothing leaks into other checks.
+    init_db()
+    init_db()
+    with Session(pg_engine) as session:
+        rows = session.scalars(
+            select(HatRiskPolicyVersion)
+            .where(HatRiskPolicyVersion.user_id == user)
+            .order_by(HatRiskPolicyVersion.version)
+        ).all()
+        assert [(r.version, r.direction, r.policy == SEED_POLICY) for r in rows] == [
+            (1, "initial", False),
+            (2, "initial", True),
+        ]
+        assert rows[0].superseded_at == rows[1].effective_from

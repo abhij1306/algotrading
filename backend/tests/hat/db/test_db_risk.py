@@ -127,7 +127,7 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
     """`snapshot.bots` writes one row per bot and day however often it runs; equity is allocation
     capital plus realised P&L, so a cut of capital with no trade is a reallocation and trips
     nothing (HAT-RISK-066), while a realised loss 10% under the restated peak trips the bot kill
-    and the account kill needs 15%."""
+    and, the world holding this one bot, the account kill with it (both 10%, D128)."""
     w = b.world(conn)
     day = date(2026, 10, 19)
     sig = b.signal(conn, w)
@@ -173,4 +173,4 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
         loss = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=2)))
         assert (loss.equity, loss.equity_peak) == (Decimal("80000"), Decimal("89000"))
         tripped = evaluate_drawdown_kills(session, seed_policy(), b.later(6))
-        assert tripped == [str(w["bot"])]
+        assert sorted(tripped) == sorted([str(w["bot"]), "account"])

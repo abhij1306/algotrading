@@ -709,7 +709,7 @@ def check_runtime__owner_serialised(conn: Connection) -> None:
     other = _second_bot(engine, bot)
     version = PolicyVersion(policy_id, 1, datetime(2026, 1, 1, tzinfo=UTC), None, policy_with())
     risk = evaluate_signal(valid_ctx(total_equity=Decimal(10**12))).risk_amount
-    total_equity = (risk + 1) / Decimal("0.03")  # room for one entry of either bot
+    total_equity = (risk + 1) / Decimal("0.015")  # room for one entry of either bot
 
     def request(bot_id: uuid.UUID, instrument: uuid.UUID) -> trades.EntryRequest:
         return trades.EntryRequest(

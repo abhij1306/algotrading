@@ -14,19 +14,19 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 | `p_max.stage2-contraction-breakout` | Max position share of bot equity, S1 | 0.20 | BL "Position size" (M 20%) |
 | `p_max.momentum-breakout-ep` | Max position share of bot equity, S2 | 0.25 | BL "Position size" (Q 25%) |
 | `adv_cap_pct` | Max share of 20-day ADV per position | 0.01 [A] | BL "Position size" |
-| `global_open_risk_pct` | Sum of open risk across all bots, share of total equity | 0.03 | BL "Caps" |
+| `global_open_risk_pct` | Sum of open risk across all bots, share of total equity | 0.015 | BL "Caps"; D128 (was 0.03) |
 | `max_open_positions` | Per bot | 6 | BL "Caps"; B21 |
 | `max_positions_per_industry` | Per bot | 2 [A] | BL "Caps" |
 | `max_entries_per_day` | Per bot | 3 [A] | BL "Caps" |
 | `max_stopouts_per_day` | Per bot | 3 [A] | BL "Caps" |
 | `exposure_ladder` | L1 2 pos / 0.5x, L2 4 pos / 1.0x, L3 6 pos / 1.0x; up after 2 consecutive winners, down after 2 consecutive losers | see §4 [A] | BL "Progressive exposure"; B16 |
-| `kill.account_drawdown_pct` | Account equity below peak that trips the account kill | 0.15 | BL "Kill switches"; B26 |
-| `kill.bot_drawdown_pct` | Bot equity below peak that trips the bot kill | 0.10 [A] | BL "Kill switches" |
-| `base_weight.S1`, `base_weight.S2` | Each sleeve's base weight b | 0.50, 0.50 [OWNER-PENDING] | BL "Allocation"; PLAN Q3 |
-| `cluster_cap` | Combined cap for the S1+S2 risk cluster | 1.00 [OWNER-PENDING] | BL "Sleeves"; PLAN Q3 |
+| `kill.account_drawdown_pct` | Account equity below peak that trips the account kill | 0.10 | BL "Kill switches"; B26; D128 (was 0.15) |
+| `kill.bot_drawdown_pct` | Bot equity below peak that trips the bot kill | 0.10 | BL "Kill switches"; D128 |
+| `base_weight.S1`, `base_weight.S2` | Each sleeve's base weight b | 0.50, 0.50 | BL "Allocation"; PLAN Q3; plan audit 2026-10-22 §6 item 9 |
+| `cluster_cap` | Combined cap for the S1+S2 risk cluster | 1.00 | BL "Sleeves"; PLAN Q3; plan audit 2026-10-22 §6 item 9 |
 | `multiplier_bounds` | Allowed range of regime and health multipliers | [0.25, 1.0] | BL "Allocation"; PL2 |
-| `health_bands` | Sleeve drawdown bands 8% / 12% → 1.0 / 0.5 / 0 | see 05-portfolio [A] | BL "Health multiplier" |
-| `weights_confirmed` | The owner has set `base_weight` and `cluster_cap` as real numbers. Not a risk number: it sizes nothing, and a stored document without it reads as false. Until it is true no bot runs confirm or auto (HAT-GOV-085) | false | D130, D132; plan audit 2026-10-22 §6 item 9 |
+| `health_bands` | Sleeve drawdown bands 8% / 10% → 1.0 / 0.5 / 0 (0 moves the sleeve to Probation) | see 05-portfolio [A] | BL "Health multiplier"; D128 (Probation band was 12%) |
+| `weights_confirmed` | The owner has set `base_weight` and `cluster_cap` as real numbers. Not a risk number: it sizes nothing, and a stored document without it reads as false. Until it is true no bot runs confirm or auto (HAT-GOV-085) | true | D130, D132; plan audit 2026-10-22 §6 item 9 (PR 46) |
 
 #### HAT-RISK-010: Risk policy holds every risk number
 - **Statement:** All sizing, cap, ladder, kill-switch, base-weight and multiplier-bound values are read from the effective `hat_risk_policy_version.policy`; no strategy version or bot row carries a risk number.
@@ -40,12 +40,15 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 #### HAT-RISK-011: Initial policy seed
 - **Statement:** The initial risk-policy seed (version 1, `direction = initial`) carries exactly the §1 seed values.
 - **Source:** BL "Position size", "Caps", "Progressive exposure", "Kill switches"; B14, B16, B21, B26; PLAN Q3.
-- **PR:** 10
-- **Verification:** CONF `risk.initial_seed_equals_spec`
+- **PR:** 10, 46
+- **Verification:** CONF `risk.initial_seed_equals_spec`, PBT `policy.seed_supersedes_old_initial`, DB `migration.ensure_idempotent`
 - **Acceptance:**
-  - Property: the seeded policy document equals the §1 seed column field by field, including `risk_pct = 0.0025` and `kill.account_drawdown_pct = 0.15`. Harm: the account starts with risk numbers nobody approved.
-- **[A]** `adv_cap_pct` 0.01, industry cap 2, entries/day 3, stop-outs/day 3, ladder 2/4/6, bot kill 10%: defaults as listed; validated by slippage in shadow mode (ADV cap), live review (caps), live after 50 trades (ladder), backtest and shadow (bot kill) per BL "Defaults that are assumptions".
-- **[OWNER-PENDING]** S1/S2 base weights 0.50/0.50, cluster cap 1.00, account equity read from broker funds at session start: default per PLAN Q3; the owner must set real numbers before any bot runs in confirm or auto. Enforced since PR 45: the seed carries `weights_confirmed = false`, and while the policy in force at a session's open says false every bot runs shadow and `/mode … confirm|auto` is refused `weights_not_confirmed` (HAT-GOV-085). The owner confirms the numbers with a policy version that sets it true (PR 46 writes 0.50/0.50 and 1.00 as that version, plan audit §6 item 9).
+  - Property: the seeded policy document equals the §1 seed column field by field, including `risk_pct = 0.0025`, `global_open_risk_pct = 0.015`, `kill.account_drawdown_pct = 0.10` and `weights_confirmed = true`. Harm: the account starts with risk numbers nobody approved.
+  - Property (PR 46): for every user whose policy in force is the PR 10 seed (the old numbers, with `weights_confirmed` false or absent), the startup upkeep writes the §1 seed as the next version, `direction = initial`, effective at once with no cooling-off, supersedes the old one and records both governance events; any other policy, a user without one, and a second run are left as they are. Harm: an existing account keeps the 15% kill and the 3% cap the owner withdrew, or the owner's own later change is overwritten.
+- **Implementation (PR 46):** `risk/policy_service.py:supersede_old_seed`, run for every user with a policy at startup by `ensure_hat_policies` (`app.database.ensure_hat_database`, after the reference seed). The new version is written `initial` because it carries the owner's decision (D128) and the confirmed weights (§6 item 9) rather than a requested change, so the 7-day cooling-off of an increase does not apply; every number in it is equal to or stricter than the old seed.
+- **[A]** `adv_cap_pct` 0.01, industry cap 2, entries/day 3, stop-outs/day 3, ladder 2/4/6: defaults as listed; validated by slippage in shadow mode (ADV cap), live review (caps), live after 50 trades (ladder), backtest and shadow (bot kill) per BL "Defaults that are assumptions".
+- **Weights (PR 46):** S1/S2 base weights 0.50/0.50 and cluster cap 1.00 are confirmed as the real numbers (plan audit 2026-10-22 §6 item 9), so the seed carries `weights_confirmed = true` and PR 45's `weights_not_confirmed` refusal clears. The gate itself stays (HAT-GOV-085): a stored policy without the field, or one the owner writes with it false, keeps every bot in shadow.
+- **[OWNER-PENDING]** account equity read from broker funds at session start: default per PLAN Q3.
 
 ## §2 Position size
 
@@ -88,7 +91,7 @@ E = bot equity (allocation + realised P&L) · r = risk per trade = the sleeve's 
 
 | Cap | Default | Scope | On breach |
 | --- | --- | --- | --- |
-| Global open risk (sum of (entry − stop) × qty) | 3% of total equity | All bots | New entry rejected |
+| Global open risk (sum of (entry − stop) × qty) | 1.5% of total equity (D128) | All bots | New entry rejected |
 | Max open positions | 6 | Per bot | New entry rejected |
 | Max positions per industry | 2 [A] | Per bot | New entry rejected |
 | Max new entries per day | 3 [A] | Per bot | Further triggers rejected |
@@ -97,13 +100,13 @@ E = bot equity (allocation + realised P&L) · r = risk per trade = the sleeve's 
 Caps can only shrink or reject an entry; they never apply to exits.
 
 #### HAT-RISK-030: Global open-risk cap
-- **Statement:** A new entry is rejected when the sum over all bots' open positions of (current_stop distance × qty) plus the new trade's risk would exceed 3% of total equity. "All bots" is every bot of the owner, on every broker account (the bots whose allocations make up total equity), counting the slots of the entry's own mode (real or virtual): open positions and entries triggered, placed or awaiting approval. The owner's entries are decided one at a time under a Postgres advisory lock keyed by the owner (taken after the bot's lock), so two bots' triggers in one instant cannot both fit on one snapshot.
-- **Source:** BL "Caps"; B15.
-- **PR:** 10, 19
+- **Statement:** A new entry is rejected when the sum over all bots' open positions of (current_stop distance × qty) plus the new trade's risk would exceed 1.5% of total equity (`global_open_risk_pct`, D128; was 3%). "All bots" is every bot of the owner, on every broker account (the bots whose allocations make up total equity), counting the slots of the entry's own mode (real or virtual): open positions and entries triggered, placed or awaiting approval. The owner's entries are decided one at a time under a Postgres advisory lock keyed by the owner (taken after the bot's lock), so two bots' triggers in one instant cannot both fit on one snapshot.
+- **Source:** BL "Caps"; B15; D128.
+- **PR:** 10, 19, 46
 - **Verification:** PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised`
 - **Acceptance:**
-  - Property: for every set of open positions and every candidate, the decision is ACCEPT only if Σ(entry − stop)·qty over the open slots of the entry's mode (real or virtual) plus the candidate's (P_entry − P_stop)·q ≤ 0.03 × total equity; otherwise REJECT with reason `global_open_risk`. Harm: correlated sleeves together risk more than the account can absorb.
-  - Property: through `open_entry`, two bots of one owner on different broker accounts, whose triggers interleave in any order, are each rejected with `global_open_risk` exactly when the open risk of both plus the candidate's exceeds the cap, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N × 3%.
+  - Property: for every set of open positions and every candidate, the decision is ACCEPT only if Σ(entry − stop)·qty over the open slots of the entry's mode (real or virtual) plus the candidate's (P_entry − P_stop)·q ≤ 0.015 × total equity; otherwise REJECT with reason `global_open_risk`. Harm: correlated sleeves together risk more than the account can absorb.
+  - Property: through `open_entry`, two bots of one owner on different broker accounts, whose triggers interleave in any order, are each rejected with `global_open_risk` exactly when the open risk of both plus the candidate's exceeds the cap, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N × 1.5%.
   - Property: two real transactions of different bots of one owner, the first holding between its risk decision and its insert, with room for one entry, end with one accepted and one rejected. Harm: both read the snapshot before the other's slot is visible and together exceed the cap.
 
 #### HAT-RISK-031: Max open positions per bot
@@ -218,7 +221,7 @@ The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portf
 
 | Trigger | Effect | Re-arm |
 | --- | --- | --- |
-| Account equity ≥ 15% below its peak | All bots manage-only | Manual, via `/arm` in Telegram (second confirmation) |
+| Account equity ≥ 10% below its peak (D128) | All bots manage-only | Manual, via `/arm` in Telegram (second confirmation) |
 | Bot equity ≥ 10% below its peak [A] | That bot manage-only | Manual |
 | `/kill` in Telegram | All bots manage-only; pending approvals cancelled | Manual |
 | Data or broker health check fails | Affected bots manage-only | Automatic when healthy |
@@ -226,22 +229,22 @@ The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portf
 Manage-only = no new entries; stops and exits keep running. Drawdown source: `hat_daily_bot_snapshot` (equity, equity_peak). State: `hat_kill_switch` (latest row per scope is current).
 
 #### HAT-RISK-060: Account drawdown kill
-- **Statement:** When account equity is ≥ 15% below its peak, the account kill trips and every bot becomes manage-only.
-- **Source:** BL "Kill switches (B26)"; B26.
-- **PR:** 10
+- **Statement:** When account equity is ≥ 10% below its peak, the account kill trips and every bot becomes manage-only (`kill.account_drawdown_pct`, D128; was 15%).
+- **Source:** BL "Kill switches (B26)"; B26; D128.
+- **PR:** 10, 46
 - **Verification:** PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly`
 - **Acceptance:**
-  - Property: for every equity series, the account kill is tripped exactly when (peak − equity)/peak ≥ 0.15 has occurred since the last re-arm. Harm: the account keeps losing past its stop-loss.
+  - Property: for every equity series, the account kill is tripped exactly when (peak − equity)/peak ≥ 0.10 has occurred since the last re-arm. Harm: the account keeps losing past its stop-loss.
   - Property: in every reachable state where the account kill is tripped, every bot is manage-only. Harm: one bot keeps entering after the account limit.
 
 #### HAT-RISK-061: Bot drawdown kill
-- **Statement:** When a bot's equity is ≥ 10% [A] below its peak, that bot becomes manage-only.
-- **Source:** BL "Kill switches".
-- **PR:** 10
+- **Statement:** When a bot's equity is ≥ 10% below its peak, that bot becomes manage-only (`kill.bot_drawdown_pct`, D128).
+- **Source:** BL "Kill switches"; D128.
+- **PR:** 10, 46
 - **Verification:** PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly`
 - **Acceptance:**
   - Property: for every bot equity series, the bot kill is tripped exactly when (equity_peak − equity)/equity_peak ≥ 0.10 has occurred since its last re-arm, and other bots are unaffected by it. Harm: a broken bot keeps trading, or a healthy bot is stopped by another's loss.
-- **[A]** bot kill 10%: validated by backtest and shadow drawdown distribution.
+- Bot kill 10%: the owner's number since D128 (it was an [A] default); the shadow drawdown distribution is still reviewed against it.
 
 #### HAT-RISK-062: Manual kill
 - **Statement:** `/kill` makes every bot manage-only and cancels every pending approval.

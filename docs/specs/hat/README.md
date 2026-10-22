@@ -119,7 +119,7 @@ to an artefact that exists.
 | HAT-DEC-B12 | [01](01-decisions.md) | 10, 16 | TLA `ExecutionRouter!GateOffNoEntry`, CONF `no_override_command` |
 | HAT-DEC-B13 | [01](01-decisions.md) | 10 | PBT `sizing.risk_bounded` |
 | HAT-DEC-B14 | [01](01-decisions.md) | 10 | CONF `initial_risk_policy_seed` |
-| HAT-DEC-B15 | [01](01-decisions.md) | 10 | PBT `caps.global_open_risk` |
+| HAT-DEC-B15 | [01](01-decisions.md) | 10, 46 | PBT `caps.global_open_risk` |
 | HAT-DEC-B16 | [01](01-decisions.md) | 10 | PBT `exposure.ladder_transitions` |
 | HAT-DEC-B17 | [01](01-decisions.md) | 13, 15 | TLA `StopPlacement!AlwaysProtected`, PBT `manage.real_fill_protected` |
 | HAT-DEC-B18 | [01](01-decisions.md) | 11, 15 | TLA `JobScheduler!ExitsCloseInWindow` |
@@ -130,7 +130,7 @@ to an artefact that exists.
 | HAT-DEC-B23 | [01](01-decisions.md) | 8, 9 | PBT `universe.include_exclude` |
 | HAT-DEC-B24 | [01](01-decisions.md) | 13 | TLA `OrderReconciliation!ProductIsCNC` |
 | HAT-DEC-B25 | [01](01-decisions.md) | 8, 15 | PBT `criteria.max_chase_contract` |
-| HAT-DEC-B26 | [01](01-decisions.md) | 10 | TLA `KillSwitch!TripOnDrawdown`, PBT `caps.kill_thresholds` |
+| HAT-DEC-B26 | [01](01-decisions.md) | 10, 46 | TLA `KillSwitch!TripOnDrawdown`, PBT `caps.kill_thresholds` |
 | HAT-DEC-B27 | [01](01-decisions.md) | 5, 7 | PBT `corporate_actions.adjusted_view` |
 | HAT-DEC-I1 | [01](01-decisions.md) | 4, 7 | TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.batches_of_50` |
 | HAT-DEC-I2 | [01](01-decisions.md) | 5 | PBT `bhavcopy.parsers_agree` |
@@ -365,7 +365,7 @@ to an artefact that exists.
 | HAT-PORT-032 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `regime.classification_total` |
 | HAT-PORT-033 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `regime.multiplier_table` |
 | HAT-PORT-034 | [05](05-portfolio-regime-allocation.md) | 9 | DB `portfolio.unique_keys`, TLA `SleeveLifecycle!RegimeNeverChangesLifecycle` |
-| HAT-PORT-040 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `health.bands`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
+| HAT-PORT-040 | [05](05-portfolio-regime-allocation.md) | 9, 46 | PBT `health.bands`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
 | HAT-PORT-050 | [05](05-portfolio-regime-allocation.md) | 9, 34 | PBT `allocator.formula_and_bounds`, PBT `allocator.virtual_allocation`, PBT `allocator.virtual_entries_sized` |
 | HAT-PORT-051 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.bounds_from_policy`, DB `governance.risk_increase_cooling_off` |
 | HAT-PORT-052 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.capital_and_risk` |
@@ -385,11 +385,11 @@ to an artefact that exists.
 | HAT-PORT-072 | [05](05-portfolio-regime-allocation.md) | P2 | PBT `regime_v2.multiplier_convex` |
 | HAT-PORT-073 | [05](05-portfolio-regime-allocation.md) | P2 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `regime_v2.fallback_to_v1` |
 | HAT-RISK-010 | [06](06-risk-and-governance.md) | 10 | CONF `risk.policy_schema_fields`, CONF `risk.no_risk_keys_in_strategy_schema`, PBT `sizing.uses_effective_policy` |
-| HAT-RISK-011 | [06](06-risk-and-governance.md) | 10 | CONF `risk.initial_seed_equals_spec` |
+| HAT-RISK-011 | [06](06-risk-and-governance.md) | 10, 46 | CONF `risk.initial_seed_equals_spec`, PBT `policy.seed_supersedes_old_initial`, DB `migration.ensure_idempotent` |
 | HAT-RISK-020 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.formula_exact`, PBT `sizing.risk_bounded`, PBT `sizing.monotone` |
 | HAT-RISK-021 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.zero_skips_with_reason` |
 | HAT-RISK-022 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.stop_below_entry_required` |
-| HAT-RISK-030 | [06](06-risk-and-governance.md) | 10, 19 | PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised` |
+| HAT-RISK-030 | [06](06-risk-and-governance.md) | 10, 19, 46 | PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised` |
 | HAT-RISK-031 | [06](06-risk-and-governance.md) | 10 | PBT `caps.max_positions` |
 | HAT-RISK-032 | [06](06-risk-and-governance.md) | 10 | PBT `caps.industry` |
 | HAT-RISK-033 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_entries` |
@@ -401,8 +401,8 @@ to an artefact that exists.
 | HAT-RISK-050 | [06](06-risk-and-governance.md) | 10, 11, 15 | PBT `caps.regime_gate_blocks_entries`, TLA `ExecutionRouter!GateOffNoEntry` |
 | HAT-RISK-051 | [06](06-risk-and-governance.md) | 11, 15 | TLA `ExecutionRouter!GateFreshBeforeFirstEntry` |
 | HAT-RISK-052 | [06](06-risk-and-governance.md) | 10, 16 | CONF `risk.no_gate_override_path`, TLA `ExecutionRouter!GateOffNoEntry` |
-| HAT-RISK-060 | [06](06-risk-and-governance.md) | 10 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
-| HAT-RISK-061 | [06](06-risk-and-governance.md) | 10 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
+| HAT-RISK-060 | [06](06-risk-and-governance.md) | 10, 46 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
+| HAT-RISK-061 | [06](06-risk-and-governance.md) | 10, 46 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
 | HAT-RISK-062 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!KillCancelsApprovals`, TLA `KillSwitch!TripImpliesManageOnly` |
 | HAT-RISK-063 | [06](06-risk-and-governance.md) | 10, 14, 17, 30 | TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`, PBT `router.broker_health_follows_the_session` |
 | HAT-RISK-064 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!NoAutoRearm` |

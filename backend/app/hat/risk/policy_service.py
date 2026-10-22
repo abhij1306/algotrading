@@ -18,18 +18,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
-from ..events import record
 from ..models import HatEvent, HatRiskPolicyVersion
 from ..time import as_utc
 from .policy import (
     COOLING_OFF,
     SEED_POLICY,
-    PolicyVersion,
     RiskPolicy,
     classify_direction,
-    parse_policy,
     require_increase_gate,
 )
+from .policy_upkeep import (
+    EVENT_EFFECTIVE,
+    EVENT_REQUESTED,
+    next_version,
+    record_policy_event,
+)
+from .policy_upkeep import load_versions as load_versions  # callers import it from here
 from .sessions import SessionCalendar, SessionState
 
 # The evidence an increase is checked with, for a user: None when there is none.
@@ -50,51 +54,6 @@ def backtest_evidence(
 
 class PolicyChangeError(HatError):
     """A policy change was refused (no known session open to take effect at)."""
-
-
-def load_versions(session: Session, user_id: uuid.UUID) -> list[PolicyVersion]:
-    """Every stored version of the user's policy, parsed (a malformed stored document raises)."""
-    rows = session.scalars(
-        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
-    return [
-        PolicyVersion(r.id, r.version, r.effective_from, r.superseded_at, parse_policy(r.policy))
-        for r in rows
-    ]
-
-
-EVENT_REQUESTED = "risk.change_requested"
-EVENT_EFFECTIVE = "risk.change_effective"
-
-
-def _event(
-    session: Session,
-    row: HatRiskPolicyVersion,
-    kind: str,
-    actor: str,
-    chat_id: int | None,
-    at: datetime,
-) -> None:
-    payload: dict[str, Any] = {"version": row.version, "direction": row.direction}
-    if actor == "user":
-        payload["chat_id"] = chat_id
-    record(
-        session,
-        aggregate_type="risk_policy",
-        aggregate_id=row.id,
-        event_type=kind,
-        actor=actor,
-        payload=payload,
-        user_id=row.user_id,
-        occurred_at=at,
-    )
-
-
-def _next_version(session: Session, user_id: uuid.UUID) -> int:
-    rows = session.scalars(
-        select(HatRiskPolicyVersion.version).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
-    return max(rows, default=0) + 1
 
 
 def seed_initial_policy(
@@ -119,8 +78,8 @@ def seed_initial_policy(
     )
     session.add(row)
     session.flush()
-    _event(session, row, EVENT_REQUESTED, "engine", None, now)
-    _event(session, row, EVENT_EFFECTIVE, "engine", None, now)
+    record_policy_event(session, row, EVENT_REQUESTED, "engine", None, now)
+    record_policy_event(session, row, EVENT_EFFECTIVE, "engine", None, now)
     return row
 
 
@@ -175,7 +134,7 @@ def request_policy_change(
         raise PolicyChangeError("the calendar has no session open to take effect at")
     row = HatRiskPolicyVersion(
         user_id=user_id,
-        version=_next_version(session, user_id),
+        version=next_version(session, user_id),
         policy=proposed.to_json(),
         direction=direction,
         requested_at=requested_at,
@@ -184,7 +143,7 @@ def request_policy_change(
     )
     session.add(row)
     session.flush()
-    _event(session, row, EVENT_REQUESTED, actor, chat_id, requested_at)
+    record_policy_event(session, row, EVENT_REQUESTED, actor, chat_id, requested_at)
     return row
 
 
@@ -216,5 +175,7 @@ def apply_due_versions(session: Session, user_id: uuid.UUID, now: datetime) -> i
                 < (as_utc(row.effective_from), row.version)
             ):
                 older.superseded_at = as_utc(row.effective_from)
-        _event(session, row, EVENT_EFFECTIVE, "scheduler", None, as_utc(row.effective_from))
+        record_policy_event(
+            session, row, EVENT_EFFECTIVE, "scheduler", None, as_utc(row.effective_from)
+        )
     return len(due)
