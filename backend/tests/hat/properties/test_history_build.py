@@ -328,7 +328,9 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
     """PR 42: the command line hands the build the NSE calendar's non-trading dates (not the
     calendar's `holidays` method). Driving `main` over a stored calendar and a window where no
     day has a file, every NSE holiday is reported as an explained holiday and every other
-    weekday as a gap; another market's calendar rows never count."""
+    weekday as a gap, and `main` exits 1 exactly when there is a gap; another market's calendar
+    rows never count. Name lookups and sockets are blocked and recorded, so a patch that stops
+    applying fails the property instead of reaching NSE."""
     engine = memory_engine()
     factory = sessionmaker(bind=engine)
     with factory() as session:
@@ -357,6 +359,13 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
         reports.append(report)
         return report
 
+    reached: list[object] = []
+
+    def no_network(*args: object, **_kwargs: object) -> None:
+        # recorded, not only raised: the real fetcher turns any exception into an "error" answer
+        reached.append(args)
+        raise OSError("a property reached the network")
+
     def nothing_fetcher(timeout: float = 30.0) -> Fetcher:
         return lambda _url: FetchResult("not_found")
 
@@ -378,10 +387,17 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
             patch.object(history_build, "run_history_build", recording_build),
             patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
             patch("app.hat.data.mcp_client.client_from_env", lambda _env: None),
+            patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
+            # whatever is patched above, nothing may reach the network
+            patch("socket.getaddrinfo", no_network),
+            patch("socket.socket.connect", no_network),
+            patch("socket.create_connection", no_network),
         ):
-            history_build.main(argv)
+            code = history_build.main(argv)
     engine.dispose()
+    assert reached == []
     [report] = reports
     holidays = {d for d, trading in marks.items() if not trading}
     assert set(report.days.holidays) == holidays
     assert set(report.days.gaps) == set(WINDOW) - holidays
+    assert code == (1 if report.days.gaps else 0)  # a gap needs the operator; holidays do not

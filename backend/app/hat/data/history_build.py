@@ -511,7 +511,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real network and DB
+def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     end = args.end or date.today()
     from app.database import SessionLocal
