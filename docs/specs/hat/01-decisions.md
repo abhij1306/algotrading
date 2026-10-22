@@ -351,7 +351,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **PR:** 10, 46
 - **Verification:** TLA `KillSwitch!TripOnDrawdown`, PBT `caps.kill_thresholds`
 - **Acceptance:**
-  - Property: for every equity series, the account kill switch is tripped iff equity ≤ 0.90 × peak at the snapshot, and a bot switch iff bot equity ≤ 0.90 × bot peak. Harm: drawdowns keep compounding past the agreed stop. Detail: 06 §6.
+  - Property: for every equity series, the account kill switch trips at the first snapshot whose equity ≤ 0.90 × peak, and a bot switch at the first whose bot equity ≤ 0.90 × bot peak; a tripped switch stays tripped through any recovery until a manual re-arm. Harm: drawdowns keep compounding past the agreed stop. Detail: 06 §6.
 - Bot kill 10%: the owner's number since D128 (it was an [A] default).
 
 #### HAT-DEC-B27: Auto-adjust for splits and bonuses

@@ -385,7 +385,7 @@ to an artefact that exists.
 | HAT-PORT-072 | [05](05-portfolio-regime-allocation.md) | P2 | PBT `regime_v2.multiplier_convex` |
 | HAT-PORT-073 | [05](05-portfolio-regime-allocation.md) | P2 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `regime_v2.fallback_to_v1` |
 | HAT-RISK-010 | [06](06-risk-and-governance.md) | 10 | CONF `risk.policy_schema_fields`, CONF `risk.no_risk_keys_in_strategy_schema`, PBT `sizing.uses_effective_policy` |
-| HAT-RISK-011 | [06](06-risk-and-governance.md) | 10, 46 | CONF `risk.initial_seed_equals_spec`, PBT `policy.seed_supersedes_old_initial`, DB `migration.ensure_idempotent` |
+| HAT-RISK-011 | [06](06-risk-and-governance.md) | 10, 46 | CONF `risk.initial_seed_equals_spec`, PBT `policy.seed_supersedes_old_initial`, PBT `policy.upkeep_raises_unless_race_lost`, DB `migration.ensure_idempotent` |
 | HAT-RISK-020 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.formula_exact`, PBT `sizing.risk_bounded`, PBT `sizing.monotone` |
 | HAT-RISK-021 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.zero_skips_with_reason` |
 | HAT-RISK-022 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.stop_below_entry_required` |

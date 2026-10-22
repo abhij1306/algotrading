@@ -2,24 +2,29 @@
 withdrawn PR 10 seed to the 06 §1 seed, on SQLite through `ensure_hat_policies`."""
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from unittest.mock import patch
 
+import pytest
 from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.hat.models import HatEvent, HatRiskPolicyVersion
+from app.hat.risk import policy_upkeep
 from app.hat.risk.policy import (
     OLD_SEED_POLICY,
     SEED_POLICY,
     classify_direction,
+    effective_version,
     parse_policy,
     seed_policy,
 )
-from app.hat.risk.policy_upkeep import ensure_hat_policies
+from app.hat.risk.policy_upkeep import ensure_hat_policies, load_versions
 from app.hat.time import as_utc, utc_now
 
 # What the user's stored policy is before startup. `old` and `old_unmarked` are the PR 10 seed
@@ -120,3 +125,47 @@ def test_seed_supersedes_old_initial(states: list[str], runs: int) -> None:
             ]
         untouched = [r for r in before if states[users.index(r[0])] not in MOVED]
         assert [r for r in _rows(session) if states[users.index(r[0])] not in MOVED] == untouched
+
+
+@settings(max_examples=20, deadline=None)
+@given(st.lists(st.sampled_from(("none", "race", "other")), min_size=1, max_size=3))
+@example(faults=["other"])
+@example(faults=["race", "none"])
+def test_upkeep_raises_unless_race_lost(faults: list[str]) -> None:
+    """HAT-RISK-011 (PR 46): a constraint failure while moving a user off the old seed is ignored
+    only when another process moved that user first (the version number race); any other one,
+    after which the old seed would still be in force, is raised and startup fails. Harm: a
+    swallowed failure leaves the withdrawn 15% kill and 3% cap in force while HAT runs."""
+    engine = memory_engine()
+    users = [uuid.uuid4() for _ in faults]
+    with Session(engine) as session:
+        for user in users:
+            _seed(session, user, "old")
+        session.commit()
+    fault_of = dict(zip(users, faults, strict=True))
+    real = policy_upkeep.supersede_old_seed
+    seen: set[uuid.UUID] = set()
+
+    def faulty(session: Session, user_id: uuid.UUID, now: datetime) -> HatRiskPolicyVersion | None:
+        fault = fault_of[user_id] if user_id not in seen else "none"
+        seen.add(user_id)
+        if fault == "race":  # another process moves the user, then this flush collides
+            with Session(engine) as other:
+                real(other, user_id, now)
+                other.commit()
+        if fault != "none":
+            raise IntegrityError("insert", {}, Exception("unique violation"))
+        return real(session, user_id, now)
+
+    with patch.object(policy_upkeep, "supersede_old_seed", faulty):
+        if "other" in faults:
+            with pytest.raises(IntegrityError):
+                ensure_hat_policies(engine)
+            return
+        moved = ensure_hat_policies(engine)
+    assert moved == faults.count("none")
+    with Session(engine) as session:
+        for user in users:
+            in_force = effective_version(load_versions(session, user), utc_now())
+            assert in_force is not None
+            assert in_force.policy == seed_policy()

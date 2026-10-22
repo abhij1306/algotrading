@@ -107,7 +107,8 @@ def supersede_old_seed(
 def ensure_hat_policies(bind: Engine) -> int:
     """Startup upkeep (`app.database.ensure_hat_database`): `supersede_old_seed` for every user
     with a policy, each in its own transaction. Safe to repeat and to race: a second process
-    that loses the version number to the first rolls back and leaves the first's row. Returns
+    that loses the version number to the first rolls back and leaves the first's row; any other
+    constraint failure, after which the old seed would still be in force, is raised. Returns
     how many users were moved to the new seed."""
     with Session(bind) as session:
         users = session.scalars(select(HatRiskPolicyVersion.user_id).distinct()).all()
@@ -119,5 +120,8 @@ def ensure_hat_policies(bind: Engine) -> int:
                     session.commit()
                     moved += 1
             except IntegrityError:
-                session.rollback()  # another process wrote the version first
+                session.rollback()
+                with Session(bind) as fresh:
+                    if supersede_old_seed(fresh, user_id, utc_now()) is not None:
+                        raise  # not a lost race: the old seed is still in force
     return moved
