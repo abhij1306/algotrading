@@ -537,11 +537,12 @@ def test_index_failure_isolated(failing: dict[str, tuple[bool, int]]) -> None:
         assert dict(rows) == {n: k for n, k in want.items() if k}
         assert history_build._exit_code(report) == (1 if failing else 0)
         assert ("failed {}" in history_build._summary(report)) is not bool(failing)
+        job = history_build_job(**args)
         if failing:
             with pytest.raises(JobError, match="history_index_incomplete"):
-                history_build_job(**args)()
+                job()
         else:
-            history_build_job(**args)()
+            job()
 
 
 @given(

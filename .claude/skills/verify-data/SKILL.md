@@ -54,7 +54,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT history_build.job_fails_on_any_gap_or_failed_download` The job body succeeds only when every weekday is stored or an explained holiday: a failed download, a missing file that is no holiday or a file with no usable rows raises `history_incomplete`. Harm: a scheduled build reports success with holes in history.
 - `PBT history_build.mcp_index_source_chains` Chained `get_index_history` chunks yield every present day in range exactly once and nothing outside. Harm: index history with holes or repeats.
 - `PBT history_build.mcp_index_source_ends_at_depth` A server keeping history only from some day answers an older window with its "No data for index" error: the chain ends there, having yielded every present day from that depth in range, and asks nothing more; any other `error` answer raises `mcp_bad_response`. Harm: the full-history build aborts after hours of downloads with no index, validation or report (the 22 Oct 2026 run), or a real outage reads as the start of history.
-- `PBT history_build.archive_fills_before_mcp_depth` With the MCP serving each index from its own depth (or not at all), NSE's daily `ind_close_all` archive fills every earlier day that has bars, under today's names whatever the file calls the index, and the MCP's rows win from its depth on; only days whose file is missing or failed stay missing. A failed fetch, or a 200 answer with no index row (never kept), fails the indices that needed that day (`index_archive_error`); an MCP failing after its first rows still gets the archive fill and is reported with its own code. Each file is fetched once for all indices, every request (the first too) waits the interval, and a rerun reads kept files from disk and asks again only for failed days. Harm: 5-year backtests run the regime and RS benchmark on 2 years of index history, or the archive is hammered.
+- `PBT history_build.archive_fills_before_mcp_depth` With the MCP serving each index from its own depth (or not at all), NSE's daily `ind_close_all` archive fills every earlier day that has bars, under today's names whatever the file calls the index, and the MCP's rows win from its depth on; only days whose file is missing or failed, or whose file has no row for that index (the archive's own answer, such as an index not yet published), stay missing, and the coverage names them. A failed fetch, or a 200 answer with no index row (never kept), fails the indices that needed that day (`index_archive_error`); an MCP failing after its first rows still gets the archive fill and is reported with its own code. Each file is fetched once for all indices, every request (the first too) waits the interval, and a rerun reads kept files from disk and asks again only for failed days. Harm: 5-year backtests run the regime and RS benchmark on 2 years of index history, or the archive is hammered.
 - `PBT history_build.index_failure_isolated` An index whose source fails is recorded with a stable code and keeps the rows it gave; the other indices load in full, validation and the report still run, and the exit code and the job flag the run exactly when an index failed. Harm: one index's error loses the whole build's report, or a failed index passes unnoticed.
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `5ff5c093199daffb71d34ce20cdf41d194723297d39bb11cfddae0cb24fb2cf8`
+Covered digest: `4ef63cdd64eedf42562eaea0e87c2a8f41cd3f2394ea6410ad36580a5f708b3c`
 
 ## Scope changes
 
@@ -563,7 +563,7 @@ E       present={datetime.date(2021, 1, 1)},  # or any other generated value
 E       depth=datetime.date(2021, 1, 4),
 ```
 
-Break: (PR 44) every MCP error ends the chain (`if exc.code == CODE_NO_DATA: return` / `raise` to `return`).
+Break: (PR 44) every MCP error ends the chain (in `mcp_index_source`'s `chunk`, `if exc.code == CODE_NO_DATA: return None` / `raise` to `return None`).
 
 ```
 E   Failed: DID NOT RAISE McpError

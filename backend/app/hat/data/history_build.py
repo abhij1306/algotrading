@@ -69,7 +69,9 @@ from .store import (
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAMES = ("NIFTY 50", "NIFTY 500", "NIFTY SMALLCAP 250", "INDIA VIX")
+NIFTY_50 = "NIFTY 50"
+NIFTY_500 = "NIFTY 500"
+INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
 # [A] Each index's first day in the archive. Smallcap 250's start date is to be checked on the
 # first run (HAT-DATA-095); until then every index is expected from the start of the build.
 DEFAULT_INDEX_START = date(2010, 1, 1)
@@ -79,10 +81,10 @@ MCP_HISTORY_MONTHS = 12
 INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
 # [A] Names the archive used before NSE's 2015 renaming; read as today's names.
 INDEX_ALIASES = {
-    "CNX NIFTY": "NIFTY 50",
-    "S&P CNX NIFTY": "NIFTY 50",
-    "CNX 500": "NIFTY 500",
-    "S&P CNX 500": "NIFTY 500",
+    "CNX NIFTY": NIFTY_50,
+    "S&P CNX NIFTY": NIFTY_50,
+    "CNX 500": NIFTY_500,
+    "S&P CNX 500": NIFTY_500,
 }
 REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
 
@@ -192,15 +194,21 @@ def mcp_index_source(client: McpClient) -> IndexSource:
     """Chain `get_index_history` chunks (12 months each) back from `end` to `start`. A "no data"
     answer is the server's depth and ends the chain; any other failure raises."""
 
+    def chunk(name: str, cursor: date) -> tuple[list[dict], date | None] | None:
+        try:
+            return client.index_history(name, cursor, MCP_HISTORY_MONTHS)
+        except McpError as exc:
+            if exc.code == CODE_NO_DATA:
+                return None
+            raise
+
     def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
         cursor: date | None = end
         while cursor is not None and cursor >= start:
-            try:
-                rows, nxt = client.index_history(name, cursor, MCP_HISTORY_MONTHS)
-            except McpError as exc:
-                if exc.code == CODE_NO_DATA:
-                    return
-                raise
+            answer = chunk(name, cursor)
+            if answer is None:
+                return
+            rows, nxt = answer
             for row in rows:
                 point = index_point_from_mcp(name, row)
                 if point is not None and start <= point.day <= end:
@@ -332,8 +340,7 @@ def archive_fill_source(primary: IndexSource, archive: IndexSource) -> IndexSour
         points: list[IndexPoint] = []
         failure: Exception | None = None
         try:
-            for point in primary(name, start, end):
-                points.append(point)
+            points.extend(primary(name, start, end))  # keeps the rows taken before a failure
         except Exception as exc:  # re-raised below, after the archive fill
             failure = exc
         yield from points
