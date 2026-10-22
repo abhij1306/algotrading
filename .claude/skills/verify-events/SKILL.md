@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's runti
 
 # verify-events
 
-Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the 32 catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Specs: `docs/specs/hat/03-schema.md` §5, §6, §8 (HAT-SCH-050..058, 060..068, 073, 081, 090, 091), `01-decisions.md` (I15), `06-risk-and-governance.md` (HAT-RISK-070), `08-telegram.md` (HAT-TG-050), `10-ops.md` §2 (job `events.partitions`).
+Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Specs: `docs/specs/hat/03-schema.md` §5, §6, §8 (HAT-SCH-050..058, 060..068, 073, 081, 090, 091), `01-decisions.md` (I15), `06-risk-and-governance.md` (HAT-RISK-070), `08-telegram.md` (HAT-TG-050), `10-ops.md` §2 (job `events.partitions`).
 
 ## Properties
 
@@ -17,7 +17,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `DB events.partitions_job` The `events.partitions` job (registered every day at 00:30 by PR 17): an event two months past a day with no partitions is refused before the job runs for that day and lands in its month's partition after; a run that leaves less than one month of partitions ahead alerts `events.partitions_short` and fails with that code. Harm: the partitions run out unseen and, on the first day of an uncovered month, every trade write fails.
 - `DB events.partitions_ahead` After the ensure step runs at any date d, partitions cover d's month and the two after it, and an event at any instant (including the first and last microsecond of a month) lands in the partition of its UTC month. Harm: on the first day of an uncovered month every event insert fails, and with it every state change.
 - `PBT events.atomic_with_state` For every sequence of stop moves failing at any point before commit (before the state write, between the two writes, after both, by a refused event type, or rolled back by the caller), the state change and its event are both stored or both absent. Harm: the log says a stop moved when it did not.
-- `PBT events.unknown_type_rejected` For every string outside the 32-type catalogue (random text and near misses such as case changes and suffixes), `record()` raises and writes nothing; every catalogue type records. Harm: a typo creates an event no replay or discipline metric reads.
+- `PBT events.unknown_type_rejected` For every string outside the catalogue (random text and near misses such as case changes and suffixes), `record()` raises and writes nothing; every catalogue type records. Harm: a typo creates an event no replay or discipline metric reads.
 - `PBT events.correlation` For every attempted event stream, each stored event has a known aggregate type, every Signals, Orders and Positions event (watchlist.published aside) carries a correlation id (the signal's own id on a signal aggregate), and every causation id names an earlier stored event; an unknown causation id is refused. Harm: a trade's history cannot be reassembled.
 - `PBT events.ids_increasing` On SQLite, for every sequence of `record()` calls across sessions, commits and rollbacks, ids are unique and strictly increase in call order. (Postgres identity ids are checked by `DB events.partitioned`.) Harm: replay order differs from the order things happened.
 - `PBT events.partition_routing` Every instant lies in the half-open range of exactly one month's partition, consecutive ranges meet with no gap, and the months to create are the month of d and the following ones. Harm: an instant routed to no partition or two.
@@ -26,7 +26,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `PBT telegram.retention_purge` Through the real `run_job`, the `retention.purge` job leaves exactly the last year of both chat tables, records one success, and a repeat is a no-op. Harm: as above, with a job that runs twice.
 - `PBT events.user_actor_chat_id` `record()` refuses an event with `actor = 'user'` whose payload has no integer `chat_id` (a bool is not one), takes one that has it, and takes any other actor without it; `actor` is typed as the four actors. Harm: a user action in the log cannot be traced to the chat that sent it (HAT-SCH-065).
 - `PBT ingest.event_and_state_atomic` An ingest outcome row and its `ingest.*` / `quality.failed` event are both stored or both absent for every failure point before commit. Harm: the night's ingest status and the audit log disagree.
-- `CONF events.catalogue` The event types in `app/hat/events.py`, group by group, equal the 32 in the spec table, and the actors and aggregate types equal the DDL. Harm: code and audits disagree on what can happen.
+- `CONF events.catalogue` The event types in `app/hat/events.py`, group by group, equal the catalogue table in the spec, and the actors and aggregate types equal the DDL. Harm: code and audits disagree on what can happen.
 - `CONF schema.runtime_columns, event_columns, indexes` The eight runtime tables, the seven ops tables and `hat_event` equal the spec columns, types, nullability, keys and uniques, and every §9 index exists with its columns, uniqueness, order and partial predicate. Harm: a trade cannot be replayed, or reconciliation by tag degrades to a full scan.
 - `PBT events.correlation_links_the_signal` `record()` refuses an Orders or Positions event whose correlation id is not the signal id of the `hat_order` or `hat_position` row it is about, or that names no such row, and writes nothing; an event that names its own signal is stored. Harm: an order's events are filed under another trade and its history cannot be replayed.
 
@@ -84,7 +84,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `3cd2d12a61a8ab9e930b3f47ea088a307ceb32d38a2b53c507b6aeabbe4af327`
+Covered digest: `c8e98fa8a45f23d181b9f15e97bfb58c35f79959a3c90ffad831b0c606cdf565`
 
 ## Scope changes
 
@@ -96,11 +96,12 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The order status set is the owner-pending default of HAT-SCH-058; the check mirrors it and changes with the owner's answer.
 - `TLA OrderReconciliation!AtMostOneEntryPerSignal` and `TLA StopPlacement!StopOnlyTightens` (named on HAT-SCH-051 and HAT-SCH-081) are not built here: 11 §3 assigns both models to PR 13 and PR 15, whose code their actions map to. They are in `KNOWN_GAPS` in `test_conf_verification.py`; the database checks `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises at the database.
 - `hat_telegram_message` and `hat_command_log` have no foreign key, so they are exempt from the `user_id` chain check (`CHAIN_EXEMPT` in `test_conf_schema.py`), like `hat_kill_switch`: a finding on HAT-SCH-012.
-- Sleeve lifecycle, regime and allocation events are not in the 32-type catalogue, so they are not recorded; PR 9 adds them with a spec change.
+- Sleeve lifecycle, regime and allocation events are not in the catalogue, so they are not recorded; PR 9 adds them with a spec change.
 
 - PR 7 added an optional `on_finish` hook to `run_job` (`ops/jobs.py`), called inside the final-status transaction; the events and the job-run recording it touches are unchanged, and the ingest outcome events (`ingest.completed`, `ingest.failed`, `quality.failed`) are written through the existing `events.record`.
 - PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
 - PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
+- PR 27 added `gtt.triggered` to the Orders group (HAT-EXEC-066: a GTT triggered with its sale resting below the limit; the payload names the broker order it became). The catalogue now holds 40 types; the text above no longer gives a count. The properties are unchanged.
 
 ## Scratch breaks
 

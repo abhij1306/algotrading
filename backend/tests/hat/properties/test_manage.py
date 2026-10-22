@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
+from app.hat.execution.fills import NOT_MARKETED, RESTING
 from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
@@ -30,6 +31,7 @@ from app.hat.execution.protect import (
     ALERT_GTT_UNVERIFIED,
     ALERT_STOP_NOT_MOVED,
     ALERT_STOP_NOT_PLACED,
+    EVENT_GTT_TRIGGERED,
     LIVE,
     STOP_DAY,
     STOP_GTT,
@@ -621,10 +623,11 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
 @settings(max_examples=20, deadline=None)
 @given(part=st.floats(min_value=0.1, max_value=0.9), ended=st.booleans())
 def test_gtt_trigger_handled(part: float, ended: bool) -> None:
-    """HAT-EXEC-062, HAT-DEC-B17: a GTT that triggered and filled only in part is not resized
-    or doubled while its sale may still sell the rest; once that sale ends short, `gtt.unfilled`
-    is raised and the shares left get a new stop for exactly their quantity. Harm: a second
-    stop under a sale still working sells the shares twice, or the rest stays unprotected."""
+    """HAT-EXEC-062, -066, HAT-DEC-B17: a GTT that triggered and filled only in part is not
+    resized or doubled while its sale may still sell the rest (the only write is asking that sale
+    to go at the market); once that sale ends short, `gtt.unfilled` is raised and the shares left
+    get a new stop for exactly their quantity. Harm: a second stop under a sale still working
+    sells the shares twice, or the rest stays unprotected."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
         position = _opened(rig, at(16, 0))
@@ -640,6 +643,7 @@ def test_gtt_trigger_handled(part: float, ended: bool) -> None:
             "status": 6,
             "productType": "CNC",
             "type": 1,
+            "limitPrice": float(gtt.price),
         }
         rig.fake.orders = [order]
         rig.fake.tradebook = [
@@ -655,19 +659,140 @@ def test_gtt_trigger_handled(part: float, ended: bool) -> None:
             },
         ]
         start = len(rig.fake.calls)
-        rig.sync(at(10, 0) + timedelta(days=1))
+        rig.sync(at(10, 0) + timedelta(days=1))  # first sight: it may still fill
+        rig.sync(at(10, 1) + timedelta(days=1))
         session.refresh(position)
         assert position.qty_open == gtt.qty - sold
-        assert _writes_since(rig, start) == []
+        assert _writes_since(rig, start) == [("modify_order", ("X-1", {"order_type": "MARKET"}))]
         if not ended:
             return
         order["status"] = 1  # the rest of the sale was cancelled
         rig.sync(at(10, 5) + timedelta(days=1))
-        assert rig.codes().count(ALERT_GTT_UNFILLED) == 1
+        assert rig.codes().count(ALERT_GTT_UNFILLED) == 2  # resting, then ended short
         [stop] = [row for row in rig.stops(position.id) if row.id != gtt.id]
         assert stop.qty == position.qty_open
         rig.sync(at(10, 10) + timedelta(days=1))
-        assert rig.codes().count(ALERT_GTT_UNFILLED) == 1
+        assert rig.codes().count(ALERT_GTT_UNFILLED) == 2
+
+
+def _gtt_alerts(rig: ManageRig, code: str) -> int:
+    return sum(
+        1 for name, _, p in rig.notifier.alerts if name == ALERT_GTT_UNFILLED and p["code"] == code
+    )
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    part=st.floats(min_value=0.0, max_value=0.9),
+    refusals=st.integers(min_value=0, max_value=3),
+    syncs=st.integers(min_value=1, max_value=4),
+    fills=st.booleans(),
+    exits=st.booleans(),
+    foreign=st.booleans(),
+)
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=True, foreign=False)
+@example(part=0.5, refusals=3, syncs=4, fills=False, exits=True, foreign=False)
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True)
+def test_gtt_resting_marketed(
+    part: float, refusals: int, syncs: int, fills: bool, exits: bool, foreign: bool
+) -> None:
+    """HAT-EXEC-066, HAT-EXEC-062: a GTT that triggered while the price was below its limit
+    leaves its limit sale working at the broker. The fill sync records `gtt.triggered` and raises
+    `gtt.unfilled` (code `gtt_triggered_resting`) once, and asks the broker to make that order a
+    market sale (exactly `{order_type: MARKET}` on the order's id) at every sync until the book
+    shows it as one; a refused conversion is alerted once and asked again at the next sync. A
+    sale first seen is left a minute to fill at its limit, and an untagged sale at another price
+    is not the GTT's and is never touched. No other order, stop or GTT is sent while the sale
+    works (a flatten waits for it, a raised stop leaves the triggered GTT where it is); once it
+    fills the position closes with no stop left, and a trigger of an earlier day whose sale the
+    book no longer shows holds no exit back. Harm: the stop triggered and the shares sit unsold
+    below the limit all session while the price keeps falling, a second sale or stop sells the
+    shares twice, or an order HAT did not place is dumped at the market."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        [gtt] = rig.stops(position.id)
+        sold = int(gtt.qty * part)
+        order = {
+            "id": "X-1",
+            "orderTag": None,
+            "symbol": SYMBOLS["SBIN"],
+            "side": -1,
+            "qty": gtt.qty,
+            "filledQty": sold,
+            "status": 6,
+            "productType": "CNC",
+            "type": 1,
+            "limitPrice": float(D(gtt.price) - (TICK if foreign else 0)),
+        }
+        rig.fake.orders = [order]
+        if sold:
+            rig.fake.tradebook = [
+                *rig.fake.tradebook,  # type: ignore[misc]
+                {
+                    "tradeNumber": "T-G1",
+                    "orderNumber": "X-1",
+                    "orderTag": None,
+                    "symbol": SYMBOLS["SBIN"],
+                    "side": -1,
+                    "tradedQty": sold,
+                    "tradePrice": float(D(gtt.trigger_price) - 1),
+                },
+            ]
+        refused = min(refusals, syncs)
+        rig.fake.script("modify_order", *([UNAVAILABLE] * refused))
+        start = len(rig.fake.calls)
+        rig.sync(at(9, 15) + timedelta(days=1))  # first sight: it may still fill at its limit
+        assert _writes_since(rig, start) == []
+        assert _event_count(session, gtt, EVENT_GTT_TRIGGERED) == 0
+        if foreign:  # not the GTT's sale: never touched, never alerted
+            for n in range(syncs):
+                rig.sync(at(9, 16 + n) + timedelta(days=1))
+            assert _writes_since(rig, start) == []
+            assert _gtt_alerts(rig, RESTING) == 0
+            return
+        for n in range(syncs):
+            when = at(9, 16 + n) + timedelta(days=1)
+            rig.sync(when)
+            if exits:
+                position.current_stop = D(position.current_stop) + TICK
+                session.commit()
+                rig.desk.follow(session, position.id, when)
+                rig.manager.flatten(session, rig.account_id, when)
+        writes = _writes_since(rig, start)
+        asked = refused + (1 if syncs > refused else 0)
+        assert writes == [("modify_order", ("X-1", {"order_type": "MARKET"}))] * asked
+        assert _event_count(session, gtt, EVENT_GTT_TRIGGERED) == 1
+        assert _gtt_alerts(rig, RESTING) == 1
+        assert _gtt_alerts(rig, NOT_MARKETED) == (1 if refused else 0)
+        session.refresh(position)
+        assert position.qty_open == gtt.qty - sold
+        if not fills or syncs == refused:
+            rig.fake.orders = []  # the next day's book: the sale expired unseen
+            start = len(rig.fake.calls)
+            rig.manager.flatten(session, rig.account_id, at(10, 0) + timedelta(days=2))
+            assert "place_order" in [name for name, _ in _writes_since(rig, start)]
+            return
+        order.update(filledQty=gtt.qty, status=2)  # the market sale sold the rest
+        rig.fake.tradebook = [
+            *rig.fake.tradebook,  # type: ignore[misc]
+            {
+                "tradeNumber": "T-G2",
+                "orderNumber": "X-1",
+                "orderTag": None,
+                "symbol": SYMBOLS["SBIN"],
+                "side": -1,
+                "tradedQty": gtt.qty - sold,
+                "tradePrice": float(D(gtt.trigger_price) - 3),
+            },
+        ]
+        start = len(rig.fake.calls)
+        rig.sync(at(9, 30) + timedelta(days=1))
+        session.refresh(position)
+        assert position.qty_open == 0
+        assert position.closed_at is not None
+        assert [name for name, _ in _writes_since(rig, start)] == []
+        assert rig.stops(position.id, *LIVE) == []
 
 
 # ---------------------------------------------------------------------------------------

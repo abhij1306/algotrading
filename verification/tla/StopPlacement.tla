@@ -10,7 +10,11 @@
 (* close the broker expires any intraday stop. Each night the GTT is       *)
 (* refreshed to the current stop, or alerted and placed again. A GTT can   *)
 (* trigger and not fill (a gap below its limit): the sync or the verify    *)
-(* sees it, alerts, and protects the position again. A GTT's placement     *)
+(* sees it, alerts, and protects the position again. A GTT can also       *)
+(* trigger with its limit sale left resting below the market's price: the *)
+(* sync sees the working sale, alerts, and has it sold at the market       *)
+(* (HAT-EXEC-066); nothing else sells or stops the shares it holds. A      *)
+(* GTT's placement                                                         *)
 (* answer can be lost (it may or may not have landed): it is settled       *)
 (* against the broker's GTT book (adopted when there, else ended and the   *)
 (* position protected again), and until then it never holds a sale back.  *)
@@ -38,14 +42,23 @@
 (*   sale sells the quantity HAT holds; the cancel of the entry remainder  *)
 (*   is asked in the step of the sale that empties the position (for a     *)
 (*   stop fill, the sync's protect right after it), and the broker ends    *)
-(*   the entry eventually (the cancel, or the DAY expiry at the close).    *)
+(*   the entry eventually (the cancel, or the DAY expiry at the close);    *)
+(*   the fill sync runs (every minute) between a GTT's trigger and the     *)
+(*   close, and a market sale fills before the close (a stock locked at    *)
+(*   its lower price band is the exception, alerted once by the sync); a   *)
+(*   triggered GTT's sale still working at the close expires with it; the  *)
+(*   broker accepts the change of a resting sale to a market sale         *)
+(*   eventually (a refusal is alerted and asked again by the next sync);   *)
+(*   a triggered GTT's working sale holds the shares, so no exit sale is   *)
+(*   placed over it.                                                       *)
 (*                                                                         *)
 (*   The GTT book can be read eventually (weak fairness on Settle).        *)
 (*                                                                         *)
 (* Properties: StopAfterFill, AlwaysProtected, BrokerStopMatchesCurrent,   *)
 (*   NoUnprotectedGap, NightlyVerifyCovers, StopOnlyTightens,              *)
 (*   LostNeverBlocksSale, SharesTracked, RestCancelledOnExit (invariants)  *)
-(*   and GttUnfilledAlerted, LostGttSettled, EmptiedCloses (temporal).     *)
+(*   and GttUnfilledAlerted, LostGttSettled, EmptiedCloses, RestingSold    *)
+(*   (temporal).                                                           *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -54,7 +67,8 @@ CONSTANTS MaxQty, MaxStop, BrokenMode
 ASSUME BrokenMode \in {"none", "act_before_stop", "no_protect", "place_above",
                        "cancel_first", "verify_skips_missing", "reset_on_follow",
                        "no_unfilled_alert", "never_settle", "lost_blocks_sale",
-                       "close_with_rest", "keep_rest", "no_close_step"}
+                       "close_with_rest", "keep_rest", "no_close_step",
+                       "no_resting_market"}
 
 Phases == {"open", "swap", "after", "night"}
 InSession == {"open", "swap"}
@@ -66,8 +80,11 @@ VARIABLES
     closed,         \* the position was sold (stop or exit fill)
     cur,            \* hat_position.current_stop
     day,            \* the intraday stop at the broker: [st: none | working, px]
-    gtt,            \* the GTT at the broker: [st: none | working | gone, px]; gone = triggered,
-                    \* not filled, not yet seen by HAT
+    gtt,            \* the GTT at the broker: [st: none | working | resting | seen | marketed |
+                    \* gone, px]; resting = triggered, its limit sale working unfilled below the
+                    \* limit, not yet seen by HAT; seen = seen and alerted, left at its limit
+                    \* (broken variant only); marketed = HAT had that sale made a market sale;
+                    \* gone = triggered, its sale ended unfilled, not yet seen by HAT
     phase,          \* open | swap (from 15:25) | after (the close) | night
     pc,             \* idle | protecting (a fill whose stop work has not run yet)
     acted,          \* another HAT action on the position ran while it was protecting
@@ -94,6 +111,8 @@ entryVars == <<bqty, rest, exited, cancelAsked>>
 
 Held == ~closed /\ qty > 0
 Protected == day.st = "working" \/ gtt.st = "working"
+\* A triggered GTT whose sale still works at the broker: the sale holds the shares.
+SaleWorks == {"resting", "seen", "marketed"}
 \* HAT's book shows a working stop (a GTT that triggered unseen still looks working to HAT, and
 \* so does one whose answer was lost).
 Booked == day.st = "working" \/ gtt.st # "none" \/ lostGtt
@@ -322,18 +341,22 @@ SwapCancelDay ==
 Clock ==
     \/ /\ phase = "open"
        /\ phase' = "swap"
-       /\ UNCHANGED <<day, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
+       /\ UNCHANGED <<day, gtt, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "swap"
        /\ swapTried \/ ~Held
+       \* the sync sees a resting sale before the close, and a market sale fills before it
+       /\ gtt.st \notin {"resting", "marketed"}
        /\ phase' = "after"
        /\ day' = None
+       \* a sale left at its limit expires at the close (seen next by the sync, as `gone`)
+       /\ gtt' = IF gtt.st = "seen" THEN [gtt EXCEPT !.st = "gone"] ELSE gtt
        \* the sync sees the expired day stop and protects a held position again
        \* (fills.py:FillSync._statuses): a late entry fill after the swap may rest on it alone
        /\ pc' = IF Held /\ day.st = "working" /\ gtt.st = "none" THEN "protecting" ELSE pc
        /\ UNCHANGED <<swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "after"
        /\ phase' = "night"
-       /\ UNCHANGED <<day, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
+       /\ UNCHANGED <<day, gtt, pc, swapTried, verifyDone, nightAlert, replaceTried, swapFailed>>
     \/ /\ phase = "night"
        /\ verifyDone \/ ~Held
        /\ phase' = "open"
@@ -342,8 +365,8 @@ Clock ==
        /\ verifyDone' = FALSE
        /\ nightAlert' = FALSE
        /\ replaceTried' = FALSE
-       /\ UNCHANGED <<day, pc>>
-    /\ UNCHANGED <<qty, closed, cur, gtt, acted, alerted, lastPx, lowered, cancelledEarly,
+       /\ UNCHANGED <<day, gtt, pc>>
+    /\ UNCHANGED <<qty, closed, cur, acted, alerted, lastPx, lowered, cancelledEarly,
                    lostGtt, saleRefused>>
     /\ UNCHANGED entryVars
 
@@ -396,6 +419,46 @@ SeeUnfilled ==
                    saleRefused>>
     /\ UNCHANGED entryVars
 
+\* code: backend/app/hat/execution/fills.py:FillSync._resting_trigger  (the GTT triggered and its
+\* limit sale rests unfilled below the limit: the sale holds the shares, it is not a stop)
+GttTriggersResting ==
+    /\ phase \in InSession
+    /\ Held
+    /\ gtt.st = "working"
+    /\ gtt' = [gtt EXCEPT !.st = "resting"]
+    /\ UNCHANGED <<qty, closed, cur, day, phase, pc, acted, alerted, lastPx, lowered,
+                   cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
+                   lostGtt, saleRefused>>
+    /\ UNCHANGED entryVars
+
+\* code: backend/app/hat/execution/fills.py:FillSync._gtt_resting  (the sync sees the untagged
+\* sale resting below its limit: alert once, then have it made a market sale; broken variant
+\* "no_resting_market": it is left at its limit, the main code before PR 27)
+SeeResting ==
+    /\ phase \in InSession
+    /\ gtt.st = "resting"
+    /\ alerted' = TRUE
+    /\ gtt' = [gtt EXCEPT !.st = IF BrokenMode = "no_resting_market" THEN "seen" ELSE "marketed"]
+    /\ UNCHANGED <<qty, closed, cur, day, phase, pc, acted, lastPx, lowered, cancelledEarly,
+                   swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
+                   saleRefused>>
+    /\ UNCHANGED entryVars
+
+\* code: backend/app/hat/execution/fills.py:FillSync._apply_gtt_trade  (the triggered GTT's sale
+\* fills: at its limit when the price comes back, or at the market once HAT had it changed)
+SaleFills ==
+    /\ phase \in InSession
+    /\ Held
+    /\ gtt.st \in SaleWorks
+    /\ SellAll
+    /\ gtt' = None
+    /\ UNCHANGED <<cur, day, phase, pc, acted, alerted, lastPx, lowered, cancelledEarly,
+                   swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
+                   saleRefused>>
+
+\* A market sale fills (fairness): the same step as SaleFills, from a marketed sale.
+MarketFills == gtt.st = "marketed" /\ SaleFills
+
 \* code: backend/app/hat/execution/protect.py:StopDesk.cancel_all  (a sold position's resting
 \* stops are cancelled, once it holds no shares even while its entry still works)
 CancelAfterSale ==
@@ -417,7 +480,7 @@ Settle ==
     /\ lostGtt
     /\ BrokenMode # "never_settle"
     /\ lostGtt' = FALSE
-    /\ pc' = IF gtt.st # "working" /\ Held THEN "protecting" ELSE pc
+    /\ pc' = IF gtt.st \notin {"working"} \cup SaleWorks /\ Held THEN "protecting" ELSE pc
     /\ UNCHANGED <<qty, closed, cur, day, gtt, phase, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    saleRefused>>
@@ -431,6 +494,7 @@ Sell ==
     /\ phase \in InSession
     /\ MayAct
     /\ Held
+    /\ gtt.st \notin SaleWorks
     /\ NoteAct
     /\ IF lostGtt /\ BrokenMode = "lost_blocks_sale"
           THEN /\ saleRefused' = TRUE
@@ -483,20 +547,21 @@ Next ==
     \/ EntryFill \/ Protect \/ Reprotect \/ RaiseStop \/ Follow \/ SwapPlaceGtt \/ SwapCancelDay
     \/ Clock \/ GttFills \/ DayStopFills \/ GttTriggersUnfilled \/ SeeUnfilled
     \/ CancelAfterSale \/ Settle \/ Sell \/ Verify \/ EntryEnds
+    \/ GttTriggersResting \/ SeeResting \/ SaleFills
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ WF_vars(Protect) /\ WF_vars(SwapPlaceGtt) /\ WF_vars(SwapCancelDay)
     /\ WF_vars(Clock) /\ WF_vars(SeeUnfilled) /\ WF_vars(Verify) /\ WF_vars(Settle)
-    /\ WF_vars(EntryEnds)
+    /\ WF_vars(EntryEnds) /\ WF_vars(SeeResting) /\ WF_vars(MarketFills)
 
 TypeOK ==
     /\ qty \in 0..MaxQty
     /\ closed \in BOOLEAN
     /\ cur \in 1..MaxStop
     /\ day \in [st : {"none", "working"}, px : Prices]
-    /\ gtt \in [st : {"none", "working", "gone"}, px : Prices]
+    /\ gtt \in [st : {"none", "working", "gone"} \cup SaleWorks, px : Prices]
     /\ phase \in Phases
     /\ pc \in {"idle", "protecting"}
     /\ lastPx \in Prices
@@ -515,7 +580,7 @@ StopAfterFill == ~acted
 \* work of a fill has not run yet, after a failure that was alerted, or while a GTT that
 \* triggered without a fill has not been seen (GttUnfilledAlerted).
 AlwaysProtected ==
-    Held => (Protected \/ pc = "protecting" \/ alerted \/ gtt.st = "gone")
+    Held => (Protected \/ pc = "protecting" \/ alerted \/ gtt.st = "gone" \/ gtt.st \in SaleWorks)
 
 \* HAT-EXEC-064: a broker stop is never above the current stop (it eventually equals it: Follow
 \* and the nightly refresh are retried, and a new stop is placed at the current stop).
@@ -561,4 +626,8 @@ RestCancelledOnExit == (exited /\ rest /\ qty = 0) => cancelAsked
 
 \* F2: a position its sales emptied eventually closes, unless a late part of the entry is held.
 EmptiedCloses == (exited /\ qty = 0 /\ ~closed) ~> (closed \/ qty > 0)
+
+\* HAT-EXEC-066: a GTT that triggered with its limit sale resting unfilled under a held position
+\* is eventually sold (the sync has the sale made a market sale), never left at its limit.
+RestingSold == (gtt.st = "resting" /\ Held) ~> ~Held
 ==============================================================================

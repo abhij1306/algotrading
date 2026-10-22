@@ -54,12 +54,12 @@ from sqlalchemy.orm import Session
 from ..engine.rescale import applied_factors, pending_actions
 from ..errors import HatError
 from ..events import record
-from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, trade_date_of, utc_now
+from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
-from .broker import BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
+from .broker import AckResult, BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .submit import (
@@ -103,6 +103,7 @@ ENTRY = "entry"
 STOP_DAY = "stop_day"
 STOP_GTT = "stop_gtt"
 EVENT_GTT_REFRESHED = "gtt.refreshed"
+EVENT_GTT_TRIGGERED = "gtt.triggered"
 WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 LIVE = ("placed", "partially_filled")
 UNSURE = ("pending", "unconfirmed")
@@ -216,6 +217,30 @@ class StopDesk:
             )
         )
         return found is not None
+
+    @staticmethod
+    def triggered_gtts(session: Session, position_id: uuid.UUID, now: datetime) -> set[uuid.UUID]:
+        """The position's live GTTs that triggered today with their sale still working at the
+        broker (`gtt.triggered`, HAT-EXEC-066): such a sale holds the shares and the fill sync has
+        it sold at the market, so no other sale is sent and the GTT is not moved meanwhile. The
+        sale is a DAY order, so a trigger of an earlier trade date holds nothing back: one the
+        sync never saw end leaves the GTT to the exits and the nightly verify as before."""
+        start, _ = day_bounds(trade_date_of(now))
+        return set(
+            session.scalars(
+                select(HatOrder.id)
+                .join(HatEvent, HatEvent.aggregate_id == HatOrder.id)
+                .where(
+                    HatOrder.position_id == position_id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.purpose == STOP_GTT,
+                    HatOrder.status.in_(LIVE),
+                    HatEvent.aggregate_type == "order",
+                    HatEvent.event_type == EVENT_GTT_TRIGGERED,
+                    HatEvent.occurred_at >= start,
+                )
+            )
+        )
 
     def _day_stop_time(self, now: datetime) -> bool:
         """In the session and before the 15:25 swap: a new stop is an intraday order."""
@@ -574,6 +599,13 @@ class StopDesk:
         session.commit()
         return True
 
+    def market_sale(self, broker_order_id: str) -> AckResult:
+        """Turn the limit sale a triggered GTT left resting below its limit into a market sale
+        (HAT-EXEC-066): the stop has triggered, so the shares go at the market instead of
+        waiting unsold for a price that has gone. It sells only the shares that order already
+        holds, so it can never sell more than the position."""
+        return self._broker.modify_order(broker_order_id, order_type=OrderType.MARKET)
+
     def cancel_entry(self, session: Session, position_id: uuid.UUID) -> None:
         """Ask the broker to cancel the unfilled rest of the position's entry, once (again only
         after the broker could not be reached; a refusal means it filled or ended). The order's
@@ -639,7 +671,10 @@ class StopDesk:
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
         done = True
+        triggered = self.triggered_gtts(session, position.id, now)
         for row in self.stops_of(session, position.id, *LIVE):
+            if row.id in triggered:
+                continue  # its sale is working; the fill sync sells it at the market
             current = Decimal(row.trigger_price) if row.trigger_price is not None else None
             if current is not None and goal <= current:
                 if goal < current:
@@ -662,7 +697,9 @@ class StopDesk:
         if not applied_factors(session, position.id):
             # Never rescaled: nothing to follow, but a pending action means the stop is not done.
             return not pending_actions(session, position, trade_date_of(now))
-        if self.exit_working(session, position.id):
+        if self.exit_working(session, position.id) or self.triggered_gtts(
+            session, position.id, now
+        ):
             return False  # the sale holds the shares; the next sync tries again
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)

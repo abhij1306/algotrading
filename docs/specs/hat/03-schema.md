@@ -766,7 +766,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | --- | --- |
 | Data | `ingest.completed`, `ingest.failed`, `quality.failed`, `gapscan.completed` |
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
-| Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed` |
+| Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed`, `gtt.triggered` |
 | Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled` |
 | Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
@@ -805,7 +805,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 39 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 40 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

@@ -55,6 +55,7 @@ from .fyers_auth import FyersAuthError, FyersAuthService, get_fyers_auth
 from .fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     CLIENT_NOT_INITIALIZED,
+    FYERS_ORDER_TYPES,
     PROCESS_BREAKER,
     SUBMIT_UNCONFIRMED,
     FyersBroker,
@@ -64,6 +65,27 @@ from .fyers_broker import (
 from .fyers_session import FyersSession, get_fyers_session
 from .fyers_tokens import TokenStoreError
 from .tags import TAG_LENGTH, is_hat_tag
+
+# The Fyers order "type" code back to HAT's order type (`FYERS_ORDER_TYPES` reversed).
+_ORDER_TYPE_OF_CODE = {code: OrderType(name) for name, code in FYERS_ORDER_TYPES.items()}
+
+
+def _order_type(code: object) -> OrderType | None:
+    """The order type a book row's `type` names; None for a code this adapter does not know."""
+    try:
+        return _ORDER_TYPE_OF_CODE.get(int(code))  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+
+
+def _book_price(value: object) -> Decimal | None:
+    """A book row's limit price; None when it has none (0, missing or not a number)."""
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return price if price.is_finite() and price > 0 else None
+
 
 __all__ = [
     "CODE_INVALID_RESPONSE",
@@ -521,6 +543,8 @@ class FyersHatBroker:
             filled_qty=filled,
             status=map_fyers_status(row.get("status"), filled, qty),
             product=str(row.get("productType") or ""),
+            order_type=_order_type(row.get("type")),
+            price=_book_price(row.get("limitPrice")),
         )
 
     def _order_book(self, rows: Iterable[Any]) -> OrderBook:
