@@ -52,7 +52,7 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 | --- | --- | --- | --- |
 | Instrument master | ISIN, exchange, series, NSE symbol, name, listing/delisting date, face value | Weekly + on corporate action | Delisted rows kept (survivorship-free backtests) |
 | Broker symbol map | instrument ID, broker, broker symbol/token | On adapter start | Fyers style `NSE:SBIN-EQ` via `symbol_master.to_fyers` (OWN-20OCT: no OpenAlgo mapping in MVP) |
-| Price band | instrument ID, band % (2/5/10/20/none), effective date | Nightly | Feeds `price_band_allowed` and the EP band check |
+| Price band | instrument ID, band % (2/5/10/20/none), effective date | Nightly | Feeds `price_band_allowed`, the EP band check, the upper and lower circuit locks and the live price's band check (PR 51, HAT-DATA-116) |
 | Industry | instrument ID, sector, industry | Weekly | Feeds the per-industry cap |
 | Corporate actions | instrument ID, ex-date, type, adjustment factor, raw text | Nightly | §5 |
 | Holidays | date, exchange, segment | Yearly + changes | Scheduler skips non-trading days |
@@ -785,13 +785,14 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 - **[OWNER-PENDING]** Baseline: DS says "compared with ADV(20)", BL `volume_pace` says "× 50-day avg"; default the criterion's parameter (`vs_avg50`, so a 50-day average volume) and keep ADV(20) for `early_volume`; owner to confirm.
 
 #### HAT-DATA-116: Feed silence of 30 seconds or more marks the feed stale
-- **Statement:** A silence of 30 seconds or more (no tick in the last 30 seconds) during market hours marks the feed stale, records `feed.stale` and blocks new orders until ticks resume. The acceptance below fixes the boundary: a tick exactly 30 seconds ago no longer counts.
-- **Source:** DS "Bar builder rules"; BL "Invariants" (4: no order when the live feed is stale); BL "Kill switches" (health → manage-only, automatic re-arm).
-- **PR:** 14, 15
-- **Verification:** PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`
+- **Statement:** A silence of 30 seconds or more (no tick in the last 30 seconds) during market hours marks the feed stale, records `feed.stale` and blocks new orders until ticks resume. The acceptance below fixes the boundary: a tick exactly 30 seconds ago no longer counts. The same threshold applies to each instrument's last price (PR 51): the one quote loop (the feed's tick listener, `daily/live.py:PriceBook`) keeps every last trade with its exchange time, and a Take, a placement or an exit acts only on a last price younger than 30 seconds (by exchange time, either side of the clock) and inside the day's price band (02 §2, HAT-DATA-025) widened by one tick; otherwise there is no usable price and the reason is the fixed code `price_unknown`, `stale_price` or `price_out_of_band`.
+- **Source:** DS "Bar builder rules"; BL "Invariants" (4: no order when the live feed is stale); BL "Kill switches" (health → manage-only, automatic re-arm); ME-F5, ME-F6, ME-F7, MX-F11 (2026-10-22 audit).
+- **PR:** 14, 15, 51
+- **Verification:** PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`, PBT `bars.usable_price`, PBT `bars.price_book_dates_each_tick`, PBT `bars.exits_and_placement_read_the_checked_price`
 - **Acceptance:**
   - Property: for every tick timeline during market hours, the feed is stale at t if and only if no tick arrived in (t − 30 s, t]; each transition to stale records exactly one `feed.stale` event. Harm: orders are sized and placed on prices that are minutes old.
   - Property: in every reachable state where the feed is stale, no entry order is created and affected bots are manage-only; exits and broker-side stops are unaffected. Harm: a frozen feed lets a breakout entry fire at a price that no longer exists.
+  - Property: for every quote, clock and band, the price book keeps each tick's exchange time, and the price a Take, a placement check or an exit view reads is the last price exactly when it is under 30 seconds from the clock and inside the band widened by one tick, else none with the matching reason. Harm: one quiet symbol's hours-old print (the feed as a whole still live) prices a Take or fires a target exit.
 
 #### HAT-DATA-117: 5-minute bars persist to Parquet
 - **Statement:** Final 5-minute bars are written to `bars_5m/date=…` (instrument_id, bar_start, OHLC, volume), and after them, at each step that changed it, the day's `coverage.json` (the instruments watched from the open, the first feed gap and how far the feed was seen up to the first bar's end; a union, a minimum and a maximum), which a restart reads back (HAT-DATA-114).

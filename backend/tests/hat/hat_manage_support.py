@@ -51,7 +51,8 @@ __all__ = ["TICK", "ManageRig", "at"]
 D = Decimal
 TICK = D("0.05")
 TICKER = "SBIN"
-LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True)
+LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
+LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
 FILLED = 2  # Fyers orderbook status of a filled order
 
 

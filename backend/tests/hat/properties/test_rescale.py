@@ -330,7 +330,7 @@ def test_pending_is_manage_only(ratio: tuple[str, Fraction], pending: bool, pric
             rescale.rescale_open_positions(factory, EX_DAY, MORNING, RecordingNotifier())
         views = ExitViews(
             _Book(),  # type: ignore[arg-type]
-            lambda _iid: paise(price),
+            lambda _s, _iid: paise(price),
             FixedClock(OPEN),
             lambda: CALENDAR,
         )
@@ -423,7 +423,7 @@ def test_unhandled_is_manage_only(
         assert applied == ([Fraction(1, 2)] if split else [])
         views = ExitViews(
             _Book(),  # type: ignore[arg-type]
-            lambda _iid: paise(price),
+            lambda _s, _iid: paise(price),
             FixedClock(datetime.combine(day, time(9, 16), tzinfo=IST)),
             lambda: CALENDAR,
         )
@@ -491,7 +491,7 @@ def test_price_neutral_changes_nothing(
             position = _position(session, position_id)
             views = ExitViews(
                 _Book(),  # type: ignore[arg-type]
-                lambda _iid: paise(5_000),
+                lambda _s, _iid: paise(5_000),
                 FixedClock(datetime.combine(day, time(9, 16), tzinfo=IST)),
                 lambda: CALENDAR,
             )

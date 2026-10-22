@@ -82,7 +82,8 @@ FILL_SYNC_EVERY = timedelta(minutes=1)
 
 BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
 TickFor = Callable[[Session, HatPosition], Decimal | None]
-CheckFor = Callable[[Session, uuid.UUID, datetime], PlacementCheck]
+# (session, bot, instrument, now): the placement check, the instrument's live price in it
+CheckFor = Callable[[Session, uuid.UUID, uuid.UUID, datetime], PlacementCheck]
 
 
 class OwnedBroker:
@@ -333,7 +334,7 @@ class Desks:
         try:
             signal = session.get(HatSignal, signal_id)
             if signal is not None:
-                bot_check = check(session, signal.bot_id, now)
+                bot_check = check(session, signal.bot_id, signal.instrument_id, now)
                 desk.router.place_entry(session, signal_id, now=now, check=bot_check)
         except Exception:
             session.rollback()

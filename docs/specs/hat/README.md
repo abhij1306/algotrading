@@ -232,7 +232,7 @@ to an artefact that exists.
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
 | HAT-DATA-114 | [02](02-data.md) | 14 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
-| HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
+| HAT-DATA-116 | [02](02-data.md) | 14, 15, 51 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`, PBT `bars.usable_price`, PBT `bars.price_book_dates_each_tick`, PBT `bars.exits_and_placement_read_the_checked_price` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
 | HAT-DATA-119 | [02](02-data.md) | 12, 41, 43 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_budget`, PBT `bars.minute_history_resume`, PBT `bars.minute_history_plan_clamp`, PBT `minute_history_cli.root_and_report` |
@@ -412,7 +412,7 @@ to an artefact that exists.
 | HAT-RISK-071 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_add_to_loser` |
 | HAT-RISK-072 | [06](06-risk-and-governance.md) | 10 | PBT `caps.no_pyramiding` |
 | HAT-RISK-073 | [06](06-risk-and-governance.md) | 10, 15 | PBT `caps.entry_requires_stop`, TLA `ExecutionRouter!EntryHasStop` |
-| HAT-RISK-074 | [06](06-risk-and-governance.md) | 10, 15 | TLA `ExecutionRouter!NoOrderWhenStale`, PBT `caps.stale_blocks_entry` |
+| HAT-RISK-074 | [06](06-risk-and-governance.md) | 10, 15, 51 | TLA `ExecutionRouter!NoOrderWhenStale`, PBT `caps.stale_blocks_entry`, PBT `bars.exits_and_placement_read_the_checked_price` |
 | HAT-RISK-075 | [06](06-risk-and-governance.md) | 10, 15 | PBT `caps.market_hours_only`, TLA `ExecutionRouter!NoOrderOutsideHours` |
 | HAT-RISK-076 | [06](06-risk-and-governance.md) | 10, 15 | PBT `caps.max_chase_always` |
 | HAT-GOV-080 | [06](06-risk-and-governance.md) | 10, 16 | CONF `gov.lever_catalogue`, TLA `ExecutionRouter!UserCannotRaiseRisk` |
@@ -441,7 +441,7 @@ to an artefact that exists.
 | HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase` |
 | HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once` |
 | HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!NoTakeAfterExpiry` |
-| HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase` |
+| HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15, 51 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase`, PBT `bars.circuit_locks_read_the_band`, PBT `bars.exits_and_placement_read_the_checked_price` |
 | HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow`, PBT `router.skip_and_expiry_become_one_veto_trade` |
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |

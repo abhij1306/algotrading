@@ -80,6 +80,7 @@ from .live import (
     ExitViews,
     GateBoard,
     LiveContexts,
+    LivePrices,
     LiveRoute,
     PriceBook,
     ShadowExits,
@@ -277,7 +278,10 @@ class HatRuntime:
             today=lambda: trade_date_of(self._now()),
         )
         feed_stale = self._feed_stale
-        self.route = LiveRoute(self.desks.router, self.gates, feed_stale, clock, self.calendar)
+        self.live_prices = LivePrices(self.prices, self.book, clock)
+        self.route = LiveRoute(
+            self.desks.router, self.gates, feed_stale, clock, self.calendar, self.live_prices
+        )
         contexts = LiveContexts(
             self.gates, self.settings.user_id, feed_stale, self._funds, self.calendar
         )
@@ -285,7 +289,7 @@ class HatRuntime:
             TriggerMonitor(self.live.builder), sf, contexts, feed_stale, self.route
         )
         self.live.add_bar_listener(self.service.on_bar)
-        self.views = ExitViews(self.book, self.prices.price, clock, self.calendar)
+        self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
         self.subscriptions = LiveSubscriptions(
             parts.feed.registry, *threadsafe_provider(parts.feed, loop)
@@ -493,12 +497,12 @@ class HatRuntime:
     def _take_inputs(
         self, session: Session, signal: HatSignal, now: datetime
     ) -> tuple[Decimal | None, bool | None, PlacementCheck]:
-        price = self.prices.price(signal.instrument_id)
-        locked = None
+        check = self.route.check(session, signal.bot_id, signal.instrument_id, now)
+        price, locked = check.ltp, None  # the checked live price (PR 51), as at placement
         if price is not None:
             daily = self.book.day(trade_date_of(now)).daily(session, signal.instrument_id)
             locked = locked_upper_circuit(price, daily)
-        return price, locked, self.route.check(session, signal.bot_id, now)
+        return price, locked, check
 
     # --- stop -----------------------------------------------------------------------------
 

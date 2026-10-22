@@ -1632,7 +1632,7 @@ def test_series_change_remapped(
             _check_series_morning(rig, position, old, successor, shape, cancel_ok, be_symbol)
         views = ExitViews(
             _Book(),  # type: ignore[arg-type]
-            lambda _iid: D(100),
+            lambda _s, _iid: D(100),
             FixedClock(_on(CHECK_DAY, 9, 16)),
             lambda: CALENDAR,
         )
