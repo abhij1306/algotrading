@@ -34,6 +34,7 @@ __all__ = [
     "TRADE_DAY",
     "Trade",
     "World",
+    "add_bot",
     "exit_stack",
     "open_trade",
     "seed_engine_world",
@@ -162,6 +163,27 @@ def seed_engine_world(
     session.add(bot)
     session.flush()
     return World(USER, bot.id, strategy.id, version.id, universe.id, ids, policy.id)
+
+
+def add_bot(session: Session, world: World) -> World:
+    """A second bot of `world`'s owner, strategy version and universe, on another broker
+    account: the global open-risk cap is the owner's (HAT-RISK-030)."""
+    first = session.get(HatBot, world.bot_id)
+    bot = HatBot(
+        id=uuid.uuid4(),
+        user_id=first.user_id,
+        strategy_id=first.strategy_id,
+        live_version_id=first.live_version_id,
+        broker_account_id=uuid.uuid4(),
+        execution_mode=first.execution_mode,
+        status="active",
+        universe_version_id=first.universe_version_id,
+        lifecycle_state="live",
+        risk_cluster="c2",
+    )
+    session.add(bot)
+    session.flush()
+    return replace(world, bot_id=bot.id)
 
 
 def request_for(

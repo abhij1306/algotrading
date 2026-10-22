@@ -113,6 +113,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - K4 deleted the legacy manual-trading code and the digest pin of its risk tests (`test_risk__existing_suite_green`, HAT-RISK-103). `risk.hat_safety_properties_pinned` pins HAT's own safety properties in its place, `risk.manager_reads_no_hat_state` goes with the legacy risk manager, and `risk.no_manual_trading_path` checks that the deleted modules stay deleted. The spec row of HAT-RISK-103 was rewritten to match.
 - PR 16 added `RequestFlatten` and `ConfirmFlatten` to `KillSwitch` with `FlattenNeedsConfirm` and `FlattenExitOnly` (code: `telegram/commands.py:_flatten`, `execution/manage.py:flatten`); their breaks are recorded in `verify-telegram`. The bullet above about their absence is superseded.
+- PR 19: `caps.global_open_risk` checks `decide` over a hand-built list, so it could not see that `open_entry` fed it one bot's slots. The wiring (every bot of the owner, under an owner lock) is checked by `PBT trades.global_open_risk_across_bots` and `DB runtime.owner_serialised`, recorded in `verify-execution`. `caps.global_open_risk` is unchanged.
 
 ## Scratch breaks
 

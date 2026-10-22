@@ -96,12 +96,14 @@ E = bot equity (allocation + realised P&L) · r = risk per trade = the sleeve's 
 Caps can only shrink or reject an entry; they never apply to exits.
 
 #### HAT-RISK-030: Global open-risk cap
-- **Statement:** A new entry is rejected when the sum over all bots' open positions of (current_stop distance × qty) plus the new trade's risk would exceed 3% of total equity.
+- **Statement:** A new entry is rejected when the sum over all bots' open positions of (current_stop distance × qty) plus the new trade's risk would exceed 3% of total equity. "All bots" is every bot of the owner, on every broker account (the bots whose allocations make up total equity), counting the slots of the entry's own mode (real or virtual): open positions and entries triggered, placed or awaiting approval. The owner's entries are decided one at a time under a Postgres advisory lock keyed by the owner (taken after the bot's lock), so two bots' triggers in one instant cannot both fit on one snapshot.
 - **Source:** BL "Caps"; B15.
-- **PR:** 10
-- **Verification:** PBT `caps.global_open_risk`
+- **PR:** 10, 19
+- **Verification:** PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised`
 - **Acceptance:**
   - Property: for every set of open positions and every candidate, the decision is ACCEPT only if Σ(entry − stop)·qty over open real positions plus the candidate's (P_entry − P_stop)·q ≤ 0.03 × total equity; otherwise REJECT with reason `global_open_risk`. Harm: correlated sleeves together risk more than the account can absorb.
+  - Property: through `open_entry`, two bots of one owner on different broker accounts, whose triggers interleave in any order, are each rejected with `global_open_risk` exactly when the open risk of both plus the candidate's exceeds the cap, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N × 3%.
+  - Property: two real transactions of different bots of one owner, the first holding between its risk decision and its insert, with room for one entry, end with one accepted and one rejected. Harm: both read the snapshot before the other's slot is visible and together exceed the cap.
 
 #### HAT-RISK-031: Max open positions per bot
 - **Statement:** A bot with open positions equal to the lesser of 6 and its exposure-level maximum cannot open another.

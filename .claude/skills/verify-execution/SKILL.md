@@ -89,6 +89,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT config.trade_keeps_entry_version` After the bot moves to a newer strategy version an open trade still evaluates the exit rules of the version it entered under, and a trade opened after the move uses the new ones. Harm: a promotion silently rewrites the exits of positions already held.
 - `DB runtime.publish_serialised` Two real nightly publishes of one bot and day, the first holding inside its scan after its "already published?" read, write one `watchlist.published`; the second waits on the bot's lock and skips. Harm: duplicate watchlist rows and events.
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
+- `PBT trades.global_open_risk_across_bots` (HAT-RISK-030) Two bots of one owner on different broker accounts, triggers interleaved in any order through `open_entry`: a trigger is rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 3% of total equity, is accepted otherwise, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N x 3%.
+- `DB runtime.owner_serialised` (HAT-RISK-030) Two real transactions of different bots of one owner (on different broker accounts), the first holding between its risk decision and its insert, with global open-risk room for one entry, end with one accepted and one rejected; the second waits on the owner's advisory lock. Harm: two bots' triggers in one instant both fit on one snapshot and together exceed the cap.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 - `TLA ExecutionRouter!RouteByMode` Each routed signal takes the route of the mode it was routed by: shadow a virtual position, confirm a card (a real order only after a Take), auto a real order. Harm: a signal is routed under the wrong mode.
 - `TLA ExecutionRouter!ShadowNeverCallsBroker` A shadow signal never reaches the broker. Harm: a paper strategy places real orders.
@@ -169,7 +171,7 @@ CI=1 python -m pytest tests/hat/properties/test_router.py -q --no-cov   # the ro
 CI=1 python -m pytest tests/hat/properties/test_manage.py -q --no-cov   # fills, broker stops, exits
 # the DB checks need a throwaway Postgres whose database name ends in _test
 SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
-  python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or publish_serialised or state_domain"
+  python -m pytest tests/hat/db -q --no-cov -m postgres -k "per_bot_serialised or owner_serialised or publish_serialised or state_domain"
 ```
 
 All adapter checks run on `FakeBroker` or a recording stand-in for the Fyers SDK. No check calls Fyers, and none needs a credential.
@@ -271,7 +273,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `3c090abad57f56096665149f69e2cf8d97f92f45f5969604b93a422746a7742f`
+Covered digest: `f2ffbb17a39b33187fd54b06c8def9e94587128219645c4de6fce2af5c67a486`
 
 ## Scope changes
 
@@ -294,7 +296,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 8 extended `CONF mvp_seed_scope` (`test_conf_broker.py`) with the seeded strategies, markets and owner (HAT-OVR-002); the broker half is unchanged. Its second scratch break is recorded in `verify-criteria`.
 
 - PR 11 added `TradeLifecycle` and the shadow engine; `TLA TradeLifecycle!TypeOK` is the one property without a broken variant. The model puts the entry's Triggered and EntryPlaced steps inside one commit (Watchlisted to Open or Rejected), so AwaitingApproval and the confirm and auto paths are checked only as rows of the table (`CONF lifecycle_transitions_match_spec`), not as model actions: they are PR 15.
-- `DB runtime.per_bot_serialised` commits real rows and empties `hat_event` and the runtime tables with TRUNCATE afterwards (the event log refuses DELETE). Its broken variants are code breaks (`lock_bot` a no-op, or keyed per call), registered in `test_db_broken_variants.py` with an undo list.
+- `DB runtime.per_bot_serialised` commits real rows and empties `hat_event` and the runtime tables with TRUNCATE afterwards (the event log refuses DELETE). Its broken variants are code breaks (`lock_bot` a no-op, or keyed per call), registered in `test_db_broken_variants.py` with an undo list. Since PR 19 the owner lock `open_entry` takes after the bot's also serialises one bot's entries, so these breaks remove `lock_owner` too.
 - `evaluate_position` and `open_entry` refuse a real position or a confirm or auto bot (`position_not_virtual`, `mode_not_shadow`); the router (PR 15) owns them. A virtual trade's continuation after a confirm skip is PR 15. (PR 15b: `open_entry` takes the effective mode and routes all three; `evaluate_position` still refuses a real position until 15c, and drives veto trades.)
 
 - PR 15b added `ExecutionRouter` (16 invariants, 2 liveness properties) and `ApprovalToken` (3 invariants, 1 liveness property). `TypeOK` of each is the one property without a broken variant. Bounds and their reasons are in each model's header: two signals on one instrument (enough for `NoAddToOpenPosition`), one card per signal, the quality gate and the feed folded into one input, an auto entry routed and placed in one step, a placed entry standing for the open position (fills, rejections and broker stops are `OrderReconciliation`'s and 15c's `StopPlacement`'s). `ApprovalToken` checks the decision service; the token's signature and single use at the Telegram edge are PR 16's (`SecondConfirmRequired` is not built).
@@ -307,6 +309,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 16 built the Telegram half of `ExecutionRouter` (`SessionFlip`, `Relay`, `UserEntry`, a user size on `Take`; `NoEntryWithoutSession`, `RejectNoCard`, `UserCannotRaiseRisk`) and of `ApprovalToken` (`Ask`, `Confirm`; `SecondConfirmRequired`). Those properties, their broken variants and their scratch breaks are recorded in `verify-telegram`; the properties above were re-run against the extended models and pass. `open_entry` now stores the sha256 of the token the router's `issuer` signs (`telegram/tokens.py`) and `EntryOutcome` no longer carries a raw token; `TradeManager.flatten` sells every open real position through the exit path.
 - PR 16 review round: `TradeManager` serialises the sales of one position (`_sale_lock`) and `flatten` continues past a position that fails (`FlattenReport.failed`); `orders_allowed` is public for the Telegram flattener. `test_manage.py` passes unchanged.
 - PR 18 (audit 2026-10-22 money-safety-execution F1-F3, engine-ops F1, tests-hat F3): `HatBroker.gtts()` reads the GTT book (07 §8, so `brk__interface_methods` changed with the spec table); `FakeBroker` keeps GTT book rows in the Fyers shape and `RecordingSdk`'s default read replies now carry their list keys (a reply without one is the case `fyers_broker.an_ok_reply_without_its_list_is_unreadable` drives). `ManageRig` takes `settle_after` (default 0: the rig settles a lost answer at once; `manage.lost_answers_never_freeze` also draws a young answer that must wait) and moves the settle's wall clock on by `elapsed`. `FakeBroker`'s GTT book rows take the flat Fyers book shape (`price_trigger`, `qty`, `ord_status`, `gtt_oco_ind`, as OpenAlgo's Fyers mapping reads them) and a cancelled GTT stays in the book with `ord_status` 1 (`resting_gtts()` lists the active ones). The pre-push review found and fixed: a lost GTT left resting under a position a sale closed (the sync now settles and cancels it), two threads sending one reserved stop (`send_order` claims the first attempt), a lost sale found filled followed by a second sale, a lost sale of an earlier session read as never sent, ended or foreign GTT book rows, and a repeated alert while a lost answer is still young. A second review of those fixes found and fixed: a retry kept its first attempt's time (the settle wait then ran from the wrong send), two senders of a retry both sending (every attempt is now a conditional stamp), a triggered GTT dropped from the book read, an odd status on someone else's GTT failing the whole read, and an earlier session's lost sale followed by a new sale for a quantity it may already have sold (it now holds further sales). `manage.async_sale_rejection_retried` patches `submit.utc_now` because `rejected_sales` counts the sales placed on the trade day of the wall clock. The hard-stop fallback now counts only a broker-confirmed stop (an unsure one is settled first, and one still unsure no longer holds the sale back: the previous rule froze positions behind lost answers); `manage.real_exits_never_blocked` passes unchanged. Nothing was narrowed.
+- PR 19 (audit 2026-10-22 money-safety-execution F4, tests-hat F1): `open_entry` hands the decision `owner_slots`, the slots of every bot of the owner on every broker account (each slot carries its own bot, so the per-bot caps in `decide` keep filtering to the bot's own), and takes `lock_owner` after `lock_bot` and after the duplicate check. The scope is the owner, not one broker account, because total equity sums every bot's allocation (`daily/live.py`). Only an entry adds open risk: the other slot writers (fills, Take, skip, expiry, stop raises, exits) hold only the bot's lock and can only keep or shrink a slot, so a stale read over-counts. `bot_snapshot` (the bot's own slots) is unchanged for its other callers. `hat_engine_support.add_bot` adds a second bot of the owner on another broker account. The per-bot DB breaks now also remove the owner lock (above). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1130,6 +1133,29 @@ Break: in `backend/app/hat/engine/trades.py`: `lock_bot` takes no lock.
 E   AssertionError: [True, True]
 FAILED tests/hat/db/test_db_runtime.py::test_runtime__per_bot_serialised - As [cut]
 ============================== 1 failed in 0.52s ===============================
+```
+
+### PBT trades.global_open_risk_across_bots
+
+Break: `backend/app/hat/engine/trades.py` as on main (the snapshot is `bot_snapshot` of the calling bot only, no owner lock).
+
+```
+E   AssertionError: assert UUID('01a16196-0875-7104-835c-0c3e3a4a95a1') is None
+E   Failing test case: test_global_open_risk_across_bots(
+E       order=[0, 1],
+E       room=1,
+E       spare=1,
+FAILED tests/hat/properties/test_trades.py::test_global_open_risk_across_bots
+```
+
+### DB runtime.owner_serialised
+
+Break: in `backend/app/hat/engine/trades.py`: `open_entry` takes no `lock_owner`.
+
+```
+E   AssertionError: [True, True]
+FAILED tests/hat/db/test_db_runtime.py::test_runtime__owner_serialised - As [cut]
+======================= 1 failed, 12 deselected in 0.49s =======================
 ```
 
 ### DB runtime.state_domain

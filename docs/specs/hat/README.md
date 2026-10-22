@@ -387,7 +387,7 @@ to an artefact that exists.
 | HAT-RISK-020 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.formula_exact`, PBT `sizing.risk_bounded`, PBT `sizing.monotone` |
 | HAT-RISK-021 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.zero_skips_with_reason` |
 | HAT-RISK-022 | [06](06-risk-and-governance.md) | 10 | PBT `sizing.stop_below_entry_required` |
-| HAT-RISK-030 | [06](06-risk-and-governance.md) | 10 | PBT `caps.global_open_risk` |
+| HAT-RISK-030 | [06](06-risk-and-governance.md) | 10, 19 | PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised` |
 | HAT-RISK-031 | [06](06-risk-and-governance.md) | 10 | PBT `caps.max_positions` |
 | HAT-RISK-032 | [06](06-risk-and-governance.md) | 10 | PBT `caps.industry` |
 | HAT-RISK-033 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_entries` |
