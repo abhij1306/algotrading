@@ -88,7 +88,12 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "risk.change_effective",
     ),
     "Portfolio": ("sleeve.lifecycle_changed", "regime.state_recorded", "allocation.computed"),
-    "Sessions": ("broker.logged_in", "broker.session_lost", "feed.stale"),
+    "Sessions": (
+        "broker.logged_in",
+        "broker.session_lost",
+        "broker.capabilities_changed",
+        "feed.stale",
+    ),
 }
 EVENT_TYPES: frozenset[str] = frozenset(t for group in EVENT_GROUPS.values() for t in group)
 

@@ -58,7 +58,7 @@ from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .guard import ExecutionGuard
-from .modes import AUTO, bot_mode, effective_mode
+from .modes import AUTO, NO_GTT_DELIVERY, bot_mode, real_orders_allowed
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -87,7 +87,7 @@ MAX_ENTRY_REJECTIONS = 2
 ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 ALERT_ENTRY_UNRESOLVED = "entry.unresolved"  # HAT-BRK-102: never sent again, left to the sync
-NO_GTT = "no_gtt_delivery"
+NO_GTT = NO_GTT_DELIVERY
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
@@ -138,13 +138,13 @@ def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
     return None
 
 
-def _gtt_refusal(session: Session, account_id: uuid.UUID) -> str | None:
+def _gtt_refusal(session: Session, account_id: uuid.UUID, broker: HatBroker) -> str | None:
     """HAT-EXEC-012 at placement: the account must still run real orders (active, GTT for
-    delivery) when a Take arrives minutes after its card went out."""
+    delivery in its stored capabilities and in the adapter's now) when a Take arrives minutes
+    after its card went out."""
     account = session.get(HatBrokerAccount, account_id)
-    if account is None or (
-        effective_mode(AUTO, account_status=account.status, capabilities=account.capabilities or {})
-        != AUTO
+    if account is None or not real_orders_allowed(
+        account.status, account.capabilities or {}, broker.capabilities().gtt_delivery
     ):
         return NO_GTT
     return None
@@ -308,7 +308,7 @@ class ExecutionRouter:
         refusal = (
             placement_refusal(check, now)
             or _kill_refusal(session, signal.bot_id)
-            or _gtt_refusal(session, account_id)
+            or _gtt_refusal(session, account_id, self._broker)
             or _session_refusal(session, account_id, now)
         )
         if refusal is not None:

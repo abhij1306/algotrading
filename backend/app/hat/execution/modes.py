@@ -40,6 +40,7 @@ __all__ = [
     "AUTO",
     "CONFIRM",
     "MODES",
+    "NO_GTT_DELIVERY",
     "SHADOW",
     "ModeRefusedError",
     "UnknownModeError",
@@ -47,6 +48,7 @@ __all__ = [
     "bot_mode",
     "effective_mode",
     "mode_anchor",
+    "real_orders_allowed",
     "request_mode",
     "request_mode_change",
     "requested_mode",
@@ -57,6 +59,7 @@ CONFIRM = "confirm"
 AUTO = "auto"
 MODES = (SHADOW, CONFIRM, AUTO)
 ACCOUNT_ACTIVE = "active"
+NO_GTT_DELIVERY = "no_gtt_delivery"
 
 
 class ModeRefusedError(HatError):
@@ -69,6 +72,16 @@ class UnknownModeError(ModeRefusedError):
 
 def _gtt_ready(account_status: str, capabilities: Mapping[str, object]) -> bool:
     return account_status == ACCOUNT_ACTIVE and capabilities.get("gtt_delivery") is True
+
+
+def real_orders_allowed(
+    account_status: str, capabilities: Mapping[str, object], reported: bool
+) -> bool:
+    """HAT-EXEC-012 at placement: a real entry needs an active account whose stored
+    capabilities report GTT for delivery and an adapter that reports it now (`reported`). The
+    stored value is a cache of the adapter's (HAT-BRK-092), so it can only narrow: a stored
+    `true` never enables a real order the adapter does not report."""
+    return _gtt_ready(account_status, capabilities) and reported is True
 
 
 def effective_mode(

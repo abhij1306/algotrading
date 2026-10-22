@@ -26,7 +26,7 @@ from typing import Any
 import yaml
 from hat.fakes.broker import FakeBroker
 from hat_bhav_support import render_udiff
-from hat_exec_support import live_session
+from hat_exec_support import GTT_READY, live_session
 from hat_mcp_support import ScriptedTransport
 from hat_telegram_support import CHAT, SECRET, FakeTransport
 from sqlalchemy.orm import Session
@@ -313,7 +313,7 @@ def _seed_rows(session: Session, market: Market, user_id: uuid.UUID) -> World:
         user_id=user_id,
         broker="fyers",
         account_ref="SIM0001",
-        capabilities={"gtt_delivery": True},
+        capabilities=GTT_READY.to_json(),
         status="active",
     )
     universe = HatUniverse(user_id=user_id, market_id=nse.id, name="sim", kind="manual")
@@ -582,7 +582,7 @@ def broker_for(market: Market, fake: FakeBroker) -> Any:  # noqa: ANN401
     pairs = [(i.symbol, f"NSE:{i.symbol}-EQ") for i in market.instruments]
 
     def build(_account: HatBrokerAccount) -> FyersHatBroker:
-        broker = FyersHatBroker(fake, instruments=lambda: list(pairs))  # type: ignore[arg-type]
+        broker = FyersHatBroker(fake, instruments=lambda: list(pairs), capabilities=GTT_READY)  # type: ignore[arg-type]
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         return broker
 

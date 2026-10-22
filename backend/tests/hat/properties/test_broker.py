@@ -2,6 +2,7 @@
 (HAT-BRK-082, -091, -092, HAT-DEC-I8, HAT-DEC-I9, HAT-DEC-T8, HAT-EXEC-012, HAT-OPS-031)."""
 
 import uuid
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -28,6 +29,7 @@ from app.hat.execution.broker import (
     CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
     BrokerUnavailableError,
+    Capabilities,
     SessionStatus,
 )
 from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
@@ -261,12 +263,71 @@ def test_an_owner_serialises_its_broker_calls() -> None:
     assert max(overlap) == 1
 
 
+CHECKS = st.lists(
+    st.tuples(st.sampled_from([SessionStatus.LIVE, SessionStatus.EXPIRED]), st.booleans()),
+    min_size=1,
+    max_size=6,
+)
+
+
+@settings(max_examples=40, deadline=None)
+@given(st.sampled_from(["empty", "gtt", "no_gtt"]), CHECKS)
+def test_live_check_refreshes_capabilities(stored: str, checks: list) -> None:
+    """HAT-BRK-092, HAT-EXEC-012: every live session check rewrites the account's stored
+    capabilities to the adapter's (a check of a session that is not live leaves them), and
+    each rewrite that changes them records one `broker.capabilities_changed`. Harm: a flip of
+    the adapter's GTT value never reaches an existing account, or a revoked one keeps routing
+    real orders from a stale row."""
+    from datetime import date
+
+    from hat_exec_support import GTT_READY
+
+    from app.hat.execution.session import record_session
+
+    engine = memory_engine(HatBrokerSession, HatEvent, HatBrokerAccount)
+    session = sessionmaker(engine, expire_on_commit=False)()
+    start = {
+        "empty": {},
+        "gtt": GTT_READY.to_json(),
+        "no_gtt": replace(GTT_READY, gtt_delivery=False).to_json(),
+    }[stored]
+    account = HatBrokerAccount(
+        user_id=USER, broker="fyers", account_ref="X1", capabilities=start, status="active"
+    )
+    session.add(account)
+    session.commit()
+
+    class Broker:
+        status = SessionStatus.LIVE
+        gtt = True
+
+        def session_status(self) -> SessionStatus:
+            return self.status
+
+        def capabilities(self) -> Capabilities:
+            return replace(GTT_READY, gtt_delivery=self.gtt)
+
+    broker = Broker()
+    expected, changes = start, 0
+    for n, (status, gtt) in enumerate(checks):
+        broker.status, broker.gtt = status, gtt
+        record_session(session, broker, account.id, date(2026, 10, 21 + n % 2))  # type: ignore[arg-type]
+        if status is SessionStatus.LIVE:
+            current = broker.capabilities().to_json()
+            changes += current != expected
+            expected = current
+        session.refresh(account)
+        assert account.capabilities == expected
+    events = [e for e in session.query(HatEvent) if e.event_type == "broker.capabilities_changed"]
+    assert len(events) == changes
+
+
 def test_record_session_writes_the_morning_login() -> None:
     from datetime import date
 
     from app.hat.execution.session import record_session
 
-    engine = memory_engine(HatBrokerSession, HatEvent)
+    engine = memory_engine(HatBrokerSession, HatEvent, HatBrokerAccount)
     session = sessionmaker(engine, expire_on_commit=False)()
     account = uuid.uuid4()
 

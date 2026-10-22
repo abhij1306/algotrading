@@ -244,8 +244,10 @@ class FyersHatBroker:
         auth: Callable[[], FyersAuthService] = get_fyers_auth,
         instruments: Callable[[], Iterable[tuple[str, str]]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        capabilities: Capabilities = FYERS_CAPABILITIES,
     ) -> None:
         self._broker = broker if broker is not None else FyersBroker(breaker=PROCESS_BREAKER)
+        self._capabilities = capabilities  # FYERS_CAPABILITIES in production; rigs set others
         self._client = client
         self._auth = auth
         self._instruments = instruments if instruments is not None else _stored_instruments
@@ -259,7 +261,7 @@ class FyersHatBroker:
     # --- capabilities and session ---------------------------------------------------------
 
     def capabilities(self) -> Capabilities:
-        return FYERS_CAPABILITIES
+        return self._capabilities
 
     def login_url(self) -> str:
         try:

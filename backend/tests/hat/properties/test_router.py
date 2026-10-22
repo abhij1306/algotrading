@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
@@ -85,6 +85,7 @@ class Rig:
         gtt: bool = True,
         reconciled: bool = True,
         fake: FakeBroker | None = None,
+        live_gtt: bool | None = None,  # the adapter's GTT now; `gtt` (the stored one) when None
     ) -> None:
         self.session = session
         self.world: World = seed_engine_world(session, mode=mode, instruments=2)
@@ -98,7 +99,7 @@ class Rig:
                 user_id=USER,
                 broker="fyers",
                 account_ref="X0001",
-                capabilities={"gtt_delivery": gtt},
+                capabilities=replace(GTT_READY, gtt_delivery=gtt).to_json(),
                 status="active",
             )
         )
@@ -118,7 +119,11 @@ class Rig:
         seed_live_sessions(session, self.account_id)
         session.commit()
         self.fake = fake if fake is not None else FakeBroker()
-        broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
+        broker = FyersHatBroker(
+            self.fake,  # type: ignore[arg-type]
+            instruments=lambda: list(SYMBOLS.items()),
+            capabilities=replace(GTT_READY, gtt_delivery=gtt if live_gtt is None else live_gtt),
+        )
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.broker = broker
         self.guard = guard_on(TRADE_DAY, reconciled=reconciled)
@@ -825,7 +830,10 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desks.watch_sessions(AT)
         desks.release()
     assert spy.most == 1
-    assert spy.calls == ["session_status"]  # the row and the outage watch see one read
+    # the row and the outage watch see one read; a live check also reads the adapter's
+    # capabilities (HAT-BRK-092), a local value, through the owner like every call
+    assert spy.calls.count("session_status") == 1
+    assert set(spy.calls) <= {"session_status", "capabilities"}
 
 
 def _fill_entry(fake: FakeBroker, order: dict) -> None:
@@ -1011,6 +1019,29 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
         assert session.scalar(
             select(func.count()).select_from(HatOrder).where(HatOrder.is_virtual.is_(False))
         ) == len(rig.places())
+
+
+@settings(max_examples=20, deadline=None)
+@given(stored=st.booleans(), live=st.booleans())
+@example(stored=True, live=False)
+def test_a_stored_capability_never_enables_a_real_entry(stored: bool, live: bool) -> None:
+    """HAT-EXEC-012, HAT-BRK-092: an auto entry reaches the broker only when the account's
+    stored capabilities and the adapter's own both report GTT for delivery. A stored `true` the
+    adapter does not report routes the bot as auto but places nothing and ends the signal
+    Rejected `no_gtt_delivery` before any order is reserved; a stored `false` routes as
+    shadow. Harm: a hand-written or stale account row buys real shares that get no overnight
+    stop."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO, gtt=stored, live_gtt=live)
+        outcome = rig.route()
+        signal = rig.signal(outcome.signal_id)
+        assert len(rig.places()) == (1 if stored and live else 0)
+        if stored and not live:  # refused at placement, before any order row is reserved
+            assert signal.state == lifecycle.REJECTED
+            assert _rejected_reason(session, signal.id) == "no_gtt_delivery"
+            assert session.scalar(select(func.count()).select_from(HatOrder)) == 0
+        if not stored:
+            assert outcome.mode == modes.SHADOW
 
 
 PAUSED = "paused"

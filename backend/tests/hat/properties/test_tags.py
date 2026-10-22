@@ -953,19 +953,24 @@ refusal_cases = st.fixed_dictionaries(
         "blocked": st.booleans(),
         "session": st.sampled_from(list(SessionStatus)),
         "purpose": st.sampled_from(["entry", "stop_day", "exit_partial", "exit_full", "flatten"]),
+        "stored_gtt": st.booleans(),
+        "live_gtt": st.booleans(),
     }
 )
 
 
 @given(refusal_cases)
 def test_refusals_happen_before_the_broker(case: dict) -> None:
-    """HAT-BRK-092/-110/-111, HAT-DEC-T14, D118: an order is placed only for an active account;
-    an entry also needs a reconciliation of this trade date, no mismatch against the bot and a
-    live session, while a stop or a sale is never refused by the reconciliation state. Every
-    refusal leaves the broker uncalled and the row pending."""
+    """HAT-BRK-092/-110/-111, HAT-DEC-T14, HAT-EXEC-012, D118: an order is placed only for an
+    active account; an entry also needs a reconciliation of this trade date, no mismatch against
+    the bot, a live session and GTT for delivery in both the stored capabilities and the
+    adapter's own, while a stop or a sale is never refused by the reconciliation state or the
+    GTT capability. Every refusal leaves the broker uncalled and the row pending."""
     env = exec_env(
         account_status="active" if case["account_active"] else "pending",
         reconciled=case["reconciled"],
+        stored_gtt=case["stored_gtt"],
+        live_gtt=case["live_gtt"],
     )
     live_session(env)
     status = case["session"]
@@ -977,7 +982,13 @@ def test_refusals_happen_before_the_broker(case: dict) -> None:
     is_entry = case["purpose"] == "entry"
     allowed = case["account_active"] and (
         not is_entry
-        or (case["reconciled"] and not case["blocked"] and status is SessionStatus.LIVE)
+        or (
+            case["reconciled"]
+            and not case["blocked"]
+            and status is SessionStatus.LIVE
+            and case["stored_gtt"]
+            and case["live_gtt"]
+        )
     )
     if allowed:
         out = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)

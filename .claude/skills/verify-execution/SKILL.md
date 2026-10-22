@@ -27,7 +27,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.reconcile_scope` `find_mismatches` depends on the broker's orders only through the HT-tagged ones, and flags exactly the four mismatch kinds. Harm: a manual order in the same account raises a false mismatch or hides a real one.
 - `PBT tags.status_mapping_total` `map_fyers_status` maps every input (any code, any quantity type) to one of the order statuses, unknown or fractional codes to `unconfirmed`. Harm: an unexpected Fyers status crashes the poller or is read as filled.
 - `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never send an entry of unknown outcome again (even while the book lags), never retry a GTT after a lost answer and do not read an unreachable broker as a rejection, and leave no attempt marker on a GTT that was never sent. Harm: a retry or restart double-places an entry or stop.
-- `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an entry on an unreconciled trade date or for a blocked bot (a stop or a sale passes both, D118), an entry that is not a buy, an exit that is not a sell, or an entry with the session not live is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
+- `PBT router.a_stored_capability_never_enables_a_real_entry` An auto entry reaches the broker only when the stored capabilities and the adapter's both report GTT; a stored `true` the adapter does not report is refused at placement before any order is reserved and ends Rejected `no_gtt_delivery`. Harm: a hand-written or stale account row buys real shares with no overnight stop.
+- `PBT broker.live_check_refreshes_capabilities` Every live session check rewrites the stored capabilities to the adapter's (a check that is not live leaves them), with one `broker.capabilities_changed` per change. Harm: a flip of the adapter's GTT value never reaches an existing account.
+- `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an entry on an unreconciled trade date or for a blocked bot (a stop or a sale passes both, D118), an entry that is not a buy, an exit that is not a sell, an entry with the session not live, or an entry without GTT for delivery in both the stored capabilities and the adapter's own (a stop or a sale is never refused for it, HAT-EXEC-012) is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
 - `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only); a mode outside the three runs shadow and its request is refused as unknown (`UnknownModeError`), whatever the account. Harm: a live mode runs on an account that cannot hold a protective stop.
 - `PBT broker.account_active_after_check` `onboard_account` marks an account active only when funds, positions and holdings were all fetched, whichever one fails. Harm: an account that cannot be read is treated as ready.
@@ -290,7 +292,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `de41e47a7bc58c915a72f4e78b567a1047707d344069c8feed817dd29e2cae94`
+Covered digest: `bf330bf4a047f60eb6b6ccc9c6bdea1551611e28b5b48c476e5632fa62b88f0d`
 
 ## Scope changes
 
@@ -333,6 +335,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 26 (design review 2026-10-22 item 1): the periodic `sync` step runs every pass and `Desks.sync_due` decides per account (every step while `fills.watch_closely`, else `FILL_SYNC_EVERY`, one minute; a sync that read nothing is tried at the next step; one account's failure is logged and never stops another's); `recover` stamps `synced_at` too and isolates each account (a failure is logged; the start goes on; CodeAnt), and `Desks.sync_all` is gone (`router.desk_calls_serialised` drives `sync_due`). A refused stop keeps the one-minute retry, so the 36 sequence characters of its tag last. The models still take a broker fill and HAT reading it as one step; `router.fill_sync_cadence` checks the time between them. An order socket was not added (HAT-OVR-006 allows one broker socket, the data socket). The per-account isolation has no property (the rig has one account). Nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2): a GTT that triggers with its sale resting below the limit is seen by `FillSync` step 5b (`_resting_trigger`: untagged SELL, working, short of its quantity, the GTT's quantity) and its sale made a market sale (`StopDesk.market_sale`, `modify_order` with `order_type` MARKET only). `BrokerOrder.order_type` is new (the adapter maps the Fyers `type` code; an unknown code is None, so the sync asks again). `FakeBroker.modify_order` now shows an accepted type change in its book. The GTT row stays live while the sale works, and `StopDesk.triggered_gtts` (a live GTT with a `gtt.triggered` event) holds back exit sales and `follow`. The review's proposals (a `triggered` status, a one-shot 09:15 job) were not taken: the sync already runs every minute and the live row keeps every other path off the shares. That Fyers accepts the change on a GTT's child is `[verify on a live account]`. Review round (/code-review): the sale is identified by its limit price (`BrokerOrder.price`, the adapter's `limitPrice`) and CNC product as well as quantity, and by its broker order id once marked; a sale is acted on only after `fills.RESTING_AFTER` (60 s, an in-memory first sight: a restart waits again); `triggered_gtts` counts only today's triggers (the sale is a DAY order) and filters on `aggregate_type`; `rescaled` waits on a triggered GTT too. That wait in `rescaled` has no property (a rescale and a trigger on one day need an ex-date intraday, which cannot happen: the rescale runs before the open). Declined: a `triggered` status (every LIVE-based path would then treat the shares as unprotected and place a stop over the working sale); bounding the conversion retries (once a minute while the sale works, and only in the session); persisting the refused-conversion alert (a restart may alert it once more); merging the resting and the ended-unfilled alerts (two different events). Nothing was narrowed.
 - PR 28 (design review 2026-10-22 item 3, HAT-BRK-102, -103): `_lookup_before_retry` raises `UnresolvedOrderError` for an entry the lookup did not find, so an unknown-outcome entry is never placed again; the fill sync adopts it by tag or `end_session` ends the signal `entry_not_found`. `find_mismatches` adds `duplicate_ht_order` for a tag the broker holds twice; `FillSync` records every fill and raises URGENT `fill.excess` for a fill that leaves an entry above its quantity. `FakeBroker.lagging` hides the newest book rows. The model gains `seen` (the lagging book), `BookCatchesUp`, `Adopt` (the later sync) and the liveness `LostEntryAdopted`. Review round (/code-review): the router alerts `entry.unresolved` (a crash between the attempt's commit and the call is not sent again either); `submit.TagBook` is the one rule for a duplicated tag in the send path, the fill sync and reconciliation (a row's own broker id, else the first order); `fill.excess` is alerted on the crossing fill only; `tags.a_reserved_tag_is_sent_by_one_sender` keeps entries in its retry case (both senders refuse; one the sync adopted meanwhile is reported placed). CodeAnt round: `fill.excess` is sent after the fill's stop (a slow Telegram call no longer delays the stop); `TagBook` skips a duplicate the broker ended unfilled when a row has no broker id. Declined: `FakeBroker.fetch_orderbook` appending `book` to a scripted read (unchanged behaviour the rigs rely on). Not taken from the review: the early `entry_unresolved` rejection (on a lagging book it rejects a signal whose order is live), the fill fence by broker order id and the refusal of excess fills (both leave real shares untracked and unstopped). Stops keep the same-tag re-place (above). Nothing was narrowed.
+- PR 29 (design review 2026-10-22 item 4, HAT-EXEC-012, HAT-BRK-092): `record_session` rewrites `hat_broker_account.capabilities` from the adapter at every live check (`broker.capabilities_changed` on a change); `modes.real_orders_allowed` (stored and the adapter's GTT) gates `router._gtt_refusal` and `submit._check_allowed` for an entry. `FyersHatBroker` takes `capabilities` (default `FYERS_CAPABILITIES`), and the rigs that place real entries build it and store it as `hat_exec_support.GTT_READY` (`exec_env` takes `stored_gtt` and `live_gtt`; the router `Rig` takes `live_gtt`). `tags.refusals_before_the_broker` gains both flags (re-pinned: stronger). `router.desk_calls_serialised` now allows the live check's `capabilities` read through the owner beside its one `session_status` read; the one-read check is kept. The review asked for the first live check of a trade date; every live check is used (a deploy that flips the constant reaches the account within a step). `ExecutionRouter.tla` still has one GTT value per account: the stored/live split is checked by the properties only. Nothing was narrowed.
 - PR 41 only reworded the comment on `brk.import_boundary`'s data-socket exception (`test_conf_broker.py`): the module also hands the minute-history download the session's REST `history` (HAT-DATA-119). The graph check itself is unchanged.
 
 ## Scratch breaks
@@ -674,7 +677,54 @@ Break: `_apply` checks the excess before `_protect` (CodeAnt). (PR 28)
 E   assert [False] == [True]
 ```
 
+### PBT router.a_stored_capability_never_enables_a_real_entry
+
+Break: `router._gtt_refusal` passes `True` for the adapter's value (stored only, before PR 29). (PR 29)
+
+```
+E   assert 1 == 0
+E    +  where 1 = scalar(<sqlalchemy.sql.selectable.Select object>)
+E    +    and   <sqlalchemy.sql.selectable.Select object> = select_from(HatOrder)
+```
+
+### PBT broker.live_check_refreshes_capabilities
+
+Break: `record_session` never refreshes (`if False:`). (PR 29)
+
+```
+E   AssertionError: assert {} == {'gtt_deliver... 'SL-M'], ...}
+```
+
+Break: `_refresh_capabilities` records the event on every live check, changed or not. (PR 29)
+
+```
+E   assert 1 == 0
+E   Failing test case: test_live_check_refreshes_capabilities(
+E       stored='no_gtt',
+E       checks=[(<SessionStatus.LIVE: 'live'>, False)],
+```
+
+Break: the refresh runs on a check that is not live. (PR 29)
+
+```
+E   AssertionError: assert {'gtt_deliver... 'SL-M'], ...} == {}
+```
+
 ### PBT tags.refusals_before_the_broker
+
+Break: `_check_allowed` passes `True` for the adapter's GTT (stored only). (PR 29)
+
+```
+E   Failed: DID NOT RAISE OrderRefusedError
+E   Failing test case: test_refusals_happen_before_the_broker(
+```
+
+Break: `_check_allowed` has no GTT check for an entry. (PR 29)
+
+```
+E   Failed: DID NOT RAISE OrderRefusedError
+E   Failing test case: test_refusals_happen_before_the_broker(
+```
 
 Break: the session-live check in `_check_allowed` is removed.
 

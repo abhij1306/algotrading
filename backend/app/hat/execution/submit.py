@@ -65,6 +65,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
+from .modes import NO_GTT_DELIVERY, real_orders_allowed
 from .tags import encode_tag, is_hat_tag
 
 __all__ = [
@@ -460,6 +461,10 @@ def _check_allowed(
     if is_entry:
         if row.side != Side.BUY.value:
             raise OrderRefusedError("entry_must_buy")
+        if not real_orders_allowed(
+            account.status, account.capabilities or {}, broker.capabilities().gtt_delivery
+        ):
+            raise OrderRefusedError(NO_GTT_DELIVERY)  # HAT-EXEC-012: no overnight stop
         if broker.session_status() is not SessionStatus.LIVE:
             raise OrderRefusedError("session_not_live")
     elif row.side != Side.SELL.value:

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerSession
+from ..models import HatBrokerAccount, HatBrokerSession
 from ..time import utc_now
 from .broker import HatBroker, SessionStatus
 
@@ -157,6 +157,8 @@ def record_session(
             actor="broker",
             payload={"status": status.value},
         )
+    if status is SessionStatus.LIVE:
+        _refresh_capabilities(session, broker, account_id)
     if lost_alert:
         record(
             session,
@@ -168,3 +170,28 @@ def record_session(
         )
     session.commit()
     return status
+
+
+def _refresh_capabilities(session: Session, broker: HatBroker, account_id: uuid.UUID) -> None:
+    """HAT-BRK-092: the stored capabilities are the adapter's, rewritten at every live session
+    check, so a flip of the adapter's value reaches the account by the next check, and a change
+    is recorded as `broker.capabilities_changed` (no commit; the caller commits)."""
+    account = session.get(HatBrokerAccount, account_id)
+    if account is None:
+        return
+    current = broker.capabilities().to_json()
+    previous = account.capabilities or {}
+    if previous == current:
+        return
+    account.capabilities = current
+    record(
+        session,
+        aggregate_type="session",
+        aggregate_id=account_id,
+        event_type="broker.capabilities_changed",
+        actor="broker",
+        payload={
+            "gtt_delivery": current.get("gtt_delivery"),
+            "was_gtt_delivery": previous.get("gtt_delivery"),
+        },
+    )
