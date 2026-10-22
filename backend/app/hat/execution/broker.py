@@ -26,6 +26,7 @@ __all__ = [
     "CODE_SESSION_EXPIRED",
     "CODE_UNAVAILABLE",
     "CODE_UNCONFIRMED",
+    "CODES_NOT_SENT",
     "AckResult",
     "BrokerError",
     "BrokerFunds",
@@ -61,6 +62,9 @@ CODE_SESSION_EXPIRED = "broker_session_expired"  # the broker refused the token:
 CODE_RATE_LIMITED = "broker_rate_limited"
 CODE_UNCONFIRMED = "submit_unconfirmed"
 CODE_INVALID_INTENT = "invalid_intent"
+# a write refused with one of these was not acted on by the broker (no circuit, no client, or the
+# day's requests spent): not a rejection, so it burns no retry and is tried again later
+CODES_NOT_SENT = frozenset({CODE_UNAVAILABLE, CODE_RATE_LIMITED})
 
 
 class BrokerError(HatError):

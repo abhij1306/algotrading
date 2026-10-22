@@ -60,7 +60,15 @@ from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
-from .broker import AckResult, BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
+from .broker import (
+    CODES_NOT_SENT,
+    AckResult,
+    BrokerUnavailableError,
+    GttModify,
+    HatBroker,
+    OrderType,
+    Side,
+)
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .submit import (
@@ -634,7 +642,7 @@ class StopDesk:
             ):
                 continue
             ack = self._broker.cancel_order(row.broker_order_id)
-            if ack.ok or ack.code != BROKER_UNAVAILABLE:
+            if ack.ok or ack.code not in CODES_NOT_SENT:
                 self._entry_cancels.add(row.id)
             if not ack.ok:
                 logger.warning("entry %s remainder not cancelled (%s)", row.tag, ack.code)
@@ -844,11 +852,7 @@ class StopDesk:
                 return VERIFIED
             # A GTT kept above the new tick's floor is never replaced by a lower one: told, and
             # left resting.
-            if (
-                keep
-                or ack.code == BROKER_UNAVAILABLE
-                or not self._cancel(session, target, row, now)
-            ):
+            if keep or ack.code in CODES_NOT_SENT or not self._cancel(session, target, row, now):
                 # The old GTT may still rest at the broker: a second one could sell the same
                 # shares twice. Told, and nothing is placed.
                 self._alert(ALERT_GTT_UNVERIFIED, target, now, ack.code)

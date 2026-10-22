@@ -39,7 +39,11 @@ from app.hat.execution.broker import (
     Side,
 )
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, map_fyers_status
-from app.hat.execution.fyers_broker import BROKER_CIRCUIT_OPEN, FYERS_ORDER_TAG_PATTERN
+from app.hat.execution.fyers_broker import (
+    BROKER_CIRCUIT_OPEN,
+    CLIENT_NOT_INITIALIZED,
+    FYERS_ORDER_TAG_PATTERN,
+)
 from app.hat.execution.reconcile import (
     DUPLICATE_HT_ORDER,
     UNREADABLE_ROW_ALERT,
@@ -1038,18 +1042,41 @@ def test_refusals_happen_before_the_broker(case: dict) -> None:
         assert env.session.query(HatOrder).one().status == "pending"
 
 
-def test_an_unreachable_broker_is_not_a_rejection() -> None:
-    """A place that was never sent (circuit open) raises and leaves the order pending, so it is
-    neither marked rejected nor counted against the one retry; a later send places it once."""
+# A place the broker did not act on: its circuit open, no client, or Fyers' -360 (the day's
+# requests spent, HAT-BRK-082; the refusal FyersBroker passes on in `details`).
+NOT_SENT = {
+    "circuit": (rejected(BROKER_CIRCUIT_OPEN), "broker_unavailable"),
+    "client": (rejected(CLIENT_NOT_INITIALIZED), "broker_unavailable"),
+    "rate_limited": (
+        {
+            **rejected("Fyers rejected the order"),
+            "details": {"s": "error", "code": -360, "message": "Standard plan limit reached"},
+        },
+        "broker_rate_limited",
+    ),
+}
+
+
+@given(kind=st.sampled_from(sorted(NOT_SENT)), times=st.integers(min_value=1, max_value=3))
+@settings(max_examples=20, deadline=None)
+def test_an_unreachable_broker_is_not_a_rejection(kind: str, times: int) -> None:
+    """A place the broker did not act on (circuit open, no client, the day's requests spent)
+    raises `BrokerUnavailableError` with its code and leaves the order pending, however often it
+    happens, so it is neither marked rejected nor counted against the one retry; a later send
+    places it once. Harm: a spent request quota burns a sale's retries, raises `exit.not_placed`
+    and leaves rejected rows for an order that never reached the market."""
     from app.hat.models import HatOrder
 
     env = exec_env()
     live_session(env)
     tag = reserve_order(env.session, env.request(uuid7()))
-    env.fake.script("place_order", rejected(BROKER_CIRCUIT_OPEN))
-    with pytest.raises(BrokerUnavailableError):
-        send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
-    assert env.session.query(HatOrder).one().status == "pending"
+    reply, code = NOT_SENT[kind]
+    env.fake.script("place_order", *([reply] * times))
+    for _ in range(times):
+        with pytest.raises(BrokerUnavailableError) as caught:
+            send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        assert caught.value.code == code
+        assert env.session.query(HatOrder).one().status == "pending"
     out = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
     assert out.status == "placed"
     assert len([r for r in env.fake.book if r["orderTag"] == tag]) == 1
@@ -1345,7 +1372,11 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
         )
     )
     leg = {"price": float(trigger) - 1, "triggerPrice": float(trigger), "qty": qty}
-    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], "tran_side": -1, "product_type": product}
+    # the book's keys as recorded live, or the ones a GTT is placed with
+    side_key, product_key = draw(
+        st.sampled_from([("tran_side", "product_type"), ("side", "productType")])
+    )
+    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], side_key: -1, product_key: product}
     if shown is not None:
         row["ordertag"] = shown
     if status is not None:
@@ -1378,12 +1409,13 @@ def test_the_gtt_book_reads_only_resting_stops(
 ) -> None:
     """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the single-leg CNC GTTs that rest or
     have triggered (the flat book fields, `orderInfo.leg1` or `leg1`; the live keys `tran_side`,
-    `product_type`), each with the stop_gtt HT tag Fyers shows on it ("<n>:GTT<tag>") or None
-    (untagged, a foreign tag, another purpose's HAT tag); a cancelled, rejected or
-    expired GTT, an OCO or another product is left out, and a single-leg CNC row with a status
-    code it does not know makes the book unreadable. Harm: a lost GTT is matched to one that
-    never sold and no longer rests, leaving the position without a stop; or a triggered or
-    unknown one is read as gone and a second GTT is placed under shares already sold."""
+    `product_type` or the placement keys `side`, `productType`), each with the stop_gtt HT tag
+    Fyers shows on it ("<n>:GTT<tag>") or None (untagged, a foreign tag, another purpose's HAT
+    tag); a cancelled, rejected or expired GTT, an OCO or another product is left out, and a
+    single-leg CNC row with a status code it does not know makes the book unreadable. Harm: a
+    lost GTT is matched to one that never sold and no longer rests, leaving the position without
+    a stop; or a triggered or unknown one is read as gone and a second GTT is placed under
+    shares already sold."""
     book = [row for row, _ in rows]
     single = {"id": "G0", "symbol": SYMBOLS["SBIN"], "tran_side": -1, "product_type": "CNC"}
     single.update(price_trigger=100.0, qty=1)

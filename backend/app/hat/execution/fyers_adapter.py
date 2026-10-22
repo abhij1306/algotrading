@@ -206,6 +206,7 @@ def _clean_tag(tag: object) -> str | None:
 # Fyers shows a GTT's tag on its book row as "<n>:GTT<tag>" and an untagged GTT's as
 # "<n>:GTTUntagged" (recorded 2026-10-22).
 _GTT_TAG_PREFIX = "GTT"
+_GTT_UNTAGGED = "GTTUntagged"
 
 
 def _gtt_tag(tag: object) -> str | None:
@@ -222,9 +223,13 @@ def _row_tags(tag: object) -> tuple[str | None, str | None]:
     """(tag, gtt_tag) of an order or trade row. A row under one of HAT's GTT tags (bare, or as
     Fyers shows a GTT's) is the sale that GTT triggered into [verify on a live account: whether
     and how the child carries the tag], not an order HAT placed: its tag is None and the GTT's
-    is `gtt_tag`."""
+    is `gtt_tag`. Fyers' "GTTUntagged" is no tag."""
     gtt_tag = _gtt_tag(tag)
-    return (None, gtt_tag) if gtt_tag is not None else (_clean_tag(tag), None)
+    if gtt_tag is not None:
+        return None, gtt_tag
+    text = _clean_tag(tag)
+    # Fyers' mark of an untagged GTT is no tag: such a sale is attributed by its shape
+    return (None if text == _GTT_UNTAGGED else text), None
 
 
 def _ack(reply: object) -> AckResult:
@@ -504,15 +509,15 @@ class FyersHatBroker:
         triggered is adopted, so the fill sync attributes its sale. The book's keys are the ones
         recorded live on 2026-10-22: `tran_side`, `product_type`, `ordertag` ("<n>:GTT<tag>",
         read as the HT tag of one of HAT's GTTs or None) and the flat `price_trigger`/`qty`; the
-        single leg is also read from `orderInfo.leg1` / `leg1` (the shape a GTT is placed with)
-        [verify on a live account]. A single-leg CNC row with a status code it does not know, or
-        whose side, trigger or quantity cannot be read, raises, so the read fails instead of
-        missing a GTT."""
+        shape a GTT is placed with is read too (`side`, `productType`, the single leg in
+        `orderInfo.leg1` / `leg1`) [verify on a live account]. A single-leg CNC row with a
+        status code it does not know, or whose side, trigger or quantity cannot be read, raises,
+        so the read fails instead of missing a GTT."""
         info = row.get("orderInfo") or {}
         oco = _whole_number(row.get("gtt_oco_ind")) == _GTT_OCO
         if oco or row.get("leg2") or info.get("leg2"):
             return None
-        product = row.get("product_type")
+        product = row.get("product_type", row.get("productType"))
         if product is not None and product != "CNC":
             return None
         status = row.get("ord_status", row.get("status"))
@@ -532,7 +537,7 @@ class FyersHatBroker:
         return BrokerGtt(
             gtt_id=str(row["id"]),
             symbol=symbol_master.to_db(str(row["symbol"])),
-            side=self._side(row["tran_side"]),
+            side=self._side(row["tran_side"] if "tran_side" in row else row["side"]),
             qty=whole,
             trigger_price=_positive_price(trigger),
             tag=_gtt_tag(row.get("ordertag")),
@@ -607,7 +612,8 @@ class FyersHatBroker:
                 book.append(self._order_row(row))
             except _UNREADABLE:
                 tag = row.get("orderTag") if isinstance(row, dict) else None
-                if is_hat_tag(_clean_tag(tag)) or _gtt_tag(tag) is not None:
+                own, gtt_tag = _row_tags(tag)
+                if is_hat_tag(own) or gtt_tag is not None:
                     raise
                 book.skipped += 1
         return book

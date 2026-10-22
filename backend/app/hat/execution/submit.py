@@ -52,8 +52,8 @@ from ..time import trade_date_of, utc_now
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_OK,
-    CODE_UNAVAILABLE,
     CODE_UNCONFIRMED,
+    CODES_NOT_SENT,
     BrokerGtt,
     BrokerOrder,
     BrokerUnavailableError,
@@ -602,8 +602,9 @@ def send_order(
         # The adapter refused it before any SDK call: a definite rejection, never a pending
         # attempt that no one resolves.
         status, broker_id, code = "rejected", None, CODE_INVALID_INTENT
-    if status == "rejected" and code == CODE_UNAVAILABLE:
-        # Nothing was sent (circuit open, no client): not a rejection, so it burns no retry and
+    if status == "rejected" and code in CODES_NOT_SENT:
+        # Nothing was sent (circuit open, no client) or Fyers refused it unread (the day's
+        # requests spent, HAT-BRK-082): not a rejection, so it burns no retry and
         # leaves no attempt marker (a GTT with one could not be sent again).
         row.placed_at = earlier_attempt
         session.commit()

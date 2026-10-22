@@ -624,13 +624,16 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
 
 # How a triggered GTT's sale may show the GTT's tag in the order and trade books: none (as Fyers
 # was assumed to before GTTs were tagged), bare, as the GTT book shows it, or with Fyers' "<n>:"
-# prefix ([verify on a live account] which, if any, Fyers uses).
-CHILD_TAGS = st.sampled_from([None, "bare", "gtt", "numbered"])
+# prefix ([verify on a live account] which, if any, Fyers uses), or the mark Fyers gives an
+# untagged GTT ("2:GTTUntagged"), which is no tag.
+CHILD_TAGS = st.sampled_from([None, "untagged", "bare", "gtt", "numbered"])
 
 
 def _child_tag(gtt: HatOrder, shape: str | None) -> str | None:
     if shape == "other":  # another GTT's tag: some other signal's stop, not this one's
         return f"1:GTT{encode_tag(uuid.UUID(int=99), 'stop_gtt', 0)}"
+    if shape == "untagged":
+        return "2:GTTUntagged"
     prefix = {None: None, "bare": "", "gtt": "GTT", "numbered": "1:GTT"}[shape]
     return None if prefix is None else f"{prefix}{gtt.tag}"
 
@@ -713,6 +716,7 @@ def _gtt_alerts(rig: ManageRig, code: str) -> int:
 @example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True, child=None)
 @example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=True, child="numbered")
 @example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=False, child="other")
+@example(part=0.0, refusals=0, syncs=2, fills=True, exits=False, foreign=False, child="untagged")
 def test_gtt_resting_marketed(
     part: float,
     refusals: int,
@@ -743,7 +747,7 @@ def test_gtt_resting_marketed(
         sold = int(gtt.qty * part)
         tag = _child_tag(gtt, child)
         # not the GTT's: another GTT's tag, or untagged at another price than the GTT's limit
-        not_ours = child == "other" or (foreign and child is None)
+        not_ours = child == "other" or (foreign and child in (None, "untagged"))
         order = {
             "id": "X-1",
             "orderTag": tag,
