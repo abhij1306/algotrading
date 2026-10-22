@@ -58,8 +58,12 @@ from app.hat.models import (
     HatEvent,
     HatJobRun,
     HatKillSwitch,
+    HatMarket,
+    HatModeChange,
     HatRegimeState,
+    HatRiskPolicyVersion,
     HatStrategy,
+    HatTradingCalendar,
 )
 from app.hat.models.ops import JOB_STATUSES
 from app.hat.ops.jobs import (
@@ -1041,8 +1045,12 @@ STATUS_TABLES = (
     HatEvent,
     HatJobRun,
     HatKillSwitch,
+    HatMarket,
+    HatModeChange,
     HatRegimeState,
+    HatRiskPolicyVersion,
     HatStrategy,
+    HatTradingCalendar,
 )
 REGIMES = ("bull_quiet", "bull_volatile", "correction", "bear")
 KILL_BASE = datetime(2026, 10, 20, 3, 0, tzinfo=UTC)

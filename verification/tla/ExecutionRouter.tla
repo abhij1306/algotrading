@@ -279,7 +279,7 @@ ExitSend(s) ==
                    badEntry, badOrder, midChange>>
     /\ UNCHANGED tgVars
 
-\* code: backend/app/hat/execution/modes.py:request_mode_change  (outside market hours only;
+\* code: backend/app/hat/execution/mode_changes.py:request_mode_change  (outside market hours only;
 \* confirm and auto need GTT; the change waits for the next open)
 RequestMode(m) ==
     /\ phase = "closed" \/ BrokenMode = "apply_now"
@@ -294,7 +294,7 @@ RequestMode(m) ==
                    badEntry, badOrder, exitAsked>>
     /\ UNCHANGED tgVars
 
-\* code: backend/app/hat/execution/modes.py:apply_mode_changes  (the session opens: the queued
+\* code: backend/app/hat/execution/mode_changes.py:apply_mode_changes  (the session opens: the queued
 \* mode comes into force and the regime gate is not yet fresh for the day)
 SessionOpen ==
     /\ phase = "closed"

@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `182d2795062d9b9f6e140bf36d7ad047f03abaf21611754388058a1cf0d7f20f`
+Covered digest: `b5f76184f8167eca506903c99393f2bbcc3d187e3d0b76fc7945ec7302295a23`
 
 ## Scope changes
 
@@ -982,6 +982,18 @@ tests/hat/conformance/test_conf_risk.py F
 tests/hat/conformance/test_conf_risk.py:319: in test_risk__no_legacy_halt_read
 E   AssertionError: assert [('hat/risk/d...DING_HALTED')] == []
 E     Left contains one more item: ('hat/risk/decision.py', 'TRADING_HALTED')
+```
+
+Break: (PR 45) in `backend/app/hat/risk/policy.py` (risk.policy_schema_fields): a policy without `weights_confirmed` reads as confirmed (`OPTIONAL_FIELDS = {"weights_confirmed": True}`).
+
+```
+E   AssertionError: assert {'weights_confirmed': True} == {'weights_confirmed': False}
+```
+
+Break: (PR 45) in `backend/app/hat/risk/policy.py` (risk.initial_seed_equals_spec): the seed policy confirms the base weights (`SEED_POLICY["weights_confirmed"] = True`).
+
+```
+E   assert True is False
 ```
 
 ### DB risk.*

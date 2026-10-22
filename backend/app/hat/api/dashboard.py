@@ -29,6 +29,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...database import get_db
+from ..data.calendar import session_calendar
+from ..execution import modes
 from ..models import (
     HatAllocationDaily,
     HatBot,
@@ -101,7 +103,11 @@ def _money(value: Decimal | int | str) -> str:
 class BotView(BaseModel):
     id: uuid.UUID
     name: str
-    execution_mode: str
+    execution_mode: str  # the mode asked for (`hat_bot.execution_mode` or a change now due)
+    effective_mode: str  # the mode an entry is routed by now (07 §1)
+    mode_reason: str | None  # why they differ: `sleeve_<state>` or a gate's code (HAT-GOV-085)
+    pending_mode: str | None  # a queued change still waiting for its session open
+    pending_from: datetime | None
     status: str
     lifecycle_state: str
     risk_cluster: str
@@ -258,7 +264,7 @@ def _kill_rows(session: Session) -> list[kill.KillRow]:
     ]
 
 
-def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str) -> BotView:
+def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str, mode: modes.ModeView) -> BotView:
     state = kill.kill_state_of(rows, bot.id, paused=bot.status != ACTIVE)
     flags = (
         ("account_kill", state.account_tripped),
@@ -269,7 +275,11 @@ def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str) -> BotView:
     return BotView(
         id=bot.id,
         name=name,
-        execution_mode=bot.execution_mode,
+        execution_mode=mode.asked,
+        effective_mode=mode.effective,
+        mode_reason=mode.why,
+        pending_mode=mode.pending,
+        pending_from=mode.pending_from,
         status=bot.status,
         lifecycle_state=bot.lifecycle_state,
         risk_cluster=bot.risk_cluster,
@@ -282,7 +292,12 @@ def _bots(session: Session, rows: list[kill.KillRow] | None = None) -> list[BotV
     rows = _kill_rows(session) if rows is None else rows
     bots = _all_bots(session)
     labels = _labels(session, (bot.id for bot in bots))
-    return [_bot_view(bot, rows, labels[bot.id]) for bot in bots]
+    now = utc_now()
+    calendar = session_calendar(session)
+    return [
+        _bot_view(bot, rows, labels[bot.id], modes.mode_view(session, bot, now, calendar))
+        for bot in bots
+    ]
 
 
 def _sessions(session: Session, day: date) -> list[BrokerSessionView]:

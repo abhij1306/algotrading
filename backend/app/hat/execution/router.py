@@ -11,7 +11,8 @@ writes what the mode needs in one transaction:
 - **confirm**: the approval card (AwaitingApproval). The user's Take re-checks max-chase
   (`approvals.take`) and the live conditions below and, when both pass, the router places the
   real order; a Skip or an expiry continues as a virtual veto trade (HAT-EXEC-032);
-- **auto**: the accepted signal waits in Triggered and the router places the real order now.
+- **auto**: the accepted signal waits in Triggered and the router places the real order now. Only
+  a high-confidence signal goes this way; any other is routed as confirm (D149).
 
 **Placing a real entry** (`place_entry`) first re-reads the live conditions (`PlacementCheck`):
 no entry outside the calendar session, on a stale or unknown feed, on a day whose data failed
@@ -26,8 +27,9 @@ an unreachable broker ends the signal Rejected with a fixed reason and an alert.
 outcome is unknown is left to the tag lookup and reconciliation, never re-placed blindly.
 
 The router imports only `execution.broker`'s contract, never the Fyers adapter or SDK (CONF
-`brk.import_boundary`). The Fyers adapter reports no GTT for delivery, so in the MVP every bot's
-effective mode is shadow and the real-order path runs only against `FakeBroker`.
+`brk.import_boundary`). A bot runs confirm or auto only once its sleeve is Live, its account
+reports GTT for delivery and has DDPI confirmed, and the owner has confirmed the policy's base
+weights (`modes.gate_refusal`); auto places only a high-confidence signal (`modes.route_mode`).
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .guard import ExecutionGuard
-from .modes import AUTO, NO_GTT_DELIVERY, bot_mode, real_orders_allowed
+from .modes import AUTO, NO_GTT_DELIVERY, bot_mode, real_orders_allowed, route_mode
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -188,15 +190,21 @@ class ExecutionRouter:
         now: datetime,
         check: PlacementCheck,
         decide: trades.DECIDE = evaluate_signal,
+        confidence: str | None = None,
     ) -> trades.EntryOutcome:
         """Write the trigger's signal under its effective mode and commit; place an accepted auto
         entry under `check`, the live conditions read by the caller at `now` (the placement
-        time, not the trigger's snapshot). A repeated trigger returns the existing signal (and
-        resumes an auto entry that a crash left unplaced)."""
+        time, not the trigger's snapshot). Auto places only a signal whose `confidence` is high;
+        any other is routed as confirm, an approval card for the owner (HAT-EXEC-014, D149).
+        Signals carry no label until the confidence labels land (D132), so every auto entry asks
+        the owner for now. A repeated trigger returns the existing signal (and resumes an auto
+        entry that a crash left unplaced)."""
         bot = session.get(HatBot, request.bot_id)
         if bot is None:
             raise trades.TradeError("unknown_bot")
-        mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
+        mode = route_mode(
+            bot_mode(session, bot, request.triggered_at, request.context.calendar), confidence
+        )
         outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
         session.commit()
         if outcome.mode == AUTO and outcome.state == lifecycle.TRIGGERED:

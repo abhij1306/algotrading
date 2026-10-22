@@ -106,7 +106,7 @@ to an artefact that exists.
 | HAT-DEC-T15 | [01](01-decisions.md) | 16 | PBT `telegram.health_alert_for_every_failure` |
 | HAT-DEC-T16 | [01](01-decisions.md) | 2-17 | CONF `spec_requirements_well_formed` |
 | HAT-DEC-B1 | [01](01-decisions.md) | 15 | TLA `ExecutionRouter!ModeDomain` |
-| HAT-DEC-B2 | [01](01-decisions.md) | 8, 15 | CONF `seed_bots_shadow` |
+| HAT-DEC-B2 | [01](01-decisions.md) | 8, 15, 45 | CONF `seed_bots_confirm` |
 | HAT-DEC-B3 | [01](01-decisions.md) | 8 | CONF `criterion_catalogue_complete` |
 | HAT-DEC-B4 | [01](01-decisions.md) | 8 | PBT `scoring.threshold_gate` |
 | HAT-DEC-B5 | [01](01-decisions.md) | 2, 8 | DB `governance.version_config_immutable` |
@@ -344,7 +344,7 @@ to an artefact that exists.
 | HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15 | PBT `criteria.ep_candidate_bands` |
 | HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `regime.strategy_rules` |
 | HAT-BOT-060 | [04](04-criteria-and-bots.md) | 8, 54 | CONF `bot_seed_s1_matches_spec` |
-| HAT-BOT-061 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_shadow` |
+| HAT-BOT-061 | [04](04-criteria-and-bots.md) | 8, 45 | CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_confirm` |
 | HAT-BOT-062 | [04](04-criteria-and-bots.md) | 11 | PBT `stops.final_contraction_low` |
 | HAT-BOT-070 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_s2_matches_spec` |
 | HAT-BOT-071 | [04](04-criteria-and-bots.md) | 15 | PBT `criteria.level_expression` |
@@ -420,6 +420,7 @@ to an artefact that exists.
 | HAT-GOV-082 | [06](06-risk-and-governance.md) | 16 | TLA `KillSwitch!FlattenNeedsConfirm` |
 | HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9, 35 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate` |
 | HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session` |
+| HAT-GOV-085 | [06](06-risk-and-governance.md) | 45 | PBT `router.mode_gates_hold_bots_in_shadow`, PBT `router.open_settles_mode_changes`, PBT `broker.confirm_and_auto_need_gtt`, PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17, 34 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
 | HAT-GOV-092 | [06](06-risk-and-governance.md) | 2 | DB `governance.risk_version_immutable` |
@@ -431,9 +432,10 @@ to an artefact that exists.
 | HAT-RISK-103 | [06](06-risk-and-governance.md) | 10, K4 | CONF `risk.hat_safety_properties_pinned`, CONF `risk.no_manual_trading_path` |
 | HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
-| HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
+| HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15, 45 | CONF `exec.default_mode_confirm` |
 | HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15, 25, 29 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker` |
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
+| HAT-EXEC-014 | [07](07-execution-and-brokers.md) | 45 | PBT `router.auto_places_only_high_confidence` |
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
 | HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
 | HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase` |
@@ -509,6 +511,7 @@ to an artefact that exists.
 | HAT-TG-035 | [08](08-telegram.md) | 16 | TLA `KillSwitch!FlattenExitOnly`, PBT `telegram.flatten_logged` |
 | HAT-TG-036 | [08](08-telegram.md) | 16 (command), 10 (service) | TLA `KillSwitch!PauseBlocksEntriesOnly` |
 | HAT-TG-037 | [08](08-telegram.md) | 16 | PBT `telegram.read_commands_side_effect_free` |
+| HAT-TG-038 | [08](08-telegram.md) | 45 | PBT `telegram.mode_names_a_bot_and_its_gate` |
 | HAT-TG-040 | [08](08-telegram.md) | 16 | PBT `telegram.token_forgery_rejected` |
 | HAT-TG-041 | [08](08-telegram.md) | 16 | TLA `ApprovalToken!SingleDecision` |
 | HAT-TG-042 | [08](08-telegram.md) | 16 (tokens), 15 (expiry service) | TLA `ApprovalToken!NoTakeAfterExpiry`, PBT `telegram.expiry_window` |

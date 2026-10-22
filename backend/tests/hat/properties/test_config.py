@@ -466,12 +466,13 @@ def test_save_creates_version(raws: list[dict]) -> None:
 
 
 @given(st.sampled_from([None, "shadow", "confirm", "auto"]))
-def test_new_bot_mode_shadow(mode: str | None) -> None:
-    """PBT config.new_bot_mode_shadow (HAT-BOT-061): a new bot starts in shadow whatever mode
-    its config names; asking creation for any other mode is refused."""
+def test_new_bot_mode_confirm(mode: str | None) -> None:
+    """PBT config.new_bot_mode_confirm (HAT-BOT-061, HAT-DEC-B2): a new bot asks for confirm
+    whatever mode its config names; asking creation for any other mode is refused. It still
+    runs shadow: its sleeve starts in research (HAT-PORT-063)."""
     with Session(ENGINE) as session:
         strategy = seed_default_strategies(session, USER)[0]
-        if mode in (None, "shadow"):
+        if mode in (None, "confirm"):
             bot = create_bot(
                 session,
                 user_id=USER,
@@ -479,7 +480,8 @@ def test_new_bot_mode_shadow(mode: str | None) -> None:
                 broker_account_id=ACCOUNT,
                 execution_mode=mode,
             )
-            assert bot.execution_mode == "shadow"
+            assert bot.execution_mode == "confirm"
+            assert bot.lifecycle_state == "research"
             assert isinstance(bot, HatBot)
         else:
             with pytest.raises(VersionError):
@@ -491,8 +493,6 @@ def test_new_bot_mode_shadow(mode: str | None) -> None:
                     execution_mode=mode,
                 )
         session.rollback()
-    for name in SEED_NAMES:
-        assert seed_config(name).execution_mode == "shadow"
 
 
 @settings(max_examples=20)

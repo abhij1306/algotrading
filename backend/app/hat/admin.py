@@ -14,7 +14,10 @@ Commands, in first-deploy order:
     seed-policy                               risk-policy version 1 (06 §1)
     onboard-account --account-ref REF         capability check of the broker account (HAT-BRK-092)
     seed-strategies                           the two strategies, version 1 as a draft
-    seed-bots --account ID                    one shadow sleeve per strategy on an active account
+    seed-bots --account ID                    one sleeve per strategy on an active account
+    confirm-ddpi --account ID --since DATE --note TEXT
+                                              the owner's word that DDPI is registered on the
+                                              account's demat (HAT-GOV-085), outside market hours
     publish-universe --constituents CSV --as-of DATE [--name N] [--include S]... [--exclude S]...
                      [--bot ID]...            a universe version from an NSE index CSV, made live
                                               and given to the sleeves (default: all of them)
@@ -29,8 +32,8 @@ Commands, in first-deploy order:
 Input files (`--constituents`, `--config`) are names inside `<HAT_DATA_ROOT>/admin/`: a path that
 leaves that folder, or a file without the expected suffix, is refused (`file_outside_admin`).
 
-`promote` and `promote-version` are the owner's acts: their events carry `actor = user`, the
-allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
+`confirm-ddpi`, `promote` and `promote-version` are the owner's acts: their events carry
+`actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from .errors import HatConfigError, HatError
 from .execution.accounts import (
     ADAPTER_FACTORIES,
     OnboardingError,
+    confirm_ddpi,
     onboard_account,
     require_active_account,
 )
@@ -149,6 +153,10 @@ def _parser() -> argparse.ArgumentParser:
     promote = commands.add_parser("promote")
     promote.add_argument("--bot", type=uuid.UUID, required=True)
     promote.add_argument("--to", choices=lifecycle.STATES, required=True)
+    ddpi = commands.add_parser("confirm-ddpi")
+    ddpi.add_argument("--account", type=uuid.UUID, required=True)
+    ddpi.add_argument("--since", type=date.fromisoformat, required=True)
+    ddpi.add_argument("--note", required=True)
     return parser
 
 
@@ -291,12 +299,25 @@ def _release(
 def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
-    """The owner's acts, `promote-version` and `promote`, under the allowlisted chat id."""
+    """The owner's acts, `confirm-ddpi`, `promote-version` and `promote`, under the allowlisted
+    chat id."""
     calendar = _calendar(session)
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
         raise AdminError("no_owner_chat") from None
+    if args.command == "confirm-ddpi":
+        account = confirm_ddpi(
+            session,
+            args.account,
+            user_id=deps.user_id,
+            since=args.since,
+            note=args.note,
+            calendar=calendar,
+            now=now,
+            chat_id=chat_id,
+        )
+        return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
     if args.command == "promote-version":
         row = versions.promote_version(
             session, args.version, calendar=calendar, now=now, chat_id=chat_id

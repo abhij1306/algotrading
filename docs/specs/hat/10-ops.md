@@ -580,9 +580,16 @@ refuse inside a session (`market_hours`).
    sized from its nominal allocation (HAT-PORT-050) and the 20 sessions start for both.
 9. After 20 trading sessions: `$ADMIN promote-version --version <version>` (refused with
    `shadow_days` until then, HAT-BOT-084), then `$ADMIN promote --bot <bot> --to live` (refused
-   with `version_not_live` before the version is promoted). The sleeve now has weight, but its
-   orders stay virtual until the account's mode changes (`/mode`, HAT-GOV-084), which needs GTT
-   delivery (HAT-EXEC-012).
+   with `version_not_live` before the version is promoted). The sleeve now has weight and asks
+   for confirm (the default, HAT-DEC-B2), but its orders stay virtual until every gate passes
+   (HAT-GOV-085): GTT delivery on the account (HAT-EXEC-012), the owner's DDPI confirmation
+   (step 9a) and a policy version with `weights_confirmed = true` (06 §1). `/status` shows the
+   mode a bot runs and the gate that holds it back; `/mode <bot> auto` switches a sleeve to auto,
+   where only a high-confidence signal is placed without a card (HAT-EXEC-014).
+9a. Once DDPI (or a POA) is active on the demat (plan audit O1): `$ADMIN confirm-ddpi --account
+   <account> --since <date DDPI became active> --note "<what was registered>"`, outside market
+   hours (refused with `market_hours`, `ddpi_date_in_future`, `ddpi_note_required` or
+   `ddpi_already_confirmed`); a bot reads it from the next session open.
 10. A new version of a running strategy: `$ADMIN save-draft --strategy <strategy> --config
     <file.yaml>` (an exported or edited config; refused inside a session, and an invalid config
     prints the paths and codes of its problems), then steps 6, 7 (publish only: a

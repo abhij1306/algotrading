@@ -7,6 +7,7 @@ policy is a separate versioned record that holds every risk number. A bot has no
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -156,6 +157,13 @@ class HatBrokerAccount(Base):
     openalgo_ref = Column(Text)
     capabilities = Column(JsonB, nullable=False)
     status = Column(Text, nullable=False)
+    # The owner's word that DDPI (or a POA) is registered on the demat, so a CNC sale goes
+    # through without a TPIN prompt (plan audit O1, D154). Set only through the admin command
+    # line, with the time and a dated note; until then no bot on the account runs confirm or
+    # auto (HAT-GOV-085).
+    ddpi_confirmed = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    ddpi_confirmed_at = Column(Timestamptz)
+    ddpi_note = Column(Text)
 
 
 class HatBot(Base):
@@ -184,7 +192,9 @@ class HatBot(Base):
     strategy_id = fk("hat_strategy.id")
     live_version_id = fk("hat_strategy_version.id", nullable=True)
     broker_account_id = fk("hat_broker_account.id")
-    execution_mode = Column(Text, nullable=False, default="shadow", server_default="shadow")
+    # Confirm by default (HAT-DEC-B2, D130/D132): the mode the owner wants. It routes shadow
+    # until the sleeve is Live and the account and policy gates pass (`execution.modes`).
+    execution_mode = Column(Text, nullable=False, default="confirm", server_default="confirm")
     status = Column(Text, nullable=False)
     universe_version_id = fk("hat_universe_version.id", nullable=True)
     lifecycle_state = Column(Text, nullable=False)
@@ -207,6 +217,10 @@ class HatModeChange(Base):
     # The next session open, from hat_trading_calendar (set by the app).
     effective_from = Column(Timestamptz, nullable=False)
     via = Column(Text, nullable=False)
+    # What the session open did with it (`mode_changes.apply_mode_changes`): applied, or
+    # refused with the gate that failed. Both stay null until its open.
+    applied_at = Column(Timestamptz)
+    refused_reason = Column(Text)
 
 
 class HatKillSwitch(Base):

@@ -26,6 +26,7 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 | `cluster_cap` | Combined cap for the S1+S2 risk cluster | 1.00 [OWNER-PENDING] | BL "Sleeves"; PLAN Q3 |
 | `multiplier_bounds` | Allowed range of regime and health multipliers | [0.25, 1.0] | BL "Allocation"; PL2 |
 | `health_bands` | Sleeve drawdown bands 8% / 12% → 1.0 / 0.5 / 0 | see 05-portfolio [A] | BL "Health multiplier" |
+| `weights_confirmed` | The owner has set `base_weight` and `cluster_cap` as real numbers. Not a risk number: it sizes nothing, and a stored document without it reads as false. Until it is true no bot runs confirm or auto (HAT-GOV-085) | false | D130, D132; plan audit 2026-10-22 §6 item 9 |
 
 #### HAT-RISK-010: Risk policy holds every risk number
 - **Statement:** All sizing, cap, ladder, kill-switch, base-weight and multiplier-bound values are read from the effective `hat_risk_policy_version.policy`; no strategy version or bot row carries a risk number.
@@ -44,7 +45,7 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 - **Acceptance:**
   - Property: the seeded policy document equals the §1 seed column field by field, including `risk_pct = 0.0025` and `kill.account_drawdown_pct = 0.15`. Harm: the account starts with risk numbers nobody approved.
 - **[A]** `adv_cap_pct` 0.01, industry cap 2, entries/day 3, stop-outs/day 3, ladder 2/4/6, bot kill 10%: defaults as listed; validated by slippage in shadow mode (ADV cap), live review (caps), live after 50 trades (ladder), backtest and shadow (bot kill) per BL "Defaults that are assumptions".
-- **[OWNER-PENDING]** S1/S2 base weights 0.50/0.50, cluster cap 1.00, account equity read from broker funds at session start: default per PLAN Q3; the owner must set real numbers before any bot runs in confirm or auto.
+- **[OWNER-PENDING]** S1/S2 base weights 0.50/0.50, cluster cap 1.00, account equity read from broker funds at session start: default per PLAN Q3; the owner must set real numbers before any bot runs in confirm or auto. Enforced since PR 45: the seed carries `weights_confirmed = false`, and while the policy in force at a session's open says false every bot runs shadow and `/mode … confirm|auto` is refused `weights_not_confirmed` (HAT-GOV-085). The owner confirms the numbers with a policy version that sets it true (PR 46 writes 0.50/0.50 and 1.00 as that version, plan audit §6 item 9).
 
 ## §2 Position size
 
@@ -412,7 +413,17 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **Verification:** TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session`
 - **Acceptance:**
   - Property: in every behaviour, a bot's effective mode during a session equals the mode in effect at that session's open, and every accepted change has `effective_from` = the next session open. Harm: a mode flips mid-session and routes an entry differently from what was approved.
-- **Implementation:** `execution/modes.py` (PR 15): `request_mode_change` refuses a confirm or auto request the account cannot run (HAT-EXEC-012) and queues the rest; `bot_mode` reads the mode in force at the open of the entry's session and answers shadow for a bot whose sleeve's lifecycle state does not route live (PR 18; 05 HAT-PORT-063); `apply_mode_changes` writes it to `hat_bot.execution_mode` at the open (wired by PR 17).
+- **Implementation:** `execution/mode_changes.py:request_mode_change` refuses a confirm or auto request a gate would hold back at the open it takes effect at (HAT-EXEC-012, HAT-GOV-085) and queues the rest; `execution/modes.py:bot_mode` reads the mode in force at the open of the entry's session and answers shadow for a bot whose sleeve's lifecycle state does not route live (PR 18; 05 HAT-PORT-063); `mode_changes.apply_mode_changes` settles each change at its open (wired by PR 17; PR 45 split the writers out of `modes.py`, so the read-only dashboard can show the mode without reaching them).
+
+#### HAT-GOV-085: Confirm and auto need the owner's DDPI and weights confirmation; the open applies or refuses each change
+- **Statement:** A bot runs confirm or auto only while, beside a Live sleeve and an account with GTT for delivery (HAT-EXEC-012), its account has `ddpi_confirmed` set by the owner and the risk policy in force has `weights_confirmed = true` (06 §1); both are read as they stood at the session's open, so neither widens a mode mid-session, while a revoked DDPI flag narrows at once. `/mode … confirm|auto` is refused with the gate's code (`mode_needs_gtt`, `ddpi_not_confirmed`, `weights_not_confirmed`), the gates read as they will stand at the open the change takes effect at. At each open every queued change now due is applied (`mode.applied`) or, when a gate fails then, refused (`mode.apply_refused`, `hat_mode_change.refused_reason`); a refused change never takes effect. `/status` and the dashboard show the mode asked for, the mode run, the reason they differ and any queued change.
+- **Source:** D130, D132, D154; plan audit 2026-10-22 PR 45, §6 items O1 and 9; 06 §1 OWNER-PENDING base weights.
+- **PR:** 45
+- **Verification:** PBT `router.mode_gates_hold_bots_in_shadow`, PBT `router.open_settles_mode_changes`, PBT `broker.confirm_and_auto_need_gtt`, PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`
+- **Acceptance:**
+  - Property: for every mode and every combination of the DDPI flag, its time and the policy's `weights_confirmed`, a Live bot's effective mode is the mode asked for exactly when every gate held at the session's open, and otherwise shadow, with no broker call. Harm: real orders go out before the owner registered DDPI (sales stall on a TPIN prompt) or confirmed the allocation numbers.
+  - Property: for every queued change and every state of the gates at its open, the open either applies it (`hat_bot.execution_mode` = its mode, one `mode.applied`) or refuses it (unchanged mode, one `mode.apply_refused` with the gate's code), a second run changes nothing, and a refused change never routes an entry. Harm: a change silently fails, or is retried every open and flips a mode later without a request.
+  - Property: `confirm-ddpi` is refused, writing nothing, inside market hours, for an account that is not the owner's or not active, for a date after today, an empty note or a second confirmation; an accepted one writes `broker.ddpi_confirmed` with `actor = user`, the chat id and `via = cli`. Harm: the flag is set by mistake or without a record.
 
 ## §9 Risk-policy change rules
 

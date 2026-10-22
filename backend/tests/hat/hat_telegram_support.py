@@ -17,7 +17,14 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world
-from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import (
+    GTT_READY,
+    SYMBOLS,
+    confirm_gates,
+    guard_on,
+    live_session,
+    seed_live_sessions,
+)
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from sqlalchemy import select
@@ -34,6 +41,7 @@ from app.hat.models import (
     HatCommandLog,
     HatInstrument,
     HatMarket,
+    HatStrategy,
     HatTradingCalendar,
 )
 from app.hat.notify import Notifier, RecordingNotifier
@@ -69,6 +77,7 @@ SECRET = bytes(range(32, 64))  # a test key of 32 bytes; the real one comes from
 LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True)
 _TICKERS = tuple(SYMBOLS)
 OWNER = load_settings(process_env()).user_id
+BOT = "trend"  # the rig's bot, by its strategy's name: `/mode BOT auto`
 
 
 def ist(day: date, hour: int, minute: int = 0) -> datetime:
@@ -207,6 +216,9 @@ class TgRig:
                 )
             _seed_calendar(session, market_id)
             seed_live_sessions(session, self.account_id)
+            session.get_one(HatStrategy, self.world.strategy_id).name = BOT
+            session.flush()
+            confirm_gates(session, self.account_id, OWNER)
             session.commit()
         self.fake = fake if fake is not None else FakeBroker()
         self.transport = FakeTransport()
@@ -242,7 +254,9 @@ class TgRig:
             clock=clock or (lambda: self.now),
         )
 
-    def route(self, instrument: int = 0, at: datetime = AT, **ctx: object) -> trades.EntryOutcome:
+    def route(
+        self, instrument: int = 0, at: datetime = AT, confidence: str | None = "high", **ctx: object
+    ) -> trades.EntryOutcome:
         with self.factory() as session:
             request = request_for(self.world, self.world.instruments[instrument], **ctx)
             outcome = self.router.route(
@@ -250,6 +264,7 @@ class TgRig:
                 trades.EntryRequest(**{**vars(request), "triggered_at": at}),
                 now=at,
                 check=LIVE,
+                confidence=confidence,
             )
             session.commit()
             return outcome

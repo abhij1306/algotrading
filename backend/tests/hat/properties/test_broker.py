@@ -11,7 +11,7 @@ from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, USER, adapter_over, exec_env
 from hat_fyers_support import LIVE_REPLIES
 from hat_support import memory_engine
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -40,6 +40,7 @@ from app.hat.execution.broker import (
     Side,
 )
 from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
+from app.hat.execution.modes import Gates
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
@@ -52,37 +53,65 @@ from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
     st.one_of(st.sampled_from(MODES), st.sampled_from(["live", "", "AUTO", "Shadow"])),
     st.sampled_from(["active", "pending", "failed", "", "ACTIVE"]),
     st.fixed_dictionaries({"gtt_delivery": st.sampled_from([True, False, None, "true", 1])}),
+    st.booleans(),
+    st.booleans(),
 )
-def test_confirm_and_auto_need_gtt(mode: str, status: str, capabilities: dict) -> None:
-    """HAT-EXEC-012 / HAT-DEC-I9: a bot never runs confirm or auto unless its account is active and
-    reports `gtt_delivery = true`, and such a request is refused; a mode outside the three runs
-    as shadow and is refused as unknown, whatever the account."""
-    effective = effective_mode(mode, account_status=status, capabilities=capabilities)
-    ready = status == "active" and capabilities["gtt_delivery"] is True
+@example(
+    mode="confirm", status="active", capabilities={"gtt_delivery": True}, ddpi=False, weights=True
+)
+@example(
+    mode="auto", status="active", capabilities={"gtt_delivery": True}, ddpi=True, weights=False
+)
+def test_confirm_and_auto_need_gtt(
+    mode: str, status: str, capabilities: dict, ddpi: bool, weights: bool
+) -> None:
+    """HAT-EXEC-012, HAT-GOV-085 / HAT-DEC-I9: a bot never runs confirm or auto unless its
+    account is active and reports `gtt_delivery = true`, the owner has confirmed DDPI on it and
+    the policy's base weights, and such a request is refused with the first gate that fails; a
+    mode outside the three runs as shadow and is refused as unknown, whatever the account."""
+    gates = Gates(status, capabilities, ddpi_confirmed=ddpi, weights_confirmed=weights)
+    effective = effective_mode(mode, gates)
+    gtt = status == "active" and capabilities["gtt_delivery"] is True
     known = mode in MODES
+    ready = gtt and ddpi and weights
     assert effective == (mode if known and (mode == "shadow" or ready) else "shadow")
     if not known:
         with pytest.raises(UnknownModeError):
-            request_mode(mode, account_status=status, capabilities=capabilities)
+            request_mode(mode, gates)
     elif mode != "shadow" and not ready:
-        with pytest.raises(ModeRefusedError):
-            request_mode(mode, account_status=status, capabilities=capabilities)
+        with pytest.raises(ModeRefusedError) as refused:
+            request_mode(mode, gates)
+        first = (
+            "no_gtt_delivery"
+            if not gtt
+            else "ddpi_not_confirmed"
+            if not ddpi
+            else "weights_not_confirmed"
+        )
+        assert refused.value.code == first
     else:
-        assert request_mode(mode, account_status=status, capabilities=capabilities) == mode
+        assert request_mode(mode, gates) == mode
 
 
 @given(status=st.sampled_from(["active", "pending", "failed", "suspended"]))
 def test_the_fyers_adapter_unlocks_modes_on_an_active_account(status: str) -> None:
     """HAT-BRK-091 with HAT-EXEC-012: the adapter reports GTT for delivery (verified live), so
-    with its capabilities every mode runs as asked on an active account, and only shadow on any
-    other; without GTT for delivery only shadow runs anywhere."""
+    with its capabilities and the owner's two confirmations every mode runs as asked on an
+    active account, and only shadow on any other; without GTT for delivery only shadow runs
+    anywhere."""
     capabilities = FyersHatBroker(FakeBroker()).capabilities().to_json()
     assert capabilities["gtt_delivery"] is True
     for mode in MODES:
         expected = mode if status == "active" else "shadow"
-        assert effective_mode(mode, account_status=status, capabilities=capabilities) == expected
-        off = {**capabilities, "gtt_delivery": False}
-        assert effective_mode(mode, account_status=status, capabilities=off) == "shadow"
+        gates = Gates(status, capabilities, ddpi_confirmed=True, weights_confirmed=True)
+        assert effective_mode(mode, gates) == expected
+        off = Gates(
+            status,
+            {**capabilities, "gtt_delivery": False},
+            ddpi_confirmed=True,
+            weights_confirmed=True,
+        )
+        assert effective_mode(mode, off) == "shadow"
 
 
 reads = st.sampled_from(["funds", "positions", "holdings"])

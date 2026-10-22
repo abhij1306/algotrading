@@ -301,6 +301,9 @@ create table hat_risk_policy_version (
 | openalgo_ref | text null | unused in MVP; kept for a later adapter (PLAN C5) |
 | capabilities | jsonb | GTT for delivery, order-tag field and length, order types, static-IP requirement; derived from the adapter, rewritten at every live session check |
 | status | text | |
+| ddpi_confirmed | boolean | default false; the owner's word that DDPI (or a POA) is registered on the demat, set only by the admin command line (10 §9, HAT-GOV-085) |
+| ddpi_confirmed_at | timestamptz null | when the owner set it; a bot reads it as set only from the first session open after this |
+| ddpi_note | text null | the owner's dated note |
 
 **`hat_bot`** (the sleeve; no risk columns):
 
@@ -311,7 +314,7 @@ create table hat_risk_policy_version (
 | strategy_id | uuid FK hat_strategy | |
 | live_version_id | uuid FK hat_strategy_version null | |
 | broker_account_id | uuid FK hat_broker_account | |
-| execution_mode | text | shadow, confirm, auto; default shadow |
+| execution_mode | text | shadow, confirm, auto; default confirm (HAT-DEC-B2): the mode asked for, which runs shadow until the sleeve is Live and the gates pass (07 §1) |
 | status | text | active, paused, manage_only |
 | universe_version_id | uuid FK hat_universe_version null | portfolio layer |
 | lifecycle_state | text | research, backtested, shadow, live, probation, retired |
@@ -328,6 +331,8 @@ create table hat_risk_policy_version (
 | requested_at | timestamptz | |
 | effective_from | timestamptz | next session open |
 | via | text | telegram, dashboard |
+| applied_at | timestamptz null | set by the open that wrote it to `hat_bot.execution_mode` (`mode.applied`) |
+| refused_reason | text null | the gate that failed at its open (`no_gtt_delivery`, `ddpi_not_confirmed`, `weights_not_confirmed`; `mode.apply_refused`); a refused change never takes effect |
 
 **`hat_kill_switch`**: latest row per scope is current.
 
@@ -770,10 +775,10 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
 | Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed`, `gtt.triggered` |
 | Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled`, `corporate_action.unhandled` |
-| Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
+| Control | `mode.change_requested`, `mode.applied`, `mode.apply_refused`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
 | Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
-| Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `feed.stale` |
+| Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `broker.ddpi_confirmed`, `feed.stale` |
 
 Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload (an owner step of the local admin command line, 10 §9, carries the allowlisted chat's ID and `via = cli`), so discipline metrics (skips, flattens, pauses) come straight from this table. `events.record()` takes `actor` as the type `Actor` (the four values of the check) and refuses a user event whose payload has no integer `chat_id`.
 
@@ -807,7 +812,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 42 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092, and `corporate_action.unhandled` from PR 31, a position spanning an action the rescale cannot handle, HAT-EXEC-144). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 45 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092, and `corporate_action.unhandled` from PR 31, a position spanning an action the rescale cannot handle, HAT-EXEC-144, and `mode.applied`, `mode.apply_refused` and `broker.ddpi_confirmed` from PR 45, what a session open did with a queued mode change and the owner's DDPI confirmation, HAT-GOV-085). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

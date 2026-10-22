@@ -346,16 +346,18 @@ def create_bot(
     execution_mode: str | None = None,
     risk_cluster: str = DEFAULT_RISK_CLUSTER,
 ) -> HatBot:
-    """A new sleeve for a strategy. It always starts in `shadow` (HAT-BOT-061); a mode change
-    goes through the mode-change service, never through creation."""
-    if execution_mode not in (None, "shadow"):
-        raise VersionError("new_bot_starts_in_shadow")
+    """A new sleeve for a strategy. It always asks for `confirm` (HAT-BOT-061, HAT-DEC-B2) and
+    runs shadow until its sleeve is Live and the account and policy gates pass
+    (`execution.modes`); a mode change goes through the mode-change service, never through
+    creation."""
+    if execution_mode not in (None, "confirm"):
+        raise VersionError("new_bot_starts_in_confirm")
     bot = HatBot(
         id=uuid.uuid4(),
         user_id=user_id,
         strategy_id=strategy_id,
         broker_account_id=broker_account_id,
-        execution_mode="shadow",
+        execution_mode="confirm",
         status="active",
         lifecycle_state="research",
         risk_cluster=risk_cluster,

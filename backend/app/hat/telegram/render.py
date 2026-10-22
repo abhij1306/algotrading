@@ -35,6 +35,7 @@ __all__ = [
     "confirm_text",
     "daily_report_text",
     "login_text",
+    "mode_text",
     "money",
     "position_event_text",
     "positions_text",
@@ -307,6 +308,33 @@ class StatusView:
     feed: str
     kill_account: bool
     bots: tuple[tuple[str, str, str, str], ...] = field(default=())  # name, mode, state, regime
+
+
+# Why a bot runs a mode other than the one asked for (`execution.modes.ModeView.why`).
+MODE_REASONS: Mapping[str, str] = {
+    "no_gtt_delivery": "account has no GTT for delivery",
+    "ddpi_not_confirmed": "DDPI not confirmed",
+    "weights_not_confirmed": "base weights not confirmed",
+    "unknown_mode": "unknown mode",
+}
+
+
+def mode_text(
+    asked: str, effective: str, why: str | None, pending: str | None, pending_from: datetime | None
+) -> str:
+    """`confirm`, or `shadow (asked confirm: DDPI not confirmed)`, then the queued change:
+    `; auto from 2026-10-23 09:15 IST`."""
+    text = effective
+    if effective != asked:
+        if why is not None and why.startswith("sleeve_"):
+            reason = f"sleeve {why.removeprefix('sleeve_')}"
+        else:
+            reason = MODE_REASONS.get(why or "", "?")
+        text = f"{effective} (asked {asked}: {reason})"
+    if pending is not None and pending_from is not None:
+        when = pending_from.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
+        text += f"; {pending} from {when}"
+    return text
 
 
 def status_text(view: StatusView) -> str:

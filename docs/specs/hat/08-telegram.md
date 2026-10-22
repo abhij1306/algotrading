@@ -165,18 +165,19 @@ From PLAN §4.4 and DS "Telegram / Commands", with PLAN C10 applied (`signal` is
 
 | Command | Effect | Constraint |
 | --- | --- | --- |
-| `/status` | Broker sessions, feed health, regime per bot, kill-switch state | Read-only |
+| `/status` | Broker sessions, feed health, regime per bot, kill-switch state; per bot the mode it runs, the mode asked for and why they differ, and any queued change | Read-only |
 | `/positions` | Open positions with stop, R, days held | Read-only |
 | `/watchlist [bot]` | Today's watchlist | Read-only |
 | `/pause [bot]`, `/resume [bot]` | Manage-only on/off for a bot | Any time |
-| `/mode [bot] shadow\|confirm\|auto` | Change execution mode, effective next session | Outside market hours only; `auto` needs a second confirm |
+| `/mode bot shadow\|confirm\|auto` | Change one bot's execution mode, effective next session | Outside market hours only; confirm and auto need the gates (HAT-GOV-085); `auto` needs a second confirm |
 | `/kill` | All bots manage-only; pending approvals cancelled | Any time |
 | `/flatten` | Closes everything; logged as a discipline breach | Second confirm |
 | `/arm` | Re-arm after a kill switch | Second confirm |
 | `/login [broker]` | Fresh login link | Any time |
 
-Implementation (PR 16): a command with no bot (`/pause`, `/resume`, `/mode`) applies to every bot,
-all or none. `/arm` re-arms every tripped kill switch. The second confirmation is a Confirm button
+Implementation (PR 16): a command with no bot (`/pause`, `/resume`) applies to every bot,
+all or none. `/mode` names its bot (PR 45, D130): a mode is switched one bot at a time, and a
+refusal says which gate holds it back (HAT-TG-038). `/arm` re-arms every tripped kill switch. The second confirmation is a Confirm button
 whose callback is a random 128-bit nonce held in memory for 5 minutes (the same window as
 approvals); it is consumed by its first press, and a restart drops it, so the command has to be
 sent again. `/flatten` sells every open real position (a virtual trade has nothing at the broker).
@@ -246,6 +247,14 @@ named belongs to `HAT_USER_ID` (HAT-OVR-061).
 - **Acceptance:**
   - Property: while a bot is paused, it places no entry order and every exit and stop rule still runs. Harm: pause either fails to stop entries or strands positions.
   - Property: `/resume` does not lift a kill switch: a bot under a tripped account or bot kill switch stays manage-only after `/resume`. Harm: resume becomes a bypass of the kill switch.
+
+#### HAT-TG-038: /mode names one bot and says why it is refused
+- **Statement:** `/mode` takes a bot and a mode; without the bot it is refused (`bad_arguments`). A confirm or auto request that a gate would hold back at the next open is refused with the gate's code and a sentence naming it (`mode_needs_gtt`, `ddpi_not_confirmed`, `weights_not_confirmed`) and writes nothing. `/status` shows each bot's mode run, the mode asked for, the reason they differ and any queued change.
+- **Source:** D130; plan audit 2026-10-22 PR 45; HAT-GOV-085.
+- **PR:** 45
+- **Verification:** PBT `telegram.mode_names_a_bot_and_its_gate`
+- **Acceptance:**
+  - Property: for every mode word and every state of the DDPI flag and the policy's `weights_confirmed`, `/mode <mode>` without a bot is refused with nothing written, `/mode <bot> <mode>` is refused with the first failing gate's code and nothing written, or accepted and queued; `/status` then shows the queued change and the mode the bot runs. Harm: the owner switches every bot at once by mistake, or cannot tell why a bot stays in shadow.
 
 #### HAT-TG-037: /status, /positions, /watchlist and /login are read-only
 - **Statement:** `/status`, `/positions`, `/watchlist` and `/login` change no trading state (`/login` only issues a fresh broker login link).

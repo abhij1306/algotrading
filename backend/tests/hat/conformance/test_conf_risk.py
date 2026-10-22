@@ -18,6 +18,7 @@ from hat_conf_spec import REPO_ROOT, SPEC_DIR
 from sqlalchemy.orm import Session
 
 from app.hat.risk.policy import (
+    OPTIONAL_FIELDS,
     POLICY_FIELDS,
     PolicyError,
     parse_policy,
@@ -55,7 +56,8 @@ def _number(cell: str) -> Decimal:
 
 def test_risk__policy_schema_fields() -> None:
     """HAT-RISK-010: the policy document's fields are exactly the §1 table's, and a document with
-    an extra or a missing field is refused."""
+    an extra or a missing field is refused, except an optional one (`weights_confirmed`), which
+    reads as its fail-closed default."""
     spec_top = {path.split(".")[0] for path in _spec_paths()}
     assert spec_top == set(POLICY_FIELDS)
     doc = seed_policy().to_json()
@@ -73,8 +75,12 @@ def test_risk__policy_schema_fields() -> None:
         parse_policy(extra)
     for name in POLICY_FIELDS:
         without = {k: v for k, v in doc.items() if k != name}
+        if name in OPTIONAL_FIELDS:
+            assert parse_policy(without).to_json()[name] == OPTIONAL_FIELDS[name]
+            continue
         with pytest.raises(PolicyError):
             parse_policy(without)
+    assert OPTIONAL_FIELDS == {"weights_confirmed": False}
 
 
 def test_risk__no_risk_keys_in_strategy_schema() -> None:
@@ -112,6 +118,8 @@ def test_risk__initial_seed_equals_spec() -> None:
         assert doc[name] == int(_number(row(name))), name
     assert Decimal(doc["kill"]["account_drawdown_pct"]) == _number(row("kill.account_drawdown_pct"))
     assert Decimal(doc["kill"]["bot_drawdown_pct"]) == _number(row("kill.bot_drawdown_pct"))
+    assert doc["weights_confirmed"] is False
+    assert row("weights_confirmed").split("|")[0].strip().startswith("false")
     weights = re.findall(r"[0-9.]+", row("base_weight.S1"))[:2]
     assert [Decimal(doc["base_weight"][k]) for k in ("S1", "S2")] == [Decimal(w) for w in weights]
     low, high = re.findall(r"[0-9.]+", row("multiplier_bounds"))[:2]
