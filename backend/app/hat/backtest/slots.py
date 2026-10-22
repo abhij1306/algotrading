@@ -5,7 +5,7 @@ slots) the first breaks get the slots. Daily bars cannot show that order, so the
 estimates it (`time`, the default): a gap over (an entry at the open) triggers at the open,
 before any break during the day, and the others break in ascending order of the distance from the
 open to the level, (level - open) / open. Ties keep the watchlist's score order. `score` (the
-PR 12 rule, the highest score first) and `random:K` (a permutation of the score order seeded by
+PR 12 rule, the highest score first) and `random:K` (a permutation of the score order fixed by
 K and the day) are variants for sensitivity runs. The rule is recorded in the run's metrics and
 `config_digest`.
 
@@ -15,7 +15,7 @@ is taken is the loop's and `evaluate_signal`'s decision.
 
 from __future__ import annotations
 
-import random
+import hashlib
 import re
 from collections.abc import Callable, Sequence
 from datetime import date
@@ -35,8 +35,9 @@ __all__ = [
 
 SLOT_ORDER_TIME = "time"  # the default: the estimated trigger time
 SLOT_ORDER_SCORE = "score"  # the PR 12 rule: the watchlist score, highest first
-SLOT_ORDER_RANDOM = "random"  # `random:K`: the score order shuffled by the seed K and the day
-_RANDOM = re.compile(r"random:(0|[1-9][0-9]{0,8})")  # one spelling per seed, so digests agree
+SLOT_ORDER_RANDOM = "random"  # `random:K`: the score order permuted by the seed K and the day
+# one spelling per seed, so digests agree; ASCII digits only
+_RANDOM = re.compile(r"random:(0|[1-9]\d{0,8})", re.ASCII)
 
 _GAP = 0  # an open above the level: triggers at the open
 _BREAK = 1  # a break during the day
@@ -73,9 +74,9 @@ def order_slots(
 ) -> list[T]:
     """`candidates` (in the watchlist's score order) in the order they take the slots under
     `rule` on `day`: `time` sorts them stably by `rank` (ties keep the score order), `score`
-    keeps them, and `random:K` shuffles them with a generator seeded by K and the day, so a run
-    is reproducible and one day's order does not depend on the days before it. An unknown rule
-    raises ValueError."""
+    keeps them, and `random:K` orders them by the SHA-256 of K, the day and each one's place in
+    the score order, so a run is reproducible and one day's order does not depend on the days
+    before it. An unknown rule raises ValueError."""
     if rule == SLOT_ORDER_TIME:
         return sorted(candidates, key=rank)
     if rule == SLOT_ORDER_SCORE:
@@ -83,6 +84,9 @@ def order_slots(
     found = _RANDOM.fullmatch(rule)
     if found is None:
         raise ValueError(f"unknown slot order {rule!r}")
-    shuffled = list(candidates)
-    random.Random(f"{found.group(1)}:{day.isoformat()}").shuffle(shuffled)  # noqa: S311 - not security
-    return shuffled
+    seed = f"{found.group(1)}:{day.isoformat()}"
+
+    def draw(place: int) -> bytes:
+        return hashlib.sha256(f"{seed}:{place}".encode()).digest()
+
+    return [candidates[n] for n in sorted(range(len(candidates)), key=draw)]
