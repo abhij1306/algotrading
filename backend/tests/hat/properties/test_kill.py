@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from hat_risk_support import AT, D, seed_bot, seed_pending_approval
 from hat_support import memory_engine
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -460,3 +460,60 @@ def test_reallocation_does_not_hide_a_loss(
         assert (str(bot) in tripped) is breach
         assert snap.equity_peak >= new_capital
         assert snap.equity_peak <= new_capital + D("0.0001")  # restated, not the old 100%
+
+
+NIGHT = st.tuples(st.sampled_from(("before", "late", "none")), CAPITAL)
+
+
+@given(st.lists(NIGHT, min_size=1, max_size=10))
+@example([("before", D(1000)), ("late", D(700)), ("none", D(1)), ("before", D(700))])
+@example([("before", D(1000)), ("none", D(1)), ("before", D(700))])
+def test_snapshot_latest_allocation(nights: list[tuple[str, Decimal]]) -> None:
+    """HAT-RISK-066 (PR 33): `snapshot.bots` runs at 23:30 on its own, not after `allocate`. For
+    every run of nights where `allocate` commits before the snapshot, after it (a late night) or
+    not at all (a failed gate), each snapshot exists iff the bot has an allocation on or before
+    its day, its equity (no trade results) is the capital of the latest allocation committed
+    by then, and no kill trips and no peak exceeds its equity: a capital cut on a night after a
+    late or missing allocation is restated, not read as a loss."""
+    from datetime import date
+
+    from app.hat.models import HatAllocationDaily
+
+    first = date(2026, 3, 2)
+    engine = memory_engine()
+    with Session(engine) as session:
+        bot = seed_bot(session)
+
+        def allocate(day: date, capital: Decimal) -> None:
+            session.add(
+                HatAllocationDaily(
+                    trade_date=day,
+                    bot_id=bot,
+                    base_weight=D("0.5"),
+                    regime_mult=D(1),
+                    health_mult=D(1),
+                    final_weight=D("0.5"),
+                    capital=capital,
+                    risk_pct=D("0.0025"),
+                    currency="INR",
+                )
+            )
+            session.flush()
+
+        latest: Decimal | None = None
+        for offset, (when, capital) in enumerate(nights):
+            day = first + timedelta(days=offset)
+            if when == "before":
+                allocate(day, capital)
+                latest = capital
+            snapshot_bots(session, day)
+            snap = session.get(HatDailyBotSnapshot, (bot, day))
+            assert (snap is not None) == (latest is not None)
+            if snap is not None:
+                assert snap.equity == latest
+                assert snap.equity_peak <= snap.equity + D("0.0001")
+            if when == "late":
+                allocate(day, capital)
+                latest = capital
+        session.commit()
+        assert evaluate_drawdown_kills(session, seed_policy(), AT + timedelta(days=400)) == []

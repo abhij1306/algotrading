@@ -35,6 +35,7 @@ from ..data.corporate_actions import stored_factors
 from ..data.features import features_job
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY, excluded_for, gate_body
+from ..data.quarantine import open_quarantines
 from ..data.reference_jobs import (
     CircuitSource,
     TextSource,
@@ -98,10 +99,12 @@ EVENTS_PARTITIONS = "events.partitions"
 RETENTION_PURGE = "retention.purge"
 
 # The pipeline of HAT-OPS-021, in order: each job starts once the one before it succeeded.
+# `ca.adjust` is not in it (PR 33): it runs after the ingest whatever the gate decides, so the
+# next session's corporate actions of held instruments are always looked up, and `features`
+# waits for both it and the gate.
 NIGHTLY_CHAIN = (
     INGEST_NIGHTLY,
     JOB_QUALITY,
-    CA_ADJUST,
     FEATURES,
     REGIME_JOB,
     ALLOCATE_JOB,
@@ -112,6 +115,10 @@ NIGHTLY_CHAIN = (
 logger = logging.getLogger(__name__)
 
 INGEST_AT = time(18, 0)  # the first probe (HAT-OPS-022); the body waits until 22:00 at most
+# `snapshot.bots` waits on no job (PR 33): the drawdown kills are measured every trading night,
+# on the latest allocation on or before the day, after the chain has normally finished. It
+# carries past midnight as a chained job does (`carry`), so a restart before 08:30 still runs it.
+SNAPSHOT_AT = time(23, 30)
 CALENDAR_AT = time(7, 0)  # daily: a changed holiday list is picked up the same morning
 BANDS_AT = time(7, 45)  # before the pre-open: the bands in force today
 RESCALE_AT = time(8, 40)  # before `live.prepare` and the 09:00 pre-open (HAT-EXEC-141)
@@ -230,8 +237,12 @@ class Nightly:
         """Corporate actions adjust prices at read time (`bars_daily` over the stored factors).
         First the next session's actions of the held and watchlisted instruments are looked up
         and stored (HAT-EXEC-140), so the features, the scan and the morning's `ca.rescale` see
-        them; a failed lookup is alerted and never fails the step. Then the factors are checked
-        to load into the adjusted view before the features read it."""
+        them; a failed lookup is alerted and never fails the step. Then the actions of every
+        quarantined instrument on its `since` date are asked again (HAT-DATA-062, PR 33): a
+        split whose lookup failed on the day releases its quarantine at the next gate once
+        stored. A failure there is only logged: the quarantine was alerted already and stands.
+        Then the factors are checked to load into the adjusted view before the features read
+        it."""
         try:
             self._next_session_actions(day)
         except Exception:
@@ -239,6 +250,10 @@ class Nightly:
             # the alert says the next session's actions are unknown.
             logger.exception("next-session corporate-action lookup failed")
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
+        try:
+            self._quarantine_actions()
+        except Exception:
+            logger.exception("quarantine corporate-action lookup failed")
         with self.deps.session_factory() as session:
             factors = stored_factors(session)
         with self.deps.store.connect(factors):
@@ -257,6 +272,24 @@ class Nightly:
         logger.info("next-session actions: %d stored, %d lookups failed", created, len(failed))
         for symbol in failed:
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
+
+    def _quarantine_actions(self) -> None:
+        with self.deps.session_factory() as session:
+            rows = open_quarantines(session)
+        if not rows:
+            return
+        client = _mcp(self.deps)
+        for since in sorted({r.since for r in rows}):
+            instruments = {r.symbol: r.instrument_id for r in rows if r.since == since}
+            created, failed = nightly_ingest.lookup_actions(
+                client, self.deps.session_factory, instruments, since, since
+            )
+            logger.info(
+                "quarantine actions of %s: %d stored, %d lookups failed",
+                since,
+                created,
+                len(failed),
+            )
 
     def rescale(self, day: date) -> JobResult:
         """`ca.rescale` (before the open): every open position spanning a stored split or bonus
@@ -395,7 +428,6 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
     n = Nightly(deps)
     chain = (
         (JOB_QUALITY, n.quality_gate),
-        (CA_ADJUST, n.ca_adjust),
         (FEATURES, n.features),
         (REGIME_JOB, n.regime),
         (ALLOCATE_JOB, n.allocate),
@@ -403,7 +435,12 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
         (WATCHLIST_DIGEST, n.watchlist_digest),
     )
     pipeline = tuple(
-        ScheduledJob(name, INGEST_AT, body, after=(NIGHTLY_CHAIN[i],))
+        ScheduledJob(
+            name,
+            INGEST_AT,
+            body,
+            after=(NIGHTLY_CHAIN[i], CA_ADJUST) if name == FEATURES else (NIGHTLY_CHAIN[i],),
+        )
         for i, (name, body) in enumerate(chain)
     )
     return (
@@ -414,8 +451,9 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
             retry_after=INGEST_RETRY,
             on_finish=n.ingest_finished,
         ),
+        ScheduledJob(CA_ADJUST, INGEST_AT, n.ca_adjust, after=(INGEST_NIGHTLY,)),
         *pipeline,
-        ScheduledJob(SNAPSHOT_BOTS, INGEST_AT, n.snapshot, after=(ALLOCATE_JOB,)),
+        ScheduledJob(SNAPSHOT_BOTS, SNAPSHOT_AT, n.snapshot, carry=True),
         ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
         ScheduledJob(CALENDAR_REFRESH, CALENDAR_AT, n.calendar, days=Days.EVERY),
         ScheduledJob(

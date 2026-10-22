@@ -9,6 +9,14 @@ the same transaction, either `quality.failed` and the data-health kill (bots tak
 and stops go on) or, on a pass, the clearing of that kill (HAT-RISK-063). A failed gate fails
 its job, so the steps that follow it do not run (HAT-OPS-021), and raises one alert through the
 `Notifier` protocol.
+
+The quarantine (PR 33, design review item 12): an unexplained mover does not fail the day. It is
+quarantined (`hat_quality_quarantine`, since the trade date), listed in the `big_moves` row's
+`excluded` with the standing quarantines, and alerted once (`quality.quarantined`). It stays out
+of every scan until a corporate action with ex-date `since` is stored for it or the owner clears
+it (`python -m app.hat.data.quarantine`). The check fails only when the day's unexplained movers
+are more than `QUARANTINE_CAP_PERCENT` of the active universe, which is a data error rather than
+odd stocks; then nothing new is quarantined.
 """
 
 from __future__ import annotations
@@ -16,7 +24,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -25,7 +33,14 @@ from sqlalchemy.orm import Session
 
 from ..clock import Clock
 from ..events import record
-from ..models import HatCorporateAction, HatEvent, HatJobRun, HatQualityCheck
+from ..models import (
+    HatCorporateAction,
+    HatEvent,
+    HatInstrument,
+    HatJobRun,
+    HatQualityCheck,
+    HatQualityQuarantine,
+)
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..risk.controls import sync_health
@@ -43,7 +58,12 @@ CHECK_NAMES = (CHECK_COVERAGE, CHECK_OHLC, CHECK_BIG_MOVES, CHECK_INDEX)
 STATUS_PASS = "PASS"  # noqa: S105
 STATUS_FAIL = "FAIL"
 
+QUARANTINE_CAP_PERCENT = 1  # the day fails above 1% of the universe unexplained (HAT-DATA-062)
+RELEASED_BY_ACTION = "corporate_action"
+RELEASED_BY_OWNER = "owner"
+
 CODE_FAILED = "quality_failed"
+CODE_QUARANTINED = "quality.quarantined"  # one alert per newly quarantined instrument
 CODE_NO_INGEST = "quality_no_ingest"
 CODE_NO_RUN = "quality_no_run"
 
@@ -91,17 +111,25 @@ def big_move_keys(rows: Iterable[tuple[object, Decimal | None, Decimal | None]])
 
 
 def big_moves_check(
-    moved: Collection[object], explained: Collection[object], excluded: Collection[object]
+    moved: Collection[object],
+    explained: Collection[object],
+    excluded: Collection[object],
+    universe: int,
 ) -> Check:
-    """FAIL iff some instrument that moved over 20% has no corporate action on the trade date and
-    is not on the day's exclusion list (HAT-DATA-062)."""
+    """The `big_moves` check (HAT-DATA-062). A mover with no corporate action on the trade date
+    that is not already excluded is unexplained. The check FAILs iff the unexplained are more
+    than QUARANTINE_CAP_PERCENT of the universe; on a pass they join the day's exclusion list
+    (`excluded` in the detail: the given exclusions plus the unexplained), to be quarantined."""
     unexplained = sorted((k for k in moved if k not in explained and k not in excluded), key=str)
+    passed = len(unexplained) * 100 <= universe * QUARANTINE_CAP_PERCENT
+    out = {str(k) for k in excluded} | ({str(k) for k in unexplained} if passed else set())
     detail = {
         "moved": len(moved),
         "unexplained": [str(k) for k in unexplained],
-        "excluded": sorted(str(k) for k in excluded if k in moved),
+        "excluded": sorted(out),
+        "cap_percent": QUARANTINE_CAP_PERCENT,
     }
-    return Check(CHECK_BIG_MOVES, not unexplained, detail)
+    return Check(CHECK_BIG_MOVES, passed, detail)
 
 
 def index_snapshot_check(index_names: Iterable[str]) -> Check:
@@ -130,7 +158,7 @@ def evaluate(
         (
             coverage_check(universe, stored),
             ohlc_check(violations),
-            big_moves_check(moved, explained, excluded),
+            big_moves_check(moved, explained, excluded, universe),
             index_snapshot_check(index_names),
         )
     )
@@ -200,6 +228,47 @@ def ingest_summary(session: Session, trade_date: date) -> Mapping[str, Any] | No
     return event.payload if event is not None else None
 
 
+def standing_quarantine(session: Session, trade_date: date, now: datetime) -> set[str]:
+    """The instruments still quarantined for `trade_date`: every open quarantine since that day or
+    earlier, less those whose corporate action with ex-date `since` is now stored (released
+    here, in the caller's transaction)."""
+    explained = (
+        select(HatCorporateAction.id)
+        .where(
+            HatCorporateAction.instrument_id == HatQualityQuarantine.instrument_id,
+            HatCorporateAction.ex_date == HatQualityQuarantine.since,
+        )
+        .exists()
+    )
+    standing = set()
+    for row, action in session.execute(
+        select(HatQualityQuarantine, explained).where(
+            HatQualityQuarantine.released_at.is_(None), HatQualityQuarantine.since <= trade_date
+        )
+    ):
+        if action:
+            row.released_at = now
+            row.released_by = RELEASED_BY_ACTION
+        else:
+            standing.add(str(row.instrument_id))
+    session.flush()
+    return standing
+
+
+def quarantine(
+    session: Session, instruments: Iterable[str], trade_date: date, now: datetime
+) -> None:
+    """Quarantine each instrument from `trade_date` on (in the caller's transaction)."""
+    for instrument in instruments:
+        if session.get(HatQualityQuarantine, (uuid.UUID(instrument), trade_date)) is None:
+            session.add(
+                HatQualityQuarantine(
+                    instrument_id=uuid.UUID(instrument), since=trade_date, quarantined_at=now
+                )
+            )
+    session.flush()
+
+
 def gate_inputs(
     session: Session, store: DataStore, trade_date: date, summary: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -237,7 +306,11 @@ def gate_body(
     clock: Clock | None = None,
 ) -> Callable[[], JobResult]:
     """The `quality.gate` body for `run_job`. It fails (so the next step does not run) when any
-    check fails, after committing the check rows, the event and the health kill."""
+    check fails, after committing the check rows, the event and the health kill. `excluded`
+    names instruments to keep out of the day's scans besides the quarantine. On a passing gate
+    the unexplained movers of `big_moves` are quarantined in the same transaction and each is
+    alerted once, after the commit; a failing gate quarantines nothing (its retry, on data
+    fixed meanwhile, decides afresh), and a passing one is never run again for its day."""
     sink = notifier if notifier is not None else LogNotifier()
     skipped = {str(i) for i in excluded}
 
@@ -249,9 +322,16 @@ def gate_body(
             summary = ingest_summary(session, trade_date)
             if summary is None or not store.partition_files(DATASET_BARS, trade_date):
                 raise JobError(CODE_NO_INGEST)
-            result = evaluate(excluded=skipped, **gate_inputs(session, store, trade_date, summary))
+            result, new = _judge(session, store, trade_date, summary, skipped, clock)
+            symbols = _symbols(session, new)
             news = persist(session, run_id, result, trade_date, clock)
             session.commit()
+        for instrument in new:  # only a passing gate quarantines, and it does not run again
+            sink.alert(
+                CODE_QUARANTINED,
+                trade_date,
+                {"symbol": symbols.get(instrument, "?"), "instrument": instrument},
+            )
         if not result.passed:
             if news:  # a retry failing the same checks again is not alerted again
                 sink.alert(CODE_FAILED, trade_date, {"failed": ",".join(result.failed_names)})
@@ -259,6 +339,40 @@ def gate_body(
         return JobResult(rows=len(result.checks))
 
     return body
+
+
+def _judge(
+    session: Session,
+    store: DataStore,
+    trade_date: date,
+    summary: Mapping[str, Any],
+    skipped: set[str],
+    clock: Clock | None,
+) -> tuple[GateResult, list[str]]:
+    """Evaluate the day with the standing quarantines excluded and, on a pass, quarantine the
+    unexplained movers (in the caller's transaction). The result and the new quarantines."""
+    now = utc_now(clock) if clock is not None else utc_now()
+    standing = standing_quarantine(session, trade_date, now)
+    result = evaluate(
+        excluded=skipped | standing, **gate_inputs(session, store, trade_date, summary)
+    )
+    if not result.passed:
+        return result, []
+    moves = next(c for c in result.checks if c.name == CHECK_BIG_MOVES)
+    new = list(moves.detail["unexplained"])
+    quarantine(session, new, trade_date, now)
+    return result, new
+
+
+def _symbols(session: Session, instruments: Collection[str]) -> dict[str, str]:
+    if not instruments:
+        return {}
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.symbol).where(
+            HatInstrument.id.in_([uuid.UUID(i) for i in instruments])
+        )
+    )
+    return {str(i): symbol for i, symbol in rows}
 
 
 def excluded_for(session: Session, trade_date: date) -> set[str]:

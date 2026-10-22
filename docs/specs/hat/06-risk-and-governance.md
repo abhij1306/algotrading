@@ -279,13 +279,14 @@ Manage-only = no new entries; stops and exits keep running. Drawdown source: `ha
   - Property: in every reachable state, an enabled exit or stop action for an open position stays enabled regardless of kill or pause state (liveness: an exit that fires is eventually sent). Harm: the kill switch strands positions without stops.
 
 #### HAT-RISK-066: A planned reallocation is not a drawdown
-- **Statement:** Drawdown kills measure losses from trading, not a change of the capital the allocator gave a sleeve: snapshot equity is allocation capital plus realised P&L (§2), so when the allocation changes, the previous peak is restated by the same ratio as the equity (the drawdown share stays what it was), and a snapshot with zero allocated capital is not measured.
-- **Source:** 05 §5 (HAT-PORT-050, multipliers scale capital); §2 above (equity = allocation + realised P&L); CodeAnt review of PR 9 (Major).
-- **PR:** 9
-- **Verification:** PBT `kill.reallocation_is_not_drawdown`
+- **Statement:** Drawdown kills measure losses from trading, not a change of the capital the allocator gave a sleeve: snapshot equity is allocation capital plus realised P&L (§2), so when the allocation changes, the previous peak is restated by the same ratio as the equity (the drawdown share stays what it was), and a snapshot with zero allocated capital is not measured. The allocation capital of a snapshot for day d is the bot's latest allocation on or before d (PR 33: `snapshot.bots` no longer waits for `allocate`, so a night with no allocation of its own is still measured on the capital in force); a snapshot's capital, for restating the peak and the account series, is the one it used (its equity less the realised P&L of the trades closed by it), not an allocation row written later.
+- **Source:** 05 §5 (HAT-PORT-050, multipliers scale capital); §2 above (equity = allocation + realised P&L); CodeAnt review of PR 9 (Major); design review 2026-10-22 item 12.
+- **PR:** 9, 33
+- **Verification:** PBT `kill.reallocation_is_not_drawdown`, PBT `kill.snapshot_latest_allocation`
 - **Acceptance:**
   - Property: for every sequence of allocation capitals (cuts, rises and nights at zero) with no realised loss, no bot or account kill trips from the snapshots, and no stored peak is above the equity it was restated for. Harm: a regime or health cut of 11% trips the 10% bot kill, which needs a manual re-arm, and benches a sound sleeve.
   - Property: for a cut of capital together with a realised loss, the bot kill trips exactly when the loss is at least the policy's drawdown share of the capital it was measured against. Harm: restating the peak hides a real loss.
+  - Property: for every run of nights where `allocate` commits before the snapshot, after it or not at all, with no realised loss, each snapshot for d exists if and only if the bot has an allocation committed by then on or before d, its equity is the latest such capital, no peak is above its equity and no kill trips. Harm: a failed gate (no allocation that night) leaves a drawdown kill unmeasured, or a capital cut after a late or missing allocation reads as a loss and benches a sound sleeve.
 
 ## §7 Invariants (not configurable)
 

@@ -298,7 +298,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `21d2a480a7d50fc9452e14620cdce0892a5b986f1b339c21bc72f14346807028`
+Covered digest: `0dadff1782585d88bf0c81f75fc6439d8401e2b45dc775843e34b8706a51e5a6`
 
 ## Scope changes
 
@@ -346,6 +346,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 41 only reworded the comment on `brk.import_boundary`'s data-socket exception (`test_conf_broker.py`): the module also hands the minute-history download the session's REST `history` (HAT-DATA-119). The graph check itself is unchanged.
 - PR 38 (design review 2026-10-22 item 17, HAT-DEC-BD5): the two login POSTs depend on `app/hat/api/guard.py`'s `frontend_write`. `FyersAuthService.exchange` takes an optional `accept_user` that sees the profile's user id before the save and raises `WrongAccountError` (a minimal change to `execution/fyers_auth.py`, which revfix's PR 30 may also touch). `POST /token` passes the active Fyers `account_ref`s through it and now opens a request session (`get_db`), so a login fails closed (503) while the database is down. The route properties' `client_for` sends the write header, wires a test origin rule and serves the broker accounts from SQLite. `fyers_auth_routes.cross_site_write_refused` needed `@example`s: 100 random draws missed the cross-site-without-Origin shape (about 1 in 87) when `Sec-Fetch-Site` was ignored (recorded below).
 - PR 38 review round: `_account_check` reads the accounts inside `accept_user`, once Fyers has answered (no connection held while Fyers answers, and an account onboarded meanwhile counts); an unknown user gets `ACCOUNT_UNCONFIRMED`; unreadable accounts answer 503 `DB_ERROR`. Not covered: the read-after-answer ordering itself (no property orders the read against the exchange). Left as follow-ups: `FyersHatBroker.complete_login` (`fyers_adapter.py`, no production caller) still calls `exchange` without `accept_user`; `ACCOUNT_ACTIVE` and `FYERS` are local strings in `api/fyers_auth.py`, because importing them from `execution.submit` or `execution.accounts` pulls the mode code into the API (CONF `auto_mode_single_user`), as `dashboard.py` and `daily/accounts.py` already do.
+- PR 33 edited `test_ops.py` (covered here): `ops.chain_carries_past_midnight` also draws an unchained job marked `carry` (`snapshot.bots`); its checks are `verify-scheduler`'s, and the property runs in this skill's command too. Nothing was narrowed.
 
 ## Scratch breaks
 

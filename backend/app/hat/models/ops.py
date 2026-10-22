@@ -1,6 +1,6 @@
 """Ops tables (03-schema §7): job runs and quality-gate results (PR 2); broker sessions,
 Telegram messages, the command log and daily bot snapshots (PR 3); the Telegram cursors
-(PR 16)."""
+(PR 16); the quality quarantine (PR 33)."""
 
 from sqlalchemy import (
     BigInteger,
@@ -24,6 +24,7 @@ __all__ = [
     "HatDailyBotSnapshot",
     "HatJobRun",
     "HatQualityCheck",
+    "HatQualityQuarantine",
     "HatTelegramCursor",
     "HatTelegramMessage",
 ]
@@ -67,6 +68,25 @@ class HatQualityCheck(Base):
     check_name = Column(Text, primary_key=True)
     status = Column(Text, nullable=False)
     detail = Column(JsonB, nullable=False)
+
+
+class HatQualityQuarantine(Base):
+    """An unexplained big mover kept out of the scans from `since` until a corporate action with
+    that ex-date is stored or the owner clears it (02 §6, HAT-DATA-062)."""
+
+    __tablename__ = "hat_quality_quarantine"
+    __table_args__ = (
+        CheckConstraint(
+            in_values("released_by", ("corporate_action", "owner")),
+            name="ck_hat_quality_quarantine_released_by",
+        ),
+    )
+
+    instrument_id = fk("hat_instrument.id", primary_key=True)
+    since = Column(Date, primary_key=True)
+    quarantined_at = Column(Timestamptz, nullable=False, default=now_utc)
+    released_at = Column(Timestamptz)
+    released_by = Column(Text)
 
 
 class HatBrokerSession(Base):

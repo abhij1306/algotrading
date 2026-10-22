@@ -319,17 +319,26 @@ NIGHT_DAY = date(2026, 10, 20)  # a Tuesday; the 21st is a trading day too
 @given(
     head_done=st.integers(min_value=0, max_value=359),  # minutes after 18:00 on NIGHT_DAY
     later=st.integers(min_value=1, max_value=16 * 60),
+    kind=st.sampled_from(("chained", "carry", "plain")),
 )
-def test_chain_carries_past_midnight(head_done: int, later: int) -> None:
+def test_chain_carries_past_midnight(head_done: int, later: int, kind: str) -> None:
     """HAT-OPS-021 (audit L6): a chained job whose `after` job succeeded late on its date is
     still started under that trade date after IST midnight, until `CARRY_UNTIL`, and never under
-    the next date before its own chain ran. Harm: an ingest that succeeds at 23:58 leaves no
-    quality gate, allocation, scan or drawdown-kill evaluation for its day."""
+    the next date before its own chain ran. A job with no `after` marked `carry`
+    (`snapshot.bots`, PR 33) carries over the same way; an unmarked one does not. Harm: an
+    ingest that succeeds at 23:58, or a restart at 00:10, leaves no quality gate, allocation,
+    scan or drawdown-kill evaluation for its day."""
     clock = [_ist(NIGHT_DAY, time(18, 0)) + timedelta(minutes=head_done)]
     started: list[tuple[str, date]] = []
     jobs = [
         ScheduledJob("head", time(18, 0), lambda _d: None),
-        ScheduledJob("next", time(18, 0), lambda d: started.append(("next", d)), after=("head",)),
+        ScheduledJob(
+            "next",
+            time(18, 0),
+            lambda d: started.append(("next", d)),
+            after=("head",) if kind == "chained" else (),
+            carry=kind == "carry",
+        ),
     ]
     with tempfile.TemporaryDirectory() as tmp:
         engine = _job_engine(tmp)
@@ -356,7 +365,11 @@ def test_chain_carries_past_midnight(head_done: int, later: int) -> None:
         asyncio.run(run())
         engine.dispose()
     local = tick_at.astimezone(IST)
-    carried = local.date() == NIGHT_DAY + timedelta(days=1) and local.time() < CARRY_UNTIL
+    carried = (
+        kind != "plain"
+        and local.date() == NIGHT_DAY + timedelta(days=1)
+        and local.time() < CARRY_UNTIL
+    )
     expected = [("next", NIGHT_DAY)] if local.date() == NIGHT_DAY or carried else []
     assert started == expected
 

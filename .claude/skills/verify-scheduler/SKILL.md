@@ -18,7 +18,9 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA NightlyPipeline!NoDataNoScan` If neither source has the day by 22:00 the run fails with an alert and the data-health kill, and no scan runs. Harm: bots act on yesterday's data.
 - `TLA NightlyPipeline!NoScanAfterGateFail` A failed quality gate fails the job, trips the health kill and no scan runs after it. Harm: a bad day is scanned.
 - `TLA NightlyPipeline!ExitsIndependentOfPipeline` Exits and stops are sent whatever state the nightly pipeline is in. Harm: a data outage leaves positions without protection.
-- `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the one before succeeded. Harm: a scan reads a day not yet ingested or gated.
+- `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the steps it waits for succeeded (the adjustment after the ingest, features after the gate and the adjustment, PR 33). Harm: a scan reads a day not yet ingested or gated.
+- `TLA NightlyPipeline!AdjustIndependentOfGate` An ingested day's corporate-action adjustment eventually succeeds, whatever the gate decides (PR 33). Harm: a failed gate hides the next session's split of a held stock.
+- `TLA NightlyPipeline!SnapshotEveryNight` The bot snapshot (drawdown kills) runs every trading night, waiting on no step (PR 33); the model has no 23:30 (its clock ends at 22:00), so the time itself is `ops.job_registry`'s. Harm: a failed gate or allocation leaves a drawdown kill unmeasured.
 - `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
 - `TLA DailyCycle!IntradayOrder` The intraday jobs first start in the order of 10 §3 (login prompt 08:30, live preparation 08:45, pre-open gaps 09:00-09:08, gap scan 09:16, the regime-gate refresh 09:20, `exits.close` 15:20-15:25, `gtt.swap` 15:25, session end 15:30, reports 15:40); no `exits.close` run starts once `gtt.swap` has; every entry order is placed inside 09:20-15:20, after today's gate refresh and with a live broker session. Harm: entries fire on an unformed opening range, yesterday's gate or without a session, or a GTT is placed for a position that is still being exited.
 - `TLA DailyCycle!AllocateAfterRegime` `allocate` starts for a trade date only after `regime` succeeded for it, and an allocation never changes an open position's quantity or stop. Harm: weights use yesterday's regime, or a weight cut forces sales the strategy did not call for.
@@ -144,7 +146,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `7a16f06707351343cffee8a267da99d459e518172ca66968e8e34a47524f61b7`
+Covered digest: `47846843c31f778da09eeb40c9f2a934847cb21ba657fe1704c99187b93dc05a`
 
 ## Scope changes
 
@@ -174,6 +176,9 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 32 updated `test_conf_verification.py`: `MERGED_PRS` now includes 32; `KNOWN_GAPS` unchanged.
 - PR 38 added `CONF hat_writes_guarded`, `CONF api_loopback_no_auth_wiring` and `CONF frontend_sends_write_header` to `test_conf_api.py` (HAT-DEC-BD5); `hat_routes_read_only` is unchanged, and its `WRITE_ROUTES` comment names the guard.
 - PR 38 updated `test_conf_verification.py`: `MERGED_PRS` now includes 38; `KNOWN_GAPS` unchanged.
+- PR 33 changed `NightlyPipeline`: step 2 (`ca.adjust`) waits only for the ingested day and step 3 (`features`) for the gate and the adjustment (`Ready(k)`); `LaterStep(k)` became `\E r : Step(k, r)` so that the adjustment's success alone can carry weak fairness (its lookups are retried until they succeed); a `Snapshot` action and variable `snapDone` model `snapshot.bots`, which waits on no step, also under weak fairness. `NightlyPipelineOrder` was restated for the new waits, not weakened: steps 4 to 7 still need the one before, and features both. The fairness on the adjustment and the snapshot is an assumption that each eventually runs to success, not a check that it does. The traces above that showed `<LaterStep ...>` now show `<Step ...>`. The DB acceptance run `daily_cycle` still runs `NIGHTLY_CHAIN`, which no longer lists `ca.adjust` (it runs on its own `after`). `job_registry` reads the new rows of the 10 §3 table.
+- PR 33 (review) added `ScheduledJob.carry`: a job with no `after` and no window marked `carry` (`snapshot.bots`) carries past midnight as a chained one does. `ops.chain_carries_past_midnight` draws the kind (chained, carry, plain) and checks that a plain unchained job does not carry. This makes the `WF_vars(Snapshot)` of `NightlyPipeline` hold for a restart before 08:30; a process down until after 08:30 still misses the night.
+- PR 33 updated `test_conf_verification.py`: `MERGED_PRS` now includes 33; `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
 
@@ -575,7 +580,7 @@ State 1: <Initial ...>
 State 2: <McpBecomesReady ...>
 State 3: <Probe ...>
 State 4: <Fetch ...>
-State 5: <LaterStep ...>
+State 5: <Step ...>
 ```
 
 Another break: the broken variant `NightlyPipeline__gate_fail_no_kill.cfg` (mode `gate_fail_no_kill` in the model's `BrokenMode` switch).
@@ -613,7 +618,33 @@ State 1: <Initial ...>
 State 2: <McpBecomesReady ...>
 State 3: <Probe ...>
 State 4: <Fetch ...>
-State 5: <LaterStep ...>
+State 5: <Step ...>
+```
+
+### TLA NightlyPipeline!AdjustIndependentOfGate
+
+Break: (PR 33) the broken variant `NightlyPipeline__adjust_needs_gate.cfg` (mode `adjust_needs_gate`: the adjustment waits for the gate, as before PR 33).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial predicate>
+State 2: <Snapshot ...>
+State 6: <Probe ...>
+State 7: <Fetch ...>
+State 8: <Gate ...>
+State 12: Stuttering
+```
+
+### TLA NightlyPipeline!SnapshotEveryNight
+
+Break: (PR 33) the broken variant `NightlyPipeline__snapshot_needs_allocate.cfg` (mode `snapshot_needs_allocate`: the snapshot waits for `allocate`, as before PR 33).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial predicate>
+State 8: <Fallback ...>
+State 9: <Step ...>
+State 10: <Gate ...>
 ```
 
 ### TLA NightlyPipeline!IngestDecides
@@ -865,6 +896,14 @@ Break: no carry-over (`elif not carries_over(job, day, now):` to `elif True:`).
 
 ```
 E   AssertionError: assert [] == [('next', datetime.date(2026, 10, 20))]
+```
+
+Break: (PR 33 review) `carry` ignored (`(bool(job.after) or job.carry)` to `bool(job.after)` in `carries_over`).
+
+```
+E   AssertionError: assert [] == [('next', dat...026, 10, 20))]
+E     Right contains one more item: ('next', datetime.date(2026, 10, 20))
+E   Failing test case: test_chain_carries_past_midnight(
 ```
 
 ### PBT ops.stop_names_abandoned_jobs

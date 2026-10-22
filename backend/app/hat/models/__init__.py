@@ -12,6 +12,7 @@ from .ops import (
     HatDailyBotSnapshot,
     HatJobRun,
     HatQualityCheck,
+    HatQualityQuarantine,
     HatTelegramCursor,
     HatTelegramMessage,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "HatModeChange",
     "HatPriceBand",
     "HatQualityCheck",
+    "HatQualityQuarantine",
     "HatRegimeModelVersion",
     "HatRegimeState",
     "HatRiskPolicyVersion",
