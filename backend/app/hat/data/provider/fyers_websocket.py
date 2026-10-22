@@ -1,10 +1,13 @@
 """The Fyers side of the live feed: the SDK data socket factory and the token source.
 
 ProviderSession (provider_session.py) owns the socket's lifecycle; this module
-only builds `fyers_apiv3` sockets and reads the current token.
+only builds `fyers_apiv3` sockets and reads the current token. It also hands the
+minute-history download (HAT-DATA-119) the history request of HAT's Fyers session:
+a REST call on the same session, never a second socket.
 """
 
 import logging
+from collections.abc import Callable, Mapping
 
 from .data_socket import DataSocket, SocketCallbacks
 
@@ -46,6 +49,24 @@ def session_token_valid() -> bool:
     from app.hat.execution.fyers_session import get_fyers_session
 
     return bool(get_fyers_session().validate_token())
+
+
+def fyers_history() -> Callable[[dict[str, str]], Mapping[str, object]] | None:
+    """The SDK's `history` request on HAT's Fyers session, or None when logged out or the token
+    is refused (a network call: never on the event loop)."""
+    from app.hat.execution.fyers_session import get_fyers_session
+
+    session = get_fyers_session()
+    if session.fyers is None or not session.validate_token():
+        return None
+    model = session.fyers
+    if model is None:
+        return None
+
+    def history(request: dict[str, str]) -> Mapping[str, object]:
+        return model.history(data=request)
+
+    return history
 
 
 def fyers_socket_factory(token: str, callbacks: SocketCallbacks) -> DataSocket:

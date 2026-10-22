@@ -6,7 +6,7 @@ Time is explicit: every property passes the instants it wants, so no test reads 
 
 import tempfile
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -32,7 +32,9 @@ from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
 from app.hat.data.live import EventFeedHealth, LiveData, tick_from_payload
 from app.hat.data.minute_history import (
     CHUNK_DAYS,
-    MinuteHistoryError,
+    CallPacer,
+    HistoryLimits,
+    Progress,
     aggregate,
     candle_prints,
     load_minute_history,
@@ -1477,52 +1479,333 @@ def test_history_matches_builder(raw: list[list[Any]]) -> None:
     assert aggregate("AAA", candles) == _builder_bars("AAA", candles)
 
 
-@given(raw=minute_candles(days=3), first=st.integers(0, 2), span=st.integers(0, 250))
-@settings(deadline=None)
-def test_minute_history_aggregates_to_5m(raw: list[list[Any]], first: int, span: int) -> None:
-    """The loader asks for 1-minute candles in chunks of at most 100 days covering the period,
-    and the `bars_5m` rows it writes are the builder's bars of those candles; a failed response,
-    even for a later symbol, writes nothing and raises a code without the broker's text."""
-    start = DAY + timedelta(days=first)
-    end = start + timedelta(days=span)
-    asked: list[dict[str, str]] = []
+class _Clock:
+    """A clock that only moves when the pacer sleeps or a call takes time."""
+
+    def __init__(self, start: datetime) -> None:
+        self.at = start
+        self.slept: list[float] = []
+
+    def now(self) -> datetime:
+        return self.at
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds > 0
+        self.slept.append(seconds)
+        self.at += timedelta(seconds=seconds)
+
+
+PLAN_REFUSAL = {
+    "s": "error",
+    "code": -50,
+    "message": "Invalid input",
+    "data": {"range_from": "range_from exceeds the historical data available for your plan"},
+}
+
+
+def _fake_history(
+    raw: dict[str, list[list[Any]]],
+    asked: list[dict[str, str]],
+    *,
+    floor: date | None = None,
+    failing: frozenset[str] = frozenset(),
+    clock: _Clock | None = None,
+    took: timedelta = timedelta(0),
+) -> Callable[[dict[str, str]], dict[str, Any]]:
+    """A Fyers history endpoint over `raw` (broker symbol -> candles): refuses a range before
+    `floor` for the plan's depth, answers -16 for the `failing` symbols, `no_data` when a range
+    holds no candle; each call takes `took` on `clock`."""
 
     def history(request: dict[str, str]) -> dict[str, Any]:
         asked.append(request)
+        if clock is not None:
+            clock.at += took
         lo, hi = date.fromisoformat(request["range_from"]), date.fromisoformat(request["range_to"])
-        rows = [r for r in raw if lo <= datetime.fromtimestamp(r[0], IST).date() <= hi]
-        return {"s": "ok", "candles": rows}
+        if floor is not None and lo < floor:
+            return PLAN_REFUSAL
+        if request["symbol"] in failing:
+            return {"s": "error", "code": -16, "message": "token expired for client XY1234"}
+        rows = [
+            r
+            for r in raw.get(request["symbol"], [])
+            if lo <= datetime.fromtimestamp(r[0], IST).date() <= hi
+        ]
+        return {"s": "ok", "candles": rows} if rows else {"s": "no_data", "candles": []}
 
-    instrument = str(uuid4())
+    return history
+
+
+def _stored(store: BarStore, start: date, end: date) -> list[Any]:
+    rows = []
+    day = start
+    while day <= end:
+        rows.extend(store.read(day))
+        day += timedelta(days=1)
+    return rows
+
+
+def _want(symbol: str, raw: list[list[Any]], instrument: str, start: date, end: date) -> list[Any]:
+    inside = [c for c in parse_candles(raw) if start <= c.at.astimezone(IST).date() <= end]
+    return [row_from_bar(b, instrument) for b in _builder_bars(symbol, inside)]
+
+
+@given(
+    raw=minute_candles(days=3),
+    first=st.integers(0, 2),
+    span=st.integers(0, 250),
+    chunk=st.integers(1, CHUNK_DAYS),
+    failing=st.sampled_from(["NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ", None]),
+    cap=st.integers(1, 60),
+)
+@settings(deadline=None)
+def test_minute_history_aggregates_to_5m(
+    raw: list[list[Any]], first: int, span: int, chunk: int, failing: str | None, cap: int
+) -> None:
+    """The loader asks for 1-minute candles in consecutive chunks of at most `chunk_days`
+    covering the period, and writes each symbol's builder bars as soon as it loads: a symbol
+    whose call fails, or whose answer holds more candles than the cap, is reported with a fixed
+    code (no broker text) and has nothing written, while every other symbol, before or after it,
+    is stored."""
+    start = DAY + timedelta(days=first)
+    end = start + timedelta(days=span)
+    symbols = {s: str(uuid4()) for s in ("NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ")}
+    asked: list[dict[str, str]] = []
+    history = _fake_history(
+        dict.fromkeys(symbols, raw), asked, failing=frozenset({failing} - {None})
+    )
+    limits = HistoryLimits(chunk_days=chunk, max_candles=cap, per_minute=10**6)
     with tempfile.TemporaryDirectory() as root:
         store = BarStore(Path(root))
-        load_minute_history(history, store, {"NSE:AAA-EQ": instrument}, start, end)
-        assert all(r["resolution"] == "1" and r["symbol"] == "NSE:AAA-EQ" for r in asked)
-        spans = [
-            (date.fromisoformat(r["range_from"]), date.fromisoformat(r["range_to"])) for r in asked
-        ]
-        assert spans[0][0] == start
-        assert spans[-1][1] == end
-        assert all((hi - lo).days < CHUNK_DAYS for lo, hi in spans)
-        assert all(b[0] == a[1] + timedelta(days=1) for a, b in zip(spans, spans[1:], strict=False))
-        inside = [c for c in parse_candles(raw) if start <= c.at.astimezone(IST).date() <= end]
-        want = _builder_bars("NSE:AAA-EQ", inside)
-        stored = [r for d in sorted({b.start.date() for b in want}) for r in store.read(d)]
-        assert stored == [row_from_bar(b, instrument) for b in want]
+        report = load_minute_history(history, store, symbols, start, end, limits=limits)
+        assert report.stopped is None
+        for symbol in symbols:
+            spans = [
+                (date.fromisoformat(r["range_from"]), date.fromisoformat(r["range_to"]))
+                for r in asked
+                if r["symbol"] == symbol
+            ]
+            assert all(r["resolution"] == "1" for r in asked)
+            assert spans[0][0] == start
+            if symbol in report.failed:
+                continue
+            assert spans[-1][1] == end
+            assert all((hi - lo).days < chunk for lo, hi in spans)
+            assert all(
+                b[0] == a[1] + timedelta(days=1) for a, b in zip(spans, spans[1:], strict=False)
+            )
+        too_many = any(
+            len([r for r in raw if lo <= datetime.fromtimestamp(r[0], IST).date() <= hi]) > cap
+            for lo, hi in (
+                (date.fromisoformat(r["range_from"]), date.fromisoformat(r["range_to"]))
+                for r in asked
+            )
+        )
+        expected_failed = {}
+        if failing is not None:
+            expected_failed[failing] = "history_failed"
+        if too_many:
+            expected_failed |= {s: "history_too_many_candles" for s in symbols if s != failing}
+        assert report.failed == expected_failed
+        assert all("XY1234" not in code for code in report.failed.values())
+        want = sorted(
+            (
+                row
+                for symbol, instrument in symbols.items()
+                if symbol not in report.failed
+                for row in _want(symbol, raw, instrument, start, end)
+            ),
+            key=lambda r: (r.bar_start, r.instrument_id),
+        )
+        assert _stored(store, start, end) == want
 
-        def broken(request: dict[str, str]) -> dict[str, Any]:
-            # the first symbol loads; the second fails, so neither may be written
-            if request["symbol"] == "NSE:AAA-EQ":
-                return history(request)
-            return {"s": "error", "message": "token expired for client XY1234"}
 
-        empty = BarStore(Path(root) / "other")
-        both = {"NSE:AAA-EQ": instrument, "NSE:ZZZ-EQ": str(uuid4())}
-        try:
-            load_minute_history(broken, empty, both, start, end)
-        except MinuteHistoryError as exc:
-            assert exc.code == "history_failed"
-            assert "XY1234" not in str(exc)
+@given(
+    raw=minute_candles(days=3),
+    per_minute=st.integers(1, 5),
+    per_day=st.integers(1, 12),
+    spent=st.integers(0, 12),
+    took=st.integers(0, 40),
+    offset=st.integers(0, 24 * 3600 - 1),
+)
+@settings(deadline=None)
+def test_minute_history_budget(
+    raw: list[list[Any]], per_minute: int, per_day: int, spent: int, took: int, offset: int
+) -> None:
+    """However long calls take and whatever the day's earlier runs spent, no 60 seconds hold
+    more than `per_minute` history calls and no IST day more than `per_day`; a spent day stops
+    the run with `history_daily_limit` (not a crash) and the day's count is kept for the next
+    run."""
+    start = DAY
+    end = DAY + timedelta(days=2)
+    symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(4)}
+    clock = _Clock(MIDNIGHT + timedelta(days=10, seconds=offset))
+    asked: list[dict[str, str]] = []
+    instants: list[datetime] = []
+    inner = _fake_history(
+        dict.fromkeys(symbols, raw), asked, clock=clock, took=timedelta(seconds=took)
+    )
+
+    def history(request: dict[str, str]) -> dict[str, Any]:
+        instants.append(clock.now())
+        return inner(request)
+
+    limits = HistoryLimits(chunk_days=1, per_minute=per_minute, per_day=per_day)
+    with tempfile.TemporaryDirectory() as root:
+        progress = Progress(Path(root) / "progress.json")
+        progress.calls[clock.now().astimezone(IST).date().isoformat()] = spent
+        progress.save()
+        pacer = CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep)
+        report = load_minute_history(
+            history,
+            BarStore(Path(root)),
+            symbols,
+            start,
+            end,
+            limits=limits,
+            progress=progress,
+            pacer=pacer,
+        )
+        for i, at in enumerate(instants):
+            window = [t for t in instants[: i + 1] if t > at - timedelta(minutes=1)]
+            assert len(window) <= per_minute
+        per_ist_day: dict[date, int] = {}
+        for at in instants:
+            per_ist_day[at.astimezone(IST).date()] = (
+                per_ist_day.get(at.astimezone(IST).date(), 0) + 1
+            )
+        first_day = (MIDNIGHT + timedelta(days=10, seconds=offset)).astimezone(IST).date()
+        for day, n in per_ist_day.items():
+            assert n + (spent if day == first_day else 0) <= per_day
+        assert report.calls == len(instants)
+        if len(asked) < len(symbols) * 3:
+            assert report.stopped == "history_daily_limit"
         else:
-            raise AssertionError("a failed response must raise")
-        assert not (Path(root) / "other").exists()
+            assert report.stopped is None
+        stored = Progress.load(Path(root) / "progress.json")
+        assert stored.calls == progress.calls
+        assert sum(stored.calls.values()) == spent + len(instants)
+
+
+@given(
+    raw=minute_candles(days=3),
+    budget=st.integers(0, 12),
+    failing=st.sets(st.sampled_from([f"NSE:S{i}-EQ" for i in range(4)])),
+)
+@settings(deadline=None)
+def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[str]) -> None:
+    """A run stopped anywhere (the day's budget spent, symbols that failed) and then resumed
+    leaves `bars_5m` as one uninterrupted run would, and never asks again for a symbol already
+    loaded over the period."""
+    start, end = DAY, DAY + timedelta(days=2)
+    symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(4)}
+    limits = HistoryLimits(chunk_days=1, per_minute=10**6, per_day=budget or 1)
+    with tempfile.TemporaryDirectory() as root:
+        once = BarStore(Path(root) / "once")
+        report = load_minute_history(
+            _fake_history(dict.fromkeys(symbols, raw), []), once, symbols, start, end
+        )
+        assert report.stopped is None
+        assert not report.failed
+
+        store = BarStore(Path(root) / "resumed")
+        path = Path(root) / "progress.json"
+        clock = _Clock(MIDNIGHT + timedelta(days=10, hours=10))
+        first_asked: list[dict[str, str]] = []
+        progress = Progress.load(path)
+        stopped = load_minute_history(
+            _fake_history(dict.fromkeys(symbols, raw), first_asked, failing=frozenset(failing)),
+            store,
+            symbols,
+            start,
+            end,
+            limits=HistoryLimits(
+                chunk_days=1, per_minute=10**6, per_day=budget or 1, failures_in_row=4
+            ),
+            progress=progress,
+            pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+        )
+        done = set(Progress.load(path).done)
+        assert done == set(stopped.days)
+        clock.at += timedelta(days=1)  # the next day: a fresh budget
+        again: list[dict[str, str]] = []
+        progress = Progress.load(path)
+        resumed = load_minute_history(
+            _fake_history(dict.fromkeys(symbols, raw), again),
+            store,
+            symbols,
+            start,
+            end,
+            limits=HistoryLimits(chunk_days=1, per_minute=10**6),
+            progress=progress,
+            pacer=CallPacer(
+                HistoryLimits(chunk_days=1, per_minute=10**6),
+                progress,
+                clock=clock.now,
+                sleep=clock.sleep,
+            ),
+            resume=True,
+        )
+        assert resumed.stopped is None
+        assert not resumed.failed
+        assert resumed.skipped == len(done)
+        assert not {r["symbol"] for r in again} & done
+        assert _stored(store, start, end) == _stored(once, start, end)
+
+
+@given(
+    raw=minute_candles(days=3),
+    late=st.integers(0, 2),
+    back=st.integers(0, 3),
+    other=st.booleans(),
+)
+@settings(deadline=None)
+def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, other: bool) -> None:
+    """A -50 refusal for the plan's depth clamps the start to where the plan serves (the run
+    goes on and every symbol is loaded from there to the end); any other -50 is a failure of
+    the symbol, never a clamp."""
+    today = DAY + timedelta(days=2)
+    clock = _Clock(MIDNIGHT + timedelta(days=2, hours=10))
+    plan_days = 2  # the plan serves from DAY + `late` days
+    floor = today - timedelta(days=plan_days) + timedelta(days=late)
+    start = floor - timedelta(days=back)
+    end = today
+    symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(3)}
+    asked: list[dict[str, str]] = []
+    refused = _fake_history(dict.fromkeys(symbols, raw), asked, floor=floor)
+    bad = {"s": "error", "code": -50, "message": "Invalid input", "data": {"range_from": "bad"}}
+
+    def history(request: dict[str, str]) -> dict[str, Any]:
+        answer = refused(request)
+        return bad if other and answer is PLAN_REFUSAL else answer
+
+    limits = HistoryLimits(chunk_days=2, per_minute=10**6, plan_days=plan_days)
+    with tempfile.TemporaryDirectory() as root:
+        store = BarStore(Path(root))
+        progress = Progress(Path(root) / "progress.json")
+        report = load_minute_history(
+            history,
+            store,
+            symbols,
+            start,
+            end,
+            limits=limits,
+            progress=progress,
+            pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+        )
+        if other and back:
+            assert report.available_from is None
+            assert set(report.failed) == set(symbols)
+            assert report.failed == dict.fromkeys(symbols, "history_failed")
+            assert _stored(store, start, end) == []
+            return
+        assert report.stopped is None
+        assert not report.failed
+        assert report.available_from == (floor if back else None)
+        assert Progress.load(Path(root) / "progress.json").available_from == report.available_from
+        assert report.clamps <= limits.max_clamps
+        assert (report.clamps > 0) == (back > 0)
+        want = sorted(
+            (r for s, i in symbols.items() for r in _want(s, raw, i, floor, end)),
+            key=lambda r: (r.bar_start, r.instrument_id),
+        )
+        assert _stored(store, start, end) == want

@@ -87,7 +87,8 @@ def test_brk__import_boundary() -> None:
     transitively; the interface module itself imports none of them either."""
     graph = build_graph()
     # The one exception (HAT-OVR-006, K3): HAT's data socket module imports the SDK socket and the
-    # Fyers session for its token; `test_imports__no_second_websocket` confines the socket to it.
+    # Fyers session for its token (and the session's history request for the minute-history
+    # download, HAT-DATA-119); `test_imports__no_second_websocket` confines the socket to it.
     graph[DATA_SOCKET_MODULE] = set()
     prefixes = (
         "app.hat.engine",

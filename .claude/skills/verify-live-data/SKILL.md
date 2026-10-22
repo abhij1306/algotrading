@@ -32,7 +32,10 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.gap_record_from_its_own_day` In a process running across days, every gap record of trade date d holds d's open: its own indicative open, or the feed's open from a tick at or after 09:15 (a 09:00 snapshot carries yesterday's open), and a later day's record drops the earlier days' records. Harm: `gap_up` runs on yesterday's open (PR 22, audit F13).
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
 - `PBT bars.history_matches_builder` Aggregating a 1-minute series to 5-minute bars (`minute_history.aggregate`) gives exactly the bars the live builder makes of the same prints (open with the volume, high, low, close): same windows, OHLC and volume, nothing outside the session. Harm: EP backtests read bars built differently from live and mislead promotion decisions.
-- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for 1-minute candles in consecutive chunks of at most 100 days covering exactly the period, writes the builder's bars of them to `bars_5m`, and on a failed response for any symbol (a later one included) writes nothing and raises `history_failed` without the broker's text. Harm: a history gap or a broker message reaches the store or the logs.
+- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for each symbol's 1-minute candles in consecutive chunks of at most `chunk_days` (drawn 1..100) covering exactly the period and writes each symbol's builder bars to `bars_5m` as soon as it loads; a symbol whose call fails (any of three, first, middle or last) or whose answer holds more candles than the cap is reported with a fixed code (no broker text) and has nothing written, while every other symbol is stored (PR 41, D131). Harm: one bad symbol throws away hours of loaded history, or a broker message reaches the store or the logs.
+- `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
+- `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume`, leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
+- `PBT bars.minute_history_plan_clamp` A fake plan that refuses (-50, `data.range_from` "exceeds the historical data available for your plan") any range before a floor 0..2 days after `today - plan_days`: a start 0..3 days before the floor is clamped to exactly the floor (saved in the progress), within `max_clamps`, and every symbol is loaded from there; a -50 with another reason is a symbol failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed, with the listing's open (PR 22: the gapper is not subscribed yet, so the feed has no open of it). Harm: impossible gaps are chased or valid EP candidates never watched.
 - `PBT gapscan.timing_recorded` Every gap-scan run, successful or failed, has a `hat_job_run` row with start and finish, and a run finishing at or after 09:20:00 IST raises an alert. Harm: the EP playbook silently never sees its candidates in time.
@@ -121,7 +124,7 @@ Code under check:
 - `backend/app/hat/data/provider/metrics.py`: `FeedMetrics`, `log_exception_throttled`
 - `backend/app/hat/data/provider/fyers_websocket.py`: `fyers_socket_factory`, `fyers_token`
 
-- `backend/app/hat/data/minute_history.py`: `parse_candles`, `candle_prints`, `aggregate`, `load_minute_history`
+- `backend/app/hat/data/minute_history.py`: `parse_candles`, `candle_prints`, `aggregate`, `load_minute_history`, `HistoryLimits`, `CallPacer`, `Progress`, `HistoryReport` (`history_universe` and `main` reach the database and Fyers and are not checked here)
 
 Checks:
 - `backend/tests/hat/properties/test_feed.py`
@@ -141,11 +144,12 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `245fd6f9a337bac4af3edf1d47ab8e5e12e45a83311ae10802ffdf3d1c2e3f4c`
+Covered digest: `f142ef0a3ed82ced5ad13054db864fafc452aac3159587173b1e7b6f4f3fafaa`
 
 ## Scope changes
 
 - PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
+- PR 41 (owner decision D131) made the download runnable on the Fyers Standard plan: per-symbol writes replace PR 12's all-or-nothing (the old CodeAnt break below is retired with it), with a call pacer, resumable progress and the plan-limit clamp; `BarStore.write` now carries the untouched rows of a day as Arrow data (`bars.persisted_equals_live` guards it). The plan's refusal text is from the audit 2026-10-22 live checks ("Fyers history depth"); a recording of the exact response is a follow-up.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
@@ -162,6 +166,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Review found `main.py` built the feed with no calendar, so weekday exchange holidays were connectable. The feed now takes its hours policy from HAT's trading calendar (`calendar_policy_source`, read at most every 10 minutes) and is closed while the calendar is missing, unreadable or not wired; `bars.feed_connection_window` keeps checking the weekday rule with a fixed empty-holiday policy and `feed.calendar_closed` checks the calendar cases.
 - `feed.registry_concurrent` raises the thread switch frequency for its run so an unguarded update shows; it draws at most 6 examples.
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
+- PR 41 narrowed `CONF single_feed_import_rule`: outside the provider package, `hat/data/minute_history.py` may import `provider.fyers_websocket.fyers_history` and nothing else from it (`PROVIDER_IMPORTS`). The download needs the Fyers session's REST history, and HAT-BRK-080 lets the data package reach the session only through that module; no socket or provider session is built, and importing anything else from the provider still fails (break recorded below).
 - PR 15b widened the live trigger path (`engine/live_entry.py`): `watchlist_candidates` and `ep_bot_candidates` take every active bot with a live version and its effective mode (with an optional `calendar`), and `submit_trigger` and `TriggerService` take a `route`. The bar and trigger properties pass unchanged; none was narrowed.
 
 ## Scratch breaks
@@ -358,6 +363,19 @@ E
 E     Right contains 1 more item:
 ```
 
+Break (PR 41, `BarStore.write`): the merge drops the other instruments' stored rows (`stored.filter(pc.invert(mine))` to `SCHEMA.empty_table()`).
+
+```
+tests/hat/properties/test_bars.py:1319: in test_persisted_equals_live
+tests/hat/properties/test_bars.py:1382: in test_persisted_equals_live
+E   AssertionError: assert {('2b83d31f-f...'0.0001'), 0)} == {('106743f9-7...'0.0001'), 0)}
+E     
+E     Omitting 1 identical items, use -vv to show
+E     Right contains 1 more item:
+E     {('106743f9-799e-4ed3-bc11-d64ede993d44', datetime.datetime(2026, 10, 21, 3, 45, tzinfo=datetime.timezone.utc)): (Decimal('0.0001'),
+E                                                                                                                       Decimal('0.0001'),
+```
+
 ### PBT bars.gap_pct
 
 Break: in `app/hat/data/preopen.py`, replaced `return Decimal(100) * (open_price / prev_close - 1)` with `return Decimal(100) * (open_price - prev_close) / open_price`.
@@ -545,6 +563,15 @@ tests/hat/conformance/test_conf_imports.py:274: in test_single_feed_import_rule
 E   AssertionError: services/live_market_service.py
 E   assert 'services/live_market_service.py' in {'main.py'}
 FAILED tests/hat/conformance/test_conf_imports.py::test_single_feed_import_rule
+```
+
+Break (PR 41): `minute_history.py` also imports `fyers_socket_factory` from the provider.
+
+```
+tests/hat/conformance/test_conf_imports.py:280: in test_single_feed_import_rule
+E   AssertionError: hat/data/minute_history.py
+E   assert {'app.hat.dat...cket_factory'} <= {'app.hat.dat...yers_history'}
+E
 ```
 
 ### CONF no_duplicate_fakes_or_authorities
@@ -1019,27 +1046,110 @@ E   AssertionError: assert [Bar(symbol='...'), volume=0)] == [Bar(symbol='...'),
 
 ### PBT bars.minute_history_aggregates_to_5m
 
-Break: in `backend/app/hat/data/minute_history.py`: chunks of 101 days.
+Break: in `backend/app/hat/data/minute_history.py`: chunks one day longer than `chunk_days`.
 
 ```
-tests/hat/properties/test_bars.py F
-tests/hat/properties/test_bars.py:957: in test_minute_history_aggregates_to_5m
-    @settings(deadline=None)
-                   ^^^
-tests/hat/properties/test_bars.py:981: in test_minute_history_aggregates_to_5m
-    assert all((hi - lo).days < CHUNK_DAYS for lo, hi in spans)
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1592: in test_minute_history_aggregates_to_5m
 E   assert False
+E    +  where False = all(<generator object test_minute_history_aggregates_to_5m.<locals>.<genexpr> at 0x7f6804e6b5a0>)
 ```
 
-Break (CodeAnt review, all-or-nothing): in `backend/app/hat/data/minute_history.py`: each symbol written to `bars_5m` as soon as it loads, so a later symbol's failure leaves the earlier one stored.
+Break: the per-response candle cap is skipped (`if len(raw) > limits.max_candles:` to `if False:`).
 
 ```
-tests/hat/properties/test_bars.py:1004: in test_minute_history_aggregates_to_5m
-E   AssertionError: assert not True
-E    +  where True = exists()
-E    +    where exists = (PosixPath('/tmp/tmpirbze0gm') / 'other').exists
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1608: in test_minute_history_aggregates_to_5m
+    assert report.failed == expected_failed
+E   AssertionError: assert {'NSE:AAA-EQ'...story_failed'} == {'NSE:AAA-EQ'...many_candles'}
+E     
+E     Omitting 1 identical items, use -vv to show
+E     Right contains 2 more items:
+E     {'NSE:MMM-EQ': 'history_too_many_candles',
+```
+
+Break: a failed symbol stops the run instead of being reported (`report.failed[symbol] = exc.code` to `report.stopped = exc.code; break`).
+
+```
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1580: in test_minute_history_aggregates_to_5m
+E   AssertionError: assert 'history_failed' is None
+E    +  where 'history_failed' = HistoryReport(start=datetime.date(2026, 10, 21), end=datetime.date(2026, 10, 21), symbols=3, days={}, skipped=0, failed={}, rows=0, calls=1, available_from=None, clamps=0, stopped='history_failed').stopped
 E   Failing test case: test_minute_history_aggregates_to_5m(
-E       raw=[[1_792_554_300, 1.0, 1.0, 1.0, 1.0, 0]],
+E       raw=[[1_792_553_400, 1.0, 1.0, 1.0, 1.0, 0],
+E        [1_792_553_460, 1.0, 1.0, 1.0, 1.0, 0]],
+E       first=0,
+```
+
+### PBT bars.minute_history_budget
+
+Break: the pacer lets one call too many into the minute (`<` to `<=` in `CallPacer.call`).
+
+```
+tests/hat/properties/test_bars.py:1623: in test_minute_history_budget
+tests/hat/properties/test_bars.py:1670: in test_minute_history_budget
+E   AssertionError: assert 2 <= 1
+E    +  where 2 = len([datetime.datetime(2026, 10, 31, 0, 0, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')), datetime.datetime(2026, 10, 31, 0, 0, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata'))])
+E   Failing test case: test_minute_history_budget(
+E       # The test always failed when commented parts were varied together.
+E       raw=[],  # or any other generated value
+E       per_minute=1,
+```
+
+Break: the call count is not saved before the call (`self._progress.save()` removed from `CallPacer.call`).
+
+```
+tests/hat/properties/test_bars.py:1623: in test_minute_history_budget
+tests/hat/properties/test_bars.py:1685: in test_minute_history_budget
+E   AssertionError: assert {'2026-10-31': 0} == {'2026-10-31': 2}
+E     
+E     Differing items:
+E     {'2026-10-31': 0} != {'2026-10-31': 2}
+E     Use -v to get more diff
+E   Failing test case: test_minute_history_budget(
+```
+
+### PBT bars.minute_history_resume
+
+Break: the progress is not saved after a symbol is written.
+
+```
+tests/hat/properties/test_bars.py:1690: in test_minute_history_resume
+tests/hat/properties/test_bars.py:1728: in test_minute_history_resume
+E   AssertionError: assert set() == {'NSE:S0-EQ'}
+E     
+E     Extra items in the right set:
+E     'NSE:S0-EQ'
+E     Use -v to get more diff
+E   Failing test case: test_minute_history_resume(
+```
+
+### PBT bars.minute_history_plan_clamp
+
+Break: no refusal is taken as the plan's depth (`_plan_refused` returns False).
+
+```
+tests/hat/properties/test_bars.py:1756: in test_minute_history_plan_clamp
+tests/hat/properties/test_bars.py:1801: in test_minute_history_plan_clamp
+E   AssertionError: assert 'history_failed' is None
+E    +  where 'history_failed' = HistoryReport(start=datetime.date(2026, 10, 20), end=datetime.date(2026, 10, 23), symbols=3, days={}, skipped=0, faile...tory_failed', 'NSE:S2-EQ': 'history_failed'}, rows=0, calls=3, available_from=None, clamps=0, stopped='history_failed').stopped
+E   Failing test case: test_minute_history_plan_clamp(
+E       # The test always failed when commented parts were varied together.
+E       raw=[],  # or any other generated value
+E       late=0,  # or any other generated value
+```
+
+Break: every -50 is taken as the plan's depth (`_plan_refused` returns True after the code check).
+
+```
+tests/hat/properties/test_bars.py:1756: in test_minute_history_plan_clamp
+tests/hat/properties/test_bars.py:1796: in test_minute_history_plan_clamp
+E   AssertionError: assert datetime.date(2026, 10, 21) is None
+E    +  where datetime.date(2026, 10, 21) = HistoryReport(start=datetime.date(2026, 10, 20), end=datetime.date(2026, 10, 23), symbols=3, days={'NSE:S0-EQ': 0, 'NS...:S2-EQ': 0}, skipped=0, failed={}, rows=0, calls=7, available_from=datetime.date(2026, 10, 21), clamps=1, stopped=None).available_from
+E   Failing test case: test_minute_history_plan_clamp(
+E       # The test always failed when commented parts were varied together.
+E       raw=[],  # or any other generated value
+E       late=0,  # or any other generated value
 ```
 
 ### PBT bars.restore_matches_live

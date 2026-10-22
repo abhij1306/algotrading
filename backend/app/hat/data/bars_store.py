@@ -24,6 +24,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ..time import as_utc, trade_date_of
@@ -99,27 +100,18 @@ class BarStore:
 
     def read(self, day: date) -> list[BarRow]:
         """Every stored row of `day`, ordered by (bar_start, instrument_id)."""
+        return sorted(_rows(self._table(day)), key=lambda r: (r.bar_start, r.instrument_id))
+
+    def _table(self, day: date) -> pa.Table:
         path = self.path(day)
-        if not path.is_file():
-            return []
-        table = pq.read_table(path, schema=SCHEMA)
-        rows = [
-            BarRow(
-                str(r["instrument_id"]),
-                as_utc(r["bar_start"]),
-                r["open"],
-                r["high"],
-                r["low"],
-                r["close"],
-                int(r["volume"]),
-            )
-            for r in table.to_pylist()
-        ]
-        return sorted(rows, key=lambda r: (r.bar_start, r.instrument_id))
+        return pq.read_table(path, schema=SCHEMA) if path.is_file() else SCHEMA.empty_table()
 
     def write(self, bars: Iterable[Bar], instrument_ids: Mapping[str, uuid.UUID | str]) -> int:
         """Merge `bars` into their trade dates' partitions; return the rows that were new or
-        changed. A bar whose symbol has no instrument id is skipped (nothing is invented)."""
+        changed. A bar whose symbol has no instrument id is skipped (nothing is invented). Only
+        the stored rows of the written instruments are turned into Python rows; the rest of the
+        day is carried over as Arrow data, so writing one symbol into a full day stays cheap
+        (the minute-history download writes each symbol on its own, D131)."""
         by_day: dict[date, dict[tuple[str, datetime], BarRow]] = {}
         for bar in bars:
             instrument_id = instrument_ids.get(bar.symbol)
@@ -129,11 +121,14 @@ class BarStore:
             by_day.setdefault(trade_date_of(bar.start), {})[row.key] = row
         written = 0
         for day, fresh in sorted(by_day.items()):
-            merged = {row.key: row for row in self.read(day)}
+            stored = self._table(day)
+            ids = pa.array(sorted({key[0] for key in fresh}), pa.string())
+            mine = pc.is_in(stored["instrument_id"], value_set=ids)
+            merged = {row.key: row for row in _rows(stored.filter(mine))}
             changed = sum(1 for key, row in fresh.items() if merged.get(key) != row)
             if changed:
                 merged.update(fresh)
-                self._replace(day, list(merged.values()))
+                self._replace(day, stored.filter(pc.invert(mine)), list(merged.values()))
             written += changed
         return written
 
@@ -184,9 +179,9 @@ class BarStore:
         finally:
             temp.unlink(missing_ok=True)
 
-    def _replace(self, day: date, rows: list[BarRow]) -> None:
-        rows = sorted(rows, key=lambda r: (r.bar_start, r.instrument_id))
-        table = pa.table(
+    def _replace(self, day: date, rest: pa.Table, rows: list[BarRow]) -> None:
+        """Write `rest` (stored rows kept as they are) and `rows` as the day's file."""
+        fresh = pa.table(
             {
                 "instrument_id": [r.instrument_id for r in rows],
                 "bar_start": [r.bar_start.astimezone(UTC) for r in rows],
@@ -198,6 +193,9 @@ class BarStore:
             },
             schema=SCHEMA,
         )
+        table = pa.concat_tables([rest, fresh]).sort_by(
+            [("bar_start", "ascending"), ("instrument_id", "ascending")]
+        )
         target = self.path(day)
         target.parent.mkdir(parents=True, exist_ok=True)
         temp = target.with_name(f".{FILE_NAME}.{uuid.uuid4().hex}.tmp")
@@ -206,3 +204,18 @@ class BarStore:
             os.replace(temp, target)
         finally:
             temp.unlink(missing_ok=True)
+
+
+def _rows(table: pa.Table) -> list[BarRow]:
+    return [
+        BarRow(
+            str(r["instrument_id"]),
+            as_utc(r["bar_start"]),
+            r["open"],
+            r["high"],
+            r["low"],
+            r["close"],
+            int(r["volume"]),
+        )
+        for r in table.to_pylist()
+    ]

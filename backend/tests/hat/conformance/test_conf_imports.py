@@ -132,6 +132,15 @@ PROVIDER_SOCKET_FILE = "data/provider/fyers_websocket.py"
 SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
 # Who may import the feed: the app's wiring (K5b deleted the legacy read side of its ticks).
 FEED_IMPORTERS = {"main.py"}
+# Outside the provider package, the one module that may import from it, and the one name it may
+# take: the minute-history download asks the Fyers session's REST history through it (HAT-DATA-119,
+# PR 41). It builds no socket and no provider session.
+PROVIDER_IMPORTS = {
+    "hat/data/minute_history.py": {
+        "app.hat.data.provider.fyers_websocket",
+        "app.hat.data.provider.fyers_websocket.fyers_history",
+    }
+}
 
 
 def _only_rest_model(path: Path) -> bool:
@@ -267,7 +276,8 @@ def test_single_feed_import_rule() -> None:
         if rel != "hat/data/feed.py" and not inside_provider:
             assert not any(n == session_module for n in names), rel
             assert not _constructs(tree, "ProviderSession"), rel
-            assert not any(n == provider or n.startswith(provider + ".") for n in names), rel
+            taken = {n for n in names if n == provider or n.startswith(provider + ".")}
+            assert taken <= PROVIDER_IMPORTS.get(rel, set()), rel
         if rel != "main.py":
             assert not _constructs(tree, "LiveFeed"), rel
         if any(n == feed for n in names) and rel != "hat/data/feed.py":
