@@ -206,7 +206,7 @@ to an artefact that exists.
 | HAT-DATA-076 | [02](02-data.md) | 6 | PBT `features.breadth` |
 | HAT-DATA-077 | [02](02-data.md) | 6 | PBT `features.incremental_equals_full` |
 | HAT-DATA-078 | [02](02-data.md) | 6 | CONF `imports.hat_polars_only` |
-| HAT-DATA-080 | [02](02-data.md) | 5 | CONF `store.data_root` |
+| HAT-DATA-080 | [02](02-data.md) | 5, 43 | CONF `store.data_root`, CONF `store.cli_root_after_env`, PBT `history_build.cli_root_and_report`, PBT `minute_history_cli.root_and_report` |
 | HAT-DATA-081 | [02](02-data.md) | 5, 6, 12, 14 | CONF `store.layout` |
 | HAT-DATA-082 | [02](02-data.md) | 5 | PBT `store.atomic_write` |
 | HAT-DATA-083 | [02](02-data.md) | 5 | PBT `store.raw_immutable` |
@@ -218,7 +218,7 @@ to an artefact that exists.
 | HAT-DATA-093 | [02](02-data.md) | 5 | PBT `bhavcopy.parsers_agree` |
 | HAT-DATA-094 | [02](02-data.md) | 5 | PBT `corporate_actions.upsert_idempotent` |
 | HAT-DATA-095 | [02](02-data.md) | 5 | PBT `ingest.index_snapshot_stored` |
-| HAT-DATA-096 | [02](02-data.md) | 5 | PBT `bhavcopy.validation_flags_mismatch` |
+| HAT-DATA-096 | [02](02-data.md) | 5, 43 | PBT `bhavcopy.validation_flags_mismatch`, PBT `history_build.cli_root_and_report` |
 | HAT-DATA-097 | [02](02-data.md) | 5 | PBT `bhavcopy.traded_value_kept` |
 | HAT-DATA-100 | [02](02-data.md) | 14 | PBT `announcements.poll_schedule` |
 | HAT-DATA-101 | [02](02-data.md) | 14 | PBT `announcements.dedupe`, DB `reference.announcement_guid_unique` |
@@ -234,7 +234,7 @@ to an artefact that exists.
 | HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
-| HAT-DATA-119 | [02](02-data.md) | 12, 41 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_budget`, PBT `bars.minute_history_resume`, PBT `bars.minute_history_plan_clamp` |
+| HAT-DATA-119 | [02](02-data.md) | 12, 41, 43 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_budget`, PBT `bars.minute_history_resume`, PBT `bars.minute_history_plan_clamp`, PBT `minute_history_cli.root_and_report` |
 | HAT-DATA-120 | [02](02-data.md) | 14 | PBT `gapscan.covers_universe` |
 | HAT-DATA-121 | [02](02-data.md) | 14 | PBT `gapscan.filter` |
 | HAT-DATA-122 | [02](02-data.md) | 14 | PBT `gapscan.timing_recorded`, OPS `gapscan.latency_observed` |

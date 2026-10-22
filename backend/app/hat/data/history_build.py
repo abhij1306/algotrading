@@ -28,7 +28,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
@@ -37,7 +37,7 @@ from sqlalchemy import select
 
 from ..ids import uuid7
 from ..ops.jobs import JobError, JobResult
-from ..settings import process_env
+from ..settings import operator_settings, process_env
 from .bhavcopy import (
     BhavRow,
     BuildState,
@@ -54,6 +54,8 @@ from .bhavcopy import (
 )
 from .corporate_actions import ActionRecord, LoadReport, Normalised, load_actions
 from .mcp_client import McpClient, McpError, parse_data_date
+from .run_report import save_report
+from .sessions import IST
 from .store import (
     DATASET_BARS,
     DataStore,
@@ -71,6 +73,7 @@ INDEX_NAMES = ("NIFTY 50", "NIFTY 500", "NIFTY SMALLCAP 250", "INDIA VIX")
 DEFAULT_INDEX_START = date(2010, 1, 1)
 SAMPLE_SIZE = 50
 MCP_HISTORY_MONTHS = 12
+REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
 
 
 # --- instruments ---------------------------------------------------------------------------------
@@ -514,6 +517,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     end = args.end or date.today()
+    settings = operator_settings()  # before the database module, which reads .env too
     from app.database import SessionLocal
 
     from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
@@ -522,7 +526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .mcp_client import client_from_env
 
     logging.basicConfig(level=logging.INFO)
-    store = DataStore()
+    store = DataStore(settings.data_root)
     with SessionLocal() as session:
         market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
         if market_id is None:
@@ -566,7 +570,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if client is not None and not args.skip_validation
         else None,
     )
-    sys.stdout.write(_summary(report))
+    summary = _summary(report)
+    sys.stdout.write(summary)
+    save_report(settings.data_root / REPORT_DIR, summary, datetime.now(IST))
     return _exit_code(report)
 
 

@@ -164,6 +164,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 19 fixed a flaky `ops.stop_names_abandoned_jobs` (CI: `OSError(39, 'Directory not empty')`): its held body returned `release.wait`'s `True`, so the released run's `_finish` raised in the scheduler's thread, left the row `running`, and raced the temporary directory's removal. The body now returns None and the property waits until every run row has its finish before the directory goes (`_await_runs_finished`). The property is unchanged otherwise; with the old body the new wait fails `an abandoned job never recorded its finish`.
 - PR 41 updated `test_conf_verification.py`: `MERGED_PRS` now includes 41; `KNOWN_GAPS` unchanged.
 - PR 42 updated `test_conf_verification.py`: `MERGED_PRS` now includes 42; `KNOWN_GAPS` unchanged.
+- PR 43 updated `test_conf_verification.py`: `MERGED_PRS` now includes 43; `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
 

@@ -104,13 +104,15 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `932a2196caba64737da44b5f741b38ebf5dede07f2cc9e4f37b318906339ef74`
+Covered digest: `f81d9a9e1693a84d39c0fc00935679f60bb42800b1013e7e2c58f4fbd701d806`
 
 ## Scope changes
 
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
 
 - MFE and MAE stop at a fill: a position the stop closes on the way down, or a profit exit closes on the way up, never saw the rest of that bar (CodeAnt review of PR 12). No property isolates the excursions; the golden replay pins them (the fix moved one trade's `mae_r` and `avg_mae_r` only).
+
+- PR 43: `main` takes its settings from `operator_settings()` (loads `.env` first) instead of `load_settings()`; `verify-data`'s `CONF store.cli_root_after_env` holds every command line to it. No backtest check changed.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 

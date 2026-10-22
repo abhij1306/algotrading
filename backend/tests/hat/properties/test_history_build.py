@@ -4,6 +4,7 @@ generated bhavcopy zips in both formats across the 8 Jul 2024 switch. Completene
 nothing."""
 
 import hashlib
+import io
 import tempfile
 from collections.abc import Mapping
 from datetime import date, time, timedelta
@@ -15,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from hat_bhav_support import prices, render_old, render_udiff
 from hat_mcp_support import ScriptedTransport, seed_market
-from hat_support import memory_engine
+from hat_support import ROOT_SOURCES, memory_engine, no_network, operator_env
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import sessionmaker
@@ -331,6 +332,41 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
     weekday as a gap, and `main` exits 1 exactly when there is a gap; another market's calendar
     rows never count. Name lookups and sockets are blocked and recorded, so a patch that stops
     applying fails the property instead of reaching NSE."""
+    with tempfile.TemporaryDirectory() as tmp:
+        code, report, _out, _root = _drive_main(marks, other_market, Path(tmp), "environment")
+    holidays = {d for d, trading in marks.items() if not trading}
+    assert set(report.days.holidays) == holidays
+    assert set(report.days.gaps) == set(WINDOW) - holidays
+    assert code == (1 if report.days.gaps else 0)  # a gap needs the operator; holidays do not
+
+
+@given(
+    marks=st.dictionaries(st.sampled_from(WINDOW), st.booleans(), max_size=len(WINDOW)),
+    source=st.sampled_from(ROOT_SOURCES),
+)
+@settings(max_examples=25, deadline=None)
+def test_cli_root_and_report(marks: dict[date, bool], source: str) -> None:
+    """PR 43: the command line resolves the data root after `.env` is loaded, so a root set
+    only in `.env` counts, one in the environment wins and a blank one means the default; and
+    the summary it prints is also appended to `history_build/report-YYYY-MM-DD.txt` under that
+    root, the only directory the run writes to."""
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        _code, _report, out, root = _drive_main(marks, False, scratch, source)
+        written = sorted(p.relative_to(scratch).as_posix() for p in scratch.rglob("*.*"))
+        assert {p.name for p in scratch.iterdir()} == {".env", root.name}, written
+        assert (root / "build" / "state.json").is_file(), written  # the store got the root too
+        saved = list((root / "history_build").glob("report-*.txt"))
+        assert len(saved) == 1, written
+        assert saved[0].read_text(encoding="utf-8").endswith(out)
+
+
+def _drive_main(
+    marks: dict[date, bool], other_market: bool, scratch: Path, source: str
+) -> tuple[int, BuildReport, str, Path]:
+    """`main` over a stored calendar of `marks` (and BSE rows that close every day of WINDOW
+    when `other_market`), the real build with no file for any day, the data root from `source`
+    in `scratch`: the exit code, the build's report, what was printed and the root it must use."""
     engine = memory_engine()
     factory = sessionmaker(bind=engine)
     with factory() as session:
@@ -359,45 +395,33 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
         reports.append(report)
         return report
 
-    reached: list[object] = []
-
-    def no_network(*args: object, **_kwargs: object) -> None:
-        # recorded, not only raised: the real fetcher turns any exception into an "error" answer
-        reached.append(args)
-        raise OSError("a property reached the network")
-
     def nothing_fetcher(timeout: float = 30.0) -> Fetcher:
         return lambda _url: FetchResult("not_found")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        argv = [
-            "--from",
-            WINDOW[0].isoformat(),
-            "--to",
-            WINDOW[-1].isoformat(),
-            "--interval",
-            "0",
-            "--skip-actions",
-            "--skip-index",
-            "--skip-validation",
-        ]
-        with (
-            patch("app.database.SessionLocal", factory),
-            patch.object(history_build, "DataStore", return_value=DataStore(Path(tmp))),
-            patch.object(history_build, "run_history_build", recording_build),
-            patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
-            patch("app.hat.data.mcp_client.client_from_env", return_value=None),
-            patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
-            # whatever is patched above, nothing may reach the network
-            patch("socket.getaddrinfo", no_network),
-            patch("socket.socket.connect", no_network),
-            patch("socket.create_connection", no_network),
-        ):
-            code = history_build.main(argv)
+    argv = [
+        "--from",
+        WINDOW[0].isoformat(),
+        "--to",
+        WINDOW[-1].isoformat(),
+        "--interval",
+        "0",
+        "--skip-actions",
+        "--skip-index",
+        "--skip-validation",
+    ]
+    with (
+        operator_env(scratch, source) as root,
+        patch("app.database.SessionLocal", factory),
+        patch.object(history_build, "run_history_build", recording_build),
+        patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
+        patch("app.hat.data.mcp_client.client_from_env", return_value=None),
+        patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
+        patch("sys.stdout", new_callable=io.StringIO) as out,
+        # whatever is patched above, nothing may reach the network
+        no_network() as reached,
+    ):
+        code = history_build.main(argv)
     engine.dispose()
     assert reached == []
     [report] = reports
-    holidays = {d for d, trading in marks.items() if not trading}
-    assert set(report.days.holidays) == holidays
-    assert set(report.days.gaps) == set(WINDOW) - holidays
-    assert code == (1 if report.days.gaps else 0)  # a gap needs the operator; holidays do not
+    return code, report, out.getvalue(), root

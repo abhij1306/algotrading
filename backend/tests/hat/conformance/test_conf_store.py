@@ -1,6 +1,8 @@
 """CONF checks of the Parquet store against the spec (HAT-DATA-080, 081): where the store writes,
-and that every file it produces has the §8 dataset's partition and exact columns."""
+which root the command lines hand it, and that every file it produces has the §8 dataset's
+partition and exact columns."""
 
+import ast
 import re
 import shutil
 import subprocess
@@ -62,6 +64,36 @@ def test_store__data_root() -> None:
         check=False,
     )
     assert ignored.returncode == 0
+
+
+def test_store__cli_root_after_env() -> None:
+    """HAT-DATA-080 (PR 43): every HAT command line (a module run with `python -m`) takes its
+    settings from `operator_settings()`, which loads `.env` first, and never from
+    `load_settings()` alone, nor a store's default root: `app.paths.HAT_DATA_ROOT` is read when
+    `app.paths` is first imported, before anything loads `.env`."""
+    commands = {}
+    for path in sorted((REPO_ROOT / "backend" / "app" / "hat").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if 'if __name__ == "__main__"' in text:
+            commands[path.relative_to(REPO_ROOT).as_posix()] = ast.parse(text)
+    assert set(commands) >= {
+        "backend/app/hat/data/features.py",
+        "backend/app/hat/data/history_build.py",
+        "backend/app/hat/data/minute_history.py",
+        "backend/app/hat/engine/backtest.py",
+    }
+    for name, tree in commands.items():
+        called = [
+            (node.func.id if isinstance(node.func, ast.Name) else node.func.attr, node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
+        ]
+        assert any(f == "operator_settings" for f, _ in called), name
+        assert not [f for f, _ in called if f == "load_settings"], name
+        default_root = [
+            f for f, n in called if f in {"DataStore", "BarStore"} and not n.args and not n.keywords
+        ]
+        assert not default_root, name
 
 
 def test_store__layout() -> None:

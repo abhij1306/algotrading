@@ -1190,7 +1190,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from ..backtest.runs import RunError, backtest_bot  # noqa: PLC0415
     from ..data.store import DataStore  # noqa: PLC0415
-    from ..settings import load_settings  # noqa: PLC0415
+    from ..settings import operator_settings  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.engine.backtest")
     parser.add_argument("--bot", type=uuid.UUID, required=True)
@@ -1200,7 +1200,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--slippage-bps", type=Decimal, default=Decimal(0))
     parser.add_argument("--cost-model", default=None)
     args = parser.parse_args(argv)
-    settings = load_settings()
+    settings = operator_settings()
     extra = {} if args.cost_model is None else {"cost_model": args.cost_model}
     refused: str | None = None
     summary: dict[str, Any] = {}

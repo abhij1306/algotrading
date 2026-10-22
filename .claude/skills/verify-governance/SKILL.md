@@ -55,7 +55,7 @@ Code under check:
 - `backend/app/hat/time.py`: `trade_date_of`, `as_utc`, `utc_now`
 - `backend/app/hat/confighash.py`: `canonical_json`, `config_hash`
 - `backend/app/hat/risk/policy.py`: `cooling_off_satisfied`, `require_cooling_off`
-- `backend/app/hat/settings.py`: `load_settings`, `require_postgres`
+- `backend/app/hat/settings.py`: `load_settings`, `operator_settings`, `require_postgres`
 - `backend/app/hat/schema.py`: `PG_DDL`, `ensure_hat_schema`, `ensure_hat_columns`, `seed_hat_reference`
 - `backend/app/hat/models/_types.py`
 - `backend/app/hat/models/reference.py`
@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `ca93eed5dc558a28ce27745ee2aa98f99394fe58fa492519f543a4be4b6ff942`
+Covered digest: `8c86fe6c8974703d850b73e65f68e2bd21780b2922332aa086f08d51cc497b12`
 
 ## Scope changes
 
@@ -109,6 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `conflict_resolutions_traced` accepts C6 as untraced (`UNTRACED_RESOLUTIONS = {6}`): no requirement in files 01 to 10 cites `PLAN C6`, which is a spec gap, not a code gap.
 - `PBT config.no_risk_keys`, `calendar.session_from_reference_data` and the other PBT names on PR 2 rows that need later features are not built here (their code does not exist yet).
 - PR 8 added the config-model properties to `test_config.py` (they are checked by `verify-criteria`; the hash properties here are unchanged) and a non-vacuity assertion to `test_import_graph_boundaries` (the `app.hat.engine.criteria` package must exist in the graph; its scratch break is recorded in `verify-criteria`).
+- PR 43 added `settings.operator_settings()` (loads `.env`, then `load_settings()`) for the command lines; `load_settings` is unchanged. Its checks are `verify-data`'s `store.cli_root_after_env` and `history_build.cli_root_and_report` and `verify-live-data`'s `minute_history_cli.root_and_report`; no check here was narrowed.
 - PR 16 added `time.day_bounds` (the UTC window of an IST trade date), now used by `engine/trades.py` and the Telegram reads and reports instead of three copies; no check was narrowed.
 
 ## Scratch breaks

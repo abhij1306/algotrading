@@ -11,8 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.paths import HAT_DATA_ROOT
-from app.utils.env_loader import TRUE_VALUES
+from app.paths import ENV_FILE, HAT_DATA_ROOT
+from app.utils.env_loader import TRUE_VALUES, load_dotenv
 
 from .errors import HatConfigError
 
@@ -45,6 +45,15 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
     )
+
+
+def operator_settings() -> HatSettings:
+    """The settings of a command-line entry point (HAT-DATA-080): `.env` is loaded first, so a
+    `HAT_DATA_ROOT` set only there counts (a variable already in the environment wins).
+    `app.paths.HAT_DATA_ROOT` is read when `app.paths` is imported, before anything loads
+    `.env`, so a command passes this `data_root` to its stores instead of their default."""
+    load_dotenv(str(ENV_FILE))
+    return load_settings()
 
 
 def process_env() -> Mapping[str, str]:

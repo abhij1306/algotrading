@@ -436,6 +436,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--through", type=date.fromisoformat, default=None)
     parser.add_argument("--chunk-days", type=int, default=CHUNK_DAYS)
     args = parser.parse_args(argv)
+    from ..settings import operator_settings
+
+    settings = operator_settings()  # before the database module, which reads .env too
     from app.database import SessionLocal
 
     from .corporate_actions import stored_factors
@@ -444,7 +447,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     with SessionLocal() as session:
         actions = stored_factors(session)
     report = run_features(
-        DataStore(), actions, through=args.through, full=args.full, chunk_days=args.chunk_days
+        DataStore(settings.data_root),
+        actions,
+        through=args.through,
+        full=args.full,
+        chunk_days=args.chunk_days,
     )
     sys.stdout.write(f"features: {len(report.dates)} dates, {report.rows} rows ({report.reason})\n")
     return 0
