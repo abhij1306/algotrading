@@ -175,12 +175,13 @@ def gap_scan_body(
     session_factory: SessionFactory,
     trade_date: date,
     universe: Callable[[HatInstrument], bool],
-    on_candidates: Callable[[Mapping[str, uuid.UUID]], None],
+    on_candidates: Callable[[Mapping[str, uuid.UUID], Mapping[str, Decimal]], None],
     minimum_pct: Decimal = EP_MIN_GAP_PCT,
 ) -> Callable[[], JobResult]:
     """A job body for `run_job`. Idempotent: the scan reads, then hands the candidates to
-    `on_candidates` (subscribe at 09:17 and attach announcements), and a re-run subscribes the
-    same symbols again, which the registry ignores."""
+    `on_candidates` with their instrument ids and the opens the listing gave (subscribe at
+    09:17 and attach announcements; the gappers are not subscribed yet, so the feed has no open
+    of theirs), and a re-run subscribes the same symbols again, which the registry ignores."""
 
     def body() -> JobResult:
         calls_before = len(client.log.records)
@@ -191,6 +192,7 @@ def gap_scan_body(
         with session_factory() as session:
             items = _enrich(session, rows, trade_date, universe, minimum_pct)
             symbols = set(select_gappers(items, minimum_pct))
+            opens = {i.row.symbol: i.row.open for i in items if i.row.symbol in symbols}
             ids = {
                 i.symbol: i.id
                 for i in session.scalars(
@@ -200,7 +202,8 @@ def gap_scan_body(
                 )
                 if i.active
             }
-        on_candidates({s: ids[s] for s in sorted(symbols) if s in ids})
+        found = {s: ids[s] for s in sorted(symbols) if s in ids}
+        on_candidates(found, {s: o for s, o in opens.items() if s in found and o is not None})
         return JobResult(calls=len(client.log.records) - calls_before, rows=len(ids))
 
     return body

@@ -27,6 +27,7 @@ MODES = ("shadow", "confirm", "auto")
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")
 S1 = "stage2-contraction-breakout"
 S2 = "momentum-breakout-ep"
+FEED = "FEED"  # another symbol on the feed, never a candidate
 
 
 def paise(value: int) -> Decimal:
@@ -112,14 +113,30 @@ def live_contract(code: str, params: dict[str, Any], ctx: LiveContext) -> Criter
     return first
 
 
+def watch_from_open(builder: BarBuilder, symbols: Iterable[str], day: date = DAY) -> None:
+    """A pre-open tick (09:00) for each symbol: the builder has watched it from the open."""
+    preopen = ist(day, 9, 0)
+    for symbol in symbols:
+        builder.on_tick(Tick(symbol, preopen, Decimal(1)), preopen)
+
+
 def drive(
-    monitor: TriggerMonitor, builder: BarBuilder, ticks: Iterable[Tick], until: datetime
+    monitor: TriggerMonitor,
+    builder: BarBuilder,
+    ticks: Iterable[Tick],
+    until: datetime,
+    *,
+    from_open: bool = True,
 ) -> tuple[list[Bar], list[Trigger]]:
-    """Feed `ticks` in exchange-time order (each arriving at its own instant), finalise bars as
-    time passes, hand each final bar to the monitor, and finish at `until`. Returns the final
-    bars and the triggers, in order."""
+    """Feed `ticks` in exchange-time order (each arriving at its own instant, then the bars
+    final by then are handed to the monitor, as the live step does), and finish at `until`, when
+    another symbol of the feed ticks. With `from_open` each symbol is first watched from before
+    the open. Returns the final bars and the triggers, in order."""
     bars: list[Bar] = []
     triggers: list[Trigger] = []
+    ticks = list(ticks)
+    if from_open and ticks:
+        watch_from_open(builder, {t.symbol for t in ticks}, ticks[0].at.astimezone(IST).date())
 
     def advance(now: datetime) -> None:
         for bar in builder.advance(now):
@@ -127,8 +144,9 @@ def drive(
             triggers.extend(monitor.on_bar(bar))
 
     for tick in sorted(ticks, key=lambda t: t.at):
-        advance(tick.at)
         builder.on_tick(tick, tick.at)
+        advance(tick.at)
+    builder.on_tick(Tick(FEED, until, Decimal(1)), until)  # the rest of the feed ticks on
     advance(until)
     return bars, triggers
 

@@ -177,8 +177,10 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
   left Triggered by the previous process is placed only once the feed has a fresh tick and the
   account is reconciled, and only on its own trade date (07, `SIGNAL_EXPIRED`). A restart after
   08:45 on a trading day re-arms the day: the bar builder gets back the day's opening ranges and
-  volumes from the stored 5-minute bars, and the gap scan's EP candidates come back from its
-  `gapscan.completed` record (the acceptance run `test_ops__simulated_day` restarts at 09:21).
+  volumes from the stored 5-minute bars (opening ranges only for symbols watched from the open,
+  and no day low for the rest of the day: the restart is a feed gap, HAT-DATA-114), and the gap
+  scan's EP candidates come back from its `gapscan.completed` record (the acceptance run
+  `test_ops__simulated_day` restarts at 10:30, after its entries).
 - Each broker login serves one active account: a second active account of the same broker
   refuses the start with `HatConfigError` (PBT `router.one_login_per_broker`), so equity is
   never counted twice from one set of funds.

@@ -16,9 +16,11 @@ IST on Tuesday 2026-10-20, and is driven on a fixed clock through:
   bhavcopy and the pipeline scans for Friday;
 - Thursday, a holiday: only the every-day housekeeping runs;
 
-with a restart at 09:21 on Wednesday, after the gap scan and the first bar but before any entry:
-the new runtime rebuilds the gappers from their record and the opening ranges from the stored
-bars, so both entries still happen. Then it stops, leaving no task behind. Shadow mode sends
+with a restart at 10:30 on Wednesday, after both entries and before S2's stop: the new runtime
+rebuilds the gappers from their record and the opening ranges from the stored bars, marks the
+entries' keys fired, and its live exits still close S2 at its stop. (A restart before the entries
+would leave the day low unknown for the rest of the day, PR 22, so both low-of-day entries would
+skip with `stop_input_missing`.) Then it stops, leaving no task behind. Shadow mode sends
 nothing to the broker but reads.
 """
 
@@ -81,7 +83,7 @@ pytestmark = pytest.mark.postgres
 USER = uuid.UUID("00000000-0000-7000-8000-0000000000d1")
 START = ist(NIGHT, 17, 55)
 END = ist(HOLIDAY, 23, 55)
-RESTART = ist(TRADE, 9, 21)  # after the 09:16 gap scan and the 09:15 bar, before the entries
+RESTART = ist(TRADE, 10, 30)  # after both entries, before S2 trades through its stop
 STEP = timedelta(seconds=15)  # in the busy hours: ticks, a scheduler tick, the periodic pass
 QUIET = timedelta(minutes=5)  # outside them
 BUSY_FROM = time(8, 25)

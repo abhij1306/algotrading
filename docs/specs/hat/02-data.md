@@ -512,7 +512,7 @@ Root: `HAT_DATA_ROOT = DATA_ROOT / "hat"` (env-overridable, gitignored; PLAN C9)
 | --- | --- | --- | --- |
 | `bars_daily_raw/` | `date=` | instrument_id, isin, symbol, series, open, high, low, close, prev_close, volume, traded_value (null from MCP), source, ingest_run_id | Nightly ingest, historical build |
 | `features_daily/` | `date=` | §7 columns | Nightly features job |
-| `bars_5m/` | `date=` | instrument_id, bar_start, open, high, low, close, volume | Live bar builder, Fyers history |
+| `bars_5m/` | `date=` | instrument_id, bar_start, open, high, low, close, volume; beside it `coverage.json` (instruments watched from the open, first feed gap, how far the feed was seen; HAT-DATA-114) | Live bar builder, Fyers history |
 | `index_daily/` | `date=` | index_name, open, high, low, close | Nightly ingest |
 | `breadth_daily/` | `date=` | universe_size, with_sma50, above_sma50, breadth_pct | Nightly features job |
 | `market_breadth/` | `date=` | total_stocks, advances, declines, unchanged, ad_ratio, volume, source | Nightly ingest |
@@ -752,13 +752,14 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
   - Property: no bar is reported final before bar_end + 2 s, and a final bar never changes. Harm: a trigger fires on a bar that later changes, so live and replay disagree.
 
 #### HAT-DATA-114: Opening range is fixed when the first bar closes
-- **Statement:** The opening-range high and low are the high and low of the 09:15–09:20 bar, fixed when it becomes final.
-- **Source:** DS "Live data" (09:20 row); MA "Daily cycle" step 4; B9.
-- **PR:** 14
-- **Verification:** PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`
+- **Statement:** The opening-range high and low are the high and low of the 09:15–09:20 bar, fixed when it becomes final. They exist only for a symbol watched from the open: its first tick that trade date arrived at or before 09:15:00 and no feed gap began before 09:20:00. The day low (the lowest low of the day's final bars up to the trigger bar, HAT-EXEC-051) exists only for a symbol watched from the open with no feed gap that day. Both exist only once a tick of the feed (any symbol) has arrived at or after the end of the last bar they cover: a feed that went silent before a bar ended may have lost its last prints, and a silence is marked as a gap only at the stale threshold. A feed gap is a silence of the stale threshold (HAT-DATA-116) inside the session, from its last tick (or the open), and a restart is a gap from the last instant the stopped process saw the feed (`coverage.json` keeps it up to the first bar's end), or the end of its last stored bar if earlier. Otherwise both are undefined (fail closed: no opening-range trigger, `stop_input_missing`).
+- **Source:** DS "Live data" (09:20 row); MA "Daily cycle" step 4; B9; audit 2026-10-22 F4.
+- **PR:** 14, 22
+- **Verification:** PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`
 - **Acceptance:**
-  - Property: for every tick sequence, from 09:20:02 onward the opening-range high and low equal the first bar's high and low and never change for the rest of the day. Harm: the ORB trigger level drifts upward and entries are late or never fire.
-  - Property: after a restart mid-session, a bar builder given the day's stored final bars (`BarBuilder.restore`) and then the rest of the ticks has the same opening ranges and day volumes as one that saw every tick, and a restored bar never replaces a live one. Harm: after a restart the opening range is lost and no ORB entry fires for the rest of the day.
+  - Property: for every tick sequence watched from the open with a tick in the first bar, from the first feed tick at or after 09:20:00 (and no earlier than 09:20:02) the opening-range high and low equal the first bar's high and low and never change for the rest of the day. Harm: the ORB trigger level drifts upward and entries are late or never fire.
+  - Property: after a restart mid-session, a bar builder given the day's stored final bars and coverage (`BarBuilder.restore`) has the same opening ranges as one that saw every tick when the stopped process had seen the feed past the first bar (none otherwise), the same day volumes for every symbol with no bar still building at the restart (its unfinished bar is lost), a restored bar never replaces a live one, and it has no day low. Harm: after a restart the opening range is lost and no ORB entry fires for the rest of the day.
+  - Property: whatever HAT missed of the session (a first tick after the open, a feed gap, a restart and its downtime), a published opening range is the session's real one and a published day low is the real low of the day's final bars; a trigger on the opening range fires only at the real opening-range high, and a `low_of_day` stop is the real low less its buffer or `stop_input_missing`. Harm: EP buys under its own breakout level with a stop above the day's real low, too tight and oversized.
 
 #### HAT-DATA-115: Volume pace
 - **Statement:** Volume pace = cumulative day volume ÷ fraction of session elapsed, compared with the criterion's average-volume baseline.
@@ -779,7 +780,7 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
   - Property: in every reachable state where the feed is stale, no entry order is created and affected bots are manage-only; exits and broker-side stops are unaffected. Harm: a frozen feed lets a breakout entry fire at a price that no longer exists.
 
 #### HAT-DATA-117: 5-minute bars persist to Parquet
-- **Statement:** Final 5-minute bars are written to `bars_5m/date=…` (instrument_id, bar_start, OHLC, volume).
+- **Statement:** Final 5-minute bars are written to `bars_5m/date=…` (instrument_id, bar_start, OHLC, volume), and after them, at each step that changed it, the day's `coverage.json` (the instruments watched from the open, the first feed gap and how far the feed was seen up to the first bar's end; a union, a minimum and a maximum), which a restart reads back (HAT-DATA-114).
 - **Source:** SCH "Parquet datasets" (`bars_5m/`); PLAN PR 14.
 - **PR:** 14
 - **Verification:** PBT `bars.persisted_equals_live`
@@ -787,12 +788,13 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
   - Property: for every session, the persisted bars equal the final bars the trigger monitor saw, one row per (instrument, bar_start). Harm: replays and audits cannot reproduce a live decision.
 
 #### HAT-DATA-118: Pre-open gap capture
-- **Statement:** From 09:00 to 09:08 the indicative gap % of each subscribed symbol is recorded; when Fyers lacks pre-open fields, the first tick's open is used.
-- **Source:** DS "Live data" (09:00–09:08 row); MA "Daily cycle" step 3.
-- **PR:** 14
-- **Verification:** PBT `bars.gap_pct`
+- **Statement:** From 09:00 to 09:08 the indicative gap % of each subscribed symbol is recorded; when Fyers lacks pre-open fields, the open of the first tick at or after 09:15 is used (before it the feed's open is the previous session's). Records are kept per (symbol, trade date).
+- **Source:** DS "Live data" (09:00–09:08 row); MA "Daily cycle" step 3; audit 2026-10-22 F13.
+- **PR:** 14, 22
+- **Verification:** PBT `bars.gap_pct`, PBT `bars.gap_record_from_its_own_day`
 - **Acceptance:**
   - Property: for every symbol with previous close c and indicative (or first-tick) open o, the recorded gap % equals 100 × (o / c − 1), and the record says which source supplied o. Harm: EP gap filters use a wrong gap.
+  - Property: in a process running across days, every gap record of trade date d holds d's open (its indicative open, or the feed's open from a tick at or after 09:15 on d). Harm: `gap_up` runs on yesterday's open.
 - **[A]** Fyers pre-open fields: validated during build (DS "Verify: Fyers WebSocket ... pre-open data").
 
 #### HAT-DATA-119: Optional Fyers minute history for EP backtests
@@ -819,12 +821,12 @@ EP candidates come from a full-market gap scan just after the open, because the 
   - Property: for every listing, the scan evaluates every active EQ symbol exactly once with gap % = 100 × (open / prev_close − 1). Harm: a gapper is missed because its prefix page was truncated.
 
 #### HAT-DATA-121: Gap-scan selection rule
-- **Statement:** Gappers of at least 10% that pass the bot's universe criteria and are in a 10% or 20% band or are F&O names are subscribed at 09:17, with matching announcements attached.
+- **Statement:** Gappers of at least 10% that pass the bot's universe criteria and are in a 10% or 20% band or are F&O names are subscribed at 09:17, with matching announcements attached. Each gapper's open for `gap_up` is the feed's record of that trade date (HAT-DATA-118), else the open the scan's listing gave (a gapper is usually not subscribed before the scan).
 - **Source:** DS "Live data" (09:17 row); BL "Qullamaggie-style bot" (India-specific consequence); BL `gap_up` (min gap % (10)).
-- **PR:** 14
+- **PR:** 14, 22
 - **Verification:** PBT `gapscan.filter`
 - **Acceptance:**
-  - Property: for every scan result, the selected set equals {s : gap%(s) ≥ 10 ∧ universe(s) passes ∧ (band(s) ∈ {10, 20} ∨ s is F&O)}, and every selected symbol is added to the `"hat"` subscriptions with announcements matched per HAT-DATA-103. Harm: impossible gaps are chased or valid EP candidates are never watched.
+  - Property: for every scan result, the selected set equals {s : gap%(s) ≥ 10 ∧ universe(s) passes ∧ (band(s) ∈ {10, 20} ∨ s is F&O)}, each is handed over with the listing's open, and every selected symbol is added to the `"hat"` subscriptions with announcements matched per HAT-DATA-103. Harm: impossible gaps are chased or valid EP candidates are never watched.
 - **[OWNER-PENDING]** F&O identification: default "no price band" (`band_pct` null) marks an F&O name, since NSE F&O stocks carry no band; owner to confirm.
 
 #### HAT-DATA-122: Gap-scan timing is recorded

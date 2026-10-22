@@ -5,10 +5,16 @@ reader sees the old or the new content, never a partial file (the same rule as H
 Rows are keyed by (instrument_id, bar_start): writing the same bar again changes nothing, which
 makes the writer safe to re-run after a crash. Only the layout of 02-data §8 is written:
 `instrument_id, bar_start, open, high, low, close, volume`.
+
+Beside it, `coverage.json` records the session coverage a restart needs (PR 22): the instruments
+the writer watched from the open and the start of the day's first feed gap. It only grows (a
+union and a minimum), and it is written after the bars, so a crash between the two leaves less
+coverage, never more: a restored opening range then fails closed.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import Iterable, Mapping
@@ -23,7 +29,7 @@ import pyarrow.parquet as pq
 from ..time import as_utc, trade_date_of
 from .bars import Bar
 
-__all__ = ["DATASET", "SCHEMA", "BarRow", "BarStore"]
+__all__ = ["DATASET", "SCHEMA", "BarRow", "BarStore", "Coverage"]
 
 DATASET = "bars_5m"
 PRICE = pa.decimal128(18, 4)
@@ -39,6 +45,7 @@ SCHEMA = pa.schema(
     ]
 )
 FILE_NAME = "bars.parquet"
+COVERAGE_NAME = "coverage.json"
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,16 @@ def row_from_bar(bar: Bar, instrument_id: uuid.UUID | str) -> BarRow:
         bar.close,
         bar.volume,
     )
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """One day's session coverage: instruments watched from the open, first feed gap, and how
+    far the feed was seen (up to the first bar's end)."""
+
+    from_open: frozenset[str] = frozenset()
+    gap_from: datetime | None = None
+    seen_until: datetime | None = None
 
 
 class BarStore:
@@ -119,6 +136,53 @@ class BarStore:
                 self._replace(day, list(merged.values()))
             written += changed
         return written
+
+    def read_coverage(self, day: date) -> Coverage:
+        """The stored coverage of `day`; none (nothing watched from the open) when absent or
+        unreadable, so a restored opening range fails closed."""
+        path = self.partition(day) / COVERAGE_NAME
+        if not path.is_file():
+            return Coverage()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            gap, seen = raw.get("gap_from"), raw.get("seen_until")
+            return Coverage(
+                frozenset(str(i) for i in raw.get("from_open", ())),
+                None if gap is None else as_utc(datetime.fromisoformat(gap)),
+                None if seen is None else as_utc(datetime.fromisoformat(seen)),
+            )
+        except (OSError, ValueError, TypeError, AttributeError):
+            return Coverage()
+
+    def write_coverage(self, day: date, coverage: Coverage) -> None:
+        """Merge `coverage` into the stored one: the union of the instruments, the earlier
+        gap, the later seen instant. Written whole through a temporary file and an atomic
+        replace."""
+        stored = self.read_coverage(day)
+        gaps = [g for g in (stored.gap_from, coverage.gap_from) if g is not None]
+        seen = [s for s in (stored.seen_until, coverage.seen_until) if s is not None]
+        merged = Coverage(
+            stored.from_open | coverage.from_open, min(gaps, default=None), max(seen, default=None)
+        )
+        if merged == stored and self.partition(day).joinpath(COVERAGE_NAME).is_file():
+            return
+        body = {
+            "from_open": sorted(merged.from_open),
+            "gap_from": None if merged.gap_from is None else as_utc(merged.gap_from).isoformat(),
+            "seen_until": None
+            if merged.seen_until is None
+            else as_utc(merged.seen_until).isoformat(),
+        }
+        self._atomic(self.partition(day) / COVERAGE_NAME, json.dumps(body).encode())
+
+    def _atomic(self, target: Path, data: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_bytes(data)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
 
     def _replace(self, day: date, rows: list[BarRow]) -> None:
         rows = sorted(rows, key=lambda r: (r.bar_start, r.instrument_id))

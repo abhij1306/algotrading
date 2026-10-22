@@ -137,7 +137,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `776938091a674e380a5c94d7d3f6a0f58b9f5e7b8a5de681f0e6d63d1ccea95f`
+Covered digest: `047d6f5776dc2a3cbb0d9c81e4a6920685474588756a62410c7b908d45adf53a`
 
 ## Scope changes
 
@@ -156,6 +156,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
+- PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 ## Scratch breaks
 

@@ -49,6 +49,7 @@ from app.hat.data.subscriptions import (
     load_inputs,
 )
 from app.hat.engine.live_entry import DataHealthKill, TriggerService
+from app.hat.engine.stops import floor_to_tick
 from app.hat.engine.trigger import DailyInputs, TriggerMonitor
 from app.hat.models import HatEvent, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
 from app.hat.risk import controls
@@ -254,12 +255,16 @@ def test_opening_range_fixed(
     first bar and never changes for the rest of the day, even when ticks of the first bar arrive
     afterwards. Before 09:20:02 there is no opening range."""
     builder = BarBuilder()
+    trigger_support.watch_from_open(builder, ["AAA"], DAY)
     for offset, price, qty in first:
         builder.on_tick(Tick("AAA", at_us(offset), price, qty), at_us(offset))
     assert builder.opening_range("AAA", DAY) is None
     assert builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US - 1)) == []
     assert builder.opening_range("AAA", DAY) is None
+    first_end = at_us((OPEN_SOD + 300) * US)
     builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US))
+    assert builder.opening_range("AAA", DAY) is None  # the feed is not seen past the first bar
+    builder.on_tick(Tick("ZZZ", first_end, Decimal(1)), at_us((OPEN_SOD + 300) * US + 2 * US))
     fixed = builder.opening_range("AAA", DAY)
     if first:
         assert fixed == (max(p for _, p, _ in first), min(p for _, p, _ in first))
@@ -296,6 +301,7 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
     second restore changes nothing. Harm: after a restart past 09:20 no opening-range breakout
     can trigger for the rest of the day, and volume pace reads as a fraction of the real one."""
     live = BarBuilder()
+    trigger_support.watch_from_open(live, SYMBOLS, DAY)
     for symbol, offset, price, qty in sorted(sequence, key=lambda row: row[1]):
         if offset < cut:
             live.on_tick(Tick(symbol, at_us(offset), price, qty), at_us(offset))
@@ -308,12 +314,248 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
         and start + timedelta(minutes=5, seconds=2) > at_us(cut)
     }
     restored = BarBuilder()
-    assert restored.restore(finals) == len(finals)
-    assert restored.restore(finals) == 0
+    from_open, gap, seen = live.coverage(DAY)
+    assert restored.restore(finals, from_open, gap, seen) == len(finals)
+    assert restored.restore(finals, from_open, gap, seen) == 0
+    for builder in (live, restored):  # the rest of the feed, seen at the restart
+        builder.on_tick(Tick("ZZZ", at_us(cut), Decimal(1)), at_us(cut))
+    # the stopped process saw the feed past the first bar, else what it missed is unknown
+    past_first = seen is not None and seen >= at_us((OPEN_SOD + 300) * US)
     for symbol in SYMBOLS:
-        assert restored.opening_range(symbol, DAY) == live.opening_range(symbol, DAY)
+        expected = live.opening_range(symbol, DAY) if past_first else None
+        assert restored.opening_range(symbol, DAY) == expected
+        assert restored.day_low(symbol, DAY) is None  # the restart is a gap (PR 22)
         if symbol not in unfinished:
             assert restored.day_volume(symbol, DAY) == live.day_volume(symbol, DAY)
+
+
+# --- complete-session state (PR 22: HAT-DATA-114, HAT-EXEC-051, HAT-BOT-071) -------------------
+
+PROBE = [(0, 11_000), (150, 10_100), (160, 10_300), (170, 10_000), (180, 10_400), (600, 10_500)]
+"""The audit's probe (F4): a 09:15 spike to 110 HAT never saw, then prints from 09:17:30."""
+
+
+def tape_bars(tape: Iterable[tuple[int, int]], now: datetime) -> list[Bar]:
+    """The final bars at `now` of a tape of (seconds after 09:15, paise) prints for AAA, each
+    arriving at its own instant: the session as it really traded."""
+    opens = at_us(OPEN_SOD * US)
+    ticks = [Tick("AAA", opens + timedelta(seconds=s), Decimal(p).scaleb(-2)) for s, p in tape]
+    return [b for b in expected_bars(enumerate(ticks)).values() if b.final_at <= now]
+
+
+def true_opening(tape: list[tuple[int, int]]) -> tuple[Decimal, Decimal] | None:
+    opens = at_us(OPEN_SOD * US)
+    first = [b for b in tape_bars(tape, at_us(CLOSE_SOD * US + 3600 * US)) if b.start == opens]
+    return (first[0].high, first[0].low) if first else None
+
+
+FIRST_FINAL = 302  # seconds after 09:15 when the first bar is final
+
+
+class Downtime:
+    """A window of seconds after 09:15 in which no tick reaches HAT."""
+
+    def __init__(self, window: tuple[int, int] | None) -> None:
+        self.window = window
+
+    def hides(self, second: int) -> bool:
+        return self.window is not None and self.window[0] <= second < sum(self.window)
+
+
+@example(tape=PROBE, watch=150, dropout=None, restart=None)
+@example(tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None)  # a 10:15 bar
+@example(tape=PROBE, watch=-600, dropout=(100, 60), restart=None)  # a gap inside the first bar
+@example(  # silent from 09:19:50 (the first bar's low unseen), restarted at 09:20:05
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(290, 30), restart=(305, 5)
+)
+@example(  # a gap found after the first bar was stored, then a restart before the next bar
+    tape=[(0, 10_000), (285, 9_000), (400, 10_500)], watch=-600, dropout=(281, 40), restart=(325, 5)
+)
+@example(  # the feed drops at 09:19:55; the low of the first bar prints, unseen, at 09:19:57
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(295, 60), restart=None
+)
+@example(  # a restart at 09:21:40; the day's low trades while HAT is down
+    tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30)
+)
+@settings(max_examples=120, deadline=None)
+@given(
+    tape=st.lists(
+        st.tuples(st.integers(0, 2 * 3600), st.integers(9_000, 11_000)), min_size=1, max_size=50
+    ),
+    watch=st.integers(-900, 1800),  # seconds after 09:15 when HAT's first tick arrives
+    dropout=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(30, 900))),
+    restart=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(1, 600))),
+)
+def test_session_state_never_partial(
+    tape: list[tuple[int, int]],
+    watch: int,
+    dropout: tuple[int, int] | None,
+    restart: tuple[int, int] | None,
+) -> None:
+    """PR 22 (audit F4): whatever HAT missed of the session (a first tick after the open, a feed
+    silence of 30 s or more, a restart with its downtime), the opening range it publishes is the
+    one the session really had, and the day low it publishes is the real low of the day's final
+    bars; otherwise it publishes none. Watched from the open with no gap it publishes both (the
+    opening range also after a restart once the first bar was stored). Harm: EP buys under its
+    true opening-range high, with a stop above the day's real low that is too tight and
+    oversizes the position."""
+    ids = {"AAA": uuid4(), "BBB": uuid4()}
+    clock = FixedClock(at_us(8 * 3600 * US))
+    opens = at_us(OPEN_SOD * US)
+    hidden = Downtime(dropout)
+    down = Downtime(restart)
+    truth = true_opening(tape)
+    watched = watch < 0 and dropout is None  # from the open, with no feed gap
+    with tempfile.TemporaryDirectory() as tmp:
+        store = BarStore(Path(tmp))
+
+        def start() -> LiveData:
+            return LiveData(
+                health=QuietHealth(),
+                is_open=is_open,
+                clock=clock,
+                store=store,
+                instrument_ids=lambda: ids,
+            )
+
+        live = start()
+
+        def check(now: datetime) -> None:
+            live.step()
+            live.persist()
+            final = tape_bars(tape, now)
+            opening = live.builder.opening_range("AAA", DAY)
+            if opening is not None:
+                assert opening == truth
+            elif watched and (restart is None or restart[0] > FIRST_FINAL):
+                # watched from the open, first bar stored before any restart: it is published
+                assert truth is None or now < opens + timedelta(seconds=FIRST_FINAL)
+            low = live.builder.day_low("AAA", DAY)
+            if low is not None:
+                assert low == min(b.low for b in final)
+            elif watched and restart is None:
+                assert not final
+
+        tick_at: dict[int, list[int]] = {}
+        for second, paise in tape:
+            tick_at.setdefault(second, []).append(paise)
+        heartbeat = {
+            (s, "BBB") for s in range(-890, 2 * 3600 + 10 * 60, 10)
+        }  # the rest of the feed
+        first = {(watch, "watch")} if watch < 0 else set()  # AAA's pre-open snapshot
+        bar_ends = {(300 * k + 302, "step") for k in range(2 * 12 + 2)}
+        back = restart is None
+        for second, kind in sorted({(s, "AAA") for s in tick_at} | heartbeat | first | bar_ends):
+            now = opens + timedelta(seconds=second)
+            if down.hides(second):
+                continue  # the process is down: what it had not stored is lost
+            if not back and second >= sum(restart or (0, 0)):
+                clock.set(now)
+                live = start()
+                live.restore(DAY)
+                back = True
+            clock.set(now)
+            if hidden.hides(second) or (kind == "AAA" and second < watch):
+                check(now)  # the feed is silent; the process steps on
+                continue
+            if kind == "watch":
+                live.on_tick({"symbol": "AAA", "ltp": 100.0})
+            elif kind == "BBB":
+                live.on_tick({"symbol": "BBB", "ltp": 50.0, "exch_feed_time": now.timestamp()})
+            elif kind == "AAA":
+                for paise in tick_at[second]:
+                    live.on_tick(
+                        {
+                            "symbol": "AAA",
+                            "ltp": float(Decimal(paise).scaleb(-2)),
+                            "exch_feed_time": now.timestamp(),
+                        }
+                    )
+            if kind != "BBB":
+                check(now)
+
+
+@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high")
+@given(
+    steps=st.lists(
+        st.tuples(st.integers(0, 2 * 3600), st.integers(9_000, 11_000), st.integers(0, 5)),
+        max_size=40,
+    ),
+    watch=st.integers(-1, 1800),
+    expr=st.sampled_from(["pivot", "opening_range_high"]),
+)
+@settings(max_examples=120, deadline=None)
+def test_trigger_never_uses_a_partial_session(
+    steps: list[tuple[int, int, int]], watch: int, expr: str
+) -> None:
+    """PR 22 (audit F4), through the real bar builder and trigger monitor: for a candidate HAT
+    first saw at `watch` seconds after 09:15, an opening-range trigger fires only at the real
+    opening-range high, and a `low_of_day` stop is planned from the day's real low (less a
+    tick) or not at all (`stop_input_missing`). Watched from before the open, both are exactly
+    the session's. Harm: a breakout bought under its own level, with an oversized position."""
+    book = trigger_support.playbook(
+        trigger=[{"type": "price_breaks_level", "params": {"level": expr}}],
+        stop={"rule": "low_of_day", "buffer_ticks": 1},
+    )
+    builder = BarBuilder()
+    monitor = TriggerMonitor(builder)
+    monitor.add(trigger_support.candidate(book, pivot=trigger_support.paise(10_000)))
+    first_seen = at_us((OPEN_SOD + watch) * US)
+    seen = [t for t in trigger_support.session_ticks("AAA", steps) if t.at >= first_seen]
+    _bars, fired = trigger_support.drive(
+        monitor, builder, seen, at_us(16 * 3600 * US), from_open=watch < 0
+    )
+    tape = [(s, p) for s, p, _q in steps]
+    tick = Decimal("0.05")
+    for trigger in fired:
+        if expr == "opening_range_high":
+            truth = true_opening(tape)
+            assert truth is not None
+            assert trigger.evaluation.level == truth[0]
+        real_low = min(b.low for b in tape_bars(tape, trigger.at))
+        expected = floor_to_tick(real_low - tick, tick)
+        stop = trigger.plan.stop
+        if watch < 0 and expected < trigger.plan.entry:
+            assert stop == expected
+        else:
+            assert stop is None or stop == expected
+        if stop is None and watch >= 0:
+            assert trigger.plan.skip == "stop_input_missing"
+
+
+@example(seen=[(0, 540, False), (1, 540, False)])  # a 09:00 snapshot carries yesterday's open
+@given(
+    seen=st.lists(
+        st.tuples(st.integers(0, 2), st.integers(8 * 60, 16 * 60), st.booleans()), max_size=30
+    )
+)
+def test_gap_record_from_its_own_day(seen: list[tuple[int, int, bool]]) -> None:
+    """PR 22 (audit F13): over a process that runs across days, every gap record of a trade date
+    holds that date's open: its own indicative open in 09:00-09:08, or the feed's open from a
+    tick at or after 09:15 (before it the feed's open is the previous session's). Harm: `gap_up`
+    runs on yesterday's open, so EP buys a stock that did not gap or misses one that did."""
+    gaps = PreopenGaps()
+    session_open = [Decimal(1000 + 10 * i) for i in range(4)]  # session_open[i + 1] is day i's
+    indicative = [Decimal(2000 + 10 * i) for i in range(3)]
+    for index, minute, with_indicative in sorted(seen, key=lambda row: (row[0], row[1])):
+        day = DAY + timedelta(days=index)
+        now = datetime.combine(day, time(), tzinfo=IST) + timedelta(minutes=minute)
+        payload: dict[str, Any] = {
+            "symbol": "AAA",
+            "prev_close_price": 900.0,
+            "open_price": float(session_open[index + (1 if minute >= 9 * 60 + 15 else 0)]),
+        }
+        if with_indicative:
+            payload["indicative_open_price"] = float(indicative[index])
+        gaps.observe(payload, now)
+    last = max((index for index, _m, _i in seen), default=0)
+    for index in range(3):
+        day = DAY + timedelta(days=index)
+        for record in gaps.records(day).values():
+            assert record.trade_date == day
+            assert record.open in {session_open[index + 1], indicative[index]}
+        if index < last and gaps.records(DAY + timedelta(days=last)):
+            assert gaps.records(day) == {}  # a later day's record drops the earlier days
 
 
 # --- volume pace (HAT-DATA-115) ----------------------------------------------------------------
@@ -1161,7 +1403,7 @@ def test_gap_pct(
 ) -> None:
     """For every symbol with previous close c and indicative (or first-tick) open o, the recorded
     gap is 100 * (o / c - 1) and the record says which source supplied o: the indicative price
-    inside 09:00-09:08, else the open of the first tick."""
+    inside 09:00-09:08, else the open of the first tick at or after the open."""
     gaps = PreopenGaps()
     when = at_us(minute * 60 * US)
     payload: dict[str, Any] = {"symbol": "AAA", "prev_close_price": float(prev_close)}
@@ -1173,12 +1415,13 @@ def test_gap_pct(
     in_window = time(9, 0) <= when.time() <= time(9, 8)
     if indicative is not None and in_window:
         source, price = GapSource.PREOPEN, indicative
-    elif opened is not None:
+    elif opened is not None and when.time() >= time(9, 15):
         source, price = GapSource.FIRST_TICK, opened
     else:
         assert record is None
         return
     assert record is not None
+    assert record.trade_date == DAY
     assert record.source is source
     sent = Decimal(str(float(price)))  # a float round trip, as a feed payload carries it
     assert record.open == sent
@@ -1188,7 +1431,7 @@ def test_gap_pct(
     later = {k: v for k, v in payload.items() if k != "indicative_open_price"}
     again = gaps.observe({**later, "open_price": float(prev_close * 2)}, when)
     assert again is None
-    assert gaps.records()["AAA"] == record
+    assert gaps.records(DAY)["AAA"] == record
 
 
 # --- HAT-DEC-I4, HAT-DATA-119: the optional minute-history loader ---------------------------
