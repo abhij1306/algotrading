@@ -168,7 +168,9 @@ class CloseAboveSma(_Rule):
 class FastAboveSlow(_Rule):
     fast: int = Field(default=10, ge=2, le=400)
     slow: int = Field(default=20, ge=2, le=400)
-    rising_days: int = Field(default=1, ge=1, le=252)  # [OWNER-PENDING] docs silent: 1 session
+    # Both SMAs above their value 3 sessions earlier: owner default (plan audit N7, §6 item 10);
+    # one session let a single down tick of the slow SMA flip the gate for a night.
+    rising_days: int = Field(default=3, ge=1, le=252)
 
     @model_validator(mode="after")
     def _check(self) -> FastAboveSlow:

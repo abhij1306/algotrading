@@ -206,7 +206,10 @@ REGIMES = st.one_of(
         {
             "index": st.sampled_from(["NIFTY 500", "NIFTY SMALLCAP 250"]),
             "rule": st.just("sma_fast_above_slow_both_rising"),
-            "params": st.just({"fast": 10, "slow": 20}),
+            "params": st.fixed_dictionaries(
+                {"fast": st.just(10), "slow": st.just(20)},
+                optional={"rising_days": st.integers(1, 30)},
+            ),
         }
     ),
 )

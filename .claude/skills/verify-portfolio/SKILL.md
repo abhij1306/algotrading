@@ -22,7 +22,7 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
 - `PBT admin.*` Through the owner's admin command line (`python -m app.hat.admin`, PR 35) on SQLite with a fake broker and scripted backtest evidence: the first-deploy runbook takes a fresh database to a sleeve in Shadow that has a strategy version and a live universe, refuses `promote --to live` until the version itself is live, promotes the version only after 20 trading sessions of shadow, and records the owner's steps (`confirm-ddpi` among them, PR 45) as `actor = user` with the allowlisted chat id and `via = cli` (`admin.first_deploy`); every refused command exits 2 with the fixed code of the rule that refused it and leaves every table unchanged, a universe publish naming an unknown sleeve included, as do a universe or draft inside a session, a CSV ISIN that differs from the instrument's, sleeves on an account that is not active, an undecodable file, a file outside `<HAT_DATA_ROOT>/admin/`, and a `confirm-ddpi` inside a session, dated in the future, with a blank note, repeated or naming an unknown account (`admin.refusal_writes_nothing`). Harm: a fresh deploy never scans, a sleeve trades real money on an unproven version, or a refused release step is half applied.
 - `CONF ops.admin_cli_calls_services` `backend/app/hat/admin.py` imports only the services it wraps (and what they need), calls no session method, builds no query and assigns no attribute; no module imports it, so no route reaches it (HAT-DEC-T3). Harm: a setup command skips the guard a service enforces, or the owner's commands become an unauthenticated API.
-- `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value one session earlier; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
+- `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value `rising_days` sessions earlier; a configured fast/slow rule without `rising_days` reads 3 sessions (PR 55, owner default), one with it reads that many, and each gives what the function gives; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
 - `PBT dsr.evidence_current_trials` The backtest evidence the lifecycle reads is the newest completed run of the sleeve's live version on its family, with the DSR deflated by the family's trial count and Sharpe variance at evaluation time (later failed runs and other versions counted), as `BacktestFacts`; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the Research to Backtested gate on a stale trial count.
 
 ## Run
@@ -95,11 +95,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `99f7d10d6af1723ed2b3c528f18c1d8b3dccdf510d412debd10788e34207788a`
+Covered digest: `2bd6605c48bcb12738877cb9089d9eb6ee04cb67a61276d1ff394d00da096ab2`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
+
+- PR 55 (plan audit N7, §6 item 10): the fast/slow regime rule's `rising_days` defaults to 3 (was an `[OWNER-PENDING]` 1) and `sma_fast_above_slow_both_rising` takes it without a default. A stored version keeps the value it was saved with (the config stores every parameter), so an S2 version saved before PR 55 keeps 1 until a new version is published. The S2 seed and its spec YAML state `rising_days: 3`, and the config generator (`hat_config_support.REGIMES`) draws it or leaves it out. Nothing was narrowed; `regime.strategy_rules` now draws the lookback for both rules.
 
 - `SleeveLifecycle` models one sleeve and scales the thresholds (2 shadow sessions, 2 probation periods): the real thresholds are properties of the pure guards (`lifecycle.shadow_days`, `lifecycle.retire_gate`), not of the state machine. The three evidence flags (backtest gate, health 0 and expectancy trigger, probation failure) are free environment inputs.
 - `AllocateAfterRegime` (HAT-PORT-053) and the job-graph order belong to PR 17 (`JobScheduler`); until then `allocate` fails with `allocate_no_regime` when the regime row of the date is absent.
@@ -1037,6 +1039,30 @@ Break: in `backend/app/hat/engine/regime_gate.py`: close_above_sma_and_rising ac
 E   AssertionError: assert True is False
 FAILED tests/hat/properties/test_regime.py::test_strategy_rules - AssertionEr [cut]
 ============================== 1 failed in 0.57s ===============================
+```
+
+Break: (PR 55) the fast/slow rule's config default is 1 session again; a regime without `rising_days` then reads one session.
+
+```
+E   AssertionError: assert True is False
+E    +  where True = <function regime_allows_longs>(Regime(..., params={'fast': 2, 'slow': 7, 'rising_days': 1}), [cut]
+E    +    where <function regime_allows_longs> = regime_gate.regime_allows_longs
+E    +  and   False = <function test_strategy_rules.<locals>.fast_slow>(3)
+E   Failing test case: test_strategy_rules(
+E       closes=[Decimal(1),
+FAILED tests/hat/properties/test_regime.py::test_strategy_rules - AssertionEr [cut]
+```
+
+Break: (PR 55) `sma_fast_above_slow_both_rising` compares with one session earlier whatever `rising_days` says.
+
+```
+E   AssertionError: assert True is False
+E    +  where True = <function regime_allows_longs>(Regime(..., params={'fast': 2, 'slow': 7, 'rising_days': 3}), [cut]
+E    +    where <function regime_allows_longs> = regime_gate.regime_allows_longs
+E    +  and   False = <function test_strategy_rules.<locals>.fast_slow>(3)
+E   Failing test case: test_strategy_rules(
+E       closes=[Decimal(1),
+FAILED tests/hat/properties/test_regime.py::test_strategy_rules - AssertionEr [cut]
 ```
 
 ### PBT dsr.evidence_current_trials

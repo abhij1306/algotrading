@@ -143,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `991d716df153445927fe4456f4ba877d50cdff2688882936a18a7a7a8ad05481`
+Covered digest: `a961cd788e95875fc85d99a7fecb7933c076a05948b8b02e10273ab5f7a6387b`
 
 ## Scope changes
 
@@ -162,6 +162,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
+- PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so `seed_bots_match_spec_yaml` still compares them field for field and is unchanged.
 - PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 

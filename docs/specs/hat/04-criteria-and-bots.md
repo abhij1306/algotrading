@@ -410,14 +410,14 @@ A **playbook** is a named set of setup, trigger, entry filters and stop; a bot c
   - Property: for every gap-scan result, every EP candidate has a price band of 10% or 20% or is an F&O name, gapped >= 10%, and passes the bot's universe criteria. Harm: the scan subscribes stocks that cannot gap 10%, wasting the symbol budget and producing impossible signals.
 
 #### HAT-BOT-053: Strategy regime rules are evaluated as configured
-- **Statement:** The Minervini-style regime rule `close_above_sma_and_rising` passes iff the NIFTY 500 close is above its 50-day SMA and that SMA is higher than 10 sessions earlier; the Qullamaggie-style rule `sma_fast_above_slow_both_rising` passes iff the index SMA(10) > SMA(20) and both are rising.
-- **Source:** BL "Minervini-style bot" and "Qullamaggie-style bot" (`regime:` blocks); B11, B12.
-- **PR:** 8, 11
+- **Statement:** The Minervini-style regime rule `close_above_sma_and_rising` passes iff the NIFTY 500 close is above its 50-day SMA and that SMA is higher than 10 sessions earlier; the Qullamaggie-style rule `sma_fast_above_slow_both_rising` passes iff the index SMA(10) > SMA(20) and both are higher than `rising_days` (default 3) sessions earlier. The gate decides **whether** a bot may enter; the portfolio regime multiplier (05 §3) decides **how big** the entry is, and the two may disagree (06 §5).
+- **Source:** BL "Minervini-style bot" and "Qullamaggie-style bot" (`regime:` blocks); B11, B12; plan audit 2026-10-22 N7 and §6 item 10 (`rising_days` 3).
+- **PR:** 8, 11, 55
 - **Verification:** PBT `regime.strategy_rules`
 - **Acceptance:**
-  - Property: for every index series, `close_above_sma_and_rising(sma=50, rising_days=10)` is true iff close_t > SMA50_t and SMA50_t > SMA50_{t−10}; `sma_fast_above_slow_both_rising(fast=10, slow=20)` is true iff SMA10_t > SMA20_t, SMA10_t > SMA10_{t−1} and SMA20_t > SMA20_{t−1}. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
+  - Property: for every index series, `close_above_sma_and_rising(sma=50, rising_days=10)` is true iff close_t > SMA50_t and SMA50_t > SMA50_{t−10}; `sma_fast_above_slow_both_rising(fast=10, slow=20, rising_days=k)` is true iff SMA10_t > SMA20_t, SMA10_t > SMA10_{t−k} and SMA20_t > SMA20_{t−k}, a configured rule without `rising_days` uses k = 3, and a series too short for either SMA now or k sessions earlier gives false. Harm: the gate lets entries through in a falling market or blocks them in a rising one, or flips for a night on one down tick of the slow SMA.
 - **[A]** Minervini regime rule: default NIFTY 500 > rising 50-day SMA; validated by backtest with vs without gate (BL "Defaults that are assumptions"). Qullamaggie index NIFTY 500 (Nifty Smallcap 250 is the alternative): validated by backtest.
-- **[OWNER-PENDING]** "both rising" lookback for the Qullamaggie rule: default 1 session; docs silent; owner to confirm.
+- **[A]** "both rising" lookback for the Qullamaggie rule: 3 sessions (owner default, plan audit §6 item 10; was an `[OWNER-PENDING]` 1 session until PR 55, which let the gate flap). A backtest of 1/3/5 can revisit it.
 
 ## §6 S1 default config: `stage2-contraction-breakout`
 
@@ -505,7 +505,7 @@ exits:                                  # evaluated top to bottom
 
 ## §7 S2 default config: `momentum-breakout-ep`
 
-One bot, two playbooks (breakout and episodic pivot) sharing one regime gate, capital pool, sizing and exit stack. Both enter above the 5-minute opening-range high with the stop at the low of the day, and skip any trade whose stop is wider than the stock's average daily range. Parabolic short is excluded (long only). The seed is this YAML, verbatim from BL "Qullamaggie-style bot - default config":
+One bot, two playbooks (breakout and episodic pivot) sharing one regime gate, capital pool, sizing and exit stack. Both enter above the 5-minute opening-range high with the stop at the low of the day, and skip any trade whose stop is wider than a multiple of the stock's average daily range (1× for a breakout, 1.5× for an episodic pivot). Parabolic short is excluded (long only). The seed is this YAML, verbatim from BL "Qullamaggie-style bot - default config" except the regime's explicit `rising_days: 3` (PR 55, plan audit N7):
 
 ```yaml
 bot: momentum-breakout-ep             # Qullamaggie-style
@@ -522,7 +522,7 @@ universe:
 regime:
   index: NIFTY 500                    # assumption; Nifty Smallcap 250 is the alternative
   rule: sma_fast_above_slow_both_rising
-  params: {fast: 10, slow: 20}
+  params: {fast: 10, slow: 20, rising_days: 3}   # both SMAs above their value 3 sessions earlier (PR 55)
 
 playbooks:
   - name: breakout
@@ -567,7 +567,7 @@ exits:
 #### HAT-BOT-070: S2 seed equals the documented config
 - **Statement:** The S2 seed `momentum-breakout-ep` v1 loads, validates and equals the YAML above field for field, with playbooks `breakout` and `episodic_pivot`.
 - **Source:** BL "Qullamaggie-style bot - default config"; B3-B5, B8-B10, PL1.
-- **PR:** 8
+- **PR:** 8, 55
 - **Verification:** CONF `bot_seed_s2_matches_spec`
 - **Acceptance:**
   - Property: the parsed seed file and the YAML block in this section are equal as data, including the `level: max(consolidation_high, opening_range_high)` expression and `required_in: [confirm]`, and both validate. Harm: the bot that runs is not the bot the owner approved.
