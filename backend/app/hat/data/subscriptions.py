@@ -8,10 +8,12 @@ returns the provider delta, so callers never diff before/after snapshots. The re
 synchronous and thread-safe: no I/O, no asyncio, one lock around all state.
 
 The owner's symbol set is always `watchlist | open positions | EP candidates`, in DB symbol
-format. Open positions are part of the set by construction, so no change to the watchlist or the
-candidates can drop one. The registry is a refcount over owners, so releasing HAT's symbols never
-unsubscribes a symbol another owner still holds: the provider is told only
-about symbols no owner holds any more.
+format, plus the heartbeat index (`HEARTBEAT_SYMBOL`, NIFTY 50, PR 39): it ticks all session, so
+feed staleness (HAT-DATA-116) measures the socket rather than a small or illiquid set, and as no
+candidate names it no trigger ever reads its bars. Open positions are part of the set by
+construction, so no change to the watchlist or the candidates can drop one. The registry is a
+refcount over owners, so releasing HAT's symbols never unsubscribes a symbol another owner still
+holds: the provider is told only about symbols no owner holds any more.
 
 The provider calls are injected as plain synchronous callables. This code runs on worker threads
 (job bodies) as well as on the loop, and a callable bound to the live service hands the call to
@@ -33,6 +35,7 @@ from ..models import HatInstrument, HatPosition, HatWatchlistEntry
 
 __all__ = [
     "HAT_OWNER",
+    "HEARTBEAT_SYMBOL",
     "SYMBOL_LIMIT",
     "LiveSubscriptions",
     "SubscriptionRegistry",
@@ -43,6 +46,8 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 HAT_OWNER = "hat"
+# DB format; the provider symbol is `NSE:NIFTY50-INDEX` (`symbols.to_fyers`).
+HEARTBEAT_SYMBOL = "NIFTY50"
 Owner = Hashable
 # DS "Live data": under 200 symbols. A set at or above the limit raises a health alert.
 SYMBOL_LIMIT = 200
@@ -167,7 +172,8 @@ def load_inputs(
 
 
 class LiveSubscriptions:
-    """Keeps the `"hat"` owner's registry entry equal to the union of the three inputs."""
+    """Keeps the `"hat"` owner's registry entry equal to the union of the three inputs and the
+    heartbeat."""
 
     def __init__(
         self,
@@ -193,11 +199,12 @@ class LiveSubscriptions:
 
     def desired(self) -> frozenset[str]:
         inputs = self._inputs
-        return inputs.watchlist | inputs.positions | inputs.candidates
+        return inputs.watchlist | inputs.positions | inputs.candidates | {HEARTBEAT_SYMBOL}
 
     def sync(self, inputs: SubscriptionInputs) -> None:
-        """Make the owner's set `watchlist | positions | candidates` and tell the provider about
-        the symbols no owner held before (subscribe) or holds now (unsubscribe)."""
+        """Make the owner's set `watchlist | positions | candidates | heartbeat` and tell the
+        provider about the symbols no owner held before (subscribe) or holds now
+        (unsubscribe)."""
         with self._update:
             with self._lock:
                 self._inputs = inputs

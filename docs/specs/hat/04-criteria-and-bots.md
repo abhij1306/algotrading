@@ -405,9 +405,9 @@ A **playbook** is a named set of setup, trigger, entry filters and stop; a bot c
   - Property: for every interleaving of trigger events, at most one `hat_signal` row exists per (bot_id, playbook, instrument_id, trade_date). Harm: a repeated trigger buys the same stock twice.
 
 #### HAT-BOT-052: Episodic-pivot setup is built live from the pre-open scan
-- **Statement:** The `episodic_pivot` playbook's setup runs live on candidates from the 09:16 gap scan, not on the nightly watchlist, and candidates come only from 10%/20%-band stocks and F&O names.
-- **Source:** BL "Qullamaggie-style bot" (EP setup comment; India-specific consequence); DS "Live data"; B10.
-- **PR:** 14, 15
+- **Statement:** The `episodic_pivot` playbook's setup runs live on candidates from the 09:16 gap scan, not on the nightly watchlist, and candidates come only from 10%/20%-band stocks and F&O names. A candidate subscribed at 09:17 has an opening range and a day low (its trigger level and its `low_of_day` stop) only from the exchange's day range on its ticks (HAT-DATA-114, PR 39), which stays off until the tick's field names are checked against a recorded tick; until then EP fires only on a name watched from the open (one already on the watchlist or held), and on every other candidate it skips (no opening-range trigger, `stop_input_missing`).
+- **Source:** BL "Qullamaggie-style bot" (EP setup comment; India-specific consequence); DS "Live data"; B10; audit 2026-10-22 triage §18.
+- **PR:** 14, 15, 39
 - **Verification:** PBT `criteria.ep_candidate_bands`
 - **Acceptance:**
   - Property: for every gap-scan result, every EP candidate has a price band of 10% or 20% or is an F&O name, gapped >= 10%, and passes the bot's universe criteria. Harm: the scan subscribes stocks that cannot gap 10%, wasting the symbol budget and producing impossible signals.

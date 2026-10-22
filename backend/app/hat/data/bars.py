@@ -29,6 +29,14 @@ Rules (02-data §11, "Bar builder rules"):
 - A restart mid-session `restore`s the day's stored final bars: their volume, and the opening
   ranges of the symbols the stored coverage says were watched from the open, for each symbol the
   builder has not seen that day (PR 17). The restart itself is a feed gap (PR 22).
+- A symbol first seen late (a 09:17 gap-scan name, a restart, a feed gap) can be *seeded* from a
+  tick that carries the exchange's day high and low so far (PR 39, behind a flag until the field
+  names are checked against a recorded tick). The seed covers every print up to its exchange
+  time, so what the builder missed before it no longer matters; only a feed gap that began at or
+  after the seed arrived does. With a seed taken inside the first bar, the opening range is the
+  seed's range widened by the first bar's own ticks; the day low is the seed's low or a lower
+  final bar's. A seed is kept per (symbol, day) and replaced only after a gap, so a tick after
+  the gap seeds again.
 """
 
 from __future__ import annotations
@@ -121,6 +129,17 @@ class _OpenBar:
         self.volume += tick.qty
 
 
+@dataclass(frozen=True)
+class _Seed:
+    """The exchange's day high and low as of exchange time `at`, from a tick arriving at
+    `arrival`."""
+
+    arrival: datetime
+    at: datetime
+    high: Decimal
+    low: Decimal
+
+
 @dataclass
 class _DayState:
     volume: int = 0
@@ -140,6 +159,8 @@ class BarBuilder:
     _lows: dict[tuple[str, date], list[tuple[datetime, Decimal]]] = field(default_factory=dict)
     _watched: dict[tuple[str, date], datetime] = field(default_factory=dict)
     _gap_from: dict[date, datetime] = field(default_factory=dict)
+    _gaps: dict[date, set[datetime]] = field(default_factory=dict)
+    _seeds: dict[tuple[str, date], list[_Seed]] = field(default_factory=dict)
     _last_arrival: dict[date, datetime] = field(default_factory=dict)
     _seq: int = 0
 
@@ -225,6 +246,37 @@ class BarBuilder:
         gap = self._gap_from.get(day)
         if gap is None or since < gap:
             self._gap_from[day] = since
+        self._gaps.setdefault(day, set()).add(since)
+
+    def seed(self, tick: Tick, high: Decimal, low: Decimal, now: datetime) -> bool:
+        """Seed the symbol's day from `tick`, which arrived at `now` and carries the exchange's
+        day `high` and `low` as of its exchange time. Refused (False) outside the session, when
+        the three prices are not ordered `0 < low <= price <= high`, or while the day's last
+        seed is still good (no feed gap began at or after it arrived)."""
+        require_aware(now)
+        start = self.bar_start(tick.at)
+        if start is None or not Decimal(0) < low <= tick.price <= high:
+            return False
+        day = start.date()
+        seeds = self._seeds.setdefault((tick.symbol, day), [])
+        if seeds and not self._gap_after(day, seeds[-1].arrival, None):
+            return False
+        seeds.append(_Seed(now, tick.at, high, low))
+        return True
+
+    def _gap_after(self, day: date, since: datetime, until: datetime | None) -> bool:
+        """Whether a feed gap began in `[since, until)` that day (`until` None: no end)."""
+        return any(since <= g and (until is None or g < until) for g in self._gaps.get(day, ()))
+
+    def _seed_for(
+        self, symbol: str, day: date, by: datetime, until: datetime | None
+    ) -> _Seed | None:
+        """The latest seed taken before exchange time `by`, if no gap began in `[its arrival,
+        until)` (an earlier seed arrived earlier, so the same gap spoils it too)."""
+        for seed in reversed(self._seeds.get((symbol, day), ())):
+            if seed.at < by:
+                return None if self._gap_after(day, seed.arrival, until) else seed
+        return None
 
     def from_open(self, symbol: str, day: date) -> bool:
         """Whether the symbol's first tick that day arrived at or before the session open."""
@@ -285,10 +337,10 @@ class BarBuilder:
 
     def _forget_before(self, day: date) -> None:
         """Drop the per-day state of earlier days (a process running across days)."""
-        for table in (self._opening, self._days, self._lows, self._watched):
+        for table in (self._opening, self._days, self._lows, self._watched, self._seeds):
             for key in [k for k in table if k[1] < day]:
                 del table[key]
-        for table in (self._gap_from, self._last_arrival):
+        for table in (self._gap_from, self._gaps, self._last_arrival):
             for key in [d for d in table if d < day]:
                 del table[key]
 
@@ -301,32 +353,47 @@ class BarBuilder:
         marked as a gap, so until the feed is seen past the bar nothing is published."""
         gap = self._gap_from.get(day)
         clean = gap is None or (until is not None and gap >= until)
+        return clean and self._seen(day, seen_through) and self.from_open(symbol, day)
+
+    def _seen(self, day: date, through: datetime) -> bool:
+        """Whether a tick (any symbol) arrived at or after `through` that day."""
         last = self._last_arrival.get(day)
-        seen = last is not None and last >= seen_through
-        return clean and seen and self.from_open(symbol, day)
+        return last is not None and last >= through
 
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None:
         """(high, low) of the session's first bar once it is final; None before that, for a
         symbol that had no tick in the first bar, and for one not watched from the open or with
-        a feed gap before the first bar's end (fail closed)."""
+        a feed gap before the first bar's end (fail closed), unless a seed taken inside the first
+        bar with no gap after it before the bar's end covers what was missed: then the seed's
+        range widened by the bar's."""
         first_end = self.session_start(day) + BAR_WIDTH
-        if not self._complete(symbol, day, first_end, first_end):
+        opening = self._opening.get((symbol, day))
+        if opening is None or self._complete(symbol, day, first_end, first_end):
+            return opening
+        seed = self._seed_for(symbol, day, first_end, first_end)
+        if seed is None or not self._seen(day, first_end):
             return None
-        return self._opening.get((symbol, day))
+        return max(seed.high, opening[0]), min(seed.low, opening[1])
 
     def day_low(self, symbol: str, day: date, through: datetime | None = None) -> Decimal | None:
         """The lowest low of the day's final bars (those starting at or before `through`, when
         given); None unless the symbol was watched from the open, no feed gap was marked that
-        day and the feed was seen past the last of those bars (fail closed)."""
+        day and the feed was seen past the last of those bars (fail closed), unless a seed taken
+        inside those bars with no gap after it covers what was missed: then the lower of its low
+        and theirs."""
         lows = [
             (start, low)
             for start, low in self._lows.get((symbol, day), ())
             if through is None or start <= through
         ]
-        if not lows or not self._complete(
-            symbol, day, None, max(start for start, _ in lows) + BAR_WIDTH
-        ):
+        if not lows:
             return None
+        covered = max(start for start, _ in lows) + BAR_WIDTH
+        if not self._complete(symbol, day, None, covered):
+            seed = self._seed_for(symbol, day, covered, None)
+            if seed is None or not self._seen(day, covered):
+                return None
+            lows.append((seed.at, seed.low))
         return min(low for _, low in lows)
 
     def day_volume(self, symbol: str, day: date) -> int:

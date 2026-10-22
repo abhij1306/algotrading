@@ -52,9 +52,10 @@ from app.hat.data.minute_history import (
 )
 from app.hat.data.preopen import GapSource, PreopenGaps
 from app.hat.data.sessions import IST
-from app.hat.data.staleness import STALE_AFTER, StalenessMonitor
+from app.hat.data.staleness import STALE_AFTER, SilenceWatch, StalenessMonitor
 from app.hat.data.subscriptions import (
     HAT_OWNER,
+    HEARTBEAT_SYMBOL,
     LiveSubscriptions,
     SubscriptionInputs,
     SubscriptionRegistry,
@@ -74,6 +75,8 @@ from app.hat.execution.router import placement_refusal
 from app.hat.models import HatEvent, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
 from app.hat.risk import controls
 from app.hat.risk.policy import seed_policy
+from app.hat.settings import load_settings
+from app.utils.env_loader import TRUE_VALUES
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -382,20 +385,57 @@ class Downtime:
         return self.window is not None and self.window[0] <= second < sum(self.window)
 
 
-@example(tape=PROBE, watch=150, dropout=None, restart=None)
-@example(tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None)  # a 10:15 bar
-@example(tape=PROBE, watch=-600, dropout=(100, 60), restart=None)  # a gap inside the first bar
+@example(tape=PROBE, watch=150, dropout=None, restart=None, seeded=False)
+@example(  # a 10:15 bar
+    tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None, seeded=False
+)
+@example(  # a gap inside the first bar
+    tape=PROBE, watch=-600, dropout=(100, 60), restart=None, seeded=False
+)
 @example(  # silent from 09:19:50 (the first bar's low unseen), restarted at 09:20:05
-    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(290, 30), restart=(305, 5)
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)],
+    watch=-600,
+    dropout=(290, 30),
+    restart=(305, 5),
+    seeded=False,
 )
 @example(  # a gap found after the first bar was stored, then a restart before the next bar
-    tape=[(0, 10_000), (285, 9_000), (400, 10_500)], watch=-600, dropout=(281, 40), restart=(325, 5)
+    tape=[(0, 10_000), (285, 9_000), (400, 10_500)],
+    watch=-600,
+    dropout=(281, 40),
+    restart=(325, 5),
+    seeded=False,
 )
 @example(  # the feed drops at 09:19:55; the low of the first bar prints, unseen, at 09:19:57
-    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(295, 60), restart=None
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)],
+    watch=-600,
+    dropout=(295, 60),
+    restart=None,
+    seeded=False,
 )
 @example(  # a restart at 09:21:40; the day's low trades while HAT is down
-    tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30)
+    tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30), seeded=False
+)
+@example(tape=PROBE, watch=150, dropout=None, restart=None, seeded=True)  # a 09:17:30 subscriber
+@example(  # seeded after a restart; the day's low traded while HAT was down
+    tape=[*PROBE, (410, 9_000), (700, 10_200)],
+    watch=-600,
+    dropout=None,
+    restart=(400, 30),
+    seeded=True,
+)
+@example(  # seeded at 09:15:10, then the first bar's low trades unseen in a gap
+    tape=[(10, 10_000), (250, 9_000)], watch=-600, dropout=(200, 100), restart=None, seeded=True
+)
+@example(  # seen from 09:17:30; a restart; the next tick (09:22:30) knows a high after 09:20
+    tape=[*PROBE, (350, 11_500), (450, 10_200)],
+    watch=150,
+    dropout=None,
+    restart=(400, 30),
+    seeded=True,
+)
+@example(  # a gap inside the first bar, then a tick seeds again
+    tape=[*PROBE, (250, 9_500)], watch=-600, dropout=(100, 60), restart=None, seeded=True
 )
 @settings(max_examples=120, deadline=None)
 @given(
@@ -405,20 +445,26 @@ class Downtime:
     watch=st.integers(-900, 1800),  # seconds after 09:15 when HAT's first tick arrives
     dropout=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(30, 900))),
     restart=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(1, 600))),
+    seeded=st.booleans(),
 )
 def test_session_state_never_partial(
     tape: list[tuple[int, int]],
     watch: int,
     dropout: tuple[int, int] | None,
     restart: tuple[int, int] | None,
+    seeded: bool,
 ) -> None:
     """PR 22 (audit F4): whatever HAT missed of the session (a first tick after the open, a feed
     silence of 30 s or more, a restart with its downtime), the opening range it publishes is the
     one the session really had, and the day low it publishes is the real low of the day's final
     bars; otherwise it publishes none. Watched from the open with no gap it publishes both (the
-    opening range also after a restart once the first bar was stored). Harm: EP buys under its
-    true opening-range high, with a stop above the day's real low that is too tight and
-    oversizes the position."""
+    opening range also after a restart once the first bar was stored). PR 39: with the exchange
+    range on (`seeded`, each tick carrying the session's high and low so far), the same holds,
+    and a symbol first seen late, after a restart or after a feed gap, with no gap after, has
+    both: the opening range when it ticked inside the first bar, the day low once that tick's
+    bar is final. Harm:
+    EP buys under its true opening-range high, with a stop above the day's real low that is too
+    tight and oversizes the position; or, without the seed, EP never fires on a gap-scan name."""
     ids = {"AAA": uuid4(), "BBB": uuid4()}
     clock = FixedClock(at_us(8 * 3600 * US))
     opens = at_us(OPEN_SOD * US)
@@ -436,29 +482,45 @@ def test_session_state_never_partial(
                 clock=clock,
                 store=store,
                 instrument_ids=lambda: ids,
+                exchange_range=seeded,
             )
 
         live = start()
+        # the second of the current process's first AAA tick after any dropout
+        seed_at: list[int] = []
+        healed = 0 if dropout is None else sum(dropout)  # no gap after this second
 
         def check(now: datetime) -> None:
             live.step()
             live.persist()
             final = tape_bars(tape, now)
             opening = live.builder.opening_range("AAA", DAY)
+            past = now >= opens + timedelta(seconds=healed)
+            first = seed_at[0] if seeded and seed_at and seed_at[0] >= healed and past else None
             if opening is not None:
                 assert opening == truth
             elif watched and (restart is None or restart[0] > FIRST_FINAL):
                 # watched from the open, first bar stored before any restart: it is published
                 assert truth is None or now < opens + timedelta(seconds=FIRST_FINAL)
+            elif first is not None and first < 300:  # seeded inside the first bar, no gap after
+                assert now < opens + timedelta(seconds=FIRST_FINAL)
             low = live.builder.day_low("AAA", DAY)
             if low is not None:
                 assert low == min(b.low for b in final)
             elif watched and restart is None:
                 assert not final
+            elif first is not None:  # seeded, no gap after: published once the seed's bar is
+                assert now < opens + timedelta(seconds=300 * (first // 300 + 1) + 2)
 
-        tick_at: dict[int, list[int]] = {}
-        for second, paise in tape:
-            tick_at.setdefault(second, []).append(paise)
+        exchange: dict[tuple[int, int], tuple[int, int]] = {}  # the session's (high, low) so far
+        high, low = 0, 10**9
+        for index, (second, paise) in sorted(enumerate(tape), key=lambda e: (e[1][0], e[0])):
+            high, low = max(high, paise), min(low, paise)
+            exchange[(second, index)] = (high, low)
+
+        tick_at: dict[int, list[tuple[int, int]]] = {}
+        for index, (second, paise) in enumerate(tape):
+            tick_at.setdefault(second, []).append((index, paise))
         heartbeat = {
             (s, "BBB") for s in range(-890, 2 * 3600 + 10 * 60, 10)
         }  # the rest of the feed
@@ -473,6 +535,7 @@ def test_session_state_never_partial(
                 clock.set(now)
                 live = start()
                 live.restore(DAY)
+                seed_at.clear()
                 back = True
             clock.set(now)
             if hidden.hides(second) or (kind == "AAA" and second < watch):
@@ -483,19 +546,25 @@ def test_session_state_never_partial(
             elif kind == "BBB":
                 live.on_tick({"symbol": "BBB", "ltp": 50.0, "exch_feed_time": now.timestamp()})
             elif kind == "AAA":
-                for paise in tick_at[second]:
+                for index, paise in tick_at[second]:
+                    high, low = exchange[(second, index)]
                     live.on_tick(
                         {
                             "symbol": "AAA",
                             "ltp": float(Decimal(paise).scaleb(-2)),
                             "exch_feed_time": now.timestamp(),
+                            "high_price": float(Decimal(high).scaleb(-2)),
+                            "low_price": float(Decimal(low).scaleb(-2)),
                         }
                     )
+                    if not seed_at or seed_at[0] < healed <= second:
+                        seed_at[:] = [second]
             if kind != "BBB":
                 check(now)
 
 
-@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high")
+@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high", seeded=False)
+@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high", seeded=True)
 @given(
     steps=st.lists(
         st.tuples(st.integers(0, 2 * 3600), st.integers(9_000, 11_000), st.integers(0, 5)),
@@ -503,16 +572,19 @@ def test_session_state_never_partial(
     ),
     watch=st.integers(-1, 1800),
     expr=st.sampled_from(["pivot", "opening_range_high"]),
+    seeded=st.booleans(),
 )
 @settings(max_examples=120, deadline=None)
 def test_trigger_never_uses_a_partial_session(
-    steps: list[tuple[int, int, int]], watch: int, expr: str
+    steps: list[tuple[int, int, int]], watch: int, expr: str, seeded: bool
 ) -> None:
     """PR 22 (audit F4), through the real bar builder and trigger monitor: for a candidate HAT
     first saw at `watch` seconds after 09:15, an opening-range trigger fires only at the real
     opening-range high, and a `low_of_day` stop is planned from the day's real low (less a
     tick) or not at all (`stop_input_missing`). Watched from before the open, both are exactly
-    the session's. Harm: a breakout bought under its own level, with an oversized position."""
+    the session's; so is the stop of a late candidate whose ticks carry the exchange's high and
+    low (PR 39, `seeded`). Harm: a breakout bought under its own level, with an oversized
+    position."""
     book = trigger_support.playbook(
         trigger=[{"type": "price_breaks_level", "params": {"level": expr}}],
         stop={"rule": "low_of_day", "buffer_ticks": 1},
@@ -521,9 +593,20 @@ def test_trigger_never_uses_a_partial_session(
     monitor = TriggerMonitor(builder)
     monitor.add(trigger_support.candidate(book, pivot=trigger_support.paise(10_000)))
     first_seen = at_us((OPEN_SOD + watch) * US)
-    seen = [t for t in trigger_support.session_ticks("AAA", steps) if t.at >= first_seen]
+    tape_ticks = trigger_support.session_ticks("AAA", steps)
+    seen = [t for t in tape_ticks if t.at >= first_seen]
+
+    def so_far(tick: Tick) -> tuple[Decimal, Decimal]:
+        prices = [t.price for t in tape_ticks if t.at <= tick.at]
+        return max(prices), min(prices)
+
     _bars, fired = trigger_support.drive(
-        monitor, builder, seen, at_us(16 * 3600 * US), from_open=watch < 0
+        monitor,
+        builder,
+        seen,
+        at_us(16 * 3600 * US),
+        from_open=watch < 0,
+        seed=so_far if seeded else None,
     )
     tape = [(s, p) for s, p, _q in steps]
     tick = Decimal("0.05")
@@ -535,7 +618,7 @@ def test_trigger_never_uses_a_partial_session(
         real_low = min(b.low for b in tape_bars(tape, trigger.at))
         expected = floor_to_tick(real_low - tick, tick)
         stop = trigger.plan.stop
-        if watch < 0 and expected < trigger.plan.entry:
+        if (watch < 0 or seeded) and expected < trigger.plan.entry:
             assert stop == expected
         else:
             assert stop is None or stop == expected
@@ -900,6 +983,173 @@ def test_health_kill_writes_out_of_order(changes: list[bool], data: st.DataObjec
         assert controls.kill_state(session, uuid4()).health_tripped == changes[-1]
 
 
+@example(price=10_000, high=9_999, low=9_000, second=150)  # the price above the high
+@example(price=10_000, high=11_000, low=0, second=150)
+@given(
+    price=st.integers(1, 20_000),
+    high=st.integers(-10, 20_000),
+    low=st.integers(-10, 20_000),
+    second=st.integers(-60, 600),
+)
+def test_seed_needs_ordered_prices(price: int, high: int, low: int, second: int) -> None:
+    """PR 39: a seed is taken only from a tick inside the session whose day low and high bracket
+    its own price above zero (`0 < low <= price <= high`); any other leaves the opening range
+    and day low as they would be without it. Harm: a garbled or stale high/low field publishes
+    an opening range or a day low the session never had."""
+    opens = at_us(OPEN_SOD * US)
+    at = opens + timedelta(seconds=second)
+    tick = Tick("AAA", at, Decimal(price).scaleb(-2))
+    plain, seeded = BarBuilder(), BarBuilder()
+    for builder in (plain, seeded):
+        builder.on_tick(tick, at)
+    taken = seeded.seed(tick, Decimal(high).scaleb(-2), Decimal(low).scaleb(-2), at)
+    ordered = 0 < low <= price <= high and 0 <= second < CLOSE_SOD - OPEN_SOD
+    assert taken == ordered
+    end = opens + timedelta(seconds=900)
+    for builder in (plain, seeded):
+        builder.on_tick(Tick("BBB", end, Decimal(1)), end)
+        builder.advance(end)
+    if not ordered:
+        assert seeded.opening_range("AAA", DAY) == plain.opening_range("AAA", DAY)
+        assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
+
+
+@example(seed=None, silent=None)
+@example(seed="1", silent="0")
+@given(
+    seed=st.none() | st.sampled_from(["1", "true", " On ", "yes", "0", "off", "", "no", "maybe"]),
+    silent=st.none() | st.sampled_from(["1", "45", "300", "0", "-3", "x", ""]),
+)
+def test_live_flags_parsed(seed: str | None, silent: str | None) -> None:
+    """PR 39 (HAT-DATA-114, HAT-DATA-116): `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed
+    on exactly for a true value (off unset or for anything else), and
+    `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120. Harm: unverified tick
+    fields seed the opening range and the stop by default, or a typo reports every symbol."""
+    env = {}
+    if seed is not None:
+        env["HAT_EXCHANGE_DAY_RANGE"] = seed
+    if silent is not None:
+        env["HAT_SYMBOL_SILENT_SECONDS"] = silent
+    loaded = load_settings(env)
+    assert loaded.exchange_day_range == (seed is not None and seed.strip().lower() in TRUE_VALUES)
+    number = int(silent) if silent is not None and silent.lstrip("-").isdigit() else 0
+    assert loaded.symbol_silent_seconds == (number if number > 0 else 120)
+
+
+# --- one symbol's silence (PR 39: HAT-DATA-116) -----------------------------------------------
+
+SILENT_AFTER = 60  # seconds, the watch's threshold in the property
+QUIET = ["AAA", "BBB", "CCC"]
+
+
+@example(  # AAA ticks once and goes quiet; an outage pauses the count; the market closes a while
+    closed=(400, 200), ticks=[(20, "AAA")], watches=[], outage=(100, 40), raises=False
+)
+@settings(max_examples=80, deadline=None)
+@given(
+    closed=st.one_of(st.none(), st.tuples(st.integers(0, 900), st.integers(1, 400))),
+    ticks=st.lists(st.tuples(st.integers(0, 900), st.sampled_from(QUIET)), max_size=40),
+    watches=st.lists(
+        st.tuples(st.integers(0, 900), st.frozensets(st.sampled_from(QUIET))), max_size=6
+    ),
+    outage=st.one_of(st.none(), st.tuples(st.integers(0, 900), st.integers(1, 300))),
+    raises=st.booleans(),
+)
+def test_symbol_silence_reported_once(
+    closed: tuple[int, int] | None,
+    ticks: list[tuple[int, str]],
+    watches: list[tuple[int, frozenset[str]]],
+    outage: tuple[int, int] | None,
+    raises: bool,
+) -> None:
+    """PR 39: with the heartbeat ticking, a watched symbol is reported (one alert, and one
+    resubscribe of the symbols found at that check) exactly when it has been silent for the
+    threshold, counted only while it was watched, the market open and the feed live, and once
+    per silence: again only after a tick of it, an unwatch or the close. Neither a quiet symbol
+    nor a failing alert or resubscribe ever reaches the feed's health. Harm: an illiquid or
+    band-locked name makes the account manage-only all day, or a dead subscription goes
+    unnoticed."""
+    start = 10 * 3600
+    shut = Downtime(closed)  # the market is closed for a while (as overnight), then reopens
+
+    def is_open(when: datetime) -> bool:
+        return not shut.hides(round((when - at_us(start * US)).total_seconds()))
+
+    clock = FixedClock(at_us(start * US))
+    sink = Sink()
+    alerts: list[tuple[str, datetime]] = []
+    resubscribed: list[tuple[datetime, list[str]]] = []
+    watched: set[str] = {*QUIET, HEARTBEAT_SYMBOL}
+
+    def alert(symbol: str, now: datetime) -> None:
+        alerts.append((symbol, now))
+        if raises:
+            raise RuntimeError("alert sink down")
+
+    def resubscribe(symbols: list[str]) -> None:
+        resubscribed.append((clock.now(), symbols))
+        if raises:
+            raise RuntimeError("provider down")
+
+    watch = SilenceWatch(is_open, alert, resubscribe, silent_after=timedelta(seconds=SILENT_AFTER))
+    live = LiveData(
+        health=sink, is_open=is_open, clock=clock, silence=watch, watched=lambda: watched
+    )
+    hidden = Downtime(outage)
+    changes = dict(sorted(watches))
+    at_second: dict[int, list[str]] = {}
+    for second, symbol in ticks:
+        at_second.setdefault(second, []).append(symbol)
+    checks: list[tuple[datetime, frozenset[str], bool, bool]] = []  # (t, watched, open, stale)
+    arrivals: dict[str, list[datetime]] = {s: [] for s in QUIET}
+    for second in range(901):
+        now = at_us((start + second) * US)
+        clock.set(now)
+        if second in changes:
+            watched = {*changes[second], HEARTBEAT_SYMBOL}
+        if not hidden.hides(second):
+            names = at_second.get(second, []) + ([HEARTBEAT_SYMBOL] if second % 10 == 0 else [])
+            for symbol in names:
+                live.on_tick({"symbol": symbol, "ltp": 100.0, "exch_feed_time": now.timestamp()})
+                if symbol in arrivals:
+                    arrivals[symbol].append(now)
+        if second % 5 == 0:
+            live.step()
+            checks.append((now, frozenset(watched), is_open(now), live.staleness.stale))
+
+    found = {(s, t) for s, t in alerts}
+    assert len(found) == len(alerts)  # one alert per symbol and check
+    for t, symbols in resubscribed:
+        assert symbols == sorted(s for s, at in alerts if at == t)
+    assert {t for _, t in alerts} == {t for t, _ in resubscribed}
+    limit = timedelta(seconds=SILENT_AFTER)
+    for symbol in QUIET:
+        for i, (t, names, open_, stale) in enumerate(checks):
+            if symbol not in names:
+                assert (symbol, t) not in found
+                continue
+            first = i
+            while first > 0 and symbol in checks[first - 1][1]:
+                first -= 1
+            run = checks[first : i + 1]
+            c0 = run[0][0]
+            own = [a for a in arrivals[symbol] if c0 <= a <= t]
+            quiet_from = max([c0, *own, *(c for c, _, o, st_ in run if not o or st_)])
+            episode = max([c0, *own, *(c for c, _, o, _ in run if not o)])
+            reported = any((symbol, c) in found for c, *_ in run if episode <= c < t)
+            expected = open_ and not stale and t - quiet_from >= limit and not reported
+            assert ((symbol, t) in found) == expected, (symbol, t)
+    opens = at_us(start * US)
+    later = [t for t in sink.stale if t != opens]  # the first tick ends the silence before it
+    if outage is None:
+        assert later == []  # the heartbeat ticks: no quiet symbol is a stale feed
+    for t in later:  # only the outage silences the feed
+        assert outage is not None
+        assert (
+            opens + timedelta(seconds=outage[0]) < t <= opens + timedelta(seconds=sum(outage) + 5)
+        )
+
+
 # --- triggers on final bars (HAT-EXEC-120) -----------------------------------------------------
 
 
@@ -1088,7 +1338,10 @@ def test_listener_isolation(
 
 # --- subscriptions (HAT-DATA-112) --------------------------------------------------------------
 
-symbol_sets = st.frozensets(st.sampled_from([f"S{i}" for i in range(12)]), max_size=8)
+# the heartbeat is in the pool, so inputs and other owners also hold it (the refcount)
+symbol_sets = st.frozensets(
+    st.sampled_from([*(f"S{i}" for i in range(12)), HEARTBEAT_SYMBOL]), max_size=8
+)
 sub_inputs = st.builds(SubscriptionInputs, symbol_sets, symbol_sets, symbol_sets)
 
 
@@ -1180,9 +1433,10 @@ def test_candidates_never_overwrite_refresh(
 )
 def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
     """For every state of watchlists, positions and candidates, the `"hat"` owner's set equals
-    watchlist | positions | candidates, open positions are always in it, the provider is
-    subscribed to exactly the symbols some owner holds, and releasing HAT's symbols never
-    unsubscribes a symbol another owner holds. A set at or above the limit raises an alert."""
+    watchlist | positions | candidates | the heartbeat (PR 39: from the first sync until HAT
+    releases its symbols), open positions are always in it, the provider is subscribed to
+    exactly the symbols some owner holds, and releasing HAT's symbols never unsubscribes a
+    symbol another owner holds. A set at or above the limit raises an alert."""
     registry = SubscriptionRegistry(str.upper)
     provider: set[str] = set()
     alerts: list[str] = []
@@ -1199,6 +1453,7 @@ def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
 
     subs = LiveSubscriptions(registry, subscribe, unsubscribe, alerts.append, limit=7)
     inputs = SubscriptionInputs()
+    active = False  # HAT holds its set: synced since the last release
     for op in ops:
         alerts_before = len(alerts)
         if op[0] == "hat":
@@ -1216,7 +1471,10 @@ def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
         else:
             inputs = SubscriptionInputs()
             subs.release_all()
+        active = op[0] in ("hat", "candidates") or (active and op[0] != "release")
         wanted = {s.upper() for s in inputs.watchlist | inputs.positions | inputs.candidates}
+        if active:
+            wanted.add(HEARTBEAT_SYMBOL)
         assert set(registry.symbols_of(HAT_OWNER)) == wanted
         assert {s.upper() for s in inputs.positions} <= set(registry.symbols_of(HAT_OWNER))
         assert provider == registry.all_symbols()

@@ -12,6 +12,12 @@ PR 51): a Take, a placement or an exit uses it only through `usable_price`, whic
 the stale threshold old (HAT-DATA-116) or outside the day's price band. No quote is ever read
 from the broker's REST API, so the loop spends none of the call budget (HAT-BRK-082).
 
+A symbol first seen after the open is seeded from the exchange's day high and low on its tick
+(`DAY_HIGH_FIELD`, `DAY_LOW_FIELD`, PR 39) only when `exchange_range` is on: the field names are
+not yet checked against a recorded tick, so the flag stays off and such a symbol has no opening
+range or day low until they are (HAT-DATA-114). A watched symbol silent for long is reported by
+`silence` (an alert and a resubscribe, never a kill).
+
 Nothing here runs unless HAT is enabled: the wiring (PR 17) builds a `LiveData` only when
 `HAT_ENABLED` is true, so with HAT off the feed has no listener and behaves exactly as before.
 """
@@ -21,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -32,13 +38,17 @@ from sqlalchemy.orm import Session
 from app.hat.clock import SYSTEM_CLOCK, Clock
 
 from ..events import record
+from ..notify import Notifier
 from ..time import trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore, Coverage
 from .preopen import PreopenGaps
-from .staleness import STALE_AFTER, FeedHealth, StalenessMonitor
+from .staleness import STALE_AFTER, FeedHealth, SilenceWatch, StalenessMonitor
 
 __all__ = [
+    "ALERT_SYMBOL_SILENT",
+    "DAY_HIGH_FIELD",
+    "DAY_LOW_FIELD",
     "PRICE_OUT_OF_BAND",
     "PRICE_STALE",
     "PRICE_UNKNOWN",
@@ -47,7 +57,9 @@ __all__ = [
     "Quote",
     "TickFeed",
     "SymbolProvider",
+    "off_loop",
     "run_listener_call",
+    "silence_alert",
     "threadsafe_provider",
     "tick_from_payload",
     "usable_price",
@@ -56,6 +68,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 TICK_TIME_FIELDS = ("exch_feed_time", "last_traded_time")
+ALERT_SYMBOL_SILENT = "symbol_silent"
+# [A] The exchange's day high and low so far on a tick; unverified (no recorded tick yet).
+DAY_HIGH_FIELD = "high_price"
+DAY_LOW_FIELD = "low_price"
 STEP_SECONDS = 1.0
 EVENT_WRITE_ATTEMPTS = 3
 
@@ -167,6 +183,25 @@ def run_listener_call(call: Callable[[], None], what: str) -> None:
         logger.exception("%s failed", what)
 
 
+def off_loop(work: Callable[[], None]) -> None:
+    """Run blocking `work` on a worker thread when called on the loop, else inline."""
+    try:
+        asyncio.get_running_loop().run_in_executor(None, work)
+    except RuntimeError:  # no loop (a plain thread): run inline
+        work()
+
+
+def silence_alert(notifier: Notifier) -> Callable[[str, datetime], None]:
+    """`SilenceWatch`'s alert as the health alert `symbol_silent` for the symbol, sent off the
+    loop (a notifier blocks on its transport)."""
+
+    def alert(symbol: str, now: datetime) -> None:
+        day = trade_date_of(now)
+        off_loop(lambda: notifier.alert(ALERT_SYMBOL_SILENT, day, {"symbol": symbol}))
+
+    return alert
+
+
 class EventFeedHealth:
     """`FeedHealth` that records `feed.stale` in the event log and tells `on_change` (the health
     kill) at once. The insert runs on a worker thread, because the monitor is driven from the
@@ -196,10 +231,7 @@ class EventFeedHealth:
 
     @staticmethod
     def _submit(work: Callable[[], None]) -> None:
-        try:
-            asyncio.get_running_loop().run_in_executor(None, work)
-        except RuntimeError:  # no loop (a plain thread): write inline
-            work()
+        off_loop(work)
 
     def _write(self, now: datetime, silent_seconds: int | None) -> None:
         day = trade_date_of(now)
@@ -233,10 +265,16 @@ class LiveData:
         builder: BarBuilder | None = None,
         store: BarStore | None = None,
         instrument_ids: Callable[[], Mapping[str, uuid.UUID]] = dict,
+        exchange_range: bool = False,
+        silence: SilenceWatch | None = None,
+        watched: Callable[[], Collection[str]] = frozenset,
     ) -> None:
         self._clock = clock
         self.builder = builder or BarBuilder()
         self.staleness = StalenessMonitor(health, is_open)
+        self.silence = silence
+        self._watched = watched
+        self._exchange_range = exchange_range
         self.gaps = PreopenGaps()
         self._store = store
         self._instrument_ids = instrument_ids
@@ -293,13 +331,28 @@ class LiveData:
         tick = tick_from_payload(payload, now, self._last_volume)
         if tick is not None:
             self.builder.on_tick(tick, now)
+            if self._exchange_range:
+                self._seed(payload, tick, now)
+            if self.silence is not None:
+                self.silence.on_tick(tick.symbol, now)
             for listener in self._tick_listeners:
                 run_listener_call(lambda fn=listener: fn(tick), "tick listener")
 
+    def _seed(self, payload: Mapping[str, Any], tick: Tick, now: datetime) -> None:
+        """Seed the builder from the tick's exchange day high and low, when it has both and its
+        own exchange time (the fields are as of that time, not the arrival)."""
+        high = _decimal(payload.get(DAY_HIGH_FIELD))
+        low = _decimal(payload.get(DAY_LOW_FIELD))
+        if high is not None and low is not None and _exchange_time(payload) is not None:
+            self.builder.seed(tick, high, low, now)
+
     def step(self) -> list[Bar]:
-        """One timer step: finalise bars, notify bar listeners in order, re-check staleness."""
+        """One timer step: finalise bars, notify bar listeners in order, re-check staleness and
+        each watched symbol's silence."""
         now = self._clock.now()
         self.staleness.check(now)
+        if self.silence is not None:
+            self.silence.check(now, self._watched(), self.staleness.stale)
         self._note_gap(now)
         finals = self.builder.advance(now)
         for bar in finals:
