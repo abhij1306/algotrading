@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import trades
-from app.hat.execution.fills import FillSync
+from app.hat.execution.fills import FillSync, SaleBand
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.manage import TradeManager
 from app.hat.execution.protect import WORKING, StopDesk
@@ -66,7 +66,8 @@ class ManageRig:
     manager, all over the Fyers adapter and `FakeBroker`. A lost answer is settled at the next
     look (`settle_after` 0) unless a property sets the wait; the settle reads the wall clock
     moved on by `elapsed`. `tick` is the instrument's tick the stop desk reads (a property may
-    change it between calls)."""
+    change it between calls). `band`, `resend` and `page_after` are the PR 48 market price
+    protection inputs (off and absent by default)."""
 
     def __init__(
         self,
@@ -76,6 +77,9 @@ class ManageRig:
         clock: Callable[[], datetime] | None = None,
         ticker: Callable[[], float] | None = None,
         settle_after: timedelta = timedelta(0),
+        band: SaleBand | None = None,
+        resend: bool = False,
+        page_after: int = 3,
     ) -> None:
         self.session = session
         self.elapsed = timedelta(0)
@@ -131,7 +135,9 @@ class ManageRig:
             settle_after=settle_after,
             wall=self.wall,
         )
-        self.fills = FillSync(broker, self.desk, self.notifier)
+        self.fills = FillSync(
+            broker, self.desk, self.notifier, band=band, resend=resend, page_after=page_after
+        )
         self.manager = TradeManager(
             broker,
             self.guard,
@@ -142,6 +148,8 @@ class ManageRig:
             clock=clock,
             settle_after=settle_after,
             wall=self.wall,
+            band=band,
+            resend=resend,
             **({"ticker": ticker} if ticker is not None else {}),
         )
         self._trades = 0

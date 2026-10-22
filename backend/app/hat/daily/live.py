@@ -51,7 +51,12 @@ from ..engine.live_trades import record_close_evaluation
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.rescale import manage_only
 from ..engine.strategy.config import parse_config
-from ..engine.trigger import DailyInputs, lower_circuit_price, upper_circuit_price
+from ..engine.trigger import (
+    DailyInputs,
+    locked_lower_circuit,
+    lower_circuit_price,
+    upper_circuit_price,
+)
 from ..execution.manage import in_close_window
 from ..execution.modes import SHADOW, bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
@@ -83,6 +88,7 @@ __all__ = [
     "LivePrices",
     "LiveRoute",
     "PriceBook",
+    "SaleBands",
     "ShadowExits",
     "band_bounds",
 ]
@@ -145,6 +151,29 @@ def band_bounds(daily: DailyInputs) -> tuple[Decimal | None, Decimal | None]:
         None if lower is None else lower - slack,
         None if upper is None else upper + slack,
     )
+
+
+class SaleBands:
+    """The day's lower band of an instrument for its sales (PR 48, `fills.SaleBand`): the lower
+    circuit price from the stored band (02 §2), and whether the last trade the feed gave is at it
+    (the instrument is locked at its lower circuit). A locked instrument trades seldom, so its
+    last trade is read whatever its age."""
+
+    def __init__(self, quotes: PriceBook, book: DailyBook) -> None:
+        self._quotes = quotes
+        self._book = book
+
+    def _daily(self, session: Session, instrument_id: uuid.UUID, now: datetime) -> DailyInputs:
+        return self._book.day(trade_date_of(now)).daily(session, instrument_id)
+
+    def lower(self, session: Session, instrument_id: uuid.UUID, now: datetime) -> Decimal | None:
+        return lower_circuit_price(self._daily(session, instrument_id, now))
+
+    def locked(self, session: Session, instrument_id: uuid.UUID, now: datetime) -> bool | None:
+        quote = self._quotes.quote(instrument_id)
+        if quote is None:
+            return None
+        return locked_lower_circuit(quote.price, self._daily(session, instrument_id, now))
 
 
 class LivePrices:

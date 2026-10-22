@@ -36,7 +36,7 @@ from ..clock import Clock
 from ..engine.lifecycle import TRIGGERED
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
-from ..execution.fills import FillSync, watch_closely
+from ..execution.fills import FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
 from ..execution.modes import AUTO
@@ -210,8 +210,15 @@ class Desks:
         calendar: Callable[[], SessionCalendar | None],
         tick_for: TickFor,
         today: Callable[[], date] | None = None,
+        band: SaleBand | None = None,
+        resend: bool = False,
+        page_after: int = 3,
     ) -> None:
         self._session_factory = session_factory
+        # PR 48: the day's lower band for sales, and `HAT_MPP_RESEND` with its page threshold
+        self._band = band
+        self._resend = resend
+        self._page_after = page_after
         self._today = today  # the guards' trade date (the wall clock's when None)
         self._registry = SessionRegistry()
         self.by_account: dict[uuid.UUID, AccountDesk] = {}
@@ -250,7 +257,14 @@ class Desks:
         guard = ExecutionGuard() if self._today is None else ExecutionGuard(today=self._today)
         reconciler = ReconciliationService(broker, guard, notifier_sink(notifier), notifier)
         stops = StopDesk(broker, guard, tick_for=tick_for, calendar=calendar, notifier=notifier)
-        fills = FillSync(broker, stops, notifier)
+        fills = FillSync(
+            broker,
+            stops,
+            notifier,
+            band=self._band,
+            resend=self._resend,
+            page_after=self._page_after,
+        )
         manager = TradeManager(
             broker,
             guard,
@@ -258,6 +272,8 @@ class Desks:
             fills,
             calendar=calendar,
             notifier=notifier,
+            band=self._band,
+            resend=self._resend,
         )
         router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer)
         return AccountDesk(
