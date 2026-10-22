@@ -338,7 +338,7 @@ create table hat_risk_policy_version (
 | bot_id | uuid FK hat_bot null | required when scope = bot |
 | state | text | tripped, armed |
 | tripped_at | timestamptz | |
-| reason | text | drawdown_account, drawdown_bot, manual, data_health, broker_health |
+| reason | text | drawdown_account, drawdown_bot, manual, data_health, feed_health, broker_health |
 | rearmed_at | timestamptz null | |
 
 **`hat_exposure_state`**: PK bot_id; progressive-exposure ladder position.
@@ -366,7 +366,7 @@ create table hat_risk_policy_version (
 - **Verification:** DB `governance.domain_checks`
 - **Acceptance:**
   - Property: for every one of these columns, inserting or updating to a value outside its §3 domain raises on Postgres and SQLite, and `hat_bot.execution_mode` defaults to `shadow`. Harm: an unknown mode such as the superseded `signal` reaches the router and is treated as auto.
-- **[OWNER-PENDING]** Value sets the docs do not list: `hat_kill_switch.state` {tripped, armed}, `hat_kill_switch.reason` {drawdown_account, drawdown_bot, manual, data_health, broker_health}, `hat_mode_change.via` {telegram, dashboard} and `hat_quality_check.status` {PASS, FAIL}: defaults derived from BL "Kill switches" and the event catalogue; owner to confirm.
+- **[OWNER-PENDING]** Value sets the docs do not list: `hat_kill_switch.state` {tripped, armed}, `hat_kill_switch.reason` {drawdown_account, drawdown_bot, manual, data_health, feed_health, broker_health}, `hat_mode_change.via` {telegram, dashboard} and `hat_quality_check.status` {PASS, FAIL}: defaults derived from BL "Kill switches" and the event catalogue; owner to confirm.
 
 #### HAT-SCH-032: Bots and strategy versions hold no risk numbers
 - **Statement:** `hat_bot` has no risk columns and a strategy version config cannot set size; every risk number lives in `hat_risk_policy_version.policy`.
@@ -828,10 +828,12 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 #### HAT-SCH-066: Monthly partitions exist ahead of time
 - **Statement:** `ensure_hat_schema` creates the current month's and the next 2 months' `hat_event` partitions, and the nightly `events.partitions` job keeps creating them ahead.
 - **Source:** SCH "Event log" ("monthly partitions"); PLAN §3 Migrations item 2, PR 3.
-- **PR:** 3
-- **Verification:** DB `events.partitions_ahead`
+- **PR:** 3, 17
+- **Verification:** DB `events.partitions_ahead`, DB `events.partitions_job`
 - **Acceptance:**
   - Property: after `ensure_hat_schema` or the partition job runs at any date d, partitions covering the month of d and the 2 following months exist, and an event recorded at any instant in that range lands in the partition of its month. Harm: on the first day of an uncovered month every event insert fails, and with it every state change.
+  - Property: the job reads back the partitions that exist; with less than one month ahead of d's month, or when creating them fails, it alerts `events.partitions_short` and fails with that code. Harm: the partitions run out unseen.
+- **Design (PR 17):** no DEFAULT partition: rows in it would block attaching the month's partition later, and the alert gives weeks of warning instead.
 
 #### HAT-SCH-067: Event ids increase on SQLite too
 - **Statement:** On SQLite, where the composite PK with identity is not supported, event ids are assigned by an emulation (sequence table or Python), chosen and documented in PR 3.
@@ -1180,7 +1182,7 @@ The repo has no Alembic: `app/database.py:init_db()` runs `Base.metadata.create_
 - **Statement:** With `HAT_ENABLED=true`, the HAT runtime refuses to start when the database is SQLite (fail closed); SQLite is only for tests.
 - **Source:** PLAN §3 Migrations item 6 ("DB-enforced governance is part of the design").
 - **PR:** 2, 17
-- **Verification:** CONF `runtime.refuses_sqlite`
+- **Verification:** CONF `hat_runtime_requires_postgres`
 - **Acceptance:**
   - Property: for every settings combination with `HAT_ENABLED=true` and a SQLite URL, HAT startup raises before any job or live task starts, and SmartTrader's own startup is unaffected. Harm: HAT trades without the triggers that protect stops, versions and the event log.
 

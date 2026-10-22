@@ -59,15 +59,19 @@ def kill_rows(draw: st.DrawFn) -> list[KillRow]:
     st.one_of(st.none(), st.sampled_from(("risk", "health"))),
 )
 def test_current_state(rows: list, scope: str, channel: str | None) -> None:
-    """A (scope, bot) is tripped exactly when some channel's latest row is a trip: the risk
-    channel (drawdown, manual) and the health channel (data, broker) are read apart so an
-    automatic health re-arm never hides a tripped drawdown or manual kill; with no rows it is
-    armed; on a time tie the trip wins."""
+    """A (scope, bot) is tripped exactly when some stream's latest row is a trip: the risk
+    reasons (drawdown, manual) form one stream and each health reason (data, feed, broker) its
+    own, so an automatic health re-arm never hides a tripped drawdown or manual kill nor another
+    source's health trip; with no rows it is armed; on a time tie the trip wins."""
     bot = BOT_A if scope == "bot" else None
     mine = [r for r in rows if r.scope == scope]
+    if channel is not None:
+        mine = [r for r in mine if kill.channel_of(r.reason) == channel]
     expected = ARMED
-    for name in ("risk", "health") if channel is None else (channel,):
-        group = [r for r in mine if kill.channel_of(r.reason) == name]
+    for name in ("risk", *kill.HEALTH_REASONS):
+        group = [
+            r for r in mine if (r.reason if r.reason in kill.HEALTH_REASONS else "risk") == name
+        ]
         if not group:
             continue
         top = max(r.occurred_at for r in group)
@@ -84,6 +88,9 @@ def test_current_state_other_key_untouched(rows: list) -> None:
 
 
 # --- the service, as a state machine ---------------------------------------------------------
+
+# The account's health sources an op's index picks: the quality gate and the live feed.
+ACCOUNT_HEALTH = ("data_health", "feed_health")
 
 OPS = st.lists(
     st.tuples(
@@ -116,14 +123,16 @@ def test_kill_service_matches_model(ops: list) -> None:
     """After any sequence of trips, health changes, re-arms, pauses and resumes: a bot is
     manage-only exactly when the account kill, its own kill, its health kill, the account
     health kill or its pause says so; a pause or resume never touches a kill; a health pass
-    never re-arms a drawdown or manual kill; a drawdown or manual re-arm needs a user and a
+    never re-arms a drawdown or manual kill; a health source (the gate's `data_health`, the
+    feed's `feed_health`) clears only its own trip, so the feed recovering never clears a failed
+    gate (HAT-DATA-065); a drawdown or manual re-arm needs a user and a
     second confirmation; every state change appends its event."""
     engine = memory_engine()
     with Session(engine) as session:
         bots = [seed_bot(session), seed_bot(session)]
         session.commit()
         risk = {"acct": False, "bot": [False, False]}
-        health = {"acct": False, "bot": [False, False]}
+        health: dict = {"acct": dict.fromkeys(ACCOUNT_HEALTH, False), "bot": [False, False]}
         paused = [False, False]
         events = 0
         clock = AT
@@ -154,18 +163,19 @@ def test_kill_service_matches_model(ops: list) -> None:
                 events += row is not None
                 health["bot"][i] = op == "health_fail"
             elif op in ("account_health_fail", "account_health_ok"):
+                source = ACCOUNT_HEALTH[i]
                 row = sync_health(
                     session,
                     scope="account",
                     bot_id=None,
                     failing=op == "account_health_fail",
-                    reason="broker_health",
+                    reason=source,
                     now=clock,
                 )
-                changed = health["acct"] != (op == "account_health_fail")
+                changed = health["acct"][source] != (op == "account_health_fail")
                 assert (row is not None) is changed
                 events += row is not None
-                health["acct"] = op == "account_health_fail"
+                health["acct"][source] = op == "account_health_fail"
             elif op in ("rearm_bot", "rearm_account"):
                 scope = "bot" if op == "rearm_bot" else "account"
                 row = rearm_kill(
@@ -214,13 +224,14 @@ def test_kill_service_matches_model(ops: list) -> None:
                 state = kill_state(session, other)
                 assert state.account_tripped == risk["acct"]
                 assert state.bot_tripped == risk["bot"][j]
-                assert state.health_tripped == (health["bot"][j] or health["acct"])
+                account_health = any(health["acct"].values())
+                assert state.health_tripped == (health["bot"][j] or account_health)
                 assert state.paused == paused[j]
                 assert state.manage_only == (
                     risk["acct"]
                     or risk["bot"][j]
                     or health["bot"][j]
-                    or health["acct"]
+                    or account_health
                     or paused[j]
                 )
         total = len(session.scalars(select(HatEvent)).all())

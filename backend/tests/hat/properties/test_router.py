@@ -12,12 +12,12 @@ from types import SimpleNamespace
 
 from hat.fakes.broker import FakeBroker, accepted, rejected
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session
+from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
@@ -30,6 +30,7 @@ from app.hat.execution.reconcile import ReconciliationService, notifier_sink
 from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
     ALERT_ORDER_REJECTED,
+    SESSION_NOT_LIVE,
     ExecutionRouter,
     PlacementCheck,
 )
@@ -39,6 +40,7 @@ from app.hat.models import (
     HatApproval,
     HatBot,
     HatBrokerAccount,
+    HatBrokerSession,
     HatEvent,
     HatInstrument,
     HatMarket,
@@ -98,6 +100,7 @@ class Rig:
                     active=True,
                 )
             )
+        seed_live_sessions(session, self.account_id)
         session.commit()
         self.fake = fake if fake is not None else FakeBroker()
         broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
@@ -605,3 +608,32 @@ def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> N
         if expected != modes.AUTO:
             assert rig.places() == []
             assert rig.fake.calls == []
+
+
+@settings(max_examples=30, deadline=None)
+@given(st.sampled_from(("missing", "expired", "unknown", "live")), st.integers(-3, 3))
+def test_entry_needs_live_session(status: str, offset: int) -> None:
+    """HAT-OPS-023: an accepted auto entry is placed only when its broker account has a live
+    `hat_broker_session` for the trade date of the placement; otherwise nothing is sent and the
+    signal ends Rejected with `broker_session_not_live`. A live session of another day does not
+    count. Harm: an entry goes out on an account nobody logged in today, or whose session
+    dropped."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        session.execute(delete(HatBrokerSession))
+        day = TRADE_DAY + timedelta(days=offset)
+        if status != "missing":
+            session.add(
+                HatBrokerSession(broker_account_id=rig.account_id, trade_date=day, status=status)
+            )
+        session.commit()
+        outcome = trades.open_entry(
+            session, request_for(rig.world, rig.world.instruments[0]), mode=modes.AUTO
+        )
+        session.commit()
+        rig.router.place_entry(session, outcome.signal_id, now=AT, check=LIVE)
+        signal = rig.signal(outcome.signal_id)
+        allowed = status == "live" and day == TRADE_DAY
+        assert len(rig.places()) == int(allowed)
+        if not allowed:
+            assert _rejected_reason(session, signal.id) == SESSION_NOT_LIVE

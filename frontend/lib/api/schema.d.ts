@@ -21,6 +21,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/hat/allocations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Allocations
+     * @description The latest nightly allocation, one row per bot.
+     */
+    get: operations["hat_allocations_api_hat_allocations_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/hat/auth/fyers/disconnect": {
     parameters: {
       query?: never;
@@ -101,6 +121,146 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/hat/bots": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Bots
+     * @description Every bot with its execution mode and why it is manage-only, if it is.
+     */
+    get: operations["hat_bots_api_hat_bots_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Events
+     * @description The latest events of the log, newest first.
+     */
+    get: operations["hat_events_api_hat_events_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/positions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Positions
+     * @description The open positions, oldest first.
+     */
+    get: operations["hat_positions_api_hat_positions_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/regime": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Regime
+     * @description The regime history, newest trade date first.
+     */
+    get: operations["hat_regime_api_hat_regime_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/signals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Signals
+     * @description The latest signals, newest first.
+     */
+    get: operations["hat_signals_api_hat_signals_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Status
+     * @description What the database holds now: bots, kill switches, regime, sessions and today's jobs.
+     */
+    get: operations["hat_status_api_hat_status_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/watchlist": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Watchlist
+     * @description Each bot's latest watchlist on or before today, best score first.
+     */
+    get: operations["hat_watchlist_api_hat_watchlist_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/ping": {
     parameters: {
       query?: never;
@@ -122,10 +282,104 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** AllocationRow */
+    AllocationRow: {
+      /** Base Weight */
+      base_weight: string;
+      /** Bot */
+      bot: string;
+      /**
+       * Bot Id
+       * Format: uuid
+       */
+      bot_id: string;
+      /** Capital */
+      capital: string;
+      /** Currency */
+      currency: string;
+      /** Final Weight */
+      final_weight: string;
+      /** Health Mult */
+      health_mult: string;
+      /** Regime Mult */
+      regime_mult: string;
+      /** Risk Pct */
+      risk_pct: string;
+    };
+    /** AllocationsResponse */
+    AllocationsResponse: {
+      /** Rows */
+      rows: components["schemas"]["AllocationRow"][];
+      /** Trade Date */
+      trade_date: string | null;
+    };
     /** AuthCodeRequest */
     AuthCodeRequest: {
       /** Auth Code */
       auth_code: string;
+    };
+    /** BotView */
+    BotView: {
+      /** Execution Mode */
+      execution_mode: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Lifecycle State */
+      lifecycle_state: string;
+      /** Manage Only */
+      manage_only: boolean;
+      /** Name */
+      name: string;
+      /** Reasons */
+      reasons: string[];
+      /** Risk Cluster */
+      risk_cluster: string;
+      /** Status */
+      status: string;
+    };
+    /** BrokerSessionView */
+    BrokerSessionView: {
+      /** Account */
+      account: string;
+      /** Status */
+      status: string;
+    };
+    /** EventView */
+    EventView: {
+      /** Actor */
+      actor: string;
+      /**
+       * Aggregate Id
+       * Format: uuid
+       */
+      aggregate_id: string;
+      /** Aggregate Type */
+      aggregate_type: string;
+      /** Bot Id */
+      bot_id: string | null;
+      /** Correlation Id */
+      correlation_id: string | null;
+      /** Event Type */
+      event_type: string;
+      /** Id */
+      id: number;
+      /**
+       * Occurred At
+       * Format: date-time
+       */
+      occurred_at: string;
+      /** Payload */
+      payload: {
+        [key: string]: unknown;
+      };
+      /**
+       * Recorded At
+       * Format: date-time
+       */
+      recorded_at: string;
     };
     /** FyersStatusResponse */
     FyersStatusResponse: {
@@ -141,6 +395,42 @@ export interface components {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
     };
+    /** JobRunView */
+    JobRunView: {
+      /** Calls */
+      calls: number;
+      /** Error */
+      error: string | null;
+      /** Finished At */
+      finished_at: string | null;
+      /** Job */
+      job: string;
+      /** Rows */
+      rows: number;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Status */
+      status: string;
+      /**
+       * Trade Date
+       * Format: date
+       */
+      trade_date: string;
+    };
+    /** KillSwitchView */
+    KillSwitchView: {
+      /** Bot Id */
+      bot_id: string | null;
+      /** Channel */
+      channel: string;
+      /** Scope */
+      scope: string;
+      /** State */
+      state: string;
+    };
     /** LoginUrlResponse */
     LoginUrlResponse: {
       /** Url */
@@ -152,6 +442,123 @@ export interface components {
       message: string;
       /** Status */
       status: string;
+    };
+    /** PositionView */
+    PositionView: {
+      /** Avg Entry */
+      avg_entry: string;
+      /** Bot */
+      bot: string;
+      /**
+       * Bot Id
+       * Format: uuid
+       */
+      bot_id: string;
+      /** Currency */
+      currency: string;
+      /** Current Stop */
+      current_stop: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Initial Stop */
+      initial_stop: string;
+      /** Is Virtual */
+      is_virtual: boolean;
+      /**
+       * Opened At
+       * Format: date-time
+       */
+      opened_at: string;
+      /** Qty Open */
+      qty_open: number;
+      /** State */
+      state: string;
+      /** Symbol */
+      symbol: string;
+    };
+    /** RegimeView */
+    RegimeView: {
+      /** Confirmed */
+      confirmed: boolean;
+      /** State */
+      state: string;
+      /**
+       * Trade Date
+       * Format: date
+       */
+      trade_date: string;
+    };
+    /** SignalView */
+    SignalView: {
+      /** Bot */
+      bot: string;
+      /**
+       * Bot Id
+       * Format: uuid
+       */
+      bot_id: string;
+      /** Currency */
+      currency: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Mode */
+      mode: string;
+      /** Playbook */
+      playbook: string;
+      /** Qty */
+      qty: number;
+      /** Risk Amount */
+      risk_amount: string;
+      /** State */
+      state: string;
+      /** Stop Price */
+      stop_price: string;
+      /** Symbol */
+      symbol: string;
+      /**
+       * Trade Date
+       * Format: date
+       */
+      trade_date: string;
+      /** Trigger Price */
+      trigger_price: string;
+      /**
+       * Triggered At
+       * Format: date-time
+       */
+      triggered_at: string;
+    };
+    /** StatusResponse */
+    StatusResponse: {
+      /**
+       * As Of
+       * Format: date-time
+       */
+      as_of: string;
+      /** Bots */
+      bots: components["schemas"]["BotView"][];
+      /** Feed Stale At */
+      feed_stale_at: string | null;
+      /** Jobs */
+      jobs: components["schemas"]["JobRunView"][];
+      /** Kill Account */
+      kill_account: boolean;
+      /** Kill Switches */
+      kill_switches: components["schemas"]["KillSwitchView"][];
+      regime: components["schemas"]["RegimeView"] | null;
+      /** Sessions */
+      sessions: components["schemas"]["BrokerSessionView"][];
+      /**
+       * Trade Date
+       * Format: date
+       */
+      trade_date: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -165,6 +572,27 @@ export interface components {
       msg: string;
       /** Error Type */
       type: string;
+    };
+    /** WatchlistItem */
+    WatchlistItem: {
+      /** Score */
+      score: string;
+      /** Symbol */
+      symbol: string;
+    };
+    /** WatchlistView */
+    WatchlistView: {
+      /** Bot */
+      bot: string;
+      /**
+       * Bot Id
+       * Format: uuid
+       */
+      bot_id: string;
+      /** Entries */
+      entries: components["schemas"]["WatchlistItem"][];
+      /** Trade Date */
+      trade_date: string | null;
     };
   };
   responses: never;
@@ -192,6 +620,40 @@ export interface operations {
         content: {
           "application/json": unknown;
         };
+      };
+    };
+  };
+  hat_allocations_api_hat_allocations_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AllocationsResponse"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -309,6 +771,277 @@ export interface operations {
       };
       /** @description Fyers credentials missing or the link could not be built */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_bots_api_hat_bots_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BotView"][];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_events_api_hat_events_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EventView"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_positions_api_hat_positions_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PositionView"][];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_regime_api_hat_regime_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RegimeView"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_signals_api_hat_signals_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SignalView"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_status_api_hat_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusResponse"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_watchlist_api_hat_watchlist_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WatchlistView"][];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
         headers: {
           [name: string]: unknown;
         };

@@ -2,7 +2,7 @@
 
 import hat_db_runtime as rules
 import pytest
-from sqlalchemy import Connection
+from sqlalchemy import Connection, Engine
 
 pytestmark = pytest.mark.postgres
 
@@ -20,3 +20,8 @@ def test_events__partitioned(conn: Connection) -> None:
 @pytest.mark.postgres
 def test_events__partitions_ahead(conn: Connection) -> None:
     rules.check_events__partitions_ahead(conn)
+
+
+@pytest.mark.postgres
+def test_events__partitions_job(pg_engine: Engine) -> None:
+    rules.check_events__partitions_job(pg_engine)

@@ -401,8 +401,8 @@ Evaluation rules (BL "Evaluation rules"): top to bottom on every price event or 
 #### HAT-EXEC-074: Scheduled exits at 15:25 on live price
 - **Statement:** `close_below_sma`, `partial_after_days`, `trailing_swing_low` and `time_stop` are evaluated in the 15:20–15:25 window using the live price as the close proxy.
 - **Source:** BL "Exit rules"; MA "Daily cycle" step 6; DS "Live data" (15:20–15:25); B18.
-- **PR:** 15
-- **Verification:** TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close`
+- **PR:** 15, 17
+- **Verification:** TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close`, PBT `ops.window_not_starved`
 - **Acceptance:**
   - Property: in every simulated trading day, the `exits.close` job runs once within 15:20–15:25 IST and its exit orders are sent before 15:30. Harm: MA exits miss the session and the position carries overnight against the rule.
 - **[A]** exit at 15:25 vs official close: default 15:25 live price; validated in shadow by logging both and comparing (PLAN Q10).

@@ -243,3 +243,28 @@ def test_next_session_open_after_a_holiday(at: datetime) -> None:
     )
     found = next_session_open(holidays, at)
     assert found is None or holidays.state(found) is SessionState.OPEN
+
+
+@settings(max_examples=60)
+@given(spec=calendars())
+def test_weekday_rows(spec: CalSpec) -> None:
+    """HAT-DATA-027 (PR 17): `with_weekdays` keeps every listed row as it is, gives every other
+    weekday of the covered years a trading row with the market's default session, and adds no
+    weekend: the holiday list names only the exceptions, but the scheduler and the risk checks
+    read a session only from a stored row."""
+    open_default, close_default, rows = spec
+    full = cal.with_weekdays(rows.values(), open_default, close_default)
+    by_day = {d.day: d for d in full}
+    assert len(by_day) == len(full)
+    assert [d.day for d in full] == sorted(by_day)
+    for day, row in rows.items():
+        assert by_day[day] == row
+    if not rows:
+        assert full == []
+        return
+    day = date(min(rows).year, 1, 1)
+    while day <= date(max(rows).year, 12, 31):
+        if day not in rows:
+            expected = cal.CalendarDay(day, True, open_default, close_default)
+            assert by_day.get(day) == (expected if day.weekday() < 5 else None)
+        day += timedelta(days=1)

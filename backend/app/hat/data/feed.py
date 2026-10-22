@@ -308,6 +308,8 @@ class LiveFeed:
         )
         if needs_validation:
             prevalidated_token = await asyncio.to_thread(self._token_valid)
+        # read the calendar off the loop: `connect` then finds the source's cached policy
+        await asyncio.to_thread(lambda: self.policy)
         return self.connect(explicit=explicit, prevalidated_token=prevalidated_token)
 
     def disconnect(self) -> None:
@@ -384,7 +386,7 @@ class LiveFeed:
     async def check_health(self) -> None:
         """One monitor check: reconnect during market hours, disconnect off-hours."""
         state = self.session.state
-        if not self.connection_allowed():
+        if not await asyncio.to_thread(self.connection_allowed):  # may read the calendar table
             if state in (SessionState.CONNECTING, SessionState.CONNECTED, SessionState.DROPPED):
                 logger.info("[WS] Market closed. Cleaning up the provider connection.")
                 await asyncio.to_thread(self.session.stop)
@@ -431,7 +433,8 @@ class LiveFeed:
         on connect."""
         wanted = sorted({self._symbols.to_db(s) for s in symbols if s} - {""})
         if not self.session.is_connected():
-            if self.session.state is SessionState.IDLE and self.connection_allowed():
+            idle = self.session.state is SessionState.IDLE
+            if idle and await asyncio.to_thread(self.connection_allowed):
                 await self.connect_async()
             else:
                 logger.info("Live feed not connected: %s symbols queued", len(wanted))

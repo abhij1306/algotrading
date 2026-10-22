@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's job s
 
 # verify-scheduler
 
-Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, that the windowed `exits.close` job runs only inside 15:20-15:25 IST and sends nothing from 15:30 on, that the 15:25 live price of each MA exit is kept next to the official close, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Specs: `docs/specs/hat/10-ops.md` §2, §3 (HAT-OPS-034), `07-execution-and-brokers.md` §7 (HAT-EXEC-074, HAT-DEC-B18), `03-schema.md` §7 (HAT-SCH-072), `11-verification.md` (HAT-VER-030..034, 040, 050, 060, 070..072).
+Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, that the windowed `exits.close` job runs only inside 15:20-15:25 IST and sends nothing from 15:30 on, that the 15:25 live price of each MA exit is kept next to the official close, that the deployment (Compose file, deploy-window guard, backup manifest) and the runbook hold their rules, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Specs: `docs/specs/hat/10-ops.md` §2, §3 (HAT-OPS-034), §5, §7, §9 (HAT-OPS-040, 042, 060, 090), `07-execution-and-brokers.md` §7 (HAT-EXEC-074, HAT-DEC-B18), `03-schema.md` §7 (HAT-SCH-072), `11-verification.md` (HAT-VER-030..034, 040, 050, 060, 070..072).
 
 ## Properties
 
@@ -20,10 +20,34 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA NightlyPipeline!ExitsIndependentOfPipeline` Exits and stops are sent whatever state the nightly pipeline is in. Harm: a data outage leaves positions without protection.
 - `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the one before succeeded. Harm: a scan reads a day not yet ingested or gated.
 - `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
+- `TLA DailyCycle!IntradayOrder` The intraday jobs first start in the order of 10 §3 (login prompt 08:30, live preparation 08:45, pre-open gaps 09:00-09:08, gap scan 09:16, the regime-gate refresh 09:20, `exits.close` 15:20-15:25, `gtt.swap` 15:25, session end 15:30, reports 15:40); no `exits.close` run starts once `gtt.swap` has; every entry order is placed inside 09:20-15:20, after today's gate refresh and with a live broker session. Harm: entries fire on an unformed opening range, yesterday's gate or without a session, or a GTT is placed for a position that is still being exited.
+- `TLA DailyCycle!AllocateAfterRegime` `allocate` starts for a trade date only after `regime` succeeded for it, and an allocation never changes an open position's quantity or stop. Harm: weights use yesterday's regime, or a weight cut forces sales the strategy did not call for.
+- `CONF ci_runs_models_for_merged_targets` Every model a README row names once all its PRs have merged is checked by CI: `verification-tla` runs `run.sh` and `run.sh --broken` unfiltered and unconditionally, `run.sh` with no argument checks every `*.tla`, and the model has its cfg and a broken variant expecting each property. Harm: a merged high-harm promise ships with its model never run.
 - `PBT ops.job_run_recording` On the real `run_job`, random calls, body failures, simulated crashes and restarts always leave one row per key, with a stable error code (never raw exception text), correct timestamps, and at most one successful body per key. Harm: an audit row lies about what ran, or an error message leaks a secret.
-- `PBT ops.disabled_starts_nothing` With HAT disabled `start_scheduler` creates no task and touches no logging or database, and with it enabled on a non-Postgres dialect it raises before any task exists. Harm: HAT runs without the database triggers that protect it.
+- `PBT ops.disabled_starts_nothing` With HAT disabled `HatRuntime.start` creates no task (scheduler, feed, Telegram poller) and touches no logging, database or runtime part. Harm: HAT trades or polls where nobody opted in.
+- `PBT ops.refuses_non_postgres` With HAT enabled on any dialect but `postgresql`, `HatRuntime.start` raises `HatConfigError` before a task, a log handler, its parts or the database exist. Harm: HAT runs without the database triggers that protect it.
+- `CONF hat_runtime_requires_postgres` The same refusal for the named non-Postgres dialects, and `app/main.py` hands `HatRuntime` the engine's own dialect. Harm: the guard checks a constant instead of the real database.
+- `PBT ops.calendar_skip` For every calendar of holidays and every instant, a trade-date job is never due on a non-trading day or a day the calendar does not know, an every-day job is not held back, and `HatScheduler.due_jobs` starts exactly the due jobs. Harm: bots act on a holiday or alert about data that never existed.
+- `CONF ops.job_registry` The jobs `daily_jobs` registers (one broker account) equal the 10-ops §3 job table row for row: name, days, IST time, window end and `after` jobs. Harm: a missing or mistimed job (for example `gtt.swap`) leaves positions unprotected overnight.
+- `CONF existing_suite_green` CI runs on every pull request with the backend, Postgres, verification, frontend and API-schema jobs, none skippable by `if:` or allowed to fail. Harm: a red suite merges.
 - `PBT ops.close_gap_recorded` Every `close_below_sma` evaluation of the close window records the live price it used, fired or not; once the nightly ingest has the official close, exactly one `exit.close_gap` per position records that close and its gap, against the same position; a close still missing is recorded by a later run and a repeated run changes nothing. Harm: the backtest/live gap of MA exits cannot be measured.
 - `PBT ops.log_records_structured` Every record under `app.hat` renders as one JSON line with `ts`, `level`, `msg` and each context key given. Harm: logs cannot be parsed during an incident.
+- `PBT ops.backup_manifest` For every generated file set, `scripts/hat_backup.py`'s manifest lists each file with its size and sha256, survives a JSON round trip, equals the listing of the tar of the set, and verifies clean at both targets; one flipped byte, missing file or size change at either target is reported for that file at that target only. Harm: a damaged or partial backup passes as good and the event log or raw files cannot be restored.
+- `PBT ops.deploy_window_guard` For every instant in any time zone and every calendar flag, `scripts/hat_deploy_guard.py` refuses exactly when the IST time is in 08:30-15:35 on a trading day and the run is not forced; an unlisted day trades iff it is a weekday (fail closed); the script exits non-zero exactly when refused and a forced run inside the window appends one log line with its reason. Harm: a restart mid-session misses triggers, stop moves or the GTT swap.
+- `CONF ops.compose_services` `deploy/hat/docker-compose.yml` has exactly `postgres` and `backend` (the `frontend` only under a profile), Postgres 18, every published port on 127.0.0.1, every secret-like variable interpolated rather than written, the backend reading the repo `.env`, running with HAT enabled, its data root on a volume, after a healthy database. Harm: an open port exposes the trading box, or a stray service holds broker credentials.
+- `CONF ops.runbook_complete` `10-ops.md` §9 has a `###` procedure with steps whose heading names every `OPS` check used anywhere in the specs, and one for every failure bullet of §4. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
+- `PBT ops.status_matches_db` For every database state of bots, kill-switch rows, job runs, regime rows, broker accounts and sessions and `feed.stale` events, `GET /api/hat/status` reports each bot's mode, status and manage-only reasons, the state of every (scope, bot, channel) kill key and the account kill, the latest regime, today's session of every active account, today's job runs and the latest `feed.stale` of today, exactly as the rows hold them. Harm: the user believes the bot is protected or halted when it is not.
+- `PBT dashboard_routes.positions_are_the_open_rows_as_decimal_strings` `/api/hat/positions` lists exactly the positions with no close time and a quantity left, oldest first, each price a decimal string equal to the stored one. Harm: the dashboard hides an open position, shows a closed one, or rounds a stop.
+- `PBT dashboard_routes.allocations_are_the_latest_day_exactly` `/api/hat/allocations` shows only the latest allocation day, each weight and the capital a decimal string equal to the stored value. Harm: the user reads yesterday's sleeve sizes or a weight rounded through a float.
+- `PBT dashboard_routes.watchlist_is_the_latest_day_on_or_before_today` `/api/hat/watchlist` shows each bot's latest watchlist day on or before today (never a future day), best score first, scores as decimal strings. Harm: tomorrow's or a stale list is read as today's.
+- `PBT dashboard_routes.lists_hold_the_newest_rows_up_to_the_limit` `/api/hat/signals`, `/regime` and `/events` return min(rows, limit) rows (50 by default), newest first. Harm: the dashboard shows a stale slice, or an unbounded read loads the whole event log.
+- `PBT dashboard_routes.a_limit_out_of_bounds_is_refused` A `limit` below 1, above 200 or not an integer is a 422 that reads nothing. Harm: one request reads the whole event log.
+- `PBT dashboard_routes.a_failed_read_is_a_fixed_message` When the database cannot be read every dashboard route answers 503 with the fixed message and no driver text. Harm: SQL, table names or credentials leak to the browser.
+- `CONF hat_routes_read_only` Every route of every router under `app/hat/api` is a GET except the two Fyers login POST routes listed in `WRITE_ROUTES` (and each listed route exists), and no GET endpoint reaches, through any `app.hat` function it calls, a session write (`add`, `commit`, `delete`, `flush`, `merge`, ...), an `insert`/`update`/`delete` statement or an event `record` (HAT-DEC-T3). Harm: the dashboard becomes a second control surface that bypasses Telegram's confirmations and the risk authority.
+- `PBT ops.entry_inputs_fail_closed` An entry on day d reads the quality state and the allocation of the night before only (the previous trading day of the calendar): the state is failed or passed only when that night's `quality.gate` run failed or succeeded, else unknown, and the allocation is that night's row or none, never an older one; without a calendar both are unknown. Harm: entries trade on an unchecked day's data, or on an old weight with an unmeasured drawdown.
+- `PBT ops.window_not_starved` After a restart at 15:19 that starts any number of overdue morning jobs whose bodies block, the 15:20 tick still runs `exits.close` inside its window while they all still run (bodies run on the scheduler's own threads, one per job). Harm: catch-up runs hold the close-phase exits past 15:25 and positions carry overnight risk the strategy meant to shed (audit money-safety-engine-ops F12).
+- `CONF ops.route_matches_protocol` `LiveRoute.__call__` takes exactly the `Route` protocol's parameters (`session, request, *, decide`) and `ExecutionRouter.route` does not (it also needs `now` and `check`), so the trigger service is wired to `LiveRoute`, which reads the placement check and calls the router. Harm: the router wired as the route raises on every trigger, and the trigger service logs it and drops the entry, shadow included.
+- `E2E ops.simulated_day` (the plan's acceptance run, `test_db_daily_cycle.py`, Postgres-marked; not a `DB` check) A whole shadow day through `HatRuntime` (HAT enabled, PostgreSQL, fixture market, `FakeBroker`, recording Telegram): every trading-day job succeeds once and in order, a breakout and an EP gap become shadow entries, a stop crossed at 10:58 is exited before 11:00 by the live exits, the untriggered watchlist row ends Expired, the nightly chain runs from the MCP and the next night from the 22:00 bhavcopy fallback, a holiday runs only the every-day jobs, the broker gets no order and `stop` leaves no task. Harm: the parts pass alone and the assembled day does not run.
 - `DB ops.job_run_unique` The database rejects a second `hat_job_run` row for one (job, trade_date), including under concurrent inserts. Harm: idempotency rests on application code alone and a race runs a job twice.
 - `CONF verification harness` The TLC runner is pinned by version and sha256 and refuses a mismatching jar; every model has a cfg, stated bounds and assumptions, a code location per action and a broken variant per property; the `ci` Hypothesis profile is registered and loaded; the CI verification jobs (`verification-tla`, `verification-conformance`, sharded `verification-properties`) run everything, each inside the 5-minute target; every DB check has a broken variant; every spec requirement is well formed; verify skills are complete and current. Harm: a check silently stops running or stops being able to fail.
 
@@ -66,20 +90,36 @@ TLA+ model and runner:
 - `verification/tla/broken/JobScheduler__retry_after_success.cfg`, `verification/tla/broken/JobScheduler__split_claim.cfg`, `verification/tla/broken/JobScheduler__no_retry.cfg`, `verification/tla/broken/JobScheduler__ignore_enabled.cfg`, `verification/tla/broken/JobScheduler__no_reap.cfg`, `verification/tla/broken/JobScheduler__no_window.cfg`, `verification/tla/broken/JobScheduler__late_send.cfg`
 - `verification/tla/NightlyPipeline.tla` and `verification/tla/NightlyPipeline.cfg`
 - `verification/tla/broken/NightlyPipeline__probe_twice.cfg`, `verification/tla/broken/NightlyPipeline__probe_at_cutoff.cfg`, `verification/tla/broken/NightlyPipeline__fetch_without_match.cfg`, `verification/tla/broken/NightlyPipeline__fallback_always.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__nodata_no_alert.cfg`, `verification/tla/broken/NightlyPipeline__scan_ignores_gate.cfg`, `verification/tla/broken/NightlyPipeline__gate_fail_no_kill.cfg`, `verification/tla/broken/NightlyPipeline__exit_needs_pipeline.cfg`, `verification/tla/broken/NightlyPipeline__skip_order.cfg`, `verification/tla/broken/NightlyPipeline__no_fallback.cfg`
+- `verification/tla/DailyCycle.tla` and `verification/tla/DailyCycle.cfg`
+- `verification/tla/broken/DailyCycle__gapscan_before_preopen.cfg`, `verification/tla/broken/DailyCycle__no_gate_refresh.cfg`, `verification/tla/broken/DailyCycle__no_session_check.cfg`, `verification/tla/broken/DailyCycle__swap_before_exits.cfg`, `verification/tla/broken/DailyCycle__trigger_after_1520.cfg`, `verification/tla/broken/DailyCycle__allocate_ignores_regime.cfg`, `verification/tla/broken/DailyCycle__allocate_resizes.cfg`
 - `verification/tla/run.sh`
 
 Code under check:
 - `backend/app/hat/ops/jobs.py`: `run_job`, `_claim`, `_finish`, `recover_interrupted`, `error_code`
-- `backend/app/hat/ops/scheduler.py`: `start_scheduler`, `HatScheduler.tick`, `HatScheduler.due_jobs` (the `until` window and `retry_after`)
+- `backend/app/hat/ops/scheduler.py`: `runs_on`, `due`, `HatScheduler.tick`, `HatScheduler.due_jobs` (the calendar, the `until` window, `after` and `retry_after`)
+- `backend/app/hat/daily/runtime.py`: `HatRuntime.start` (the enabled and Postgres gates), `daily_jobs`, `HatRuntime.periodic`
+- `backend/app/hat/daily/intraday.py`, `backend/app/hat/daily/nightly.py`, `backend/app/hat/daily/accounts.py`, `backend/app/hat/daily/live.py`, `backend/app/hat/daily/market.py`: the job bodies of the daily cycle
 - `backend/app/hat/ops/trade_jobs.py`: `trade_jobs` (`exits.close`, `gtt.swap`, `gtt.verify`)
 - `backend/app/hat/execution/manage.py`: `TradeManager.close_exits`, `TradeManager._sell` (the 15:30 check at sending)
 - `backend/app/hat/engine/live_trades.py`: `record_close_evaluation`, `record_close_gaps`
 - `backend/app/hat/logs.py`: `JsonFormatter`
 - `backend/app/hat/models/ops.py`: `HatJobRun`
+- `scripts/hat_backup.py`: `build_manifest`, `archive_manifest`, `compare_entries`, `verify_manifest`, `write_data_tar`
+- `scripts/hat_deploy_guard.py`: `in_market_window`, `deploy_allowed`, `is_trading_day`, `parse_calendar`, `main`
+- `deploy/hat/docker-compose.yml`
+- `backend/app/hat/api/dashboard.py`: every route, `_read`, `_status`, `_kill_switches`, `_bot_view`
 
 Checks:
-- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_enabled_refuses_a_non_postgres_database`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`
+- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_refuses_non_postgres`, `test_calendar_skip`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`, `test_backup_manifest`, `test_deploy_window_guard`, `test_status_matches_db`
+- `backend/tests/hat/conformance/test_conf_ops.py`: `test_compose_services`, `test_runbook_complete`
+- `backend/tests/hat/properties/test_dashboard_routes.py`
+- `backend/tests/hat/hat_dashboard_support.py`
+- `backend/tests/hat/conformance/test_conf_api.py`: `test_hat_routes_read_only`
+- `backend/tests/hat/conformance/test_conf_runtime.py`: `test_job_registry`, `test_existing_suite_green`, `test_route_matches_protocol`
+- `backend/tests/hat/conformance/test_conf_boundaries.py`: `test_hat_runtime_requires_postgres`
 - `backend/tests/hat/db/test_db_portfolio_ops.py`: `test_ops__job_run_unique`
+- `backend/tests/hat/db/test_db_daily_cycle.py`: `test_ops__simulated_day`
+- `backend/tests/hat/hat_day_support.py`
 - `backend/tests/hat/db/hat_db_rules.py`: `check_ops__job_run_unique`
 - `backend/tests/hat/db/test_db_broken_variants.py`
 - `backend/tests/hat/conformance/test_conf_verification.py`
@@ -93,7 +133,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `c59d3ee7ecb2f9c629d9a9e78b414fad857bd36a8626b6826fcb7e9369f09343`
+Covered digest: `146ca210e873ce5ea79f0debdca78af9965b2037ec956ed90bacd0692b3b3c4a`
 
 ## Scope changes
 
@@ -114,6 +154,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 7 split the nightly-pipeline promises (probe window, fallback at 22:00, no data no scan, gate, exits independent) out of `JobScheduler` into the `NightlyPipeline` model, because the product of the two state spaces was too large to check; `JobScheduler` keeps the job-run promises. The README and spec property names were renamed to match; no check was weakened. PR 7 also added an `on_finish` hook to `run_job` (called inside the final-status transaction; `ops.job_run_recording` still passes) and `MERGED_PRS` now includes 7, `KNOWN_GAPS` unchanged.
 - PR 15b updated the harness without narrowing any check: `KNOWN_GAPS` lost `TLA ExecutionRouter!AutoNeedsGtt`, `TLA ExecutionRouter!NoAddToOpenPosition` and `TLA ExecutionRouter!ModeChangeNextSession` (the `ExecutionRouter` model now exists), `MERGED_PRS` is unchanged (15c adds 15), and two models joined `verification/tla` (`ExecutionRouter`, `ApprovalToken`; their checks and breaks are in `verify-execution`). The new property file `test_router.py` is placed by `ci_property_shards.py`'s partition like any other.
 - PR 16 added the Telegram jobs to `JobScheduler` (`TgTick`, `LoginFlip`, `Prompt`, `Reprompt`, `Report`; `LoginPromptOrder`, `ReportsAfterClose`), whose breaks are in `verify-telegram`, and `16` to `MERGED_PRS`; `KNOWN_GAPS` is unchanged.
+- PR 17 put `AllocateAfterRegime` and `IntradayOrder` (named `JobScheduler!...` until then and never built) in a new model `DailyCycle` rather than in `JobScheduler`, whose state space is already about a million states; the README rows were renamed to match. `DailyCycle` checks the order of first starts on one trade date with the scheduler running all day: a job's retry after a failure is modelled only for the gate refresh, `exits.close`, `regime` and `allocate` (the jobs whose outcome something waits on), a restart late in the day (which starts every due job at once) is outside it, and each job run is one step (an `exits.close` run still running at 15:25 is handled by `gtt.swap` leaving a position whose exit sale is working). No entry before 09:20 is guarded twice (the trigger window and the 09:20 gate refresh), so removing either guard alone cannot show it; the breaks remove the gate refresh and the 15:20 end of the window instead. `NightlyPipeline`'s `LaterStep` now points at `scheduler.py:due` (ordering by `after`) instead of `run_job`.
+- PR 17 added the read-only dashboard routes. `ops.status_matches_db` compares against an oracle that takes the latest row of each kill key by time; the generated rows have distinct times, so the tie rule of `kill._latest` (a tripped row wins) is covered by the risk checks, not here. The status report shows `feed.stale` as the latest such event of the day: recovery writes no event, so the feed's current health shows through the health kill. The Telegram CONF checks `gov__lever_catalogue` and `no_override_command` (in `verify-telegram`) now judge only writing (non-GET) routes, because reads are held to `hat_routes_read_only`; they still fail on a `POST /api/hat/regime`. Their route list reads `route.path`, which already carries the router prefix (it was prefixed twice).
 
 ## Scratch breaks
 
@@ -219,10 +261,116 @@ E   state.call_run_job(calls=0, ..., job='ingest.nightly', kind='ok', rows=0)
 
 ### PBT ops.disabled_starts_nothing
 
-Break: `start_scheduler` stops checking `settings.enabled`.
+Break: `HatRuntime.start` stops checking `settings.enabled` (`if False:`), PR 17 (the PR 2 break removed the same check from the deleted `start_scheduler`).
 
 ```
 FAILED tests/hat/properties/test_ops.py::test_disabled_starts_nothing - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+```
+
+### PBT ops.refuses_non_postgres
+
+Break: `HatRuntime.start` builds its parts before `require_postgres(self._dialect_name)`.
+
+```
+FAILED tests/hat/properties/test_ops.py::test_refuses_non_postgres - AssertionError: assert ['parts'] == []
+```
+
+### CONF hat_runtime_requires_postgres
+
+Break: the same one: `HatRuntime.start` builds its parts before `require_postgres(self._dialect_name)`.
+
+```
+FAILED tests/hat/conformance/test_conf_boundaries.py::test_hat_runtime_requires_postgres[sqlite] - AssertionError: assert ['parts'] == []
+FAILED tests/hat/conformance/test_conf_boundaries.py::test_hat_runtime_requires_postgres[mysql] - AssertionError: assert ['parts'] == []
+```
+
+### PBT ops.calendar_skip
+
+Break: `runs_on` returns True whatever the calendar says (`return True` in place of `return job.days is Days.EVERY or trading(day)`).
+
+```
+FAILED tests/hat/properties/test_ops.py::test_calendar_skip - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+```
+
+### E2E ops.simulated_day
+
+Break: `ShadowExits._positions` skips the virtual positions of accounts with a desk in the live phase too (`accounts = self._managed()` in all phases), so a crossed stop waits for the 15:20 close exits.
+
+```
+tests/hat/db/test_db_daily_cycle.py:385: in _check_trades
+    assert _local(stopped.closed_at) < (TRADE, STOPPED_BY)
+E   assert (datetime.date(2026, 10, 21), datetime.time(15, 20)) < (datetime.date(2026, 10, 21), datetime.time(11, 0))
+```
+
+Break: `after=()` for the nightly chain in `daily/nightly.py`.
+
+```
+tests/hat/db/test_db_daily_cycle.py:315: in _check_night
+E   AssertionError: ('regime', 'regime_no_breadth')
+E   assert 'failed' == 'succeeded'
+```
+
+Break: `LiveRoute.__call__` calls `router.route(session, request, decide=decide)` without `now` and `check` (the router used as a `Route`), so every trigger raises a `TypeError` that `TriggerService.write` logs and drops.
+
+```
+{"level": "ERROR", "msg": "writing a trigger failed", "exc_type": "TypeError"}
+E   AssertionError: assert 'Expired' == 'Triggered'
+```
+
+### PBT ops.entry_inputs_fail_closed
+
+Break: `_quality_failed` returns `False` (passed) when the night's run is missing or unfinished.
+
+```
+E   assert False is None
+E   Failing test case: test_entry_inputs_fail_closed(
+E       trading=[True, False],
+E       statuses=[None, None, None, None, None, None, None, None],
+```
+
+Break: `_allocation` returns the latest allocation before d (an older night's row when that night's is missing).
+
+```
+E   assert datetime.date(2026, 1, 1) == None
+E   Failing test case: test_entry_inputs_fail_closed(
+E       trading=[False, True, False],
+```
+
+### PBT ops.window_not_starved
+
+Break: `_run` hands the body to the loop's default pool (`run_in_executor(None, ...)`, as `asyncio.to_thread` did).
+
+```
+E   assert False
+E   Failing test case: test_window_not_starved(
+E       pending=8,
+E   )
+```
+
+### CONF ops.route_matches_protocol
+
+Break: `LiveRoute.__call__` takes a keyword-only `now: datetime` like `ExecutionRouter.route`.
+
+```
+FAILED tests/hat/conformance/test_conf_runtime.py::test_route_matches_protocol
+E   assert [('session', ...), ('request', ...), ('now', <_ParameterKind.KEYWORD_ONLY: 3>, ...), ('decide', ...)] == [('session', ...), ('request', ...), ('decide', ...)]
+```
+
+### CONF ops.job_registry
+
+Break: `GTT_SWAP_AT = time(15, 26)` in `ops/trade_jobs.py`.
+
+```
+E   AssertionError: {'not_in_table': {('gtt.swap:<account>', 'trading', datetime.time(15, 26), None, ())}, 'not_registered': {('gtt.swap:<account>', 'trading', datetime.time(15, 25), None, ())}}
+```
+
+### CONF existing_suite_green
+
+Break: `continue-on-error: true` on the `frontend` job of `.github/workflows/ci.yml`.
+
+```
+E   AssertionError: frontend
+E   assert not True
 ```
 
 ### PBT ops.log_records_structured
@@ -232,6 +380,67 @@ Break: `JsonFormatter.format` pretty-prints with `indent=1`.
 ```
 tests/hat/properties/test_ops.py:127: in test_log_records_structured
 E   assert '\n' not in '{\n "ts": "..."msg": ""\n}'
+```
+
+### PBT ops.backup_manifest
+
+Break: in `scripts/hat_backup.py`, `compare_entries` drops its checksum branch (only missing files and sizes are compared).
+
+```
+FAILED tests/hat/properties/test_ops.py::test_backup_manifest
+E   assert 0 == 1
+E    +  where 0 = len([])
+E   Failing test case: test_backup_manifest(files={'0.parquet': b'\x00'}, target=0, how='flip', pick=0)
+```
+
+### PBT ops.deploy_window_guard
+
+Break: in `scripts/hat_deploy_guard.py`, `WINDOW_END = time(15, 30)` (the window ends five minutes early).
+
+```
+FAILED tests/hat/properties/test_ops.py::test_deploy_window_guard - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+    |     assert allowed == (force or not (trading and inside))
+    | AssertionError: assert True == ((False or not (True and True)))
+```
+
+Another break: `main` no longer calls `log_forced` for a forced run inside the window.
+
+```
+E   assert 0 == 1
+E    +  where 0 = len([])
+E    +  and   1 = int((True and True and True))
+```
+
+### CONF ops.compose_services
+
+Break: the backend port in `deploy/hat/docker-compose.yml` published as `"8000:8000"` (all interfaces).
+
+```
+E   AssertionError: ('backend', '8000:8000')
+E   assert '' == '127.0.0.1'
+```
+
+Another break: `POSTGRES_PASSWORD: hunter2` written inline instead of `${DB_PASSWORD:?...}`.
+
+```
+E   AssertionError: ('postgres', 'POSTGRES_PASSWORD')
+E   assert None
+```
+
+### CONF ops.runbook_complete
+
+Break: in `docs/specs/hat/10-ops.md` §9, the failover drill's heading lost its check name (shortened to `### Failover drill`).
+
+```
+E   AssertionError: assert ['ops.failover_drill'] == []
+E     Left contains one more item: 'ops.failover_drill'
+```
+
+Another break: `### Failure: Machine down` renamed `### Failure: host outage` (a §4 bullet without its procedure).
+
+```
+E   AssertionError: assert ['Machine down'] == []
+E     Left contains one more item: 'Machine down'
 ```
 
 ### DB ops.job_run_unique
@@ -387,4 +596,194 @@ State 3: <Tick ...>
 State 4: <ExitBecomesDue ...>
 State 5: <Tick ...>
 State 6: <ExitSend ...>
+```
+
+### TLA DailyCycle!IntradayOrder
+
+Break: the broken variant `DailyCycle__gapscan_before_preopen.cfg` (mode `gapscan_before_preopen` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant IntradayOrder is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <RunIntraday ...>
+State 6: <RunIntraday ...>
+```
+
+Another break: the broken variant `DailyCycle__no_gate_refresh.cfg` (mode `no_gate_refresh` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant IntradayOrder is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Tick ...>
+State 6: <Tick ...>
+State 7: <SessionFlip ...>
+State 8: <Entry ...>
+```
+
+Another break: the broken variant `DailyCycle__no_session_check.cfg` (mode `no_session_check` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant IntradayOrder is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Tick ...>
+State 6: <Tick ...>
+State 7: <RunIntraday ...>
+State 8: <Entry ...>
+```
+
+Another break: the broken variant `DailyCycle__swap_before_exits.cfg` (mode `swap_before_exits` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant IntradayOrder is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Tick ...>
+State 6: <Tick ...>
+State 7: <Tick ...>
+State 8: <RunIntraday ...>
+State 9: <RunIntraday ...>
+```
+
+Another break: the broken variant `DailyCycle__trigger_after_1520.cfg` (mode `trigger_after_1520` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant IntradayOrder is violated.
+State 1: <Initial ...>
+State 2: <Tick ...>
+State 3: <Tick ...>
+State 4: <Tick ...>
+State 5: <Tick ...>
+State 6: <Tick ...>
+State 7: <SessionFlip ...>
+State 8: <RunIntraday ...>
+State 9: <Tick ...>
+State 10: <Entry ...>
+```
+
+### TLA DailyCycle!AllocateAfterRegime
+
+Break: the broken variant `DailyCycle__allocate_ignores_regime.cfg` (mode `allocate_ignores_regime` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant AllocateAfterRegime is violated.
+State 1: <Initial ...>
+State 2..11: <Tick ...>
+State 12: <Allocate ...>
+```
+
+Another break: the broken variant `DailyCycle__allocate_resizes.cfg` (mode `allocate_resizes` in the model's `BrokenMode` switch).
+
+```
+Error: Invariant AllocateAfterRegime is violated.
+State 1: <Initial ...>
+State 2..11: <Tick ...>
+State 12: <Regime ...>
+State 13: <Allocate ...>
+```
+
+### CONF ci_runs_models_for_merged_targets
+
+Break: two separate breaks, each reverted after the check failed: the `verification-tla` step `verification/tla/run.sh --broken` filtered to `verification/tla/run.sh --broken JobScheduler` in `.github/workflows/ci.yml`; the two `DailyCycle__allocate_*.cfg` broken variants moved out of `verification/tla/broken/`.
+
+```
+test_ci_runs_models_for_merged_targets: AssertionError: verification/tla/run.sh --broken   assert None is not None
+test_ci_runs_models_for_merged_targets: AssertionError: ('DailyCycle', ['AllocateAfterRegime'])   assert not {'AllocateAfterRegime'}
+```
+
+### PBT ops.status_matches_db
+
+Break: in `backend/app/hat/api/dashboard.py`, `_status` reads the account kill from the `risk` channel only.
+
+```
+E   assert False is True
+E   Failing test case: test_status_matches_db(world={'bots': [], 'kills': [(None, 'data_health', 'tripped', 0)], ...})
+```
+
+Break: `_kill_switches` reads each key across both channels (`kill.current_state(rows, scope, bot_id)`).
+
+```
+E   AssertionError: assert {('account', ...'): 'tripped'} == {('account', ...th'): 'armed'}
+E     {('account', None, 'health'): 'tripped'} != {('account', None, 'health'): 'armed'}
+```
+
+### PBT dashboard_routes.positions_are_the_open_rows_as_decimal_strings
+
+Break: `_positions` drops the `qty_open > 0` condition.
+
+```
+E   AssertionError: assert [('00000000-0...al('0.0100'))] == []
+E     Left contains one more item: ('00000000-0000-0000-0000-000000002000', 'SYM0', 0, Decimal('0.0500'), Decimal('0.0100'))
+```
+
+### PBT dashboard_routes.allocations_are_the_latest_day_exactly
+
+Break: `_allocations` no longer filters to the latest trade date.
+
+```
+E   AssertionError: assert [('00000000-0...al('0.0500'))] == [('00000000-0...imal('0.05'))]
+E     Left contains one more item: ('00000000-0000-0000-0000-0000000000c0', Decimal('0E-10'), Decimal('0.0500'))
+```
+
+### PBT dashboard_routes.watchlist_is_the_latest_day_on_or_before_today
+
+Break: `_watchlist` drops the `trade_date <= today` bound.
+
+```
+E   AssertionError: assert '2026-10-22' == None
+E   Failing test case: test_watchlist_is_the_latest_day_on_or_before_today(rows=[(-1, 0, Decimal('0'))])
+```
+
+### PBT dashboard_routes.lists_hold_the_newest_rows_up_to_the_limit
+
+Break: `_signals` orders oldest first.
+
+```
+E   assert [datetime.dat...timezone.utc)] == [datetime.dat...timezone.utc)]
+E     At index 0 diff: datetime.datetime(2026, 10, 21, 5, 58, tzinfo=datetime.timezone.utc) != datetime.datetime(2026, 10, 21, 5, 59, tzinfo=datetime.timezone.utc)
+```
+
+### PBT dashboard_routes.a_limit_out_of_bounds_is_refused
+
+Break: `Limit` loses its upper bound (`Query(ge=1)`).
+
+```
+E   assert 503 == 422
+E   Failing test case: test_a_limit_out_of_bounds_is_refused(route='signals', limit=201)
+```
+
+### PBT dashboard_routes.a_failed_read_is_a_fixed_message
+
+Break: `_read` appends the driver's error text to the 503 detail.
+
+```
+E   AssertionError: assert {'detail': 'T...e/e/21/e3q8)'} == {'detail': 'T... not be read'}
+```
+
+### CONF hat_routes_read_only
+
+Break: a `POST /api/hat/events/purge` route that commits, added to `dashboard.py`.
+
+```
+E   AssertionError: assert {('POST', '/a...vents/purge')} == {('POST', '/a...fyers/token')}
+E     Extra items in the left set:
+E     ('POST', '/api/hat/events/purge')
+```
+
+Break: `_all_bots` (reached from `GET /api/hat/status`) calls `session.flush()`.
+
+```
+E   AssertionError: ('app.hat.api.dashboard', '/api/hat/status')
+E   assert ['app.hat.api...ts: .flush()'] == []
+E     Left contains one more item: 'app.hat.api.dashboard._all_bots: .flush()'
 ```

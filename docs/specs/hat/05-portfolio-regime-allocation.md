@@ -201,7 +201,7 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 - **Statement:** Allocation is recomputed nightly after the regime job and applies only to new entries; open positions keep their stops and exits.
 - **Source:** BL "Allocation" (Recomputed nightly); MA "Daily cycle" step 7.
 - **PR:** 9, 17
-- **Verification:** TLA `JobScheduler!AllocateAfterRegime`, PBT `allocator.no_effect_on_open_positions`
+- **Verification:** TLA `DailyCycle!AllocateAfterRegime`, PBT `allocator.no_effect_on_open_positions`
 - **Acceptance:**
   - Property: in every run of the nightly job graph, `allocate` for trade date d starts only after `regime` for d succeeded. Harm: weights use yesterday's regime.
   - Property: for every allocation change, no stop, exit order or position quantity of an open position changes as a result. Harm: a weight cut forces sales the strategy did not call for.

@@ -14,6 +14,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `DB governance.stop_only_rises` For every pair (old, new) of stops, an UPDATE of `hat_position.current_stop` raises when new is below old and succeeds when it is equal or higher, with the row unchanged after a refusal. Harm: a bug widens a stop and a planned small loss becomes a large one (invariant 1).
 - `DB events.append_only` Every UPDATE (any column) and every DELETE on `hat_event`, one row or all rows, in any partition, raises `hat_event is append-only` and leaves the log unchanged. Harm: the audit trail can be rewritten.
 - `DB events.partitioned` `hat_event` is a RANGE (recorded_at) partitioned table with the specified columns, an identity id that strictly increases, primary key (id, recorded_at), and the actor CHECK. Harm: one unbounded table, or a log that cannot hold what replay needs.
+- `DB events.partitions_job` The `events.partitions` job (registered every day at 00:30 by PR 17): an event two months past a day with no partitions is refused before the job runs for that day and lands in its month's partition after; a run that leaves less than one month of partitions ahead alerts `events.partitions_short` and fails with that code. Harm: the partitions run out unseen and, on the first day of an uncovered month, every trade write fails.
 - `DB events.partitions_ahead` After the ensure step runs at any date d, partitions cover d's month and the two after it, and an event at any instant (including the first and last microsecond of a month) lands in the partition of its UTC month. Harm: on the first day of an uncovered month every event insert fails, and with it every state change.
 - `PBT events.atomic_with_state` For every sequence of stop moves failing at any point before commit (before the state write, between the two writes, after both, by a refused event type, or rolled back by the caller), the state change and its event are both stored or both absent. Harm: the log says a stop moved when it did not.
 - `PBT events.unknown_type_rejected` For every string outside the 32-type catalogue (random text and near misses such as case changes and suffixes), `record()` raises and writes nothing; every catalogue type records. Harm: a typo creates an event no replay or discipline metric reads.
@@ -61,7 +62,7 @@ DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTR
 Code under check:
 - `backend/app/hat/events.py`: `record`, `EVENT_GROUPS`, `EventError`
 - `backend/app/hat/runtime.py`: `position_is_virtual`, `child_is_virtual`
-- `backend/app/hat/ops/partitions.py`: `ensure_event_partitions`, `events_partitions`, `months_to_cover`, `partition_bounds`
+- `backend/app/hat/ops/partitions.py`: `ensure_event_partitions`, `events_partitions`, `existing_partitions`, `months_ahead`, `months_to_cover`, `partition_bounds`
 - `backend/app/hat/ops/retention.py`: `purge_chat_logs`, `purge_job`, `purge_cutoff`
 - `backend/app/hat/models/events.py`
 - `backend/app/hat/models/runtime.py`
@@ -83,7 +84,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `17c9705445ec28573b9a1c51ba6b884ec844c21c8fa0a511810475c40913aca9`
+Covered digest: `8541b482db0a4b3acdade93cfc94276906a675734d5ec979d757d0f19a8d9014`
 
 ## Scope changes
 
@@ -161,6 +162,16 @@ Break: `MONTHS_AHEAD = 1` in `app/hat/ops/partitions.py`.
 tests/hat/db/test_db_events.py:22: in test_events__partitions_ahead
 tests/hat/db/hat_db_runtime.py:567: in check_events__partitions_ahead
 E   AssertionError: no partition for 2026-03 at 2026-01-01
+```
+
+### DB events.partitions_job
+
+Break: `MIN_MONTHS_AHEAD = 0` in `app/hat/ops/partitions.py` (a short run neither alerts nor fails).
+
+```
+tests/hat/db/hat_db_runtime.py:804: in check_events__partitions_job
+E   AssertionError
+FAILED tests/hat/db/test_db_events.py::test_events__partitions_job
 ```
 
 ### PBT events.atomic_with_state

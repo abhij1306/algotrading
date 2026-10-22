@@ -113,6 +113,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA ApprovalToken!SingleDecision` A card is decided at most once. Harm: a double tap places two orders.
 - `TLA ApprovalToken!CardsDecided` Every sent card is eventually decided (liveness). Harm: an undecided card waits forever.
 - `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement) allow it and otherwise no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+- `PBT router.entry_needs_live_session` An accepted auto entry is placed only when its broker account has a live `hat_broker_session` for the placement's trade date (written by the runtime's session watch); a missing, expired or unknown session, or a live one of another day, sends nothing and ends the signal Rejected with `broker_session_not_live`. Harm: an entry goes out on an account nobody logged in today (HAT-OPS-023).
 - `PBT router.refused_entry_is_not_sent` An auto entry whose bot became manage-only (account, bot, manual or health kill, or a pause) after the signal committed sends nothing: an unsent reserved order is cancelled and the signal ends Rejected with the kill or pause reason; an order that may be at the broker (unconfirmed) is left to reconciliation, neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
 - `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
 - `PBT router.skip_and_expiry_become_one_veto_trade` Any mix of Skips, sweeps and late Takes ends a card Cancelled or Expired with exactly one virtual veto trade at the card's quantity and stop, no broker call, replays that match, no slot held and a stop-out that is not the bot's. Harm: a skip is scored twice or never, or blocks the bot's next entries.
@@ -266,7 +267,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `000a52b86dc4752649320aab0352efa71e55a7d24ee976118474181e31a49c2f`
+Covered digest: `12e48ab7d7d739a0c1d35531cfa367ed95f01fb4e8db001a9eccf28fcf6ebc7f`
 
 ## Scope changes
 
@@ -1431,6 +1432,15 @@ Third break: `bot_snapshot` values a pending signal's slot at its trigger price 
 E   AssertionError: assert Decimal('99.5000') == Decimal('100')
 E   Failing test case: test_routes_by_mode(
 E       mode='confirm',
+```
+
+### PBT router.entry_needs_live_session
+
+Break: `_preflight` drops the live-session refusal (`_session_refusal`).
+
+```
+FAILED tests/hat/properties/test_router.py::test_entry_needs_live_session
+AssertionError: assert 1 == 0
 ```
 
 ### PBT router.refused_entry_is_not_sent

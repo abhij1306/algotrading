@@ -15,7 +15,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.hat.backtest.runs import backtest_evidence
-from app.hat.data.store import DATASET_BREADTH, DATASET_INDEX, DataStore
+from app.hat.data.store import DATASET_BREADTH, DATASET_INDEX, DATASET_MARKET_BREADTH, DataStore
 from app.hat.errors import HatError
 from app.hat.ops.jobs import JobError, JobResult
 
@@ -59,11 +59,30 @@ def read_breadth(store: DataStore, day: date) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
 
+def read_ad_ratio(store: DataStore, day: date) -> Decimal | None:
+    """The advance/decline ratio the ingest wrote for `day` (HAT-DATA-044); None when absent.
+    It is recorded with the regime inputs and never decides the regime."""
+    frame = store.read_partition(DATASET_MARKET_BREADTH, day)
+    if frame.height == 0:
+        return None
+    value = frame["ad_ratio"][0]
+    if value is None:
+        return None
+    number = Decimal(str(value))
+    return number if number.is_finite() else None
+
+
 def regime_job(session: Session, store: DataStore, trade_date: date) -> JobResult:
     """`regime`: classify `trade_date` and store its `hat_regime_state` row."""
     closes, vix = read_series(store, trade_date)
     try:
-        inputs = regime.compute_inputs(trade_date, closes, vix, read_breadth(store, trade_date))
+        inputs = regime.compute_inputs(
+            trade_date,
+            closes,
+            vix,
+            read_breadth(store, trade_date),
+            read_ad_ratio(store, trade_date),
+        )
         market_id = market_id_of(session)
     except (regime.RegimeError, PortfolioError) as exc:
         raise JobError(exc.code) from exc

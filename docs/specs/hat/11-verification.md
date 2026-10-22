@@ -56,7 +56,7 @@ errors.
 | 6 | Approval tokens | A token is accepted at most once, only before expiry, only for its signal, only with a valid signature | TLA, PBT | `ApprovalToken`; `telegram` | `verify-execution` |
 | 7 | Trade lifecycle | Every trade follows the 11-state machine and ends in exactly one of 4 endings; state replays from events | TLA | `TradeLifecycle` | `verify-execution` |
 | 8 | Event log | Events are append-only and written in the same transaction as the state change | DB, PBT | `hat_event_is_append_only` | `verify-data` |
-| 9 | Scheduler | A job runs at most once to success per (job, trade_date); the daily cycle runs in order; 22:00 fallback | TLA | `JobScheduler` | `verify-scheduler` |
+| 9 | Scheduler | A job runs at most once to success per (job, trade_date); the daily cycle runs in order; 22:00 fallback | TLA | `JobScheduler`, `NightlyPipeline`, `DailyCycle` | `verify-scheduler` |
 | 10 | Data-quality gate and corporate actions | Scans never run on data that failed the gate; adjusted prices are raw times cumulative factors | PBT | `quality_gate`, `corporate_actions`, `features` | `verify-data` |
 | 11 | Portfolio layer | Allocator multipliers stay in [0.25, 1.0] and move at most 0.25 per day; regime changes only after 3 days; lifecycle guards hold | PBT, TLA | `allocator`, `health`, `regime`; `RegimeConfirmation`, `SleeveLifecycle` | `verify-portfolio` |
 | 12 | Backtest | Cost model, deflated Sharpe and trial counting are correct for every input | PBT | `costs`, `dsr` | `verify-portfolio` |
@@ -72,7 +72,7 @@ errors.
 
 ## §3 TLA+ models
 
-The ten models. Each one is small, describes the design at the level of the code's atomic steps, and
+The eleven models. Each one is small, describes the design at the level of the code's atomic steps, and
 names the code location of every action. A later PR may split a model, but may not add a model
 outside this list without updating this section.
 
@@ -84,8 +84,9 @@ outside this list without updating this section.
 | `StopPlacement` | Stop only tightens; intraday SL on every real fill; GTT swap around 15:25 leaves no unprotected gap; nightly GTT verify; a lost GTT answer is settled and never blocks a sale | 13, 15, 18 | 07 §5-§6, 03 §5 |
 | `OrderReconciliation` | Persist PENDING before the broker call; tag idempotency; unconfirmed submit resolved by tag; reconcile before the first order; a rejected order is retried at most once | 13, 15 | 07 §10-§11 |
 | `KillSwitch` | Account, bot, manual and health switches; manage-only blocks entries and never exits; manual re-arm vs automatic re-arm for health | 10 | 06 §6 |
-| `JobScheduler` | At most one success per (job, trade_date); a failed job can be retried; the intraday order | 2, 14, 15, 17 | 10 §2-§3 |
+| `JobScheduler` | At most one success per (job, trade_date); a failed job can be retried; `exits.close` only in its window; login prompts and reports at their times | 2, 15, 16, 17 | 10 §2-§3 |
 | `NightlyPipeline` | The 18:00-22:00 poll and the 22:00 fallback; the nightly chain order; no scan on no data or a failed gate; exits independent of the chain (split out of `JobScheduler` in PR 7) | 7, 17 | 10 §3, 02 §4, §6 |
+| `DailyCycle` | The intraday order (login prompt, live preparation, pre-open gaps, gap scan, the 09:20 gate refresh, MA exits, GTT swap, session end, reports); entries only 09:20-15:20 after the gate refresh and with a live broker session; no `exits.close` after `gtt.swap`; `allocate` only after `regime` succeeded and never touching open positions (split out of `JobScheduler` in PR 17) | 14, 15, 17 | 10 §3, 05 §5 |
 | `RegimeConfirmation` | The confirmed regime state changes only after 3 consecutive days in the new state | 9 | 05 §3 |
 | `SleeveLifecycle` | research, backtested, shadow, live, probation, retired: only guarded transitions; regime never changes lifecycle state | 9, 12 | 05 §6 |
 
@@ -180,7 +181,7 @@ Each critical area gets a skill an agent can follow cold, mid-change, without le
 | `.claude/skills/verify-execution/SKILL.md` | `ExecutionRouter`, `OrderReconciliation`, `ApprovalToken`, `TradeLifecycle`; PBT `tags`, `telegram` |
 | `.claude/skills/verify-stops/SKILL.md` | `StopPlacement`; DB `governance.stop_only_rises`; PBT `stops`, `exits` |
 | `.claude/skills/verify-risk/SKILL.md` | `KillSwitch`; PBT `sizing`, `caps`, `exposure` |
-| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`, `NightlyPipeline`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
+| `.claude/skills/verify-scheduler/SKILL.md` | `JobScheduler`, `NightlyPipeline`, `DailyCycle`; PBT `ops`; DB `ops.job_run_unique`; CONF verification harness |
 | `.claude/skills/verify-governance/SKILL.md` | DB `governance`, `reference`, `portfolio`, `migration` checks; PBT `ids`, `time`, `config`, `risk_policy`; CONF `schema`, boundaries |
 | `.claude/skills/verify-data/SKILL.md` | DB event-log checks; PBT `quality_gate`, `corporate_actions`, `features`, `ingest` |
 | `.claude/skills/verify-live-data/SKILL.md` | The tick hook, 5-minute bars, staleness, pre-open gap capture, the 09:16 gap scan and announcements: PBT `bars` (live), `gapscan`, `announcements`; CONF `imports.no_second_websocket`, `single_feed_import_rule` |

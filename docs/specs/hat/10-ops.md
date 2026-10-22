@@ -102,26 +102,100 @@ MA "Daily cycle":
 8. **22:00 cutoff**: still no data → fall back to NSE bhavcopy download; still nothing → skip scans, alert, bots stay manage-only.
 9. **Nightly**: confirm a GTT stop exists for every open position.
 
-Jobs (PLAN §4.3):
+Jobs (PLAN §4.3), as `HatRuntime` registers them (`app/hat/daily/runtime.py`; PR 17). "Trading"
+jobs run only for a trading day of `hat_trading_calendar` (HAT-OPS-012), "every" jobs for every
+calendar day; "After" jobs start only once those jobs succeeded for the same trade date; "Until"
+is the end of a window the job is never started at or after. `<account>` jobs exist once per
+active broker account (their name carries the account id). `CONF ops.job_registry` reads this
+table.
 
-| Job | Time (IST) | PR (job logic) | Wired in |
-| --- | --- | --- | --- |
-| `reference.weekly` (equity list, industry) | weekly | 4 | 17 |
-| `calendar.refresh` | yearly + on change | 4 | 17 |
-| `bands.nightly` | nightly | 4 | 17 |
-| `ingest.nightly` (probe 18:00, poll 10 min, 22:00 bhavcopy fallback) | 18:00–22:00 | 7 | 17 |
-| `quality.gate` → `ca.adjust` → `features` → `regime` → `allocate` → `scan` → `watchlist.digest` | after ingest | 7, 6, 9, 11, 16 | 17 |
-| `login.prompt` | 08:30, 09:05 | 16 | 17 |
-| `live.prepare` (subscribe watchlist + positions) | 08:45 | 14 | 17 |
-| `preopen.gaps` / `gapscan` | 09:00–09:08 / 09:16 | 14 | 17 |
-| `announcements.poll` | every 2 min 07:30–15:30, else 15 min | 14 | 17 |
-| `exits.close` (MA / partial-after-days / time stops on live price; never started from 15:25, retried each minute inside the window: a run that fails at 15:24 is not retried after 15:25 and stays a failed run) | 15:20–15:25 | 15 | 17 |
-| `gtt.swap` (intraday stop → GTT; retried each minute until it succeeds) | 15:25 | 15 | 17 |
-| `digest.rejections` 15:35, `pnl.daily` 15:40 | — | 16 | 17 |
-| `gtt.verify` (GTT exists for every open position) | nightly, 23:00 | 15 | 17 |
-| `snapshot.bots` (`hat_daily_bot_snapshot`, drawdowns → kill/health) | nightly | 10 | 17 |
-| `events.partitions` | nightly | 3 | 17 |
-| `history.build` (one-off CLI) | manual | 5 | — |
+| Job | Days | Time (IST) | Until | After | PR (job logic) |
+| --- | --- | --- | --- | --- | --- |
+| `events.partitions` | every | 00:30 | | | 3 |
+| `retention.purge` | every | 01:00 | | | 16 |
+| `calendar.refresh` | every | 07:00 | | | 4 |
+| `bands.nightly` | trading | 07:45 | | | 4 |
+| `reference.weekly` | every, Saturday | 09:00 | | | 4 |
+| `telegram.login_prompt` | trading | 08:30 | 09:05 | | 16 |
+| `live.prepare` | trading | 08:45 | | | 14 |
+| `telegram.login_reprompt` | trading | 09:05 | 15:30 | | 16 |
+| `modes.apply` | trading | 09:15 | | | 15b |
+| `gapscan` | trading | 09:16 | 09:20 | `live.prepare` | 14 |
+| `exits.close:<account>` | trading | 15:20 | 15:25 | | 15c |
+| `exits.close_shadow` | trading | 15:20 | 15:25 | | 15c |
+| `gtt.swap:<account>` | trading | 15:25 | | | 15c |
+| `watchlist.expire` (HAT-EXEC-041: an untriggered row ends Expired) | trading | 15:30 | | | 11 |
+| `trade.end_session:<account>` | trading | 15:31 | | | 15c |
+| `telegram.rejections` | trading | 15:35 | | | 16 |
+| `telegram.daily_report` | trading | 15:40 | | | 16 |
+| `telegram.veto_digest` | trading | 15:45 | | | 16 |
+| `ingest.nightly` (probe 18:00, poll 10 min, 22:00 bhavcopy fallback) | trading | 18:00 | | | 7 |
+| `exits.close_gaps` | trading | 18:00 | | `ingest.nightly` | 15c |
+| `quality.gate` | trading | 18:00 | | `ingest.nightly` | 7 |
+| `ca.adjust` | trading | 18:00 | | `quality.gate` | 6 |
+| `features` | trading | 18:00 | | `ca.adjust` | 6 |
+| `regime` | trading | 18:00 | | `features` | 11 |
+| `allocate` | trading | 18:00 | | `regime` | 11 |
+| `snapshot.bots` (`hat_daily_bot_snapshot`, drawdowns → kill/health) | trading | 18:00 | | `allocate` | 10 |
+| `scan` | trading | 18:00 | | `allocate` | 9 |
+| `watchlist.digest` | trading | 18:00 | | `scan` | 16 |
+| `gtt.verify:<account>` | trading | 23:00 | | | 15c |
+
+Periodic steps of the runtime (not `hat_job_run` jobs; each step logs and survives its own
+failure): the broker-session check, fill sync and approval expiry every minute, reconciliation
+every 5 minutes, the calendar read every 10 minutes, the live exit rules of the shadow positions
+every 5 seconds while the market is open, and `announcements.poll` at its own interval (every 2
+minutes 07:30–15:30, else 15). The pre-open gap capture (09:00–09:08) is done by the feed listener
+(`LiveData`), not a job. `history.build` is a one-off CLI (PR 5).
+
+Design (PR 17), where the wiring chose a default the requirements leave open:
+
+- Each job body gets the trade date its run is kept under (`ScheduledJob.fn(day)`).
+- Job bodies run on the scheduler's own threads, one per registered job, so catch-up runs after a
+  restart (any number, however slow) never hold a windowed job such as `exits.close` past its
+  window (PBT `ops.window_not_starved`). An overdue job without a window still runs late the
+  same day: each such job (`live.prepare`, `modes.apply`, the housekeeping) is still useful then,
+  and the morning jobs that are not (`telegram.login_prompt`, `gapscan`) have windows.
+- A `gtt.verify` run that fails at 23:xx is retried every 10 minutes until midnight IST only; the
+  next night's run covers every open position again.
+- `snapshot.bots` runs nightly after `allocate` (it needs the day's allocation capital), and
+  `exits.close_gaps` after `ingest.nightly` (it needs the official closes).
+- The nightly chain belongs to the trade date it started on, so it must finish before midnight
+  IST; a chain still running then is not resumed under the next date. A failed job of a past date
+  is not re-run by the scheduler [OWNER-PENDING: a manual re-run command].
+- The quality state an entry reads for day d is the status of the previous trading day's
+  `quality.gate` run; when that run did not finish or does not exist the state is unknown and
+  entries fail closed (reason `missing_input`).
+- An entry on day d reads the allocation `allocate` made on the previous trading day; when that
+  night's allocation is missing (for example the broker funds could not be read) entries fail
+  closed rather than trade on an older weight or an unmeasured drawdown (`snapshot.bots` runs
+  after `allocate` and measures the drawdown kills on that allocation).
+- `allocate` takes total equity from the broker funds read when it runs (the sum over active
+  accounts; unavailable funds fail the job with `equity_unavailable`). The 05 default reads them
+  at session start, but the allocation for the next session is made the evening before
+  [OWNER-PENDING HAT-PORT-052].
+- The live exit rules of shadow positions read the latest traded price every 5 seconds instead of
+  acting on each tick; the 15:25 `close_below_sma` evaluation is the `exits.close_shadow` window.
+- A restart after 08:45 on a trading day arms the day again from the watchlist (`live.prepare`'s
+  body, with every key that already has a signal marked fired). The EP candidates of the 09:16 gap
+  scan are not rebuilt: their pre-open open prices are process memory, so after a restart past
+  09:16 no EP entry triggers that day (fail closed); open positions, exits and stops are
+  unaffected.
+- The runtime re-reads the trading calendar every 10 minutes and hands it to every broker
+  desk, so a calendar loaded after start or a new year's rows reach the stop desks and exits.
+- The daily inputs of the live engine (ATR and swing lengths) are shared across bots and fail
+  closed (no candidate) when the active bots disagree.
+- The nightly scan does not read price bands; the band is checked at entry (`risk.service.price_band_ok`, HAT-DATA-025).
+
+Acceptance run (PR 17, PLAN §4.3): `backend/tests/hat/db/test_db_daily_cycle.py::test_ops__simulated_day`
+(Postgres-marked, CI job `backend-postgres`) runs a whole day through `HatRuntime` with HAT enabled,
+fixture data, `FakeBroker` and a recording Telegram transport, in shadow mode: every trading-day
+job of the table above succeeds once and in order; a breakout and an EP gap become shadow entries
+and a stop crossed in the session is exited by the live exits within the minute; an untriggered
+watchlist row ends Expired; the nightly chain runs from the MCP, and the next night from the 22:00
+bhavcopy fallback; a holiday runs only the every-day jobs; no order reaches the broker; `stop`
+leaves no task. It is an end-to-end run, not a `DB` check (11 §1 keeps `DB` for invariants the
+database enforces); its breaks are recorded in `verify-scheduler`.
 
 #### HAT-OPS-020: Every daily-cycle job is registered at its time
 - **Statement:** The scheduler registers exactly the jobs of the table above at the stated IST times.
@@ -129,13 +203,13 @@ Jobs (PLAN §4.3):
 - **PR:** 17
 - **Verification:** CONF `ops.job_registry`
 - **Acceptance:**
-  - Property: the set of registered `(job, schedule)` pairs equals the job table of this section, with times in `Asia/Kolkata`. Harm: a missing or mistimed job (for example `gtt.swap`) leaves positions unprotected overnight.
+  - Property: the set of registered `(job, days, time, until, after)` rows equals the job table of this section, with times in `Asia/Kolkata`. Harm: a missing or mistimed job (for example `gtt.swap`) leaves positions unprotected overnight.
 
 #### HAT-OPS-021: Nightly pipeline order
 - **Statement:** After a successful ingest, the nightly jobs run in the order `quality.gate` → `ca.adjust` → `features` → `regime` → `allocate` → `scan` → `watchlist.digest`, each only after its predecessor succeeded for the same trade date.
 - **Source:** MA "Daily cycle" step 7; DS "Nightly ingest" steps 5–9; PLAN §4.3.
 - **PR:** 17
-- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`
+- **Verification:** TLA `NightlyPipeline!NightlyPipelineOrder`, PBT `ops.entry_inputs_fail_closed`
 - **Acceptance:**
   - Property: in every behaviour, a job of the pipeline starts for trade date d only after every earlier job of the pipeline has status `succeeded` for d. Harm: scans run on unadjusted prices or stale features and produce wrong watchlists.
   - Property: if `quality.gate` fails for d, no `scan` runs for d and every bot is manage-only for new entries. Harm: the bot trades on data the gate rejected.
@@ -153,7 +227,7 @@ Jobs (PLAN §4.3):
 - **Statement:** On a trading day, login prompts (08:30), live preparation (08:45), pre-open gap capture (09:00–09:08), the gap scan (09:16), the first trigger window (from 09:20), MA exits (15:20–15:25) and the GTT swap (~15:25) happen in that order.
 - **Source:** MA "Daily cycle" steps 1–6; DS "Live data" window table.
 - **PR:** 14, 15 (logic), 17 (wiring)
-- **Verification:** TLA `JobScheduler!IntradayOrder`
+- **Verification:** TLA `DailyCycle!IntradayOrder`, PBT `router.entry_needs_live_session`, CONF `ops.route_matches_protocol`
 - **Acceptance:**
   - Property: in every behaviour of a trading day, no trigger is acted on before the 09:20 bar is final, and no entry order is placed for a broker account without a live `hat_broker_session` for that trade date. Harm: entries fire on an unformed opening range or without a valid broker session.
   - Property: `gtt.swap` for a position runs only after that day's MA exits for it have been evaluated. Harm: a GTT is placed for a position that is being exited, leaving an orphan stop that could open a short.
@@ -244,6 +318,7 @@ and OWN-20OCT (no OpenAlgo container).
 - **Verification:** CONF `ops.compose_services`
 - **Acceptance:**
   - Property: the Compose file defines exactly the services `postgres` and `backend` (plus an optional `frontend`), no `openalgo` service, and every published port is bound to a loopback or VPN address. Harm: an open port exposes the trading box, or a stray service holds broker credentials.
+- **Implementation (PR 17):** `deploy/hat/docker-compose.yml` (project `hat`): `postgres` (image `postgres:18.x`, named volume `hat_pgdata`, `pg_isready` healthcheck) and `backend` (built from `deploy/hat/backend.Dockerfile`: python:3.14-slim, `backend/requirements.txt` constrained to the CI lock plus fyers-apiv3 `--no-deps`; `HAT_ENABLED=true`, `HAT_DATA_ROOT=/data/hat` on volume `hat_data`, the Fyers token directory on `hat_fyers`; `/ping` healthcheck; starts once `postgres` is healthy); `frontend` only under the `frontend` profile. Every published port is `127.0.0.1:...` (the VPN reaches the host, Docker publishes nothing beyond loopback). Every service reads the repo-root `.env` through `env_file` (Postgres's own variables are interpolated from `--env-file .env`); the file holds no secret value. CONF `ops.compose_services` (`backend/tests/hat/conformance/test_conf_ops.py`) checks all of this.
 
 #### HAT-OPS-041: Host prerequisites
 - **Statement:** The HAT host runs Linux with NTP sync, a registered ISP static IP, a UPS, a second internet link for alerts, and Tailscale (or WireGuard) for remote access.
@@ -261,6 +336,7 @@ and OWN-20OCT (no OpenAlgo container).
 - **Verification:** OPS `ops.deploy_window`, PBT `ops.deploy_window_guard`
 - **Acceptance:**
   - Property: for every instant on a trading day between 08:30 and 15:35 IST, the deploy script refuses to run unless forced, and a forced run is logged. Harm: a restart mid-session misses triggers, stop moves or the GTT swap.
+- **Implementation (PR 17):** `scripts/hat_deploy_guard.py`, run first in every deploy (runbook §9). The window is 08:30 ≤ t < 15:35 IST. The guard runs on the host before the stack is up, so it cannot read `hat_trading_calendar`: it fails closed and treats every weekday as a trading day; `--calendar` takes an export of that table whose rows win (a holiday is free, a special weekend session is guarded). It exits 2 when refused; `--force` needs `--reason` and appends one JSON line to `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl`.
 
 #### HAT-OPS-043: 4G failover places no orders
 - **Statement:** When the host is on its failover link (a non-registered IP), new entries wait until the static line returns; broker-side stops cover open positions.
@@ -312,6 +388,7 @@ Fyers variables and `fyers/config/access_token.json`). New HAT secrets (PLAN §7
 - **Acceptance:**
   - Property: for every backup run, the manifest lists the dump file and every Parquet and raw-zip file under `HAT_DATA_ROOT` with matching size and checksum at both targets, and a missing or mismatched file fails the run with an alert. Harm: losing the event log or raw files makes trades unexplainable and history unrebuildable.
   - Property: a restore drill from the latest backup reproduces the event-log row count and the latest trade date. Harm: backups exist but cannot be restored.
+- **Implementation (PR 17):** `scripts/hat_backup.py run` writes one set per run (`hat.dump`, a custom-format `pg_dump` read from its stdout; `hat_data.tar`, every file under `HAT_DATA_ROOT`; `manifest.json`, size and sha256 of both files and of every member of the tar) to the local target, copies it to the remote target and re-reads both against the manifest; any missing, resized or changed file exits 1, and the host timer's `OnFailure=` unit sends the alert (runbook §9). Both targets are directories: the external disk and a mounted cloud bucket (rclone or s3fs), so the script holds no bucket keys. Sets beyond `--keep` (14) are pruned only after a verified run. The database password reaches `pg_dump` only through `PGPASSWORD` or `~/.pgpass`.
 - **[OWNER-PENDING]** backup target and credentials (external disk path, cloud bucket keys): PLAN §7; owner to provide.
 
 ## §8 Observability and alerts
@@ -340,10 +417,29 @@ Fyers variables and `fyers/config/access_token.json`). New HAT secrets (PLAN §7
 - **Acceptance:**
   - Property: for every DB state, the status payload's broker-session, kill-switch, regime and feed fields equal the latest corresponding rows. Harm: the user believes the bot is protected or halted when it is not.
 
+The dashboard's read routes (`app/hat/api/dashboard.py`, HAT-DEC-T3) are GETs under `/api/hat`
+that read Postgres and change nothing; kill, re-arm (`/arm`), mode and flatten are Telegram
+commands. Money, weights and scores are decimal strings. A failed read answers 503 with a fixed
+message and no database text. The list routes take `limit` (1..200, default 50; anything else is
+a 422).
+
+| Route | Answer |
+| --- | --- |
+| `GET /api/hat/status` | `as_of`, `trade_date`, `kill_account`, `feed_stale_at` (latest `feed.stale` of today), `regime` (latest), `bots`, `kill_switches` (state of every scope, bot, channel key), `sessions` (today's login of every active account), `jobs` (today's `hat_job_run` rows) |
+| `GET /api/hat/bots` | every bot: mode, status, lifecycle, `manage_only` and its reasons |
+| `GET /api/hat/watchlist` | per bot, its latest watchlist on or before today, best score first |
+| `GET /api/hat/signals?limit=` | the latest signals, newest first |
+| `GET /api/hat/positions` | the open positions, oldest first |
+| `GET /api/hat/allocations` | the latest nightly allocation day, one row per bot |
+| `GET /api/hat/regime?limit=` | the regime history, newest first |
+| `GET /api/hat/events?limit=` | the latest events of the log, newest first |
+
 ## §9 Runbook
 
-Skeleton. PR 17 fills in the procedures; each `OPS` check below is a checklist item with a date
-and initials recorded in this section when performed.
+The operator's procedures (PR 17). Each `OPS` check below is a checklist item: when it is
+performed, add a row to the check log at the end of this section with the date, initials and
+result. CONF `ops.runbook_complete` keeps one `###` procedure here for every `OPS` name used in
+the specs and every §4 failure case.
 
 | OPS check | When | What |
 | --- | --- | --- |
@@ -352,10 +448,287 @@ and initials recorded in this section when performed.
 | `ops.deploy_window` | Every deploy | Outside 08:30–15:35 IST on trading days; reconcile on start |
 | `ops.failover_drill` | Quarterly | Switch to 4G; confirm no orders, alert sent, stops intact |
 | `ops.backup_restore_drill` | Monthly | Restore latest backup to a scratch DB; compare event count and latest trade date |
+| `gapscan.latency_observed` | Daily for the first 2 weeks of live data | 09:16 gap-scan finish time against the 09:20 bar |
 
-Procedures to write in PR 17: morning login, missed login, data gate failure, 22:00 fallback
-failure, broker session loss, feed stale, kill switch and re-arm, flatten, reconciliation mismatch,
-GTT missing, restore from backup.
+The decision rows also name two of these checks by older names: `host_static_ip_ups_failover`
+(HAT-DEC-T9) is `ops.host_checklist`, and `env_file_permissions` (HAT-DEC-T13) is
+`ops.env_permissions`.
+
+Conventions. Commands run from the repository root on the host, as the service user unless they
+say otherwise. `$COMPOSE` stands for
+`docker compose --env-file .env -f deploy/hat/docker-compose.yml`. Database commands take the
+password from `PGPASSWORD` or `~/.pgpass`, never from the command line. "Telegram" is the one
+allowlisted chat. Every procedure ends by recording what happened (check log below, or the
+incident in the PR or issue tracker).
+
+### Start and stop
+
+1. Start (or bring up after a host reboot): `python scripts/hat_deploy_guard.py && $COMPOSE up -d`.
+   Docker restarts the containers on its own after a crash (`restart: unless-stopped`); the guard
+   is for planned starts.
+2. Check: `$COMPOSE ps` shows `postgres` and `backend` healthy; `curl -fsS http://127.0.0.1:8000/ping`
+   answers; Telegram `/status` answers.
+3. Stop (planned, outside the window): `python scripts/hat_deploy_guard.py && $COMPOSE stop backend`.
+   The backend has 30 s to stop the feed, the scheduler and the engine. Stop `postgres` only after
+   the backend.
+4. Logs: `$COMPOSE logs -f backend` (one JSON object per line, HAT-OPS-070).
+5. Never `$COMPOSE down -v`: it deletes the database and data volumes.
+
+### Morning login (daily Fyers login)
+
+1. 08:30 IST: Telegram sends the Fyers login link (`login.prompt`). Open it and log in at Fyers.
+2. Fyers redirects to the registered `REDIRECT_URI`; copy the `auth_code` from the redirected URL
+   into the login dialog in the app header (or `POST /api/hat/auth/fyers/token`).
+3. Check: the header shows Fyers connected; `/status` shows the broker session live.
+4. No entries are placed until the login is done; stops and exits that rest at the broker are not
+   affected.
+
+### Missed login
+
+1. 09:05 IST: Telegram sends the second prompt. If it is missed too, the bots stay without a live
+   session: no entries that day (HAT-DEC-T14); broker-side stops still protect open positions.
+2. Late login: send `/login` in Telegram for a fresh link, then follow "Morning login". Entries
+   resume from the next trigger after the session is live; missed triggers are not replayed.
+3. If the token was revoked mid-day, `GET /api/hat/auth/fyers/status` shows disconnected: log in
+   again the same way.
+
+### Deploy and planned restart: `ops.deploy_window`
+
+1. Pick a time outside 08:30–15:35 IST on a trading day (weekends and NSE holidays are free).
+2. Run the guard: `python scripts/hat_deploy_guard.py`. Exit 2 means refused. It treats every
+   weekday as a trading day unless given `--calendar` with an export of `hat_trading_calendar`:
+   `$COMPOSE exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -F, -c "select date, is_trading from hat_trading_calendar" > /tmp/hat_calendar.csv`.
+3. Deploy: `git pull` (or check out the release), then
+   `python scripts/hat_deploy_guard.py && $COMPOSE up -d --build`.
+4. Emergency deploy inside the window only for a fix that cannot wait:
+   `python scripts/hat_deploy_guard.py --force --reason "<why>"`. The forced run is appended to
+   `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl`; copy the reason into the check log.
+5. After the start, follow "Restart recovery: reconcile, then resume".
+
+### Restart recovery: reconcile, then resume
+
+Covers every restart: planned, a crash, or the machine coming back after being down.
+
+1. On start the scheduler marks any run left `running` by the previous process as interrupted, so
+   it can run again (`recover_interrupted`); jobs resume from `hat_job_run` and a job that
+   already succeeded for today is not run again (HAT-OPS-010).
+2. The first real entry of each broker session reconciles HAT's book with the broker's order and
+   trade books before any order (HAT-OPS-003). A broker that cannot be read, or an HT order HAT
+   does not know, places nothing and sends an alert.
+3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
+   position shows its stop). If the session is not live, follow "Morning login".
+4. If a `reconcile.mismatch` alert arrives, follow "Reconciliation mismatch".
+
+### Failure: Machine down
+
+1. While the host is down, broker-side stops (intraday SL-M or GTT) protect every open position;
+   nothing else is needed during market hours.
+2. Bring the host back, then `$COMPOSE up -d` (no guard needed for an unplanned outage; record it).
+3. Follow "Restart recovery: reconcile, then resume", then check missed jobs as in "Failed nightly
+   job".
+
+### Failure: Data missing or fails the quality gate
+
+1. Alert: `quality.failed` or `ingest.failed`. The data-health kill makes the affected bots
+   manage-only: no new scans or entries; exits and stops continue (HAT-OPS-030).
+2. Look at the job rows: `select job, trade_date, status, error_code from hat_job_run where trade_date = current_date order by started_at;`
+   and the backend log for the failing job.
+3. Fix the cause (source late, MCP endpoint down, a bad row). The scheduler retries a failed job
+   every 10 minutes while it is still that date; once the gate passes, the health kill clears on
+   its own and the chain (ca.adjust, features, regime, allocate, scan, watchlist) continues.
+4. Do not re-arm by hand: a data-health kill re-arms automatically when the check passes.
+
+### Failure: 22:00 fallback fails
+
+1. Alert at 22:00: neither the MCP nor the NSE bhavcopy download has the day. No scan runs; bots
+   stay manage-only for the next session (HAT-OPS-022).
+2. Check NSE's site for a delayed publication and the backend log for the fallback's error code.
+3. When the file is out, a failed `ingest.nightly` is retried by the scheduler while it is still
+   the same date. After midnight the scheduler does not run a past trade date again; the next
+   night's ingest runs as usual and the missed day stays a gap: record it as an incident.
+   **[OWNER-PENDING]** a CLI to re-run one job for a past trade date.
+
+### Failure: Broker session drops
+
+1. HAT retries with backoff (1 s doubling to 30 s); after 2 minutes Telegram gets one
+   `broker.session_lost` alert (HAT-OPS-031). Bots on that account are manage-only; stops rest at
+   the broker.
+2. Check Fyers status and the host's internet link. If the token expired or was revoked, log in
+   again ("Morning login").
+3. If the host is on the 4G link, see "Failover drill": no entries until the static line returns.
+4. Recovery is automatic once the session is back; check `/status`.
+
+### Failure: Feed stale
+
+1. Alert: `feed.stale`. Bars and triggers stop for the stale symbols; broker-side stops are not
+   affected; MA exits at 15:20 use the live price, so a feed still stale then is an incident.
+2. Check the internet link and Fyers status; `$COMPOSE logs backend | grep feed`.
+3. If the socket does not come back within a few minutes, restart the backend (a planned restart
+   inside the window needs `hat_deploy_guard.py --force --reason "feed stale"`), then follow
+   "Restart recovery: reconcile, then resume".
+
+### Failure: Order rejected
+
+1. Alert: `order.rejected` with its reason. HAT retries a rejected order at most once
+   (HAT-OPS-032); a second rejection ends the signal.
+2. Read the reason: price band, margin, freeze, session, unregistered IP (see "Failover drill").
+3. Fix the cause; do not place the order by hand (there is no manual trading). A rejected stop is
+   placed again by the next fill sync (`stop.not_placed`); if it keeps failing, see "GTT missing".
+
+### Failure: Duplicate trigger
+
+1. A second trigger for the same bot, playbook, instrument and trade date places no second order:
+   the signal id is the idempotency key (HAT-OPS-033). Nothing to do unless an alert says a
+   second order reached the broker.
+2. If one did: `/kill`, then compare `/positions` with the Fyers order book and treat it as
+   "Reconciliation mismatch". Record it as a bug.
+
+### Failure: Close vs live price
+
+1. Known gap, not an incident: MA exits at 15:25 use the live price, NSE's official close is the
+   last-30-minute weighted average. Each evaluation records `exit.close_evaluated`; after the
+   nightly ingest `exit.close_gap` records the gap (HAT-OPS-034).
+2. Weekly in shadow mode: review the gaps (`select payload from hat_event where event_type = 'exit.close_gap' order by created_at desc limit 50;`)
+   and raise a spec change if exits are systematically biased.
+
+### Kill switch and re-arm via Telegram
+
+1. Kill: send `/kill`. Every bot becomes manage-only and pending approvals are cancelled; exits
+   and stops keep running (HAT-TG-034). Drawdown and data-health kills trip on their own.
+2. Before re-arming: find why it tripped (`/status`, the `kill.tripped` event), fix it, and check
+   `/positions` shows every open position with its stop.
+3. Re-arm: send `/arm`, then press Confirm on the confirmation card (second confirmation,
+   HAT-TG-033). `kill.rearmed` is recorded. `/resume` does not lift a kill switch.
+4. A data-health kill re-arms automatically once the data check passes; do not `/arm` it.
+
+### Flatten
+
+1. Only to get out of everything now: send `/flatten`, then press Confirm. HAT sells every open
+   real position through exit-only orders and records `flatten.executed` as a discipline breach
+   (HAT-TG-035).
+2. Check `/positions` and the Fyers positions page are both empty; `/kill` too if no new entries
+   should follow.
+
+### Reconciliation mismatch
+
+1. Alert: `reconcile.mismatch` (kind, tag or symbol, bot). Entries for that bot are blocked; HAT
+   never auto-closes or adopts a position (HAT-BRK-111).
+2. Compare the Fyers order book, trades and positions with `/positions` and `hat_order`.
+3. A broker position HAT does not know: close or keep it at Fyers yourself; it is not HAT's.
+   A HAT position missing at the broker or a quantity difference: find the fill or cancel that HAT
+   missed (backend log, Fyers trade book) and record it as a bug.
+4. The block clears at the next reconciliation that matches. Record the incident.
+
+### GTT missing
+
+1. Alerts: `gtt.missing`, `gtt.unverified`, `gtt.swap_failed` or `stop.not_placed`. `gtt.verify`
+   at 23:00 refreshes and re-places GTTs; `gtt.swap` at 15:25 retries every minute and keeps the
+   intraday stop until the GTT is confirmed.
+2. Check the Fyers GTT page against `/positions`: every open real position needs one GTT at its
+   current stop.
+3. If the broker keeps refusing: check the session (log in again), the price band and the
+   quantity. A position that stays unprotected overnight is an incident: decide whether to
+   `/flatten` it the next morning.
+
+### Failed nightly job
+
+1. Alert or `/status` shows a failed job. List today's runs:
+   `select job, status, error_code, started_at, finished_at from hat_job_run where trade_date = current_date order by started_at;`
+2. A failed run is retried by the scheduler every 10 minutes while it is still that date; jobs
+   after it in the chain wait for it (HAT-OPS-021). Exits and stops never wait (HAT-OPS-004).
+3. Fix the cause from the error code and the backend log, then watch the next retry succeed.
+4. A run stuck in `running` after a crash is reaped at the next start; restart only outside the
+   window (deploy guard).
+
+### Gap-scan latency: `gapscan.latency_observed`
+
+1. For the first two weeks of live data, each trading day after 09:20, read the `gapscan` run:
+   `select started_at, finished_at from hat_job_run where job = 'gapscan' and trade_date = current_date;`
+2. Record the finish time in the check log. A finish at or after 09:20:00 also raises a health
+   alert (HAT-DATA-122). If it is late on more than one day, raise the scan's latency assumption
+   with the owner.
+
+### Backup and restore drill: `ops.backup_restore_drill`
+
+Nightly backup (HAT-OPS-060): a systemd timer on the host runs, at 23:30 IST, as root (it reads
+the Docker volume) with the `.env` variables loaded (`EnvironmentFile=`):
+
+```
+python scripts/hat_backup.py run \
+  --local "$HAT_BACKUP_LOCAL" --remote "$HAT_BACKUP_REMOTE" \
+  --data-root "$(docker volume inspect -f '{{ .Mountpoint }}' hat_hat_data)"
+```
+
+`HAT_BACKUP_LOCAL` is the external disk and `HAT_BACKUP_REMOTE` a mounted cloud bucket. The run
+exits 1 when any file is missing or differs at either target, and the timer's `OnFailure=` unit
+sends the alert. pg_dump must be version 18 (or pass `--pg-dump` with the postgres container's,
+see the script's help).
+
+Monthly drill:
+
+1. Pick the latest set on the remote target and verify it: `python scripts/hat_backup.py verify "$HAT_BACKUP_REMOTE/<set>"`.
+2. Restore the dump into a scratch database:
+   `createdb -h 127.0.0.1 -U "$DB_USER" hat_restore_drill` and
+   `pg_restore -h 127.0.0.1 -U "$DB_USER" -d hat_restore_drill --no-owner "$HAT_BACKUP_REMOTE/<set>/hat.dump"`.
+3. Compare with the live database (both queries on each): `select count(*) from hat_event;` and
+   `select max(trade_date) from hat_job_run where status = 'succeeded';`. The restored counts
+   equal the live ones as of the backup time (the live event count can only be larger).
+4. Extract the data tar into a scratch directory (`tar -xf .../hat_data.tar -C /tmp/hat_restore`)
+   and check the newest Parquet partition and raw zip are there.
+5. Clean up: `dropdb -h 127.0.0.1 -U "$DB_USER" hat_restore_drill` and remove the scratch
+   directory. Never point the backend at the scratch database. Record the drill in the check log.
+
+### Restore from backup
+
+1. Stop the backend (`$COMPOSE stop backend`); outside the window unless the database is lost.
+2. Verify the set (`hat_backup.py verify`). Recreate the database:
+   `$COMPOSE exec -T postgres dropdb -U "$DB_USER" "$DB_NAME"`, `... createdb -U "$DB_USER" "$DB_NAME"`,
+   then `pg_restore -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" --no-owner <set>/hat.dump`.
+3. Restore the data root into the volume:
+   `$COMPOSE run --rm --no-deps -v "<set>:/restore:ro" backend tar -xf /restore/hat_data.tar -C /data/hat`.
+4. Start the backend and follow "Restart recovery: reconcile, then resume". Positions changed at
+   the broker since the backup show as reconciliation mismatches: resolve each one.
+
+### Failover drill: `ops.failover_drill`
+
+1. Quarterly, outside market hours with no order expected: switch the host to the 4G/5G link.
+2. Confirm that broker order calls are refused (the failover IP is not registered with the Fyers
+   app) or not attempted, that a health alert reaches Telegram over the 4G link, and that every
+   open position still shows its GTT on the Fyers GTT page (HAT-OPS-043).
+3. Switch back to the static line, check `/status`, and record the drill.
+4. In a real failover during market hours: no new entries until the static line returns; do not
+   force entries; broker-side stops cover the positions.
+
+### Host checklist: `ops.host_checklist`, `host_static_ip_ups_failover`
+
+Before confirm or auto mode is enabled on any bot, and after any host change (HAT-OPS-041):
+
+1. Linux host, NTP synchronised with an offset under 1 s: `timedatectl` shows
+   `System clock synchronized: yes`; `chronyc tracking` (or `ntpq -p`) shows the offset.
+2. The ISP static IP is the one registered with the Fyers app: `curl -fsS https://ifconfig.me`
+   from the host, compared with the Fyers app settings.
+3. The UPS carries the host and router through a pulled plug for at least 10 minutes; the 4G link
+   comes up on its own when the static line is unplugged ("Failover drill").
+4. The dashboard and API are reachable only over Tailscale/WireGuard: from outside the VPN,
+   ports 8000, 3000 and 5432 do not answer; `docker compose ps` shows every port on 127.0.0.1.
+5. Record each item with its value in the check log.
+
+### Env file permissions: `ops.env_permissions`, `env_file_permissions`
+
+After any change to `.env` (HAT-OPS-050):
+
+1. `chmod 600 .env` and `chown <service-user>: .env`; check with `stat -c '%a %U' .env`
+   (expect `600 <service-user>`).
+2. The disk holding the repository and `.env` is encrypted (LUKS): `lsblk -f` shows `crypto_LUKS`
+   under it.
+3. `git status --ignored .env` shows it ignored; `.env` is never copied into an image (the
+   `.dockerignore` files keep it out of the build context) or a backup set.
+4. Record the check in the check log.
+
+### Check log
+
+| Date | Check | Initials | Result |
+| --- | --- | --- | --- |
 
 #### HAT-OPS-090: Runbook covers every OPS check and failure
 - **Statement:** The runbook has one procedure for each OPS check and each MA failure case listed in §4.

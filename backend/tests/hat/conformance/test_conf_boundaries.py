@@ -1,6 +1,8 @@
 """CONF checks of the module boundaries and runtime guards (HAT-OVR-003/004/005/007/052,
 HAT-DEC-T2/T5/T13/BD1/BD3, HAT-SCH-021/105/106, HAT-OPS-050)."""
 
+import ast
+import asyncio
 import importlib
 import pkgutil
 import re
@@ -136,26 +138,40 @@ def test_hat_enabled_default_false() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "mysql", "mssql", "oracle", ""])
-def test_runtime_refuses_sqlite(dialect: str) -> None:
-    """HAT-SCH-105 / DEC-T5: a non-postgresql dialect raises before logging, recovery or a task."""
+def test_hat_runtime_requires_postgres(dialect: str) -> None:
+    """HAT-DEC-T5 / HAT-SCH-105: `HatRuntime.start` with HAT enabled on a non-postgresql dialect
+    raises before it builds its parts (the feed, Telegram, brokers), reads the database or starts
+    a task, and `app/main.py` hands it the engine's real dialect."""
+    from app.hat.daily.runtime import HatRuntime
     from app.hat.errors import HatConfigError
-    from app.hat.ops import scheduler
     from app.hat.settings import DEFAULT_USER_ID, HatSettings
 
     settings = HatSettings(enabled=True, user_id=DEFAULT_USER_ID, data_root=Path("x"))
-    called = []
-    original = scheduler.HatScheduler
-    scheduler.HatScheduler = lambda *a, **k: called.append(1)  # type: ignore[assignment]
-    try:
+    touched: list[str] = []
+    runtime = HatRuntime(
+        settings,
+        lambda: touched.append("db"),  # type: ignore[arg-type,return-value]
+        dialect_name=dialect,
+        parts=lambda: touched.append("parts"),  # type: ignore[arg-type,return-value]
+    )
+
+    async def start() -> int:
         with pytest.raises(HatConfigError):
-            scheduler.start_scheduler(settings, dialect_name=dialect)
-    finally:
-        scheduler.HatScheduler = original
-    assert called == []
+            await runtime.start()
+        return len(asyncio.all_tasks())
 
-
-def test_runtime_requires_postgres() -> None:
-    test_runtime_refuses_sqlite("sqlite")
+    assert asyncio.run(start()) == 1
+    assert touched == []
+    assert runtime.started is False
+    main = ast.parse((REPO_ROOT / "backend" / "app" / "main.py").read_text(encoding="utf-8"))
+    dialects = [
+        ast.unparse(k.value)
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "HatRuntime"
+        for k in node.keywords
+        if k.arg == "dialect_name"
+    ]
+    assert dialects == ["database.engine.dialect.name"]
 
 
 def _memory_sqlite() -> Engine:

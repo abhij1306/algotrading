@@ -102,15 +102,19 @@ def _listener_findings(root: Path) -> list[str]:
     return found
 
 
+READS = {"GET", "HEAD"}
+
+
 def _routes() -> list[tuple[str, set[str]]]:
-    """(path, methods) of every route of every router under app.hat.api."""
+    """(path, methods) of every route of every router under app.hat.api. A router's routes
+    already carry its prefix."""
     routes = []
     for info in pkgutil.iter_modules(app.hat.api.__path__, "app.hat.api."):
         module = importlib.import_module(info.name)
         for value in vars(module).values():
             if isinstance(value, APIRouter):
                 for route in value.routes:
-                    routes.append((value.prefix + route.path, set(route.methods or ())))
+                    routes.append((route.path, set(route.methods or ())))
     return routes
 
 
@@ -158,8 +162,9 @@ def test_gov__lever_catalogue() -> None:
     """HAT-GOV-080: no command, button or API route sets the price, size or stop of a signal or
     exits one position. Commands take at most a bot or broker name and a mode word; the buttons
     are Take, Skip and Confirm, and Take carries only the signal (the engine sizes it); the
-    only confirmable actions are flatten (all positions), arm and auto; the API has only the
-    Fyers login routes."""
+    only confirmable actions are flatten (all positions), arm and auto; the API writes only
+    through the Fyers login routes (every other route is a read, HAT-DEC-T3, CONF
+    `hat_routes_read_only`)."""
     for command, (_fewest, most) in commands._ARITY.items():
         assert not RISK_WORDS.search(command[1:]), command
         assert most <= 2, command
@@ -174,19 +179,21 @@ def test_gov__lever_catalogue() -> None:
     assert asked == {"flatten", "arm", "mode_auto"}
     source = (TELEGRAM / "callbacks.py").read_text(encoding="utf-8")
     assert set(re.findall(r'pending\.action == "(\w+)"', source)) == {"flatten", "arm"}
-    for path, _methods in _routes():
+    for path, methods in _routes():
+        if methods <= READS:
+            continue
         assert path.startswith("/api/hat/auth/fyers"), path
         assert not RISK_WORDS.search(path.removeprefix("/api/hat/auth/fyers")), path
 
 
 def test_no_override_command() -> None:
     """HAT-DEC-B12: no Telegram command, API route or strategy config field can set the regime
-    gate on: no command or route names a gate, regime or override, no config field is an
-    override, and nothing in the Telegram or API packages writes the regime state."""
+    gate on: no command or writing (non-GET) route names a gate, regime or override, no config
+    field is an override, and nothing in the Telegram or API packages writes the regime state."""
     for command in commands.COMMANDS:
         assert not re.search(r"gate|regime|override|force", command), command
-    for path, _methods in _routes():
-        assert not re.search(r"gate|regime|override|force", path), path
+    for path, methods in _routes():
+        assert methods <= READS or not re.search(r"gate|regime|override|force", path), path
     for name in _field_names(StrategyConfig):
         assert not re.search(r"override|force|bypass", name), name
     for root in (TELEGRAM, APP_ROOT / "hat" / "api"):

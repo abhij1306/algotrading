@@ -169,6 +169,10 @@ class StopDesk:
         self._settle_after = settle_after
         self._wall = wall
 
+    def use_calendar(self, calendar: SessionCalendar | None) -> None:
+        """The trading calendar read again (a refresh, a new year's rows)."""
+        self._calendar = calendar
+
     # --- reading ------------------------------------------------------------------------------
 
     @staticmethod

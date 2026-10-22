@@ -6,9 +6,11 @@ Drawdown and manual kills re-arm only by hand with a second confirmation; a heal
 by itself once the checks are healthy. The model is `verification/tla/KillSwitch.tla`.
 
 A kill key is (scope, bot, channel). The channel separates what can clear by itself (`health`)
-from what cannot (`risk`: drawdown and manual). The latest row of a key is its state, so an
-automatic health re-arm can never hide a tripped drawdown kill (a single latest-row-per-scope
-reading would let it).
+from what cannot (`risk`: drawdown and manual). Within the health channel each reason is a stream
+of its own (the quality gate's `data_health`, the live feed's `feed_health`, `broker_health`): a
+check trips and clears only its own reason, so the feed recovering never clears a failed gate
+(HAT-DATA-065). The latest row of each stream is its state, so an automatic health re-arm can
+never hide a tripped drawdown kill or another source's health trip.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from .sizing import MissingInputError, exact
 
 TRIPPED = "tripped"
 ARMED = "armed"
-HEALTH_REASONS = ("data_health", "broker_health")
+HEALTH_REASONS = ("data_health", "feed_health", "broker_health")
 RISK_REASONS = ("drawdown_account", "drawdown_bot", "manual")
 REASONS = (*RISK_REASONS, *HEALTH_REASONS)
 
@@ -32,6 +34,12 @@ REASONS = (*RISK_REASONS, *HEALTH_REASONS)
 def channel_of(reason: str) -> str:
     """`health` for a reason that clears by itself, else `risk`."""
     return "health" if reason in HEALTH_REASONS else "risk"
+
+
+def stream_of(reason: str) -> str:
+    """The stream a row belongs to: each health reason alone, the risk reasons together (a
+    confirmed re-arm ends a drawdown or manual trip alike)."""
+    return reason if reason in HEALTH_REASONS else "risk"
 
 
 @dataclass(frozen=True)
@@ -70,15 +78,27 @@ def _latest(rows: Iterable[KillRow]) -> KillRow | None:
 
 
 def current_state(
-    rows: Iterable[KillRow], scope: str, bot_id: UUID | None, channel: str | None = None
+    rows: Iterable[KillRow],
+    scope: str,
+    bot_id: UUID | None,
+    channel: str | None = None,
+    *,
+    stream: str | None = None,
 ) -> str:
-    """The state of (scope, bot) from its rows: `tripped` when any channel of the key is
-    tripped (each channel is read from its latest row), else `armed`. With `channel` set, only
-    that channel is read. A key with no rows is armed."""
-    mine = [r for r in rows if r.scope == scope and r.bot_id == bot_id]
-    channels = {channel} if channel else {channel_of(r.reason) for r in mine}
-    for name in channels:
-        latest = _latest(r for r in mine if channel_of(r.reason) == name)
+    """The state of (scope, bot) from its rows: `tripped` when any stream of the key is
+    tripped (each stream is read from its latest row), else `armed`. With `channel` set, only
+    that channel's streams are read; with `stream` set, only that stream. A key with no rows is
+    armed."""
+    mine = [
+        r
+        for r in rows
+        if r.scope == scope
+        and r.bot_id == bot_id
+        and (channel is None or channel_of(r.reason) == channel)
+        and (stream is None or stream_of(r.reason) == stream)
+    ]
+    for name in {stream_of(r.reason) for r in mine}:
+        latest = _latest(r for r in mine if stream_of(r.reason) == name)
         if latest is not None and latest.state == TRIPPED:
             return TRIPPED
     return ARMED

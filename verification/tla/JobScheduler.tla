@@ -122,7 +122,7 @@ Claimable(r) ==
 
 CanCall(w) == schedulerUp /\ pc[w] = "idle" /\ calls[w] < MaxCalls
 
-\* code: backend/app/hat/ops/scheduler.py:start_scheduler
+\* code: backend/app/hat/daily/runtime.py:start
 StartScheduler ==
     /\ ~schedulerUp
     /\ enabled \/ BrokenMode = "ignore_enabled"

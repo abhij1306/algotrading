@@ -27,7 +27,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
+MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
 
 
 def _models() -> list[Path]:
@@ -313,6 +313,39 @@ def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) ->
     assert all(shard_files(shard, shards) for shard in matrix)
 
 
+def test_ci_runs_models_for_merged_targets() -> None:
+    """HAT-VER-020: every model a README row names once all its PRs have merged is run by CI:
+    the `verification-tla` job runs `run.sh` and `run.sh --broken` unfiltered and unconditionally,
+    `run.sh` with no model argument checks every `*.tla` beside it, and the model has its cfg and
+    a broken variant expecting each of its properties."""
+    readme = (SPEC_DIR / "README.md").read_text(encoding="utf-8")
+    models = set()
+    for _, pr_text, methods in README_ROW.findall(readme):
+        prs = _requirement_prs(pr_text)
+        if prs and set(prs) <= MERGED_PRS:
+            models.update(re.findall(r"\bTLA `(\w+)!\w+`", methods))
+    assert models
+    tla = _ci_jobs()["verification-tla"]
+    assert "if" not in tla
+    runs = [step for step in tla["steps"] if "run" in step]
+    for command in ("verification/tla/run.sh", "verification/tla/run.sh --broken"):
+        step = next((s for s in runs if s["run"].strip() == command), None)
+        assert step is not None, command
+        assert "if" not in step, command
+    script = (TLA_DIR / "run.sh").read_text(encoding="utf-8")
+    assert 'for f in "${HERE}"/*.tla; do models+=' in script  # no argument: every model
+    for model in sorted(models):
+        assert (TLA_DIR / f"{model}.tla").is_file(), model
+        cfg = TLA_DIR / f"{model}.cfg"
+        assert cfg.is_file(), model
+        expected = {
+            re.search(r"^\\\* EXPECT: (\w+)\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)[1]
+            for path in (TLA_DIR / "broken").glob(f"{model}__*.cfg")
+        }
+        missing = set(_cfg_properties(cfg)) - TYPING_ONLY - expected
+        assert not missing, (model, sorted(missing))
+
+
 # --- database check coverage ----------------------------------------------------------------
 
 
@@ -358,6 +391,9 @@ def test_db_checks_match_governance_table() -> None:
 
 
 ENSURE_STEP_CHECKS = {"migration.ensure_idempotent", "events.partitions_ahead"}
+# Checks of a job's code against the database, not of a database object: there is nothing to
+# drop for a variant, and the break is a code change recorded in the area's skill.
+JOB_CHECKS = {"events.partitions_job"}
 
 
 def test_verification_db_rules_covered() -> None:
@@ -369,7 +405,7 @@ def test_verification_db_rules_covered() -> None:
         if min(prs) in MERGED_PRS:
             # The two ensure-step checks take the step as an argument; their broken variants
             # are separate tests (a faulty ensure step substituted for the real one).
-            assert name in variants or name in ENSURE_STEP_CHECKS, name
+            assert name in variants or name in ENSURE_STEP_CHECKS | JOB_CHECKS, name
     assert "test_migration_check_fails_when_ensure_is_not_idempotent" in broken
     assert "test_partitions_check_fails_when_ensure_is_broken" in broken
     assert "test_concurrent_signal_check_fails_without_the_unique_key" in broken

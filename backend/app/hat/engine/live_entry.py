@@ -78,7 +78,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 ACTIVE = "active"
-DATA_HEALTH = "data_health"
+FEED_HEALTH = "feed_health"  # the feed's own health reason: its recovery never clears the gate
 _INSTANT = timedelta(microseconds=1)
 
 DailySource = Callable[[uuid.UUID], DailyInputs]
@@ -322,7 +322,9 @@ def entry_request(
 
 
 class Route(Protocol):
-    """Where a trigger's `EntryRequest` goes: `ExecutionRouter.route` or `route_by_mode`."""
+    """Where a trigger's `EntryRequest` goes: `route_by_mode`, or `daily.live.LiveRoute`, which
+    reads a fresh `PlacementCheck` and calls `ExecutionRouter.route` (that method is not a `Route`:
+    it also takes `now` and `check`)."""
 
     def __call__(
         self,
@@ -431,8 +433,9 @@ class TriggerService:
 
 
 class DataHealthKill:
-    """`EventFeedHealth`'s `on_change`: a stale feed trips the account's data-health kill (every
-    bot manage-only, exits untouched); recovery clears it by itself (HAT-RISK-063). The write
+    """`EventFeedHealth`'s `on_change`: a stale feed trips the account's `feed_health` kill (every
+    bot manage-only, exits untouched); recovery clears that reason by itself (HAT-RISK-063), never
+    the quality gate's `data_health` trip (HAT-DATA-065). The write
     runs on a worker thread when called from the loop. Changes are numbered when they happen
     and written one at a time; a change that reaches the database after a newer one is dropped,
     so the kill always ends in the state of the latest change, whatever order the workers run."""
@@ -477,7 +480,7 @@ class DataHealthKill:
                     scope="account",
                     bot_id=None,
                     failing=stale,
-                    reason=DATA_HEALTH,
+                    reason=FEED_HEALTH,
                     now=at,
                 )
                 session.commit()

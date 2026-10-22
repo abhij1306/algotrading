@@ -1,7 +1,8 @@
 """Risk-policy changes as database operations (06 §9, HAT-GOV-090..094).
 
 A change is requested as a new `hat_risk_policy_version`: a decrease takes effect at the next
-session open, an increase no sooner than 7 days after the request and only with gate evidence.
+session open, an increase no sooner than 7 days after the request and only with gate evidence,
+which by default comes from the backtest runs (`backtest.runs.gate_evidence`, HAT-GOV-091).
 Requesting writes `risk.change_requested`; a version taking effect writes `risk.change_effective`
 and marks the version it replaces `superseded_at`, in the same transaction. Nothing commits here.
 """
@@ -9,7 +10,7 @@ and marks the version it replaces `superseded_at`, in the same transaction. Noth
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -30,6 +31,18 @@ from .policy import (
     require_increase_gate,
 )
 from .sessions import SessionCalendar, SessionState
+
+# The evidence an increase is checked with, for a user: None when there is none.
+EvidenceSource = Callable[[Session, uuid.UUID], Mapping[str, Any] | None]
+
+
+def backtest_evidence(session: Session, user_id: uuid.UUID) -> Mapping[str, Any] | None:
+    """The user's closed trades against the discounted expectancy of the sleeves' newest completed
+    backtest runs; None (the increase is refused) when no sleeve has one."""
+    # Imported here: `backtest.runs` reads `load_versions` from this module.
+    from ..backtest.runs import gate_evidence
+
+    return gate_evidence(session, user_id)
 
 
 class PolicyChangeError(HatError):
@@ -115,7 +128,7 @@ def request_policy_change(
     proposed: RiskPolicy,
     calendar: SessionCalendar,
     requested_at: datetime,
-    gate_evidence: Mapping[str, Any] | None = None,
+    evidence: EvidenceSource = backtest_evidence,
     actor: str = "user",
     chat_id: int | None = None,
 ) -> HatRiskPolicyVersion:
@@ -124,8 +137,9 @@ def request_policy_change(
     The direction is `increase` when `proposed` is more permissive than the version in force or
     than any pending one, else `decrease`. A decrease takes effect at the next session open; an
     increase at the first session open at least 7 days after the request, and `GateError` is
-    raised unless `gate_evidence` passes the gate. Raises `PolicyChangeError` inside market hours
-    (or when the calendar does not know the day) and when the calendar holds no such open.
+    raised unless the evidence `evidence` reads (by default the backtest runs) passes the gate.
+    Raises `PolicyChangeError` inside market hours (or when the calendar does not know the day)
+    and when the calendar holds no such open.
     """
     if calendar.state(requested_at) is not SessionState.CLOSED:
         raise PolicyChangeError("a policy change is requested outside market hours")
@@ -148,6 +162,7 @@ def request_policy_change(
         if any(classify_direction(v.policy, proposed) == "increase" for v in reference)
         else "decrease"
     )
+    gate_evidence = evidence(session, user_id) if direction == "increase" else None
     require_increase_gate(direction, gate_evidence)
     if direction == "increase":
         effective = calendar.first_open_at_or_after(as_utc(requested_at) + COOLING_OFF)

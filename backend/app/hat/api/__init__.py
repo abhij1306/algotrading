@@ -1,2 +1,2 @@
-"""HAT's HTTP routes. Today only the daily Fyers login (`/api/hat/auth/fyers/*`); PR 17 adds the
-rest and the lifespan wiring."""
+"""HAT's HTTP routes: the daily Fyers login (`/api/hat/auth/fyers/*`, `fyers_auth.py`) and the
+read-only dashboard reads (`/api/hat/*`, `dashboard.py`). Every route but the login is a GET."""

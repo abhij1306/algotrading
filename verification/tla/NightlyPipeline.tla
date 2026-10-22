@@ -151,8 +151,8 @@ Gate ==
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
                    fallbackRuns, rawCommits, exitDue, exitUsed>>
 
-\* code: backend/app/hat/ops/jobs.py:run_job  (steps 2 to 7: a step starts only after the one
-\* before it succeeded; a succeeded step never runs again)
+\* code: backend/app/hat/ops/scheduler.py:due  (steps 2 to 7: a step is registered `after` the one
+\* before it, so it starts only after that one succeeded; a succeeded step never runs again)
 LaterStep(k) ==
     /\ k \in 2..7
     /\ st[k] # "succeeded"

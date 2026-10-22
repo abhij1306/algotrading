@@ -112,15 +112,17 @@ def trip_kill(
     actor: str = "engine",
     chat_id: int | None = None,
 ) -> HatKillSwitch | None:
-    """Trip a kill switch and append `kill.tripped`; None when the key's channel is already
-    tripped (a repeat adds no row). A drawdown or manual trip also ends the undecided approvals
-    it covers; a health trip does not (the take re-checks the gate)."""
+    """Trip a kill switch and append `kill.tripped`; None when the key's stream (the risk
+    reasons together, each health reason alone) is already tripped (a repeat adds no row). A
+    drawdown or manual trip also ends the undecided approvals it covers; a health trip does not
+    (the take re-checks the gate)."""
     if reason not in kill.REASONS or scope not in ("account", "bot"):
         raise ControlError("unknown kill scope or reason")
     if (scope == "bot") != (bot_id is not None):
         raise ControlError("a bot kill names its bot and an account kill names none")
     channel = kill.channel_of(reason)
-    if kill.current_state(kill_rows(session), scope, bot_id, channel) == kill.TRIPPED:
+    stream = kill.stream_of(reason)
+    if kill.current_state(kill_rows(session), scope, bot_id, stream=stream) == kill.TRIPPED:
         return None
     row = HatKillSwitch(
         scope=scope, bot_id=bot_id, state=kill.TRIPPED, tripped_at=now, reason=reason
@@ -143,7 +145,7 @@ def trip_kill(
 
 
 def _latest_trip(
-    session: Session, scope: str, bot_id: uuid.UUID | None, channel: str
+    session: Session, scope: str, bot_id: uuid.UUID | None, stream: str
 ) -> HatKillSwitch | None:
     rows = [
         r
@@ -152,7 +154,7 @@ def _latest_trip(
                 HatKillSwitch.scope == scope, HatKillSwitch.bot_id == bot_id
             )
         )
-        if kill.channel_of(r.reason) == channel
+        if kill.stream_of(r.reason) == stream
     ]
     tripped = [r for r in rows if r.state == kill.TRIPPED]
     return max(tripped, key=lambda r: as_utc(r.tripped_at)) if tripped else None
@@ -162,14 +164,14 @@ def _arm(
     session: Session,
     scope: str,
     bot_id: uuid.UUID | None,
-    channel: str,
+    stream: str,
     now: datetime,
     actor: str,
     chat_id: int | None,
 ) -> HatKillSwitch | None:
-    if kill.current_state(kill_rows(session), scope, bot_id, channel) != kill.TRIPPED:
+    if kill.current_state(kill_rows(session), scope, bot_id, stream=stream) != kill.TRIPPED:
         return None
-    trip = _latest_trip(session, scope, bot_id, channel)
+    trip = _latest_trip(session, scope, bot_id, stream)
     if trip is None:
         return None
     row = HatKillSwitch(
@@ -224,13 +226,15 @@ def sync_health(
     reason: str,
     now: datetime,
 ) -> HatKillSwitch | None:
-    """The data or broker health check result for a bot (or the account): trip the health kill
-    while it fails, clear it by itself the moment it passes (HAT-RISK-063)."""
+    """One health check's result for a bot (or the account): trip its reason while it fails,
+    clear that reason by itself the moment it passes (HAT-RISK-063). A check clears only its own
+    reason: the feed recovering (`feed_health`) leaves a failed quality gate (`data_health`)
+    tripped until the next gate passes (HAT-DATA-065)."""
     if reason not in kill.HEALTH_REASONS:
-        raise ControlError("a health check names data_health or broker_health")
+        raise ControlError("a health check names data_health, feed_health or broker_health")
     if failing:
         return trip_kill(session, scope=scope, bot_id=bot_id, reason=reason, now=now)
-    return _arm(session, scope, bot_id, "health", now, "engine", None)
+    return _arm(session, scope, bot_id, reason, now, "engine", None)
 
 
 # --- Drawdown kills ---------------------------------------------------------------------------

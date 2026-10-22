@@ -1,0 +1,313 @@
+"""What the daily cycle reads from the Parquet store (PR 17): the scan's inputs, the live
+trigger's daily inputs, the close-phase exit views and the official closes of a day.
+
+Everything is point in time: a read for trade date d uses sessions before d (the nightly scan
+and the live trigger) or the official closes of d itself (the close gap). Prices come from the
+adjusted view (`bars_daily`); ticks from the unadjusted closes, as NSE prices them
+(HAT-EXEC-053). A missing value is None, never a guess, so a rule that needs it fails closed.
+"""
+
+from __future__ import annotations
+
+import threading
+import uuid
+from collections.abc import Callable, Iterable, Sequence
+from datetime import date
+from decimal import Decimal
+
+import polars as pl
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..data.corporate_actions import stored_factors
+from ..data.instruments import current_band
+from ..data.store import (
+    DATASET_BARS,
+    DATASET_FEATURES,
+    DataStore,
+)
+from ..data.ticks import tick_for_date
+from ..engine.exits import ExitView
+from ..engine.scan import ScanInputs
+from ..engine.strategy.config import (
+    ExitCloseBelowSma,
+    ExitRule,
+    ExitTrailingSwingLow,
+    StopAtrMultiple,
+    StopSwingLow,
+    StrategyConfig,
+)
+from ..engine.trigger import DailyInputs, daily_inputs
+from ..models import HatInstrument
+
+__all__ = [
+    "DailyBook",
+    "DailyData",
+    "held_sessions",
+    "SCAN_SESSIONS",
+    "index_closes",
+    "official_closes",
+    "scan_inputs",
+    "sessions_before",
+]
+
+SCAN_SESSIONS = 700  # the scan's window: enough for the 52-week and 200-day criteria
+DAILY_SESSIONS = 260  # the live inputs: 200-day SMAs, 50-day volume, swing lows
+
+_ADJ_SQL = """
+SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
+       CAST(open AS DOUBLE) AS open, CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
+       CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
+       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
+FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
+"""
+_RAW_SQL = """
+SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date, CAST(close AS VARCHAR) AS close
+FROM bars_daily_raw WHERE date BETWEEN ? AND ?
+QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+ORDER BY instrument_id, date
+"""
+_INDEX_SQL = """
+SELECT date, CAST(close AS VARCHAR) FROM index_daily
+WHERE index_name = ? AND date <= ? ORDER BY date
+"""
+
+
+def sessions_before(store: DataStore, day: date, count: int, *, inclusive: bool = False) -> list:
+    """The last `count` stored sessions before `day` (through it when `inclusive`), oldest first."""
+    days = [d for d in store.days(DATASET_BARS) if d < day or (inclusive and d == day)]
+    return days[-count:]
+
+
+def _dec(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    number = Decimal(str(value))
+    return number if number.is_finite() else None
+
+
+def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
+    """The closes of `index` dated on or before `through`, oldest first."""
+    with store.connect() as con:
+        rows = con.execute(_INDEX_SQL, [index, through]).fetchall()
+    return [Decimal(close) for _, close in rows]
+
+
+def _features(store: DataStore, day: date) -> pl.DataFrame | None:
+    frame = store.read_partition(DATASET_FEATURES, day)
+    if frame.height == 0:
+        return None
+    return frame.with_columns(pl.col("instrument_id").cast(pl.String), pl.lit(day).alias("date"))
+
+
+def _series(session: Session) -> dict[str, str]:
+    return {str(i): s for i, s in session.execute(select(HatInstrument.id, HatInstrument.series))}
+
+
+def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> ScanInputs:
+    """The inputs of a nightly scan as of the session `as_of` (the members are replaced by the
+    bot's universe in `scan_and_publish`). Price bands are not read: no criterion of the MVP
+    bots uses them in the scan, as in the backtest."""
+    window = sessions_before(store, as_of, SCAN_SESSIONS, inclusive=True)
+    if not window:
+        bars = pl.DataFrame()
+    else:
+        with store.connect(stored_factors(session)) as con:
+            bars = con.execute(_ADJ_SQL, [window[0], as_of]).pl()
+    return ScanInputs(
+        as_of=as_of,
+        members=(),
+        bars=bars,
+        regime_closes=index_closes(store, index, as_of),
+        features=_features(store, as_of),
+        series=_series(session),
+    )
+
+
+def official_closes(store: DataStore, day: date) -> dict[uuid.UUID, Decimal]:
+    """Each instrument's official close of `day` (the latest ingest run's row)."""
+    frame = store.read_bars(day)
+    if frame.height == 0:
+        return {}
+    latest = frame.sort("ingest_run_id").unique(subset=["instrument_id"], keep="last")
+    out: dict[uuid.UUID, Decimal] = {}
+    for instrument_id, close in zip(latest["instrument_id"], latest["close"], strict=True):
+        value = _dec(close)
+        if instrument_id and value is not None:
+            out[uuid.UUID(instrument_id)] = value
+    return out
+
+
+def stop_lengths(configs: Iterable[StrategyConfig]) -> tuple[int | None, int | None]:
+    """(ATR days, swing-low lookback) the playbooks' stops need. One `DailyInputs` serves every
+    bot, so when bots disagree on a length that stop gets no input and fails closed."""
+    atr: set[int] = set()
+    swing: set[int] = set()
+    for config in configs:
+        for playbook in config.playbooks:
+            if isinstance(playbook.stop, StopAtrMultiple):
+                atr.add(playbook.stop.days)
+            elif isinstance(playbook.stop, StopSwingLow):
+                swing.add(playbook.stop.lookback_days)
+    return (atr.pop() if len(atr) == 1 else None, swing.pop() if len(swing) == 1 else None)
+
+
+class DailyData:
+    """The daily view of trade date `trade_date`: adjusted bars of the sessions before it, the
+    unadjusted closes for the tick, and the previous session's features. Loaded once per trade
+    date and read from the trigger, exit and stop code (read-only after construction)."""
+
+    def __init__(
+        self,
+        store: DataStore,
+        session: Session,
+        trade_date: date,
+        *,
+        sessions: int = DAILY_SESSIONS,
+        configs: Sequence[StrategyConfig] = (),
+    ) -> None:
+        self.trade_date = trade_date
+        window = sessions_before(store, trade_date, sessions)
+        self._atr_days, self._swing_days = stop_lengths(configs)
+        if window:
+            with store.connect(stored_factors(session)) as con:
+                bars = con.execute(_ADJ_SQL, [window[0], window[-1]]).pl()
+                raw = con.execute(_RAW_SQL, [window[0], window[-1]]).fetchall()
+        else:
+            bars, raw = pl.DataFrame(), []
+        self._bars: dict[str, pl.DataFrame] = (
+            {str(k[0]): v for k, v in bars.partition_by("instrument_id", as_dict=True).items()}
+            if bars.height
+            else {}
+        )
+        self._raw: dict[str, tuple[list[date], list[Decimal | None]]] = {}
+        for instrument_id, day, close in raw:
+            dates, closes = self._raw.setdefault(instrument_id, ([], []))
+            dates.append(day)
+            closes.append(_dec(close))
+        features = _features(store, window[-1]) if window else None
+        self._features: dict[str, dict[str, object]] = (
+            {str(r["instrument_id"]): r for r in features.to_dicts()}
+            if features is not None
+            else {}
+        )
+
+    def bars(self, instrument_id: uuid.UUID) -> pl.DataFrame:
+        """The instrument's adjusted daily bars before the trade date (empty when unknown)."""
+        return self._bars.get(str(instrument_id), pl.DataFrame())
+
+    def tick(self, instrument_id: uuid.UUID) -> Decimal | None:
+        dates, closes = self._raw.get(str(instrument_id), ([], []))
+        return tick_for_date(dates, closes, self.trade_date)
+
+    def feature(self, instrument_id: uuid.UUID, name: str) -> Decimal | None:
+        return _dec(self._features.get(str(instrument_id), {}).get(name))
+
+    def _closes(self, instrument_id: uuid.UUID) -> list[Decimal]:
+        frame = self.bars(instrument_id)
+        return [Decimal(repr(v)) for v in frame["close"].to_list()] if frame.height else []
+
+    def _atr(self, instrument_id: uuid.UUID) -> Decimal | None:
+        if self._atr_days is None:
+            return None
+        frame = self.bars(instrument_id)
+        if frame.height < self._atr_days + 1:
+            return None
+        rows = frame.tail(self._atr_days + 1).to_dicts()
+        ranges = [
+            max(Decimal(repr(b["high"])), Decimal(repr(a["close"])))
+            - min(Decimal(repr(b["low"])), Decimal(repr(a["close"])))
+            for a, b in zip(rows, rows[1:], strict=False)
+        ]
+        return sum(ranges, Decimal(0)) / self._atr_days
+
+    def daily(self, session: Session, instrument_id: uuid.UUID) -> DailyInputs:
+        """The trigger's `DailyInputs` of one instrument (HAT-CRIT-115, HAT-DATA-115)."""
+        found, band = current_band(session, instrument_id, self.trade_date)
+        frame = self.bars(instrument_id)
+        if frame.height == 0:
+            return DailyInputs(tick=self.tick(instrument_id), band_known=found, band_pct=band)
+        return daily_inputs(
+            frame,
+            self.trade_date,
+            tick=self.tick(instrument_id),
+            adv20=self.feature(instrument_id, "adv20"),
+            adtr20=self.feature(instrument_id, "adtr20"),
+            band_known=found,
+            band_pct=band,
+            swing_lookback=self._swing_days or 0,
+            atr=self._atr(instrument_id),
+        )
+
+    def sma(self, instrument_id: uuid.UUID, length: int, live: Decimal) -> Decimal | None:
+        """The `length`-session SMA with the live price standing in for today's close (07 §6:
+        the close-phase rules read the live price as the close proxy)."""
+        closes = self._closes(instrument_id)[-(length - 1) :] if length > 1 else []
+        if len(closes) < length - 1:
+            return None
+        return (sum(closes, Decimal(0)) + live) / length
+
+    def swing_low(self, instrument_id: uuid.UUID, lookback: int) -> Decimal | None:
+        """The lowest low of the `lookback` sessions before the trade date."""
+        frame = self.bars(instrument_id)
+        if frame.height < lookback:
+            return None
+        return min(Decimal(repr(v)) for v in frame.tail(lookback)["low"].to_list())
+
+    def exit_view(
+        self,
+        instrument_id: uuid.UUID,
+        price: Decimal,
+        rules: Sequence[ExitRule],
+        days_held: int,
+    ) -> ExitView:
+        """The view of a position at the live `price` under its pinned exit `rules`."""
+        sma: dict[int, Decimal] = {}
+        swing: dict[int, Decimal] = {}
+        for rule in rules:
+            if isinstance(rule, ExitCloseBelowSma):
+                level = self.sma(instrument_id, rule.sma, price)
+                if level is not None:
+                    sma[rule.sma] = level
+            elif isinstance(rule, ExitTrailingSwingLow):
+                low = self.swing_low(instrument_id, rule.lookback_days)
+                if low is not None:
+                    swing[rule.lookback_days] = low
+        return ExitView(price, days_held=days_held, sma=sma, swing_low=swing)
+
+
+def held_sessions(trading_days: Iterable[date], opened: date, today: date) -> int:
+    """Trading sessions after the entry day up to `today` (0 on the entry day)."""
+    return sum(1 for d in set(trading_days) if opened < d <= today)
+
+
+class DailyBook:
+    """One `DailyData` per trade date, loaded on first use and shared by the trigger, stop and
+    exit code of that day. `reset` drops the cache (after the nightly load writes new bars)."""
+
+    def __init__(
+        self,
+        store: DataStore,
+        session_factory: Callable[[], Session],
+        configs: Callable[[Session], Sequence[StrategyConfig]] = lambda _s: (),
+    ) -> None:
+        self._store = store
+        self._session_factory = session_factory
+        self._configs = configs
+        self._days: dict[date, DailyData] = {}
+        self._lock = threading.Lock()
+
+    def day(self, trade_date: date) -> DailyData:
+        with self._lock:
+            found = self._days.get(trade_date)
+            if found is None:
+                with self._session_factory() as session:
+                    found = DailyData(
+                        self._store, session, trade_date, configs=self._configs(session)
+                    )
+                self._days = {trade_date: found}  # only the current day is kept
+            return found
+
+    def reset(self) -> None:
+        with self._lock:
+            self._days = {}

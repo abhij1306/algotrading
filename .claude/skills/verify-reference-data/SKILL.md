@@ -23,6 +23,7 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `PBT reference.current_industry` The industry in force is the latest row on or before the date, and an instrument with none is reported, never given a shared one. Harm: the per-industry cap is bypassed.
 - `PBT calendar.holiday_closed` A date with `is_trading = false` is closed in the `MarketHoursPolicy` built from the calendar at every instant, a trading date follows its own session, a holiday withdrawn from a refreshed snapshot is reopened, and the scheduler's trading days equal the dates with `is_trading = true`. Harm: orders attempted on an exchange holiday.
 - `PBT calendar.policy_has_no_process_state` A policy is its own calendar and nothing else (no installed global, no `DEV_MODE`): building one from a loaded calendar never changes a bare policy, which is closed only at weekends and outside 09:15 to 15:30 whatever was loaded elsewhere. Harm: one test, job or caller's holidays leak into another's market hours.
+- `PBT calendar.weekday_rows` `with_weekdays` (used by `calendar.refresh`) keeps every listed holiday or special-session row as it is, stores every other weekday of the covered years as a trading day with the market's default session, and adds no weekend. Harm: the scheduler and the risk checks, which read a session only from a stored row, treat every ordinary weekday as closed.
 - `PBT calendar.session_from_reference_data` The session the engine uses on any date equals the `hat_trading_calendar` row, or the `hat_market` default on a normal weekday, never a constant. Harm: hard-coded NSE hours place a P2 market's orders at the wrong time.
 - `DB reference.refresh_on_postgres` On real Postgres a refresh with renames, delisting and a broker symbol moving between instruments never trips the unique keys. Harm: the weekly refresh fails half-way and leaves the master stale.
 - `CONF imports.engine_data_sources` The only MCP server names in HAT code are `nse-bhavcopy` and `cm-market`, and engine, risk and execution modules reach no research or chat MCP client. Harm: an unvetted source changes which stocks are scanned.
@@ -69,7 +70,7 @@ Code under check:
 - `backend/app/hat/data/mcp_client.py`: `McpClient`, `HttpTransport`, `unwrap_result`, `batches`, `backoff_delay`
 - `backend/app/hat/data/reference.py`: `page_listing`, `parse_equity_list_csv`, `build_listing_from_mcp`, `build_listing_from_csv`, `parse_price_band_csv`, `band_from_circuit_limits`, `parse_industry_csv`
 - `backend/app/hat/data/instruments.py`: `fyers_instruments`, `upsert_instruments`, `apply_symbol_change`, `resolve_symbol`, `seed_symbol_history`, `refresh_fyers_symbols`, `load_price_bands`, `current_band`, `load_industries`, `current_industry`
-- `backend/app/hat/data/calendar.py`: `parse_nse_holidays`, `upsert_calendar`, `MarketCalendar`, `trading_days`
+- `backend/app/hat/data/calendar.py`: `parse_nse_holidays`, `upsert_calendar`, `MarketCalendar`, `trading_days`, `with_weekdays`
 - `backend/app/hat/data/reference_jobs.py`: `reference_weekly`, `bands_nightly`, `calendar_refresh`
 - `backend/app/hat/data/sessions.py`: `MarketHoursPolicy.phase`, `MarketPhase`
 - `backend/app/hat/data/symbols.py`
@@ -90,7 +91,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `cbcb17363d223621633d4d634c651c397327f8b62b0f7b381784198722ce638d`
+Covered digest: `c874533fd9cf27d19a3c34d5c59fbc2257798b1a1dbfc9ec164bd2a49d9ac71b`
 
 ## Scope changes
 
@@ -416,6 +417,15 @@ tests/hat/properties/test_calendar.py:130: in test_policy_has_no_process_state
 E   AssertionError: (datetime.date(2026, 1, 1), datetime.time(9, 15))
 E   assert False == True
 E    +  where False = is_open(datetime.datetime(2026, 1, 1, 3, 45, tzinfo=datetime.timezone.utc))
+```
+
+### PBT calendar.weekday_rows
+
+Break: `with_weekdays` fills Saturdays too (`day.weekday() < 6`).
+
+```
+E   assert CalendarDay(day=datetime.date(2026, 1, 3), is_trading=True, open_at=datetime.time(0, 0), close_at=datetime.time(0, 30), note=None) == None
+E   Failing test case: test_weekday_rows(
 ```
 
 ### PBT calendar.session_from_reference_data

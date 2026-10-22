@@ -549,6 +549,47 @@ def test_raw_write_once(attempts: list[tuple[str, int, bool]]) -> None:
     assert fallbacks <= 1
 
 
+def _killed_after_write(store: object) -> None:
+    """The process is killed right after the day's raw partition is written."""
+    write = store.write_bars  # type: ignore[attr-defined]
+
+    def write_then_die(*args: object, **kwargs: object) -> object:
+        write(*args, **kwargs)
+        raise Crash
+
+    store.write_bars = write_then_die  # type: ignore[attr-defined]
+
+
+@settings(max_examples=20)
+@given(
+    first=st.tuples(st.sets(st.integers(0, 4), max_size=4), st.booleans()),
+    retries=st.lists(st.sets(st.integers(0, 4), max_size=4), min_size=1, max_size=3),
+)
+def test_checks_kept_for_retry(first: tuple[set[int], bool], retries: list[set[int]]) -> None:
+    """For every first ingest attempt that writes the raw partition and then fails (no index
+    rows) or is killed right after the write, every retry, dropping other symbols, reports the
+    row-check counts of the first attempt: not its own and not 0."""
+    names = [s for s, _, _ in symbols_of(6)]
+    dropped, killed = first
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(6))
+        world.nse.drop = {names[i] for i in dropped}
+        world.nse.index_rows = []
+        if killed:
+            _killed_after_write(world.store)
+        try:
+            run_ingest(world.deps(), TRADE_DAY, uuid7())
+        except (JobError, Crash):
+            pass
+        vars(world.store).pop("write_bars", None)
+        world.nse.index_rows = list(INDEX_ROWS)
+        reported = []
+        for again in retries:
+            world.nse.drop = {names[i] for i in again}
+            reported.append(run_ingest(world.deps(), TRADE_DAY, uuid7()).missing)
+    assert reported == [len(dropped)] * len(retries)
+
+
 class _Attempt:
     """What one scenario does to the world and where it leaves a job run."""
 

@@ -2,9 +2,9 @@
 Hire a Trader API: the FastAPI app, its routes and its startup.
 
 Startup (the lifespan): connect the event loop, create the database schema, then, only when
-`HAT_ENABLED` is true, start HAT's scheduler and its live feed (the one Fyers data socket,
-HAT-OVR-006). With HAT disabled nothing of HAT runs, and the app serves only the Fyers login
-routes. HAT's Telegram bot (`app/hat/telegram`, PR 16) is started here by PR 17.
+`HAT_ENABLED` is true, start the HAT runtime (`app/hat/daily/runtime.py`): the broker desks,
+the scheduler with the daily cycle, the live feed (the one Fyers data socket, HAT-OVR-006) and
+the Telegram bot. With HAT disabled nothing of HAT runs, and the app serves only its routes.
 """
 
 import asyncio
@@ -30,6 +30,7 @@ load_dotenv()
 # E402 is suppressed below: the modules read the environment at import, so load_dotenv() runs first.
 from .config import config  # noqa: E402
 from .exceptions import DatabaseUnavailableError  # noqa: E402
+from .hat.api import dashboard as hat_dashboard  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
 from .hat.settings import is_enabled  # noqa: E402
 from .utils.origins import FrontendCORSMiddleware  # noqa: E402
@@ -116,49 +117,56 @@ async def _validate_fyers_token(app: FastAPI) -> None:
         logger.warning("[WARN] Fyers token is invalid or expired; log in through the Fyers route.")
 
 
-def _start_hat_scheduler(app: FastAPI) -> None:
-    """The in-process job scheduler (HAT-OPS-013). The daily-cycle jobs are registered by PR 17."""
-    from . import database
-    from .hat.ops.scheduler import start_scheduler
-    from .hat.settings import load_settings
-
-    app.state.hat_scheduler = start_scheduler(
-        load_settings(), dialect_name=database.engine.dialect.name
-    )
-
-
-def _start_hat_feed(app: FastAPI) -> None:
-    """Build HAT's live feed, hang its login hooks on the Fyers auth service and start it."""
+def _build_hat_feed() -> Any:  # noqa: ANN401 - LiveFeed, imported only when HAT is enabled
+    """HAT's live feed (the one Fyers data socket of the process, HAT-OVR-006), its login hooks
+    hung on the Fyers auth service. The runtime starts it."""
     from .database import SessionLocal
     from .hat.data.feed import LiveFeed, calendar_policy_source
     from .hat.execution.fyers_auth import get_fyers_auth
 
     feed = LiveFeed(policy_source=calendar_policy_source(SessionLocal))
     feed.install_auth_hooks(get_fyers_auth())
-    app.state.hat_feed = feed
-    feed.start(app.state.loop, prevalidated_token=app.state.fyers_token_valid)
+    return feed
+
+
+async def _start_hat_runtime(app: FastAPI, feed: Any) -> None:  # noqa: ANN401 - LiveFeed
+    """Check the Fyers token (warn only), then start the HAT runtime (`app/hat/daily/runtime.py`:
+    desks, scheduler with the daily cycle, the feed and the Telegram bot)."""
+    from . import database
+    from .hat.daily.production import production_parts
+    from .hat.daily.runtime import HatRuntime
+    from .hat.settings import load_settings
+
+    settings = load_settings()
+    await _validate_fyers_token(app)
+    runtime = HatRuntime(
+        settings,
+        database.SessionLocal,
+        dialect_name=database.engine.dialect.name,
+        parts=production_parts(settings, feed, prevalidated_token=app.state.fyers_token_valid),
+    )
+    app.state.hat_runtime = runtime
+    await runtime.start()
 
 
 async def _start_hat(app: FastAPI) -> None:
-    """The scheduler, then the feed, only when HAT_ENABLED. A failure stops what already
-    started, then raises: HAT enabled means HAT runs or the app does not start."""
+    """The HAT runtime, only when HAT_ENABLED. A failure stops what already started, then
+    raises: HAT enabled means HAT runs or the app does not start."""
     if is_enabled():
         try:
-            _start_hat_scheduler(app)
-            await _validate_fyers_token(app)
-            _start_hat_feed(app)
+            await _start_hat_runtime(app, _build_hat_feed())
         except Exception:
             await _shutdown(app)
             raise
         logger.info("[OK] HAT started")
     else:
-        logger.info("HAT_ENABLED is false: the scheduler and the live feed are not started")
+        logger.info("HAT_ENABLED is false: no HAT task is started")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: event loop, database schema, then HAT (scheduler, feed) when HAT_ENABLED.
-    Shutdown: the feed, the scheduler and the database engine, each even if another failed."""
+    """Startup: event loop, database schema, then the HAT runtime when HAT_ENABLED.
+    Shutdown: the HAT runtime, then the database engine, each even if the other failed."""
     loop = asyncio.get_running_loop()
     app.state.loop = loop
     _install_windows_reset_handler(loop)
@@ -170,20 +178,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _shutdown(app)
 
 
-async def _stop_hat_feed(app: FastAPI) -> None:
-    feed = getattr(app.state, "hat_feed", None)
-    if feed is None:
+async def _stop_hat(app: FastAPI) -> None:
+    runtime = getattr(app.state, "hat_runtime", None)
+    if runtime is None:
         return
-    del app.state.hat_feed
-    await feed.stop()
-
-
-async def _stop_hat_scheduler(app: FastAPI) -> None:
-    scheduler = getattr(app.state, "hat_scheduler", None)
-    if scheduler is None:
-        return
-    del app.state.hat_scheduler
-    await scheduler.stop()
+    del app.state.hat_runtime
+    await runtime.stop()
 
 
 async def _dispose_engine() -> None:
@@ -207,8 +207,7 @@ async def _shutdown(app: FastAPI) -> None:
     """Stop HAT's background work and release the DB pool; each step runs even if an earlier
     one failed."""
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
-        ("hat_feed", lambda: _stop_hat_feed(app)),
-        ("hat_scheduler", lambda: _stop_hat_scheduler(app)),
+        ("hat", lambda: _stop_hat(app)),
         ("database_engine", _dispose_engine),
     ]
     results = [await _run_shutdown_step(name, step) for name, step in steps]
@@ -298,8 +297,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# HAT routes. PR 15 adds the rest of `/api/hat/*`.
+# HAT routes: the Fyers login and the read-only dashboard (`/api/hat/*`).
 app.include_router(hat_fyers_auth.router)
+app.include_router(hat_dashboard.router)
 
 
 @app.get("/", response_model=None)

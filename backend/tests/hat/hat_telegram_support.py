@@ -17,7 +17,7 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session
+from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from sqlalchemy import select
@@ -207,6 +207,7 @@ class TgRig:
                     )
                 )
             _seed_calendar(session, market_id)
+            seed_live_sessions(session, self.account_id)
             session.commit()
         self.fake = fake if fake is not None else FakeBroker()
         self.transport = FakeTransport()

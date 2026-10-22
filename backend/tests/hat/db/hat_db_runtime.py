@@ -17,8 +17,12 @@ from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
 from app.hat.ids import uuid7
+from app.hat.notify import RecordingNotifier
+from app.hat.ops.jobs import JobError
 from app.hat.ops.partitions import (
+    CODE_PARTITIONS_SHORT,
     ensure_event_partitions,
+    events_partitions,
     month_of,
     months_to_cover,
     partition_bounds,
@@ -767,6 +771,38 @@ def check_events__partitioned(conn: Connection) -> None:
         accepts(conn, f"actor {actor}", lambda a=actor: b.event(conn, actor=a))
     ids = [b.event(conn) for _ in range(20)]
     assert ids == sorted(set(ids)), "event ids do not strictly increase"
+
+
+# Far past every other check's months: the job commits its partitions (dropped with hat_event).
+JOB_DAY = date(2091, 3, 15)
+
+
+def check_events__partitions_job(engine: Engine) -> None:
+    """The `events.partitions` job: an event two months past a day with no partitions is refused
+    before the job runs for that day and lands in its month's partition after; a run that leaves
+    less than one month ahead alerts `events.partitions_short` and fails with that code."""
+    later = datetime(2091, 5, 2, 12, tzinfo=UTC)
+    with engine.connect() as conn, conn.begin():
+        rejects(
+            conn, "an event in a month with no partition", lambda: b.event(conn, recorded_at=later)
+        )
+    notifier = RecordingNotifier()
+    result = events_partitions(engine, JOB_DAY, notifier)
+    assert result.rows == 3
+    assert notifier.alerts == []
+    with engine.connect() as conn, conn.begin():
+        routed = _routed_to(conn, later)
+        conn.rollback()
+    assert routed == partition_name(date(2091, 5, 1))
+    short_day = date(2091, 9, 10)
+    try:
+        events_partitions(engine, short_day, notifier, ahead=0)
+    except JobError as error:
+        code = error.code
+    else:
+        code = None
+    assert code == CODE_PARTITIONS_SHORT
+    assert [a[:2] for a in notifier.alerts] == [(CODE_PARTITIONS_SHORT, short_day)]
 
 
 def _children(conn: Connection) -> dict[str, str]:

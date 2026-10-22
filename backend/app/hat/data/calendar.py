@@ -88,6 +88,26 @@ def parse_nse_holidays(text: str) -> tuple[list[CalendarDay], int]:
     return sorted(days.values(), key=lambda d: d.day), skipped
 
 
+def with_weekdays(
+    days: Iterable[CalendarDay], session_open: time, session_close: time
+) -> list[CalendarDay]:
+    """`days` plus every other weekday of the calendar years they cover, as a trading day with
+    the market's default session (PR 17). The holiday list names only exceptions, but the risk
+    checks and the scheduler read a session only from a stored row (HAT-RISK-075, HAT-OPS-012),
+    so an ordinary weekday needs its row too. A weekend not listed stays without a row: closed."""
+    listed = {d.day: d for d in days}
+    if not listed:
+        return []
+    day = date(min(listed).year, 1, 1)
+    last = date(max(listed).year, 12, 31)
+    out = dict(listed)
+    while day <= last:
+        if day not in out and day.weekday() < 5:
+            out[day] = CalendarDay(day, True, session_open, session_close)
+        day += timedelta(days=1)
+    return sorted(out.values(), key=lambda d: d.day)
+
+
 def _to_instant(day: date, wall: time) -> datetime:
     return as_utc(datetime.combine(day, wall, tzinfo=IST))
 

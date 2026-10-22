@@ -41,14 +41,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..engine import approvals, lifecycle, trades
-from ..models import HatBot, HatBrokerAccount, HatInstrument, HatOrder, HatSignal
+from ..models import (
+    HatBot,
+    HatBrokerAccount,
+    HatBrokerSession,
+    HatInstrument,
+    HatOrder,
+    HatSignal,
+)
 from ..notify import LogNotifier, Notifier
 from ..risk import controls
 from ..risk.decision import Reason, SignalContext
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
-from .broker import BrokerUnavailableError, HatBroker, OrderType, Side
+from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .guard import ExecutionGuard
 from .modes import AUTO, bot_mode, effective_mode
 from .reconcile import ReconciliationService
@@ -78,6 +85,7 @@ MAX_ENTRY_REJECTIONS = 2
 ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 NO_GTT = "no_gtt_delivery"
+SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
 _ROUTABLE = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL)
 
@@ -135,6 +143,15 @@ def _gtt_refusal(session: Session, account_id: uuid.UUID) -> str | None:
         != AUTO
     ):
         return NO_GTT
+    return None
+
+
+def _session_refusal(session: Session, account_id: uuid.UUID, now: datetime) -> str | None:
+    """HAT-OPS-023: no entry for an account without a live `hat_broker_session` for the trade
+    date (the session watch writes it; a missing row is not live)."""
+    row = session.get(HatBrokerSession, (account_id, trade_date_of(now)))
+    if row is None or row.status != SessionStatus.LIVE.value:
+        return SESSION_NOT_LIVE
     return None
 
 
@@ -286,6 +303,7 @@ class ExecutionRouter:
             placement_refusal(check, now)
             or _kill_refusal(session, signal.bot_id)
             or _gtt_refusal(session, account_id)
+            or _session_refusal(session, account_id, now)
         )
         if refusal is not None:
             return refusal

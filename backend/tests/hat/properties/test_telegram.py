@@ -35,7 +35,7 @@ from hat_telegram_support import (
 )
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import ColumnElement, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
@@ -848,6 +848,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
                 )
             )
         session.flush()
+        session.execute(delete(HatBrokerSession))  # the rig's live sessions: this test sets its own
         for account, status in zip(accounts, statuses, strict=True):
             if status != "missing":
                 session.add(
@@ -862,7 +863,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
         run_job(
             "telegram.login_prompt",
             day,
-            jobs["telegram.login_prompt"].fn,
+            lambda: jobs["telegram.login_prompt"].fn(day),
             session_factory=rig.factory,
         )
     first = list(rig.transport.texts())
@@ -870,7 +871,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
     run_job(
         "telegram.login_reprompt",
         day,
-        jobs["telegram.login_reprompt"].fn,
+        lambda: jobs["telegram.login_reprompt"].fn(day),
         session_factory=rig.factory,
     )
     second = rig.transport.texts()[len(first) :]

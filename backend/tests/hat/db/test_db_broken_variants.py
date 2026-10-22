@@ -469,10 +469,12 @@ def test_every_check_has_a_broken_variant() -> None:
     }
     expected = {"check_" + rule.replace(".", "__") for rule in VARIANTS}
     # The ensure-step checks take the step as an argument: their broken variants are the
-    # `test_*_check_fails_*` tests below.
+    # `test_*_check_fails_*` tests below. `events.partitions_job` checks the job's code, not a
+    # database object: its break is recorded in verify-events.
     assert names - expected == {
         "check_migration__ensure_idempotent",
         "check_events__partitions_ahead",
+        "check_events__partitions_job",
     }
     assert not any(isinstance(item, DBAPIError) for item in names)
 

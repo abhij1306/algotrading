@@ -6,7 +6,9 @@
 (* when the account kill is tripped, its own kill is tripped, its health   *)
 (* kill is tripped, it is paused, or a live health input is failing.       *)
 (* Exits are never gated. Drawdown and manual kills re-arm only through a  *)
-(* second, confirmed step; the health kill clears by itself. /flatten only *)
+(* second, confirmed step; the health kill clears by itself, each source  *)
+(* (the nightly quality gate, the live feed) clearing only its own trip    *)
+(* (PR 17: the feed recovering never clears a failed gate). /flatten only  *)
 (* asks; the confirmed flatten sells every open position through the exit  *)
 (* path (purpose flatten), whatever the kill or pause state (PR 16).       *)
 (*                                                                         *)
@@ -24,7 +26,8 @@
 (*   environment (equity, health, due exits) is otherwise arbitrary.       *)
 (*                                                                         *)
 (* Properties: TripOnDrawdown, TripImpliesManageOnly, KillCancelsApprovals,*)
-(*   DataHealthManageOnly, NoAutoRearm, PauseBlocksEntriesOnly (invariants)*)
+(*   DataHealthManageOnly, HealthClearsOwnSource, NoAutoRearm,             *)
+(*   PauseBlocksEntriesOnly (invariants),                                  *)
 (*   FlattenNeedsConfirm, FlattenExitOnly (invariants) and HealthAutoRearm,*)
 (*   ExitsContinue (temporal).                                             *)
 (***************************************************************************)
@@ -37,16 +40,19 @@ ASSUME BrokenMode \in {"none", "no_trip_on_drawdown", "entry_ignores_kill",
                        "auto_rearm_on_recovery", "resume_clears_kill",
                        "entry_ignores_pause", "health_manual_rearm",
                        "exit_blocked_when_killed", "flatten_without_confirm",
-                       "flatten_opens"}
+                       "flatten_opens", "shared_health_channel"}
 
 Bots == 1..NBots
 Reasons == {"acct", "bot", "health", "unhealthy", "paused"}
+\* The health sources, each a reason of its own (risk/kill.py HEALTH_REASONS): the quality gate
+\* (data_health) and the live feed (feed_health); broker_health behaves the same way.
+Sources == {"quality", "feed"}
 
 VARIABLES
     acct,        \* account kill: armed | tripped
     bot,         \* per bot kill: armed | tripped
-    health,      \* per bot stored health kill: armed | tripped
-    unhealthy,   \* per bot: a data or broker health input is failing now
+    health,      \* per health source: the account's stored health kill, armed | tripped
+    unhealthy,   \* per health source: that input is failing now
     paused,      \* per bot: paused by the user
     appr,        \* per bot approval: none | pending | taken | cancelled
     pos,         \* per bot position: none | open | closed
@@ -59,17 +65,18 @@ VARIABLES
     badRearm,    \* ghost: a drawdown or manual kill was re-armed without the second step
     askedFlat,   \* /flatten asked and its confirmation is pending
     badFlat,     \* ghost: a flatten ran without the confirmed second step
-    flatOpen     \* ghost: a flatten opened or grew a position
+    flatOpen,    \* ghost: a flatten opened or grew a position
+    badClear     \* ghost: a source's health trip was cleared while that source still failed
 
-flatVars == <<askedFlat, badFlat, flatOpen>>
+flatVars == <<askedFlat, badFlat, flatOpen, badClear>>
 vars == <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
-          askedAcct, askedBot, badEntry, badRearm, askedFlat, badFlat, flatOpen>>
+          askedAcct, askedBot, badEntry, badRearm, askedFlat, badFlat, flatOpen, badClear>>
 
 Init ==
     /\ acct = "armed"
     /\ bot = [b \in Bots |-> "armed"]
-    /\ health = [b \in Bots |-> "armed"]
-    /\ unhealthy = [b \in Bots |-> FALSE]
+    /\ health = [s \in Sources |-> "armed"]
+    /\ unhealthy = [s \in Sources |-> FALSE]
     /\ paused = [b \in Bots |-> FALSE]
     /\ appr = [b \in Bots |-> "none"]
     /\ pos = [b \in Bots |-> "none"]
@@ -83,14 +90,15 @@ Init ==
     /\ askedFlat = FALSE
     /\ badFlat = FALSE
     /\ flatOpen = FALSE
+    /\ badClear = FALSE
 
 \* What blocks a new entry for bot b right now.
 Blocking(b) ==
     {r \in Reasons :
         \/ r = "acct" /\ acct = "tripped"
         \/ r = "bot" /\ bot[b] = "tripped"
-        \/ r = "health" /\ health[b] = "tripped"
-        \/ r = "unhealthy" /\ unhealthy[b]
+        \/ r = "health" /\ \E s \in Sources : health[s] = "tripped"
+        \/ r = "unhealthy" /\ \E s \in Sources : unhealthy[s]
         \/ r = "paused" /\ paused[b]}
 
 \* The entry gate (evaluate_entry): the real protocol allows an entry only when nothing blocks.
@@ -150,25 +158,30 @@ ManualKill ==
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:sync_health  (environment: a data or broker health
-\* input starts or stops failing)
-HealthFlip(k) ==
-    /\ unhealthy' = [unhealthy EXCEPT ![k] = ~@]
+\* code: backend/app/hat/risk/controls.py:sync_health  (environment: a health source (the gate's
+\* result, the feed) starts or stops failing; both act on the account key, so every bot reads it)
+HealthFlip(src) ==
+    /\ unhealthy' = [unhealthy EXCEPT ![src] = ~@]
     /\ UNCHANGED <<acct, bot, health, paused, appr, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:sync_health  (the health check job: trip while
-\* failing, clear by itself once healthy)
-HealthEval(k) ==
-    /\ health[k] # IF unhealthy[k] THEN "tripped" ELSE "armed"
-    /\ health' = [health EXCEPT ![k] =
-          IF unhealthy[k] THEN "tripped"
-          ELSE IF BrokenMode = "health_manual_rearm" THEN @ ELSE "armed"]
-    /\ ~(BrokenMode = "health_manual_rearm" /\ ~unhealthy[k])
+\* code: backend/app/hat/risk/controls.py:sync_health  (the source's health check: trip its own
+\* reason on the account key while failing, clear that reason by itself once healthy; the broken
+\* variant clears every health reason of the key, as one shared channel did)
+HealthEval(src) ==
+    /\ health[src] # IF unhealthy[src] THEN "tripped" ELSE "armed"
+    /\ health' = [t \in Sources |->
+          IF t = src
+             THEN IF unhealthy[src] THEN "tripped"
+                  ELSE IF BrokenMode = "health_manual_rearm" THEN health[t] ELSE "armed"
+          ELSE IF BrokenMode = "shared_health_channel" /\ ~unhealthy[src]
+                  THEN "armed" ELSE health[t]]
+    /\ ~(BrokenMode = "health_manual_rearm" /\ ~unhealthy[src])
+    /\ badClear' = (badClear \/ \E t \in Sources :
+                       health[t] = "tripped" /\ unhealthy[t] /\ health'[t] = "armed")
     /\ UNCHANGED <<acct, bot, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
-                   askedAcct, askedBot, badEntry, badRearm>>
-    /\ UNCHANGED flatVars
+                   askedAcct, askedBot, badEntry, badRearm, askedFlat, badFlat, flatOpen>>
 
 \* code: backend/app/hat/risk/controls.py:pause_bot
 Pause(k) ==
@@ -293,7 +306,7 @@ RequestFlatten ==
     /\ ~askedFlat
     /\ askedFlat' = TRUE
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
-                   askedAcct, askedBot, badEntry, badRearm, badFlat, flatOpen>>
+                   askedAcct, askedBot, badEntry, badRearm, badFlat, flatOpen, badClear>>
 
 \* code: backend/app/hat/execution/manage.py:flatten  (the confirmed step: every open position
 \* is sold through the exit path, never gated by a kill or pause, and nothing is bought)
@@ -308,7 +321,7 @@ ConfirmFlatten ==
     /\ flatOpen' = (flatOpen \/ \E k \in Bots : pos[k] # "open" /\ pos'[k] = "open")
     /\ exitDue' = [k \in Bots |-> FALSE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,
-                   askedBot, badEntry, badRearm>>
+                   askedBot, badEntry, badRearm, badClear>>
 
 Next ==
     \/ SnapshotAccount
@@ -317,21 +330,23 @@ Next ==
     \/ ConfirmRearmAcct
     \/ RequestFlatten
     \/ ConfirmFlatten
+    \/ \E src \in Sources : HealthFlip(src) \/ HealthEval(src)
     \/ \E k \in Bots :
-          SnapshotBot(k) \/ HealthFlip(k) \/ HealthEval(k) \/ Pause(k) \/ Resume(k)
+          SnapshotBot(k) \/ Pause(k) \/ Resume(k)
           \/ CreateApproval(k) \/ Take(k) \/ Expire(k) \/ PlaceEntry(k) \/ ExitDue(k)
           \/ ExitSend(k) \/ RequestRearmBot(k) \/ ConfirmRearmBot(k)
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
-    /\ \A k \in Bots : WF_vars(ExitSend(k)) /\ WF_vars(HealthEval(k))
+    /\ \A k \in Bots : WF_vars(ExitSend(k))
+    /\ \A src \in Sources : WF_vars(HealthEval(src))
 
 TypeOK ==
     /\ acct \in {"armed", "tripped"}
     /\ bot \in [Bots -> {"armed", "tripped"}]
-    /\ health \in [Bots -> {"armed", "tripped"}]
-    /\ unhealthy \in [Bots -> BOOLEAN]
+    /\ health \in [Sources -> {"armed", "tripped"}]
+    /\ unhealthy \in [Sources -> BOOLEAN]
     /\ paused \in [Bots -> BOOLEAN]
     /\ appr \in [Bots -> {"none", "pending", "taken", "cancelled"}]
     /\ pos \in [Bots -> {"none", "open", "closed"}]
@@ -355,6 +370,10 @@ KillCancelsApprovals ==
 \* No entry is placed while a data or broker health input is failing or its kill is tripped.
 DataHealthManageOnly == "health" \notin badEntry /\ "unhealthy" \notin badEntry
 
+\* A source's health trip is cleared only by that source's own check, once it is healthy: the
+\* feed recovering never clears a failed quality gate (HAT-DATA-065, HAT-RISK-063).
+HealthClearsOwnSource == ~badClear
+
 \* A drawdown or manual kill is re-armed only after the confirmed second step.
 NoAutoRearm == ~badRearm
 
@@ -369,8 +388,8 @@ FlattenExitOnly == ~flatOpen
 
 \* A health kill clears by itself: once the checks are healthy, it is armed or fails again.
 HealthAutoRearm ==
-    \A k \in Bots :
-        [](health[k] = "tripped" /\ ~unhealthy[k] => <>(health[k] = "armed" \/ unhealthy[k]))
+    \A src \in Sources :
+        [](health[src] = "tripped" /\ ~unhealthy[src] => <>(health[src] = "armed" \/ unhealthy[src]))
 
 \* An exit that is due for an open position is eventually sent, whatever the kill state.
 ExitsContinue ==

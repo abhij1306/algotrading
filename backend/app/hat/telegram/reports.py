@@ -253,16 +253,16 @@ def telegram_jobs(reports: Reports) -> tuple[ScheduledJob, ...]:
         ScheduledJob(
             "telegram.login_prompt",
             LOGIN_PROMPT_AT,
-            lambda: reports.login_prompt(repeat=False),
+            lambda _day: reports.login_prompt(repeat=False),
             until=LOGIN_REPROMPT_AT,
         ),
         ScheduledJob(
             "telegram.login_reprompt",
             LOGIN_REPROMPT_AT,
-            lambda: reports.login_prompt(repeat=True),
+            lambda _day: reports.login_prompt(repeat=True),
             until=SESSION_CLOSE,
         ),
-        ScheduledJob("telegram.rejections", REJECTIONS_AT, reports.rejection_digest),
-        ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, reports.daily_report),
-        ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, reports.veto_digest),
+        ScheduledJob("telegram.rejections", REJECTIONS_AT, lambda _day: reports.rejection_digest()),
+        ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, lambda _day: reports.daily_report()),
+        ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, lambda _day: reports.veto_digest()),
     )

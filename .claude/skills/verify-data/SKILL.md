@@ -26,6 +26,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT ingest.probe_schedule` The nightly ingest probes from the later of its start and 18:00, every 10 minutes, never at or after 22:00, stops at the first probe that matches the trade date, and is ready exactly when one matched. Harm: the fallback runs early, or never, or the MCP is hammered.
 - `PBT ingest.fetch_covers_universe` The symbols fetched are exactly the active instruments with series EQ or BE, each once; an empty universe fails before any fetch. Harm: part of the market has no bar for the day.
 - `PBT ingest.row_checks` A fetched row is accepted iff its date is the trade date, prices are above zero, low <= open <= high, low <= close <= high, prev_close is null or above zero and volume is a whole number of at least zero. Harm: a corrupt row becomes a stored bar.
+- `PBT ingest.checks_kept_for_retry` When the first attempt at a date writes the raw partition and then fails (no index rows) or is killed right after the write, every retry, dropping other symbols, reports the row-check counts of the first attempt. Harm: a retry's quality gate reads 0 dropped rows and passes a bad day.
 - `PBT ingest.raw_write_once` For any sequence of attempts at one date (MCP or fallback, failing or not) exactly one raw partition exists, its bytes never change after the first, and the fallback runs at most once. Harm: a re-run rewrites history or splits one day across sources.
 - `PBT ingest.outcome_event` Each ingest run that reaches a final status leaves exactly one `ingest.completed` or `ingest.failed` event in the same transaction, a crash leaves none, and the data-health kill is tripped iff some run failed. Harm: a night with no data scans as if healthy.
 - `PBT ingest.call_budget` A run makes at most ceil(N/50) bulk calls, its probes, one index call, one breadth call and one lookup per flagged symbol. Harm: the nightly job exhausts the MCP quota.
@@ -142,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `e58531dd9688d167c424c5dab1691cbeb2a14080736690f790e7cc4c6eecad55`
+Covered digest: `532e44105a34bbc10bd32388599e1f99b05ad979e2b7f0d6d3c4832d4e28a0ae`
 
 ## Scope changes
 
@@ -891,6 +892,16 @@ E   Failing explicit example: test_row_checks(
 E       o=1,
 E       h=5,
 E       low=2,
+```
+
+### PBT ingest.checks_kept_for_retry
+
+Break: the old order in `run_ingest`: `write_raw_once` first, then `_keep_checks` when it wrote (a kill between them loses the counts).
+
+```
+tests/hat/properties/test_ingest.py:590: in test_checks_kept_for_retry
+E   assert [0] == [1]
+E     At index 0 diff: 0 != 1
 ```
 
 ### PBT ingest.raw_write_once
