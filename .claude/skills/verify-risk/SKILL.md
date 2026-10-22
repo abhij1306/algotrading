@@ -19,7 +19,7 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 - `TLA KillSwitch!HealthAutoRearm` A health kill clears by itself as soon as the health inputs pass, without a user. Harm: a brief data glitch freezes the bot until someone notices.
 - `TLA KillSwitch!ExitsContinue` Whatever is tripped, paused or failing, a due exit is eventually sent. Harm: a kill or a health failure traps an open position.
 - `PBT sizing.*` On the real `size_position` and the real `evaluate_signal`: the size is exactly the floor of the smallest of the four terms (risk, position share, 20-day volume, cash), in Decimal with no float; the risk taken never exceeds `equity x risk_pct x ladder multiplier`; a wider stop never grows the size and more equity never shrinks it; a zero size is a skip with a named reason; a stop at or above the entry is refused; the regime and health multipliers are applied once (they are already inside the allocation's `risk_pct`); every number comes from the policy version in force at the signal time, so a pending increase never sizes a trade. Harm: a position larger than the owner's risk budget, or one sized with a limit nobody approved.
-- `PBT caps.*` On the real decision: the 1.5% global open risk (D128), positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, read by the service itself from the backtest runs (none, and so refused, without a completed run), a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
+- `PBT caps.*` On the real decision: the 1.5% global open risk (D128), positions per bot and level, positions per industry, entries and stop-outs per day, the regime gate, no add to a loser and no pyramiding, a stop strictly below the entry, no entry on a stale feed or failed data check, no entry outside the calendar's session (DEV_MODE never opens it; an unknown date fails closed; a special session such as Muhurat is open from its own open to its own close), the per-instrument cooldown (`cooldown_sessions` N > 0 refuses the instrument on the session of the bot's latest `hard_stop` of it and the N trading sessions after, counted on the calendar; a stop after the trade date is ignored; with N > 0 a missing or malformed history is `missing_input`, with N = 0 it is not read; a shorter cooldown is an increase and a value outside [0, 250] is refused; HAT-RISK-036, PR 58), the max-chase rule, the price band (an entry more than 20% from the last price is `price_out_of_band`; a band width that is not a finite number of at least zero is `missing_input`), HAT's own kill switches as the only halt (no legacy halt flag is read); exits and stop moves accepted in every state; the decision is total (any input gives ACCEPT or a REJECT with a reason from the enumerated set, never an exception) and fails closed on a missing, float, NaN or infinite number; a policy change is classified increase or decrease from every field (a higher multiplier ceiling or base weight is an increase), an increase needs 50 live (non-shadow) trades inside tolerance, read by the service itself from the backtest runs (none, and so refused, without a completed run), a change is requested outside market hours, and each request and each effect writes its event. Harm: any one cap missing or off by one lets the book take more risk than the policy allows, or an exit is trapped.
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk stream (drawdown, manual together) or of one of its health reasons (`data_health`, `feed_health`, `broker_health`, each its own stream) is a trip, so an automatic health re-arm never hides a tripped drawdown kill nor another source's health trip; another bot's rows never count. On the real service on SQLite, random trips, health changes (the account's from the gate and from the feed apart), re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 10% and a bot at 10% (D128; the account was 15% before PR 46) from the summed and per-bot equity. A planned reallocation is not a drawdown (HAT-RISK-066): with no trade results, any sequence of allocation capitals (cuts, rises, nights at zero) trips nothing and leaves no stored peak above its equity, and a cut together with a realised loss trips exactly when the loss reaches the drawdown share of the restated capital; a snapshot of day d is measured on the bot's latest allocation on or before d, and its capital for restating the peak and the account series is the one it used (equity less realised P&L), so an allocation written after it, or a night without one, reads as no loss (PR 33: `snapshot.bots` no longer waits for `allocate`). Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
@@ -96,12 +96,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `930b36bf36c068ec8d0c4f11058f70d42039f8b23554a64ad3873fe8e2d48b61`
+Covered digest: `2923aaf50255ca31f8645622508c9ad15b595121c5c367f19b5baf85a1ee731e`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 58 (HAT-RISK-036, plan audit G29): the policy gains `cooldown_sessions` (seed 0; a stored document without it reads as 0) and the decision the reason `cooldown`, checked last among the per-bot caps, after `stopout_cap`, so an entry refused for a position or a daily cap keeps that reason. The history is `SignalContext.hard_stop_days`, read only while N > 0. Properties `caps.cooldown`, `caps.cooldown_input_fails_closed` and `caps.cooldown_shortening_is_increase` are under `PBT caps.*`; the wiring through `open_entry` is `trades.last_hard_stop` (verify-execution) and the backtest's use is `backtest.cooldown_applied` (verify-backtest). This PR also refreshed `verify-governance` (`risk/policy.py`), `verify-portfolio` (`backtest/runs.py`) and `verify-scheduler` (`MERGED_PRS` gained 58).
 - `KillSwitch` has no `FlattenNeedsConfirm` or `FlattenExitOnly`: the flatten command is PR 16 code and the model's actions must map to existing functions. The kill, pause, health and approval rules of HAT-RISK-062 to 065 and HAT-GOV-081 are modelled.
 - `KillCancelsApprovals` covers approvals that are still undecided (`pending`). An approval already taken has left the approval state and still passes the entry gate at placement, which the kill and manage-only checks stop (`TripImpliesManageOnly`). The spec text says "pending".
 - The ExecutionRouter TLA names of HAT-DEC-B20, HAT-GOV-084 and HAT-SCH-086 (`NoAddToOpenPosition`, `ModeChangeNextSession`) belong to the router model of PR 15 and are listed in `KNOWN_GAPS`; the same promises are checked on the real code by `caps.no_pyramiding`, `caps.no_add_to_loser`, `mode.mode_change_next_session` and `calendar.next_session_open`.
@@ -633,6 +634,42 @@ Break: (PR 46) the seed's `kill.account_drawdown_pct` back to 0.15 (`caps.kill_t
 E   AssertionError: assert False is True
 E    +  where False = <function tripped_since at 0x7f49d36fe1f0>([...], Decimal('0.15'), None)
 E   Failing test case: test_kill_thresholds(
+```
+
+Break: (PR 58) in `backend/app/hat/risk/caps.py`: (caps.cooldown) the cooldown ends a session early (`>=` for `>`).
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:220: in test_cooldown
+    assert (decision.accepted, decision.reason) == (False, Reason.COOLDOWN)
+E   AssertionError: assert (True, None) == (False, <Reas...: 'cooldown'>)
+```
+
+Break: (PR 58) in `backend/app/hat/risk/decision.py`: (caps.cooldown) a hard stop dated after the trade date is read as the latest.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:220: in test_cooldown
+    assert (decision.accepted, decision.reason) == (False, Reason.COOLDOWN)
+E   AssertionError: assert (True, None) == (False, <Reas...: 'cooldown'>)
+```
+
+Break: (PR 58) in `backend/app/hat/risk/decision.py`: (caps.cooldown_input_fails_closed) a missing hard-stop history reads as none.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:233: in test_cooldown_input_fails_closed
+    assert decide(on).reason == Reason.MISSING_INPUT
+E   AssertionError: assert None == <Reason.MISSING_INPUT: 'missing_input'>
+```
+
+Break: (PR 58) in `backend/app/hat/risk/policy.py`: (caps.cooldown_shortening_is_increase) a higher cooldown counted as more permissive.
+
+```
+tests/hat/properties/test_caps.py F
+tests/hat/properties/test_caps.py:246: in test_cooldown_shortening_is_increase
+    assert direction == ("increase" if proposed < current else "decrease")
+E   AssertionError: assert 'increase' == 'decrease'
 ```
 
 ### PBT exposure.*

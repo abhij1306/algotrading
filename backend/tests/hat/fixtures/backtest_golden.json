@@ -5,6 +5,7 @@
    "avg_mae_r": "-1.381452",
    "avg_mfe_r": "0.966803",
    "avg_win_r": null,
+   "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
@@ -95,6 +96,7 @@
    "avg_mae_r": "0.000000",
    "avg_mfe_r": "9.997681",
    "avg_win_r": "8.003568",
+   "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"

@@ -106,6 +106,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `DB runtime.publish_serialised` Two real nightly publishes of one bot and day, the first holding inside its scan after its "already published?" read, write one `watchlist.published`; the second waits on the bot's lock and skips. Harm: duplicate watchlist rows and events.
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
 - `PBT trades.global_open_risk_across_bots` (HAT-RISK-030; the cap is 1.5% since PR 46, D128) Two bots of one owner on different broker accounts, triggers interleaved in any order through `open_entry`: a trigger is rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 1.5% of total equity, is accepted otherwise, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N x 1.5%.
+- `PBT trades.last_hard_stop` (HAT-RISK-036, PR 58) Positions opened through `open_entry` and closed by the exit stack's hard stop or by another reason, on the bot or another bot of the owner, in the instrument or another, on later days: the cooldown's history is the trade date of the bot's latest `hard_stop` close of the instrument at or before the trigger, and nothing else. Harm: the cooldown bars the wrong name, misses the stop that should bar it, or reads a stop the bot has not had yet.
 - `DB runtime.owner_serialised` (HAT-RISK-030) Two real transactions of different bots of one owner (on different broker accounts), the first holding between its risk decision and its insert, with global open-risk room for one entry, end with one accepted and one rejected; the second waits on the owner's advisory lock. Harm: two bots' triggers in one instant both fit on one snapshot and together exceed the cap.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 - `TLA ExecutionRouter!RouteByMode` Each routed signal takes the route of the mode it was routed by: shadow a virtual position, confirm a card (a real order only after a Take), auto a real order. Harm: a signal is routed under the wrong mode.
@@ -338,13 +339,14 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `f3c4ab1747703ee908db9ee70ca0adb481b61e22a9d071df7379553b07a09898`
+Covered digest: `de01e492b9acd482deafabcd917fd878e85c4ec23cb8702da945c35df63d20c2`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
+- PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `trades.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `_day_counts`). `trades.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
@@ -1758,6 +1760,44 @@ Break: (PR 46) the seed's `global_open_risk_pct` back to 0.03: the second bot's 
 E   AssertionError: assert UUID('01a16469-36fd-729b-8546-f2c41c2f730a') is None
 E   Failing test case: test_global_open_risk_across_bots(
 E       order=[1, 1],
+```
+
+### PBT trades.last_hard_stop
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: the instrument filter dropped, so another instrument's hard stop counts.
+
+```
+tests/hat/properties/test_trades.py F
+tests/hat/properties/test_trades.py:220: in test_last_hard_stop
+    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+E   assert (datetime.date(2026, 10, 21),) == ()
+```
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: the exit-reason filter dropped, so a `time_stop` close counts.
+
+```
+tests/hat/properties/test_trades.py F
+tests/hat/properties/test_trades.py:220: in test_last_hard_stop
+    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+E   assert (datetime.date(2026, 10, 21),) == ()
+```
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: the bot filter dropped, so another bot's hard stop counts.
+
+```
+tests/hat/properties/test_trades.py F
+tests/hat/properties/test_trades.py:220: in test_last_hard_stop
+    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+E   assert (datetime.date(2026, 10, 21),) == ()
+```
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: the at-or-before-the-trigger filter dropped, so a later close counts.
+
+```
+tests/hat/properties/test_trades.py F
+tests/hat/properties/test_trades.py:220: in test_last_hard_stop
+    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+E   assert (datetime.date(2026, 10, 24),) == (datetime.date(2026, 10, 21),)
 ```
 
 ### DB runtime.owner_serialised

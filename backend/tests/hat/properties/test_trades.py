@@ -5,12 +5,21 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
+from datetime import datetime, timedelta
 from decimal import Decimal
 
-from hat_engine_support import TRADE_DAY, add_bot, open_trade, seed_engine_world
+from hat_engine_support import (
+    AT,
+    TRADE_DAY,
+    add_bot,
+    exit_stack,
+    open_trade,
+    seed_engine_world,
+    step_trade,
+)
 from hat_risk_support import decide, policy_with, valid_ctx, version_of
 from hat_support import memory_engine
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -19,6 +28,7 @@ from app.hat.engine import lifecycle, trades
 from app.hat.models import HatBot, HatPosition, HatSignal, HatUniverseMember, HatWatchlistEntry
 from app.hat.risk.decision import Reason
 from app.hat.risk.exposure import max_positions
+from app.hat.time import trade_date_of
 
 PLAYBOOKS = ("stage2", "momentum", "episodic", "other")
 
@@ -162,3 +172,49 @@ def test_retry_returns_existing_signal(mode_changed: bool, left_universe: bool) 
         assert again.duplicate
         assert again.signal_id == first.signal_id
         assert session.scalar(select(func.count()).select_from(HatSignal)) == 1
+
+
+# --- HAT-RISK-036: the hard stops the cooldown reads (PR 58) --------------------------------------
+
+STOP_EVENTS = st.lists(
+    st.tuples(st.integers(0, 1), st.booleans(), st.booleans(), st.integers(0, 6)), max_size=6
+)
+
+
+@settings(max_examples=30)
+@given(STOP_EVENTS, st.integers(0, 8))
+@example([(0, False, False, 0)], 1)  # another exit reason
+@example([(0, True, True, 0)], 1)  # another bot
+@example([(1, False, True, 0)], 1)  # another instrument
+@example([(0, False, True, 0), (0, False, True, 3)], 1)  # a close after the trigger
+def test_last_hard_stop(events: list[tuple[int, bool, bool, int]], query_days: int) -> None:
+    """The cooldown's input is the trade date of the bot's latest `hard_stop` close of the
+    instrument at or before the trigger: positions are opened through `open_entry` and closed
+    by the exit stack's hard stop or by another reason, on this bot or another bot of the owner,
+    in this instrument or another, on later days. Another reason, another bot, another
+    instrument or a close after the trigger never counts. Harm: the cooldown bars the wrong name,
+    misses the stop that should bar it, or reads a stop the bot has not had yet."""
+    policy = policy_with(max_entries_per_day=20, max_stopouts_per_day=20)
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, exits=exit_stack("stop_only"))
+        other = add_bot(session, world)
+        loose = [replace(version_of(policy), version_id=world.policy_version_id)]
+        counted: list[datetime] = []
+        for n, (index, other_bot, hard, days) in enumerate(events):
+            bot = other if other_bot else world
+            instrument = world.instruments[index]
+            trade = open_trade(session, bot, instrument, f"pb{n}", policy_versions=loose)
+            position_id = trade.outcome.position_id
+            assert position_id is not None
+            closed = AT + timedelta(days=days, minutes=1)
+            if hard:
+                step_trade(session, trade, Decimal(94), days=days, phase="live")
+            else:
+                trades.close_position(session, position_id, Decimal(101), "time_stop", closed)
+            assert session.get(HatPosition, position_id).closed_at is not None
+            if hard and not other_bot and index == 0:
+                counted.append(closed)
+        at = AT + timedelta(days=query_days)
+        seen = [c for c in counted if c <= at]
+        want = (trade_date_of(max(seen)),) if seen else ()
+        assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want

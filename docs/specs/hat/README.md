@@ -395,6 +395,7 @@ to an artefact that exists.
 | HAT-RISK-033 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_entries` |
 | HAT-RISK-034 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_stopouts` |
 | HAT-RISK-035 | [06](06-risk-and-governance.md) | 10 | PBT `caps.exits_never_blocked` |
+| HAT-RISK-036 | [06](06-risk-and-governance.md) | 58 | PBT `caps.cooldown`, PBT `caps.cooldown_input_fails_closed`, PBT `caps.cooldown_shortening_is_increase`, PBT `trades.last_hard_stop`, PBT `backtest.cooldown_applied`, PBT `dsr.evidence_cooldown_in_force` |
 | HAT-RISK-040 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.ladder_transitions` |
 | HAT-RISK-041 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.level_applies` |
 | HAT-RISK-042 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.virtual_ignored` |

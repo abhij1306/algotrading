@@ -1,4 +1,4 @@
-"""Caps and invariants as pure predicates (06 §3, §5, §7; HAT-RISK-030..035, 050, 070..076).
+"""Caps and invariants as pure predicates (06 §3, §5, §7; HAT-RISK-030..036, 050, 070..076).
 
 Each predicate answers one question about a new entry and holds no state. A cap can only reject
 an entry; it never applies to an exit (the exit path in `decision.py` does not call any of
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from .exposure import max_positions
@@ -72,6 +72,24 @@ def entries_ok(entries_today: int, policy: RiskPolicy) -> bool:
 def stopouts_ok(stopouts_today: int, policy: RiskPolicy) -> bool:
     """HAT-RISK-034."""
     return stopouts_today < policy.max_stopouts_per_day
+
+
+def sessions_since(calendar: SessionCalendar, stop_day: date, day: date) -> int:
+    """The calendar's trading sessions after `stop_day` up to and including `day`: 0 on the stop's
+    own session."""
+    return sum(1 for d, row in calendar.days.items() if row.is_trading and stop_day < d <= day)
+
+
+def cooldown_ok(
+    calendar: SessionCalendar, last_hard_stop: date | None, day: date, policy: RiskPolicy
+) -> bool:
+    """HAT-RISK-036: with `cooldown_sessions` N > 0, an instrument the bot last closed by
+    `hard_stop` on `last_hard_stop` is refused on that session and the N sessions after it.
+    N = 0, or no hard stop at or before `day`, refuses nothing."""
+    n = policy.cooldown_sessions
+    if n == 0 or last_hard_stop is None or last_hard_stop > day:
+        return True
+    return sessions_since(calendar, last_hard_stop, day) > n
 
 
 def regime_gate_open(gate_on: bool) -> bool:

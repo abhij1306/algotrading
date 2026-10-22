@@ -17,12 +17,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from ..time import trade_date_of
 from . import caps
 from .exposure import LadderState, risk_multiplier
 from .kill import KillState
@@ -57,6 +58,7 @@ class Reason(StrEnum):
     INDUSTRY_CAP = "industry_cap"
     ENTRY_CAP = "entry_cap"
     STOPOUT_CAP = "stopout_cap"
+    COOLDOWN = "cooldown"
     NO_ALLOCATION = "no_allocation"
     ALLOCATION_EXCEEDS_POLICY = "allocation_exceeds_policy"
     SIZE_ZERO_RISK = "size_zero_risk"
@@ -112,6 +114,9 @@ class SignalContext:
     open_positions: Sequence[caps.OpenPosition] | None = None
     entries_today: int | None = None
     stopouts_today: int | None = None
+    # The trade dates on which the bot closed this instrument by `hard_stop` (empty: never). Read
+    # only while the policy's `cooldown_sessions` is above 0, when None is a missing input.
+    hard_stop_days: Sequence[date] | None = None
     gate_on: bool | None = None
     feed_stale: bool | None = None
     quality_failed: bool | None = None
@@ -225,9 +230,25 @@ class _Entry:
     locked: bool
     entries_today: int
     stopouts_today: int
+    last_hard_stop: date | None
+    calendar: SessionCalendar
     session: SessionState
     configured_chase: Decimal | None
     p_max: Decimal
+
+
+def _last_hard_stop(ctx: SignalContext, version: PolicyVersion, at: datetime) -> date | None:
+    """The bot's latest hard-stop day of the instrument at or before the signal's trade date;
+    None when there is none or the policy has no cooldown (the input is then not read)."""
+    if version.policy.cooldown_sessions == 0:
+        return None
+    days = _require(ctx.hard_stop_days, "hard_stop_days")
+    if isinstance(days, (str, bytes)) or not isinstance(days, Sequence):
+        raise MissingInputError("hard_stop_days: not a sequence")
+    if any(isinstance(d, datetime) or not isinstance(d, date) for d in days):
+        raise MissingInputError("hard_stop_days: not trade dates")
+    today = trade_date_of(at)
+    return max((d for d in days if d <= today), default=None)
 
 
 def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
@@ -303,6 +324,8 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
         locked=flags["locked_upper_circuit"],
         entries_today=entries_today,
         stopouts_today=stopouts_today,
+        last_hard_stop=_last_hard_stop(ctx, version, at),
+        calendar=calendar,
         session=session,
         configured_chase=None if chase is None else exact(chase, "configured_max_chase_pct"),
         p_max=p_max,
@@ -332,9 +355,9 @@ def _state_reason(e: _Entry, checks: EntryChecks) -> Reason | None:
 
 
 def _cap_reason(e: _Entry) -> Reason | None:
-    """The first of the position, industry and daily caps that fails. The positions are the
-    caller's snapshot: two evaluations racing on one snapshot are serialised per bot by the
-    caller (the lifecycle's per-bot transaction), not here."""
+    """The first of the position, industry and daily caps and the cooldown that fails. The
+    positions are the caller's snapshot: two evaluations racing on one snapshot are serialised
+    per bot by the caller (the lifecycle's per-bot transaction), not here."""
     policy = e.version.policy
     mine = [p for p in e.positions if p.is_virtual == e.virtual and p.bot_id == e.bot_id]
     held = [p for p in mine if p.instrument_id == e.instrument_id]
@@ -348,6 +371,10 @@ def _cap_reason(e: _Entry) -> Reason | None:
         ),
         (not caps.entries_ok(e.entries_today, policy), Reason.ENTRY_CAP),
         (not caps.stopouts_ok(e.stopouts_today, policy), Reason.STOPOUT_CAP),
+        (
+            not caps.cooldown_ok(e.calendar, e.last_hard_stop, trade_date_of(e.at), policy),
+            Reason.COOLDOWN,
+        ),
     )
     for failed, reason in checks:
         if failed:
