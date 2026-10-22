@@ -471,12 +471,18 @@ odd_values = st.one_of(
 
 
 @given(odd_values, odd_values, odd_values)
+@example("¹", None, None)  # a Unicode digit `int` refuses (found by Hypothesis)
+@example("--1", None, None)
+@example("1", None, None)
 def test_broker_status_mapping_is_total(code: object, filled: object, qty: object) -> None:
-    """Every broker status maps to exactly one of our states, and a status the mapping does not
-    know is `unconfirmed` (it blocks a retry until looked up), never filled or cancelled."""
+    """Every broker status maps to exactly one of our states (it never raises), and a status the
+    mapping does not know is `unconfirmed` (it blocks a retry until looked up), never filled or
+    cancelled. A status sent as an ASCII integer string reads as that integer."""
     status = map_fyers_status(code, filled, qty)
     assert status in ORDER_STATUSES
     known = {1, 2, 4, 5, 6, 7}
+    if isinstance(code, str) and re.fullmatch(r"-?[0-9]+", code.strip()):
+        code = int(code)
     if isinstance(code, bool) or not isinstance(code, (int, float)):
         assert status == "unconfirmed"
     elif isinstance(code, float) and not code.is_integer():  # fractions, NaN, infinities

@@ -21,6 +21,7 @@ from ..errors import HatError
 __all__ = [
     "CODE_INVALID_INTENT",
     "CODE_OK",
+    "CODE_RATE_LIMITED",
     "CODE_REJECTED",
     "CODE_SESSION_EXPIRED",
     "CODE_UNAVAILABLE",
@@ -55,6 +56,9 @@ CODE_OK = "ok"
 CODE_REJECTED = "broker_rejected"
 CODE_UNAVAILABLE = "broker_unavailable"
 CODE_SESSION_EXPIRED = "broker_session_expired"  # the broker refused the token: log in again
+# the broker refused the call because the plan's daily requests are spent (Fyers -360): not an
+# outage, and no call succeeds until the next day
+CODE_RATE_LIMITED = "broker_rate_limited"
 CODE_UNCONFIRMED = "submit_unconfirmed"
 CODE_INVALID_INTENT = "invalid_intent"
 

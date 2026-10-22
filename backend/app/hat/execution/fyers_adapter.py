@@ -14,6 +14,7 @@ raise `BrokerUnavailableError`, never an empty list. Results carry fixed codes, 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -24,6 +25,7 @@ from app.hat.data.symbols import symbol_master
 
 from .broker import (
     CODE_INVALID_INTENT,
+    CODE_RATE_LIMITED,
     CODE_REJECTED,
     CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
@@ -59,8 +61,10 @@ from .fyers_broker import (
     PROCESS_BREAKER,
     SUBMIT_UNCONFIRMED,
     FyersBroker,
+    FyersRateLimitedError,
     FyersSessionExpiredError,
     FyersUnavailableError,
+    rate_limited,
 )
 from .fyers_session import FyersSession, get_fyers_session
 from .fyers_tokens import TokenStoreError
@@ -124,18 +128,20 @@ _GTT_KNOWN = {2, 4, 6}
 # what a reply that cannot be read raises while it is parsed
 _UNREADABLE = (KeyError, ValueError, TypeError, InvalidOperation, AttributeError, OverflowError)
 _GTT_OCO = 2  # `gtt_oco_ind`: 1 a single GTT, 2 an OCO
+_INTEGER_TEXT = re.compile(r"-?[0-9]+")
 
 
 def _whole_number(value: object) -> int | None:
-    """`value` as an int when it is an int, an integral float or a digit string; else None
-    (never a truncated fraction, never a bool)."""
+    """`value` as an int when it is an int, an integral float or an ASCII integer string
+    (`-?[0-9]+`, surrounding spaces ignored); else None (never a truncated fraction, never a bool,
+    never a Unicode digit `int` refuses such as "¹")."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float):
         return int(value) if value.is_integer() else None
-    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+    if isinstance(value, str) and _INTEGER_TEXT.fullmatch(value.strip()):
         return int(value)
     return None
 
@@ -199,6 +205,8 @@ def _clean_tag(tag: object) -> str | None:
 def _ack(reply: object) -> AckResult:
     if isinstance(reply, dict) and reply.get("s") == "ok":
         return AckResult(ok=True, code=CODE_OK)
+    if rate_limited(reply):
+        return AckResult(ok=False, code=CODE_RATE_LIMITED)
     message = str(reply.get("message", "")) if isinstance(reply, dict) else ""
     if "timeout/unavailable" in message or CLIENT_NOT_INITIALIZED in message:
         return AckResult(ok=False, code=CODE_UNAVAILABLE)
@@ -218,6 +226,8 @@ def _place_result(reply: object) -> tuple[str, str | None, str]:
     message = str(reply.get("message") or "")
     if message == BROKER_CIRCUIT_OPEN or CLIENT_NOT_INITIALIZED in message:
         return "rejected", None, CODE_UNAVAILABLE
+    if rate_limited(reply.get("details")):
+        return "rejected", None, CODE_RATE_LIMITED  # refused: nothing was placed
     return "rejected", None, CODE_REJECTED
 
 
@@ -509,7 +519,8 @@ class FyersHatBroker:
     def _read(self, fetch: Callable[[], Any], parse: Callable[[Any], Any]) -> Any:  # noqa: ANN401
         """Fetch and parse; any failure is a fixed-code BrokerUnavailableError
         (`broker_session_expired` when Fyers refused the token, which also ends the standing
-        profile check, so the next `session_status` reads the refusal at once)."""
+        profile check, so the next `session_status` reads the refusal at once;
+        `broker_rate_limited` when the plan's daily requests are spent)."""
         try:
             raw = fetch()
         except FyersSessionExpiredError:
@@ -517,6 +528,9 @@ class FyersHatBroker:
             with self._token_check_lock:
                 self._token_check = None
             raise BrokerUnavailableError(CODE_SESSION_EXPIRED) from None
+        except FyersRateLimitedError:
+            logger.warning("Fyers daily request limit reached on a read")
+            raise BrokerUnavailableError(CODE_RATE_LIMITED) from None
         except (FyersUnavailableError, BrokerUnavailableError):
             logger.warning("Fyers read unavailable")
             raise BrokerUnavailableError(CODE_UNAVAILABLE) from None

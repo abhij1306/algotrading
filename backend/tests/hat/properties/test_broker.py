@@ -27,17 +27,24 @@ from app.hat.execution.accounts import (
     request_mode,
 )
 from app.hat.execution.broker import (
+    CODE_RATE_LIMITED,
     CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
     BrokerUnavailableError,
     Capabilities,
+    GttModify,
+    GttRequest,
+    OrderIntent,
+    OrderType,
     SessionStatus,
+    Side,
 )
 from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
 )
+from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
 
 
@@ -195,6 +202,62 @@ def test_token_refused_is_session_expired(reply: object, read: str, wait: float)
     with pytest.raises(BrokerUnavailableError) as caught:
         fetch()
     assert caught.value.code == (CODE_SESSION_EXPIRED if refused else CODE_UNAVAILABLE)
+
+
+# Fyers' reply once the plan's daily requests are spent: the code and message the owner saw on
+# 2026-10-22 (the history endpoint), in Fyers' error shape.
+RATE_LIMITED = {"s": "error", "code": -360, "message": "Standard plan limit of 5,000 requests/day"}
+WRITES = {
+    "place_order": lambda b: b.place_order(
+        OrderIntent(
+            "SBIN",
+            Side.BUY,
+            3,
+            OrderType.LIMIT,
+            encode_tag(uuid.UUID(int=7), "entry", 0),
+            price=Decimal("100"),
+        )
+    ),
+    "modify_order": lambda b: b.modify_order(
+        "26102200316678", order_type=OrderType.LIMIT, qty=3, price=Decimal("101")
+    ),
+    "cancel_order": lambda b: b.cancel_order("26102200316678"),
+    "place_gtt_stop": lambda b: b.place_gtt_stop(
+        GttRequest("SBIN", 3, Decimal("95"), Decimal("94.5"))
+    ),
+    "modify_gtt": lambda b: b.modify_gtt(
+        GttModify("26102200000001", 3, Decimal("96"), Decimal("95.5"))
+    ),
+    "cancel_gtt": lambda b: b.cancel_gtt("26102200000001"),
+}
+
+
+@given(
+    read=st.sampled_from(["funds", "positions", "holdings", "orders", "trades", "gtts"]),
+    write=st.sampled_from(sorted(WRITES)),
+)
+def test_rate_limit_is_its_own_code(read: str, write: str) -> None:
+    """HAT-BRK-082: Fyers' -360 (the plan's daily requests spent) is neither an outage nor a lost
+    session: a read fails closed with `broker_rate_limited`, a write is a definite refusal with
+    `broker_rate_limited` (nothing was placed), the session stays LIVE, and no broker text is
+    carried."""
+    sdk = RecordingSdk(RATE_LIMITED)
+    adapter = FyersHatBroker(
+        broker_over(sdk),
+        client=lambda: type("C", (), {"fyers": object()})(),  # type: ignore[arg-type,return-value]
+        auth=lambda: _Auth(True),  # type: ignore[arg-type,return-value]
+        instruments=lambda: list(SYMBOLS.items()),
+    )
+    assert adapter.session_status() is SessionStatus.LIVE
+    with pytest.raises(BrokerUnavailableError) as caught:
+        getattr(adapter, read)()
+    assert caught.value.code == CODE_RATE_LIMITED
+    result = WRITES[write](adapter)
+    assert getattr(result, "status", "rejected") == "rejected"
+    assert getattr(result, "ok", False) is False
+    assert result.code == CODE_RATE_LIMITED
+    assert "5,000" not in repr(result) + repr(caught.value)
+    assert adapter.session_status() is SessionStatus.LIVE
 
 
 @given(read=st.sampled_from(["funds", "positions", "holdings", "orders", "trades", "gtts"]))
