@@ -75,9 +75,9 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
 - `PBT bars.usable_price` For every quote, clock and band, the price a Take, a placement or an exit may act on is the quote's price exactly when it is under 30 seconds from the clock either way (by exchange time) and inside the known bounds, else none with `price_unknown`, `stale_price` or `price_out_of_band`; a tick exactly 30 seconds old no longer counts (PR 51, HAT-DATA-116). Harm: one quiet symbol's hours-old print prices a Take while the feed as a whole is live.
-- `PBT bars.price_book_dates_each_tick` Through `LiveData` and its tick listener, the price book keeps per instrument the last tick's price with its exchange time (`exch_feed_time`), else its arrival. Harm: a price that has not traded for an hour reads as current.
+- `PBT bars.price_book_dates_each_tick` Through `LiveData` and its tick listener, the price book keeps per instrument the latest tick's price with its exchange time (`exch_feed_time`), else its arrival, and a print arriving after a newer one does not replace it. Harm: a price that has not traded for an hour reads as current, or a late print regresses it.
 - `PBT bars.circuit_locks_read_the_band` For every previous close, band and tick, the upper circuit price is the band's top rounded down to the tick grid and the lower one its bottom rounded up; a price is locked at a circuit exactly when it is at or beyond it, neither lock holds without a band (F&O) and both are unknown without a band row or a previous close. Harm: an entry is taken into a frozen upper circuit, or a lower-circuit print is treated as sellable.
-- `PBT bars.exits_and_placement_read_the_checked_price` Wired as the runtime wires them, `LivePrices` over the price book and the stored band (widened by one tick) gives the exit views a view exactly when the price is usable, `LiveRoute.check` fills `ltp` and `ltp_refusal` with exactly that price and reason, and `placement_refusal` passes exactly then. Harm: a stale or impossible print fires a target exit or prices an entry.
+- `PBT bars.exits_and_placement_read_the_checked_price` Wired as the runtime wires them, `LivePrices` over the price book and the stored band (widened by one tick) gives the exit views a view exactly when the price is usable, `LiveRoute.check` fills `ltp` and `ltp_refusal` with exactly that price and reason, and `placement_refusal` (given no stop; the stop refusal is `router.routes_by_mode`'s and `router.take_rechecks_max_chase`'s) passes exactly then. Harm: a stale or impossible print fires a target exit or prices an entry.
 
 ## Run
 
@@ -153,7 +153,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `ba3510fa60ddc7a164114296db3a38dd14aae06a1b0bcd94c0783ac5b35c61ef`
+Covered digest: `6cba53a95b9bf9c46a782f15d84e6781c0616435e9ef6acf58e068db73e590ed`
 
 ## Scope changes
 
@@ -1414,6 +1414,16 @@ E       age_ms=0,
 ```
 
 ### PBT bars.price_book_dates_each_tick
+
+Break: (PR 51, CodeAnt) in `backend/app/hat/daily/live.py`: `PriceBook.on_tick` keeps every print, so a late one (older exchange time) replaces the newer quote.
+
+```
+E   AssertionError: assert Quote(price=D...timezone.utc)) == Quote(price=D...timezone.utc))
+E       price: Decimal('2') != Decimal('1')
+E   Failing explicit example: test_price_book_dates_each_tick(
+E       ticks=[(0, 100, 0, 1), (0, 200, -5, 1)],
+E   )
+```
 
 Break: (PR 51) in `backend/app/hat/data/live.py`: `tick_from_payload` dates every tick by its arrival (`when = arrival`), ignoring `exch_feed_time`.
 

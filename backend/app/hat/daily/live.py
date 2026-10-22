@@ -106,7 +106,10 @@ class PriceBook:
         self._symbols: dict[uuid.UUID, str] = {}
 
     def on_tick(self, tick: Tick) -> None:
-        self._prices[tick.symbol] = Quote(tick.price, tick.at)
+        # A print older than the one kept (by exchange time) arrived late: keep the newer one.
+        kept = self._prices.get(tick.symbol)
+        if kept is None or tick.at >= kept.at:
+            self._prices[tick.symbol] = Quote(tick.price, tick.at)
 
     def track_session(self, session: Session, instrument_ids: set[uuid.UUID]) -> None:
         """The instruments whose prices are read by id (the day's subscriptions)."""

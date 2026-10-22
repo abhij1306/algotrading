@@ -1985,10 +1985,12 @@ def test_usable_price(
         max_size=25,
     )
 )
+@example(ticks=[(0, 100, 0, 1), (0, 200, -5, 1)])  # a late print, 4 s older than the kept one
 def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]]) -> None:
-    """PR 51: the price book keeps, per instrument, the last tick's price and its exchange time
+    """PR 51: the price book keeps, per instrument, the latest tick's price and its exchange time
     (`exch_feed_time`), else the time it arrived, so every price HAT acts on carries the time it
-    traded. Harm: a price that has not traded for an hour reads as current."""
+    traded; a print that arrives after a newer one (by exchange time) does not replace it. Harm:
+    a price that has not traded for an hour reads as current, or a late print regresses it."""
     with Session(memory_engine()) as session:
         world = seed_engine_world(session, instruments=3)
         symbols = _instrument_rows(session, world.instruments)
@@ -2008,7 +2010,9 @@ def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]
             payload["exch_feed_time"] = int(now.timestamp()) + exch
         live.on_tick(payload)
         at = now if exch is None else datetime.fromtimestamp(int(now.timestamp()) + exch, UTC)
-        expected[iid] = Quote(_paise(paise), at)
+        kept = expected.get(iid)
+        if kept is None or at >= kept.at:
+            expected[iid] = Quote(_paise(paise), at)
     for iid in world.instruments:
         assert book.quote(iid) == expected.get(iid)
         assert book.price(iid) == (expected[iid].price if iid in expected else None)

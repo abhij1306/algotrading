@@ -338,7 +338,7 @@ The invariants live in the risk manager, outside every config, so no edit can re
   - Property: for every routed entry (real or virtual), `stop_price` is present and 0 < stop_price < entry price. Harm: an unprotected position.
 
 #### HAT-RISK-074: Invariant 4, no order on stale data
-- **Statement:** No entry order is placed when the day's quality gate failed or the live feed is stale (> 30 s silence in market hours), nor when the instrument's own last price is unknown, 30 seconds old or outside the day's price band (HAT-DATA-116, PR 51).
+- **Statement:** No entry order is placed when the day's quality gate failed or the live feed is stale (a silence of 30 s or more in market hours, HAT-DATA-116), nor when the instrument's own last price is unknown, 30 seconds old or outside the day's price band (HAT-DATA-116, PR 51).
 - **Source:** BL "Invariants" 4; DS "Bar builder rules"; ME-F6, MX-F11 (2026-10-22 audit).
 - **PR:** 10, 15, 51
 - **Verification:** TLA `ExecutionRouter!NoOrderWhenStale`, PBT `caps.stale_blocks_entry`, PBT `bars.exits_and_placement_read_the_checked_price`
