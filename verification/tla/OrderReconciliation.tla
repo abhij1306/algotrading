@@ -43,7 +43,7 @@ CONSTANTS MaxTags, MaxRetries, MaxBook, MaxDiverge, NOwners, MaxRestarts, Broken
 ASSUME BrokenMode \in {"none", "no_persist", "retry_new_tag", "retry_without_lookup",
                        "no_reconcile", "ignore_mismatch", "alert_every_run",
                        "inactive_account", "two_owners", "non_cnc", "unlimited_retry",
-                       "retry_on_lagging_lookup"}
+                       "retry_on_lagging_lookup", "no_late_adoption"}
 
 Tags == 0..(MaxTags - 1)
 Owners == 1..NOwners
@@ -267,6 +267,20 @@ BookCatchesUp(t) ==
                    checked, owners, reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
+\* code: backend/app/hat/execution/fills.py:FillSync._adopt  (and ReconciliationService.run: an
+\* attempted order whose lookup found nothing is adopted once the book shows its tag)
+Adopt(t) ==
+    /\ BrokenMode # "no_late_adoption"
+    /\ stage[t] = "idle"
+    /\ attempted[t]
+    /\ row[t] \in {"pending", "unconfirmed"}
+    /\ seen[t] > 0
+    /\ row' = [row EXCEPT ![t] = "placed"]
+    /\ unresolved' = [unresolved EXCEPT ![t] = FALSE]
+    /\ UNCHANGED <<seen, attempted, stage, answer, book, product, retries, acct, checked, owners,
+                   reconciled, diverged, divergeCount, blocked, alerts, restarts,
+                   violUnresolved, violUnreconciled, violBlocked, violInactive>>
+
 Next ==
     \/ CheckAccount
     \/ Restart
@@ -281,8 +295,10 @@ Next ==
           \/ Record(t)
           \/ Lookup(t)
           \/ BookCatchesUp(t)
+          \/ Adopt(t)
 
-Spec == Init /\ [][Next]_vars
+\* The book catches up and the fill sync runs (every minute, HAT-EXEC-064).
+Spec == Init /\ [][Next]_vars /\ \A t \in Tags : WF_vars(BookCatchesUp(t)) /\ WF_vars(Adopt(t))
 
 Total == book[0] + book[1] + book[2]
 
@@ -328,4 +344,11 @@ ProductIsCNC == \A t \in Tags : book[t] > 0 => product[t] = "CNC"
 
 \* A rejected order is retried at most once.
 RetryAtMostOnce == retries <= 1
+
+\* HAT-BRK-102: an entry of unknown outcome that did land is adopted by tag once the book shows
+\* it, though it is never sent again (liveness, under fairness of BookCatchesUp and Adopt).
+LostEntryAdopted ==
+    \A t \in Tags :
+        (stage[t] = "idle" /\ row[t] \in {"pending", "unconfirmed"} /\ book[t] > 0)
+            ~> row[t] = "placed"
 ==============================================================================

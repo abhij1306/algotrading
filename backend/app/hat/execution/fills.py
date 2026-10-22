@@ -74,11 +74,11 @@ from .protect import (
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
+    TagBook,
     adopt_broker_order,
     record_broker_status,
     rejected_sales,
 )
-from .tags import is_hat_tag
 
 __all__ = ["ALERT_FILL_EXCESS", "ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
 
@@ -165,8 +165,8 @@ class FillSync:
                 )
             )
         }
-        by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}
-        self._adopt(session, rows, by_tag, now, report)
+        book = TagBook.of(orders)
+        self._adopt(session, rows, book, now, report)
         for trade in trades:
             row = rows.get(trade.tag) if trade.tag else None
             if row is not None:
@@ -175,7 +175,7 @@ class FillSync:
         for trade in trades:
             if trade.tag is None and trade.side is Side.SELL and trade.symbol in gtts:
                 self._apply_gtt_trade(session, gtts[trade.symbol], trade, now, report)
-        self._statuses(session, rows, by_tag, now, report)
+        self._statuses(session, rows, book, now, report)
         gtts = self._working_gtts(session, account_id)
         for order in orders:
             if self._unfilled_trigger(order, gtts):
@@ -221,16 +221,17 @@ class FillSync:
         self,
         session: Session,
         rows: dict[str, HatOrder],
-        by_tag: dict[str | None, BrokerOrder],
+        book: TagBook,
         now: datetime,
         report: SyncReport,
     ) -> None:
-        for tag, row in rows.items():
-            if row.status in UNSURE and tag in by_tag:
-                adopt_broker_order(session, row, by_tag[tag], self._bot_of(session, row))
+        for row in rows.values():
+            found = book.for_row(row) if row.status in UNSURE else None
+            if found is not None:
+                adopt_broker_order(session, row, found, self._bot_of(session, row))
                 session.commit()
                 report.adopted += 1
-                self._sale_ended(session, row, by_tag[tag], now)
+                self._sale_ended(session, row, found, now)
 
     def _sale_ended(
         self, session: Session, row: HatOrder, found: BrokerOrder, now: datetime
@@ -298,16 +299,17 @@ class FillSync:
         session.commit()
         report.fills += 1
         if row.purpose == ENTRY:
-            self._check_excess(session, row, now)
+            self._check_excess(session, row, trade.qty, now)
         return position.id
 
-    def _check_excess(self, session: Session, row: HatOrder, now: datetime) -> None:
-        """A fill just recorded left the entry's fills above its quantity: `fill.excess` (each
-        such fill is recorded once, so it is alerted once). The fills stay recorded: shares
-        refused here would sit at the broker untracked, with no stop; recorded, the stop covers
-        them and reconciliation blocks the account's entries."""
+    def _check_excess(self, session: Session, row: HatOrder, qty: int, now: datetime) -> None:
+        """The fill of `qty` just recorded took the entry's fills above its quantity:
+        `fill.excess`, once, on the fill that crosses it (each fill is recorded once; later fills
+        of the same excess are not alerted again). The fills stay recorded: shares refused here
+        would sit at the broker untracked, with no stop; recorded, the stop covers them and
+        reconciliation blocks the account's entries."""
         filled = session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == row.id))
-        if int(filled or 0) <= row.qty:
+        if not int(filled or 0) - qty <= row.qty < int(filled or 0):
             return
         logger.error("entry %s filled %s of %s", row.tag, filled, row.qty)
         self._notifier.alert(
@@ -384,14 +386,14 @@ class FillSync:
         self,
         session: Session,
         rows: dict[str, HatOrder],
-        by_tag: dict[str | None, BrokerOrder],
+        book: TagBook,
         now: datetime,
         report: SyncReport,
     ) -> None:
         touched: set[uuid.UUID] = set()
-        for tag, found in by_tag.items():
-            row = rows.get(tag) if tag else None
-            if row is None or row.status in UNSURE:
+        for row in rows.values():
+            found = None if row.status in UNSURE else book.for_row(row)
+            if found is None:
                 continue
             session.refresh(row)
             if record_broker_status(session, row, found, self._bot_of(session, row)):

@@ -34,7 +34,7 @@ from ..notify import Notifier
 from ..time import trade_date_of, utc_now
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
-from .submit import adopt_broker_order
+from .submit import TagBook, adopt_broker_order
 from .tags import is_hat_tag
 
 __all__ = [
@@ -203,7 +203,7 @@ class ReconciliationService:
         skipped = orders.skipped
         self._alert_unreadable(day, skipped)
         quantities = broker_quantities(self._broker.positions(), self._broker.holdings())
-        by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}
+        book = TagBook.of(orders)
 
         rows = session.execute(
             select(HatOrder).where(HatOrder.broker_account_id == account_id)
@@ -211,11 +211,12 @@ class ReconciliationService:
         hat_orders = [row for row in rows if not row.is_virtual]
         adopted = []
         for row in hat_orders:
-            if row.status in ("pending", "unconfirmed") and row.tag in by_tag:
+            found = book.for_row(row) if row.status in ("pending", "unconfirmed") else None
+            if found is not None:
                 bot_id = session.execute(
                     select(HatSignal.bot_id).where(HatSignal.id == row.signal_id)
                 ).scalar_one_or_none()
-                adopt_broker_order(session, row, by_tag[row.tag], bot_id)
+                adopt_broker_order(session, row, found, bot_id)
                 adopted.append(row.tag)
         session.commit()
 

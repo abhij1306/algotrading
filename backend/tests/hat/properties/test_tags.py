@@ -1108,22 +1108,26 @@ def test_the_purposes_match_the_database_domain() -> None:
     answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]),
     retry=st.booleans(),
     adopted=st.booleans(),
+    purpose=st.sampled_from(["entry", "stop_day"]),
 )
 @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@example(answer="accepted", retry=True, adopted=True)
-def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool, adopted: bool) -> None:
+@example(answer="accepted", retry=True, adopted=True, purpose="stop_day")
+@example(answer="accepted", retry=True, adopted=False, purpose="entry")
+def test_a_reserved_tag_is_sent_by_one_sender(
+    answer: str, retry: bool, adopted: bool, purpose: str
+) -> None:
     """HAT-BRK-102, HAT-EXEC-065: when two senders read the same order before either stamped
     a new attempt (a fill sync and a stop job protecting one position), whether it was never
     sent or its earlier answer was lost and the lookup found nothing (`retry`), only the one
     that stamps first calls the broker, with a new attempt time from which a lost answer's
     settle wait runs; the other sends nothing and reports what the first left. A lost answer
     that the fill sync adopted from the book in between (`adopted`: placed, its attempt time
-    unchanged) is not sent again either. A resend after a lost answer is a stop's: an entry of
-    unknown outcome is never sent again (HAT-BRK-102). Harm: two sell stops rest for the same
+    unchanged) is not sent again either. Only a stop is resent after a lost answer: an entry of
+    unknown outcome is refused by both senders (HAT-BRK-102). Harm: two sell stops rest for the same
     shares, an entry is bought twice, or a resend still in flight is settled as absent."""
     env = exec_env()
     live_session(env)
-    tag = reserve_order(env.session, env.request(uuid7(), "stop_day" if retry else "entry"))
+    tag = reserve_order(env.session, env.request(uuid7(), purpose))
     earlier = None
     if retry:
         env.fake.script("place_order", unconfirmed())
@@ -1149,6 +1153,12 @@ def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool, adopted:
             )
         return build(*args, **kwargs)
 
+    if retry and purpose == "entry":
+        for sender in (env.session, other):
+            with pytest.raises(UnresolvedOrderError):
+                send_order(sender, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        assert env.fake.count("place_order") == 1
+        return
     with patch.object(submit, "_build_request", racing):
         late = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
     if retry and adopted:

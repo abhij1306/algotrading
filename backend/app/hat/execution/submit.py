@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -64,7 +65,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
-from .tags import encode_tag
+from .tags import encode_tag, is_hat_tag
 
 __all__ = [
     "ACCOUNT_ACTIVE",
@@ -73,6 +74,7 @@ __all__ = [
     "OrderRefusedError",
     "OrderRequest",
     "SendOutcome",
+    "TagBook",
     "UnresolvedOrderError",
     "adopt_broker_order",
     "adopt_gtt",
@@ -191,6 +193,33 @@ def _row(session: Session, tag: str) -> HatOrder:
     if row is None:
         raise OrderRefusedError("unknown_tag")
     return row
+
+
+@dataclass(frozen=True)
+class TagBook:
+    """The broker's order book as HAT's rows read it. Fyers does not enforce tag uniqueness
+    (HAT-BRK-103), so one tag may name two orders: a row that holds a broker order id is matched
+    by that id only, and a row without one adopts the first order under its tag, the one
+    `resolve_by_tag` picks, so every reader of one book adopts the same order."""
+
+    first: dict[str, BrokerOrder]
+    by_id: dict[str, BrokerOrder]
+
+    @classmethod
+    def of(cls, orders: Iterable[BrokerOrder]) -> TagBook:
+        first: dict[str, BrokerOrder] = {}
+        by_id: dict[str, BrokerOrder] = {}
+        for order in orders:
+            if order.tag is not None and is_hat_tag(order.tag):
+                first.setdefault(order.tag, order)
+                by_id[order.order_id] = order
+        return cls(first, by_id)
+
+    def for_row(self, row: HatOrder) -> BrokerOrder | None:
+        if row.broker_order_id is None:
+            return self.first.get(row.tag)
+        found = self.by_id.get(row.broker_order_id)
+        return found if found is not None and found.tag == row.tag else None
 
 
 def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:

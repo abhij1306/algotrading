@@ -71,6 +71,7 @@ from .submit import (
 
 __all__ = [
     "ALERT_ENTRY_NOT_PLACED",
+    "ALERT_ENTRY_UNRESOLVED",
     "ALERT_ORDER_REJECTED",
     "MAX_ENTRY_REJECTIONS",
     "ExecutionRouter",
@@ -85,6 +86,7 @@ ENTRY = "entry"
 MAX_ENTRY_REJECTIONS = 2
 ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
+ALERT_ENTRY_UNRESOLVED = "entry.unresolved"  # HAT-BRK-102: never sent again, left to the sync
 NO_GTT = "no_gtt_delivery"
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
@@ -366,6 +368,8 @@ class ExecutionRouter:
             logger.warning("entry %s outcome unknown after %s; left to reconcile", tag, code)
             return True, previous
         except UnresolvedOrderError:
+            logger.warning("entry %s of unknown outcome not sent again; left to the fill sync", tag)
+            self._alert(ALERT_ENTRY_UNRESOLVED, signal, {"tag": tag})
             return True, previous
         if sent.status != "rejected":
             return True, sent

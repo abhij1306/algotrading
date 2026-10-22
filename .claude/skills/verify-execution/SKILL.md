@@ -139,9 +139,12 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.a_settled_answer_never_sells_twice` A lost GTT that landed under a position a sale then closed is cancelled by the first sync after the settle wait; a lost sale the broker filled is left to the fill sync and no second sale goes out before its fills are recorded; a lost sale of an earlier session that today's book cannot show is left unsure with its rule fired, alerted (`sale_unresolved`), and nothing more is sold while the broker stop rests. Harm: a GTT rests under shares already sold, or a position is sold twice.
 - `PBT manage.a_resting_sale_is_never_stopped_over` While a full sale the broker accepted still works (resting, or part filled over one to three syncs), no sync places or grows a stop over its shares, and once it ends short the next sync protects the position again. Harm: a stop rests under shares a working sale is selling, so the sale is refused or the position sold twice.
 - `PBT manage.the_close_ends_only_settled_answers` After the close, a lost entry or sale the book does not hold and that is older than the settle wait ends (entry signal Rejected, sale `expired`); one the book holds, or a young one, is left unsure. Harm: an order that reached the broker is written off.
+- `TLA OrderReconciliation!LostEntryAdopted` An entry of unknown outcome that landed is adopted by tag once the order book shows it, though it is never sent again (liveness, fairness on `BookCatchesUp` and `Adopt`). Harm: a live entry is never tracked and its shares get no stop.
+- `PBT router.unresolved_entry_is_alerted_not_resent` An auto entry whose answer was lost (landed behind a lagging book, or not landed) is placed once; each later attempt sends nothing and raises one `entry.unresolved`, and the signal is not rejected. Harm: a lagging book doubles the position, or a stuck entry is silent until the close.
 - `PBT tags.a_timeout_is_looked_up_before_any_retry` An entry or a day stop whose answer was lost is looked up by tag before anything is sent again; an entry is placed at most once even when the order book lags its placement (the lookup finds nothing), and a day stop found by the lookup is not sent again. Harm: a lagging book doubles the position.
 - `PBT tags.a_tag_twice_at_the_broker_blocks_the_account` Two broker orders under one HT tag (Fyers does not enforce tag uniqueness) are a `duplicate_ht_order` mismatch on that tag, whatever HAT knows. Harm: a second order under HAT's tag goes unnoticed and entries continue.
-- `PBT manage.a_second_order_under_one_tag_is_tracked` A second filled order under an entry's tag (the DUP-1 case) has every fill recorded: the open quantity is the sum, the live stops cover all of it, and one `fill.excess` is raised. Harm: real shares are left untracked and without a stop.
+- `PBT manage.a_second_order_under_one_tag_is_tracked` A second filled order under an entry's tag (the DUP-1 case) has every fill recorded: the open quantity is the sum, the live stops cover all of it, and one `fill.excess` is raised however many partial fills make up the excess. Harm: real shares are left untracked and without a stop.
+- `PBT manage.a_dead_second_order_never_ends_the_entry` A second order under a filled entry's tag that the broker cancels, rejects or expires unfilled, listed before or after the entry's own, leaves the row on its own broker order id and status, the signal unchanged and the position open under its stops (`submit.TagBook`). Harm: the duplicate's status ends an open position's signal.
 - `PBT tags.a_reserved_tag_is_sent_by_one_sender` Two senders that read the same order before either stamped a new attempt (never sent, or a lost answer the lookup did not find): one calls the broker with a new attempt time, the other sends nothing and reports what the first left; a lost answer the fill sync adopted between a sender's lookup and its stamp is not sent again. Harm: two stops or two entries for one order, or a resend in flight settled as absent.
 - `PBT tags.the_gtt_book_reads_only_resting_stops` `gtts()` lists exactly the single-leg CNC GTTs resting or triggered (`ord_status` 2, 4 or 6, or none) from the flat book fields, `orderInfo.leg1` or `leg1`; a cancelled, rejected or expired GTT, an OCO or another product (whatever its status) is left out, and a single-leg CNC row with an unknown status code raises. Harm: a lost GTT is matched to one that no longer rests, or one still resting is read as gone.
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
@@ -215,7 +218,7 @@ When a check fails, decide which side is wrong before touching anything.
 
 TLA+ model:
 - `verification/tla/OrderReconciliation.tla` and `verification/tla/OrderReconciliation.cfg`
-- `verification/tla/broken/OrderReconciliation__no_persist.cfg`, `verification/tla/broken/OrderReconciliation__retry_new_tag.cfg`, `verification/tla/broken/OrderReconciliation__retry_without_lookup.cfg`, `verification/tla/broken/OrderReconciliation__retry_on_lagging_lookup.cfg`, `verification/tla/broken/OrderReconciliation__no_reconcile.cfg`, `verification/tla/broken/OrderReconciliation__ignore_mismatch.cfg`, `verification/tla/broken/OrderReconciliation__alert_every_run.cfg`, `verification/tla/broken/OrderReconciliation__inactive_account.cfg`, `verification/tla/broken/OrderReconciliation__two_owners.cfg`, `verification/tla/broken/OrderReconciliation__non_cnc.cfg`, `verification/tla/broken/OrderReconciliation__unlimited_retry.cfg`
+- `verification/tla/broken/OrderReconciliation__no_persist.cfg`, `verification/tla/broken/OrderReconciliation__retry_new_tag.cfg`, `verification/tla/broken/OrderReconciliation__retry_without_lookup.cfg`, `verification/tla/broken/OrderReconciliation__retry_on_lagging_lookup.cfg`, `verification/tla/broken/OrderReconciliation__no_late_adoption.cfg`, `verification/tla/broken/OrderReconciliation__no_reconcile.cfg`, `verification/tla/broken/OrderReconciliation__ignore_mismatch.cfg`, `verification/tla/broken/OrderReconciliation__alert_every_run.cfg`, `verification/tla/broken/OrderReconciliation__inactive_account.cfg`, `verification/tla/broken/OrderReconciliation__two_owners.cfg`, `verification/tla/broken/OrderReconciliation__non_cnc.cfg`, `verification/tla/broken/OrderReconciliation__unlimited_retry.cfg`
 
 Code under check:
 - `backend/app/hat/execution/tags.py`
@@ -328,8 +331,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 24 (audit 2026-10-22 money-safety-execution F5, F8; D118): `ExecutionGuard` keys the gate by trade date (`reconciled_for`, `today`; `begin_session` and the boolean `reconciled` are gone) and gates entries only; `TradeManager` no longer takes the reconciler (its sales, `gtt.swap` and the fill sync never wait for a reconciliation). The rigs build their guard with `hat_exec_support.guard_on(day)`, a fixed trade date. `tags.refusals_before_the_broker` now expects a stop or a sale to pass while the date is not reconciled, and `tags.broker_errors_fail_closed`'s garbage order row carries an HT tag (an untagged unreadable row is now skipped, not a failure). `OrderReconciliation` is unchanged: its orders are entries, and a new trade date is the router property. Nothing was narrowed.
 - PR 26 (design review 2026-10-22 item 1): the periodic `sync` step runs every pass and `Desks.sync_due` decides per account (every step while `fills.watch_closely`, else `FILL_SYNC_EVERY`, one minute; a sync that read nothing is tried at the next step; one account's failure is logged and never stops another's); `recover` stamps `synced_at` too and isolates each account (a failure is logged; the start goes on; CodeAnt), and `Desks.sync_all` is gone (`router.desk_calls_serialised` drives `sync_due`). A refused stop keeps the one-minute retry, so the 36 sequence characters of its tag last. The models still take a broker fill and HAT reading it as one step; `router.fill_sync_cadence` checks the time between them. An order socket was not added (HAT-OVR-006 allows one broker socket, the data socket). The per-account isolation has no property (the rig has one account). Nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2): a GTT that triggers with its sale resting below the limit is seen by `FillSync` step 5b (`_resting_trigger`: untagged SELL, working, short of its quantity, the GTT's quantity) and its sale made a market sale (`StopDesk.market_sale`, `modify_order` with `order_type` MARKET only). `BrokerOrder.order_type` is new (the adapter maps the Fyers `type` code; an unknown code is None, so the sync asks again). `FakeBroker.modify_order` now shows an accepted type change in its book. The GTT row stays live while the sale works, and `StopDesk.triggered_gtts` (a live GTT with a `gtt.triggered` event) holds back exit sales and `follow`. The review's proposals (a `triggered` status, a one-shot 09:15 job) were not taken: the sync already runs every minute and the live row keeps every other path off the shares. That Fyers accepts the change on a GTT's child is `[verify on a live account]`. Review round (/code-review): the sale is identified by its limit price (`BrokerOrder.price`, the adapter's `limitPrice`) and CNC product as well as quantity, and by its broker order id once marked; a sale is acted on only after `fills.RESTING_AFTER` (60 s, an in-memory first sight: a restart waits again); `triggered_gtts` counts only today's triggers (the sale is a DAY order) and filters on `aggregate_type`; `rescaled` waits on a triggered GTT too. That wait in `rescaled` has no property (a rescale and a trigger on one day need an ex-date intraday, which cannot happen: the rescale runs before the open). Declined: a `triggered` status (every LIVE-based path would then treat the shares as unprotected and place a stop over the working sale); bounding the conversion retries (once a minute while the sale works, and only in the session); persisting the refused-conversion alert (a restart may alert it once more); merging the resting and the ended-unfilled alerts (two different events). Nothing was narrowed.
+- PR 28 (design review 2026-10-22 item 3, HAT-BRK-102, -103): `_lookup_before_retry` raises `UnresolvedOrderError` for an entry the lookup did not find, so an unknown-outcome entry is never placed again; the fill sync adopts it by tag or `end_session` ends the signal `entry_not_found`. `find_mismatches` adds `duplicate_ht_order` for a tag the broker holds twice; `FillSync` records every fill and raises URGENT `fill.excess` for a fill that leaves an entry above its quantity. `FakeBroker.lagging` hides the newest book rows. The model gains `seen` (the lagging book), `BookCatchesUp`, `Adopt` (the later sync) and the liveness `LostEntryAdopted`. Review round (/code-review): the router alerts `entry.unresolved` (a crash between the attempt's commit and the call is not sent again either); `submit.TagBook` is the one rule for a duplicated tag in the send path, the fill sync and reconciliation (a row's own broker id, else the first order); `fill.excess` is alerted on the crossing fill only; `tags.a_reserved_tag_is_sent_by_one_sender` keeps entries in its retry case (both senders refuse). Not taken from the review: the early `entry_unresolved` rejection (on a lagging book it rejects a signal whose order is live), the fill fence by broker order id and the refusal of excess fills (both leave real shares untracked and unstopped). Stops keep the same-tag re-place (above). Nothing was narrowed.
 - PR 41 only reworded the comment on `brk.import_boundary`'s data-socket exception (`test_conf_broker.py`): the module also hands the minute-history download the session's REST `history` (HAT-DATA-119). The graph check itself is unchanged.
-- PR 28 (design review 2026-10-22 item 3, HAT-BRK-102, -103): `_lookup_before_retry` raises `UnresolvedOrderError` for an entry the lookup did not find, so an unknown-outcome entry is never placed again; the fill sync adopts it by tag or `end_session` ends the signal `entry_not_found`. `find_mismatches` adds `duplicate_ht_order` for a tag the broker holds twice; `FillSync` records every fill and raises URGENT `fill.excess` for a fill that leaves an entry above its quantity. `FakeBroker.lagging` hides the newest book rows. The model gains `seen` (the lagging book) and `BookCatchesUp`. Not taken from the review: the early `entry_unresolved` rejection (on a lagging book it rejects a signal whose order is live), the fill fence by broker order id and the refusal of excess fills (both leave real shares untracked and unstopped). Stops keep the same-tag re-place (above). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -362,6 +365,19 @@ Break: broken variant `OrderReconciliation__retry_on_lagging_lookup.cfg` (`Broke
 ```
 Error: Invariant AtMostOneEntryPerSignal is violated.
 Init, CheckAccount, Reconcile, Reserve, Stamp, PlaceCall, Record, Lookup, Stamp, PlaceCall
+```
+
+### TLA OrderReconciliation!LostEntryAdopted
+
+Break: broken variant `OrderReconciliation__no_late_adoption.cfg` (`BrokenMode = "no_late_adoption"`): only the lookup adopts; the later sync never does. (PR 28)
+
+```
+Error: Temporal properties were violated.
+State 15: <PlaceCall ...>
+State 16: <Record ...>
+State 17: <BookCatchesUp ...>
+State 18: <ReleaseSession ...>
+Back to state 17: <AcquireSession ...>
 ```
 
 ### TLA OrderReconciliation!UnconfirmedResolvedByTag
@@ -586,6 +602,26 @@ E       purpose='entry',
 E       lagging=True,
 ```
 
+### PBT router.unresolved_entry_is_alerted_not_resent
+
+Break: in `router.py`, `_send_once` swallows `UnresolvedOrderError` without the alert. (PR 28)
+
+```
+E   AssertionError: assert 0 == 1
+E    +  where 0 = <built-in method count of list object at 0x7f3d041852c0>('entry.unresolved')
+E   Failing explicit example: test_unresolved_entry_is_alerted_not_resent(
+```
+
+### PBT manage.a_dead_second_order_never_ends_the_entry
+
+Break: `TagBook` keeps the last order per tag and ignores the row's broker order id (the `by_tag` dicts before the review round). (PR 28)
+
+```
+E   AssertionError: assert ('B-1', 'rejected') == ('B-1', 'filled')
+E   Failing explicit example: test_a_dead_second_order_never_ends_the_entry(
+E       status=5,
+```
+
 ### PBT tags.a_tag_twice_at_the_broker_blocks_the_account
 
 Break: `find_mismatches` flags a tag only when it is held more than twice. (PR 28)
@@ -609,6 +645,16 @@ Break: the review's fence, a fill recorded only for the order's stored broker or
 ```
 E   assert 500 == (500 + 1)
 E   Failing explicit example: test_a_second_order_under_one_tag_is_tracked(
+```
+
+Break: `_check_excess` alerts every fill above the quantity, not the crossing one (review round). (PR 28)
+
+```
+E   AssertionError: assert 3 == 1
+E    +    where <built-in method count of list object> = ['fill.excess', 'fill.excess', 'fill.excess'].count
+E   Failing explicit example: test_a_second_order_under_one_tag_is_tracked(
+E       extra=3,
+E       parts=3,
 ```
 
 ### PBT tags.refusals_before_the_broker
@@ -2141,6 +2187,17 @@ E   Failing explicit example: test_a_reserved_tag_is_sent_by_one_sender(
 E       answer='accepted',
 E       retry=True,
 E       adopted=True,
+```
+
+Break: `_lookup_before_retry` returns None for an entry the lookup did not find (review round: entries back in the retry case). (PR 28)
+
+```
+E   Failed: DID NOT RAISE UnresolvedOrderError
+E   Failing explicit example: test_a_reserved_tag_is_sent_by_one_sender(
+E       answer='accepted',
+E       retry=True,
+E       adopted=False,
+E       purpose='entry',
 ```
 
 ### PBT manage.a_resting_sale_is_never_stopped_over
