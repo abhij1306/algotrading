@@ -525,7 +525,7 @@ to an artefact that exists.
 | HAT-BT-011 | [09](09-backtest.md) | 12 | PBT `backtest.no_lookahead` |
 | HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
-| HAT-BT-020 | [09](09-backtest.md) | 12 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick` |
+| HAT-BT-020 | [09](09-backtest.md) | 12, 60 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide` |
 | HAT-BT-021 | [09](09-backtest.md) | 12 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close` |
 | HAT-BT-022 | [09](09-backtest.md) | 12 | PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds` |
 | HAT-BT-023 | [09](09-backtest.md) | 12 | PBT `costs.charges_contract`, PBT `costs.charges_contract_run`, PBT `costs.charges_contract_float_rates` |

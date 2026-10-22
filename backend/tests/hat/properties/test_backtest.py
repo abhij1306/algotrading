@@ -5,6 +5,7 @@ version and run rules of `publish_version`.
 
 A run takes about a second, so the run-level properties use fewer examples than the profile."""
 
+import dataclasses
 import json
 import math
 import tempfile
@@ -14,6 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import hat_backtest_support as s
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -39,11 +41,12 @@ from app.hat.engine.backtest import (
     TradeRow,
     compute_metrics,
     industry_on,
+    pre_break_low,
     run_backtest,
     trades_parquet,
 )
 from app.hat.engine.portfolio.universe import Interval
-from app.hat.engine.stops import floor_to_tick
+from app.hat.engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, floor_to_tick, low_of_day
 from app.hat.engine.strategy.versions import VersionError, publish_version, seed_default_strategies
 from app.hat.models import (
     HatBacktestRun,
@@ -239,6 +242,162 @@ def test_stop_on_instrument_tick(paths: dict, scale: int) -> None:
         entry = entry_fill(open_, high, signal.trigger_price)  # the trigger price is the level
         assert entry is not None
         assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
+
+
+# --- HAT-BT-020: the entry day (PR 60) ---------------------------------------------------------
+
+LOWS = st.lists(st.tuples(PRICE, PRICE), min_size=1, max_size=8)
+
+
+ADR = st.none() | st.integers(0, 2000).map(lambda n: D(n) / 100)
+
+
+@given(LOWS, PRICE, PRICE, ADR, st.booleans())
+@example([(D(12), D(9)), (D(10), D(8))], D(10), D(9), None, False)
+@example([(D(12), D(9))], D(10), D(9), D(5), False)
+@example([(D(12), D(9))], D(10), D(9), None, True)
+def test_pre_break_low(
+    bars: list[tuple[D, D]], open_: D, level: D, adr20: D | None, missed: bool
+) -> None:
+    """With the session's 5-minute bars, the low before the break is the lowest low of the bars
+    read in order until one reaches the level (the last bar when none does), and the low after
+    it is the lowest low of the bars after that one, or the day low when the bars miss it (None
+    when neither). Without them it is max(day low, min(open, level x
+    (1 - adr20/100))), and the day low counts as after the break only when it is lower; with no
+    adr20 the whole day's low is before. Either way the lower of the two is the day low. Harm: a
+    low-of-day stop reads the day's low after the entry, which live never knows."""
+    intraday = [(max(a, b), min(a, b)) for a, b in bars]
+    seen: list[D] = []
+    for n, (high, low) in enumerate(intraday):
+        seen.append(low)
+        if high >= level or n == len(intraday) - 1:
+            break
+    floor = min(low for _, low in intraday)
+    bar_low = floor - D("0.01") if missed and floor > D("0.01") else floor
+    before, after = pre_break_low(open_, bar_low, level, adr20, intraday)
+    rest = [low for _, low in intraday[len(seen) :]] + ([bar_low] if bar_low < floor else [])
+    assert before == min(seen)
+    assert after == (min(rest) if rest else None)
+    assert min(before, before if after is None else after) == bar_low
+    day_low = min(open_, *(low for _, low in intraday))
+    before, after = pre_break_low(open_, day_low, level, adr20)
+    if adr20 is None:
+        assert (before, after) == (day_low, None)
+        return
+    assert before == max(day_low, min(open_, level * (1 - adr20 / 100)))
+    assert day_low <= before <= open_
+    assert after == (day_low if day_low < before else None)
+
+
+def _intraday(draw: st.DrawFn, data: MarketData) -> dict[tuple[str, date], list[tuple[D, D]]]:
+    """For some simulated sessions, 5-minute (high, low) bars of a path open, low and high in a
+    drawn order, close, with prices between: the bars span exactly the day's range."""
+    found: dict[tuple[str, date], list[tuple[D, D]]] = {}
+    for row in data.bars.filter(data.bars["date"] >= DAYS[s.WARM_UP]).iter_rows(named=True):
+        if not draw(st.booleans()):
+            continue
+        o, h, low, c = (D(repr(row[k])) for k in ("open", "high", "low", "close"))
+        turns = [low, h] if draw(st.booleans()) else [h, low]
+        points = [o]
+        for target in [*turns, c]:
+            cents = st.integers(int(low * 100), int(h * 100)).map(lambda n: D(n) / 100)
+            points += [*draw(st.lists(cents, max_size=2)), target]
+        found[(row["instrument_id"], row["date"])] = [
+            (max(a, b), min(a, b)) for a, b in zip(points, points[1:], strict=False)
+        ]
+    return found
+
+
+def _tick(data: MarketData, instrument_id: str, day: date) -> D:
+    prior = data.bars.filter(
+        (data.bars["instrument_id"] == instrument_id) & (data.bars["date"] < day)
+    ).sort("date")
+    closes = [D(repr(c)).quantize(D("0.0001")) for c in prior["close"].to_list()]
+    tick = tick_for_date(prior["date"].to_list(), closes, day)
+    assert tick is not None
+    return tick
+
+
+def _adr20(data: MarketData, instrument_id: str, day: date) -> D | None:
+    """adr20 at the close of the session before `day`, as the loop reads it."""
+    prev = data.days[data.days.index(day) - 1]
+    rows = data.features.filter(
+        (data.features["instrument_id"] == instrument_id) & (data.features["date"] == prev)
+    )["adr20"].to_list()
+    return None if not rows or rows[0] is None else D(repr(rows[0])).quantize(D("0.0001"))
+
+
+@given(s.paths(SESSIONS), st.booleans(), st.data())
+@RUNS
+def test_entry_day_stop(paths: dict, with_intraday: bool, draw: st.DataObject) -> None:
+    """Under a low-of-day stop, every entry's stop is the live plan from the day's low before the
+    break (`pre_break_low`); a gap over without 5-minute bars is never entered and counts as a
+    `gap_over_no_intraday` skip, and an entry without them needs adr20; a day whose low after
+    the trigger bar reaches the stop exits that day at the stop for -1 R (MAE -1), and a higher
+    one bounds the MAE.
+    Harm: an S2 entry's stop sits at a low the market made after the entry, and the entry day's
+    loss is never seen."""
+    data = s.market(paths, DAYS)
+    if with_intraday:
+        data = dataclasses.replace(data, intraday=draw.draw(st.composite(_intraday)(data)))
+    blank = draw.draw(st.sets(st.sampled_from(DAYS[s.WARM_UP - 1 :]), max_size=6))
+    if blank:  # adr20 missing at some closes (a short history)
+        adr20 = pl.when(pl.col("date").is_in(sorted(blank))).then(None).otherwise(pl.col("adr20"))
+        data = dataclasses.replace(data, features=data.features.with_columns(adr20.alias("adr20")))
+    cfg = s.config(stop={"rule": "low_of_day", "buffer_ticks": 1})
+    result = run_backtest(s.spec(cfg, DAYS, fills=s.zero_fills()), data)
+    gaps = 0
+    for row in result.watchlists:
+        if row.pivot is None or row.trade_date not in DAYS[s.WARM_UP :]:
+            continue
+        open_, high, _, _ = _bar(data, row.instrument_id, row.trade_date)
+        no_bars = (row.instrument_id, row.trade_date) not in data.intraday
+        gaps += entry_fill(open_, high, row.pivot) == open_ and no_bars
+    assert result.skips.get("gap_over_no_intraday", 0) == gaps
+    trades = {(t.instrument_id, t.entry_date): t for t in result.trades}
+    for signal in result.signals:
+        day, iid, level = signal.trade_date, signal.instrument_id, signal.trigger_price
+        open_, high, low, _ = _bar(data, iid, day)
+        intraday = data.intraday.get((iid, day), ())
+        entry = entry_fill(open_, high, level)
+        assert entry is not None
+        assert entry != open_ or intraday  # no gap over without 5-minute bars
+        adr20 = _adr20(data, iid, day)
+        assert intraday or adr20 is not None
+        before, dip = pre_break_low(open_, low, level, adr20, intraday)
+        assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
+        trade = trades.get((iid, day))
+        if trade is None or dip is None:
+            continue
+        if dip <= trade.initial_stop:  # the MAE stops at the stop's fill
+            outcome = (trade.exit_date, trade.exit_reason, trade.r_multiple, trade.mae_r)
+            assert outcome == (day, "hard_stop", -1, -1)
+        else:
+            risk = trade.entry_price - trade.initial_stop
+            assert trade.mae_r <= ((dip - trade.entry_price) / risk).quantize(D("0.0001")) + D(
+                "1e-4"
+            )
+
+
+@given(s.paths(SESSIONS), st.sampled_from([1.0, 8.0, 50.0]))
+@RUNS
+def test_contraction_stop_too_wide(paths: dict, max_pct: float) -> None:
+    """A contraction stop the scan left empty (the stop at the pivot is too wide, or there is no
+    contraction low) skips its trigger as `stop_too_wide`, never `stop_input_missing`: here the
+    setup reports no contraction low, so every trigger skips and no signal is made. Harm: the
+    run's skip counts blame missing data for a stop the plan refused as too wide."""
+    data = s.market(paths, DAYS)
+    stop = {"rule": "below_final_contraction_low", "max_pct": max_pct}
+    result = run_backtest(s.spec(s.config(stop=stop), DAYS, fills=s.zero_fills()), data)
+    triggers = sum(
+        row.pivot is not None
+        and entry_fill(*_bar(data, row.instrument_id, row.trade_date)[:2], row.pivot) is not None
+        for row in result.watchlists
+        if row.trade_date in DAYS[s.WARM_UP :]
+    )
+    assert result.signals == ()
+    assert result.skips.get(SKIP_BAD_INPUT, 0) == 0
+    assert result.skips.get(SKIP_TOO_WIDE, 0) == triggers
 
 
 @given(PRICE, PRICE, PRICE)
