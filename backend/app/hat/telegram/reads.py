@@ -14,7 +14,8 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..data.calendar import MarketCalendar, load_calendar, trading_days
+from ..data.calendar import MarketCalendar, load_calendar, session_calendar, trading_days
+from ..execution.modes import mode_view
 from ..models import (
     HatBot,
     HatBrokerAccount,
@@ -29,6 +30,7 @@ from ..models import (
     HatWatchlistEntry,
 )
 from ..risk import controls, kill
+from ..risk.sessions import SessionCalendar
 from ..time import as_utc, day_bounds, trade_date_of
 from . import render
 
@@ -166,8 +168,15 @@ def _bot_state(session: Session, bot: HatBot) -> str:
     return "manage-only: " + ", ".join(reasons) if reasons else "active"
 
 
+def _mode(session: Session, bot: HatBot, now: datetime, calendar: SessionCalendar | None) -> str:
+    """The effective and the asked mode and the queued change (HAT-TG-034, D130)."""
+    view = mode_view(session, bot, now, calendar)
+    return render.mode_text(view.asked, view.effective, view.why, view.pending, view.pending_from)
+
+
 def status_view(session: Session, now: datetime, feed: str) -> render.StatusView:
     day = trade_date_of(now)
+    calendar = session_calendar(session)
     regime = _regime(session)
     rows = controls.kill_rows(session)
     account_tripped = any(
@@ -181,7 +190,12 @@ def status_view(session: Session, now: datetime, feed: str) -> render.StatusView
         feed=feed,
         kill_account=account_tripped,
         bots=tuple(
-            (bot_label(session, b), b.execution_mode, _bot_state(session, b), regime)
+            (
+                bot_label(session, b),
+                _mode(session, b, now, calendar),
+                _bot_state(session, b),
+                regime,
+            )
             for b in bots_named(session, None)
         ),
     )

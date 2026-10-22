@@ -8,20 +8,29 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from hat.fakes.broker import FakeBroker
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_support import memory_engine
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.execution.broker import OrderType, Side
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.submit import OrderRequest
-from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent, HatOrder, HatSignal
+from app.hat.models import (
+    HatBrokerAccount,
+    HatBrokerSession,
+    HatEvent,
+    HatOrder,
+    HatRiskPolicyVersion,
+    HatSignal,
+)
 from app.hat.models.strategy import HatBrokerAccount as _Account  # noqa: F401
+from app.hat.risk.policy_service import seed_initial_policy
 from app.hat.time import utc_now
 
 USER = uuid.UUID("00000000-0000-7000-8000-000000000001")
@@ -162,3 +171,31 @@ def seed_live_sessions(
                 status="live",
             )
         )
+
+
+# Long before every test session: the owner's confirmations count from this instant on.
+CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def confirm_gates(
+    session: Session,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    ddpi: bool = True,
+    weights: bool = True,
+) -> None:
+    """Set the owner's two mode gates (HAT-GOV-085): DDPI on the account, and
+    `weights_confirmed` on every stored policy version of the user (seeding version 1 first
+    when the user has none). Does not commit."""
+    account = session.get(HatBrokerAccount, account_id)
+    if account is not None:
+        account.ddpi_confirmed = ddpi
+        account.ddpi_confirmed_at = CONFIRMED_AT if ddpi else None
+    seed_initial_policy(session, user_id, CONFIRMED_AT)
+    session.flush()
+    for row in session.scalars(
+        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user_id)
+    ):
+        row.policy = {**row.policy, "weights_confirmed": weights}
+    session.flush()

@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -268,6 +269,9 @@ def test_ops__single_fyers_secret_store() -> None:
         "openalgo_ref",
         "capabilities",
         "status",
+        "ddpi_confirmed",
+        "ddpi_confirmed_at",
+        "ddpi_note",
     }
 
 
@@ -354,11 +358,13 @@ class _NoSession:
         pass
 
 
-def test_exec__default_mode_shadow() -> None:
-    """HAT-EXEC-011, HAT-BOT-061: everything that gives a bot its mode starts at shadow. Every
-    seed YAML declares shadow, the strategy config defaults to it, the bot row defaults to it in
-    the model and in the database, a new bot cannot be created in another mode, the entry path
-    routes shadow unless told otherwise, and a mode outside the three reads as shadow."""
+def test_exec__default_mode_confirm() -> None:
+    """HAT-EXEC-011, HAT-BOT-061, HAT-DEC-B2: a bot asks for confirm unless the owner changes it,
+    and runs shadow until every gate passes. The bot row defaults to confirm in the model and in
+    the database, a new bot cannot be created in another mode, the entry path routes shadow
+    unless told otherwise, a mode outside the three reads as shadow, and confirm with any gate
+    missing reads as shadow. The strategy config's `execution_mode` is not read for a bot's mode;
+    its seeds still say shadow (06 §1 note in 07 HAT-EXEC-011)."""
     seeds = sorted(SEEDS_DIR.glob("*.yaml"))
     assert seeds
     for path in seeds:
@@ -366,10 +372,10 @@ def test_exec__default_mode_shadow() -> None:
     assert StrategyConfig.model_fields["execution_mode"].default == "shadow"
     column = HatBot.__table__.c.execution_mode
     assert column.default is not None
-    assert column.default.arg == "shadow"
+    assert column.default.arg == "confirm"
     assert column.server_default is not None
-    assert column.server_default.arg == "shadow"
-    for mode in ("confirm", "auto"):
+    assert column.server_default.arg == "confirm"
+    for mode in ("shadow", "auto"):
         no_session, user_id, strategy_id, account_id = (
             _NoSession(),
             uuid.uuid4(),
@@ -385,13 +391,14 @@ def test_exec__default_mode_shadow() -> None:
                 execution_mode=mode,
             )
     assert inspect.signature(trades.open_entry).parameters["mode"].default == modes.SHADOW
+    ready = modes.Gates(
+        "active", {"gtt_delivery": True}, ddpi_confirmed=True, weights_confirmed=True
+    )
     for unknown in ("", "live", "AUTO"):
-        assert (
-            modes.effective_mode(
-                unknown, account_status="active", capabilities={"gtt_delivery": True}
-            )
-            == modes.SHADOW
-        )
+        assert modes.effective_mode(unknown, ready) == modes.SHADOW
+    for missing in ("ddpi_confirmed", "weights_confirmed"):
+        gates = replace(ready, **{missing: False})
+        assert modes.effective_mode(modes.CONFIRM, gates) == modes.SHADOW
 
 
 WRITES_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fyers_live_writes.json"

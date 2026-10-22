@@ -31,6 +31,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.watchlist_digest_content` The digest's new and dropped symbols are the set differences and the top list is the first min(10, n) by score. Harm: the owner acts on a wrong summary.
 - `PBT telegram.card_matches_signal` The card or shadow message shows the `hat_signal` row's trigger, stop, qty and risk exactly; a card offers exactly Take and Skip, signed for that signal. Harm: the owner approves a trade other than the one placed.
 - `PBT telegram.report_content` The 15:35 digest lists exactly the day's `signal.rejected` signals with reasons; the 15:40 report shows each bot's snapshot; every real fill, partial, close and stop move is one message. Harm: rejections, drawdowns and money moving go unseen.
+- `PBT telegram.mode_names_a_bot_and_its_gate` `/mode <mode>` without a bot is refused `bad_arguments` and writes nothing; `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`), says which gate, and writes nothing, or is queued (auto after its Confirm); a name two bots share is refused `ambiguous_bot` and writes nothing, while the bot's id still names it; `/status` then shows the mode the bot runs, why it differs from the one asked for, and the queued change (HAT-TG-038, HAT-GOV-085). Harm: every bot switched at once by mistake, or a bot left in shadow with no way to tell why.
 - `PBT telegram.mode_outside_hours` `/mode` is refused in market hours and for unknown values, writing nothing; an accepted one queues for the next session open. Harm: switching to auto mid-session.
 - `PBT telegram.second_confirm` Auto, re-arm and flatten act only on a Confirm pressed in time, in the allowlisted chat, at most once. Harm: one message switches to auto or sells everything.
 - `PBT telegram.flatten_logged` A confirmed `/flatten` only sells, at most the open qty, even under a kill; it writes one `flatten.executed` with `actor = 'user'` and the chat id. Harm: flatten grows a position or the breach is invisible.
@@ -117,7 +118,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `beb99e5f58133c4bffd9789ae283d9ecc0b9523c425cc49007136ee3a144797e`
+Covered digest: `d37fd19abd11194806cd4b269e6b217bd15b951e8dcf3e8a055f5c5bc62b3726`
 
 ## Scope changes
 
@@ -686,4 +687,33 @@ Break: `send_watchlist_digest` ignores the digests already sent (`if bot is None
 
 ```
 E   AssertionError: assert 2 == (0 + 1)
+```
+
+### PBT telegram.mode_names_a_bot_and_its_gate
+
+Break: (PR 45) `gate_refusal` skips the DDPI gate (also fails `router.mode_gates_hold_bots_in_shadow`, `verify-execution`).
+
+```
+E   AssertionError: assert (True, None) == (False, 'ddpi_not_confirmed')
+E     At index 0 diff: True != False
+```
+
+Break: (PR 45) `/mode` takes one or two arguments again (`"/mode": (1, 2)`): `/mode auto` reads `auto` as a bot name.
+
+```
+E   AssertionError: assert (False, 'unknown_bot') == (False, 'bad_arguments')
+E     At index 1 diff: 'unknown_bot' != 'bad_arguments'
+```
+
+Break: (PR 45) `render.mode_text` drops the queued change.
+
+```
+E   AssertionError: assert 'shadow (asked confirm: DDPI not confirmed); shadow from ' in (('Status\nBroker fyers X0001: live\nFeed: unknown\nAccount kill: armed\ntrend: shadow (asked confirm: DDPI not confirmed), active, regime n/a'))
+```
+
+Break: (PR 45 review) `_mode` drops the `len(bots) > 1` refusal: `/mode trend auto` with two `trend` bots queues both.
+
+```
+E   AssertionError: assert (True, None) == (False, 'ambiguous_bot')
+E     At index 0 diff: True != False
 ```

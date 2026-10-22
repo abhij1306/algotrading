@@ -44,7 +44,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT config.no_risk_keys` A config naming a risk or sizing key at any depth is refused with `risk_key`. Harm: a strategy edit could raise risk without the cooling-off gate.
 - `PBT config.yaml_round_trip` Export then import gives the same config and hash, the text is stable under a second export, and both seeds round-trip. Harm: an exported strategy cannot be re-imported unchanged.
 - `PBT config.save_creates_version` Each save adds one draft with the next number (no gaps) whose config and hash are the validated ones, publishing freezes a draft, and a save inside the market session writes nothing. Harm: history has holes or a live strategy changes mid-session.
-- `PBT config.new_bot_mode_shadow` A bot created through the service starts in shadow; any other requested mode is refused. Harm: a new bot could place real orders before it has a shadow record.
+- `PBT config.new_bot_mode_confirm` A bot created through the service asks for confirm whatever its config names; any other requested mode is refused. It still runs shadow while its sleeve is in research and its gates are closed (PR 45, HAT-BOT-061, HAT-DEC-B2). Harm: a new bot places real orders before it has a shadow record, or the owner must remember to switch every bot out of shadow.
 - `CONF criterion_instance_schema` An instance has exactly the seven fields of the 04 §2 table. Harm: a field the spec never approved changes what a criterion means.
 - `CONF criterion_type_registry` The stored `param_schema` of every type equals the schema generated from its parameter model, and the registry holds exactly the catalogue. Harm: app and catalogue validation disagree.
 - `CONF criterion_catalogue_complete` The registered types and their stages equal the 25 types of the 04 §4 table. Harm: a config refers to a type with no schema, or a type exists nobody specified.
@@ -52,7 +52,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `CONF bot_seed_s2_matches_spec` The S2 seed file equals the YAML block of 04 §7 as data. Harm: the bot that runs is not the bot the owner approved.
 - `CONF seed_bots_match_spec_yaml` Both seed files equal their spec YAML (every key, value, list order and `enabled` flag) and validate. Harm: the seeded bots drift from the approved design.
 - `CONF bot_seed_default_mode` Both seeds declare `execution_mode: shadow`. Harm: a bot could start live.
-- `CONF seed_bots_shadow` Every seeded bot row is shadow, one per seeded strategy. Harm: a new bot trades real money before shadow evidence exists.
+- `CONF seed_bots_confirm` Every seeded bot row asks for confirm and starts in research, one per seeded strategy (PR 45). Harm: a seeded bot trades real money before shadow evidence exists, or never leaves shadow.
 - `CONF risk_policy_seed_bot_limits` The seed risk policy holds p_max 0.20 for S1, 0.25 for S2 and 6 open positions. Harm: the bots size against limits that differ from the approved design.
 - `CONF import_graph_boundaries` The `app.hat.engine.criteria` package exists in the import graph (the rule is not vacuous) and reaches no broker, execution, database, ORM, router, Telegram or web module, directly or transitively. Harm: a criterion starts to depend on I/O and stops being a pure function of its data.
 - `CONF mvp_seed_scope` The seeds create exactly S1 and S2 on NSE, and every strategy and bot row they create is owned by the one user (the broker half of this check is in verify-execution). Harm: a stray strategy or a row owned by nobody ships with the MVP.
@@ -143,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `8ad64306f054c4a9480038a9c1f876faf85fd3a2016d37e3041ed81bb91110e9`
+Covered digest: `991d716df153445927fe4456f4ba877d50cdff2688882936a18a7a7a8ad05481`
 
 ## Scope changes
 
@@ -802,9 +802,18 @@ E         'exits': [{'rule': 'hard_stop'}],
 E         'playbooks': [{'name': 'breakout',
 ```
 
-### PBT config.new_bot_mode_shadow
+### PBT config.new_bot_mode_confirm
 
-Break: `create_bot` starts a bot in `confirm`.
+Break: (PR 45) `create_bot` accepts a shadow bot (`(None, "confirm", "shadow")`).
+
+```
+E   Failed: DID NOT RAISE VersionError
+E   Failing test case: test_new_bot_mode_confirm(
+E       mode='shadow',
+E   )
+```
+
+Break: (before PR 45, as `config.new_bot_mode_shadow`) `create_bot` starts a bot in `confirm`.
 
 ```
 E   AssertionError: assert 'confirm' == 'shadow'
@@ -919,9 +928,17 @@ E     - shadow
 E     + confirm
 ```
 
-### CONF seed_bots_shadow
+### CONF seed_bots_confirm
 
-Break: `create_bot` starts a bot in `confirm`.
+Break: (PR 45) `create_bot` starts the seeded bots in shadow.
+
+```
+E   AssertionError: assert {'shadow'} == {'confirm'}
+E     Extra items in the left set:
+E     'shadow'
+```
+
+Break: (before PR 45, as `seed_bots_shadow`) `create_bot` starts a bot in `confirm`.
 
 ```
 E   AssertionError: assert {'confirm'} == {'shadow'}

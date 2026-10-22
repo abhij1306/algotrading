@@ -320,6 +320,8 @@ export interface components {
     };
     /** BotView */
     BotView: {
+      /** Effective Mode */
+      effective_mode: string;
       /** Execution Mode */
       execution_mode: string;
       /**
@@ -331,8 +333,14 @@ export interface components {
       lifecycle_state: string;
       /** Manage Only */
       manage_only: boolean;
+      /** Mode Reason */
+      mode_reason: string | null;
       /** Name */
       name: string;
+      /** Pending From */
+      pending_from: string | null;
+      /** Pending Mode */
+      pending_mode: string | null;
       /** Reasons */
       reasons: string[];
       /** Risk Cluster */

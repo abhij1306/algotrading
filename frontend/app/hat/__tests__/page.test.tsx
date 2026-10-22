@@ -22,6 +22,10 @@ const STATUS = {
       id: BOT_ID,
       name: "momentum",
       execution_mode: "confirm",
+      effective_mode: "shadow",
+      mode_reason: "ddpi_not_confirmed",
+      pending_mode: "auto",
+      pending_from: "2026-10-22T03:45:00Z",
       status: "active",
       lifecycle_state: "live",
       risk_cluster: "c1",
@@ -150,6 +154,11 @@ describe("HatPage", () => {
     expect(within(status).getByText(/bull_quiet \(unconfirmed\)/)).toBeInTheDocument();
     expect(within(status).getByText("fyers XA1234: live")).toBeInTheDocument();
     expect(within(status).getByText("scan: succeeded")).toBeInTheDocument();
+    expect(
+      within(bots).getByText(
+        "shadow (asked confirm: ddpi_not_confirmed); auto from 2026-10-22T03:45:00Z",
+      ),
+    ).toBeInTheDocument();
     const allocations = screen.getByRole("region", { name: "Allocations" });
     expect(await within(allocations).findByText("25.00%")).toBeInTheDocument();
     expect(within(allocations).getByText("2,50,000.00")).toBeInTheDocument();

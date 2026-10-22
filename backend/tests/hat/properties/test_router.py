@@ -25,7 +25,14 @@ from hat_engine_support import (
     request_for,
     seed_engine_world,
 )
-from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import (
+    GTT_READY,
+    SYMBOLS,
+    confirm_gates,
+    guard_on,
+    live_session,
+    seed_live_sessions,
+)
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
@@ -40,7 +47,7 @@ from app.hat.data.staleness import StalenessMonitor
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.errors import HatConfigError
-from app.hat.execution import modes
+from app.hat.execution import mode_changes, modes
 from app.hat.execution.broker import BrokerUnavailableError, OrderType, SessionStatus, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
@@ -95,8 +102,12 @@ class Rig:
         reconciled: bool = True,
         fake: FakeBroker | None = None,
         live_gtt: bool | None = None,  # the adapter's GTT now; `gtt` (the stored one) when None
+        ddpi: bool = True,
+        weights: bool = True,
+        confidence: str | None = modes.HIGH,  # the label the router routes auto by (D149)
     ) -> None:
         self.session = session
+        self.confidence = confidence
         self.world: World = seed_engine_world(session, mode=mode, instruments=2)
         bot = session.get(HatBot, self.world.bot_id)
         assert bot is not None
@@ -126,6 +137,8 @@ class Rig:
                 )
             )
         seed_live_sessions(session, self.account_id)
+        session.flush()
+        confirm_gates(session, self.account_id, USER, ddpi=ddpi, weights=weights)
         session.commit()
         self.fake = fake if fake is not None else FakeBroker()
         broker = FyersHatBroker(
@@ -153,6 +166,7 @@ class Rig:
             trades.EntryRequest(**{**vars(request), "triggered_at": at}),
             now=at,
             check=check,
+            confidence=self.confidence,
         )
 
     def signal(self, signal_id: uuid.UUID) -> HatSignal:
@@ -986,7 +1000,7 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
         during = AT + timedelta(minutes=minutes % 240)
         refused = False
         try:
-            modes.request_mode_change(
+            mode_changes.request_mode_change(
                 session,
                 bot_id=bot.id,
                 to_mode=target,
@@ -1001,7 +1015,7 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
         assert refused
         assert session.scalar(select(func.count()).select_from(HatModeChange)) == 0
         before_open = EVENING + timedelta(minutes=minutes)
-        modes.request_mode_change(
+        mode_changes.request_mode_change(
             session,
             bot_id=bot.id,
             to_mode=target,
@@ -1016,8 +1030,8 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
         assert modes.bot_mode(session, bot, AT, CALENDAR) == target
         opened = CALENDAR.days[AT.date()].open_at
         assert opened is not None
-        assert modes.apply_mode_changes(session, opened) == int(start != target)
-        assert modes.apply_mode_changes(session, opened) == 0
+        assert mode_changes.apply_mode_changes(session, opened) == int(start != target)
+        assert mode_changes.apply_mode_changes(session, opened) == 0
         assert bot.execution_mode == target
         assert rig.route().mode == target
         if target == modes.SHADOW:
@@ -1256,7 +1270,10 @@ def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> N
         bot.lifecycle_state = state
         session.commit()
         allowed = modes.effective_mode(
-            mode, account_status="active", capabilities={"gtt_delivery": gtt}
+            mode,
+            modes.Gates(
+                "active", {"gtt_delivery": gtt}, ddpi_confirmed=True, weights_confirmed=True
+            ),
         )
         expected = allowed if state == sleeves.LIVE else modes.SHADOW
         assert modes.bot_mode(session, bot, AT, CALENDAR) == expected
@@ -1294,3 +1311,136 @@ def test_entry_needs_live_session(status: str, offset: int) -> None:
         assert len(rig.places()) == int(allowed)
         if not allowed:
             assert _rejected_reason(session, signal.id) == SESSION_NOT_LIVE
+
+
+# --- HAT-GOV-085, HAT-EXEC-014: the owner's gates and auto by confidence -----------------------
+
+OPENED = CALENDAR.days[AT.date()].open_at
+assert OPENED is not None
+assert OPENED < AT
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    mode=MODE,
+    ddpi=st.sampled_from(("none", "before_open", "after_open", "revoked")),
+    weights=st.booleans(),
+)
+@example(mode=modes.AUTO, ddpi="after_open", weights=True)
+@example(mode=modes.CONFIRM, ddpi="before_open", weights=False)
+def test_mode_gates_hold_bots_in_shadow(mode: str, ddpi: str, weights: bool) -> None:
+    """HAT-GOV-085: a Live bot on an account with GTT for delivery runs the mode it asked for
+    only while the owner had confirmed DDPI on its account by the session's open (one set
+    during the session waits for the next open; one revoked holds it back at once) and the
+    policy in force at the open confirms the base weights; otherwise it runs shadow and calls
+    no broker. Harm: real orders before DDPI is registered (sales stall on a TPIN prompt) or
+    before the owner set the allocation numbers."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=mode, weights=weights)
+        account = session.get(HatBrokerAccount, rig.account_id)
+        assert account is not None
+        if ddpi == "none":
+            account.ddpi_confirmed, account.ddpi_confirmed_at = False, None
+        elif ddpi == "after_open":
+            account.ddpi_confirmed_at = OPENED + timedelta(minutes=1)
+        elif ddpi == "revoked":  # confirmed long ago, then cleared
+            account.ddpi_confirmed = False
+        session.commit()
+        bot = session.get(HatBot, rig.world.bot_id)
+        assert bot is not None
+        gated = ddpi == "before_open" and weights
+        expected = mode if gated else modes.SHADOW
+        assert modes.bot_mode(session, bot, AT, CALENDAR) == expected
+        outcome = rig.route()
+        assert outcome.mode == expected
+        if expected == modes.SHADOW:
+            assert rig.fake.calls == []
+            view = modes.mode_view(session, bot, AT, CALENDAR)
+            reason = "ddpi_not_confirmed" if ddpi != "before_open" else "weights_not_confirmed"
+            assert view.why == (None if mode == modes.SHADOW else reason)
+        if expected == modes.AUTO:
+            assert len(rig.places()) == 1
+
+
+@settings(max_examples=30, deadline=None)
+@given(st.sampled_from((modes.HIGH, "medium", "low", None, "HIGH", "")))
+@example(None)
+def test_auto_places_only_high_confidence(confidence: str | None) -> None:
+    """HAT-EXEC-014, D149: an accepted auto signal labelled high sends exactly one entry order;
+    any other label, or none, is routed as confirm: an approval card, the signal in
+    AwaitingApproval and no broker call. Harm: a medium- or low-confidence trade is bought
+    without the owner's approval."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO, confidence=confidence)
+        outcome = rig.route()
+        signal = rig.signal(outcome.signal_id)
+        if confidence == modes.HIGH:
+            assert outcome.mode == signal.mode == modes.AUTO
+            assert len(rig.places()) == 1
+            assert session.get(HatApproval, signal.id) is None
+        else:
+            assert outcome.mode == signal.mode == modes.CONFIRM
+            assert signal.state == lifecycle.AWAITING_APPROVAL
+            assert session.get(HatApproval, signal.id) is not None
+            assert rig.fake.calls == []
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    start=MODE,
+    target=MODE,
+    ddpi_at_open=st.booleans(),
+    weights_at_open=st.booleans(),
+)
+@example(start=modes.SHADOW, target=modes.AUTO, ddpi_at_open=False, weights_at_open=True)
+def test_open_settles_mode_changes(
+    start: str, target: str, ddpi_at_open: bool, weights_at_open: bool
+) -> None:
+    """HAT-GOV-085, HAT-GOV-084: a change queued in the evening, while every gate passed, is
+    settled at the next open by the gates as they stand then: applied (the bot row takes the
+    mode, one `mode.applied`) or refused with the gate's code (the bot keeps its mode, one
+    `mode.apply_refused`, and the change never routes an entry). A second run at the same open
+    changes nothing. Harm: a change silently fails, or a refused change takes effect later
+    without a request."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=start)
+        bot = session.get(HatBot, rig.world.bot_id)
+        assert bot is not None
+        mode_changes.request_mode_change(
+            session,
+            bot_id=bot.id,
+            to_mode=target,
+            requested_at=EVENING,
+            calendar=CALENDAR,
+            via="telegram",
+            chat_id=7,
+        )
+        session.commit()
+        account = session.get(HatBrokerAccount, rig.account_id)
+        assert account is not None
+        account.ddpi_confirmed = ddpi_at_open  # the owner revokes it overnight, or not
+        confirm_gates(session, rig.account_id, USER, ddpi=ddpi_at_open, weights=weights_at_open)
+        session.commit()
+        refused = target != modes.SHADOW and not (ddpi_at_open and weights_at_open)
+        after = start if refused else target
+        changed = mode_changes.apply_mode_changes(session, OPENED)
+        assert changed == int(after != start)
+        assert mode_changes.apply_mode_changes(session, OPENED) == 0
+        assert bot.execution_mode == after
+        [row] = session.scalars(select(HatModeChange)).all()
+        kinds = session.scalars(
+            select(HatEvent.event_type).where(
+                HatEvent.event_type.in_(("mode.applied", "mode.apply_refused"))
+            )
+        ).all()
+        if refused:
+            assert row.refused_reason == (
+                "ddpi_not_confirmed" if not ddpi_at_open else "weights_not_confirmed"
+            )
+            assert row.applied_at is None
+            assert kinds == ["mode.apply_refused"]
+        else:
+            assert row.refused_reason is None
+            assert row.applied_at is not None
+            assert kinds == ["mode.applied"]
+        assert modes.requested_mode(session, bot, AT) == after

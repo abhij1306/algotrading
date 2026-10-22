@@ -290,7 +290,7 @@ def check_governance__domain_checks(conn: Connection) -> None:
     )
     assert (
         scalar(conn, text("SELECT execution_mode FROM hat_bot WHERE id = :i").bindparams(i=raw))
-        == "shadow"
+        == "confirm"
     )
 
 

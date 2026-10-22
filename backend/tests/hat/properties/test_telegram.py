@@ -17,15 +17,18 @@ from decimal import Decimal
 import pytest
 from hat.fakes.broker import FakeBroker, rejected
 from hat_engine_support import request_for
+from hat_exec_support import confirm_gates
 from hat_manage_support import ManageRig
 from hat_manage_support import at as manage_at
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hat_telegram_support import (
     AT,
+    BOT,
     BOT_USERNAME,
     CHAT,
     LIVE,
+    OWNER,
     TRADE_DAY,
     FakeTransport,
     TgRig,
@@ -42,6 +45,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
 from app.hat.engine import approvals
+from app.hat.engine.strategy.versions import create_bot
 from app.hat.events import record
 from app.hat.execution import modes
 from app.hat.execution.broker import Side
@@ -484,6 +488,7 @@ UNPARSED = st.one_of(
             "/start",
             "/help",
             "/mode",
+            "/mode auto",
             "buy SBIN",
             "/kill now",
             "/flatten SBIN",
@@ -512,7 +517,16 @@ def test_unknown_command_rejected(text: str, now: datetime) -> None:
 
 
 SAFETY_TEXTS = st.sampled_from(
-    ("/kill", "/flatten", "/arm", "/pause", "/resume", "/mode auto", "/mode shadow", "/status")
+    (
+        "/kill",
+        "/flatten",
+        "/arm",
+        "/pause",
+        "/resume",
+        f"/mode {BOT} auto",
+        f"/mode {BOT} shadow",
+        "/status",
+    )
 )
 BOT_NAMES = st.text(
     alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
@@ -786,11 +800,19 @@ USER_EVENTS = frozenset(
         "flatten.executed",
     }
 )
-CHANGING = ("/pause", "/resume", "/kill", "/mode shadow", "take", "skip", "confirm")
+CHANGING = ("/pause", "/resume", "/kill", f"/mode {BOT} shadow", "take", "skip", "confirm")
 USER_ACTIONS = st.lists(
     st.tuples(
         st.sampled_from(
-            ("/pause", "/resume", "/kill", "/arm", "/mode shadow", "/mode auto", "/flatten")
+            (
+                "/pause",
+                "/resume",
+                "/kill",
+                "/arm",
+                f"/mode {BOT} shadow",
+                f"/mode {BOT} auto",
+                "/flatten",
+            )
             + ("take", "skip", "confirm")
         ),
         st.sampled_from((AT, EVENING)),
@@ -1274,6 +1296,7 @@ def test_report_content(
                 replace(request, triggered_at=AT),
                 now=AT,
                 check=_refused_check(reason),
+                confidence="high",
             )
             session.commit()
         for back, equity, realised in snapshots:
@@ -1416,7 +1439,7 @@ def test_mode_outside_hours(quarter: int, word: str) -> None:
     Harm: switching to auto mid-session, or a mode that trades around the risk policy."""
     now = ist(TRADE_DAY, 0) + timedelta(minutes=15 * quarter)
     rig = TgRig().at(now)
-    handled = rig.service.handle(text_update(1, CHAT, f"/mode {word}"))
+    handled = rig.service.handle(text_update(1, CHAT, f"/mode {BOT} {word}"))
     assert handled.reply is not None
     if handled.reply.accepted and handled.reply.buttons:
         handled = rig.service.handle(button_update(2, CHAT, last_button(rig)))
@@ -1435,6 +1458,80 @@ def test_mode_outside_hours(quarter: int, word: str) -> None:
     assert row.to_mode == word.lower()
 
 
+# --- HAT-TG-038: /mode names one bot and says which gate refuses it ----------------------------
+
+
+@SLOW
+@given(
+    word=st.sampled_from(modes.MODES),
+    ddpi=st.booleans(),
+    weights=st.booleans(),
+    twin=st.booleans(),
+)
+@example(word="confirm", ddpi=False, weights=True, twin=False)
+@example(word="auto", ddpi=True, weights=False, twin=False)
+@example(word="auto", ddpi=True, weights=True, twin=True)
+def test_mode_names_a_bot_and_its_gate(word: str, ddpi: bool, weights: bool, twin: bool) -> None:
+    """HAT-TG-038, HAT-GOV-085: `/mode <mode>` without a bot is refused and writes nothing;
+    `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at
+    the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`) and writes nothing, or is
+    queued (auto after its confirmation); `/status` then shows the queued change beside the mode
+    the bot runs. A name two bots share (one strategy on two sleeves) is refused
+    `ambiguous_bot` and writes nothing; the bot's id still names it. Harm: every bot switched at
+    once by mistake, or a bot left in shadow with no way to tell why."""
+    rig = TgRig().at(EVENING)
+    with rig.factory() as session:
+        confirm_gates(session, rig.account_id, OWNER, ddpi=ddpi, weights=weights)
+        if twin:
+            create_bot(
+                session,
+                user_id=OWNER,
+                strategy_id=rig.world.strategy_id,
+                broker_account_id=rig.account_id,
+            )
+        session.commit()
+    bare = rig.service.handle(text_update(1, CHAT, f"/mode {word}"))
+    assert bare.reply is not None
+    assert (bare.reply.accepted, bare.reply.reason) == (False, "bad_arguments")
+    name = BOT
+    if twin:
+        shared = rig.service.handle(text_update(5, CHAT, f"/mode {BOT} {word}"))
+        assert shared.reply is not None
+        assert (shared.reply.accepted, shared.reply.reason) == (False, "ambiguous_bot")
+        with rig.factory() as session:
+            assert list(session.scalars(select(HatModeChange))) == []
+        name = str(rig.world.bot_id)[:8]
+    handled = rig.service.handle(text_update(2, CHAT, f"/mode {name} {word}"))
+    assert handled.reply is not None
+    if handled.reply.accepted and handled.reply.buttons:
+        handled = rig.service.handle(button_update(3, CHAT, last_button(rig)))
+        assert handled.reply is not None
+    with rig.factory() as session:
+        rows = list(session.scalars(select(HatModeChange)))
+    gate = (
+        None
+        if word == "shadow"
+        else (
+            "ddpi_not_confirmed" if not ddpi else "weights_not_confirmed" if not weights else None
+        )
+    )
+    if gate is not None:
+        assert (handled.reply.accepted, handled.reply.reason) == (False, gate)
+        assert f"Refused: {gate} (" in (handled.reply.text or "")
+        assert rows == []
+        return
+    assert handled.reply.accepted
+    [row] = rows
+    assert row.to_mode == word
+    status = rig.service.handle(text_update(4, CHAT, "/status"))
+    assert status.reply is not None
+    held = (
+        "DDPI not confirmed" if not ddpi else "base weights not confirmed" if not weights else None
+    )
+    now = "confirm" if held is None else f"shadow (asked confirm: {held})"
+    assert f"{now}; {word} from " in (status.reply.text or "")
+
+
 # --- HAT-TG-033: second confirmation ------------------------------------------------------------
 
 
@@ -1445,7 +1542,9 @@ def _count(session: Session, where: ColumnElement[bool]) -> int:
 
 CONFIRM_ACTIONS = st.lists(
     st.tuples(
-        st.sampled_from(("/flatten", "/arm", "/mode auto", "/kill", "press", "replay", "stranger")),
+        st.sampled_from(
+            ("/flatten", "/arm", f"/mode {BOT} auto", "/kill", "press", "replay", "stranger")
+        ),
         st.integers(min_value=0, max_value=400),
     ),
     max_size=10,
@@ -1492,7 +1591,7 @@ def test_second_confirm(actions: list[tuple[str, int]]) -> None:
         if action == "/kill":
             tripped = True
         elif handled.reply.buttons:
-            kind = {"/flatten": "flatten", "/arm": "arm", "/mode auto": "mode_auto"}[action]
+            kind = {"/flatten": "flatten", "/arm": "arm", f"/mode {BOT} auto": "mode_auto"}[action]
             pending[last_button(rig)] = (kind, rig.now)
     with rig.factory() as session:
         got = Counter(

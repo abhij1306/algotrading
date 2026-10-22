@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 from hat_conf_spec import SPEC_DIR
 from hat_risk_support import CALENDAR
-from hat_telegram_support import CHAT, OWNER, TRADE_DAY, TgRig, button_update, ist, text_update
+from hat_telegram_support import BOT, CHAT, OWNER, TRADE_DAY, TgRig, button_update, ist, text_update
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -141,7 +141,7 @@ def test_telegram_command_set() -> None:
     assert set(commands.COMMANDS) == _spec_commands()
     assert len(commands.COMMANDS) == 10
     for command in commands.COMMANDS:
-        assert commands.parse(command if command != "/mode" else "/mode shadow") is not None
+        assert commands.parse(command if command != "/mode" else "/mode trend shadow") is not None
     for stray in ("/buy", "/sell", "/override", "/exit", "/start", "/help"):
         assert commands.parse(stray) is None, stray
 
@@ -260,11 +260,13 @@ def test_telegram__no_order_import_in_text_path() -> None:
 
 
 def test_auto_mode_single_user() -> None:
-    """HAT-OVR-061: no API route sets a mode (no route module reaches the mode-change code),
+    """HAT-OVR-061: no API route sets a mode (no route module reaches the code that writes one:
+    `execution.mode_changes` and the queue in `risk.controls`; the dashboard may read the mode
+    through the read-only `execution.modes`),
     `/mode auto` for a bot whose account belongs to anyone but `HAT_USER_ID` is refused
     before and after its second confirmation, and the owner's own account is accepted."""
     graph = build_graph()
-    mode_code = ("app.hat.execution.modes", "app.hat.risk.modes")
+    mode_code = ("app.hat.execution.mode_changes", "app.hat.risk.controls")
     for info in pkgutil.iter_modules(app.hat.api.__path__, "app.hat.api."):
         assert reaches(graph, info.name, mode_code) == [], info.name
     for _path, methods in _routes():
@@ -275,7 +277,7 @@ def test_auto_mode_single_user() -> None:
     stranger = uuid.UUID(int=OWNER.int ^ 1)
     for handed_over in (False, True):
         rig = TgRig().at(evening)
-        asked = rig.service.handle(text_update(1, CHAT, "/mode auto"))
+        asked = rig.service.handle(text_update(1, CHAT, f"/mode {BOT} auto"))
         assert asked.reply is not None
         assert asked.reply.accepted
         [[(_label, data)]] = asked.reply.buttons
@@ -290,7 +292,7 @@ def test_auto_mode_single_user() -> None:
             continue
         assert confirmed.reply.reason == "auto_not_owner"
         assert modes_queued == []
-        again = rig.service.handle(text_update(3, CHAT, "/mode auto"))
+        again = rig.service.handle(text_update(3, CHAT, f"/mode {BOT} auto"))
         assert again.reply is not None
         assert again.reply.reason == "auto_not_owner"
         assert _modes(rig) == []

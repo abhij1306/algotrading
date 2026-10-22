@@ -76,6 +76,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "Control": (
         "mode.change_requested",
+        "mode.applied",
+        "mode.apply_refused",
         "bot.paused",
         "bot.resumed",
         "kill.tripped",
@@ -93,6 +95,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "broker.logged_in",
         "broker.session_lost",
         "broker.capabilities_changed",
+        "broker.ddpi_confirmed",
         "feed.stale",
     ),
 }

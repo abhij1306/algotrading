@@ -208,8 +208,14 @@ def test_first_deploy(tmp_path: Path, waited: int) -> None:
         row = session.get(HatBot, uuid.UUID(bot))
         assert row is not None
         assert row.lifecycle_state == lifecycle.SHADOW
+        assert row.execution_mode == "confirm"  # asked for; runs shadow until Live and the gates
         assert str(row.live_version_id) == version
         assert row.universe_version_id is not None
+        account = str(row.broker_account_id)
+    ddpi = world.ok(
+        "confirm-ddpi", "--account", account, "--since", START.isoformat(), "--note", "DDPI on"
+    )
+    assert ddpi == {"broker_account_id": account, "ddpi_confirmed": True}
     code, _, err = world.run("promote", "--bot", bot, "--to", "live")
     assert code == 2
     assert err == "refused: version_not_live\n"
@@ -236,6 +242,10 @@ def test_first_deploy(tmp_path: Path, waited: int) -> None:
             )
         ).all()
         assert len(owner_events) == 4  # backtested, shadow, version promoted, live
+        owner_events += session.scalars(
+            select(HatEvent).where(HatEvent.event_type == "broker.ddpi_confirmed")
+        ).all()
+        assert len(owner_events) == 5
         for event in owner_events:
             assert event.actor == "user"
             assert event.payload["chat_id"] == CHAT
@@ -270,6 +280,11 @@ REFUSALS = {
     "draft_bad_utf8": "config_unreadable",
     "file_outside_admin": "file_outside_admin",
     "draft_wrong_suffix": "file_outside_admin",
+    "ddpi_in_hours": "market_hours",
+    "ddpi_in_future": "ddpi_date_in_future",
+    "ddpi_blank_note": "ddpi_note_required",
+    "ddpi_twice": "ddpi_already_confirmed",
+    "ddpi_unknown_account": "account_not_active",
 }
 
 
@@ -340,6 +355,21 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
         argv = ("publish-universe", "--constituents", f"../{outside.name}", "--as-of", "2026-11-02")
     elif case == "draft_wrong_suffix":
         argv = ("save-draft", "--strategy", str(strategy_id), "--config", "../../etc/passwd")
+    elif case.startswith("ddpi_"):
+        with world.scope() as session:
+            account = str(session.get_one(HatBot, uuid.UUID(bot)).broker_account_id)
+        since, note = START.isoformat(), "DDPI on"
+        if case == "ddpi_in_hours":
+            world.now = at(START + timedelta(days=1), 11)
+        elif case == "ddpi_in_future":
+            since = (START + timedelta(days=3)).isoformat()
+        elif case == "ddpi_blank_note":
+            note = "   "
+        elif case == "ddpi_twice":
+            world.ok("confirm-ddpi", "--account", account, "--since", since, "--note", note)
+        else:
+            account = str(uuid.uuid4())
+        argv = ("confirm-ddpi", "--account", account, "--since", since, "--note", note)
     elif case == "universe_unknown_bot":
         csv = constituents_csv(world.tmp, SYMBOLS)
         argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())

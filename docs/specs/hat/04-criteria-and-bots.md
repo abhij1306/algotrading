@@ -487,13 +487,13 @@ exits:                                  # evaluated top to bottom
   - Property: the parsed seed file and the YAML block in this section are equal as data (every key, value, order of list items and `enabled` flag), and both validate against the criterion schemas. Harm: the bot that runs is not the bot the owner approved.
 - **[A]** breakeven / partial / trail: defaults 2R / 3R / 50-day SMA; validated by backtest variants (BL "Defaults that are assumptions").
 
-#### HAT-BOT-061: New bots start in shadow mode
-- **Statement:** Both seeded bots, and any newly created bot, start with `execution_mode: shadow`.
-- **Source:** BL bot configs; MA "Execution modes"; B2 (revised).
-- **PR:** 8
-- **Verification:** CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_shadow`
+#### HAT-BOT-061: New bots ask for confirm mode and run shadow until Live
+- **Statement:** Both seeded bots, and any newly created bot, start with `execution_mode: confirm` in research, so they run shadow (HAT-PORT-063, HAT-GOV-085). The seed configs' `execution_mode: shadow` is not read for a bot's mode (07 HAT-EXEC-011 note).
+- **Source:** BL bot configs; MA "Execution modes"; B2 (revised); D130, D132.
+- **PR:** 8, 45
+- **Verification:** CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_confirm`
 - **Acceptance:**
-  - Property: for every bot created through the config service with no explicit mode, the stored mode is `shadow`, and both seeds declare `shadow`. Harm: a new bot could place real orders before it has a shadow record.
+  - Property: for every bot created through the config service with no explicit mode, the stored mode is `confirm` and the lifecycle state research, any other requested mode is refused, and both seeds declare `shadow`. Harm: a new bot could place real orders before it has a shadow record.
 
 #### HAT-BOT-062: S1 skips trades whose stop is more than 8% below entry
 - **Statement:** With `below_final_contraction_low`, the stop is the final contraction low less a 0.5% buffer, and the trade is skipped if that stop is more than 8% below entry.

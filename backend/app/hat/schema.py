@@ -210,6 +210,8 @@ CREATE OR REPLACE TRIGGER hat_position_no_delete_guard
 CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
   ON hat_announcement (instrument_id, published_at DESC)
 """,
+    # HAT-EXEC-011 (PR 45): a database created before PR 45 keeps the old `shadow` default.
+    "ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'confirm'",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update

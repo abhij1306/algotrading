@@ -48,7 +48,7 @@ from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members
 from ..events import record
 from ..execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL
-from ..execution.modes import apply_mode_changes
+from ..execution.mode_changes import apply_mode_changes
 from ..models import (
     HatBot,
     HatEvent,

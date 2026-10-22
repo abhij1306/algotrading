@@ -112,6 +112,9 @@ class RiskPolicy:
     health_zero_dd: Decimal
     health_full_mult: Decimal
     health_half_mult: Decimal
+    # The owner has set `base_weight` and `cluster_cap` as real numbers (06 §1, 06:47): until
+    # then no bot runs confirm or auto (HAT-GOV-085). Not a risk number: it sizes nothing.
+    weights_confirmed: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """The JSON document stored in `hat_risk_policy_version.policy` (numbers as strings)."""
@@ -145,6 +148,7 @@ class RiskPolicy:
                 "full_mult": str(self.health_full_mult),
                 "half_mult": str(self.health_half_mult),
             },
+            "weights_confirmed": self.weights_confirmed,
         }
 
 
@@ -165,7 +169,11 @@ POLICY_FIELDS = (
     "cluster_cap",
     "multiplier_bounds",
     "health_bands",
+    "weights_confirmed",
 )
+# Fields a stored document may lack, with the value a missing one reads as. A document written
+# before the field existed reads as unconfirmed, which keeps every bot in shadow (fail closed).
+OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False}
 
 # The initial seed (version 1, direction "initial"): the 06 §1 seed column.
 SEED_POLICY: dict[str, Any] = {
@@ -189,6 +197,7 @@ SEED_POLICY: dict[str, Any] = {
     "cluster_cap": "1.00",
     "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.12", "full_mult": "1.0", "half_mult": "0.5"},
+    "weights_confirmed": False,
 }
 
 
@@ -202,7 +211,12 @@ def parse_policy(doc: object) -> RiskPolicy:
     """The typed policy of a stored document, or `PolicyError`. Strict: an unknown or missing
     field, a float, or a number outside its range is refused, so a malformed or half-written
     document can never size an order."""
+    if isinstance(doc, Mapping):
+        doc = {**OPTIONAL_FIELDS, **doc}
     top = _exact_keys(doc, POLICY_FIELDS, "policy")
+    confirmed = top["weights_confirmed"]
+    if not isinstance(confirmed, bool):
+        raise PolicyError("weights_confirmed: must be true or false")
     p_max_doc = top["p_max"]
     if not isinstance(p_max_doc, Mapping) or not p_max_doc:
         raise PolicyError("p_max: needs one entry per strategy")
@@ -250,6 +264,7 @@ def parse_policy(doc: object) -> RiskPolicy:
         health_zero_dd=_ratio(bands["zero_dd"], "health_bands.zero_dd"),
         health_full_mult=_ratio(bands["full_mult"], "health_bands.full_mult"),
         health_half_mult=_ratio(bands["half_mult"], "health_bands.half_mult", zero_ok=True),
+        weights_confirmed=confirmed,
     )
     if policy.multiplier_hi < policy.multiplier_lo or policy.multiplier_hi <= 0:
         raise PolicyError("multiplier_bounds: hi must be positive and not below lo")

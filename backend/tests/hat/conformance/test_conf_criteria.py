@@ -130,13 +130,15 @@ def test_bot_seed_default_mode() -> None:
         assert seed_config(name).execution_mode == "shadow"
 
 
-def test_seed_bots_shadow() -> None:
-    """HAT-DEC-B2: every seeded bot row is shadow, one per seeded strategy."""
+def test_seed_bots_confirm() -> None:
+    """HAT-DEC-B2: every seeded bot row asks for confirm, one per seeded strategy, and starts in
+    research, so it runs shadow (HAT-PORT-063)."""
     with _memory_session() as session:
         bots = seed_default_bots(session, user_id=uuid.uuid4(), broker_account_id=uuid.uuid4())
         rows = session.scalars(select(HatBot)).all()
     assert len(bots) == len(rows) == 2
-    assert {b.execution_mode for b in rows} == {"shadow"}
+    assert {b.execution_mode for b in rows} == {"confirm"}
+    assert {b.lifecycle_state for b in rows} == {"research"}
 
 
 def test_risk_policy_seed_bot_limits() -> None:

@@ -66,6 +66,11 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE hat_instrument DROP COLUMN delisted_on"))
             connection.execute(text("ALTER TABLE hat_job_run DROP COLUMN rows"))
+            # A database from before PR 45: bots defaulted to shadow and no DDPI columns.
+            connection.execute(
+                text("ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'shadow'")
+            )
+            connection.execute(text("ALTER TABLE hat_broker_account DROP COLUMN ddpi_confirmed"))
             connection.execute(
                 text(
                     "INSERT INTO hat_job_run (id, job, trade_date, started_at, status, calls)"
@@ -80,12 +85,21 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
                 for row in connection.execute(
                     text(
                         "SELECT column_name FROM information_schema.columns"
-                        " WHERE table_name IN ('hat_instrument', 'hat_job_run')"
+                        " WHERE table_name IN ('hat_instrument', 'hat_job_run',"
+                        " 'hat_broker_account')"
                     )
                 )
             }
+            default = connection.execute(
+                text(
+                    "SELECT column_default FROM information_schema.columns"
+                    " WHERE table_name = 'hat_bot' AND column_name = 'execution_mode'"
+                )
+            ).scalar_one()
             kept = connection.execute(text("SELECT calls FROM hat_job_run WHERE job = 'old'"))
-            assert {"delisted_on", "rows"} <= columns
+            assert {"delisted_on", "rows", "ddpi_confirmed"} <= columns
+            assert default is not None
+            assert default.startswith("'confirm'")
             assert kept.scalar_one() == 3
     finally:
         with engine.begin() as connection:

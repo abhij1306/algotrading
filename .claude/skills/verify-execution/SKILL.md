@@ -137,6 +137,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT router.skip_and_expiry_become_one_veto_trade` Any mix of Skips, sweeps and late Takes ends a card Cancelled or Expired with exactly one virtual veto trade at the card's quantity and stop, no broker call, replays that match, no slot held and a stop-out that is not the bot's. Harm: a skip is scored twice or never, or blocks the bot's next entries.
 - `PBT router.rejected_entry_is_retried_once` A rejected auto entry is alerted and retried once under the next tag; a second rejection ends Rejected with one `entry.not_placed` alert and no third order. Harm: a retry storm or a silent failure.
 - `PBT router.reconcile_before_first_order` The first real entry of a session reconciles first; an unreadable broker or an unknown HT order places nothing and ends the entry Rejected with an alert. Harm: an order on top of an unmatched book.
+- `PBT router.mode_gates_hold_bots_in_shadow` A Live bot on an active account with GTT for delivery runs the mode it asked for only while DDPI was confirmed on its account by the session's open (one confirmed during the session waits for the next open; one revoked holds the bot back at once) and the policy in force at the open confirms the base weights; otherwise it runs shadow and calls no broker (HAT-GOV-085). Harm: real orders before DDPI is registered (sales stall on a TPIN prompt) or before the owner set the allocation numbers.
+- `PBT router.auto_places_only_high_confidence` An accepted auto signal labelled high sends exactly one entry order; any other label, or none, goes to the owner as in confirm: a card, the signal AwaitingApproval and no broker call (HAT-EXEC-014, D149). Harm: a medium- or low-confidence trade is bought without the owner's approval.
+- `PBT router.open_settles_mode_changes` A change queued in the evening while every gate passed is settled at the next open by the gates as they stand then: applied (the bot row takes the mode, one `mode.applied`) or refused with the gate's code (the bot keeps its mode, one `mode.apply_refused`); a second run at the same open changes nothing (HAT-GOV-084, HAT-GOV-085). Harm: a change silently fails, or a refused change takes effect later without a request.
 - `PBT router.mode_change_takes_effect_next_session` A change queued outside hours routes nothing differently before the next open (the evening and the next pre-open included) and everything after; one asked in hours is refused and writes nothing; the open applies it to the bot row once. Harm: a bot switches to real orders mid-session.
 - `PBT manage.real_fill_protected` Each entry fill the sync reads (one or several partial fills, at any time of the session or after the close) is followed, before any other broker write, by the position's stop: placed for the open quantity when none rests (an intraday SL-M SELL before 15:25, a GTT from 15:25 on), resized when one does, its trigger on the tick and never above the stop; a stop the broker refuses twice is alerted and placed by the next sync; a resize it refuses is alerted and sent again by the next sync. Harm: a filled position sits at the broker with no stop, or a stop for fewer shares than it holds.
 - `PBT manage.broker_stop_only_tightens` As the position's stop rises (any steps, refused modifies among them), its intraday or GTT broker stop is modified up to it rounded down to the tick, never above it and never down; a refused modify leaves it and is alerted. Harm: a loosened broker stop, or one above the price HAT holds, sells on noise.
@@ -167,7 +170,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.the_gtt_book_reads_only_resting_stops` `gtts()` lists exactly the single-leg CNC GTTs resting or triggered (`ord_status` 2, 4 or 6, or none) from the flat book fields (the live keys `tran_side`, `product_type`, `ordertag`), `orderInfo.leg1` or `leg1`, each with its HAT tag read from `ordertag` (`N:GTT<tag>`; `GTTUntagged` or a foreign tag is no tag); a cancelled, rejected or expired GTT, an OCO or another product (whatever its status) is left out, and a single-leg CNC row with an unknown status code raises. Harm: a lost GTT is matched to one that no longer rests, or one still resting is read as gone.
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
-- `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
+- `CONF exec__default_mode_confirm` A bot asks for confirm unless the owner changes it and runs shadow until every gate passes: the bot row defaults to confirm (model and database), `create_bot` refuses another mode, the entry path routes shadow unless told otherwise, an unknown mode reads as shadow, and confirm with any gate missing reads as shadow. The seed YAMLs and the strategy config default still say shadow; the bot's mode never reads them (PR 45). Harm: a new bot trades real money before its gates pass.
 - `PBT router.routine_reconcile_keeps_gate` A routine reconciliation (the periodic pass) of an account already reconciled for the trade date leaves the entry gate open while it reads the book and after it, readable or not. Harm: entries are refused while a routine pass runs, or wait on a pass that already succeeded.
 - `PBT router.older_read_never_overrides_newer` When a reconciliation that read the book earlier finishes after one that read it later (`ExecutionGuard.begin_read` tickets), the later read's result stays in force. Harm: the router's run and the periodic run race, and an older clean book clears a newer mismatch so entries open over an unknown HT order.
 - `PBT router.entry_gate_keyed_by_trade_date` Over any sequence of reconciliations that read the book or cannot, with the clock moving on 0..2 trade dates between them, `ExecutionGuard` accepts an entry exactly on a trade date that has had a success, and never refuses a stop or a sale (D118, MX-F5). Harm: yesterday's success opens today's entries over an unmatched book, or an unreadable book keeps a stop or a sale from the broker.
@@ -296,6 +299,7 @@ Execution router and approvals (PR 15b):
 - `verification/tla/broken/ApprovalToken__decide_twice.cfg`, `verification/tla/broken/ApprovalToken__no_chase_recheck.cfg`, `verification/tla/broken/ApprovalToken__no_sweep.cfg`, `verification/tla/broken/ApprovalToken__take_after_expiry.cfg`
 - `backend/app/hat/execution/router.py`
 - `backend/app/hat/execution/modes.py`
+- `backend/app/hat/execution/mode_changes.py`
 - `backend/app/hat/engine/approvals.py`
 - `backend/app/hat/notify.py`
 - `backend/tests/hat/properties/test_router.py`
@@ -313,7 +317,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `b5931e5e45c1356d069fe2e4faffdfd5f414bc27b6ef5f4bb971e46edd5677f1`
+Covered digest: `3fb8eab25102e406d6907a9bd98b428ff763a6a4690481b24b94891eb7d46a7d`
 
 ## Scope changes
 
@@ -364,6 +368,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 38 review round: `_account_check` reads the accounts inside `accept_user`, once Fyers has answered (no connection held while Fyers answers, and an account onboarded meanwhile counts); an unknown user gets `ACCOUNT_UNCONFIRMED`; unreadable accounts answer 503 `DB_ERROR`. Not covered: the read-after-answer ordering itself (no property orders the read against the exchange). Left as follow-ups: `FyersHatBroker.complete_login` (`fyers_adapter.py`, no production caller) still calls `exchange` without `accept_user`; `ACCOUNT_ACTIVE` and `FYERS` are local strings in `api/fyers_auth.py`, because importing them from `execution.submit` or `execution.accounts` pulls the mode code into the API (CONF `auto_mode_single_user`), as `dashboard.py` and `daily/accounts.py` already do.
 - PR 25 (Fyers live write test 2026-10-22, HAT-BRK-081, -082, -090, -091, -093, -103, HAT-EXEC-012, -065, -066; the brief assigns these `execution/` files to this PR, overriding "revfix owns execution"): `fyers_ipv4.py` installs a urllib3 hook so Fyers HTTP leaves over IPv4 and is the one importer of `fyersModel` (`fyers_adapter_wraps_existing`'s `SDK_IMPORTERS` is now a map of file to allowed submodule). Fyers -360 is `FyersRateLimitedError` (a `FyersUnavailableError`, so reads still fail closed) and the adapter's `broker_rate_limited`. A GTT carries its HT tag (`GttRequest.tag`, sent as `orderTag`); the GTT book reads the live keys (`tran_side`, `product_type`, `ordertag`: the old `side` and `productType` made every non-empty live book unreadable); an order or trade row tagged with a stop_gtt tag (bare or `GTT`-prefixed) is that GTT's child (`gtt_tag`). `find_gtt` matches by tag first; the fill sync attributes a child by `gtt_tag`, else the untagged shape. `FakeBroker`'s GTT rows take the live shape with `ordertag`. `gtt_delivery` is now true (`broker.the_fyers_adapter_never_unlocks_confirm_or_auto` became `the_fyers_adapter_unlocks_modes_on_an_active_account`; `brk__fyers_capabilities` asserts true). `tags.status_mapping_total` found that `'¹'` passed `str.isdigit()` and crashed `int()` (`_whole_number` now matches ASCII digits; `@example`s added). `fyers_broker.only_explicit_error_rejects` (pinned) is unchanged; the recorded rejection with an id is a new property. `manage.gtt_trigger_handled` and `gtt_resting_marketed` draw the child's tag (none, `GTTUntagged`, bare, `GTT`-prefixed); nothing was narrowed. Review round (/code-review): a -360 write is not sent, like an unavailable broker (`broker.CODES_NOT_SENT`: `send_order` leaves the order pending and burns no retry; `StopDesk` retries an entry-remainder cancel and does not cancel a GTT whose resize was refused for it); `tags.an_unreachable_broker_is_not_a_rejection` became a property over circuit, client and -360. The two `StopDesk` branches have no property of their own (no rig drives a rate-limited cancel or GTT modify). The GTT book also reads the placement keys `side` and `productType`, and `GTTUntagged` on an order or trade row is no tag. Declined: a quantity check on a tagged child (the tag is the GTT's, which identifies it; a partial child keeps the GTT's quantity), and importing `rate_limited` into `minute_history` (it keeps its own -360 constant as it keeps -50). CodeAnt round: a GTT shown under a foreign tag (not `GTTUntagged`, not one of HAT's GTT tags) is `BrokerGtt.foreign` and never matched by shape; an untagged sale that ended ends a GTT only at the GTT's quantity (`_unfilled_trigger`). `tags.a_lost_gtt_is_found_by_its_tag` missed its break in 100 draws (about 1 book in 75 had a foreign GTT first in the shape match), so `gtt_books` now draws the row's quantity, SBIN and unclaimed GTTs more often (about 1 in 10) and has an `@example`. Declined: the claim that the IPv4 hook misses connections once `requests` is imported (urllib3 2.x looks `create_connection` up on its module at each connect, and `fyers_ipv4.fyers_http_leaves_over_ipv4` imports `requests` first); an untagged SELL trade on a symbol whose one GTT is working is still attributed to it (a trade carries no order quantity to compare).
 - PR 33 edited `test_ops.py` (covered here): `ops.chain_carries_past_midnight` also draws an unchained job marked `carry` (`snapshot.bots`); its checks are `verify-scheduler`'s, and the property runs in this skill's command too. Nothing was narrowed.
+- PR 45 (HAT-GOV-085, HAT-EXEC-014): the DDPI and base-weights gates and the high-confidence rule are proved on the real code (`router.mode_gates_hold_bots_in_shadow`, `router.open_settles_mode_changes`, `router.auto_places_only_high_confidence`); `ExecutionRouter.tla` models only the GTT gate and was not extended. No live caller passes a confidence label yet (PR 71), so every auto signal goes to approval. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -2143,13 +2148,21 @@ E   AssertionError: assert 'confirm' == 'shadow'
 Failing test case: test_mode_change_takes_effect_next_session(start='shadow', target='confirm', minutes=270)
 ```
 
-### CONF exec__default_mode_shadow
+### CONF exec__default_mode_confirm
 
-Break: `create_bot` accepts a confirm or auto bot.
+Break: `create_bot` accepts a confirm or auto bot (before PR 45, as `exec__default_mode_shadow`).
 
 ```
 E   Failed: DID NOT RAISE VersionError
 FAILED tests/hat/conformance/test_conf_broker.py::test_exec__default_mode_shadow
+```
+
+Break: (PR 45) the bot row's default and server default go back to shadow (`models/strategy.py`).
+
+```
+E   AssertionError: assert 'shadow' == 'confirm'
+E     - confirm
+E     + shadow
 ```
 
 ### PBT manage.real_fill_protected
@@ -3000,4 +3013,51 @@ Break (CodeAnt round): `_capped` does not spend the snapshot, so each of two pos
 E   assert 1000 == 600
 E    +  where 600 = min(1000, 600)
 E   Failing explicit example: test_flatten_capped_at_holdings(
+```
+
+### PBT router.mode_gates_hold_bots_in_shadow
+
+Break: (PR 45) `gate_refusal` skips the DDPI gate (`if gates.ddpi_confirmed is not True:` to `if False:`). The same break fails `telegram.mode_names_a_bot_and_its_gate` (`verify-telegram`).
+
+```
+E   AssertionError: assert 'auto' == 'shadow'
+E     - shadow
+E     + auto
+```
+
+Break: (PR 45) `gate_refusal` skips the weights gate.
+
+```
+E   AssertionError: assert 'confirm' == 'shadow'
+E     - shadow
+E     + confirm
+```
+
+Break: (PR 45) `account_gates` counts DDPI without comparing `ddpi_confirmed_at` with the instant (one confirmed during the session opens it at once). `router.open_settles_mode_changes` does not catch this one: it confirms DDPI before the evening it queues in.
+
+```
+E   AssertionError: assert 'auto' == 'shadow'
+E     - shadow
+E     + auto
+```
+
+### PBT router.auto_places_only_high_confidence
+
+Break: (PR 45) `route_mode` lets a medium signal place in auto (`confidence not in (HIGH, "medium")`).
+
+```
+E   AssertionError: assert 'auto' == 'confirm'
+E     - confirm
+E     + auto
+```
+
+### PBT router.open_settles_mode_changes
+
+Break: (PR 45) `apply_mode_changes` applies every due change without reading the gates (`refusal = None`).
+
+```
+E   AssertionError: assert 1 == 0
+E    +  where 0 = int('shadow' != 'shadow')
+E   Failing explicit example: test_open_settles_mode_changes(
+E       start='shadow',
 ```

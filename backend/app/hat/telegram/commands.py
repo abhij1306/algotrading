@@ -22,13 +22,13 @@ from sqlalchemy.orm import Session
 
 from ..data.calendar import session_calendar
 from ..errors import HatError
+from ..execution.mode_changes import request_mode_change
 from ..execution.modes import (
     AUTO,
     MODES,
-    ModeRefusedError,
-    UnknownModeError,
-    request_mode,
-    request_mode_change,
+    NO_GTT_DELIVERY,
+    account_gates,
+    gate_refusal,
 )
 from ..models import HatBot, HatBrokerAccount
 from ..risk import controls, kill
@@ -47,6 +47,7 @@ __all__ = [
     "addressee",
     "for_another_bot",
     "parse",
+    "mode_refused",
     "queue_modes",
     "rearm_all",
     "run_command",
@@ -59,7 +60,7 @@ _ARITY = {
     "/watchlist": (0, 1),
     "/pause": (0, 1),
     "/resume": (0, 1),
-    "/mode": (1, 2),
+    "/mode": (2, 2),
     "/kill": (0, 0),
     "/flatten": (0, 0),
     "/arm": (0, 0),
@@ -272,10 +273,26 @@ def _owner_accounts(session: Session, bots: Sequence[HatBot]) -> bool:
     return True
 
 
+# A gate's code as `/mode` reports it (`mode_needs_gtt` predates the other gates).
+_GATE_REASONS = {NO_GTT_DELIVERY: "mode_needs_gtt"}
+_REFUSAL_TEXT = {
+    "mode_needs_gtt": "the account is not active or has no GTT for delivery",
+    "ddpi_not_confirmed": "DDPI is not confirmed on the account (admin confirm-ddpi)",
+    "weights_not_confirmed": "the owner has not confirmed the base weights and cluster cap",
+}
+
+
+def mode_refused(reason: str) -> Reply:
+    """A `/mode` refusal; a gate's refusal says which gate."""
+    detail = _REFUSAL_TEXT.get(reason)
+    return refused(reason, f"Refused: {reason} ({detail})" if detail else None)
+
+
 def _mode_refusal(
     session: Session, bots: Sequence[HatBot], to_mode: str, now: datetime, calendar: SessionCalendar
 ) -> str | None:
-    """Why the change may not be queued now (HAT-TG-032), checked without writing."""
+    """Why the change may not be queued now (HAT-TG-032, HAT-GOV-085), checked without writing:
+    the gates are read as they will stand at the open the change takes effect at."""
     if to_mode not in MODES:
         return "unknown_mode"
     state = calendar.state(now)
@@ -286,20 +303,13 @@ def _mode_refusal(
     if to_mode == AUTO and not _owner_accounts(session, bots):
         return "auto_not_owner"
     try:
-        plan_mode_change(to_mode, now, calendar)
-        for bot in bots:
-            account = _account(session, bot)
-            request_mode(
-                to_mode,
-                account_status=account.status if account is not None else "",
-                capabilities=(account.capabilities or {}) if account is not None else {},
-            )
-    except UnknownModeError:
-        return "unknown_mode"
-    except ModeRefusedError:
-        return "mode_needs_gtt"
+        opens = plan_mode_change(to_mode, now, calendar).effective_from
     except ModeChangeError:
         return "no_next_session"
+    for bot in bots:
+        refusal = gate_refusal(to_mode, account_gates(session, _account(session, bot), opens))
+        if refusal is not None:
+            return _GATE_REASONS.get(refusal, refusal)
     return None
 
 
@@ -313,7 +323,7 @@ def queue_modes(
         return refused("no_calendar")
     refusal = _mode_refusal(session, bots, to_mode, now, calendar)
     if refusal is not None:
-        return refused(refusal)
+        return mode_refused(refusal)
     effective = None
     for bot in bots:
         try:
@@ -337,10 +347,13 @@ def queue_modes(
 
 
 def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    """`/mode <bot> <shadow|confirm|auto>`: one bot by name, never all at once (D130)."""
     to_mode = args[-1].lower()
-    bots = reads.bots_named(session, args[0] if len(args) == 2 else None)
+    bots = reads.bots_named(session, args[0])
     if not bots:
         return refused("unknown_bot")
+    if len(bots) > 1:  # one name, several bots (one strategy on two accounts): name it by id
+        return refused("ambiguous_bot", "Refused: ambiguous_bot (name the bot by its id)")
     if to_mode != AUTO:
         return queue_modes(session, bots, to_mode, ctx.now, ctx.chat_id)
     calendar = session_calendar(session)
@@ -348,7 +361,7 @@ def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
         return refused("no_calendar")
     refusal = _mode_refusal(session, bots, to_mode, ctx.now, calendar)
     if refusal is not None:
-        return refused(refusal)
+        return mode_refused(refusal)
     return _ask(ctx, "mode_auto", tuple(str(b.id) for b in bots))
 
 

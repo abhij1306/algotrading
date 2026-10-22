@@ -51,7 +51,7 @@ OpenAlgo for the MVP; the owner's build decisions of 20 Oct narrow that to a dir
 | R | The initial risk per share, `P_entry − P_stop`; results are stated in multiples of R. |
 | ADR / ADTR / ADV | Average daily range %, average daily true range, average daily volume (20 days unless stated). |
 | EP | Episodic pivot: a gap-up on a catalyst after a period of neglect. |
-| Execution mode | `shadow` (virtual fills only), `confirm` (you take or skip each entry), `auto` (orders sent directly). Default shadow. |
+| Execution mode | `shadow` (virtual fills only), `confirm` (you take or skip each entry), `auto` (orders sent directly). A new bot asks for confirm and runs shadow until its gates pass (PR 45). |
 | Manage-only | No new entries; stops and exits keep running. |
 | Kill switch | A trip that puts all bots (account scope) or one bot into manage-only. |
 | Risk policy | The account-level, versioned record holding every risk number. Bots hold none. |

@@ -6,7 +6,7 @@ Build decision (OWN-20OCT): orders go through HAT's own broker interface (`app/h
 
 ## §1 Execution modes
 
-Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, no broker), **confirm** (Telegram Take/Skip, then a real order), **auto** (real order without asking). Default shadow (B2, revised). All three run the same risk check. Auto is for the owner's own accounts only (MA "Execution modes").
+Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, no broker), **confirm** (Telegram Take/Skip, then a real order), **auto** (real order without asking). A new bot asks for confirm and runs shadow until its gates pass (B2, revised; HAT-EXEC-011, HAT-GOV-085). All three run the same risk check. Auto is for the owner's own accounts only (MA "Execution modes").
 
 #### HAT-EXEC-010: Shadow never reaches the broker
 - **Statement:** A bot in shadow mode never calls any broker method; its orders, fills and positions are written with `is_virtual = true`.
@@ -17,13 +17,22 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
   - Property: in every reachable state of the router, for every signal whose bot mode was shadow at the session open, the count of broker calls attributed to that signal is 0. Harm: a paper strategy places real orders.
   - Property: for every shadow signal driven end to end through the real router against `FakeBroker`, every `hat_order`, `hat_fill` and `hat_position` row it produces has `is_virtual = true` and the fake records zero calls. Harm: shadow trades contaminate real position, P&L and reconciliation.
 
-#### HAT-EXEC-011: Default mode is shadow
-- **Statement:** Every new bot and both seeded default configs start in shadow mode.
-- **Source:** BL "Minervini-style bot — default config", "Qullamaggie-style bot — default config" (`execution_mode: shadow`); B2 (revised).
-- **PR:** 8, 15
-- **Verification:** CONF `exec.default_mode_shadow`
+#### HAT-EXEC-011: Default mode is confirm (revised, D130/D132)
+- **Statement:** Every new bot asks for confirm mode and runs shadow until its sleeve is Live and the gates pass (HAT-EXEC-012, HAT-GOV-085); the owner switches a bot with `/mode <bot> shadow|confirm|auto`.
+- **Source:** D130 ("the default is manual"), D132; BL default configs (`execution_mode: shadow`, revised); B2 (revised).
+- **PR:** 8, 15, 45
+- **Verification:** CONF `exec.default_mode_confirm`
 - **Acceptance:**
-  - Property: every seed config and the `hat_bot.execution_mode` column default equal `shadow`. Harm: a new bot trades real money before it has run in shadow.
+  - Property: the `hat_bot.execution_mode` column default (model and database) is `confirm`, a new bot cannot be created in another mode, an unknown mode reads as shadow, and confirm with any gate missing reads as shadow. Harm: a new bot trades real money before the owner's gates, or the owner's chosen default is lost.
+- **Note (PR 45):** the strategy config's `execution_mode` key is not read for a bot's mode; the seed YAMLs still say `shadow`. They are lane E files whose change would move the backtest golden digest; dropping the key is a follow-up.
+
+#### HAT-EXEC-014: Auto places only high-confidence signals
+- **Statement:** In auto mode an accepted signal labelled `high` confidence is placed as a real order; any other label, or none, is routed as in confirm: an approval card for the owner (D149, Q40). Until the confidence labels land (D132, plan audit PR 71) no signal carries a label, so every auto entry asks the owner.
+- **Source:** D149; D132; plan audit 2026-10-22 PR 45.
+- **PR:** 45
+- **Verification:** PBT `router.auto_places_only_high_confidence`
+- **Acceptance:**
+  - Property: for every confidence value (high, medium, low, none, anything else), an accepted auto signal labelled `high` sends exactly one entry order when the live conditions read at placement allow it (§2; otherwise none and the signal Rejected with the reason), and any other label writes an approval card, moves the signal to AwaitingApproval and calls no broker. Harm: a medium- or low-confidence trade is bought without the owner's approval.
 
 #### HAT-EXEC-012: Auto requires a broker with delivery GTT
 - **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.
@@ -36,7 +45,7 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode confirm either, so it places no real order. Harm: a confirmed entry fills and then goes overnight with no resting stop, breaking "protective stops sit at the broker on every real fill" (MA "Execution modes").
   - Property: a stored `gtt_delivery = true` never enables a real order the adapter does not report: the router refuses such an entry at placement (`no_gtt_delivery`, before any order is reserved) and `send_order` refuses it before the broker call; a stop or a sale is never refused for the capability. Harm: a hand-written or stale account row buys real shares that get no overnight stop.
 - **Implementation:** `modes.real_orders_allowed` (active, stored GTT, the adapter's GTT now) gates `router._gtt_refusal` and `submit._check_allowed` for an entry; `bot_mode` and `/mode` read the stored value, which the desks set at start and every session check keeps (HAT-BRK-092).
-- **Fyers GTT for CNC** (was OWNER-PENDING, PLAN Q8): verified on the live account on 2026-10-22 (a single-leg CNC sell GTT placed with and without a tag, read in the GTT book, modified and cancelled; `tests/hat/fixtures/fyers_live_writes.json`). The Fyers adapter reports `gtt_delivery = true` since PR 25 (HAT-BRK-091), so confirm and auto run once the owner queues them; every bot still starts in shadow (HAT-EXEC-011).
+- **Fyers GTT for CNC** (was OWNER-PENDING, PLAN Q8): verified on the live account on 2026-10-22 (a single-leg CNC sell GTT placed with and without a tag, read in the GTT book, modified and cancelled; `tests/hat/fixtures/fyers_live_writes.json`). The Fyers adapter reports `gtt_delivery = true` since PR 25 (HAT-BRK-091), so confirm and auto run once the owner queues them and the owner's gates pass (HAT-GOV-085); every bot asks for confirm and runs shadow until then (HAT-EXEC-011).
 
 #### HAT-EXEC-013: Delivery only
 - **Statement:** Every HAT real order uses product CNC (delivery).

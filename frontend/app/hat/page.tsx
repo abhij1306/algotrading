@@ -116,6 +116,20 @@ function StatusSummary({ status }: Readonly<{ status: HatStatus }>) {
   );
 }
 
+type Bot = HatStatus["bots"][number];
+
+/** The mode the bot runs, why it differs from the one asked for, and any queued change. */
+function modeLabel(bot: Bot): string {
+  let label = bot.effective_mode;
+  if (bot.effective_mode !== bot.execution_mode) {
+    label += ` (asked ${bot.execution_mode}: ${bot.mode_reason ?? "?"})`;
+  }
+  if (bot.pending_mode !== null) {
+    label += `; ${bot.pending_mode} from ${bot.pending_from ?? "?"}`;
+  }
+  return label;
+}
+
 function BotsTable({ bots }: Readonly<{ bots: HatStatus["bots"] }>) {
   return (
     <Table>
@@ -131,7 +145,7 @@ function BotsTable({ bots }: Readonly<{ bots: HatStatus["bots"] }>) {
         {bots.map((bot) => (
           <TableRow key={bot.id}>
             <TableCell>{bot.name}</TableCell>
-            <TableCell>{bot.execution_mode}</TableCell>
+            <TableCell>{modeLabel(bot)}</TableCell>
             <TableCell>{bot.lifecycle_state}</TableCell>
             <TableCell>
               <Badge variant={bot.manage_only ? "warning" : "profit"}>

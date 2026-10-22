@@ -3,15 +3,13 @@ HAT-EXEC-012; 07 §8-§9).
 
 A broker account becomes usable only after the capability check (funds, positions and holdings
 fetched without error) and is recorded in `hat_broker_account` with the adapter's capabilities.
-The only adapter registered in the MVP is Fyers. Confirm and auto mode place real orders, and
-every real fill needs an overnight broker-side stop, so both need an active account whose
-capabilities report GTT for delivery; the Fyers adapter reports none until the owner verifies GTT
-on a live account (PLAN Q8), so the MVP runs shadow only until then. The gate itself lives in
-`modes.py` (which imports no broker, so the engine may read it); the mode helpers are
-re-exported here. The
-stored capabilities are a cache: every session check rewrites them from the adapter
-(`session.record_session`, HAT-BRK-092), and a real entry also needs the adapter's own GTT value
-(`modes.real_orders_allowed`).
+The only adapter registered in the MVP is Fyers. Confirm and auto mode place real orders, so
+both need an active account whose capabilities report GTT for delivery (every real fill needs an
+overnight broker-side stop) and the owner's confirmation that DDPI is registered
+(`confirm_ddpi`, HAT-GOV-085). The gates live in `modes.py` (which imports no broker, so the
+engine may read it); the mode helpers are re-exported here. The stored capabilities are a cache:
+every session check rewrites them from the adapter (`session.record_session`, HAT-BRK-092), and a
+real entry also needs the adapter's own GTT value (`modes.real_orders_allowed`).
 """
 
 from __future__ import annotations
@@ -19,12 +17,16 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Callable
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
+from ..events import record
 from ..models import HatBrokerAccount
+from ..risk.sessions import SessionCalendar, SessionState
+from ..time import as_utc, trade_date_of
 from .broker import BrokerError, HatBroker
 from .fyers_adapter import build_fyers_broker
 from .modes import MODES, ModeRefusedError, UnknownModeError, effective_mode, request_mode
@@ -38,6 +40,7 @@ __all__ = [
     "ModeRefusedError",
     "UnknownModeError",
     "OnboardingError",
+    "confirm_ddpi",
     "effective_mode",
     "onboard_account",
     "request_mode",
@@ -55,6 +58,7 @@ class OnboardingError(HatError):
 
 
 _ONBOARD_LOCK = threading.Lock()
+DDPI_NOTE_MAX = 200
 
 
 def require_active_account(session: Session, account_id: uuid.UUID) -> HatBrokerAccount:
@@ -106,4 +110,51 @@ def _onboard(
     account.capabilities = broker.capabilities().to_json()
     account.status = ACCOUNT_ACTIVE if passed else ACCOUNT_FAILED
     session.commit()
+    return account
+
+
+def confirm_ddpi(
+    session: Session,
+    account_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    since: date,
+    note: str,
+    calendar: SessionCalendar,
+    now: datetime,
+    chat_id: int,
+) -> HatBrokerAccount:
+    """Record the owner's word that DDPI (or a POA) is registered on the account's demat since
+    `since` (plan audit O1, D154; HAT-GOV-085): sets `ddpi_confirmed` with the time and the
+    dated note and writes `broker.ddpi_confirmed` (actor user, via cli). A bot reads it as set
+    from the next session open on. Refused, writing nothing: an account that is not the user's
+    or not active (`account_not_active`), inside market hours or without a calendar row
+    (`market_hours`), a date after today (`ddpi_date_in_future`), an empty or overlong note
+    (`ddpi_note_required`), or an account already confirmed (`ddpi_already_confirmed`). The
+    account row is locked first, so of two confirmations at once the second sees the first."""
+    account = session.get(HatBrokerAccount, account_id, with_for_update=True)
+    if account is None or account.user_id != user_id or account.status != ACCOUNT_ACTIVE:
+        raise OnboardingError("account_not_active")
+    if calendar.state(now) is not SessionState.CLOSED:
+        raise OnboardingError("market_hours")
+    if since > trade_date_of(now):
+        raise OnboardingError("ddpi_date_in_future")
+    text = note.strip()
+    if not text or len(text) > DDPI_NOTE_MAX:
+        raise OnboardingError("ddpi_note_required")
+    if account.ddpi_confirmed:
+        raise OnboardingError("ddpi_already_confirmed")
+    account.ddpi_confirmed = True
+    account.ddpi_confirmed_at = as_utc(now)
+    account.ddpi_note = f"{since.isoformat()}: {text}"
+    record(
+        session,
+        aggregate_type="session",
+        aggregate_id=account.id,
+        event_type="broker.ddpi_confirmed",
+        actor="user",
+        payload={"chat_id": chat_id, "via": "cli", "since": since.isoformat()},
+        occurred_at=now,
+    )
+    session.flush()
     return account
