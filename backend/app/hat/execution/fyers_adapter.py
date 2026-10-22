@@ -78,6 +78,15 @@ def _order_type(code: object) -> OrderType | None:
         return None
 
 
+def _book_price(value: object) -> Decimal | None:
+    """A book row's limit price; None when it has none (0, missing or not a number)."""
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return price if price.is_finite() and price > 0 else None
+
+
 __all__ = [
     "CODE_INVALID_RESPONSE",
     "FYERS_CAPABILITIES",
@@ -535,6 +544,7 @@ class FyersHatBroker:
             status=map_fyers_status(row.get("status"), filled, qty),
             product=str(row.get("productType") or ""),
             order_type=_order_type(row.get("type")),
+            price=_book_price(row.get("limitPrice")),
         )
 
     def _order_book(self, rows: Iterable[Any]) -> OrderBook:

@@ -57,7 +57,7 @@ from ..events import record
 from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, trade_date_of, utc_now
+from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import AckResult, BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
 from .gtt import gtt_limit_price
@@ -219,10 +219,13 @@ class StopDesk:
         return found is not None
 
     @staticmethod
-    def triggered_gtts(session: Session, position_id: uuid.UUID) -> set[uuid.UUID]:
-        """The position's live GTTs that triggered with their sale still working at the broker
-        (`gtt.triggered`, HAT-EXEC-066): such a sale holds the shares and the fill sync has it
-        sold at the market, so no other sale is sent and the GTT is not moved meanwhile."""
+    def triggered_gtts(session: Session, position_id: uuid.UUID, now: datetime) -> set[uuid.UUID]:
+        """The position's live GTTs that triggered today with their sale still working at the
+        broker (`gtt.triggered`, HAT-EXEC-066): such a sale holds the shares and the fill sync has
+        it sold at the market, so no other sale is sent and the GTT is not moved meanwhile. The
+        sale is a DAY order, so a trigger of an earlier trade date holds nothing back: one the
+        sync never saw end leaves the GTT to the exits and the nightly verify as before."""
+        start, _ = day_bounds(trade_date_of(now))
         return set(
             session.scalars(
                 select(HatOrder.id)
@@ -232,7 +235,9 @@ class StopDesk:
                     HatOrder.is_virtual.is_(False),
                     HatOrder.purpose == STOP_GTT,
                     HatOrder.status.in_(LIVE),
+                    HatEvent.aggregate_type == "order",
                     HatEvent.event_type == EVENT_GTT_TRIGGERED,
+                    HatEvent.occurred_at >= start,
                 )
             )
         )
@@ -666,7 +671,7 @@ class StopDesk:
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
         done = True
-        triggered = self.triggered_gtts(session, position.id)
+        triggered = self.triggered_gtts(session, position.id, now)
         for row in self.stops_of(session, position.id, *LIVE):
             if row.id in triggered:
                 continue  # its sale is working; the fill sync sells it at the market
@@ -692,7 +697,9 @@ class StopDesk:
         if not applied_factors(session, position.id):
             # Never rescaled: nothing to follow, but a pending action means the stop is not done.
             return not pending_actions(session, position, trade_date_of(now))
-        if self.exit_working(session, position.id):
+        if self.exit_working(session, position.id) or self.triggered_gtts(
+            session, position.id, now
+        ):
             return False  # the sale holds the shares; the next sync tries again
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)

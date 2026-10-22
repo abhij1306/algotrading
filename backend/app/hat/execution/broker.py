@@ -194,6 +194,7 @@ class BrokerOrder:
     status: str  # one of hat_order.status
     product: str
     order_type: OrderType | None = None  # None when the broker's code is unknown
+    price: Decimal | None = None  # the limit price; None for an order without one
 
 
 class OrderBook(list[BrokerOrder]):

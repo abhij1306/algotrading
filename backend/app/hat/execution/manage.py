@@ -366,7 +366,7 @@ class TradeManager:
         if (
             settled == WAIT
             or self._desk.exit_working(session, position.id)
-            or self._desk.triggered_gtts(session, position.id)
+            or self._desk.triggered_gtts(session, position.id, now)
         ):
             # one sale at a time (a triggered GTT's working sale is one, HAT-EXEC-066); the next
             # evaluation sees what it left

@@ -19,10 +19,11 @@ book raises and nothing is written) and then, for one broker account:
 5. raises `gtt.unfilled` for an untagged SELL order on such a symbol that ended (cancelled,
    rejected, expired) short of its quantity: the GTT triggered and did not fill (07 §6 step 3).
    The GTT is ended and the position protected again. The broker order id is kept on the
-   `order.cancelled` event, so the alert is raised once; while such an order still works short of
-   its quantity (the price gapped below the GTT's limit), the GTT triggered and its sale rests:
-   `gtt.triggered` is recorded and `gtt.unfilled` raised once, and the sale is asked to go at the
-   market at every sync until the book shows it does (HAT-EXEC-066);
+   `order.cancelled` event, so the alert is raised once; while the GTT's own sale (at its limit
+   price and quantity) still works short of its quantity a minute after it was first seen (the
+   price gapped below the limit), it rests: `gtt.triggered` is recorded and `gtt.unfilled`
+   raised once, and the sale is asked to go at the market at every sync until the book shows it
+   does (HAT-EXEC-066);
 6. protects again every open real position of the account that has no stop the broker
    confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
    settled by `StopDesk.protect`; each sync tries again);
@@ -45,7 +46,8 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -89,6 +91,8 @@ STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
 RESTING = "gtt_triggered_resting"  # alert code: the GTT's sale rests below its limit
 NOT_MARKETED = "gtt_sale_not_marketed"  # alert code: the broker refused the market conversion
+# A GTT's sale working this long is resting, not on its way to a fill (HAT-EXEC-066).
+RESTING_AFTER = timedelta(seconds=60)
 
 
 def watch_closely(session: Session, account_id: uuid.UUID, now: datetime) -> bool:
@@ -142,6 +146,7 @@ class FillSync:
         self._notifier = notifier or LogNotifier()
         self._refused_trades: set[str] = set()
         self._unmarketed: set[str] = set()  # resting GTT sales whose conversion was alerted
+        self._working_since: dict[str, datetime] = {}  # a GTT's sale first seen working
 
     def run(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport:
         """One pass over the broker's books. Raises BrokerUnavailableError when either book
@@ -172,7 +177,7 @@ class FillSync:
         for order in orders:
             if self._unfilled_trigger(order, gtts):
                 self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
-            elif self._resting_trigger(order, gtts):
+            elif self._resting_trigger(session, order, gtts):
                 self._gtt_resting(session, gtts[order.symbol], order, now, report)
         for position_id in self._unprotected(session, account_id) - report.protected:
             self._protect(session, position_id, now, report)
@@ -447,23 +452,35 @@ class FillSync:
 
     # --- 5b. a GTT that triggered and whose sale rests unfilled ----------------------------------
 
-    @staticmethod
-    def _resting_trigger(order: BrokerOrder, gtts: dict[str, HatOrder]) -> bool:
+    def _resting_trigger(
+        self, session: Session, order: BrokerOrder, gtts: dict[str, HatOrder]
+    ) -> bool:
+        """The GTT's own sale, still working short of its quantity: untagged, a CNC SELL of the
+        GTT's quantity at the GTT's limit price (once marked, by its broker order id: a market
+        sale has no limit price). Any other untagged order is not HAT's and is left alone."""
         gtt = gtts.get(order.symbol)
-        return (
-            gtt is not None
-            and order.tag is None
-            and order.side is Side.SELL
-            and order.status in LIVE
-            and order.filled_qty < order.qty
-            and order.qty == gtt.qty
+        if (
+            gtt is None
+            or order.tag is not None
+            or order.side is not Side.SELL
+            or order.product != "CNC"
+            or order.status not in LIVE
+            or order.filled_qty >= order.qty
+            or order.qty != gtt.qty
+        ):
+            return False
+        limit = Decimal(gtt.price) if gtt.price is not None else None
+        return (limit is not None and order.price == limit) or self._trigger_seen(
+            session, gtt.id, order.order_id
         )
 
     @staticmethod
     def _trigger_seen(session: Session, gtt_id: uuid.UUID, order_id: str) -> bool:
         payloads = session.scalars(
             select(HatEvent.payload).where(
-                HatEvent.event_type == EVENT_GTT_TRIGGERED, HatEvent.aggregate_id == gtt_id
+                HatEvent.aggregate_type == "order",
+                HatEvent.aggregate_id == gtt_id,
+                HatEvent.event_type == EVENT_GTT_TRIGGERED,
             )
         )
         return any((payload or {}).get(TRIGGER_ORDER) == order_id for payload in payloads)
@@ -477,9 +494,10 @@ class FillSync:
         report: SyncReport,
     ) -> None:
         """HAT-EXEC-066: the GTT triggered and its limit sale still works (the price gapped below
-        the limit): the first sight records `gtt.triggered` and raises `gtt.unfilled`; every
-        sync asks for the sale to go at the market until the book shows it does. The GTT row
-        stays live: its sale holds the shares, so no other stop or sale is placed over it."""
+        the limit). Once the sale has worked `RESTING_AFTER` (a sale filling at once is left to
+        fill), `gtt.triggered` is recorded and `gtt.unfilled` raised; from then on every sync
+        asks for the sale to go at the market until the book shows it does. The GTT row stays
+        live: its sale holds the shares, so no other stop or sale is placed over it."""
         signal = session.get(HatSignal, gtt.signal_id)
         if signal is None:
             return
@@ -489,6 +507,10 @@ class FillSync:
             "position_id": str(gtt.position_id),
         }
         if not self._trigger_seen(session, gtt.id, order.order_id):
+            since = self._working_since.setdefault(order.order_id, now)
+            if now - since < RESTING_AFTER:
+                return  # it may still fill at its limit; a restart only waits again
+            self._working_since.pop(order.order_id, None)
             record(
                 session,
                 aggregate_type="order",
