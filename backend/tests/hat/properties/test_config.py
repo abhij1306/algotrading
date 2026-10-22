@@ -4,7 +4,7 @@ import copy
 import json
 import random
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, time
 
 import pytest
 import yaml
@@ -15,15 +15,17 @@ from hat.hat_config_support import (
     with_unknown_key,
 )
 from hat.hat_criteria_support import Lcg, frame, make_rows, universe_frame
-from hat.hat_risk_support import AT, CALENDAR
+from hat.hat_risk_support import AT, CALENDAR, calendar_around
 from hat.hat_support import memory_engine
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import canonical_json, config_hash
+from app.hat.data.sessions import IST
 from app.hat.engine.criteria import REGISTRY, EvalContext
+from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.strategy.config import (
     ConfigError,
     Instance,
@@ -36,12 +38,15 @@ from app.hat.engine.strategy.scoring import evaluate_stage
 from app.hat.engine.strategy.versions import (
     SEED_NAMES,
     VersionError,
+    assign_version,
     create_bot,
+    promote_version,
     publish_version,
     save_draft,
     seed_config,
     seed_default_strategies,
     seed_text,
+    start_shadow,
 )
 from app.hat.engine.strategy.yamlio import export_yaml, import_yaml
 from app.hat.models import HatBacktestRun, HatBot, HatEvent, HatStrategyVersion
@@ -500,3 +505,112 @@ def test_trade_keeps_entry_version(price: int) -> None:
         # price < 100 is below the old stack's sma(10) = 100, and above the 95 stop for 96..99
         assert (old_pos.closed_at is not None) is True
         assert (new_pos.closed_at is not None) == (price <= 95)
+
+
+GATE_CALENDAR = calendar_around(date(2026, 12, 1), span=75)
+GATE_START = date(2026, 10, 1)
+
+
+def gate_night(after: int) -> datetime:
+    """20:00 IST of the `after`-th trading session after GATE_START, as UTC (0: GATE_START)."""
+    days = [d for d in GATE_CALENDAR.trading_days() if d > GATE_START]
+    day = days[after - 1] if after else GATE_START
+    return datetime.combine(day, time(20, 0), tzinfo=IST).astimezone(UTC)
+
+
+def released(session: Session, strategy_id: uuid.UUID, at: datetime) -> HatStrategyVersion:
+    """A new version of the strategy, published on a run and in shadow from `at`."""
+    draft = save_draft(
+        session,
+        strategy_id=strategy_id,
+        config=seed_config(SEED_NAMES[0]),
+        calendar=GATE_CALENDAR,
+        now=at,
+    )
+    publish_version(session, draft.id, backtest_run_id=add_run(session, draft).id)
+    return start_shadow(session, draft.id, calendar=GATE_CALENDAR, now=at)
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    state=st.sampled_from(lifecycle.STATES),
+    waited=st.integers(0, 30),
+    replaces=st.booleans(),
+    in_hours=st.booleans(),
+)
+@example(state="live", waited=20, replaces=True, in_hours=False)
+@example(state="shadow", waited=19, replaces=False, in_hours=False)
+def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -> None:
+    """PBT config.release_gate (HAT-BOT-084, HAT-GOV-083): a version goes live only from shadow,
+    outside market hours, after at least 20 trading sessions of shadow; it retires the version it
+    replaces and moves that version's sleeves onto it in the same step, with one
+    `strategy.promoted` event; a refusal changes nothing. A sleeve that places real orders (Live,
+    Probation) is never pointed at a version that is not live. Harm: an untested edit trades real
+    money, or two live versions of one strategy split the sleeves."""
+    with Session(ENGINE) as session:
+        strategy = seed_default_strategies(session, uuid.uuid4())[0]
+        previous = None
+        start = 0
+        if replaces:
+            previous = released(session, strategy.id, gate_night(0))
+            promote_version(
+                session, previous.id, calendar=GATE_CALENDAR, now=gate_night(20), chat_id=7
+            )
+            start = 20
+        version = released(session, strategy.id, gate_night(start))
+        bot = HatBot(
+            id=uuid.uuid4(),
+            user_id=strategy.user_id,
+            strategy_id=strategy.id,
+            broker_account_id=ACCOUNT,
+            execution_mode="shadow",
+            status="active",
+            lifecycle_state=state,
+            risk_cluster="momentum-long",
+            live_version_id=None if previous is None else previous.id,
+        )
+        session.add(bot)
+        session.flush()
+        real_money = state in (lifecycle.LIVE, lifecycle.PROBATION)
+        if real_money:
+            with pytest.raises(VersionError) as refused:
+                assign_version(session, bot_id=bot.id, version_id=version.id)
+            assert refused.value.code == "version_not_live"
+        else:
+            assert assign_version(session, bot_id=bot.id, version_id=version.id) is bot
+            bot.live_version_id = None if previous is None else previous.id
+        session.flush()
+        now = gate_night(start + waited)
+        if in_hours:
+            now = now.replace(hour=5)  # 10:30 IST, inside the session
+        events = session.scalar(select(func.count()).select_from(HatEvent))
+        if in_hours or waited < lifecycle.SHADOW_DAYS:
+            with pytest.raises(VersionError) as refused:
+                promote_version(session, version.id, calendar=GATE_CALENDAR, now=now, chat_id=7)
+            assert refused.value.code == ("market_hours" if in_hours else "shadow_days")
+            assert version.status == "shadow"
+            assert previous is None or previous.status == "live"
+            assert bot.live_version_id == (None if previous is None else previous.id)
+            assert session.scalar(select(func.count()).select_from(HatEvent)) == events
+        else:
+            promote_version(session, version.id, calendar=GATE_CALENDAR, now=now, chat_id=7)
+            assert version.status == "live"
+            live = session.scalars(
+                select(HatStrategyVersion).where(
+                    HatStrategyVersion.strategy_id == strategy.id,
+                    HatStrategyVersion.status == "live",
+                )
+            ).all()
+            assert live == [version]
+            assert previous is None or previous.status == "retired"
+            assert bot.live_version_id == (None if previous is None else version.id)
+            promoted = session.scalars(
+                select(HatEvent).where(
+                    HatEvent.event_type == "strategy.promoted", HatEvent.aggregate_id == version.id
+                )
+            ).all()
+            assert len(promoted) == 1
+            assert promoted[0].payload["bots"] == ([str(bot.id)] if previous else [])
+            assert promoted[0].payload["chat_id"] == 7
+            assert assign_version(session, bot_id=bot.id, version_id=version.id) is bot
+        session.rollback()

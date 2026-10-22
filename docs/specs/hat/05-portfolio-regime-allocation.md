@@ -93,6 +93,8 @@ Three inputs classify the market into four states each night; each sleeve has a 
 | Correction | Close > 200 SMA but < 50 SMA, or breadth < 40% | 0.5 |
 | Bear | Close < 200 SMA | 0.25 |
 
+Two regime definitions exist on purpose (design review 2026-10-22 item 13, kept by default): this portfolio regime decides **how big** a sleeve's entries are (its multiplier scales the weight and the risk per trade), and each strategy's own regime gate (stage 2 of its config, 04 HAT-BOT-053; 06 §5) decides **whether** it may enter at all. They read different series and can disagree: S1's gate may be on while the portfolio is in Bear, and then S1 enters at the Bear multiplier. Neither changes the other, and neither changes a sleeve's lifecycle (HAT-PORT-034).
+
 #### HAT-PORT-030: State changes only after 3 consecutive days
 - **Statement:** The confirmed regime state changes to a new state only on the 3rd consecutive trading day on which the raw classification equals that new state.
 - **Source:** BL "Regime engine v1" (State changes); SCH `hat_regime_state.confirmed`; PL3.
@@ -247,13 +249,14 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 
 #### HAT-PORT-060: Lifecycle transitions follow the table and its guards
 - **Statement:** A sleeve moves Research → Backtested → Shadow → Live, Live → Probation, Probation → Live (owner promotion only, see the pending default below), Probation → Retired, and Retired → Research only, each transition guarded by its entry condition and recorded as an event.
-- **Source:** BL "Sleeve lifecycle"; SCH `hat_bot.lifecycle_state`; PL4.
-- **PR:** 9, 12
-- **Verification:** TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`
+- **Source:** BL "Sleeve lifecycle"; SCH `hat_bot.lifecycle_state`; PL4; design review 2026-10-22 item 8 (no caller took the forward edges).
+- **PR:** 9, 12, 35
+- **Verification:** TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy`
 - **Acceptance:**
   - Property: in every reachable state, every lifecycle change is one of the allowed edges and is accompanied by an event in the same transaction. Harm: a sleeve skips the backtest or shadow stage and trades unproven.
   - Property: in every reachable state, a Live sleeve passed through Backtested and Shadow since it last left Research. Harm: a retired sleeve returns to money without the full gate.
 - Re-entry to Live from Probation restarts the health multiplier at its target (no ramp), because the sleeve's previous multiplier was 0.
+- **Implementation (PR 35):** the engine takes Live → Probation and Probation → Retired by itself (`advance_automatic`); the owner takes every other edge with `python -m app.hat.admin promote --bot ID --to STATE` (10 §9 "First deploy", HAT-OPS-091). `service.owner_transition` applies the same guard to the same evidence, only outside market hours, records the change as the owner's (`actor = user`, the allowlisted chat id, `via = cli`), and refuses Live (`version_not_live`) unless the sleeve's strategy version is itself live (HAT-BOT-084), so the sleeve-level and version-level 20 sessions both hold before real money.
 - **[OWNER-PENDING]** Probation → Live recovery: docs do not define it; default = not automatic, only by owner promotion after the probation condition no longer holds, recorded as an event; owner to confirm.
 
 #### HAT-PORT-061: Backtested requires DSR probability ≥ 0.95 and ≥ 200 trades

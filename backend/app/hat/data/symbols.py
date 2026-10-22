@@ -97,10 +97,11 @@ class SymbolMaster:
             ticker = match.group(2)
             return SYMBOL_ALIASES.get(ticker, ticker)
         if ":" in symbol:
-            ticker = symbol.split(":")[1]
+            # stripped on both sides of the suffix, so the result converts to itself
+            ticker = symbol.split(":")[1].strip()
             for suffix in _SERIES_SUFFIXES:
                 if ticker.endswith(suffix):
-                    ticker = ticker[: -len(suffix)]
+                    ticker = ticker[: -len(suffix)].strip()
                     break
             return SYMBOL_ALIASES.get(ticker, ticker)
         if DB_PATTERN.match(symbol):

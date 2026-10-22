@@ -92,13 +92,14 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `7003b4d97ef6e4b9b216063e17d6fb12d2c439a16688238f70d76085278325cb`
+Covered digest: `f8e6e3a061891f6037b8956942035725ac3dd960105f469be30c06d07b323459`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - K2 moved symbol conversion into `app/hat/data/symbols.py` (stateless; no `known_symbols`). `symbols.aliases_resolve` also checks that a spaced alias (`NIFTY BANK`) converts through `to_fyers` (found in review). `symbols.total_and_valid` found that a hyphenated ticker written as a Fyers symbol (`NSE:BAJAJ-AUTO-EQ`) was refused, and `FYERS_PATTERN` now accepts a hyphen in the ticker and the -BE and -BZ series. `reference.broker_instrument_list` replaces the legacy index-only instrument list with `hat_instrument` joined to `hat_broker_symbol`.
+- PR 35: `symbols.total_and_valid` found in CI that `to_db(": 0")` returned `" 0"`, which converts to `"0"`, so `to_db` was not idempotent: the ticker after the colon was not stripped. `to_db` now strips it before and after removing the series suffix; the input is pinned as an `@example` (with `"X: A -EQ"`). Break (the old code, ticker not stripped): `E   AssertionError: assert '0' == ' 0'`. Nothing was narrowed.
 
 
 - `McpClient` gained `corporate_actions`, `stock_history` and `index_history` (PR 5, HAT-DATA-094..096). Their checks live in `verify-data` (`history_build.mcp_*`, the history CONF fixtures test); the unwrapping and error rules shared with the other client methods are still checked here.

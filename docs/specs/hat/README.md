@@ -352,7 +352,7 @@ to an artefact that exists.
 | HAT-BOT-081 | [04](04-criteria-and-bots.md) | 8 | PBT `config.hash_canonical` |
 | HAT-BOT-082 | [04](04-criteria-and-bots.md) | 8 | PBT `config.yaml_round_trip` |
 | HAT-BOT-083 | [04](04-criteria-and-bots.md) | 11, 15 | PBT `config.trade_keeps_entry_version`, TLA `TradeLifecycle!VersionPinned` |
-| HAT-BOT-084 | [04](04-criteria-and-bots.md) | 8, 9, 12 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence` |
+| HAT-BOT-084 | [04](04-criteria-and-bots.md) | 8, 9, 12, 35 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate` |
 | HAT-PORT-010 | [05](05-portfolio-regime-allocation.md) | 2, 9 | CONF `bot_sleeve_columns`, PBT `allocator.sleeve_count_agnostic` |
 | HAT-PORT-011 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.cluster_cap` |
 | HAT-PORT-020 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `governance.universe_version_immutable`, DB `governance.one_live_version` |
@@ -372,7 +372,7 @@ to an artefact that exists.
 | HAT-PORT-054 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.smoothing` |
 | HAT-PORT-055 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.cash_remainder` |
 | HAT-PORT-056 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `portfolio.unique_keys`, TLA `JobScheduler!AtMostOnceSuccess` |
-| HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
+| HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12, 35 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy` |
 | HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
 | HAT-PORT-062 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days` |
 | HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9, 18 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow` |
@@ -417,7 +417,7 @@ to an artefact that exists.
 | HAT-GOV-080 | [06](06-risk-and-governance.md) | 10, 16 | CONF `gov.lever_catalogue`, TLA `ExecutionRouter!UserCannotRaiseRisk` |
 | HAT-GOV-081 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!PauseBlocksEntriesOnly` |
 | HAT-GOV-082 | [06](06-risk-and-governance.md) | 16 | TLA `KillSwitch!FlattenNeedsConfirm` |
-| HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence` |
+| HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9, 35 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate` |
 | HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17, 34 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
@@ -563,6 +563,7 @@ to an artefact that exists.
 | HAT-OPS-071 | [10](10-ops.md) | 16, 17 | PBT `telegram.report_content` |
 | HAT-OPS-072 | [10](10-ops.md) | 16, 17 | PBT `ops.status_matches_db` |
 | HAT-OPS-090 | [10](10-ops.md) | 17 | CONF `ops.runbook_complete` |
+| HAT-OPS-091 | [10](10-ops.md) | 35 | PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services` |
 | HAT-VER-010 | [11](11-verification.md) | 1 | CONF `spec_requirements_well_formed` |
 | HAT-VER-011 | [11](11-verification.md) | 2-17 | CONF `traceability_points_to_methods` |
 | HAT-VER-020 | [11](11-verification.md) | 10, 11, 13, 15, 16, 17 | CONF `ci_runs_models_for_merged_targets` |

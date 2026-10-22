@@ -22,6 +22,8 @@ formats = st.sampled_from(["{t}", "NSE:{t}-EQ", "nse:{t}-eq", " {t} ", "BSE:{t}-
 
 
 @example(text="-")
+@example(text=": 0")
+@example(text="X: A -EQ")
 @example(text="NSE:BAJAJ-AUTO-EQ")
 @given(text=anything)
 def test_conversion_is_total_and_valid(text: str) -> None:

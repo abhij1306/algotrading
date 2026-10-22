@@ -57,6 +57,15 @@ class OnboardingError(HatError):
 _ONBOARD_LOCK = threading.Lock()
 
 
+def require_active_account(session: Session, account_id: uuid.UUID) -> HatBrokerAccount:
+    """The account, when it passed its capability check (HAT-BRK-092); a missing or failed one
+    raises `OnboardingError`, so no sleeve is bound to an account that never passed."""
+    account = session.get(HatBrokerAccount, account_id)
+    if account is None or account.status != ACCOUNT_ACTIVE:
+        raise OnboardingError("account_not_active")
+    return account
+
+
 def onboard_account(
     session: Session, broker: HatBroker, *, user_id: uuid.UUID, broker_name: str, account_ref: str
 ) -> HatBrokerAccount:
