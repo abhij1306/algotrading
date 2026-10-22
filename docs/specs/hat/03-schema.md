@@ -767,7 +767,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Data | `ingest.completed`, `ingest.failed`, `quality.failed`, `gapscan.completed` |
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
 | Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed`, `gtt.triggered` |
-| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled` |
+| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled`, `corporate_action.unhandled` |
 | Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
 | Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
@@ -805,7 +805,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 41 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 42 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092, and `corporate_action.unhandled` from PR 31, a position spanning an action the rescale cannot handle, HAT-EXEC-144). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

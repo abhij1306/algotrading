@@ -334,7 +334,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **[OWNER-PENDING]** Volume adjustment: default divide by the cumulative factor (no plan §8 default; standard practice); owner to confirm.
 
 #### HAT-DATA-055: Split and bonus factors from text sources
-- **Statement:** When the factor comes from archive text rather than the MCP field, it is parsed with the shared helper derived from `phase1_build._parse_corp_action_factor`/`find_bonus_ratio`: a split from face value a to b gives factor b / a, a bonus of x new for y held gives y / (x + y).
+- **Statement:** When the factor comes from archive text rather than the MCP field, it is parsed with the shared helper derived from `phase1_build._parse_corp_action_factor`/`find_bonus_ratio`: a split from face value a to b gives factor b / a, a bonus of x new for y held gives y / (x + y). An archive text without a usable ratio that names a split, a bonus or a consolidation is reported unparsed, never dropped (a consolidation is never parsed: HAT-EXEC-144).
 - **Source:** DS "Historical data build" step 4 (archive fallback); PLAN PR 5 (reuse of the phase-1 factor parsing).
 - **PR:** 5
 - **Verification:** PBT `corporate_actions.factor_parse`

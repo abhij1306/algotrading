@@ -17,6 +17,14 @@ it on the ex-date open for nothing but the action. So:
   from the action alone) and its instrument takes no entry (`corporate_action_pending`), and
   the job alerts `corporate_action.pending`.
 
+An action the rescale cannot handle (a rights issue, a demerger or any `other` action, and a
+consolidation, factor 1 or above) changes no share count HAT can know: it is never applied, and
+the position is manage-only for good instead (HAT-EXEC-144, design review item 6, option A):
+`manage_only` holds it, so its exits see no view and its instrument takes no entry, the broker
+stop is left as it is, and `ca.rescale` records one URGENT `corporate_action.unhandled` per
+(position, action). The owner resolves it (a `/flatten` sells at most the shares the broker
+holds).
+
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
 
@@ -44,21 +52,26 @@ __all__ = [
     "ALERT_ACTION_PENDING",
     "ALERT_ACTION_UNCHECKED",
     "EVENT_RESCALED",
+    "EVENT_UNHANDLED",
     "SKIP_ACTION_PENDING",
     "Scaled",
     "applied_factors",
     "awaits_rescale",
     "exact_factor",
+    "flag_unhandled",
     "held_and_watchlisted",
+    "manage_only",
     "pending_actions",
     "rescale_open_positions",
     "scale_position",
     "scale_qty",
+    "unhandled_actions",
 ]
 
 logger = logging.getLogger(__name__)
 
 EVENT_RESCALED = "position.rescaled"
+EVENT_UNHANDLED = "corporate_action.unhandled"
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
 SKIP_ACTION_PENDING = "corporate_action_pending"
@@ -166,6 +179,40 @@ def pending_actions(session: Session, position: HatPosition, day: date) -> list[
     return [a for a in actions if _key(a.ex_date, a.action_type) not in done]
 
 
+def _rescalable(action: HatCorporateAction) -> bool:
+    """A split or bonus of factor below 1: the only actions `ca.rescale` applies."""
+    return action.action_type in RESCALED_TYPES and Decimal(action.adjustment_factor) < 1
+
+
+def unhandled_actions(
+    session: Session, position: HatPosition, day: date
+) -> list[HatCorporateAction]:
+    """The stored actions of the position's instrument the rescale cannot handle (`other`, or a
+    consolidation: factor 1 or above), ex-date after the day it opened and on or before `day`,
+    oldest first. None for a closed position (HAT-EXEC-144)."""
+    if position.closed_at is not None:
+        return []
+    opened = trade_date_of(as_utc(position.opened_at))
+    actions = session.scalars(
+        select(HatCorporateAction)
+        .where(
+            HatCorporateAction.instrument_id == position.instrument_id,
+            HatCorporateAction.ex_date > opened,
+            HatCorporateAction.ex_date <= day,
+        )
+        .order_by(HatCorporateAction.ex_date, HatCorporateAction.action_type)
+    )
+    return [a for a in actions if not _rescalable(a)]
+
+
+def manage_only(session: Session, position: HatPosition, day: date) -> bool:
+    """True while the position spans an action it was not rescaled for, or one the rescale
+    cannot handle: its exits see no view (HAT-EXEC-142, HAT-EXEC-144)."""
+    return bool(
+        pending_actions(session, position, day) or unhandled_actions(session, position, day)
+    )
+
+
 def _open_positions(session: Session, instrument_id: uuid.UUID | None = None) -> list[HatPosition]:
     query = select(HatPosition).where(HatPosition.closed_at.is_(None))
     if instrument_id is not None:
@@ -191,9 +238,10 @@ def held_and_watchlisted(session: Session, day: date) -> dict[str, uuid.UUID]:
 
 
 def awaits_rescale(session: Session, instrument_id: uuid.UUID, day: date) -> bool:
-    """True while some open position of the instrument has an action it was not rescaled for:
-    the instrument is manage-only and that position's exits wait (HAT-EXEC-142)."""
-    return any(pending_actions(session, p, day) for p in _open_positions(session, instrument_id))
+    """True while some open position of the instrument has an action it was not rescaled for,
+    or one the rescale cannot handle: the instrument is manage-only and that position's exits
+    wait (HAT-EXEC-142, HAT-EXEC-144)."""
+    return any(manage_only(session, p, day) for p in _open_positions(session, instrument_id))
 
 
 def _apply(
@@ -244,6 +292,52 @@ def rescale_position(session: Session, position_id: uuid.UUID, day: date, now: d
     for action in actions:
         _apply(session, position, action, now)
     return len(actions)
+
+
+def _flagged(session: Session, position_id: uuid.UUID) -> set[str]:
+    rows = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.aggregate_type == "position",
+            HatEvent.aggregate_id == position_id,
+            HatEvent.event_type == EVENT_UNHANDLED,
+        )
+    )
+    return {str(dict(row or {}).get("action")) for row in rows}
+
+
+def flag_unhandled(session: Session, day: date, now: datetime) -> int:
+    """Record one `corporate_action.unhandled` per (open position, unhandled action) not yet
+    recorded; the relay sends it as an URGENT alert (HAT-EXEC-144). Returns how many were
+    recorded. Works in the caller's transaction."""
+    flagged = 0
+    for position in _open_positions(session):
+        done = _flagged(session, position.id)
+        for action in unhandled_actions(session, position, day):
+            key = _key(action.ex_date, action.action_type)
+            if key in done:
+                continue
+            symbol = session.scalar(
+                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+            )
+            record(
+                session,
+                aggregate_type="position",
+                aggregate_id=position.id,
+                event_type=EVENT_UNHANDLED,
+                actor="scheduler",
+                payload={
+                    "action": key,
+                    "factor": str(action.adjustment_factor),
+                    "symbol": str(symbol or "?"),
+                    "virtual": "true" if position.is_virtual else "false",
+                },
+                correlation_id=position.signal_id,
+                bot_id=position.bot_id,
+                occurred_at=now,
+            )
+            done.add(key)
+            flagged += 1
+    return flagged
 
 
 def rescale_open_positions(

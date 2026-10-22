@@ -5,7 +5,8 @@ It replaces `LogNotifier` for the alerts the router, the trade manager, the stop
 reconciliation and the nightly ingest raise: each becomes one message with the code, the trade
 date and the detail's fixed codes and ids (`render.alert_text` prints anything else as `?`, so no
 broker or server text reaches the chat, HAT-TG-014). `gtt.unverified` and `gtt.unfilled` (PR 15c)
-and `fill.excess` (PR 28) are sent as URGENT (`render.URGENT_ALERTS`).
+and `fill.excess` (PR 28) are sent as URGENT (`render.URGENT_ALERTS`); so is the event
+`corporate_action.unhandled` (PR 31), which the relay sends.
 
 Two alerts also exist as events, `order.rejected` and the quality gate's `quality.failed`; the
 event relay sends those (`relay.HEALTH_EVENTS`), so the notifier only logs them and each failure

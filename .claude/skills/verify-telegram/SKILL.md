@@ -17,7 +17,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `TLA ExecutionRouter!UserCannotRaiseRisk` A user action only takes or skips an engine-sized entry: it never creates an entry or changes its size or stop. Harm: discretionary edits bypass the risk policy.
 - `TLA JobScheduler!LoginPromptOrder` The 08:30 prompt goes out only on a trading day, and the 09:05 reprompt only for accounts still logged out. Harm: noise trains the owner to ignore prompts, or a missed login blocks the day.
 - `TLA JobScheduler!ReportsAfterClose` The rejection digest, the daily report and the veto digest go out only after the 15:30 close of a trading day. Harm: a report built mid-session shows a day that is not over.
-- `PBT telegram.health_alert_for_every_failure` Every `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` and `order.rejected` event is exactly one health alert; every other service alert is one message; `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does not learn that a bot went manage-only or an order failed.
+- `PBT telegram.health_alert_for_every_failure` Every `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed`, `corporate_action.unhandled` and `order.rejected` event is exactly one health alert; every other service alert is one message; `gtt.unverified`, `gtt.unfilled`, `fill.excess` and `corporate_action.unhandled` are URGENT. Harm: the owner does not learn that a bot went manage-only or an order failed.
 - `PBT telegram.unknown_chat_has_no_effect` An update from any other chat writes one refused `hat_command_log` row (`unknown_chat`) and nothing else: no reply, no broker call. Harm: a stranger controls the bots.
 - `PBT telegram.every_command_logged` Every message is one `hat_command_log` row with the sender's chat id; a refused one has a reason and changed nothing. Harm: discipline metrics and audits miss user actions.
 - `PBT telegram.unknown_command_rejected` Text that is not one of the ten commands with its arguments is refused and changes nothing. Harm: malformed input triggers an action.
@@ -117,7 +117,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `23a52875d20375c33dc15e01d14902008237d8761ac3e11bd1fc46d56a6b4336`
+Covered digest: `69b39eea1adabace9c600edae909512eec4c2dc62b01d54d50c51110dafc97a3`
 
 ## Scope changes
 
@@ -125,6 +125,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
 - PR 30 (design review item 5, HAT-TG-021): the 09:05 reprompt is URGENT when the logged-out accounts hold real open positions (`reads.open_real_positions`, `render.login_text(open_positions=)`); the head line carries it, so the link lines after it are unchanged. `telegram.login_prompt_links` draws real, virtual and closed positions on the first account.
+- PR 31 (design review item 6, HAT-EXEC-144): `corporate_action.unhandled` is a health event (relayed, URGENT). It is a Positions event, so `telegram.health_alert_for_every_failure` records it on a real open position row of the rig's bot (`_held_position`) with that position's signal as correlation id, as `events.record` requires. Nothing was narrowed.
 - PR 16 built this skill. The properties run one bot (confirm unless a property needs auto) on one account over SQLite and `FakeBroker`, with the HTTP layer faked; `SLOW` properties run 15 examples.
 - `telegram.report_content` first routed its refusals on a confirm bot, where the router posts a card and checks only at the Take, so no signal was ever rejected and the digest assertion was vacuous; the scratch break found it. It now routes them on an auto bot, one instrument per refusal (a signal a day per instrument), and asserts as many digest lines as refusals.
 - `telegram.user_events_attributed` and `telegram.send_only_to_allowlist` gained an `@example` each (a confirmed flatten; a Take on a live card, which clears its buttons): in 15 examples the generator reached neither reliably and the scratch breaks went unseen.
@@ -249,6 +250,20 @@ Break: `URGENT_ALERTS` without `fill.excess`. (PR 28)
 
 ```
 E   AssertionError: assert {'fill.excess...t.unverified'} <= frozenset({'g....unverified'})
+```
+
+Break: `HEALTH_EVENTS` without `corporate_action.unhandled`. (PR 31)
+
+```
+E   AssertionError: assert Counter() == Counter({'cor...nhandled': 1})
+```
+
+Break: `URGENT_ALERTS` without `corporate_action.unhandled`. (PR 31)
+
+```
+E   AssertionError: assert {'corporate_a...t.unverified'} <= frozenset({'f....unverified'})
+E     Extra items in the left set:
+E     'corporate_action.unhandled'
 ```
 
 ### PBT telegram.unknown_chat_has_no_effect

@@ -483,6 +483,11 @@ to an artefact that exists.
 | HAT-EXEC-122 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.entry_filters_skip` |
 | HAT-EXEC-130 | [07](07-execution-and-brokers.md) | 15, 16 | PBT `exits.veto_score` |
 | HAT-EXEC-131 | [07](07-execution-and-brokers.md) | 16 | PBT `exits.veto_verdict_threshold` |
+| HAT-EXEC-140 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.next_session_lookup` |
+| HAT-EXEC-141 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.preserves_position`, PBT `rescale.applied_once`, PBT `rescale.factor_exact`, DB `governance.rescale_moves_stop` |
+| HAT-EXEC-142 | [07](07-execution-and-brokers.md) | 21, 31 | PBT `rescale.pending_is_manage_only` |
+| HAT-EXEC-143 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.broker_stop_follows` |
+| HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported` |
 | HAT-TG-005 | [08](08-telegram.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
 | HAT-TG-010 | [08](08-telegram.md) | 16 | CONF `telegram.no_webhook_no_listener` |
 | HAT-TG-011 | [08](08-telegram.md) | 16, 32 | PBT `telegram.offset_commits_with_update` |

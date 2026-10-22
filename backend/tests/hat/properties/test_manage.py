@@ -37,7 +37,7 @@ from app.hat.execution.protect import (
     STOP_GTT,
     broker_trigger,
 )
-from app.hat.models import HatEvent, HatOrder, HatPosition, HatSignal
+from app.hat.models import HatCorporateAction, HatEvent, HatOrder, HatPosition, HatSignal
 from app.hat.risk import controls
 
 D = Decimal
@@ -1217,3 +1217,55 @@ def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bo
         else:
             assert row.status == "expired"
             assert order == "sale" or signal.state == "Rejected"
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-144: /flatten of a position spanning an unhandled action sells what the broker holds
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    action=st.sampled_from([None, ("other", "0.95"), ("split", "10"), ("bonus", "0.5")]),
+    held=st.one_of(st.none(), st.integers(min_value=0, max_value=12)),
+    days=st.integers(min_value=1, max_value=2),
+)
+@example(action=("split", "10"), held=1, days=1)
+@example(action=("other", "0.95"), held=None, days=2)
+def test_flatten_capped_at_holdings(
+    action: tuple[str, str] | None, held: int | None, days: int
+) -> None:
+    """HAT-EXEC-144: a position spanning an action the rescale cannot handle (a consolidation
+    leaves fewer shares than HAT holds) is flattened for at most the shares the broker holds of
+    the symbol; a readable book of none sells nothing, an unreadable one sells the open
+    quantity (a flatten is never blocked). Every other position, a rescaled bonus included, is
+    sold for its open quantity whatever the book says. Harm: an oversell the broker refuses
+    leaves the position unsold, or one sale is short of what HAT holds."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(10, 40))
+        if action is not None:
+            session.add(
+                HatCorporateAction(
+                    instrument_id=position.instrument_id,
+                    ex_date=TRADE_DAY + timedelta(days=1),
+                    action_type=action[0],
+                    adjustment_factor=D(action[1]),
+                    raw_text="fixture",
+                    source="mcp",
+                )
+            )
+            session.commit()
+        rig.fake.holdings = (
+            BrokerUnavailableError("broker_unavailable")
+            if held is None
+            else [{"symbol": SYMBOLS["SBIN"], "quantity": held, "costPrice": 100}]
+        )
+        start = len(rig.fake.calls)
+        rig.manager.flatten(session, rig.account_id, at(10, 0) + timedelta(days=days))
+        sold = sum(int(a["quantity"]) for a in _sold(rig, start))
+        unhandled = action is not None and action[0] != "bonus"
+        if unhandled and held is not None:
+            assert sold == min(position.qty_open, held)
+        else:
+            assert sold == position.qty_open

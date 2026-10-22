@@ -356,6 +356,84 @@ def test_pending_is_manage_only(ratio: tuple[str, Fraction], pending: bool, pric
             assert outcome.position_id is None
 
 
+# --- HAT-EXEC-144: an action the rescale cannot handle leaves the position manage-only -----------
+
+# A rights issue or demerger (`other`), and a consolidation however it is typed (factor above 1).
+UNHANDLED = st.sampled_from(
+    [
+        (TYPE_OTHER, Fraction(19, 20)),
+        (TYPE_OTHER, Fraction(3, 2)),
+        (TYPE_SPLIT, Fraction(10)),
+        (TYPE_BONUS, Fraction(2)),
+        (TYPE_OTHER, Fraction(5)),
+    ]
+)
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    unhandled=UNHANDLED,
+    offset=st.integers(-2, 2),  # its ex-date from the entry day: 1 or 2 spans the position
+    split=st.booleans(),  # a split the rescale does apply, on another day
+    runs=st.integers(1, 3),
+    price=st.integers(1_000, 20_000),
+)
+def test_unhandled_is_manage_only(
+    unhandled: tuple[str, Fraction], offset: int, split: bool, runs: int, price: int
+) -> None:
+    """HAT-EXEC-144 (design review item 6, option A): for every stored action the rescale cannot
+    handle whose ex-date falls after the day a position opened, however often `ca.rescale`
+    runs, the action is never applied, the position gets no exit view at any price and its
+    instrument is manage-only, and exactly one `corporate_action.unhandled` names the
+    (position, action); a split beside it is still applied, once. An action on or before the
+    entry day changes nothing. Harm: a consolidation keeps ten times the shares with an
+    old-scale stop (R-rules fire at about 90R, a trim sells more than is held), or a rights
+    issue's old stop sits above the ex-date price and `hard_stop` sells at the open."""
+    kind, f = unhandled
+    engine = memory_engine()
+    factory = sessionmaker(bind=engine)
+    day = TRADE_DAY + timedelta(days=3)
+    with factory() as session:
+        world = seed_engine_world(session, instruments=1)
+        trade = open_trade(session, world)
+        position_id = trade.outcome.position_id
+        assert position_id is not None
+        qty = _position(session, position_id).qty_open
+        iid = world.instruments[0]
+        _action(session, iid, TRADE_DAY + timedelta(days=offset), kind, f)
+        if split:
+            _action(session, iid, day, TYPE_SPLIT, Fraction(1, 2))
+        deps = SimpleNamespace(
+            session_factory=factory, notifier=RecordingNotifier(), clock=FixedClock(MORNING)
+        )
+        for _ in range(runs):
+            Nightly(deps).rescale(day)  # type: ignore[arg-type]
+        spans = offset >= 1
+        position = _position(session, position_id)
+        assert position.qty_open == (int(Fraction(qty) / Fraction(1, 2)) if split else qty)
+        applied = rescale.applied_factors(session, position_id)
+        assert applied == ([Fraction(1, 2)] if split else [])
+        views = ExitViews(
+            _Book(),  # type: ignore[arg-type]
+            lambda _iid: paise(price),
+            FixedClock(datetime.combine(day, time(9, 16), tzinfo=IST)),
+            lambda: CALENDAR,
+        )
+        assert (views(session, position) is None) == spans
+        assert rescale.manage_only(session, position, day) == spans
+        assert rescale.awaits_rescale(session, iid, day) == spans
+        flags = list(
+            session.scalars(
+                select(HatEvent.payload).where(
+                    HatEvent.aggregate_id == position_id,
+                    HatEvent.event_type == rescale.EVENT_UNHANDLED,
+                )
+            )
+        )
+        ex = TRADE_DAY + timedelta(days=offset)
+        assert [p["action"] for p in flags] == ([f"{ex.isoformat()}:{kind}"] if spans else [])
+
+
 # --- HAT-EXEC-143: the broker stop follows the rescale down ---------------------------------------
 
 

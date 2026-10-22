@@ -127,12 +127,12 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: in every reachable state, no real entry order is placed for a broker account whose `hat_broker_session` for the trade date is not live. Harm: orders fail or go out on an expired session. Detail: 07 §9, 08 §2.
 
 #### HAT-DEC-T15: Structured logs plus Telegram alerts
-- **Statement:** HAT logs are structured, and every health failure (data gate, stale feed, broker session, broker capabilities changed, order rejected) raises a Telegram alert.
+- **Statement:** HAT logs are structured, and every health failure (data gate, stale feed, broker session, broker capabilities changed, a corporate action the rescale cannot handle, order rejected) raises a Telegram alert.
 - **Source:** MA "Recommended options" (T15); DS "Outbound messages" (Health alert).
 - **PR:** 16
 - **Verification:** PBT `telegram.health_alert_for_every_failure`
 - **Acceptance:**
-  - Property: for every health failure event type in {`quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed`, `order.rejected`}, recording it causes exactly one health alert message. Harm: the owner does not learn that bots went manage-only or an order failed. Detail: 10 §8.
+  - Property: for every health failure event type in {`quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed`, `corporate_action.unhandled`, `order.rejected`}, recording it causes exactly one health alert message. Harm: the owner does not learn that bots went manage-only or an order failed. Detail: 10 §8.
 
 #### HAT-DEC-T16: Verification instead of unit and replay tests
 - **Statement:** T16 ("unit + replay tests") is replaced by the owner's verification rule: TLA+ models, Hypothesis properties, DB checks; replay survives only as a determinism property.

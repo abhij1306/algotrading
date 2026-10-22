@@ -72,6 +72,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "exit.close_evaluated",
         "exit.close_gap",
         "position.rescaled",
+        "corporate_action.unhandled",
     ),
     "Control": (
         "mode.change_requested",

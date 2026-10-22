@@ -181,6 +181,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 42 added `history_build.cli_passes_calendar_holidays`, the first check that runs `main`: it patches only its boundaries (`app.database.SessionLocal` with an in-memory SQLite calendar, `DataStore`, `http_fetcher`, `client_from_env`) and records the real `run_history_build` report; name lookups and sockets are blocked and recorded, and the property asserts none was attempted. Nothing was narrowed.
 - PR 43 (PR 41 follow-ups 1 and 7): the command lines take their settings from `operator_settings()` (loads `.env` first) and hand its root to their stores, and `history_build` appends its summary to `history_build/report-YYYY-MM-DD.txt` (`run_report.save_report`). `DataStore` no longer has a default root (`app.paths.HAT_DATA_ROOT`): nothing but the old `store.data_root` check used it, which now checks the settings' default instead. The PR 42 property no longer patches `DataStore`: it shares `_drive_main` with `history_build.cli_root_and_report` and runs in a scratch root from the environment. `CONF store.cli_root_after_env` is a source check: it does not run `features` or the backtest, whose `main` needs a real database. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). The report file is named by the wall clock's IST day, so the properties match it by pattern. Nothing was narrowed.
 - PR 33 (design review item 12): the gate fills the exclusion list itself (the quarantine), so `big_moves_explained` no longer treats it as an owner-chosen input; it draws universe sizes 0 to 1100, and the end-to-end gate properties use 100 to 300 instruments (1% of fewer than 100 is no mover at all). `big_moves_end_to_end` and `quarantine_*` run 10 to 12 examples (one database and store each); `quarantine_release` runs 40 sequences of up to 14 steps over three instruments and four earlier days. A passing gate is never run again for its day (one success per job and day), so the retry of `quarantine_one_mover` is a gate failing another check (India VIX not stored) and then passing on fixed data. `quarantine_lookup` calls `Nightly._quarantine_actions` directly (the next-session lookup of `ca.adjust` needs the position and watchlist tables, and is `test_rescale.py`'s); it runs 20 examples. The gate still measures moves on raw close against `prev_close`, not on adjusted prices as the HAT-DATA-062 property words it (unchanged from PR 7; follow-up). Nothing was narrowed.
+- PR 31 (design review 2026-10-22 item 6, HAT-EXEC-144): `from_archive_csv` reports a purpose text naming a consolidation as unparsed (it was ignored as a dividend is); `corporate_actions.factor_parse_unparseable_is_reported` draws the word (split, bonus, two consolidation forms). Rights issues and demergers are still ignored by the archive path. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -282,6 +283,14 @@ E   AssertionError: assert ParsedAction(action_type='other', factor=Fraction(1, 
 E    +  where ParsedAction(action_type='other', factor=Fraction(1, 2)) = parse_action_text('')
 E   Failing test case: test_factor_parse_unparseable_is_reported(
 E       text='',  # or any other generated value
+```
+
+Break (PR 31): in `backend/app/hat/data/corporate_actions.py`: `from_archive_csv` no longer reports a consolidation text (it is ignored).
+
+```
+E   assert 0 == 1
+E    +  where [] = Normalised(records=[], unparsed=[], ignored=1).unparsed
+E   Failing test case: test_factor_parse_unparseable_is_reported(
 ```
 
 ### PBT corporate_actions.upsert_idempotent

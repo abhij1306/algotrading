@@ -44,7 +44,7 @@ from ..engine.exits import ExitView, Phase
 from ..engine.live_entry import route_by_mode
 from ..engine.live_trades import record_close_evaluation
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.rescale import pending_actions
+from ..engine.rescale import manage_only
 from ..engine.strategy.config import parse_config
 from ..execution.manage import in_close_window
 from ..execution.modes import SHADOW, bot_mode
@@ -332,7 +332,9 @@ class ExitViews:
     """The exits' `ViewSource`: the live price, the sessions held and the daily levels of the
     position's pinned exit rules. None without a live price, and None while the position awaits
     a split or bonus rescale: its prices are on the old scale, so no exit fires from the action
-    alone (HAT-EXEC-142)."""
+    alone (HAT-EXEC-142); nor ever once it spans an action the rescale cannot handle (a
+    consolidation, a rights issue, a demerger): it is manage-only until the owner resolves it
+    (HAT-EXEC-144)."""
 
     def __init__(
         self,
@@ -351,8 +353,8 @@ class ExitViews:
         if price is None:
             return None
         today = trade_date_of(utc_now(self._clock))
-        if pending_actions(session, position, today):
-            logger.warning("position %s awaits a corporate-action rescale", position.id)
+        if manage_only(session, position, today):
+            logger.warning("position %s spans a corporate action not rescaled", position.id)
             return None
         signal = session.get(HatSignal, position.signal_id)
         if signal is None:
