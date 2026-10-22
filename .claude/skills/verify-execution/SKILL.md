@@ -66,7 +66,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_auth.credentials_precedence` Each credential comes from the first non-empty name in its list (the legacy name first); a missing one raises an error naming the primary variable and carrying no value, and the credentials' repr hides the secret. Harm: the wrong app credentials are used or the secret leaks.
 - `PBT fyers_auth.no_sdk_without_credentials` Without app credentials neither the login link nor the exchange builds an SDK session or touches the token file. Harm: a half-configured process calls Fyers with blank credentials.
 - `PBT fyers_auth_routes.cross_site_write_refused` (HAT-DEC-BD5, PR 38) For every write header (absent, `1`, other values), `Origin` (absent, a frontend origin, a page on another site, `null`), `Sec-Fetch-Site` and with or without the app's origin rule wired, both login POSTs run only when the header is `1` and the request names a frontend origin, or names none and is not marked cross-site or same-site. A refusal is a 403 with `guard.WRITE_REFUSED`, writes or removes no token and runs no hook. Five `@example`s pin the harmful shapes. Harm: any page the owner's browser opens logs HAT out of Fyers mid-session or plants its own token.
-- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. Harm: HAT trades or reconciles on another Fyers account.
+- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `ACCOUNT_UNCONFIRMED` (unknown user) or `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. With the accounts unreadable (`db_down`: the table is dropped) it answers 503 with `DB_ERROR` and writes nothing. Harm: HAT trades or reconciles on another Fyers account.
 - `PBT fyers_routes.failed_exchange_fixed_message` Every failure of the Fyers side answers 400 or 500 with one of the fixed messages, the body and the log carry no code, secret or echoed text, and no token file exists. Harm: Fyers text or the auth code reaches the browser or the log.
 - `PBT fyers_routes.missing_credentials_fixed` Without app credentials the link and the exchange answer 500 with the fixed message, never the variable text. Harm: configuration detail leaks to the client.
 - `PBT fyers_routes.good_exchange_connected` After a good exchange `status` is connected with the user id, disconnect flips it back, and the token never appears in a response or log. Harm: the page shows the wrong login state or the token leaks.
@@ -342,6 +342,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 29 (design review 2026-10-22 item 4, HAT-EXEC-012, HAT-BRK-092): `session.refresh_capabilities` rewrites `hat_broker_account.capabilities` from the adapter when the desks start and after every session check's row commit (`broker.capabilities_changed` on a change, relayed as a health alert); `modes.real_orders_allowed` (stored and the adapter's GTT) gates `router._gtt_refusal` and `submit._check_allowed` for an entry. `FyersHatBroker` takes `capabilities` (default `FYERS_CAPABILITIES`), and the rigs that place real entries build it and store it as `hat_exec_support.GTT_READY` (`exec_env` takes `stored_gtt` and `live_gtt`; the router `Rig` takes `live_gtt`). `tags.refusals_before_the_broker` gains both flags (re-pinned: stronger). `OwnedBroker.capabilities` reads the local value without the session owner, and `OverlapSpy` does not count it as a broker call, so `router.desk_calls_serialised` is unchanged. The triage asked for the first live check of a trade date; the desk start and every session check are used (the value is local, and a deploy that flips the constant reaches the account at once). Review round (/code-review): the refresh at start and on every check, outside the owner, after the row's commit, the health alert, the changed keys in the payload. `ExecutionRouter.tla` still has one GTT value per account: the stored/live split is checked by the properties only. Nothing was narrowed.
 - PR 41 only reworded the comment on `brk.import_boundary`'s data-socket exception (`test_conf_broker.py`): the module also hands the minute-history download the session's REST `history` (HAT-DATA-119). The graph check itself is unchanged.
 - PR 38 (design review 2026-10-22 item 17, HAT-DEC-BD5): the two login POSTs depend on `app/hat/api/guard.py`'s `frontend_write`. `FyersAuthService.exchange` takes an optional `accept_user` that sees the profile's user id before the save and raises `WrongAccountError` (a minimal change to `execution/fyers_auth.py`, which revfix's PR 30 may also touch). `POST /token` passes the active Fyers `account_ref`s through it and now opens a request session (`get_db`), so a login fails closed (503) while the database is down. The route properties' `client_for` sends the write header, wires a test origin rule and serves the broker accounts from SQLite. `fyers_auth_routes.cross_site_write_refused` needed `@example`s: 100 random draws missed the cross-site-without-Origin shape (about 1 in 87) when `Sec-Fetch-Site` was ignored (recorded below).
+- PR 38 review round: `_account_check` reads the accounts inside `accept_user`, once Fyers has answered (no connection held while Fyers answers, and an account onboarded meanwhile counts); an unknown user gets `ACCOUNT_UNCONFIRMED`; unreadable accounts answer 503 `DB_ERROR`. Not covered: the read-after-answer ordering itself (no property orders the read against the exchange). Left as follow-ups: `FyersHatBroker.complete_login` (`fyers_adapter.py`, no production caller) still calls `exchange` without `accept_user`; `ACCOUNT_ACTIVE` and `FYERS` are local strings in `api/fyers_auth.py`, because importing them from `execution.submit` or `execution.accounts` pulls the mode code into the API (CONF `auto_mode_single_user`), as `dashboard.py` and `daily/accounts.py` already do.
 
 ## Scratch breaks
 
@@ -1014,7 +1015,6 @@ E       state='valid',
 Break: (PR 38) the guard skips the write-header check.
 
 ```
-tests/hat/properties/test_fyers_auth_routes.py:313: in test_cross_site_write_refused
 E   assert 200 == 403
 E   Failing explicit example: test_cross_site_write_refused(
 E       header=None,
@@ -1043,7 +1043,6 @@ E       origin=None,
 Break: (PR 38) `POST /disconnect` without `Depends(frontend_write)` (also fails `CONF hat_writes_guarded`, in `verify-scheduler`).
 
 ```
-tests/hat/properties/test_fyers_auth_routes.py:311: in test_cross_site_write_refused
 E   assert 200 == 403
 E       header=None,
 ```
@@ -1053,7 +1052,7 @@ E       header=None,
 Break: (PR 38) `POST /token` does not pass `accept_user` to the exchange.
 
 ```
-tests/hat/properties/test_fyers_auth_routes.py:341: in test_token_for_another_account_refused
+tests/hat/properties/test_fyers_auth_routes.py:374: in test_token_for_another_account_refused
 E   assert 200 == 403
 E   Failing test case: test_token_for_another_account_refused(
 ```
@@ -1061,15 +1060,29 @@ E   Failing test case: test_token_for_another_account_refused(
 Break: (PR 38) the account check counts every Fyers account, not only active ones.
 
 ```
-tests/hat/properties/test_fyers_auth_routes.py:338: in test_token_for_another_account_refused
+tests/hat/properties/test_fyers_auth_routes.py:371: in test_token_for_another_account_refused
 E   assert 403 == 200
 ```
 
 Break: (PR 38) the account check lets a user it could not read (`None`) through.
 
 ```
-tests/hat/properties/test_fyers_auth_routes.py:341: in test_token_for_another_account_refused
+tests/hat/properties/test_fyers_auth_routes.py:374: in test_token_for_another_account_refused
 E   assert 200 == 403
+```
+
+Break: (PR 38 review) the route has no `except SQLAlchemyError`, so unreadable accounts fall to the generic 500.
+
+```
+tests/hat/properties/test_fyers_auth_routes.py:367: in test_token_for_another_account_refused
+E   assert 500 == 503
+```
+
+Break: (PR 38 review) `exchange` answers `WRONG_ACCOUNT` for an unknown user too.
+
+```
+tests/hat/properties/test_fyers_auth_routes.py:375: in test_token_for_another_account_refused
+E   AssertionError: assert 'This Fyers l...that account.' == 'Could not co...log in again.'
 ```
 
 ### PBT fyers_auth.failed_exchange_fails_closed

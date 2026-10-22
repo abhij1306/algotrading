@@ -207,3 +207,13 @@ def test_api_loopback_no_auth_wiring() -> None:
         and any(alias.name == "is_frontend_origin" and alias.asname is None for alias in node.names)
     ]
     assert len(imported) == 1
+
+
+def test_frontend_sends_write_header() -> None:
+    """HAT-DEC-BD5: the frontend API client names the guard's header and value, and sets them in
+    its one write middleware. Harm: a rename on either side makes every login and logout from
+    the HAT page a 403."""
+    client = (REPO_ROOT / "frontend" / "lib" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert f'export const WRITE_HEADER = "{guard.HEADER}";' in client
+    assert f'request.headers.set(WRITE_HEADER, "{guard.HEADER_VALUE}")' in client
+    assert client.count("client.use(") == 1

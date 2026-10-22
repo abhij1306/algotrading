@@ -23,6 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -57,6 +58,7 @@ URL_ERROR = "Failed to generate authentication URL"
 EXCHANGE_ERROR = "Token exchange failed"
 STORE_ERROR = "The Fyers token could not be saved"
 DISCONNECT_ERROR = "Failed to disconnect from Fyers"
+DB_ERROR = "The database is unavailable; the Fyers login was not saved"
 
 
 class AuthCodeRequest(BaseModel):
@@ -106,15 +108,21 @@ def fyers_login_url(service: AuthService) -> LoginUrlResponse:
 
 def _account_check(db: Session) -> Callable[[str | None], bool]:
     """The `accept_user` of a login: the user id must be the `account_ref` of an active Fyers
-    broker account, unless there is none yet."""
-    refs = set(
-        db.scalars(
-            select(HatBrokerAccount.account_ref).where(
-                HatBrokerAccount.broker == FYERS, HatBrokerAccount.status == ACCOUNT_ACTIVE
+    broker account, unless there is none yet. The accounts are read once Fyers has answered, just
+    before the save, so no connection is held while Fyers answers and an account onboarded in
+    the meantime counts."""
+
+    def accept(user_id: str | None) -> bool:
+        refs = set(
+            db.scalars(
+                select(HatBrokerAccount.account_ref).where(
+                    HatBrokerAccount.broker == FYERS, HatBrokerAccount.status == ACCOUNT_ACTIVE
+                )
             )
         )
-    )
-    return lambda user_id: not refs or user_id in refs
+        return not refs or user_id in refs
+
+    return accept
 
 
 @router.post(
@@ -123,6 +131,7 @@ def _account_check(db: Session) -> Callable[[str | None], bool]:
     responses={
         400: {"description": "Fyers rejected the auth code"},
         403: {"description": "Not from the HAT page, or not the HAT broker account's login"},
+        503: {"description": "The broker accounts could not be read"},
         500: {"description": "Credentials missing, the exchange failed or the token was not saved"},
     },
 )
@@ -142,6 +151,10 @@ def exchange_auth_code(request: AuthCodeRequest, service: AuthService, db: Db) -
     except TokenStoreError:
         logger.exception("Fyers token could not be stored")
         raise HTTPException(status_code=500, detail=STORE_ERROR) from None
+    except SQLAlchemyError:
+        # the broker accounts could not be read: fail closed, nothing was saved
+        logger.exception("Fyers login: broker accounts unreadable")
+        raise HTTPException(status_code=503, detail=DB_ERROR) from None
     except Exception:
         logger.exception("Fyers token exchange failed")
         raise HTTPException(status_code=500, detail=EXCHANGE_ERROR) from None

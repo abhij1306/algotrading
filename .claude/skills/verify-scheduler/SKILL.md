@@ -46,6 +46,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `CONF hat_routes_read_only` Every route of every router under `app/hat/api` is a GET except the two Fyers login POST routes listed in `WRITE_ROUTES` (and each listed route exists), and no GET endpoint reaches, through any `app.hat` function it calls, a session write (`add`, `commit`, `delete`, `flush`, `merge`, ...), an `insert`/`update`/`delete` statement or an event `record` (HAT-DEC-T3). Harm: the dashboard becomes a second control surface that bypasses Telegram's confirmations and the risk authority.
 - `CONF hat_writes_guarded` (HAT-DEC-BD5, PR 38) Every route under `app/hat/api` that is not a GET or HEAD depends on `guard.frontend_write` (read from the route's dependency tree). Harm: a new write route ships open to cross-site requests.
 - `CONF api_loopback_no_auth_wiring` (HAT-DEC-BD5, PR 38) `start_server.py` defaults `BACKEND_HOST` to `127.0.0.1`, and `app/main.py` sets `app.state.frontend_origin` to `is_frontend_origin` imported from `.utils.origins` (both read as source, never imported). Harm: the auth-less API listens on every interface, or the write guard has no rule or a looser one than CORS.
+- `CONF frontend_sends_write_header` (HAT-DEC-BD5, PR 38) `frontend/lib/api/client.ts` declares `WRITE_HEADER` as `guard.HEADER`, sets it to `guard.HEADER_VALUE` and has exactly one `client.use(` middleware. Harm: a rename on either side makes every login and logout from the HAT page a 403.
 - `PBT ops.entry_inputs_fail_closed` An entry on day d reads the quality state and the allocation of the night before only (the previous trading day of the calendar): the state is failed or passed only when that night's `quality.gate` run failed or succeeded, else unknown, and the allocation is that night's row or none, never an older one; without a calendar both are unknown. Harm: entries trade on an unchecked day's data, or on an old weight with an unmeasured drawdown.
 - `PBT ops.window_not_starved` After a restart at 15:19 that starts any number of overdue morning jobs whose bodies block, the 15:20 tick still runs `exits.close` inside its window while they all still run (bodies run on the scheduler's own threads, one per job). Harm: catch-up runs hold the close-phase exits past 15:25 and positions carry overnight risk the strategy meant to shed (audit money-safety-engine-ops F12).
 - `CONF ops.route_matches_protocol` `LiveRoute.__call__` takes exactly the `Route` protocol's parameters (`session, request, *, decide`) and `ExecutionRouter.route` does not (it also needs `now` and `check`), so the trigger service is wired to `LiveRoute`, which reads the placement check and calls the router. Harm: the router wired as the route raises on every trigger, and the trigger service logs it and drops the entry, shadow included.
@@ -117,13 +118,14 @@ Code under check:
 - `backend/app/hat/api/dashboard.py`: every route, `_read`, `_status`, `_kill_switches`, `_bot_view`
 - `backend/app/main.py`: the `app.state.frontend_origin` wiring (PR 38)
 - `backend/start_server.py`: the `BACKEND_HOST` default (PR 38)
+- `frontend/lib/api/client.ts`: the write-header middleware (PR 38)
 
 Checks:
 - `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_refuses_non_postgres`, `test_calendar_skip`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`, `test_backup_manifest`, `test_deploy_window_guard`, `test_status_matches_db`, `test_retry_after_failed_run`, `test_chain_carries_past_midnight`, `test_stop_names_abandoned_jobs`, `test_stop_after_failed_start`, `test_daily_tick_matches_reference`
 - `backend/tests/hat/conformance/test_conf_ops.py`: `test_compose_services`, `test_runbook_complete`
 - `backend/tests/hat/properties/test_dashboard_routes.py`
 - `backend/tests/hat/hat_dashboard_support.py`
-- `backend/tests/hat/conformance/test_conf_api.py`: `test_hat_routes_read_only`, `test_hat_writes_guarded`, `test_api_loopback_no_auth_wiring`
+- `backend/tests/hat/conformance/test_conf_api.py`: `test_hat_routes_read_only`, `test_hat_writes_guarded`, `test_api_loopback_no_auth_wiring`, `test_frontend_sends_write_header`
 - `backend/tests/hat/conformance/test_conf_runtime.py`: `test_job_registry`, `test_existing_suite_green`, `test_route_matches_protocol`
 - `backend/tests/hat/conformance/test_conf_boundaries.py`: `test_hat_runtime_requires_postgres`
 - `backend/tests/hat/db/test_db_portfolio_ops.py`: `test_ops__job_run_unique`
@@ -170,7 +172,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 42 updated `test_conf_verification.py`: `MERGED_PRS` now includes 42; `KNOWN_GAPS` unchanged.
 - PR 43 updated `test_conf_verification.py`: `MERGED_PRS` now includes 43; `KNOWN_GAPS` unchanged.
 - PR 32 updated `test_conf_verification.py`: `MERGED_PRS` now includes 32; `KNOWN_GAPS` unchanged.
-- PR 38 added `CONF hat_writes_guarded` and `CONF api_loopback_no_auth_wiring` to `test_conf_api.py` (HAT-DEC-BD5); `hat_routes_read_only` is unchanged, and its `WRITE_ROUTES` comment names the guard.
+- PR 38 added `CONF hat_writes_guarded`, `CONF api_loopback_no_auth_wiring` and `CONF frontend_sends_write_header` to `test_conf_api.py` (HAT-DEC-BD5); `hat_routes_read_only` is unchanged, and its `WRITE_ROUTES` comment names the guard.
 - PR 38 updated `test_conf_verification.py`: `MERGED_PRS` now includes 38; `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
@@ -821,6 +823,14 @@ Break: (PR 38) `start_server.py` defaults `BACKEND_HOST` to `0.0.0.0`.
 
 ```
 E   assert ["'0.0.0.0'"] == ["'127.0.0.1'"]
+```
+
+### CONF frontend_sends_write_header
+
+Break: (PR 38 review) `client.ts` renames the header to `X-Hat-Write`.
+
+```
+E   assert 'export const WRITE_HEADER = "X-HAT-Request";' in 'import createClient from "openapi-fetch";...'
 ```
 
 ### CONF hat_routes_read_only

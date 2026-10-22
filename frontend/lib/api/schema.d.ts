@@ -763,6 +763,13 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description The broker accounts could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   fyers_login_url_api_hat_auth_fyers_url_get: {
