@@ -38,8 +38,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT broker.token_refused_on_a_read_ends_the_check` A -16 on any read inside the 30 s window of a passed profile check makes the next `session_status` EXPIRED at once (CodeAnt, PR 23). Harm: the alert and login prompt wait up to 30 s while every read already fails.
 - `PBT broker.one_session_owner` `SessionRegistry` hands out one owner per account, serialises that owner's calls and refuses a call after release; the adapter's session status never raises and maps (connected, client, store error) to live, expired, missing or unknown; `record_session` writes the morning login. Harm: two owners race for one session, or a broken token store reads as live.
 - `PBT ops.session_backoff_alert` The reconnect delay is 1 s doubling to 30 s, and an outage raises exactly one alert after 2 minutes, none after a recovery until the next outage. Harm: a dead session retries in a tight loop or alerts every minute.
-- `PBT ops.no_outage_before_the_login_window` An outage is counted from 08:30 IST: checks before it never alert and reset the watch, so a session down since midnight alerts once, at 08:32, only if it is still down. Harm: a `broker.session_lost` alert every night at 00:02 trains the owner to ignore it.
-- `PBT router.broker_health_follows_the_session` After every session check of the desks, each bot of the account has `broker_health` tripped iff the session is not live (a failed read counts) between 09:05 and the 15:30 close IST; a tripped `feed_health` stays and the account switch is untouched. Harm: a missed login leaves the bots looking healthy while their exits are off, or a check clears another reason's trip.
+- `PBT ops.no_outage_before_the_login_window` An outage is counted from 08:30 IST: checks before it never alert and reset the watch, so a session down since midnight alerts once, 2 minutes after the first check from 08:30, only if it is still down. Harm: a `broker.session_lost` alert every night at 00:02 trains the owner to ignore it.
+- `PBT router.broker_health_follows_the_session` After every session check of the desks, each bot of the account has `broker_health` tripped iff the session is not live (a failed read counts) between 09:05 and the 15:30 close IST; a tripped `feed_health` stays, and the account switch and a bot of another account are untouched (checks are at least a minute apart: a trip wins a same-instant tie by design, `kill._latest`). Harm: a missed login leaves the bots looking healthy while their exits are off, or a check clears another reason's trip.
 - `CONF brk__interface_methods` The `HatBroker` protocol has exactly the 17 methods of 07 §8 and the Fyers adapter implements each with the same parameters. Harm: a method is added to or dropped from the broker boundary without the spec.
 - `CONF brk__import_boundary` Engine, risk, data, router and the interface module import nothing from `app.brokers`, `fyers_apiv3` or an OpenAlgo package, directly or transitively (and the checker is shown to catch a synthetic offender). Harm: strategy code starts to depend on one broker's SDK.
 - `CONF brk__fyers_capabilities` The Fyers adapter reports tag length 20, a static IP requirement, CNC only and no GTT for delivery. Harm: confirm and auto unlock before the owner verified GTT on a live account.
@@ -857,6 +857,18 @@ Break: the sync trips the account switch instead of each bot. (PR 30)
 
 ```
 E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: the sync covers only the account's first bot (CodeAnt review: the property now has a second bot on the account). (PR 30)
+
+```
+E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: the sync covers every bot, not only the account's (a bot on another account is in the property). (PR 30)
+
+```
+E   AssertionError: assert 'tripped' == 'armed'
 ```
 
 ### CONF brk__interface_methods

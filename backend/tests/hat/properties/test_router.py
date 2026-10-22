@@ -16,7 +16,15 @@ from unittest import mock
 
 import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
-from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
+from hat_engine_support import (
+    AT,
+    TRADE_DAY,
+    USER,
+    World,
+    add_bot,
+    request_for,
+    seed_engine_world,
+)
 from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
@@ -1105,6 +1113,9 @@ SESSION_CHECKS = st.lists(
     ),
     min_size=1,
     max_size=8,
+    # one check per minute at most, as the periodic step runs them: a trip and a clear at one
+    # instant resolve to the trip by design (`kill._latest`, fail safe)
+    unique_by=lambda check: check[0],
 )
 
 
@@ -1114,9 +1125,10 @@ def test_broker_health_follows_the_session(checks: list[tuple[int, str]], feed_d
     """HAT-RISK-063 (design review item 5): after every session check of a trading day, the
     account's bots have `broker_health` tripped iff the session is not live (a failed read counts
     as not live) between 09:05 and the 15:30 close IST, and cleared otherwise; the check never
-    touches another reason (a tripped `feed_health` stays) or the account switch. Harm: a missed
-    login leaves the bots looking healthy while their exits are off, or a check clears the
-    feed's trip and entries run on a stale feed."""
+    touches another reason (a tripped `feed_health` stays), the account switch or a bot of
+    another account. Harm: a missed login leaves the bots looking healthy while their exits are
+    off, a check clears the feed's trip and entries run on a stale feed, or one account's
+    outage halts another's bots."""
     engine = memory_engine()
     with Session(engine) as session:
         rig = Rig(session, mode=modes.AUTO)
@@ -1130,6 +1142,12 @@ def test_broker_health_follows_the_session(checks: list[tuple[int, str]], feed_d
             tick_for=lambda _s, _p: None,
         )
         bot = rig.world.bot_id
+        sibling = add_bot(session, rig.world).bot_id  # a second bot on the account
+        stranger = add_bot(session, rig.world).bot_id  # a bot on another account
+        sibling_row = session.get(HatBot, sibling)
+        assert sibling_row is not None
+        sibling_row.broker_account_id = rig.account_id
+        session.commit()
         if feed_down:
             controls.sync_health(
                 session, scope="bot", bot_id=bot, failing=True, reason="feed_health", now=AT
@@ -1143,8 +1161,10 @@ def test_broker_health_follows_the_session(checks: list[tuple[int, str]], feed_d
             session.expire_all()
             rows = controls.kill_rows(session)
             down = broker_health_failing(now, answer == "live")
-            state = kill.current_state(rows, "bot", bot, stream="broker_health")
-            assert state == (kill.TRIPPED if down else kill.ARMED)
+            for mine in (bot, sibling):
+                state = kill.current_state(rows, "bot", mine, stream="broker_health")
+                assert state == (kill.TRIPPED if down else kill.ARMED)
+            assert kill.current_state(rows, "bot", stranger) == kill.ARMED
             feed = kill.current_state(rows, "bot", bot, stream="feed_health")
             assert feed == (kill.TRIPPED if feed_down else kill.ARMED)
             assert kill.current_state(rows, "account", None) == kill.ARMED

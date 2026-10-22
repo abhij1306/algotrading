@@ -783,8 +783,9 @@ def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
 def test_no_outage_before_the_login_window(steps: list[tuple[int, bool]], start: int) -> None:
     """HAT-OPS-031 (design review item 5): an outage is counted from 08:30 IST, when the login
     prompt goes out. Checks before it (the night after the midnight token expiry, live or not)
-    never alert and reset the watch, so a session down since midnight alerts once, at 08:32,
-    and only if it is still down then. Harm: a `broker.session_lost` alert every night at
+    never alert and reset the watch, so a session down since midnight alerts once, 2 minutes
+    after the first check from 08:30, and only if it is still down then. Harm: a
+    `broker.session_lost` alert every night at
     00:02, which trains the owner to ignore the alert that matters."""
     watch = SessionWatch()
     now = datetime.combine(date(2026, 10, 21), time(0), tzinfo=IST) + timedelta(minutes=start)
