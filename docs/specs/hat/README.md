@@ -191,7 +191,7 @@ to an artefact that exists.
 | HAT-DATA-052 | [02](02-data.md) | 5, 7 | PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique` |
 | HAT-DATA-053 | [02](02-data.md) | 5 | PBT `corporate_actions.adjusted_view` |
 | HAT-DATA-054 | [02](02-data.md) | 5 | PBT `corporate_actions.adjusted_volume` |
-| HAT-DATA-055 | [02](02-data.md) | 5 | PBT `corporate_actions.factor_parse` |
+| HAT-DATA-055 | [02](02-data.md) | 5, 31 | PBT `corporate_actions.factor_parse`, PBT `history_build.archive_unparsed_reported` |
 | HAT-DATA-060 | [02](02-data.md) | 7 | PBT `quality_gate.coverage_threshold`, TLA `KillSwitch!DataHealthManageOnly` |
 | HAT-DATA-061 | [02](02-data.md) | 7 | PBT `quality_gate.ohlc_zero_tolerance` |
 | HAT-DATA-062 | [02](02-data.md) | 7, 33 | PBT `quality_gate.big_moves_explained`, PBT `quality_gate.quarantine_one_mover`, PBT `quality_gate.quarantine_cap`, PBT `quality_gate.quarantine_release`, PBT `quality_gate.quarantine_lookup` |

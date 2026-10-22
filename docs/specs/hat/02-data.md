@@ -334,12 +334,13 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **[OWNER-PENDING]** Volume adjustment: default divide by the cumulative factor (no plan §8 default; standard practice); owner to confirm.
 
 #### HAT-DATA-055: Split and bonus factors from text sources
-- **Statement:** When the factor comes from archive text rather than the MCP field, it is parsed with the shared helper derived from `phase1_build._parse_corp_action_factor`/`find_bonus_ratio`: a split from face value a to b gives factor b / a, a bonus of x new for y held gives y / (x + y). An archive text without a usable ratio that names a split, a bonus or a consolidation is reported unparsed, never dropped (a consolidation is never parsed: HAT-EXEC-144).
+- **Statement:** When the factor comes from archive text rather than the MCP field, it is parsed with the shared helper derived from `phase1_build._parse_corp_action_factor`/`find_bonus_ratio`: a split from face value a to b gives factor b / a, a bonus of x new for y held gives y / (x + y). An archive text without a usable ratio that names a split, a bonus or a consolidation is reported unparsed, never dropped (a consolidation is never parsed: HAT-EXEC-144); the history build lists them in its report and summary.
 - **Source:** DS "Historical data build" step 4 (archive fallback); PLAN PR 5 (reuse of the phase-1 factor parsing).
 - **PR:** 5
-- **Verification:** PBT `corporate_actions.factor_parse`
+- **Verification:** PBT `corporate_actions.factor_parse`, PBT `history_build.archive_unparsed_reported`
 - **Acceptance:**
   - Property: for every split (a > b > 0) and bonus (x, y > 0) text in the supported formats, the parsed factor equals b / a or y / (x + y) exactly and lies in (0, 1]; unparseable text is reported and never yields a factor. Harm: a misparsed ratio silently distorts years of adjusted history.
+  - Property: for every archive file of split, bonus and consolidation rows without a usable ratio, beside a parseable split or not, the history build's loader returns each such row's text in order (the build report's `actions_unparsed`, counted in its summary) and still loads the parseable split. Harm: a consolidation in the archive leaves the adjusted history wrong and nobody is told (PR 31).
 
 ## §6 Quality gate
 

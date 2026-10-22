@@ -270,11 +270,12 @@ class TradeManager:
 
         A position spanning a corporate action the rescale cannot handle (HAT-EXEC-144) holds a
         quantity of the old scale, so its sale is capped at the shares the broker holds of the
-        symbol (a consolidation leaves fewer); an unreadable holdings book leaves the cap off,
-        since the broker refuses an oversell anyway and a flatten is never blocked."""
+        symbol (a consolidation leaves fewer), less what the flatten already sized for other
+        positions of that symbol; an unreadable holdings book leaves the cap off, since the
+        broker refuses an oversell anyway and a flatten is never blocked."""
         report = FlattenReport()
         sending = self._sending_clock(now)
-        held: list[dict[str, int] | None] = []  # read once, on the first capped position
+        held: list[dict[str, int] | None] = []  # read once, spent as capped sales are sized
         for position in self.open_positions(session, account_id):
             report.positions += 1
             try:
@@ -311,10 +312,14 @@ class TradeManager:
     ) -> int:
         if held is None:
             return qty  # unreadable: the broker refuses an oversell
-        symbol = session.scalar(
-            select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+        symbol = str(
+            session.scalar(
+                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+            )
         )
-        return min(qty, held.get(str(symbol), 0))
+        capped = max(0, min(qty, held.get(symbol, 0)))
+        held[symbol] = held.get(symbol, 0) - capped  # a second position of it gets the rest
+        return capped
 
     # --- sales --------------------------------------------------------------------------------
 
