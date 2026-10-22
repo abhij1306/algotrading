@@ -91,7 +91,7 @@ to an artefact that exists.
 | HAT-OVR-061 | [00](00-overview.md) | 15, 16 | CONF `auto_mode_single_user` |
 | HAT-DEC-T1 | [01](01-decisions.md) | 2, 3 | CONF `user_id_on_owned_tables` |
 | HAT-DEC-T2 | [01](01-decisions.md) | 2 | CONF `hat_package_in_backend` |
-| HAT-DEC-T3 | [01](01-decisions.md) | 16, 17 | CONF `hat_routes_read_only` |
+| HAT-DEC-T3 | [01](01-decisions.md) | 16, 17, 38 | CONF `hat_routes_read_only`, CONF `hat_writes_guarded` |
 | HAT-DEC-T4 | [01](01-decisions.md) | 2-17 | CONF `existing_suite_green` |
 | HAT-DEC-T5 | [01](01-decisions.md) | 2, 17 | CONF `hat_runtime_requires_postgres` |
 | HAT-DEC-T6 | [01](01-decisions.md) | 5 | PBT `ingest.parquet_roundtrip` |
@@ -158,6 +158,7 @@ to an artefact that exists.
 | HAT-DEC-BD2 | [01](01-decisions.md) | 13 | CONF `fyers_adapter_wraps_existing` |
 | HAT-DEC-BD3 | [01](01-decisions.md) | 2, 13 | CONF `no_deferred_integrations` |
 | HAT-DEC-BD4 | [01](01-decisions.md) | 1 | CONF `old_docs_removed` |
+| HAT-DEC-BD5 | [01](01-decisions.md) | 38 | CONF `hat_writes_guarded`, CONF `api_loopback_no_auth_wiring`, PBT `fyers_auth_routes.cross_site_write_refused`, PBT `fyers_auth_routes.token_for_another_account_refused` |
 | HAT-DATA-010 | [02](02-data.md) | 4 | CONF `imports.engine_data_sources` |
 | HAT-DATA-011 | [02](02-data.md) | 5, 7 | PBT `ingest.sources_same_schema` |
 | HAT-DATA-020 | [02](02-data.md) | 4 | PBT `reference.instrument_identity_stable`, DB `reference.instrument_unique` |

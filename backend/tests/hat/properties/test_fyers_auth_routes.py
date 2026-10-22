@@ -1,26 +1,37 @@
-"""PBT fyers_auth_routes.* (HAT-OPS-051, K2): the four `/api/hat/auth/fyers` routes answer with
-fixed messages for every failure, never echo the token, the secret, the auth code or exception
-text, write no token on a failure, and report connected right after a good exchange. Mini app with
-only the HAT router; the login service runs on a temporary token file and a recording SDK."""
+"""PBT fyers_auth_routes.* (HAT-OPS-051, K2; HAT-DEC-BD5, PR 38): the four `/api/hat/auth/fyers`
+routes answer with fixed messages for every failure, never echo the token, the secret, the auth
+code or exception text, write no token on a failure, and report connected right after a good
+exchange. The two POSTs refuse a request that did not come from the HAT page, and `token` refuses
+a login for a Fyers user other than the active Fyers broker account. Mini app with only the HAT
+router; the login service runs on a temporary token file and a recording SDK, and the broker
+accounts live in SQLite in memory."""
 
+import uuid
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 from unittest import mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from hat.fakes.fyers_sdk import RecordingSdk, RecordingSession
-from hat_fyers_support import captured_logs, profile_ok, token_reply, token_store
-from hypothesis import given
+from hat_fyers_support import captured_logs, profile_ok, token_reply, token_store, write_token
+from hat_support import memory_engine
+from hypothesis import example, given
 from hypothesis import strategies as st
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.database import get_db
 from app.hat.api import fyers_auth as routes
+from app.hat.api import guard
 from app.hat.execution.fyers_auth import (
+    WRONG_ACCOUNT,
     FyersAuthService,
     FyersCredentials,
     MissingCredentialsError,
     get_fyers_auth,
 )
 from app.hat.execution.fyers_tokens import TokenStore
+from app.hat.models import HatBrokerAccount
 
 SECRET = "SECRETKEY-1a2b3c"
 MARKER = "echoed-text-77ee"
@@ -37,7 +48,28 @@ FIXED = {
     "Fyers rejected the auth code. Please log in again.",
     "Fyers login failed. Please try again.",
     "Login was cancelled by a logout. Please log in again.",
+    WRONG_ACCOUNT,
 }
+# The frontend origins of the test app's rule; every other origin is a page on another site.
+FRONTEND = ("http://localhost:3000", "http://127.0.0.1:5173")
+FOREIGN = (
+    "https://evil.example",
+    "http://localhost.evil.example",
+    "null",
+    "http://localhost:8000.evil",
+)
+WRITE = {guard.HEADER: guard.HEADER_VALUE}
+USERS = ("XA1234", "XB5678", "XC9012")
+# (broker, account_ref, status) of a broker account row
+Account = tuple[str, str, str]
+ACCOUNTS = st.lists(
+    st.tuples(
+        st.sampled_from(("fyers", "zerodha")),
+        st.sampled_from(USERS),
+        st.sampled_from(("active", "failed", "pending")),
+    ),
+    max_size=3,
+)
 
 REPLIES = st.one_of(
     st.just({"s": "error", "code": -413, "message": f"bad code {MARKER}"}),
@@ -49,7 +81,43 @@ REPLIES = st.one_of(
 )
 
 
-def client_for(store: TokenStore, reply: object, creds: bool = True) -> TestClient:
+def _accounts_db(accounts: Sequence[Account]) -> Callable[[], Iterator[Session]]:
+    engine = memory_engine(HatBrokerAccount)
+    factory = sessionmaker(bind=engine)
+    with factory() as session:
+        for broker, ref, status in accounts:
+            session.add(
+                HatBrokerAccount(
+                    user_id=uuid.uuid4(),
+                    broker=broker,
+                    account_ref=ref,
+                    capabilities={},
+                    status=status,
+                )
+            )
+        session.commit()
+
+    def db() -> Iterator[Session]:
+        with factory() as session:
+            yield session
+
+    return db
+
+
+def client_for(
+    store: TokenStore,
+    reply: object,
+    creds: bool = True,
+    *,
+    profile: object = None,
+    accounts: Sequence[Account] = (),
+    wired: bool = True,
+    headers: dict[str, str] | None = None,
+    hooks: list[str] | None = None,
+) -> TestClient:
+    """A client of the login routes. By default it sends the write header, the profile answers
+    user XA1234, there is no broker account and the app has the test frontend-origin rule."""
+
     def factory(**kwargs: str) -> RecordingSession:
         return RecordingSession(reply, **kwargs)
 
@@ -63,12 +131,22 @@ def client_for(store: TokenStore, reply: object, creds: bool = True) -> TestClie
         session_factory=factory,
         credentials=credentials,
         on_token_change=lambda: None,
-        model_factory=lambda **_kwargs: RecordingSdk(profile_ok("XA1234")),
+        model_factory=lambda **_kwargs: RecordingSdk(
+            profile_ok("XA1234") if profile is None else profile
+        ),
     )
+    if hooks is not None:
+        for event in ("token_change", "login", "disconnect"):
+            service.add_hook(event, lambda event=event: hooks.append(event))  # type: ignore[misc]
     app = FastAPI()
     app.include_router(routes.router)
     app.dependency_overrides[get_fyers_auth] = lambda: service
-    return TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides[get_db] = _accounts_db(accounts)
+    if wired:
+        setattr(app.state, guard.ORIGIN_RULE, lambda origin: origin in FRONTEND)
+    return TestClient(
+        app, raise_server_exceptions=False, headers=WRITE if headers is None else headers
+    )
 
 
 @given(reply=REPLIES, code=codes)
@@ -168,3 +246,114 @@ def test_a_token_file_that_cannot_be_read_or_saved_is_a_fixed_error(token: str, 
         assert secret not in status.text + saved.text
     assert token not in shown
     assert code not in shown
+
+
+TOKEN = "TKN0123456789abcdef"
+CODE = "AUTHCODE0123456789ab"
+HEADER_VALUES = st.sampled_from((None, guard.HEADER_VALUE, "0", "true", ""))
+ORIGINS = st.sampled_from((None, *FRONTEND, *FOREIGN))
+FETCH_SITES = st.sampled_from((None, "same-origin", "same-site", "cross-site", "none"))
+
+
+@given(
+    header=HEADER_VALUES,
+    origin=ORIGINS,
+    fetch_site=FETCH_SITES,
+    wired=st.booleans(),
+    token=tokens,
+    code=codes,
+)
+# the harmful shapes, each pinned: a cross-site or same-site request that names no origin, a page
+# on another site that got the header past CORS, and the HAT page with no rule wired
+@example(header="1", origin=None, fetch_site="cross-site", wired=True, token=TOKEN, code=CODE)
+@example(header="1", origin=None, fetch_site="same-site", wired=True, token=TOKEN, code=CODE)
+@example(header="1", origin=FOREIGN[0], fetch_site="cross-site", wired=True, token=TOKEN, code=CODE)
+@example(
+    header=None, origin=FRONTEND[0], fetch_site="same-origin", wired=True, token=TOKEN, code=CODE
+)
+@example(
+    header="1", origin=FRONTEND[0], fetch_site="same-origin", wired=False, token=TOKEN, code=CODE
+)
+def test_cross_site_write_refused(
+    header: str | None,
+    origin: str | None,
+    fetch_site: str | None,
+    wired: bool,
+    token: str,
+    code: str,
+) -> None:
+    """For every combination of the write header, `Origin` and `Sec-Fetch-Site`, both POSTs run
+    only when the header is `1` and the request names a frontend origin (with the rule wired), or
+    names none and is not marked cross-site or same-site. A refused request is a 403 with the fixed
+    message: no token is written or removed and no login hook runs. Harm: any page the owner's
+    browser opens logs HAT out of Fyers mid-session or plants its own token."""
+    sent = {
+        name: value
+        for name, value in (
+            (guard.HEADER, header),
+            ("Origin", origin),
+            ("Sec-Fetch-Site", fetch_site),
+        )
+        if value is not None
+    }
+    from_page = header == guard.HEADER_VALUE and (
+        (wired and origin in FRONTEND)
+        if origin is not None
+        else fetch_site in (None, "same-origin", "none")
+    )
+    base = routes.router.prefix
+    with token_store() as store:
+        hooks: list[str] = []
+        client = client_for(store, token_reply(token), wired=wired, headers=sent, hooks=hooks)
+        exchanged = client.post(f"{base}/token", json={"auth_code": code})
+        if from_page:
+            assert exchanged.status_code == 200
+            assert store.path.exists()
+        else:
+            assert exchanged.status_code == 403
+            assert exchanged.json()["detail"] == guard.WRITE_REFUSED
+            assert not store.path.exists()
+            assert hooks == []
+            write_token(store)
+        hooks.clear()
+        gone = client.post(f"{base}/disconnect")
+        if from_page:
+            assert gone.status_code == 200
+            assert not store.path.exists()
+        else:
+            assert gone.status_code == 403
+            assert gone.json()["detail"] == guard.WRITE_REFUSED
+            assert store.path.exists()
+            assert hooks == []
+
+
+@given(
+    accounts=ACCOUNTS,
+    user=st.one_of(st.none(), st.sampled_from(USERS)),
+    token=tokens,
+    code=codes,
+)
+def test_token_for_another_account_refused(
+    accounts: list[Account], user: str | None, token: str, code: str
+) -> None:
+    """For every set of broker accounts and every Fyers user a login token belongs to (None: the
+    profile could not be read), `token` saves the token exactly when there is no active Fyers
+    account or the user is the `account_ref` of one. Otherwise it answers 403 with the fixed
+    message and writes nothing. Harm: a page or a wrong login plants a token for another Fyers
+    account, and HAT trades or reconciles against it."""
+    refs = {ref for broker, ref, status in accounts if broker == "fyers" and status == "active"}
+    accepted = not refs or user in refs
+    profile = profile_ok(user) if user is not None else {"s": "error", "code": -16}
+    with captured_logs() as logs, token_store() as store:
+        client = client_for(store, token_reply(token), profile=profile, accounts=accounts)
+        exchanged = client.post(f"{routes.router.prefix}/token", json={"auth_code": code})
+        if accepted:
+            assert exchanged.status_code == 200
+            assert store.path.exists()
+        else:
+            assert exchanged.status_code == 403
+            assert exchanged.json()["detail"] == WRONG_ACCOUNT
+            assert not store.path.exists()
+        shown = exchanged.text + logs.text
+    for secret in (token, code):
+        assert secret not in shown

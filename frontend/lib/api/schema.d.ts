@@ -675,6 +675,13 @@ export interface operations {
           "application/json": components["schemas"]["MessageResponse"];
         };
       };
+      /** @description Not from the HAT page */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description The token could not be removed */
       500: {
         headers: {
@@ -728,6 +735,13 @@ export interface operations {
       };
       /** @description Fyers rejected the auth code */
       400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Not from the HAT page, or not the HAT broker account's login */
+      403: {
         headers: {
           [name: string]: unknown;
         };

@@ -44,6 +44,8 @@ __all__ = [
     "LoginCancelledError",
     "MissingCredentialsError",
     "TokenRejectedError",
+    "WRONG_ACCOUNT",
+    "WrongAccountError",
     "credentials_from_env",
     "fyers_auth",
     "get_fyers_auth",
@@ -59,6 +61,7 @@ _SESSION_STATE = "fyers_api_state"
 AUTH_CODE_REJECTED = "Fyers rejected the auth code. Please log in again."
 LOGIN_FAILED = "Fyers login failed. Please try again."
 LOGIN_CANCELLED = "Login was cancelled by a logout. Please log in again."
+WRONG_ACCOUNT = "This Fyers login is not the HAT broker account. Please log in with that account."
 
 Event = Literal["token_change", "login", "disconnect"]
 
@@ -77,6 +80,10 @@ class MissingCredentialsError(FyersAuthError):
 
 class TokenRejectedError(FyersAuthError):
     """Fyers did not return a token for the auth code."""
+
+
+class WrongAccountError(FyersAuthError):
+    """The token is for a Fyers user the caller does not accept (HAT-DEC-BD5)."""
 
 
 class LoginCancelledError(TokenRejectedError):
@@ -229,11 +236,16 @@ class FyersAuthService:
             return None
         return user_id
 
-    def exchange(self, auth_code: str) -> FyersStatus:
+    def exchange(
+        self, auth_code: str, *, accept_user: Callable[[str | None], bool] | None = None
+    ) -> FyersStatus:
         """Trade an auth code for a token, save it, and point the process at it.
 
-        Raises MissingCredentialsError, TokenRejectedError, FyersAuthError (the SDK failed) or
-        TokenStoreError (save failed); in each case no token was written.
+        `accept_user`, when given, sees the token's Fyers user id (None when the profile could not
+        be read) before anything is saved; a refusal raises WrongAccountError.
+
+        Raises MissingCredentialsError, TokenRejectedError, WrongAccountError, FyersAuthError (the
+        SDK failed) or TokenStoreError (save failed); in each case no token was written.
         """
         creds = self._credentials()
         with self._lock:
@@ -248,6 +260,9 @@ class FyersAuthService:
             raise TokenRejectedError(AUTH_CODE_REJECTED)
 
         user_id = self._profile_user_id(creds.client_id, access_token)
+        if accept_user is not None and not accept_user(user_id):
+            logger.warning("Fyers login refused: the token is not for the HAT broker account")
+            raise WrongAccountError(WRONG_ACCOUNT)
         if user_id is not None:
             reply = {**reply, "fy_id": user_id}
 

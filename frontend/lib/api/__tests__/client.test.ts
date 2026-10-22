@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createApiClient, parseResponse, unwrap } from "../client";
+import { WRITE_HEADER, createApiClient, parseResponse, unwrap } from "../client";
 import { ApiError } from "../errors";
 import { z } from "zod";
 
@@ -130,5 +130,26 @@ describe("parseResponse", () => {
     expect(() => parseResponse(schema, { total: "3" })).toThrowError(
       expect.objectContaining({ code: "RESPONSE_SHAPE_ERROR" }),
     );
+  });
+});
+
+describe("write header", () => {
+  it("marks every write and no read", async () => {
+    const seen: Request[] = [];
+    const api = createApiClient({
+      baseUrl: "http://api.test",
+      fetch: (request) => {
+        seen.push(request as Request);
+        return Promise.resolve(Response.json({ status: "success", message: "ok" }));
+      },
+    });
+    await api.GET("/api/hat/auth/fyers/status");
+    await api.POST("/api/hat/auth/fyers/disconnect");
+    await api.POST("/api/hat/auth/fyers/token", { body: { auth_code: "code" } });
+    expect(seen.map((request) => [request.method, request.headers.get(WRITE_HEADER)])).toEqual([
+      ["GET", null],
+      ["POST", "1"],
+      ["POST", "1"],
+    ]);
   });
 });
