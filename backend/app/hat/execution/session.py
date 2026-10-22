@@ -6,6 +6,11 @@ One service owns each broker account's session and serialises its broker calls
 `hat_broker_session` current from the adapter's status, and `SessionWatch` decides the retry
 backoff and the one `broker.session_lost` alert per outage, which is due once the outage lasts 2
 minutes. Backoff: exponential from 1 s, capped at 30 s [OWNER-PENDING default].
+
+The token expires at midnight IST and the owner logs in after the 08:30 prompt, so a session that
+is not live before 08:30 is not an outage: the watch counts outages from 08:30 (HAT-OPS-031), and
+`broker_health_failing` says when a session that is not live trips the bots' `broker_health`
+kill, from 09:05 (the repeat prompt) until the 15:30 close (HAT-RISK-063, design review item 5).
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TypeVar
 
 from sqlalchemy.orm import Session
@@ -23,17 +28,21 @@ from sqlalchemy.orm import Session
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatBrokerSession
-from ..time import utc_now
+from ..time import IST, utc_now
 from .broker import HatBroker, SessionStatus
 
 __all__ = [
     "ALERT_AFTER",
     "BACKOFF_CAP_SECONDS",
+    "BROKER_HEALTH_FROM",
+    "BROKER_HEALTH_UNTIL",
+    "WATCH_FROM",
     "SessionOwner",
     "SessionOwnedError",
     "SessionRegistry",
     "SessionWatch",
     "backoff_delay",
+    "broker_health_failing",
     "record_session",
     "refresh_capabilities",
 ]
@@ -42,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 ALERT_AFTER = timedelta(minutes=2)
 BACKOFF_CAP_SECONDS = 30
+WATCH_FROM = time(8, 30)  # IST: the login prompt; a logged-out session before it is no outage
+BROKER_HEALTH_FROM = time(9, 5)  # IST: the repeat prompt
+BROKER_HEALTH_UNTIL = time(15, 30)  # IST: the close
 T = TypeVar("T")
 
 
@@ -106,8 +118,17 @@ class WatchStep:
     alert: bool  # the one session-lost alert of this outage is due now
 
 
+def broker_health_failing(now: datetime, live: bool) -> bool:
+    """True when a session check at `now` trips `broker_health` (HAT-RISK-063): the session is
+    not live between 09:05 and the 15:30 close IST. Any other check clears it."""
+    at = now.astimezone(IST).time()
+    return not live and BROKER_HEALTH_FROM <= at < BROKER_HEALTH_UNTIL
+
+
 class SessionWatch:
-    """Tracks one account's outages: feed it each status check in time order."""
+    """Tracks one account's outages: feed it each status check in time order. An outage starts
+    no earlier than 08:30 IST (`WATCH_FROM`): before it, a session that is not live is the night
+    between the midnight expiry and the morning login, and resets the watch."""
 
     def __init__(self) -> None:
         self._down_since: datetime | None = None
@@ -115,7 +136,7 @@ class SessionWatch:
         self._alerted = False
 
     def observe(self, now: datetime, live: bool) -> WatchStep:
-        if live:
+        if live or now.astimezone(IST).time() < WATCH_FROM:
             self._down_since, self._attempt, self._alerted = None, 0, False
             return WatchStep(None, False)
         if self._down_since is None:

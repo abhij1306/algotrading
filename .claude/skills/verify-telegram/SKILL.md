@@ -27,7 +27,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.user_events_attributed` Every event a command or button records has `actor = 'user'` and the chat id, and every accepted change records one. Harm: skips, pauses and flattens are missing from the discipline metrics.
 - `PBT telegram.no_secret_in_output` No message or log record holds the bot token, the approval secret, an issued token or broker error text. Harm: a leaked secret lets an outsider control the bot or forge approvals.
 - `PBT telegram.send_only_to_allowlist` Every `sendMessage` and `editMessageReplyMarkup` goes to the allowlisted chat; another chat is never answered. Harm: trade details and buttons reach someone else.
-- `PBT telegram.login_prompt_links` 08:30 sends one link per active account once; 09:05 lists exactly the accounts with no live session; nothing on a non-trading day. Harm: a missed login blocks the day, or noise is ignored.
+- `PBT telegram.login_prompt_links` 08:30 sends one link per active account once; 09:05 lists exactly the accounts with no live session, URGENT with their number of real open positions iff they hold any (PR 30); nothing on a non-trading day. Harm: a missed login blocks the day, positions sit with broker stops only and the owner is not told, or noise is ignored.
 - `PBT telegram.watchlist_digest_content` The digest's new and dropped symbols are the set differences and the top list is the first min(10, n) by score. Harm: the owner acts on a wrong summary.
 - `PBT telegram.card_matches_signal` The card or shadow message shows the `hat_signal` row's trigger, stop, qty and risk exactly; a card offers exactly Take and Skip, signed for that signal. Harm: the owner approves a trade other than the one placed.
 - `PBT telegram.report_content` The 15:35 digest lists exactly the day's `signal.rejected` signals with reasons; the 15:40 report shows each bot's snapshot; every real fill, partial, close and stop move is one message. Harm: rejections, drawdowns and money moving go unseen.
@@ -117,13 +117,14 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `3d436c32bfd6997a5a4489f31e4df7496bc89e3568944a0b09a215ff86f420b8`
+Covered digest: `23a52875d20375c33dc15e01d14902008237d8761ac3e11bd1fc46d56a6b4336`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
+- PR 30 (design review item 5, HAT-TG-021): the 09:05 reprompt is URGENT when the logged-out accounts hold real open positions (`reads.open_real_positions`, `render.login_text(open_positions=)`); the head line carries it, so the link lines after it are unchanged. `telegram.login_prompt_links` draws real, virtual and closed positions on the first account.
 - PR 16 built this skill. The properties run one bot (confirm unless a property needs auto) on one account over SQLite and `FakeBroker`, with the HTTP layer faked; `SLOW` properties run 15 examples.
 - `telegram.report_content` first routed its refusals on a confirm bot, where the router posts a card and checks only at the Take, so no signal was ever rejected and the digest assertion was vacuous; the scratch break found it. It now routes them on an auto bot, one instrument per refusal (a signal a day per instrument), and asserts as many digest lines as refusals.
 - `telegram.user_events_attributed` and `telegram.send_only_to_allowlist` gained an `@example` each (a confirmed flatten; a Take on a live card, which clears its buttons): in 15 examples the generator reached neither reliably and the scratch breaks went unseen.
@@ -410,6 +411,28 @@ Break: in `reports.py`, the reprompt lists every account.
     | Failing test case: test_login_prompt_links(
     | AssertionError: assert ['Still not l...n.test/X0001'] == []
     | Failing test case: test_login_prompt_links(
+```
+
+Break: the reprompt is never URGENT (the code before PR 30). (PR 30)
+
+```
+E   AssertionError: assert False == (1 > 0)
+E    +    where <built-in method startswith of str object> = 'Still not logged in:'.startswith
+```
+
+Break: `reads.open_real_positions` counts virtual positions too. (PR 30)
+
+```
+    | AssertionError: assert ' 1 open position(s) ' in 'URGENT: still not logged in. 2 open position(s) have broker stops only: ...'
+    | AssertionError: assert True == (0 > 0)
+```
+
+Break: the count covers every active account, not only the logged-out ones. Hypothesis did not draw it, so the property has an `@example` of a live account holding the position while another is logged out. (PR 30)
+
+```
+E   AssertionError: assert True == (0 > 0)
+E    +  where True = <built-in method startswith of str object>('URGENT')
+E   Failing explicit example: test_login_prompt_links(
 ```
 
 ### PBT telegram.watchlist_digest_content

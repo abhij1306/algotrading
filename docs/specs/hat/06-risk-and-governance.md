@@ -253,11 +253,13 @@ Manage-only = no new entries; stops and exits keep running. Drawdown source: `ha
 #### HAT-RISK-063: Health kill
 - **Statement:** A failed data quality gate, stale feed or lost broker session makes the affected bots manage-only, and the state clears automatically when the check is healthy again.
 - **Source:** BL "Kill switches"; MA "Failure handling"; DS "Bar builder rules".
-- **PR:** 10, 14, 17
-- **Verification:** TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`
+- **PR:** 10, 14, 17, 30
+- **Verification:** TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`, PBT `router.broker_health_follows_the_session`
 - **Acceptance:**
   - Property: in every reachable state, while any health check for a bot is failing that bot accepts no entry, and once all its checks are healthy its health kill is cleared without user action. Harm: entries on bad data, or a bot left disabled after a transient fault.
   - Property: each health check trips and clears only its own reason (`data_health` for the quality gate and ingest, `feed_health` for the live feed, `broker_health`): a check turning healthy never clears another check's trip. Harm: the feed recovering at 09:15 clears a failed gate, and entries run on data the gate rejected.
+  - Property: after every session check of a trading day, each bot of the account has `broker_health` tripped iff the session is not live (a status read that fails counts as not live) between 09:05 IST (the repeat login prompt) and the 15:30 close, and cleared otherwise; the check touches no other reason and not the account switch. Harm: a missed login leaves the bots looking healthy while their app-side exits (breakeven, trim, MA) are off, or one account's live session clears another's trip.
+- **Implementation (PR 30):** `AccountDesk.check_session` (`daily/accounts.py`) calls `sync_health(scope="bot", reason="broker_health")` for each bot bound to the account after every session check, with `session.broker_health_failing(now, live)`. The trip is per bot, not the account switch, so one account's live session never clears another account's trip. A check before 09:05 or after the close clears it: the token expires at midnight and no entry runs then. The router already refuses a real entry without a live `hat_broker_session` (HAT-OPS-023); this trip also makes the bots manage-only for shadow entries and shows in `/status` and the dashboard. Design review 2026-10-22 item 5.
 - **Design (PR 17):** the reasons were one `health` channel, so `DataHealthKill(False)` re-armed the gate's trip. Each health reason is now its own stream of the kill key (`risk/kill.py:stream_of`); the feed writes `feed_health`.
 
 #### HAT-RISK-064: Manual re-arm with second confirm

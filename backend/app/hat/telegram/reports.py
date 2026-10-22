@@ -107,8 +107,9 @@ class Reports:
 
     def login_prompt(self, *, repeat: bool) -> JobResult:
         """08:30: a link for every active account; 09:05 (`repeat`): only for the accounts with
-        no live `hat_broker_session` today. Nothing on a non-trading day or when every account
-        is logged in."""
+        no live `hat_broker_session` today, URGENT when those accounts hold real open positions
+        (their app-side exits are off until the login). Nothing on a non-trading day or when
+        every account is logged in."""
         now = self._clock()
         day = trade_date_of(now)
         with self._factory() as session:
@@ -122,7 +123,9 @@ class Reports:
                 for a in accounts
             ]
             kind = "login_reprompt" if repeat else "login_prompt"
-            self._send(session, kind, None, render.login_text(links, repeat=repeat))
+            held = reads.open_real_positions(session, [a.id for a in accounts]) if repeat else 0
+            text = render.login_text(links, repeat=repeat, open_positions=held)
+            self._send(session, kind, None, text)
         return JobResult(calls=1, rows=len(accounts))
 
     # --- after the close (HAT-TG-024) ----------------------------------------------------------

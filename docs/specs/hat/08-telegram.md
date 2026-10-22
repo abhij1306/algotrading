@@ -90,7 +90,7 @@ measured".
 
 | Message | When | Contains |
 | --- | --- | --- |
-| Login prompt | 08:30, repeat 09:05 if not done | One link per broker |
+| Login prompt | 08:30, repeat 09:05 if not done | One link per broker; the repeat is URGENT with the number of real open positions, whose app-side exits are off (HAT-TG-021) |
 | Watchlist digest | After nightly scan | Per bot: new, dropped, top 10 by score, regime state |
 | Shadow trade (shadow mode) | On trigger | Symbol, entry, stop, qty, risk ₹, R target, chart link |
 | Approval card (confirm) | On trigger | Same + catalyst headline/PDF; Take / Skip buttons (size, stop and price are fixed); expiry time |
@@ -119,12 +119,13 @@ virtual position.
   - Property: for every message kind and every input, every `sendMessage`/`editMessage*` request made by the client targets `HAT_TELEGRAM_CHAT_ID`. Harm: trade details and approval buttons reach someone else.
 
 #### HAT-TG-021: Login prompts at 08:30 and 09:05
-- **Statement:** On each trading day a login prompt with one link per connected broker is sent at 08:30 IST, and repeated at 09:05 IST only for brokers still not logged in.
-- **Source:** DS "Outbound messages" (Login prompt); MA "Daily cycle" step 1, "Risks" (missed morning login); T14.
-- **PR:** 16
+- **Statement:** On each trading day a login prompt with one link per connected broker is sent at 08:30 IST, and repeated at 09:05 IST only for brokers still not logged in. The repeat is URGENT when those brokers hold real open positions: it names their number and says that they have broker stops only, because breakeven, trim and the MA exits run only on a live session.
+- **Source:** DS "Outbound messages" (Login prompt); MA "Daily cycle" step 1, "Risks" (missed morning login); T14; design review 2026-10-22 item 5.
+- **PR:** 16, 30
 - **Verification:** TLA `JobScheduler!LoginPromptOrder`, PBT `telegram.login_prompt_links`
 - **Acceptance:**
   - Property: on every trading day the 08:30 prompt is sent once, and the 09:05 prompt is sent iff some connected broker has no live `hat_broker_session` for the trade date, listing exactly those brokers. Harm: a missed login blocks all entries for the day.
+  - Property: the 09:05 prompt is URGENT iff the brokers it lists hold real open positions (virtual and closed ones do not count, nor those of a logged-in broker), and it names their number. Harm: positions sit with broker stops only while the app's exits are off, and the owner reads a routine reminder.
   - Property: on every non-trading day of `hat_trading_calendar` no login prompt is sent. Harm: noise trains the user to ignore prompts.
 
 #### HAT-TG-022: Watchlist digest content

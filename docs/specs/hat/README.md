@@ -403,7 +403,7 @@ to an artefact that exists.
 | HAT-RISK-060 | [06](06-risk-and-governance.md) | 10 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
 | HAT-RISK-061 | [06](06-risk-and-governance.md) | 10 | PBT `caps.kill_thresholds`, TLA `KillSwitch!TripImpliesManageOnly` |
 | HAT-RISK-062 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!KillCancelsApprovals`, TLA `KillSwitch!TripImpliesManageOnly` |
-| HAT-RISK-063 | [06](06-risk-and-governance.md) | 10, 14, 17 | TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model` |
+| HAT-RISK-063 | [06](06-risk-and-governance.md) | 10, 14, 17, 30 | TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`, PBT `router.broker_health_follows_the_session` |
 | HAT-RISK-064 | [06](06-risk-and-governance.md) | 10, 16 | TLA `KillSwitch!NoAutoRearm` |
 | HAT-RISK-065 | [06](06-risk-and-governance.md) | 10, 15 | TLA `KillSwitch!ExitsContinue` |
 | HAT-RISK-066 | [06](06-risk-and-governance.md) | 9 | PBT `kill.reallocation_is_not_drawdown` |
@@ -490,7 +490,7 @@ to an artefact that exists.
 | HAT-TG-013 | [08](08-telegram.md) | 16 | PBT `telegram.user_events_attributed` |
 | HAT-TG-014 | [08](08-telegram.md) | 16 | PBT `telegram.no_secret_in_output` |
 | HAT-TG-020 | [08](08-telegram.md) | 16 | PBT `telegram.send_only_to_allowlist` |
-| HAT-TG-021 | [08](08-telegram.md) | 16 | TLA `JobScheduler!LoginPromptOrder`, PBT `telegram.login_prompt_links` |
+| HAT-TG-021 | [08](08-telegram.md) | 16, 30 | TLA `JobScheduler!LoginPromptOrder`, PBT `telegram.login_prompt_links` |
 | HAT-TG-022 | [08](08-telegram.md) | 16 | PBT `telegram.watchlist_digest_content`, PBT `telegram.watchlist_digest_once` |
 | HAT-TG-023 | [08](08-telegram.md) | 16 | PBT `telegram.card_matches_signal` |
 | HAT-TG-024 | [08](08-telegram.md) | 16 | TLA `JobScheduler!ReportsAfterClose`, PBT `telegram.report_content` |
@@ -542,7 +542,7 @@ to an artefact that exists.
 | HAT-OPS-023 | [10](10-ops.md) | 14, 15 (logic), 17 (wiring) | TLA `DailyCycle!IntradayOrder`, PBT `router.entry_needs_live_session`, CONF `ops.route_matches_protocol` |
 | HAT-OPS-024 | [10](10-ops.md) | 15 (logic), 17 (wiring) | TLA `StopPlacement!NightlyVerifyCovers` |
 | HAT-OPS-030 | [10](10-ops.md) | 7, 10 | TLA `KillSwitch!DataHealthManageOnly`, TLA `NightlyPipeline!ExitsIndependentOfPipeline` |
-| HAT-OPS-031 | [10](10-ops.md) | 13 (session), 16 (alert) | TLA `KillSwitch!DataHealthManageOnly`, PBT `ops.session_backoff_alert` |
+| HAT-OPS-031 | [10](10-ops.md) | 13 (session), 16 (alert), 30 (08:30 start) | TLA `KillSwitch!DataHealthManageOnly`, PBT `ops.session_backoff_alert`, PBT `ops.no_outage_before_the_login_window` |
 | HAT-OPS-032 | [10](10-ops.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce` |
 | HAT-OPS-033 | [10](10-ops.md) | 3 (constraint), 15 (router) | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day` |
 | HAT-OPS-034 | [10](10-ops.md) | 15 | PBT `ops.close_gap_recorded` |
