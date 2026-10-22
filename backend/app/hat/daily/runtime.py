@@ -6,8 +6,9 @@ task exists, then starts in the restart-safe order of HAT-OPS-003:
 
 1. reap the job runs a previous process left running, and read the trading calendar;
 2. build one desk per active broker account and reconcile each before anything is placed, read
-   its fills (a fill without a working stop is protected) and resume auto entries left in
-   Triggered;
+   its fills (a fill without a working stop is protected) and note the auto entries left in
+   Triggered: the periodic loop places them once the feed is fresh (no tick since the start
+   reads as stale) and the account has reconciled;
 3. on a trading day from 08:45, arm the day (watchlist candidates, subscriptions, keys already
    fired);
 4. attach the live data to the feed and start the feed;
@@ -40,6 +41,7 @@ from ..clock import SYSTEM_CLOCK, Clock
 from ..data.announcements import INTRADAY_FEEDS, poll_all, poll_interval
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
+from ..data.calendar import session_calendar
 from ..data.live import EventFeedHealth, LiveData, threadsafe_provider
 from ..data.mcp_client import McpClient
 from ..data.store import DataStore
@@ -59,14 +61,14 @@ from ..models import (
 )
 from ..ops.jobs import JobError, SessionFactory, recover_interrupted
 from ..ops.scheduler import HatScheduler, ScheduledJob
-from ..risk.sessions import SessionCalendar, SessionState
+from ..risk.sessions import SessionCalendar, SessionState, is_trading_day
 from ..settings import HatSettings, require_postgres
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
 from ..telegram.client import BotClient, TelegramTransport
 from ..telegram.config import TelegramSettings
 from ..telegram.confirm import PendingConfirmations
 from ..telegram.notifier import TelegramNotifier
-from ..telegram.reads import LoginLinks, is_trading_day, session_calendar
+from ..telegram.reads import LoginLinks
 from ..telegram.relay import EventRelay
 from ..telegram.reports import Reports, telegram_jobs
 from ..telegram.service import TelegramService, run_relay
@@ -74,7 +76,15 @@ from ..telegram.tokens import ApprovalSigner
 from ..time import IST, trade_date_of, utc_now
 from .accounts import Desks, account_jobs
 from .intraday import PREPARE_AT, Intraday, intraday_jobs
-from .live import ExitViews, GateBoard, LiveContexts, LiveRoute, PriceBook, ShadowExits
+from .live import (
+    ExitViews,
+    GateBoard,
+    LiveContexts,
+    LiveRoute,
+    PriceBook,
+    ShadowExits,
+    stale_feed,
+)
 from .market import DailyBook
 from .nightly import NightlyDeps, TextSources, nightly_jobs
 
@@ -247,6 +257,7 @@ class HatRuntime:
             store=parts.bar_store,
             instrument_ids=self._instrument_ids,
         )
+        self.live.add_tick_listener(self.prices.on_tick)
         self.desks = Desks(
             sf,
             parts.broker_for,
@@ -280,6 +291,7 @@ class HatRuntime:
             shadow=self.shadow,
             notifier=self.notifier,
             gap_client=parts.mcp,
+            calendar=self.calendar,
         )
         self.reports = Reports(self.client, sf, links=parts.links, clock=self._now)
         self.telegram = TelegramService(
@@ -313,20 +325,23 @@ class HatRuntime:
         self.scheduler = HatScheduler(self.jobs, sf, self._now, trading=self.trading)
 
     async def _recover(self) -> None:
-        """HAT-OPS-003: reconcile, read fills and resume entries, then arm a day already under
-        way (a restart after 08:45 on a trading day)."""
+        """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
+        feed: `resume_entries`), then arm a day already under way (a restart after 08:45 on a
+        trading day)."""
         now = self._now()
         await asyncio.to_thread(self._watch_sessions, now)
-        await asyncio.to_thread(self.desks.recover, now, self.route.check)
+        await asyncio.to_thread(self.desks.recover, now)
         today = trade_date_of(now)
         if self.trading(today) and now.astimezone(IST).time() >= PREPARE_AT:
             try:
+                # before the feed starts (the bar builder is the loop thread's once it does): the
+                # bars stored before the restart give back the opening ranges and day volumes
+                await asyncio.to_thread(self.live.restore, today)
                 await asyncio.to_thread(self.intraday.prepare, today)
             except Exception:  # the day stays unarmed (no entries); exits and stops still run
                 logger.exception("arming the day on restart failed")
 
     def _start_live(self, parts: RuntimeParts) -> None:
-        self._detach_prices = parts.feed.add_tick_listener(self.prices.on_tick)
         self.live.attach(parts.feed)
         parts.feed.start(asyncio.get_running_loop(), prevalidated_token=parts.prevalidated_token)
 
@@ -361,7 +376,12 @@ class HatRuntime:
                 ("sessions", MINUTE, lambda: self._watch_sessions(now)),
                 ("sync", MINUTE, lambda: self.desks.sync_all(now)),
                 ("expire", MINUTE, lambda: self.desks.expire_all(now)),
-                ("reconcile", RECONCILE_EVERY, self.desks.reconcile_all),
+                ("reconcile", RECONCILE_EVERY, lambda: self.desks.reconcile_all(now)),
+                (
+                    "resume",
+                    timedelta(0),
+                    lambda: self.desks.resume_entries(now, self.route.check, self._feed_stale),
+                ),
             ]
             if self.is_open(now):
                 steps.append(("exits", timedelta(0), lambda: self._live_exits(now)))
@@ -416,7 +436,7 @@ class HatRuntime:
     # --- inputs ---------------------------------------------------------------------------
 
     def _feed_stale(self) -> bool:
-        return self.live.staleness.stale
+        return stale_feed(self.live.staleness, self._now())
 
     def _feed_state(self) -> str:
         if self._feed_stale():
@@ -434,7 +454,7 @@ class HatRuntime:
         if desk is None:
             return None
         try:
-            return desk.owner.call(desk.broker.funds).available
+            return desk.broker.funds().available
         except Exception:
             logger.warning("broker funds unreadable", extra={"account_id": str(account_id)})
             return None
@@ -448,7 +468,7 @@ class HatRuntime:
         total = Decimal(0)
         for desk in desks:
             try:
-                total += desk.owner.call(desk.broker.funds).total
+                total += desk.broker.funds().total
             except Exception as exc:
                 raise JobError("equity_unavailable") from exc
         return total
@@ -493,12 +513,20 @@ class HatRuntime:
             await self.scheduler.stop()
 
     async def _stop_feed(self) -> None:
-        if not hasattr(self, "parts"):
+        """Detach, release the subscriptions and stop the feed; after a start that failed part
+        way each step runs on what was built, and the feed is always stopped."""
+        parts = getattr(self, "parts", None)
+        if parts is None:
             return
-        self.live.detach()
-        self._detach_prices()
-        self.subscriptions.release_all()
-        await self.parts.feed.stop()
+        for name, step in (("live", "detach"), ("subscriptions", "release_all")):
+            built = getattr(self, name, None)
+            if built is None:
+                continue
+            try:
+                getattr(built, step)()
+            except Exception as exc:
+                logger.warning("HAT stop step %s failed: %s", name, type(exc).__name__)
+        await parts.feed.stop()
 
     async def _release(self) -> None:
         if hasattr(self, "desks"):

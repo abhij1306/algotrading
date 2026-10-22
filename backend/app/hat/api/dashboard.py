@@ -227,14 +227,9 @@ class EventView(BaseModel):
 # --- reads -------------------------------------------------------------------------------------
 
 
-def _bot_name(session: Session, bot: HatBot) -> str:
-    """The bot's strategy name, else the start of its id (as the Telegram replies name it)."""
-    name = session.scalar(select(HatStrategy.name).where(HatStrategy.id == bot.strategy_id))
-    return name or str(bot.id)[:8]
-
-
 def _labels(session: Session, bot_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Each bot's `_bot_name`, read in one query (a bot that does not exist is left out)."""
+    """Each bot's strategy name, else the start of its id (as the Telegram replies name it),
+    read in one query (a bot that does not exist is left out)."""
     rows = session.execute(
         select(HatBot.id, HatStrategy.name)
         .outerjoin(HatStrategy, HatStrategy.id == HatBot.strategy_id)
@@ -263,7 +258,7 @@ def _kill_rows(session: Session) -> list[kill.KillRow]:
     ]
 
 
-def _bot_view(session: Session, bot: HatBot, rows: list[kill.KillRow]) -> BotView:
+def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str) -> BotView:
     state = kill.kill_state_of(rows, bot.id, paused=bot.status != ACTIVE)
     flags = (
         ("account_kill", state.account_tripped),
@@ -273,7 +268,7 @@ def _bot_view(session: Session, bot: HatBot, rows: list[kill.KillRow]) -> BotVie
     )
     return BotView(
         id=bot.id,
-        name=_bot_name(session, bot),
+        name=name,
         execution_mode=bot.execution_mode,
         status=bot.status,
         lifecycle_state=bot.lifecycle_state,
@@ -285,26 +280,27 @@ def _bot_view(session: Session, bot: HatBot, rows: list[kill.KillRow]) -> BotVie
 
 def _bots(session: Session, rows: list[kill.KillRow] | None = None) -> list[BotView]:
     rows = _kill_rows(session) if rows is None else rows
-    return [_bot_view(session, bot, rows) for bot in _all_bots(session)]
+    bots = _all_bots(session)
+    labels = _labels(session, (bot.id for bot in bots))
+    return [_bot_view(bot, rows, labels[bot.id]) for bot in bots]
 
 
 def _sessions(session: Session, day: date) -> list[BrokerSessionView]:
     """Today's login state of every active broker account (`missing` when none is recorded)."""
-    accounts = session.scalars(
-        select(HatBrokerAccount)
+    rows = session.execute(
+        select(HatBrokerAccount.broker, HatBrokerAccount.account_ref, HatBrokerSession.status)
+        .outerjoin(
+            HatBrokerSession,
+            (HatBrokerSession.broker_account_id == HatBrokerAccount.id)
+            & (HatBrokerSession.trade_date == day),
+        )
         .where(HatBrokerAccount.status == ACTIVE)
         .order_by(HatBrokerAccount.id)
     )
-    out = []
-    for account in accounts:
-        row = session.get(HatBrokerSession, (account.id, day))
-        out.append(
-            BrokerSessionView(
-                account=f"{account.broker} {account.account_ref}",
-                status=row.status if row is not None else "missing",
-            )
-        )
-    return out
+    return [
+        BrokerSessionView(account=f"{broker} {ref}", status=status or "missing")
+        for broker, ref, status in rows
+    ]
 
 
 def _kill_switches(rows: list[kill.KillRow]) -> list[KillSwitchView]:
@@ -379,36 +375,48 @@ def _status(session: Session, now: datetime) -> StatusResponse:
     )
 
 
-def _watchlist(session: Session, bot: HatBot, today: date) -> WatchlistView:
-    """The bot's latest watchlist on or before `today`: one row per symbol at its best score,
-    best first (score, then symbol)."""
-    day = session.scalar(
-        select(func.max(HatWatchlistEntry.trade_date)).where(
-            HatWatchlistEntry.bot_id == bot.id, HatWatchlistEntry.trade_date <= today
-        )
-    )
-    best: dict[str, Decimal] = {}
-    if day is not None:
-        rows = session.execute(
-            select(HatInstrument.symbol, HatWatchlistEntry.score)
-            .join(HatInstrument, HatInstrument.id == HatWatchlistEntry.instrument_id)
-            .where(HatWatchlistEntry.bot_id == bot.id, HatWatchlistEntry.trade_date == day)
-        ).all()
-        for symbol, score in rows:
-            value = Decimal(score)
-            best[symbol] = max(best.get(symbol, value), value)
-    ranked = sorted(best.items(), key=lambda item: (-item[1], item[0]))
-    return WatchlistView(
-        bot_id=bot.id,
-        bot=_bot_name(session, bot),
-        trade_date=day,
-        entries=[WatchlistItem(symbol=s, score=_money(score)) for s, score in ranked],
-    )
-
-
 def _watchlists(session: Session, now: datetime) -> list[WatchlistView]:
+    """Each bot's latest watchlist on or before today: one row per symbol at its best score,
+    best first (score, then symbol). Two queries for every bot."""
     today = trade_date_of(now)
-    return [_watchlist(session, bot, today) for bot in _all_bots(session)]
+    latest = (
+        select(HatWatchlistEntry.bot_id, func.max(HatWatchlistEntry.trade_date).label("day"))
+        .where(HatWatchlistEntry.trade_date <= today)
+        .group_by(HatWatchlistEntry.bot_id)
+        .subquery()
+    )
+    days: dict[uuid.UUID, date] = {}
+    best: dict[uuid.UUID, dict[str, Decimal]] = {}
+    rows = session.execute(
+        select(latest.c.bot_id, latest.c.day, HatInstrument.symbol, HatWatchlistEntry.score)
+        .join(
+            HatWatchlistEntry,
+            (HatWatchlistEntry.bot_id == latest.c.bot_id)
+            & (HatWatchlistEntry.trade_date == latest.c.day),
+        )
+        .join(HatInstrument, HatInstrument.id == HatWatchlistEntry.instrument_id)
+    )
+    for bot_id, day, symbol, score in rows:
+        days[bot_id] = day
+        value = Decimal(score)
+        scores = best.setdefault(bot_id, {})
+        scores[symbol] = max(scores.get(symbol, value), value)
+    bots = _all_bots(session)
+    labels = _labels(session, (bot.id for bot in bots))
+    return [
+        WatchlistView(
+            bot_id=bot.id,
+            bot=labels[bot.id],
+            trade_date=days.get(bot.id),
+            entries=[
+                WatchlistItem(symbol=s, score=_money(score))
+                for s, score in sorted(
+                    best.get(bot.id, {}).items(), key=lambda item: (-item[1], item[0])
+                )
+            ],
+        )
+        for bot in bots
+    ]
 
 
 def _signals(session: Session, limit: int) -> list[SignalView]:

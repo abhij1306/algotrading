@@ -14,8 +14,12 @@ that fires twice cannot run a body twice.
 
 A job with a window (`until`, PR 15c) is never started at or after its end: `exits.close` runs
 between 15:20 and 15:25 IST or not at all that day (HAT-EXEC-074, TLA
-`JobScheduler!ExitsCloseInWindow`), and a failed run is tried again after its own
-`retry_after`, which fits inside the window.
+`JobScheduler!ExitsCloseInWindow`), and a failed run is tried again `retry_after` after the
+failed run ended, which fits inside the window.
+
+A chained job (`after`, no window) of the night before still starts after IST midnight, under
+that night's trade date, until `CARRY_UNTIL`: a nightly chain whose head finished late (the
+ingest succeeded at 23:58) completes for its own date instead of being dropped.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -39,7 +43,11 @@ logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 30.0
 RETRY_AFTER = timedelta(minutes=10)
-STOP_GRACE_SECONDS = 10.0
+# Running bodies get this long to end on stop; the compose `stop_grace_period` is 30 s and the
+# feed and the desks stop after the scheduler.
+STOP_GRACE_SECONDS = 25.0
+CARRY_UNTIL = time(8, 30)  # before `live.prepare` (08:45) reads the night's watchlist
+ONE_DAY = timedelta(days=1)
 
 JobBody = Callable[[date], JobResult | None]
 TradingDay = Callable[[date], bool]
@@ -79,6 +87,18 @@ def runs_on(job: ScheduledJob, day: date, trading: TradingDay) -> bool:
     return job.days is Days.EVERY or trading(day)
 
 
+def carries_over(job: ScheduledJob, day: date, now: datetime) -> bool:
+    """Whether `now` is still in the carry-over of `day` for `job`: a chained job without a
+    window, on the next IST date before `CARRY_UNTIL`."""
+    local = now.astimezone(IST)
+    return (
+        bool(job.after)
+        and job.until is None
+        and local.date() == day + ONE_DAY
+        and local.time() < CARRY_UNTIL
+    )
+
+
 def due(
     job: ScheduledJob,
     now: datetime,
@@ -86,15 +106,21 @@ def due(
     trading: TradingDay,
     succeeded: Collection[str],
     attempted: datetime | None,
+    day: date | None = None,
 ) -> bool:
-    """Whether the scheduler starts `job` at `now`: a date it runs on, at or after its time and
-    before the end of its window, every `after` job succeeded today, and not attempted within its
+    """Whether the scheduler starts `job` for `day` (default today) at `now`: a date it runs on;
+    today at or after its time and before the end of its window, or the night before's carry-over
+    (`carries_over`); every `after` job succeeded for `day`; and not attempted within its
     `retry_after`."""
     today = trade_date_of(now)
-    local = now.astimezone(IST).time()
-    if job.name in succeeded or not runs_on(job, today, trading):
+    day = today if day is None else day
+    if job.name in succeeded or not runs_on(job, day, trading):
         return False
-    if local < job.at or (job.until is not None and local >= job.until):
+    if day == today:
+        local = now.astimezone(IST).time()
+        if local < job.at or (job.until is not None and local >= job.until):
+            return False
+    elif not carries_over(job, day, now):
         return False
     if any(name not in succeeded for name in job.after):
         return False
@@ -137,10 +163,6 @@ class HatScheduler:
             max_workers=max(1, len(self._jobs)), thread_name_prefix="hat-job"
         )
 
-    @property
-    def jobs(self) -> tuple[ScheduledJob, ...]:
-        return self._jobs
-
     def _factory(self) -> SessionFactory:
         if self._session_factory is None:
             from app.database import SessionLocal  # deferred: importing it connects the engine
@@ -149,24 +171,30 @@ class HatScheduler:
         return self._session_factory
 
     def due_jobs(
-        self, now: datetime, succeeded: Collection[str] = ()
+        self, now: datetime, succeeded: Mapping[date, Collection[str]]
     ) -> list[tuple[ScheduledJob, date]]:
-        """The jobs to start at `now` that are not already running."""
+        """The jobs to start at `now` that are not already running, each with its trade date:
+        today's, then the night before's carry-over. `succeeded` holds the jobs that succeeded
+        for each of those dates."""
         today = trade_date_of(now)
-        return [
-            (job, today)
-            for job in self._jobs
-            if job.name not in self._running
-            and due(
-                job,
-                now,
-                trading=self._trading,
-                succeeded=succeeded,
-                attempted=self._attempted.get((job.name, today)),
-            )
-        ]
+        found: list[tuple[ScheduledJob, date]] = []
+        for day in (today, today - ONE_DAY):
+            for job in self._jobs:
+                if job.name in self._running or any(job is j for j, _ in found):
+                    continue
+                if due(
+                    job,
+                    now,
+                    trading=self._trading,
+                    succeeded=succeeded.get(day, ()),
+                    attempted=self._attempted.get((job.name, day)),
+                    day=day,
+                ):
+                    found.append((job, day))
+        return found
 
     async def _run(self, job: ScheduledJob, trade_date: date, started: datetime) -> None:
+        succeeded = False
         try:
             outcome = await asyncio.get_running_loop().run_in_executor(
                 self._threads,
@@ -179,18 +207,23 @@ class HatScheduler:
                     on_finish=job.on_finish(trade_date) if job.on_finish is not None else None,
                 ),
             )
-            if outcome.status is RunStatus.SUCCEEDED:
-                self._attempted[(job.name, trade_date)] = started + timedelta(days=1)
+            succeeded = outcome.status is RunStatus.SUCCEEDED
         except Exception:
             logger.exception("scheduled job could not run", extra={"job": job.name})
         finally:
+            # the retry waits `retry_after` from the end of a failed run, not from its start
+            ended = started + ONE_DAY if succeeded else self._now()
+            self._attempted[(job.name, trade_date)] = ended
             self._running.pop(job.name, None)
 
     async def tick(self) -> list[asyncio.Task[None]]:
         """Start every due job as its own task; return the tasks started."""
         now = self._now()
         today = trade_date_of(now)
-        succeeded = await asyncio.to_thread(succeeded_on, self._factory(), today)
+        days = (today, today - ONE_DAY)
+        succeeded = {
+            day: await asyncio.to_thread(succeeded_on, self._factory(), day) for day in days
+        }
         started = []
         for job, trade_date in self.due_jobs(now, succeeded):
             self._attempted[(job.name, trade_date)] = now
@@ -216,14 +249,19 @@ class HatScheduler:
         if self._task is None:
             self._task = asyncio.get_running_loop().create_task(self._loop())
 
-    async def stop(self) -> None:
-        """Stop starting jobs and wait a little for running ones (the runtime tells long bodies
-        to end first). A body still running after the grace period is left to its thread; the
-        next start reaps its run as interrupted (`recover_interrupted`)."""
+    async def stop(self, grace: float = STOP_GRACE_SECONDS) -> list[str]:
+        """Stop starting jobs and wait up to `grace` seconds for running ones (the runtime tells
+        long bodies to end first). A body still running then is left to its thread and logged by
+        name; the desks' sessions are released next, so it sends nothing more, and the next start
+        reaps its run as interrupted (`recover_interrupted`). Returns the jobs left running."""
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if self._running:
-            await asyncio.wait(list(self._running.values()), timeout=STOP_GRACE_SECONDS)
+            await asyncio.wait(list(self._running.values()), timeout=grace)
+        abandoned = sorted(name for name, run in self._running.items() if not run.done())
+        for name in abandoned:
+            logger.warning("job still running at stop: abandoned", extra={"job": name})
         self._threads.shutdown(wait=False)
+        return abandoned

@@ -764,7 +764,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 
 | Group | Events |
 | --- | --- |
-| Data | `ingest.completed`, `ingest.failed`, `quality.failed` |
+| Data | `ingest.completed`, `ingest.failed`, `quality.failed`, `gapscan.completed` |
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
 | Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed` |
 | Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap` |
@@ -805,7 +805,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 37 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 38 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, and `gapscan.completed` from PR 17, the gap scan's record for a restart). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

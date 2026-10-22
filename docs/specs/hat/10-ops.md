@@ -37,9 +37,11 @@ there is no OpenAlgo process; the broker layer is the in-process Fyers adapter.
 - **Statement:** After any (re)start, HAT reconciles positions and open orders with each broker before its first order and resumes jobs from `hat_job_run`.
 - **Source:** MA "Runtime" (live service reconciles before its first order), "Failure handling" (machine down → on restart, reconcile before acting).
 - **PR:** 17 (wiring), 13 (reconciliation)
-- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`
+- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start`
 - **Acceptance:**
   - Property: in every behaviour that includes a restart, no order is sent to a broker account before a reconciliation of that account has completed successfully since the restart. Harm: the engine re-places orders that already exist or misses fills from while it was down.
+  - Property: an entry left Triggered by the previous process is placed at most once after the restart, only after the feed has a fresh tick and the account is reconciled, and never on a later trade date than its own. Harm: an entry goes out on a stale price, twice, or a day late.
+  - Property: a stop, including one after a start that failed part way, stops the feed once, leaves no tick listener and names every job body still running after its grace. Harm: a half-started runtime keeps the provider socket, or a cut-off close leaves no trace.
 
 #### HAT-OPS-004: Exits and stops never depend on the nightly pipeline
 - **Statement:** Exit evaluation and protective stops run whether or not the nightly ingest, gate, features or scans succeeded.
@@ -67,7 +69,7 @@ started_at, finished_at, status, calls, rows, error)` with unique `(job, trade_d
 - **Statement:** A job whose last run failed (or was interrupted) can run again for the same trade date, and its status, calls, rows and error are recorded.
 - **Source:** SCH `hat_job_run` (status, calls, rows, error); MA "Runtime".
 - **PR:** 2
-- **Verification:** TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording`
+- **Verification:** TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording`, PBT `ops.retry_after_failed_run`, PBT `ops.chain_carries_past_midnight`
 - **Acceptance:**
   - Property: from every state where the latest run of `(job, trade_date)` is `failed` or was interrupted, a retry is allowed and eventually either succeeds or records a new error; a crashed run never stays `running` forever after restart. Harm: one transient failure blocks that day's job permanently.
   - Property: for every run, `finished_at ≥ started_at` and a failed run has a non-empty `error` with no raw broker or DB error text. Harm: failures are untraceable or leak internals.
@@ -160,9 +162,26 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
   next night's run covers every open position again.
 - `snapshot.bots` runs nightly after `allocate` (it needs the day's allocation capital), and
   `exits.close_gaps` after `ingest.nightly` (it needs the official closes).
-- The nightly chain belongs to the trade date it started on, so it must finish before midnight
-  IST; a chain still running then is not resumed under the next date. A failed job of a past date
-  is not re-run by the scheduler [OWNER-PENDING: a manual re-run command].
+- The nightly chain belongs to the trade date it started on. A chained job without a window (one
+  with `after`, such as `quality.gate`, `scan` or `allocate`) whose date has passed still starts
+  for that date until 08:30 IST the next day, before `live.prepare` reads the night's watchlist
+  (PBT `ops.chain_carries_past_midnight`). After that a failed job of a past date is not re-run
+  by the scheduler [OWNER-PENDING: a manual re-run command].
+- A failed run is retried `retry_after` (10 minutes) after it ended, not after it started, so a
+  body slower than that is not started again at once (PBT `ops.retry_after_failed_run`).
+- On stop the scheduler waits up to 25 s (inside the compose `stop_grace_period` of 30 s) for the
+  running bodies, then logs the name of each one still running; the next start reaps its run as
+  interrupted (PBT `ops.stop_names_abandoned_jobs`). A start that failed part way still stops
+  the feed and leaves no tick listener (PBT `ops.stop_after_failed_start`).
+- A restart reconciles every account and reads its fills before anything is placed. An entry
+  left Triggered by the previous process is placed only once the feed has a fresh tick and the
+  account is reconciled, and only on its own trade date (07, `SIGNAL_EXPIRED`). A restart after
+  08:45 on a trading day re-arms the day: the bar builder gets back the day's opening ranges and
+  volumes from the stored 5-minute bars, and the gap scan's EP candidates come back from its
+  `gapscan.completed` record (the acceptance run `test_ops__simulated_day` restarts at 09:21).
+- Each broker login serves one active account: a second active account of the same broker
+  refuses the start with `HatConfigError` (PBT `router.one_login_per_broker`), so equity is
+  never counted twice from one set of funds.
 - The quality state an entry reads for day d is the status of the previous trading day's
   `quality.gate` run; when that run did not finish or does not exist the state is unknown and
   entries fail closed (reason `missing_input`).
@@ -469,8 +488,9 @@ incident in the PR or issue tracker).
 2. Check: `$COMPOSE ps` shows `postgres` and `backend` healthy; `curl -fsS http://127.0.0.1:8000/ping`
    answers; Telegram `/status` answers.
 3. Stop (planned, outside the window): `python scripts/hat_deploy_guard.py && $COMPOSE stop backend`.
-   The backend has 30 s to stop the feed, the scheduler and the engine. Stop `postgres` only after
-   the backend.
+   The backend has 30 s to stop the feed, the scheduler and the engine: running job bodies get
+   25 s, and any still running then are logged by name (look for `abandoned` in the log and
+   check those jobs after the next start). Stop `postgres` only after the backend.
 4. Logs: `$COMPOSE logs -f backend` (one JSON object per line, HAT-OPS-070).
 5. Never `$COMPOSE down -v`: it deletes the database and data volumes.
 
@@ -512,9 +532,11 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 1. On start the scheduler marks any run left `running` by the previous process as interrupted, so
    it can run again (`recover_interrupted`); jobs resume from `hat_job_run` and a job that
    already succeeded for today is not run again (HAT-OPS-010).
-2. The first real entry of each broker session reconciles HAT's book with the broker's order and
-   trade books before any order (HAT-OPS-003). A broker that cannot be read, or an HT order HAT
-   does not know, places nothing and sends an alert.
+2. Before any order, every account's book is reconciled with the broker's order and trade books
+   and its fills are read (HAT-OPS-003). A broker that cannot be read, or an HT order HAT does
+   not know, places nothing and sends an alert. Entries left Triggered by the previous process
+   are placed once the feed is fresh, and only on their own trade date; a restart after 08:45
+   re-arms the day from the stored 5-minute bars and the recorded gap scan.
 3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
    position shows its stop). If the session is not live, follow "Morning login".
 4. If a `reconcile.mismatch` alert arrives, follow "Reconciliation mismatch".
@@ -534,7 +556,9 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 2. Look at the job rows: `select job, trade_date, status, error_code from hat_job_run where trade_date = current_date order by started_at;`
    and the backend log for the failing job.
 3. Fix the cause (source late, MCP endpoint down, a bad row). The scheduler retries a failed job
-   every 10 minutes while it is still that date; once the gate passes, the health kill clears on
+   10 minutes after each failed run while it is still that date (a chained job such as the gate
+   until 08:30 the next morning); a retry that fails the same checks sends no second alert. Once
+   the gate passes, the health kill clears on
    its own and the chain (ca.adjust, features, regime, allocate, scan, watchlist) continues.
 4. Do not re-arm by hand: a data-health kill re-arms automatically when the check passes.
 

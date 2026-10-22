@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -32,12 +32,15 @@ from hypothesis.stateful import (
     rule,
     run_state_machine_as_test,
 )
-from sqlalchemy import create_engine, select
+from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.daily import live as live_module
 from app.hat.daily.live import GateBoard
+from app.hat.daily.market import DailyData
 from app.hat.daily.runtime import HatRuntime
+from app.hat.data.store import BarRow, DataStore
+from app.hat.data.ticks import tick_for_date
 from app.hat.engine import exits, live_trades, trades
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import BACKOFF_CAP_SECONDS, SessionWatch, backoff_delay
@@ -63,7 +66,7 @@ from app.hat.ops.jobs import (
     recover_interrupted,
     run_job,
 )
-from app.hat.ops.scheduler import Days, HatScheduler, ScheduledJob, due, runs_on
+from app.hat.ops.scheduler import CARRY_UNTIL, Days, HatScheduler, ScheduledJob, due, runs_on
 from app.hat.risk import kill
 from app.hat.risk.sessions import SessionCalendar
 from app.hat.settings import load_settings
@@ -202,7 +205,7 @@ def test_calendar_skip(
     now = datetime.combine(CAL_START, time(0), tzinfo=IST) + timedelta(minutes=offset)
     today = now.astimezone(IST).date()
     scheduler = HatScheduler(jobs, trading=trading)
-    started = {job.name for job, _ in scheduler.due_jobs(now)}
+    started = {job.name for job, _ in scheduler.due_jobs(now, {})}
     for job in jobs:
         is_due = due(job, now, trading=trading, succeeded=(), attempted=None)
         assert (job.name in started) is is_due
@@ -259,6 +262,234 @@ def test_window_not_starved(pending: int) -> None:
         ran = asyncio.run(restart())
         engine.dispose()
     assert ran
+
+
+def _job_engine(tmp: str) -> Engine:
+    engine = create_engine(
+        f"sqlite:///{tmp}/jobs.db", connect_args={"check_same_thread": False, "timeout": 30}
+    )
+    HatJobRun.__table__.create(engine)
+    return engine
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    run_minutes=st.integers(min_value=0, max_value=300),
+    wait=st.integers(min_value=0, max_value=20),
+)
+def test_retry_after_failed_run(run_minutes: int, wait: int) -> None:
+    """HAT-OPS-021 (`retry_after`): a failed run is tried again `retry_after` after it ended,
+    however long it ran. Harm: the ingest that waited four hours for its data and failed at 22:01
+    is started again at once, a second download and failure cycle with no back-off."""
+    clock = [_ist(RESTART_DAY, time(18, 0))]
+
+    def body(_day: date) -> None:
+        clock[0] += timedelta(minutes=run_minutes)  # the run takes this long, then fails
+        raise JobError("source_unavailable")
+
+    job = ScheduledJob("ingest.nightly", time(18, 0), body, retry_after=timedelta(minutes=10))
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = _job_engine(tmp)
+        scheduler = HatScheduler([job], sessionmaker(engine), lambda: clock[0])
+
+        async def run() -> tuple[int, int]:
+            first = len(await scheduler.tick())
+            await scheduler.drain()
+            clock[0] += timedelta(minutes=wait)
+            again = len(await scheduler.tick())
+            await scheduler.drain()
+            await scheduler.stop()
+            return first, again
+
+        first, again = asyncio.run(run())
+        engine.dispose()
+    assert first == 1
+    assert (again == 1) is (wait >= 10)
+
+
+NIGHT_DAY = date(2026, 10, 20)  # a Tuesday; the 21st is a trading day too
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    head_done=st.integers(min_value=0, max_value=359),  # minutes after 18:00 on NIGHT_DAY
+    later=st.integers(min_value=1, max_value=16 * 60),
+)
+def test_chain_carries_past_midnight(head_done: int, later: int) -> None:
+    """HAT-OPS-021 (audit L6): a chained job whose `after` job succeeded late on its date is
+    still started under that trade date after IST midnight, until `CARRY_UNTIL`, and never under
+    the next date before its own chain ran. Harm: an ingest that succeeds at 23:58 leaves no
+    quality gate, allocation, scan or drawdown-kill evaluation for its day."""
+    clock = [_ist(NIGHT_DAY, time(18, 0)) + timedelta(minutes=head_done)]
+    started: list[tuple[str, date]] = []
+    jobs = [
+        ScheduledJob("head", time(18, 0), lambda _d: None),
+        ScheduledJob("next", time(18, 0), lambda d: started.append(("next", d)), after=("head",)),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = _job_engine(tmp)
+        with Session(engine) as session:
+            session.add(
+                HatJobRun(
+                    job="head",
+                    trade_date=NIGHT_DAY,
+                    started_at=clock[0],
+                    finished_at=clock[0],
+                    status="succeeded",
+                )
+            )
+            session.commit()
+        scheduler = HatScheduler(jobs[1:], sessionmaker(engine), lambda: clock[0])
+        tick_at = clock[0] + timedelta(minutes=later)
+        clock[0] = tick_at
+
+        async def run() -> None:
+            await scheduler.tick()
+            await scheduler.drain()
+            await scheduler.stop()
+
+        asyncio.run(run())
+        engine.dispose()
+    local = tick_at.astimezone(IST)
+    carried = local.date() == NIGHT_DAY + timedelta(days=1) and local.time() < CARRY_UNTIL
+    expected = [("next", NIGHT_DAY)] if local.date() == NIGHT_DAY or carried else []
+    assert started == expected
+
+
+@settings(max_examples=10, deadline=None)
+@given(stuck=st.lists(st.booleans(), min_size=1, max_size=4))
+def test_stop_names_abandoned_jobs(stuck: list[bool]) -> None:
+    """Audit L9: `stop` waits up to its grace for the running bodies, and names (and logs) each
+    one still running then. Harm: a close or swap cut off by a shutdown leaves no trace of which
+    job was abandoned, so a position left on its day stop is found only by chance."""
+    release = threading.Event()
+    jobs = [
+        ScheduledJob(
+            f"job{i}",
+            time(9, 0),
+            (lambda _d: release.wait(10)) if blocked else (lambda _d: None),
+        )
+        for i, blocked in enumerate(stuck)
+    ]
+    clock = [_ist(RESTART_DAY, time(9, 0))]
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = _job_engine(tmp)
+        scheduler = HatScheduler(jobs, sessionmaker(engine), lambda: clock[0])
+
+        async def run() -> list[str]:
+            await scheduler.tick()
+            await asyncio.sleep(0.2)
+            abandoned = await scheduler.stop(grace=0.3)
+            release.set()
+            return abandoned
+
+        abandoned = asyncio.run(run())
+        engine.dispose()
+    assert abandoned == sorted(f"job{i}" for i, blocked in enumerate(stuck) if blocked)
+
+
+class _StopFeed:
+    """The feed's stop half: listeners and stop calls, counted."""
+
+    def __init__(self) -> None:
+        self.listeners: list[object] = []
+        self.stopped = 0
+
+    def add_tick_listener(self, listener: object) -> object:
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+class _Failing:
+    """A built part whose stop step raises."""
+
+    def detach(self) -> None:
+        raise RuntimeError
+
+    def release_all(self) -> None:
+        raise RuntimeError
+
+
+@settings(max_examples=60)
+@given(
+    built=st.integers(min_value=0, max_value=3),
+    attached=st.booleans(),
+    failing=st.sets(st.sampled_from(["live", "subscriptions"])),
+)
+def test_stop_after_failed_start(built: int, attached: bool, failing: set[str]) -> None:
+    """Audit L8: after a start that failed part way (parts read, then none, some or all of the
+    live data and subscriptions built), `stop` runs each step on what exists, and the feed is
+    stopped exactly once with no tick listener left, even when a step raises. Harm: a skipped
+    `feed.stop` leaves the provider's login hooks and socket behind a failed start."""
+    feed = _StopFeed()
+    runtime = _runtime(load_settings({"HAT_ENABLED": "true"}), "postgresql", [])
+    if built:
+        runtime.parts = SimpleNamespace(feed=feed)  # type: ignore[attr-defined]
+    if built >= 2:
+        live = SimpleNamespace(detach=lambda: None)
+        if attached:
+            remove = feed.add_tick_listener(object())
+            live = SimpleNamespace(detach=remove)
+        runtime.live = _Failing() if "live" in failing else live  # type: ignore[attr-defined]
+    if built >= 3:
+        released = SimpleNamespace(release_all=lambda: None)
+        runtime.subscriptions = (  # type: ignore[attr-defined]
+            _Failing() if "subscriptions" in failing else released
+        )
+    asyncio.run(runtime.stop())
+    assert feed.stopped == (1 if built else 0)
+    left = 1 if built >= 2 and attached and "live" in failing else 0
+    assert len(feed.listeners) == left
+    assert runtime.started is False
+
+
+TICK_DAYS = [date(2026, 8, 24) + timedelta(days=i) for i in range(28) if (i % 7) < 5]
+tick_closes = st.dictionaries(  # (instrument, session) -> the closes of its ingest runs, in order
+    st.tuples(st.integers(min_value=0, max_value=2), st.sampled_from(TICK_DAYS)),
+    st.lists(
+        st.decimals(min_value=Decimal("0.05"), max_value=Decimal(9000), places=2),
+        min_size=1,
+        max_size=3,
+    ),
+    max_size=24,
+)
+
+
+@settings(max_examples=40, deadline=None)
+@given(closes=tick_closes, trade_at=st.integers(min_value=1, max_value=len(TICK_DAYS)))
+def test_daily_tick_matches_reference(
+    closes: dict[tuple[int, date], list[Decimal]], trade_at: int
+) -> None:
+    """Simplify #21: `DailyData.tick` reads only the two closes `reference_close` can pick (the
+    last before the month start and the latest, each date's from its newest ingest run), and
+    gives the tick `tick_for_date` gives over every close of the window. Harm: a wrong tick puts
+    a stop or a limit off the exchange's grid, and the order is rejected."""
+    ids = [uuid.UUID(int=n + 1) for n in range(3)]
+    trade_date = TICK_DAYS[trade_at] if trade_at < len(TICK_DAYS) else date(2026, 9, 21)
+    engine = memory_engine()
+    with tempfile.TemporaryDirectory() as tmp:
+        store = DataStore(Path(tmp))
+        runs: dict[date, dict[int, list[BarRow]]] = {}
+        for (n, day), prices in closes.items():
+            for run, price in enumerate(prices):
+                row = BarRow(
+                    *(ids[n], f"INE{n:09d}", f"S{n}", "EQ", price, price, price, price, price),
+                    *(1000, None, "bhavcopy", uuid.UUID(int=run + 1)),
+                )
+                runs.setdefault(day, {}).setdefault(run, []).append(row)
+        for day, by_run in runs.items():
+            for rows in by_run.values():
+                store.write_bars(day, rows)
+        with Session(engine) as session:
+            data = DailyData(store, session, trade_date)
+        engine.dispose()
+    for n, instrument in enumerate(ids):
+        mine = sorted((d, p[-1]) for (i, d), p in closes.items() if i == n and d < trade_date)
+        want = tick_for_date([d for d, _ in mine], [c for _, c in mine], trade_date)
+        assert data.tick(instrument) == want
 
 
 RUN_STATUSES = (None, *JOB_STATUSES)

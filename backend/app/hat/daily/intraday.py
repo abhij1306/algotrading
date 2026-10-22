@@ -2,10 +2,12 @@
 
 - `live.prepare` (08:45): load the day's daily view, subscribe the watchlist and the open
   positions, and hand the trigger monitor the watchlist candidates; a key that already has its
-  signal (a restart mid-session) is marked fired so it never fires twice.
+  signal (a restart mid-session) is marked fired so it never fires twice, and a restart after the
+  gap scan rebuilds the EP candidates it recorded.
 - `modes.apply` (09:15, the session open): the queued execution modes that are now in force.
 - `gapscan` (09:16): the EP gappers whose setup passes become candidates of every EP bot and
-  are subscribed; the scan alerts when it finished at or after 09:20.
+  are subscribed; the gappers and their opens are recorded (`gapscan.completed`) for a restart;
+  the scan alerts when it finished at or after 09:20.
 - `exits.close_shadow` (15:20-15:25): the close-phase exits of the virtual positions no broker
   account's `TradeManager` handles.
 - `watchlist.expire` (15:30, the session close): today's Watchlisted rows that never triggered end
@@ -22,6 +24,7 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,15 +46,23 @@ from ..engine.live_entry import (
 from ..engine.trades import expire_watchlist
 from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members
+from ..events import record
 from ..execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL
 from ..execution.modes import apply_mode_changes
-from ..models import HatBot, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
+from ..models import (
+    HatBot,
+    HatEvent,
+    HatInstrument,
+    HatJobRun,
+    HatPosition,
+    HatSignal,
+    HatWatchlistEntry,
+)
 from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
-from ..telegram.reads import session_calendar
 from ..time import utc_now
-from .live import PriceBook, ShadowExits
+from .live import CalendarSource, PriceBook, ShadowExits
 from .market import DailyBook
 
 __all__ = [
@@ -77,6 +88,9 @@ GAPSCAN_AT = time(9, 16)
 GAPSCAN_UNTIL = time(9, 20)  # a scan that cannot start before the first bar is no use that day
 WATCHLIST_EXPIRE_AT = time(15, 30)  # the session close: a Watchlisted row ends with its day
 ONE_MINUTE = timedelta(minutes=1)
+GAPPERS_RECORDED = "gapscan.completed"
+
+Gappers = tuple[Mapping[str, uuid.UUID], Mapping[str, Decimal]]  # symbol -> id, symbol -> open
 
 
 class Intraday:
@@ -95,6 +109,7 @@ class Intraday:
         shadow: ShadowExits,
         notifier: Notifier,
         gap_client: Callable[[], McpClient | None],
+        calendar: CalendarSource,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
@@ -106,6 +121,7 @@ class Intraday:
         self._shadow = shadow
         self._notifier = notifier
         self._gap_client = gap_client
+        self._calendar = calendar
 
     def _now(self) -> datetime:
         return utc_now(self._clock)
@@ -120,13 +136,12 @@ class Intraday:
         data = self._book.day(day)
         monitor = TriggerMonitor(self._live.builder)
         with self._session_factory() as session:
-            calendar = session_calendar(session)
             candidates = watchlist_candidates(
                 session,
                 day,
                 lambda iid: data.daily(session, iid),
                 data.bars,
-                calendar=calendar,
+                calendar=self._calendar(),
             )
             for candidate in candidates:
                 monitor.add(candidate)
@@ -134,9 +149,12 @@ class Intraday:
                 monitor.mark_fired(key)
             inputs = load_inputs(session, day)
             self._prices.track_session(session, _day_instruments(session, day))
+            gappers = _recorded_gappers(session, day)
         self._service.monitor = monitor
         if self._subs is not None:
             self._subs.sync(inputs)
+        if gappers is not None:  # a restart after the gap scan: its EP candidates again
+            self._add_gappers(day, *gappers)
         return JobResult(rows=len(candidates))
 
     # --- 09:15 --------------------------------------------------------------------------------
@@ -172,17 +190,29 @@ class Intraday:
         return lambda instrument: instrument.id in members
 
     def on_gappers(self, day: date, found: Mapping[str, uuid.UUID]) -> int:
-        """The EP candidates of each EP bot among the gappers: setup passed on the bars before
-        `day`, open price from the feed's pre-open record, announcements of the last 24 hours."""
-        data = self._book.day(day)
+        """Record the gappers with their opens from the feed's pre-open record (a restart
+        rebuilds the candidates from them: the record is gone by then), then add the EP
+        candidates."""
         gaps = self._live.gaps.records()
+        opens = {symbol: gaps[symbol].open for symbol in found if symbol in gaps}
+        with self._session_factory() as session:
+            _record_gappers(session, day, found, opens, self._now())
+            session.commit()
+        return self._add_gappers(day, found, opens)
+
+    def _add_gappers(
+        self, day: date, found: Mapping[str, uuid.UUID], opens: Mapping[str, Decimal]
+    ) -> int:
+        """The EP candidates of each EP bot among the gappers: setup passed on the bars before
+        `day`, the day's open, announcements of the last 24 hours."""
+        data = self._book.day(day)
         now = self._now()
         with self._session_factory() as session:
             items = [
                 EpInputs(
                     instrument_id=iid,
                     symbol=symbol,
-                    open_price=gaps[symbol].open if symbol in gaps else None,
+                    open_price=opens.get(symbol),
                     announcements=tuple(
                         a.published_at for a in attached_announcements(session, iid, now)
                     ),
@@ -197,7 +227,7 @@ class Intraday:
                     items,
                     lambda iid: data.daily(session, iid),
                     data.bars,
-                    calendar=session_calendar(session),
+                    calendar=self._calendar(),
                 )
                 if c.playbook.name == EP_PLAYBOOK
                 and ep_setup_passes(c.playbook, data.bars(c.instrument_id), day)
@@ -223,9 +253,61 @@ class Intraday:
             session.commit()
         return JobResult(rows=expired)
 
-    def live_exits(self) -> int:
-        """One pass of the live exit rules over the open virtual positions."""
-        return self._shadow.run(self._now())
+
+def _gapscan_run(session: Session, day: date) -> uuid.UUID | None:
+    return session.scalar(
+        select(HatJobRun.id).where(HatJobRun.job == GAPSCAN, HatJobRun.trade_date == day)
+    )
+
+
+def _record_gappers(
+    session: Session,
+    day: date,
+    found: Mapping[str, uuid.UUID],
+    opens: Mapping[str, Decimal],
+    now: datetime,
+) -> None:
+    run_id = _gapscan_run(session, day)
+    if run_id is None:  # not run by the scheduler: nothing to rebuild from
+        return
+    record(
+        session,
+        aggregate_type="ingest",
+        aggregate_id=run_id,
+        event_type=GAPPERS_RECORDED,
+        actor="scheduler",
+        payload={
+            "trade_date": day.isoformat(),
+            "gappers": [
+                {
+                    "symbol": symbol,
+                    "instrument_id": str(iid),
+                    "open": str(opens[symbol]) if symbol in opens else None,
+                }
+                for symbol, iid in sorted(found.items())
+            ],
+        },
+        occurred_at=now,
+    )
+
+
+def _recorded_gappers(session: Session, day: date) -> Gappers | None:
+    """The gappers the day's last gap scan recorded; None before it ran."""
+    run_id = _gapscan_run(session, day)
+    if run_id is None:
+        return None
+    payload = session.scalar(
+        select(HatEvent.payload)
+        .where(HatEvent.aggregate_id == run_id, HatEvent.event_type == GAPPERS_RECORDED)
+        .order_by(HatEvent.id.desc())
+        .limit(1)
+    )
+    if payload is None:
+        return None
+    rows = payload["gappers"]
+    found = {row["symbol"]: uuid.UUID(row["instrument_id"]) for row in rows}
+    opens = {row["symbol"]: Decimal(row["open"]) for row in rows if row["open"] is not None}
+    return found, opens
 
 
 def _signal_keys(session: Session, day: date) -> list[tuple[uuid.UUID, str, uuid.UUID, date]]:

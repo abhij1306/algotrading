@@ -86,6 +86,7 @@ ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 NO_GTT = "no_gtt_delivery"
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
+SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
 _ROUTABLE = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL)
 
@@ -299,6 +300,8 @@ class ExecutionRouter:
         check: PlacementCheck,
     ) -> str | None:
         """Why the entry may not be placed now (a fixed code), or None."""
+        if signal.trade_date != trade_date_of(now):
+            return SIGNAL_EXPIRED  # its price, size and risk decision were for that session
         refusal = (
             placement_refusal(check, now)
             or _kill_refusal(session, signal.bot_id)

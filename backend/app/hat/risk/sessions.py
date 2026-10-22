@@ -70,6 +70,19 @@ class SessionCalendar:
         ]
         return min(opens) if opens else None
 
+    def trading_days(self) -> list[date]:
+        """The calendar's trading days, in date order."""
+        return sorted(day for day, row in self.days.items() if row.is_trading)
+
+    def previous_trading_day(self, day: date) -> date | None:
+        """The last trading day before `day`; None when the calendar holds none."""
+        earlier = [d for d in self.trading_days() if d < day]
+        return earlier[-1] if earlier else None
+
+    def next_trading_day(self, day: date) -> date | None:
+        """The first trading day after `day`; None when the calendar holds none."""
+        return next((d for d in self.trading_days() if d > day), None)
+
     def first_open_at_or_after(self, at: datetime) -> datetime | None:
         """The first session open at or after `at` (None when the calendar holds none)."""
         moment = as_utc(at)
@@ -79,6 +92,12 @@ class SessionCalendar:
             if day.is_trading and day.open_at is not None and as_utc(day.open_at) >= moment
         ]
         return min(opens) if opens else None
+
+
+def is_trading_day(calendar: SessionCalendar | None, day: date) -> bool:
+    """A day the calendar holds as a trading day; an unknown day (or no calendar) is not one."""
+    found = calendar.days.get(day) if calendar is not None else None
+    return found is not None and found.is_trading
 
 
 def next_session_open(calendar: SessionCalendar, after: datetime) -> datetime | None:

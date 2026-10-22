@@ -93,6 +93,7 @@ def _registered() -> set[Row]:
                 "shadow",
                 "notifier",
                 "gap_client",
+                "calendar",
             )
         )
     )

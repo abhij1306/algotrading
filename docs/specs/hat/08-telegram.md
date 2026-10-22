@@ -120,9 +120,10 @@ virtual position.
 - **Statement:** After the nightly scan, one digest per bot lists new and dropped symbols, the top 10 by score and the regime state.
 - **Source:** DS "Outbound messages" (Watchlist digest); MA "Daily cycle" step 7.
 - **PR:** 16
-- **Verification:** PBT `telegram.watchlist_digest_content`
+- **Verification:** PBT `telegram.watchlist_digest_content`, PBT `telegram.watchlist_digest_once`
 - **Acceptance:**
   - Property: for every pair of consecutive watchlists of a bot, the digest's "new" set equals today minus yesterday, "dropped" equals yesterday minus today, and "top" is the first min(10, n) entries ordered by score descending. Harm: the user acts on a wrong summary of what the bot will trade.
+  - Property: a `watchlist.digest` retry after a partial failure sends only the digests not yet sent for the latest publish of that day. Harm: the user gets the same digest again on every retry.
 
 #### HAT-TG-023: Shadow trade and approval card content
 - **Statement:** A trigger produces a shadow-trade message (shadow mode) or an approval card (confirm mode) carrying symbol, entry, stop, qty, risk ₹ and R target as fixed by the engine; the card adds its expiry time and, when announcements are attached (EP signals), the catalyst headline and PDF link.

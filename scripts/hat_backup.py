@@ -115,29 +115,13 @@ def _present_entries(directory: Path, names: Iterable[str]) -> dict[str, Entry]:
     return {name: file_entry(directory / name) for name in names if (directory / name).is_file()}
 
 
-def _archive_problems(directory: Path, archives: Mapping[str, Mapping[str, Entry]]) -> list[str]:
-    problems = []
-    for tar_name, members in sorted(archives.items()):
-        tar_path = directory / tar_name
-        if not tar_path.is_file():
-            continue  # already reported as a missing file
-        try:
-            actual = archive_manifest(tar_path)
-        except (tarfile.TarError, OSError):
-            problems.append(f"{directory}: {tar_name} cannot be read as a tar")
-            continue
-        problems.extend(compare_entries(f"{directory}/{tar_name}", members, actual))
-    return problems
-
-
 def verify_manifest(directory: Path, manifest: Mapping) -> list[str]:
     """Every problem found re-reading `directory` against `manifest`; empty when it matches."""
     files = manifest.get(FILES) or {}
     if not files:
         return [f"{directory}: the manifest lists no files"]
-    problems = compare_entries(str(directory), files, _present_entries(directory, files))
-    problems.extend(_archive_problems(directory, manifest.get(ARCHIVES) or {}))
-    return problems
+    # an archive is listed in `files`, so its checksum already covers every member it holds
+    return compare_entries(str(directory), files, _present_entries(directory, files))
 
 
 # --- the backup run -------------------------------------------------------------------------

@@ -185,13 +185,17 @@ def test_index_snapshot_present(names: list[str]) -> None:
 @given(
     kind=st.sampled_from(["good", "bad_row", "no_vix", "unexplained_move"]),
     tripped_before=st.booleans(),
+    retries=st.integers(min_value=0, max_value=2),
 )
-@example(kind="good", tripped_before=True)
-def test_rows_written(kind: str, tripped_before: bool) -> None:
+@example(kind="good", tripped_before=True, retries=0)
+@example(kind="bad_row", tripped_before=False, retries=2)
+def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     """For every night's data (good, a bad row, no India VIX stored, an unexplained 50% move) and
     either health state before it, the gate writes exactly four rows, one per check, PASS iff all
     four pass; a failure writes one `quality.failed` event, raises one alert, fails the job and
-    leaves the health kill tripped; only a passing gate clears it."""
+    leaves the health kill tripped, however often the scheduler retries it on the same data
+    (audit L4: a retry every 10 minutes until midnight re-alerted each time); only a passing
+    gate clears it."""
     names = [s for s, _, _ in symbols_of(4)]
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(4))
@@ -218,6 +222,8 @@ def test_rows_written(kind: str, tripped_before: bool) -> None:
                 r for r in read(day) if r.index_name.upper() != "INDIA VIX"
             ]
         passed = _gate(world)
+        for _ in range(retries):
+            assert _gate(world) == passed
         rows = _rows(world)
         with world.factory() as session:
             failed_events = session.scalars(

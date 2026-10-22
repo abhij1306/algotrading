@@ -278,6 +278,44 @@ def test_opening_range_fixed(
         assert builder.opening_range("AAA", DAY) == fixed
 
 
+@given(
+    sequence=st.lists(
+        st.tuples(
+            st.sampled_from(SYMBOLS),
+            st.integers(OPEN_SOD * US, CLOSE_SOD * US - 1),
+            prices,
+            quantities,
+        ),
+        max_size=40,
+    ),
+    cut=st.integers(OPEN_SOD * US, CLOSE_SOD * US),
+)
+def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut: int) -> None:
+    """PR 17 (a restart mid-session): a builder restored from the final bars a live builder made
+    before a restart at `cut` has the same opening range and day volume of every symbol, and a
+    second restore changes nothing. Harm: after a restart past 09:20 no opening-range breakout
+    can trigger for the rest of the day, and volume pace reads as a fraction of the real one."""
+    live = BarBuilder()
+    for symbol, offset, price, qty in sorted(sequence, key=lambda row: row[1]):
+        if offset < cut:
+            live.on_tick(Tick(symbol, at_us(offset), price, qty), at_us(offset))
+    finals = live.advance(at_us(cut))
+    unfinished = {  # a symbol with a bar still building at the cut
+        symbol
+        for symbol, offset, price, qty in sequence
+        if offset < cut
+        and (start := expected_start(Tick(symbol, at_us(offset), price, qty))) is not None
+        and start + timedelta(minutes=5, seconds=2) > at_us(cut)
+    }
+    restored = BarBuilder()
+    assert restored.restore(finals) == len(finals)
+    assert restored.restore(finals) == 0
+    for symbol in SYMBOLS:
+        assert restored.opening_range(symbol, DAY) == live.opening_range(symbol, DAY)
+        if symbol not in unfinished:
+            assert restored.day_volume(symbol, DAY) == live.day_volume(symbol, DAY)
+
+
 # --- volume pace (HAT-DATA-115) ----------------------------------------------------------------
 
 

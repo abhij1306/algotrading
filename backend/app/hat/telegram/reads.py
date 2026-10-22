@@ -22,16 +22,13 @@ from ..models import (
     HatDailyBotSnapshot,
     HatEvent,
     HatInstrument,
-    HatMarket,
     HatPosition,
     HatRegimeState,
     HatSignal,
     HatStrategy,
-    HatTradingCalendar,
     HatWatchlistEntry,
 )
 from ..risk import controls, kill
-from ..risk.sessions import SessionCalendar
 from ..time import as_utc, day_bounds, trade_date_of
 from . import render
 
@@ -47,7 +44,6 @@ __all__ = [
     "logged_out",
     "position_rows",
     "rejection_rows",
-    "session_calendar",
     "status_view",
     "symbol_of",
     "watchlist_digest",
@@ -67,23 +63,6 @@ class LoginLinks(Protocol):
     def link(self, account: HatBrokerAccount) -> str | None:
         """A fresh login link for the account's broker, None when one cannot be made."""
         ...
-
-
-def session_calendar(session: Session, market_code: str = "NSE") -> SessionCalendar | None:
-    """The market's `hat_trading_calendar` rows as the session calendar the risk checks read."""
-    market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == market_code))
-    if market_id is None:
-        return None
-    rows = session.scalars(
-        select(HatTradingCalendar).where(HatTradingCalendar.market_id == market_id)
-    )
-    return SessionCalendar.from_rows((r.day, r.is_trading, r.open_at, r.close_at) for r in rows)
-
-
-def is_trading_day(calendar: SessionCalendar | None, day: date) -> bool:
-    """A day the calendar holds as a trading day; an unknown day is not one."""
-    found = calendar.days.get(day) if calendar is not None else None
-    return found is not None and found.is_trading
 
 
 # --- bots and instruments ----------------------------------------------------------------------

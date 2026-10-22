@@ -33,6 +33,7 @@ __all__ = [
     "final_contraction_low",
     "floor_to_tick",
     "low_of_day",
+    "mean_true_range",
     "pct_below_entry",
     "plan_stop",
     "swing_low",
@@ -42,6 +43,7 @@ SKIP_TOO_WIDE = "stop_too_wide"
 SKIP_NOT_BELOW_ENTRY = "stop_not_below_entry"
 SKIP_BAD_INPUT = "stop_input_missing"
 _HUNDRED = Decimal(100)
+_ZERO = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,22 @@ def pct_below_entry(entry: Decimal, pct: Decimal, tick: Decimal) -> StopPlan:
     if not (_positive(entry, tick) and isinstance(pct, Decimal) and pct > 0):
         return _skip(SKIP_BAD_INPUT)
     return _valid(entry, floor_to_tick(entry * (_HUNDRED - pct) / _HUNDRED, tick))
+
+
+def mean_true_range(
+    highs: Sequence[Decimal], lows: Sequence[Decimal], closes: Sequence[Decimal], length: int
+) -> Decimal | None:
+    """The mean true range of the last `length` sessions of these daily bars (oldest first; the
+    session before them gives the first previous close), or None with fewer than `length` + 1
+    bars. The live stop and the backtest both read the ATR from here."""
+    if length < 1 or len(closes) < length + 1:
+        return None
+    start = len(closes) - length
+    ranges = (
+        max(highs[i], closes[i - 1]) - min(lows[i], closes[i - 1])
+        for i in range(start, len(closes))
+    )
+    return sum(ranges, _ZERO) / length
 
 
 def atr_multiple(entry: Decimal, atr: Decimal, multiple: Decimal, tick: Decimal) -> StopPlan:

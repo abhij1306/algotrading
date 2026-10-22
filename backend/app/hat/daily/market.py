@@ -27,12 +27,11 @@ from ..data.store import (
     DataStore,
 )
 from ..data.ticks import tick_for_date
-from ..engine.exits import ExitView
+from ..engine.exits import ExitView, view_from_rules
 from ..engine.scan import ScanInputs
+from ..engine.stops import mean_true_range
 from ..engine.strategy.config import (
-    ExitCloseBelowSma,
     ExitRule,
-    ExitTrailingSwingLow,
     StopAtrMultiple,
     StopSwingLow,
     StrategyConfig,
@@ -61,11 +60,19 @@ SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
 FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
 """
+# The two closes `reference_close` can pick, per instrument: the last before the month start and
+# the latest (each date's close from its newest ingest run; a date without a close is skipped).
 _RAW_SQL = """
-SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date, CAST(close AS VARCHAR) AS close
-FROM bars_daily_raw WHERE date BETWEEN ? AND ?
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-ORDER BY instrument_id, date
+WITH latest AS (
+    SELECT instrument_id, date, close FROM bars_daily_raw WHERE date BETWEEN ? AND ?
+    QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+)
+SELECT CAST(instrument_id AS VARCHAR),
+       max(date) FILTER (WHERE date < ?),
+       CAST(arg_max(close, date) FILTER (WHERE date < ?) AS VARCHAR),
+       max(date),
+       CAST(arg_max(close, date) AS VARCHAR)
+FROM latest WHERE close IS NOT NULL GROUP BY instrument_id
 """
 _INDEX_SQL = """
 SELECT date, CAST(close AS VARCHAR) FROM index_daily
@@ -163,16 +170,18 @@ class DailyData:
         session: Session,
         trade_date: date,
         *,
-        sessions: int = DAILY_SESSIONS,
         configs: Sequence[StrategyConfig] = (),
     ) -> None:
         self.trade_date = trade_date
-        window = sessions_before(store, trade_date, sessions)
+        window = sessions_before(store, trade_date, DAILY_SESSIONS)
         self._atr_days, self._swing_days = stop_lengths(configs)
         if window:
             with store.connect(stored_factors(session)) as con:
                 bars = con.execute(_ADJ_SQL, [window[0], window[-1]]).pl()
-                raw = con.execute(_RAW_SQL, [window[0], window[-1]]).fetchall()
+                month_start = trade_date.replace(day=1)
+                raw = con.execute(
+                    _RAW_SQL, [window[0], window[-1], month_start, month_start]
+                ).fetchall()
         else:
             bars, raw = pl.DataFrame(), []
         self._bars: dict[str, pl.DataFrame] = (
@@ -181,10 +190,13 @@ class DailyData:
             else {}
         )
         self._raw: dict[str, tuple[list[date], list[Decimal | None]]] = {}
-        for instrument_id, day, close in raw:
-            dates, closes = self._raw.setdefault(instrument_id, ([], []))
-            dates.append(day)
-            closes.append(_dec(close))
+        for instrument_id, *picks in raw:
+            pairs = [
+                (day, _dec(close))
+                for day, close in zip(picks[::2], picks[1::2], strict=True)
+                if day
+            ]
+            self._raw[instrument_id] = ([d for d, _ in pairs], [c for _, c in pairs])
         features = _features(store, window[-1]) if window else None
         self._features: dict[str, dict[str, object]] = (
             {str(r["instrument_id"]): r for r in features.to_dicts()}
@@ -210,16 +222,13 @@ class DailyData:
     def _atr(self, instrument_id: uuid.UUID) -> Decimal | None:
         if self._atr_days is None:
             return None
-        frame = self.bars(instrument_id)
-        if frame.height < self._atr_days + 1:
+        frame = self.bars(instrument_id).tail(self._atr_days + 1)
+        if frame.height == 0:
             return None
-        rows = frame.tail(self._atr_days + 1).to_dicts()
-        ranges = [
-            max(Decimal(repr(b["high"])), Decimal(repr(a["close"])))
-            - min(Decimal(repr(b["low"])), Decimal(repr(a["close"])))
-            for a, b in zip(rows, rows[1:], strict=False)
-        ]
-        return sum(ranges, Decimal(0)) / self._atr_days
+        highs, lows, closes = (
+            [Decimal(repr(v)) for v in frame[name].to_list()] for name in ("high", "low", "close")
+        )
+        return mean_true_range(highs, lows, closes, self._atr_days)
 
     def daily(self, session: Session, instrument_id: uuid.UUID) -> DailyInputs:
         """The trigger's `DailyInputs` of one instrument (HAT-CRIT-115, HAT-DATA-115)."""
@@ -262,18 +271,13 @@ class DailyData:
         days_held: int,
     ) -> ExitView:
         """The view of a position at the live `price` under its pinned exit `rules`."""
-        sma: dict[int, Decimal] = {}
-        swing: dict[int, Decimal] = {}
-        for rule in rules:
-            if isinstance(rule, ExitCloseBelowSma):
-                level = self.sma(instrument_id, rule.sma, price)
-                if level is not None:
-                    sma[rule.sma] = level
-            elif isinstance(rule, ExitTrailingSwingLow):
-                low = self.swing_low(instrument_id, rule.lookback_days)
-                if low is not None:
-                    swing[rule.lookback_days] = low
-        return ExitView(price, days_held=days_held, sma=sma, swing_low=swing)
+        return view_from_rules(
+            price,
+            rules,
+            days_held,
+            lambda length: self.sma(instrument_id, length, price),
+            lambda lookback: self.swing_low(instrument_id, lookback),
+        )
 
 
 def held_sessions(trading_days: Iterable[date], opened: date, today: date) -> int:
@@ -289,7 +293,7 @@ class DailyBook:
         self,
         store: DataStore,
         session_factory: Callable[[], Session],
-        configs: Callable[[Session], Sequence[StrategyConfig]] = lambda _s: (),
+        configs: Callable[[Session], Sequence[StrategyConfig]],
     ) -> None:
         self._store = store
         self._session_factory = session_factory

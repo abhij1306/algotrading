@@ -16,14 +16,17 @@ IST on Tuesday 2026-10-20, and is driven on a fixed clock through:
   bhavcopy and the pipeline scans for Friday;
 - Thursday, a holiday: only the every-day housekeeping runs;
 
-and stops, leaving no task behind. Shadow mode sends nothing to the broker but reads.
+with a restart at 09:21 on Wednesday, after the gap scan and the first bar but before any entry:
+the new runtime rebuilds the gappers from their record and the opening ranges from the stored
+bars, so both entries still happen. Then it stops, leaving no task behind. Shadow mode sends
+nothing to the broker but reads.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -58,6 +61,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.hat.clock import FixedClock
 from app.hat.daily.nightly import NIGHTLY_CHAIN, TextSources
 from app.hat.daily.runtime import HatRuntime, RuntimeParts
+from app.hat.data.bars_store import BarStore
 from app.hat.data.store import DataStore
 from app.hat.engine import lifecycle
 from app.hat.models import (
@@ -77,6 +81,7 @@ pytestmark = pytest.mark.postgres
 USER = uuid.UUID("00000000-0000-7000-8000-0000000000d1")
 START = ist(NIGHT, 17, 55)
 END = ist(HOLIDAY, 23, 55)
+RESTART = ist(TRADE, 9, 21)  # after the 09:16 gap scan and the 09:15 bar, before the entries
 STEP = timedelta(seconds=15)  # in the busy hours: ticks, a scheduler tick, the periodic pass
 QUIET = timedelta(minutes=5)  # outside them
 BUSY_FROM = time(8, 25)
@@ -134,6 +139,7 @@ class Rig:
     market: Market
     world: World
     runtime: HatRuntime
+    new_runtime: Callable[[], HatRuntime]
     feed: DayFeed
     mcp: DayMcp
     fake: FakeBroker
@@ -248,15 +254,14 @@ async def _drive(rig: Rig, until: datetime) -> None:
             _emit_ticks(rig, now)
         if runtime.live.step():
             await asyncio.sleep(0.05)  # the trigger writes run on the default executor
+            await asyncio.to_thread(runtime.live.persist)
         await scheduler.tick()
         await scheduler.drain()
         await asyncio.to_thread(runtime.periodic, rig.clock.now())
         rig.clock.set(max(rig.clock.now(), now + (STEP if _busy(now) else QUIET)))
 
 
-async def _simulate(rig: Rig) -> None:
-    runtime = rig.runtime
-    before = asyncio.all_tasks()
+async def _start(runtime: HatRuntime) -> None:
     assert await runtime.start()
     scheduler = runtime.scheduler
     assert scheduler is not None
@@ -265,8 +270,17 @@ async def _simulate(rig: Rig) -> None:
     for task in (scheduler._task, runtime._tasks[0], runtime._tasks[1]):
         assert task is not None
         task.cancel()
+
+
+async def _simulate(rig: Rig) -> None:
+    before = asyncio.all_tasks()
+    await _start(rig.runtime)
+    await _drive(rig, RESTART)
+    await rig.runtime.stop()
+    rig.runtime = rig.new_runtime()
+    await _start(rig.runtime)
     await _drive(rig, END)
-    await runtime.stop()
+    await rig.runtime.stop()
     await asyncio.sleep(0)  # the unsubscribe calls `stop` handed to the loop start here
     started = asyncio.all_tasks() - before
     if started:
@@ -421,7 +435,8 @@ def _check_stopped(rig: Rig) -> None:
     assert runtime.scheduler._task is None
     assert runtime._tasks == []
     assert rig.leftover == set()
-    assert rig.feed.stopped == 1
+    assert rig.feed.started == 2  # the restart
+    assert rig.feed.stopped == 2
     assert rig.feed.listeners == 0
 
 
@@ -454,16 +469,21 @@ def _rig(engine: Engine, tmp_path: Path) -> Rig:
                 price_bands=lambda _day: lambda: band_text(market),
             ),
             sleep=lambda seconds: clock.advance(timedelta(seconds=seconds)),
+            bar_store=BarStore(tmp_path / "hat"),
         )
 
-    runtime = HatRuntime(
-        HatSettings(enabled=True, user_id=USER, data_root=tmp_path / "hat"),
-        factory,
-        dialect_name="postgresql",
-        parts=parts,
-        clock=clock,
+    def new_runtime() -> HatRuntime:
+        return HatRuntime(
+            HatSettings(enabled=True, user_id=USER, data_root=tmp_path / "hat"),
+            factory,
+            dialect_name="postgresql",
+            parts=parts,
+            clock=clock,
+        )
+
+    return Rig(
+        clock, factory, market, world, new_runtime(), new_runtime, feed, mcp, fake, transport, urls
     )
-    return Rig(clock, factory, market, world, runtime, feed, mcp, fake, transport, urls)
 
 
 def test_ops__simulated_day(clean_db: Engine, tmp_path: Path) -> None:

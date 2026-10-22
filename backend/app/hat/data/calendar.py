@@ -21,6 +21,7 @@ from app.hat.clock import SYSTEM_CLOCK, Clock
 from app.hat.data.sessions import IST, MarketHoursPolicy
 
 from ..models import HatMarket, HatTradingCalendar
+from ..risk.sessions import SessionCalendar
 from ..time import as_utc
 
 _DATE_FORMATS = ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d")
@@ -227,6 +228,17 @@ def trading_days(calendar: MarketCalendar, start: date, end: date) -> set[date]:
             out.add(day)
         day += timedelta(days=1)
     return out
+
+
+def session_calendar(session: Session, market_code: str = "NSE") -> SessionCalendar | None:
+    """The market's `hat_trading_calendar` rows as the session calendar the risk checks read."""
+    market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == market_code))
+    if market_id is None:
+        return None
+    rows = session.scalars(
+        select(HatTradingCalendar).where(HatTradingCalendar.market_id == market_id)
+    )
+    return SessionCalendar.from_rows((r.day, r.is_trading, r.open_at, r.close_at) for r in rows)
 
 
 def load_calendar(session: Session, market_code: str = "NSE") -> MarketCalendar | None:

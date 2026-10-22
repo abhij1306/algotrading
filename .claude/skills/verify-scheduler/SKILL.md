@@ -47,9 +47,14 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.entry_inputs_fail_closed` An entry on day d reads the quality state and the allocation of the night before only (the previous trading day of the calendar): the state is failed or passed only when that night's `quality.gate` run failed or succeeded, else unknown, and the allocation is that night's row or none, never an older one; without a calendar both are unknown. Harm: entries trade on an unchecked day's data, or on an old weight with an unmeasured drawdown.
 - `PBT ops.window_not_starved` After a restart at 15:19 that starts any number of overdue morning jobs whose bodies block, the 15:20 tick still runs `exits.close` inside its window while they all still run (bodies run on the scheduler's own threads, one per job). Harm: catch-up runs hold the close-phase exits past 15:25 and positions carry overnight risk the strategy meant to shed (audit money-safety-engine-ops F12).
 - `CONF ops.route_matches_protocol` `LiveRoute.__call__` takes exactly the `Route` protocol's parameters (`session, request, *, decide`) and `ExecutionRouter.route` does not (it also needs `now` and `check`), so the trigger service is wired to `LiveRoute`, which reads the placement check and calls the router. Harm: the router wired as the route raises on every trigger, and the trigger service logs it and drops the entry, shadow included.
-- `E2E ops.simulated_day` (the plan's acceptance run, `test_db_daily_cycle.py`, Postgres-marked; not a `DB` check) A whole shadow day through `HatRuntime` (HAT enabled, PostgreSQL, fixture market, `FakeBroker`, recording Telegram): every trading-day job succeeds once and in order, a breakout and an EP gap become shadow entries, a stop crossed at 10:58 is exited before 11:00 by the live exits, the untriggered watchlist row ends Expired, the nightly chain runs from the MCP and the next night from the 22:00 bhavcopy fallback, a holiday runs only the every-day jobs, the broker gets no order and `stop` leaves no task. Harm: the parts pass alone and the assembled day does not run.
+- `E2E ops.simulated_day` (the plan's acceptance run, `test_db_daily_cycle.py`, Postgres-marked; not a `DB` check) A whole shadow day through `HatRuntime` (HAT enabled, PostgreSQL, fixture market, `FakeBroker`, recording Telegram): every trading-day job succeeds once and in order, a breakout and an EP gap become shadow entries, a stop crossed at 10:58 is exited before 11:00 by the live exits, the untriggered watchlist row ends Expired, the nightly chain runs from the MCP and the next night from the 22:00 bhavcopy fallback, a holiday runs only the every-day jobs, the broker gets no order, a restart at 09:21 (after the gap scan and the first bar) still makes both entries from the recorded gappers and the stored bars, and `stop` leaves no task. Harm: the parts pass alone and the assembled day does not run, or a restart mid-session loses the day's entries.
 - `DB ops.job_run_unique` The database rejects a second `hat_job_run` row for one (job, trade_date), including under concurrent inserts. Harm: idempotency rests on application code alone and a race runs a job twice.
 - `CONF verification harness` The TLC runner is pinned by version and sha256 and refuses a mismatching jar; every model has a cfg, stated bounds and assumptions, a code location per action and a broken variant per property; the `ci` Hypothesis profile is registered and loaded; the CI verification jobs (`verification-tla`, `verification-conformance`, sharded `verification-properties`) run everything, each inside the 5-minute target; every DB check has a broken variant; every spec requirement is well formed; verify skills are complete and current. Harm: a check silently stops running or stops being able to fail.
+- `PBT ops.retry_after_failed_run` A failed run is retried `retry_after` after it ended, not after it started, so a body slower than the retry interval is not started again at once. Harm: a slow failing job runs back to back and hammers its source.
+- `PBT ops.chain_carries_past_midnight` A chained job without a window whose head finished late still starts for its own date on the next IST date until 08:30, and not after. Harm: a nightly chain whose ingest succeeded at 23:58 is dropped and the next day has no watchlist.
+- `PBT ops.stop_names_abandoned_jobs` `stop` waits up to its grace for running bodies and returns (and logs) the name of each one still running. Harm: a close or swap cut off by a shutdown leaves no trace of which job was abandoned.
+- `PBT ops.stop_after_failed_start` After a start that failed part way, `stop` runs each step on what exists and stops the feed exactly once with no tick listener left, even when a step raises. Harm: a failed start leaves the provider socket and login hooks behind.
+- `PBT ops.daily_tick_matches_reference` `DailyData.tick` reads only the two closes `reference_close` can pick (each date's from its newest ingest run) and gives the tick `tick_for_date` gives over every close of the window. Harm: a stop or limit off the exchange's tick grid is rejected.
 
 ## Run
 
@@ -110,7 +115,7 @@ Code under check:
 - `backend/app/hat/api/dashboard.py`: every route, `_read`, `_status`, `_kill_switches`, `_bot_view`
 
 Checks:
-- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_refuses_non_postgres`, `test_calendar_skip`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`, `test_backup_manifest`, `test_deploy_window_guard`, `test_status_matches_db`
+- `backend/tests/hat/properties/test_ops.py`: `test_job_run_recording`, `test_disabled_starts_nothing`, `test_refuses_non_postgres`, `test_calendar_skip`, `test_log_records_structured`, `test_job_error_codes_are_stable_codes`, `test_close_gap_recorded`, `test_backup_manifest`, `test_deploy_window_guard`, `test_status_matches_db`, `test_retry_after_failed_run`, `test_chain_carries_past_midnight`, `test_stop_names_abandoned_jobs`, `test_stop_after_failed_start`, `test_daily_tick_matches_reference`
 - `backend/tests/hat/conformance/test_conf_ops.py`: `test_compose_services`, `test_runbook_complete`
 - `backend/tests/hat/properties/test_dashboard_routes.py`
 - `backend/tests/hat/hat_dashboard_support.py`
@@ -133,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `6df1ac17cf8f1e4dba532b2e3629889fdf66dff990c228b8820567504760b25f`
+Covered digest: `47458413076c6b30932adac54e19a5ea90b3fef8aa76b2f94551357cdc8b6fc7`
 
 ## Scope changes
 
@@ -314,6 +319,20 @@ Break: `LiveRoute.__call__` calls `router.route(session, request, decide=decide)
 
 ```
 {"level": "ERROR", "msg": "writing a trigger failed", "exc_type": "TypeError"}
+E   AssertionError: assert 'Expired' == 'Triggered'
+```
+
+Break (the 09:21 restart): `Intraday.prepare` skips the recorded gappers (`if gappers is not None:` to `if False:`), so the EP candidate is gone after the restart.
+
+```
+tests/hat/db/test_db_daily_cycle.py:390: in _check_trades
+E   assert None is not None
+```
+
+Break (the 09:21 restart): `HatRuntime._recover` skips `self.live.restore(today)`, so the breakout bot has no opening range after the restart.
+
+```
+tests/hat/db/test_db_daily_cycle.py:375: in _check_watchlist
 E   AssertionError: assert 'Expired' == 'Triggered'
 ```
 
@@ -786,4 +805,55 @@ Break: `_all_bots` (reached from `GET /api/hat/status`) calls `session.flush()`.
 E   AssertionError: ('app.hat.api.dashboard', '/api/hat/status')
 E   assert ['app.hat.api...ts: .flush()'] == []
 E     Left contains one more item: 'app.hat.api.dashboard._all_bots: .flush()'
+```
+
+### PBT ops.retry_after_failed_run
+
+Break: the retry is stamped from the start of the failed run (`ended = started + ONE_DAY if succeeded else started`).
+
+```
+E   assert (1 == 1) is (9 >= 10)
+```
+
+### PBT ops.chain_carries_past_midnight
+
+Break: no carry-over (`elif not carries_over(job, day, now):` to `elif True:`).
+
+```
+E   AssertionError: assert [] == [('next', datetime.date(2026, 10, 20))]
+```
+
+### PBT ops.stop_names_abandoned_jobs
+
+Break: `stop` names nothing (`abandoned: list[str] = []` kept empty).
+
+```
+E   AssertionError: assert [] == ['job0']
+```
+
+### PBT ops.stop_after_failed_start
+
+Break: `_stop_feed` calls each step without the getattr guard or the try (`getattr(getattr(self, name), step)()`).
+
+```
+E   assert 0 == 1
+E    +  where 0 = <test_ops._StopFeed object at 0x...>.stopped
+E   Failing test case: test_stop_after_failed_start(
+E       built=1,
+```
+
+### PBT ops.daily_tick_matches_reference
+
+Break: the month-start close reads one session too many (the close's `FILTER (WHERE date < ?)` to `<= ?`).
+
+```
+E   AssertionError: assert Decimal('0.01') == Decimal('0.05')
+E    +  where Decimal('0.01') = tick(UUID('00000000-0000-0000-0000-000000000001'))
+```
+
+Break: each date's close from its oldest ingest run (`ORDER BY ingest_run_id DESC` to `ASC`).
+
+```
+E   AssertionError: assert Decimal('0.01') == Decimal('0.05')
+E    +  where Decimal('0.01') = tick(UUID('00000000-0000-0000-0000-000000000001'))
 ```

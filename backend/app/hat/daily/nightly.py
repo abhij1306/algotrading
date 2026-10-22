@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
+from ..data.calendar import session_calendar
 from ..data.corporate_actions import stored_factors
 from ..data.features import features_job
 from ..data.mcp_client import McpClient
@@ -57,7 +58,6 @@ from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
 from ..ops.scheduler import Days, ScheduledJob
 from ..risk.controls import evaluate_drawdown_kills, snapshot_bots
-from ..telegram.reads import session_calendar
 from ..time import utc_now
 from .market import official_closes, scan_inputs
 
@@ -148,10 +148,7 @@ class NightlyDeps:
 def next_session(session: Session, day: date) -> date | None:
     """The first trading day of the calendar after `day`; None when the calendar holds none."""
     calendar = session_calendar(session)
-    if calendar is None:
-        return None
-    later = [d for d, row in calendar.days.items() if d > day and row.is_trading]
-    return min(later) if later else None
+    return None if calendar is None else calendar.next_trading_day(day)
 
 
 def _mcp(deps: NightlyDeps) -> McpClient:

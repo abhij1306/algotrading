@@ -1,7 +1,8 @@
 """The live trading day (10-ops §3 steps 1-6, PR 17): what the trigger, the router, the exits and
 the Telegram commands read while the market is open.
 
-- `PriceBook`: the feed's last trade per instrument (a tick listener on the loop thread).
+- `PriceBook`: the feed's last trade per instrument (a `LiveData` tick listener, loop thread).
+- `stale_feed`: whether the feed is stale now; before a first tick in an open session it is.
 - `GateBoard`: each bot's regime gate, evaluated at or after 09:20 IST of the trade date and kept
   for the day; before 09:20 it is unknown, so no entry is accepted (HAT-RISK-051). It also tells
   whether last night's quality gate passed for the data the day trades on.
@@ -25,17 +26,18 @@ import copy
 import logging
 import threading
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import date, datetime, time
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..data.bars import Tick
 from ..data.instruments import current_industry
 from ..data.quality import JOB_QUALITY
+from ..data.staleness import StalenessMonitor
 from ..data.store import DataStore
 from ..engine import trades
 from ..engine.exits import ExitView, Phase
@@ -84,40 +86,26 @@ FundsFor = Callable[[uuid.UUID], Decimal | None]
 
 
 class PriceBook:
-    """The last traded price per instrument from the feed. `on_tick` runs on the loop thread;
-    `price` may be read from any thread (a dict read of an immutable value)."""
+    """The last traded price per instrument from the feed. `on_tick` runs on the loop thread
+    with ticks `LiveData` already parsed (a symbol and a finite positive price); `price` may be
+    read from any thread (a dict read of an immutable value)."""
 
     def __init__(self) -> None:
         self._prices: dict[str, Decimal] = {}
         self._symbols: dict[uuid.UUID, str] = {}
 
-    def on_tick(self, payload: Mapping[str, Any]) -> None:
-        symbol = payload.get("symbol")
-        raw = payload.get("ltp")
-        if not isinstance(symbol, str) or raw is None or isinstance(raw, bool):
-            return
-        try:
-            price = Decimal(str(raw))
-        except InvalidOperation:
-            return
-        if price.is_finite() and price > 0:
-            self._prices[symbol] = price
-
-    def track(self, symbols: Mapping[uuid.UUID, str]) -> None:
-        """The instruments whose prices are read by id (the day's subscriptions)."""
-        self._symbols = {**self._symbols, **symbols}
+    def on_tick(self, tick: Tick) -> None:
+        self._prices[tick.symbol] = tick.price
 
     def track_session(self, session: Session, instrument_ids: set[uuid.UUID]) -> None:
+        """The instruments whose prices are read by id (the day's subscriptions)."""
         if instrument_ids:
-            self.track(
-                dict(
-                    session.execute(
-                        select(HatInstrument.id, HatInstrument.symbol).where(
-                            HatInstrument.id.in_(instrument_ids)
-                        )
-                    ).all()
+            found = session.execute(
+                select(HatInstrument.id, HatInstrument.symbol).where(
+                    HatInstrument.id.in_(instrument_ids)
                 )
             )
+            self._symbols = {**self._symbols, **dict(found.tuples().all())}
 
     def reset(self) -> None:
         """A new trading day: yesterday's prices are not today's."""
@@ -132,11 +120,18 @@ class PriceBook:
 CalendarSource = Callable[[], SessionCalendar | None]
 
 
+def stale_feed(staleness: StalenessMonitor, now: datetime) -> bool:
+    """HAT-DATA-116 read at `now`, not the monitor's last transition: in an open session the feed
+    is stale until a tick arrives, so a restart never reads a feed it has not heard from as fresh
+    (an entry resumed or triggered then is refused `stale_feed`)."""
+    return staleness.is_stale(now)
+
+
 def _quality_failed(session: Session, day: date, calendar: SessionCalendar | None) -> bool | None:
     """Whether the quality gate of the data `day` trades on failed: the gate run of the previous
     trading day (the night before). None when that run did not finish or does not exist, so
     entries fail closed."""
-    wanted = _previous_trading_day(calendar, day)
+    wanted = calendar.previous_trading_day(day) if calendar is not None else None
     if wanted is None:
         return None
     status = session.scalar(
@@ -147,13 +142,6 @@ def _quality_failed(session: Session, day: date, calendar: SessionCalendar | Non
     if status == RunStatus.FAILED.value:
         return True
     return None
-
-
-def _previous_trading_day(calendar: SessionCalendar | None, day: date) -> date | None:
-    if calendar is None:
-        return None
-    earlier = [d for d, row in calendar.days.items() if d < day and row.is_trading]
-    return max(earlier) if earlier else None
 
 
 class GateBoard:
@@ -202,7 +190,7 @@ def _allocation(
     trading day). None when that night's allocation is missing (for example the broker funds
     could not be read), so the entry fails closed rather than trade on an older weight or an
     unmeasured drawdown."""
-    made = _previous_trading_day(calendar, day)
+    made = calendar.previous_trading_day(day) if calendar is not None else None
     if made is None:
         return None
     return session.get(HatAllocationDaily, (made, bot_id))
@@ -364,7 +352,7 @@ class ExitViews:
         if signal is None:
             return None
         calendar = self._calendar()
-        trading = [d for d, row in calendar.days.items() if row.is_trading] if calendar else []
+        trading = calendar.trading_days() if calendar is not None else []
         held = held_sessions(trading, trade_date_of(position.opened_at), today)
         rules = trades.exit_rules_of(session, signal)
         return self._book.day(today).exit_view(position.instrument_id, price, rules, held)

@@ -96,7 +96,7 @@ to an artefact that exists.
 | HAT-DEC-T5 | [01](01-decisions.md) | 2, 17 | CONF `hat_runtime_requires_postgres` |
 | HAT-DEC-T6 | [01](01-decisions.md) | 5 | PBT `ingest.parquet_roundtrip` |
 | HAT-DEC-T7 | [01](01-decisions.md) | 2, 17 | TLA `JobScheduler!AtMostOnceSuccess` |
-| HAT-DEC-T8 | [01](01-decisions.md) | 13 | TLA `OrderReconciliation!OneSessionOwner` |
+| HAT-DEC-T8 | [01](01-decisions.md) | 13 | TLA `OrderReconciliation!OneSessionOwner`, PBT `router.desk_calls_serialised` |
 | HAT-DEC-T9 | [01](01-decisions.md) | 17 | OPS `host_static_ip_ups_failover` |
 | HAT-DEC-T10 | [01](01-decisions.md) | 8 | PBT `config.yaml_round_trip`, PBT `config.hash_canonical` |
 | HAT-DEC-T11 | [01](01-decisions.md) | 6 | PBT `features.no_lookahead` |
@@ -196,7 +196,7 @@ to an artefact that exists.
 | HAT-DATA-062 | [02](02-data.md) | 7 | PBT `quality_gate.big_moves_explained` |
 | HAT-DATA-063 | [02](02-data.md) | 7 | PBT `quality_gate.index_snapshot_present` |
 | HAT-DATA-064 | [02](02-data.md) | 7 | PBT `quality_gate.rows_written` |
-| HAT-DATA-065 | [02](02-data.md) | 7, 10, 17 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`, TLA `KillSwitch!HealthClearsOwnSource` |
+| HAT-DATA-065 | [02](02-data.md) | 7, 10, 17 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `quality_gate.rows_written` |
 | HAT-DATA-070 | [02](02-data.md) | 6 | CONF `features.schema` |
 | HAT-DATA-071 | [02](02-data.md) | 6 | PBT `features.no_lookahead` |
 | HAT-DATA-072 | [02](02-data.md) | 6 | PBT `features.formulas` |
@@ -229,7 +229,7 @@ to an artefact that exists.
 | HAT-DATA-111 | [02](02-data.md) | 14 | PBT `bars.listener_isolation` |
 | HAT-DATA-112 | [02](02-data.md) | 14 | PBT `bars.subscription_set` |
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
-| HAT-DATA-114 | [02](02-data.md) | 14 | PBT `bars.opening_range_fixed` |
+| HAT-DATA-114 | [02](02-data.md) | 14 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
 | HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
@@ -450,7 +450,7 @@ to an artefact that exists.
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.final_contraction_low` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
-| HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs` |
+| HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs`, PBT `ops.daily_tick_matches_reference` |
 | HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over` |
 | HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap` |
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
@@ -472,7 +472,7 @@ to an artefact that exists.
 | HAT-BRK-100 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.shape_and_roundtrip`, DB `runtime.order_tag_unique` |
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!UnconfirmedResolvedByTag` |
-| HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order` |
+| HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order`, PBT `router.routine_reconcile_keeps_gate` |
 | HAT-BRK-111 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!MismatchBlocksEntries` |
 | HAT-BRK-112 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.reconcile_scope` |
 | HAT-EXEC-120 | [07](07-execution-and-brokers.md) | 15 | PBT `bars.trigger_only_on_final_bars` |
@@ -488,7 +488,7 @@ to an artefact that exists.
 | HAT-TG-014 | [08](08-telegram.md) | 16 | PBT `telegram.no_secret_in_output` |
 | HAT-TG-020 | [08](08-telegram.md) | 16 | PBT `telegram.send_only_to_allowlist` |
 | HAT-TG-021 | [08](08-telegram.md) | 16 | TLA `JobScheduler!LoginPromptOrder`, PBT `telegram.login_prompt_links` |
-| HAT-TG-022 | [08](08-telegram.md) | 16 | PBT `telegram.watchlist_digest_content` |
+| HAT-TG-022 | [08](08-telegram.md) | 16 | PBT `telegram.watchlist_digest_content`, PBT `telegram.watchlist_digest_once` |
 | HAT-TG-023 | [08](08-telegram.md) | 16 | PBT `telegram.card_matches_signal` |
 | HAT-TG-024 | [08](08-telegram.md) | 16 | TLA `JobScheduler!ReportsAfterClose`, PBT `telegram.report_content` |
 | HAT-TG-030 | [08](08-telegram.md) | 16 | CONF `telegram.command_catalogue`, PBT `telegram.unknown_command_rejected` |
@@ -527,10 +527,10 @@ to an artefact that exists.
 | HAT-BT-061 | [09](09-backtest.md) | 2, 12 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
-| HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder` |
+| HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start` |
 | HAT-OPS-004 | [10](10-ops.md) | 17 | TLA `NightlyPipeline!ExitsIndependentOfPipeline` |
 | HAT-OPS-010 | [10](10-ops.md) | 2 | TLA `JobScheduler!AtMostOnceSuccess`, DB `ops.job_run_unique` |
-| HAT-OPS-011 | [10](10-ops.md) | 2 | TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording` |
+| HAT-OPS-011 | [10](10-ops.md) | 2 | TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording`, PBT `ops.retry_after_failed_run`, PBT `ops.chain_carries_past_midnight` |
 | HAT-OPS-012 | [10](10-ops.md) | 17 | PBT `ops.calendar_skip` |
 | HAT-OPS-013 | [10](10-ops.md) | 2 | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-020 | [10](10-ops.md) | 17 | CONF `ops.job_registry` |
