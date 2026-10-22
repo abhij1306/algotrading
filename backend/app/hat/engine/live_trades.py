@@ -45,7 +45,6 @@ from .trades import (
     TradeError,
     _day_bounds,
     _emit,
-    _entry_qty,
     _is_veto,
     _log_ignored,
     _raise_stop,
@@ -204,13 +203,19 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
         now=fill.at,
     )
     if position is not None:
-        # Weighted by the shares bought before, not those still held: a sale before this fill
-        # (or one that emptied the position) leaves the entry price as it was.
         if position.qty_open == 0:
             _fire_again_late(session, position)
-        bought = _entry_qty(session, signal) - fill.qty
+        # The average of every entry fill recorded (this one included), rounded once: weighted by
+        # the shares bought, not those still held, so a sale before this fill (or one that
+        # emptied the position) leaves the entry price as it was.
+        bought = session.execute(
+            select(HatFill.qty, HatFill.price)
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .where(HatOrder.signal_id == signal.id, HatOrder.purpose == ENTRY)
+        ).all()
         position.avg_entry = (
-            (Decimal(position.avg_entry) * bought + fill.price * fill.qty) / (bought + fill.qty)
+            sum((Decimal(price) * qty for qty, price in bought), _ZERO)
+            / sum(qty for qty, _ in bought)
         ).quantize(_PRICE_PLACES)
         position.qty_open += fill.qty
         order.position_id = position.id

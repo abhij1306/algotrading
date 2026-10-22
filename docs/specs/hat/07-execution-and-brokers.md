@@ -299,7 +299,7 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
 - Nothing in stop placement checks a kill switch or pause (06 §6).
 
 #### HAT-EXEC-060: Stop at the broker on every real fill
-- **Statement:** Every real entry fill is followed by an intraday stop order (purpose `stop_day`) at the position's stop price, including a fill of the entry's remainder after the position's sales emptied it.
+- **Statement:** Every real entry fill is followed by a broker stop at the position's stop price: an intraday stop order (purpose `stop_day`) in the session before the 15:25 swap, a GTT stop (purpose `stop_gtt`) from then on and after the close; this includes a fill of the entry's remainder after the position's sales emptied it.
 - **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17; audit 2026-10-22 tests-hat F2.
 - **PR:** 15, 20
 - **Verification:** TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`
