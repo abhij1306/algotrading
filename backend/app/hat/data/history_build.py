@@ -529,7 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real n
             sys.stderr.write("history_no_market\n")
             return 2
         calendar = hat_calendar.load_calendar(session)
-        holidays = calendar.holidays if calendar else frozenset()
+        holidays = calendar.holidays() if calendar else frozenset()
     client = client_from_env(process_env())
 
     def instruments() -> list[tuple[object, str]]:

@@ -51,6 +51,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT history_build.mcp_index_source_chains` Chained `get_index_history` chunks yield every present day in range exactly once and nothing outside. Harm: index history with holes or repeats.
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
+- `PBT history_build.cli_passes_calendar_holidays` Driving `main` (the command line) over a stored calendar (any mix of trading and non-trading rows in the window, sometimes another market's rows too), with the real build, no file for any day and the database, store, fetcher and MCP client patched in: every NSE non-trading date is reported as an explained holiday and every other weekday as a gap. Harm: a full-history run crashes at the reconciliation after hours of downloads (PR 42), or counts the wrong holidays.
 - `CONF store.data_root` The store root is `app.paths.HAT_DATA_ROOT`, defined only there, and raw names cannot leave it. Harm: data written outside the data volume.
 - `CONF store.layout` Every Parquet file sits in `<dataset>/date=YYYY-MM-DD/`. Harm: DuckDB partition pruning and the views miss files.
 - `PBT features.no_lookahead` Features and breadth of every date d are identical after any bar dated after d is changed, dropped, or more bars are appended (any universe, gaps, ties). Harm: backtests use future data and report edge live trading cannot have.
@@ -143,7 +144,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `f13bf5e658e02013d0ac3940d1c6a7504d74f5cdc4f46bd7aace1c2318a36c00`
+Covered digest: `d18d2b978ea7b73f8ad677a529dd6174bc263e8e9d7162f7383c1ee07d6e91d1`
 
 ## Scope changes
 
@@ -168,6 +169,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten `no_second_websocket` and `single_feed_import_rule`): the checks here (`imports.hat_polars_only` and the rest) are unchanged and still pass.
 
 - PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). PR 23: the live run of 2026-10-22 confirmed the index layout and found breadth in snake_case (`total_volume`, `total_stocks`, `ad_ratio`); `breadth_from_mcp` reads `total_volume` and the `Nse` and day-rig fixtures send the recorded reply. When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
+- PR 42 added `history_build.cli_passes_calendar_holidays`, the first check that runs `main`: it patches only its boundaries (`app.database.SessionLocal` with an in-memory SQLite calendar, `DataStore`, `http_fetcher`, `client_from_env`) and records the real `run_history_build` report. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -549,6 +551,21 @@ E   assert ([] == []
 E     
 E     Full diff:
 E       [] and False is True)
+```
+
+### PBT history_build.cli_passes_calendar_holidays
+
+Break: (PR 42) `main` passes `calendar.holidays` (the method) again, as before the fix. It reproduces the real run's crash.
+
+```
+tests/hat/properties/test_history_build.py:323: in test_cli_passes_calendar_holidays
+tests/hat/properties/test_history_build.py:382: in test_cli_passes_calendar_holidays
+app/hat/data/history_build.py:552: in main
+tests/hat/properties/test_history_build.py:356: in recording_build
+app/hat/data/history_build.py:419: in run_history_build
+app/hat/data/bhavcopy.py:480: in reconcile_days
+E   TypeError: 'method' object is not iterable
+E   Failing test case: test_cli_passes_calendar_holidays(
 ```
 
 ### CONF store.data_root

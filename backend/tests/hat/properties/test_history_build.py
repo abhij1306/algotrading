@@ -6,19 +6,24 @@ nothing."""
 import hashlib
 import tempfile
 from collections.abc import Mapping
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from hat_bhav_support import prices, render_old, render_udiff
-from hat_mcp_support import ScriptedTransport
+from hat_mcp_support import ScriptedTransport, seed_market
+from hat_support import memory_engine
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from sqlalchemy.orm import sessionmaker
 
-from app.hat.data.bhavcopy import BhavRow, FetchResult, archive_url, weekdays
+from app.hat.data import history_build
+from app.hat.data.bhavcopy import BhavRow, Fetcher, FetchResult, archive_url, weekdays
 from app.hat.data.history_build import (
+    BuildReport,
     DictCatalog,
     Pacing,
     history_build_job,
@@ -28,6 +33,7 @@ from app.hat.data.history_build import (
 )
 from app.hat.data.mcp_client import McpClient, McpError
 from app.hat.data.store import DATASET_BARS, DataStore
+from app.hat.models import HatMarket, HatTradingCalendar
 from app.hat.ops.jobs import JobError
 
 WINDOW = weekdays(date(2024, 6, 24), date(2024, 7, 19))
@@ -311,3 +317,71 @@ def test_mcp_corporate_actions_page(has_warning: bool, error: bool) -> None:
         page = client.corporate_actions("INFY", start, end)
         assert page.actions == []
         assert page.incomplete is has_warning
+
+
+@given(
+    marks=st.dictionaries(st.sampled_from(WINDOW), st.booleans(), max_size=len(WINDOW)),
+    other_market=st.booleans(),
+)
+@settings(max_examples=25, deadline=None)
+def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: bool) -> None:
+    """PR 42: the command line hands the build the NSE calendar's non-trading dates (not the
+    calendar's `holidays` method). Driving `main` over a stored calendar and a window where no
+    day has a file, every NSE holiday is reported as an explained holiday and every other
+    weekday as a gap; another market's calendar rows never count."""
+    engine = memory_engine()
+    factory = sessionmaker(bind=engine)
+    with factory() as session:
+        market_id = seed_market(session)
+        rows = [
+            HatTradingCalendar(market_id=market_id, day=d, is_trading=t) for d, t in marks.items()
+        ]
+        if other_market:
+            bse = HatMarket(
+                code="BSE",
+                timezone="Asia/Kolkata",
+                currency="INR",
+                session_open=time(9, 15),
+                session_close=time(15, 30),
+            )
+            session.add(bse)
+            session.flush()
+            rows += [HatTradingCalendar(market_id=bse.id, day=d, is_trading=False) for d in WINDOW]
+        session.add_all(rows)
+        session.commit()
+    reports: list[BuildReport] = []
+    real_build = history_build.run_history_build
+
+    def recording_build(**kwargs: Any) -> BuildReport:  # noqa: ANN401 - main's keyword arguments
+        report = real_build(**kwargs)
+        reports.append(report)
+        return report
+
+    def nothing_fetcher(timeout: float = 30.0) -> Fetcher:
+        return lambda _url: FetchResult("not_found")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        argv = [
+            "--from",
+            WINDOW[0].isoformat(),
+            "--to",
+            WINDOW[-1].isoformat(),
+            "--interval",
+            "0",
+            "--skip-actions",
+            "--skip-index",
+            "--skip-validation",
+        ]
+        with (
+            patch("app.database.SessionLocal", factory),
+            patch.object(history_build, "DataStore", lambda: DataStore(Path(tmp))),
+            patch.object(history_build, "run_history_build", recording_build),
+            patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
+            patch("app.hat.data.mcp_client.client_from_env", lambda _env: None),
+        ):
+            history_build.main(argv)
+    engine.dispose()
+    [report] = reports
+    holidays = {d for d, trading in marks.items() if not trading}
+    assert set(report.days.holidays) == holidays
+    assert set(report.days.gaps) == set(WINDOW) - holidays

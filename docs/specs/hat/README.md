@@ -213,7 +213,7 @@ to an artefact that exists.
 | HAT-DATA-084 | [02](02-data.md) | 5 | PBT `store.bars_daily_unique` |
 | HAT-DATA-085 | [02](02-data.md) | 5, 7 | PBT `ingest.sources_same_schema` |
 | HAT-DATA-090 | [02](02-data.md) | 5 | PBT `bhavcopy.format_by_date` |
-| HAT-DATA-091 | [02](02-data.md) | 5 | PBT `bhavcopy.missing_file_is_holiday_candidate` |
+| HAT-DATA-091 | [02](02-data.md) | 5, 42 | PBT `bhavcopy.missing_file_is_holiday_candidate`, PBT `history_build.cli_passes_calendar_holidays` |
 | HAT-DATA-092 | [02](02-data.md) | 5 | PBT `bhavcopy.resume_skips_done`, PBT `bhavcopy.rate_limited` |
 | HAT-DATA-093 | [02](02-data.md) | 5 | PBT `bhavcopy.parsers_agree` |
 | HAT-DATA-094 | [02](02-data.md) | 5 | PBT `corporate_actions.upsert_idempotent` |

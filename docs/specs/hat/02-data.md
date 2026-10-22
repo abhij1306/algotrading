@@ -594,12 +594,13 @@ Running it (an ops step, from `backend/`, with the HAT database up, `HAT_DATA_RO
 - **[A]** URL patterns: from a TradingQnA thread; validated by the first download (DS "Historical data build").
 
 #### HAT-DATA-091: Day list and holiday candidates
-- **Statement:** The day list is every weekday since 1 Jan 2010; a missing file is logged as a holiday candidate and checked against NSE's holiday lists.
-- **Source:** DS "Historical data build" step 1.
-- **PR:** 5
-- **Verification:** PBT `bhavcopy.missing_file_is_holiday_candidate`
+- **Statement:** The day list is every weekday since 1 Jan 2010; a missing file is logged as a holiday candidate and checked against NSE's holiday lists. The command line takes that list from the stored NSE trading calendar (its non-trading dates).
+- **Source:** DS "Historical data build" step 1; PR 42 (a real run from 2010 crashed at the reconciliation: the command line passed the calendar's `holidays` method, not its dates).
+- **PR:** 5, 42
+- **Verification:** PBT `bhavcopy.missing_file_is_holiday_candidate`, PBT `history_build.cli_passes_calendar_holidays`
 - **Acceptance:**
   - Property: for every download outcome set, each weekday is either downloaded, or recorded as a holiday candidate; a candidate that is not in the NSE holiday list is reported as a gap. Harm: a missing trading day is silently treated as a holiday and indicators skip a day.
+  - Property: for every stored calendar, `python -m app.hat.data.history_build` reconciles against exactly the NSE calendar's non-trading dates (another market's rows never count). Harm: a full-history run crashes after hours of downloads, or reconciles against the wrong holidays.
 
 #### HAT-DATA-092: Download is polite, resumable and keeps raw zips
 - **Statement:** Downloads use browser-like headers at about 1 request per second, are resumable, and keep raw zips untouched in `raw/`.
