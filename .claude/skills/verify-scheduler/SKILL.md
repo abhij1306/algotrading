@@ -20,7 +20,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA NightlyPipeline!ExitsIndependentOfPipeline` Exits and stops are sent whatever state the nightly pipeline is in. Harm: a data outage leaves positions without protection.
 - `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the steps it waits for succeeded (the adjustment after the ingest, features after the gate and the adjustment, PR 33). Harm: a scan reads a day not yet ingested or gated.
 - `TLA NightlyPipeline!AdjustIndependentOfGate` An ingested day's corporate-action adjustment eventually succeeds, whatever the gate decides (PR 33). Harm: a failed gate hides the next session's split of a held stock.
-- `TLA NightlyPipeline!SnapshotEveryNight` The bot snapshot (drawdown kills) runs every night, waiting on no step (PR 33). Harm: a failed gate or allocation leaves a drawdown kill unmeasured.
+- `TLA NightlyPipeline!SnapshotEveryNight` The bot snapshot (drawdown kills) runs every trading night, waiting on no step (PR 33); the model has no 23:30 (its clock ends at 22:00), so the time itself is `ops.job_registry`'s. Harm: a failed gate or allocation leaves a drawdown kill unmeasured.
 - `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
 - `TLA DailyCycle!IntradayOrder` The intraday jobs first start in the order of 10 §3 (login prompt 08:30, live preparation 08:45, pre-open gaps 09:00-09:08, gap scan 09:16, the regime-gate refresh 09:20, `exits.close` 15:20-15:25, `gtt.swap` 15:25, session end 15:30, reports 15:40); no `exits.close` run starts once `gtt.swap` has; every entry order is placed inside 09:20-15:20, after today's gate refresh and with a live broker session. Harm: entries fire on an unformed opening range, yesterday's gate or without a session, or a GTT is placed for a position that is still being exited.
 - `TLA DailyCycle!AllocateAfterRegime` `allocate` starts for a trade date only after `regime` succeeded for it, and an allocation never changes an open position's quantity or stop. Harm: weights use yesterday's regime, or a weight cut forces sales the strategy did not call for.
@@ -146,7 +146,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `a8e07bc809b04bb2bf2e21cfc3cd384c179bf0fac843df0d6920fe2c9469ec79`
+Covered digest: `47846843c31f778da09eeb40c9f2a934847cb21ba657fe1704c99187b93dc05a`
 
 ## Scope changes
 

@@ -268,18 +268,23 @@ def _capital_by_snapshot(
     real trades closed by it. Not the allocation row of its date: the snapshot runs on its own
     time (PR 33), so that row may be missing or have been written after it. A snapshot with no
     allocation of its bot on or before its date has no known capital (left out)."""
+    bots = {s.bot_id for s in snaps}
     first = dict(
         session.execute(
-            select(HatAllocationDaily.bot_id, func.min(HatAllocationDaily.trade_date)).group_by(
-                HatAllocationDaily.bot_id
-            )
+            select(HatAllocationDaily.bot_id, func.min(HatAllocationDaily.trade_date))
+            .where(HatAllocationDaily.bot_id.in_(bots))
+            .group_by(HatAllocationDaily.bot_id)
         ).all()
     )
     closed: dict[uuid.UUID, list[tuple[datetime, Decimal]]] = {}
     for bot_id, closed_at, pnl in session.execute(
         select(HatPosition.bot_id, HatPosition.closed_at, HatTradeResult.realized_pnl)
         .join(HatTradeResult, HatTradeResult.position_id == HatPosition.id)
-        .where(HatPosition.is_virtual.is_(False), HatPosition.closed_at.is_not(None))
+        .where(
+            HatPosition.bot_id.in_(bots),
+            HatPosition.is_virtual.is_(False),
+            HatPosition.closed_at.is_not(None),
+        )
     ):
         closed.setdefault(bot_id, []).append((as_utc(closed_at), Decimal(pnl)))
     out = {}

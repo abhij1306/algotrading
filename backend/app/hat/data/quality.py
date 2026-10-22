@@ -315,7 +315,6 @@ def gate_body(
     skipped = {str(i) for i in excluded}
 
     def body() -> JobResult:
-        new: list[str] = []
         with session_factory() as session:
             run_id = _run_id(session, JOB_QUALITY, trade_date)
             if run_id is None:
@@ -323,14 +322,7 @@ def gate_body(
             summary = ingest_summary(session, trade_date)
             if summary is None or not store.partition_files(DATASET_BARS, trade_date):
                 raise JobError(CODE_NO_INGEST)
-            now = utc_now(clock) if clock is not None else utc_now()
-            standing = standing_quarantine(session, trade_date, now)
-            inputs = gate_inputs(session, store, trade_date, summary)
-            result = evaluate(excluded=skipped | standing, **inputs)
-            if result.passed:
-                moves = next(c for c in result.checks if c.name == CHECK_BIG_MOVES)
-                new = list(moves.detail["unexplained"])
-                quarantine(session, new, trade_date, now)
+            result, new = _judge(session, store, trade_date, summary, skipped, clock)
             symbols = _symbols(session, new)
             news = persist(session, run_id, result, trade_date, clock)
             session.commit()
@@ -347,6 +339,29 @@ def gate_body(
         return JobResult(rows=len(result.checks))
 
     return body
+
+
+def _judge(
+    session: Session,
+    store: DataStore,
+    trade_date: date,
+    summary: Mapping[str, Any],
+    skipped: set[str],
+    clock: Clock | None,
+) -> tuple[GateResult, list[str]]:
+    """Evaluate the day with the standing quarantines excluded and, on a pass, quarantine the
+    unexplained movers (in the caller's transaction). The result and the new quarantines."""
+    now = utc_now(clock) if clock is not None else utc_now()
+    standing = standing_quarantine(session, trade_date, now)
+    result = evaluate(
+        excluded=skipped | standing, **gate_inputs(session, store, trade_date, summary)
+    )
+    if not result.passed:
+        return result, []
+    moves = next(c for c in result.checks if c.name == CHECK_BIG_MOVES)
+    new = list(moves.detail["unexplained"])
+    quarantine(session, new, trade_date, now)
+    return result, new
 
 
 def _symbols(session: Session, instruments: Collection[str]) -> dict[str, str]:

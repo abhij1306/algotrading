@@ -249,7 +249,7 @@ database enforces); its breaks are recorded in `verify-scheduler`.
 - **Acceptance:**
   - Property: in every behaviour, a job of the pipeline starts for trade date d only after every earlier job of the pipeline has status `succeeded` for d. Harm: scans run on unadjusted prices or stale features and produce wrong watchlists.
   - Property: if `quality.gate` fails for d, no `scan` runs for d and every bot is manage-only for new entries. Harm: the bot trades on data the gate rejected.
-  - Property: in every behaviour where d is ingested, `ca.adjust` eventually succeeds for d, whatever `quality.gate` decides, and `snapshot.bots` runs every night. Harm: a failed gate hides the next session's split of a held stock, or leaves a drawdown kill unmeasured.
+  - Property: in every behaviour where d is ingested, `ca.adjust` eventually succeeds for d, whatever `quality.gate` decides, and `snapshot.bots` runs every trading night. Harm: a failed gate hides the next session's split of a held stock, or leaves a drawdown kill unmeasured.
 - **Changed (PR 33):** PR 17 chained `ca.adjust` after the gate and `snapshot.bots` after `allocate`, so a failed gate also skipped the corporate-action lookup and the drawdown measurement.
 
 #### HAT-OPS-022: Ingest polling and the 22:00 fallback

@@ -25,7 +25,7 @@ verification can check.
 | [00-overview.md](00-overview.md) | Scope and phases, glossary, module boundaries and import rules, reuse map, conflict resolutions C1-C12, non-goals | HAT-OVR |
 | [01-decisions.md](01-decisions.md) | Decisions T1-T16, B1-B27 (revised B1/B2/B12), I1-I17, PL1-PL5, build decisions of 20 Oct | HAT-DEC-&lt;code&gt; |
 | [02-data.md](02-data.md) | Source map, reference data, NSE MCP client, nightly ingest, corporate actions, quality gate, features, Parquet/DuckDB, historical build, announcements, live bars, gap scan | HAT-DATA |
-| [03-schema.md](03-schema.md) | The 43 tables, event log and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
+| [03-schema.md](03-schema.md) | The 42 tables, the event log (`hat_event`) and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
 | [04-criteria-and-bots.md](04-criteria-and-bots.md) | Nine-stage model, criterion instances, scoring, the 24 criterion types, playbooks, S1 and S2 default configs, versioning | HAT-CRIT, HAT-BOT |
 | [05-portfolio-regime-allocation.md](05-portfolio-regime-allocation.md) | Sleeves, universes, regime v1, health multiplier, allocator, sleeve lifecycle, regime v2 (P2) | HAT-PORT |
 | [06-risk-and-governance.md](06-risk-and-governance.md) | Risk policy, sizing, caps, progressive exposure, regime gate, kill switches, invariants, governance, the risk authority (`evaluate_signal`) | HAT-RISK, HAT-GOV |

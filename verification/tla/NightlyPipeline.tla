@@ -279,7 +279,9 @@ ExitsIndependentOfPipeline == exitDue ~> ~exitDue
 \* instruments looked up) even when the gate fails.
 AdjustIndependentOfGate == (phase = "ingested") ~> (st[2] = "succeeded")
 
-\* The drawdown kills are measured every night, whatever the ingest and the gate did.
+\* The drawdown kills are measured every trading night, whatever the ingest and the gate did. The
+\* model's clock covers only 18:00-22:00, so `Snapshot` has no time guard: its 23:30 time is the
+\* scheduler's (`ops.job_registry` checks it), and this property checks only that no step gates it.
 SnapshotEveryNight == <>snapDone
 ==============================================================================
 \* Checked by: verification/tla/run.sh NightlyPipeline

@@ -1,6 +1,6 @@
 # 03: Schema
 
-Scope: the 41 Postgres tables (five groups), the event log, the rules the database itself enforces, indexes, retention, and how the schema is created and evolved in this repo. Parquet datasets are specified in 02 §8. Requirement format and verification methods: see README.md and 11-verification.md.
+Scope: the 42 Postgres tables (five groups; 41 until PR 33 added `hat_quality_quarantine`), the event log, the rules the database itself enforces, indexes, retention, and how the schema is created and evolved in this repo. Parquet datasets are specified in 02 §8. Requirement format and verification methods: see README.md and 11-verification.md.
 
 Types in the column tables are the logical Postgres types; §10 says how each maps to a portable SQLAlchemy type. "PK" = primary key, "FK" = foreign key, "null" = nullable (columns are NOT NULL unless marked null).
 
@@ -852,7 +852,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
   - Property: the append-only property of HAT-SCH-061 holds for the single application DB user. Harm: without the trigger the shared app user could rewrite history.
 - **[OWNER-PENDING]** Role split: default triggers only in MVP; a separate `hat_app` role is added with the Compose deployment (PR 17) if the owner wants it (PLAN Q7); owner to confirm.
 
-## §7 Backtest and ops tables (8)
+## §7 Backtest and ops tables (9)
 
 **`hat_backtest_run`**: trades go to `backtests/run_id=…/trades.parquet` (02 §8).
 
