@@ -145,7 +145,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `3341d8c7aec0b2656b0fcfa8ab4d48d213328e6bbdd56f07191281922f92bd73`
+Covered digest: `e8fa5e764be78477c1a852001e018ab10e24a303e7cdd6a72e50337702d1db81`
 
 ## Scope changes
 
@@ -522,21 +522,47 @@ E           'contractions': [2, 6],
 Break: (PR 57) the dry-up baseline is the last 50 bars again, including the base.
 
 ```
-E   assert 0.3939749517122749 == 0.33160674814475366 ± 3.3e-07
-E     comparison failed
-E     Obtained: 0.3939749517122749
-E     Expected: 0.33160674814475366 ± 3.3e-07
-E   Failing test case: test_vcp_contract(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),
-E       depths=[8, 3],
-E       quiet=20,
-E       params={
-E           'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,  # or any other generated value
-E           'final_depth_max_pct': 5.0,  # or any other generated value
-E           'lookback_days': 60,  # or any other generated value
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - assert 0.3939749517122749 == 0.33160674814475366 ± 3.3e-07
+  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 835, in test_vcp_contract
+    |     assert result.extras["dryup_ratio"] == pytest.approx(float(final_volume / average))
+    | AssertionError: assert 0.36140187405020635 == 0.2916630930473436 ± 2.9e-07
+    |   comparison failed
+    |   Obtained: 0.36140187405020635
+    |   Expected: 0.2916630930473436 ± 2.9e-07
+    | Failing test case: test_vcp_contract(
+    |     # The test always failed when commented parts were varied together.
+    |     rng=Lcg(1),
+    |     depths=[8, 3],
+    |     quiet=20,
+    |     params={
+    |         'contractions': [2, 6],
+    |         'depth_ratio_max': 0.5,  # or any other generated value
+    |         'final_depth_max_pct': 5.0,  # or any other generated value
+    |         'lookback_days': 60,  # or any other generated value
+    |         'dryup_vs_avg50': 0.5,  # or any other generated value
+    |     },
+    |     structure={'max_high_spread_pct': None,
+    |         'min_first_depth_pct': None,
+    |         'min_contraction_bars': None},
+    | )
+    | Explanation:
+    |     These lines were always and only run by failing test cases:
+    |         app/hat/engine/criteria/vcp.py:237
+    |         app/hat/engine/criteria/vcp.py:279
+    |         tests/hat/properties/test_criteria.py:812
+    +---------------- 2 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 808, in test_vcp_contract
+    |     assert evaluate("vcp", params, context(cut)).reason == "no_data"
+    | AssertionError: assert 'ok' == 'no_data'
+    |   - no_data
+    |   + ok
+    | Failing test case: test_vcp_contract(
+    |     # The test always failed when commented parts were varied together.
+    |     rng=Lcg(0),
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
 ```
 
 Break: (PR 57) `vcp` ignores `min_contraction_bars`.
@@ -597,6 +623,26 @@ E           'final_depth_max_pct': 5.0,  # or any other generated value
 E           'lookback_days': 60,  # or any other generated value
 E           'dryup_vs_avg50': 0.5,  # or any other generated value
 FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert Fraction(32100, 10009) <= Fraction(3, 1)
+```
+
+Break: (PR 57) with fewer than 50 sessions before the base, `vcp` falls back to the last 50 bars instead of `no_data`.
+
+```
+E   AssertionError: assert 'ok' == 'no_data'
+E     - no_data
+E     + ok
+E   Failing test case: test_vcp_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),
+E       depths=shrinking_depths(
+E           8,  # or any other generated value
+E           40,  # or any other generated value
+E           2,
+E       ),
+E       quiet=20,  # or any other generated value
+E       params={'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert 'ok' == 'no_data'
 ```
 
 ### PBT criteria.vcp_base_high
@@ -686,7 +732,7 @@ Break: (PR 57) a null `min_contraction_bars` is not off: it reads as 7 bars.
   | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
   +-+---------------- 1 ----------------
     | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 863, in test_vcp_structure_narrows
+    |   File "tests/hat/properties/test_criteria.py", line 866, in test_vcp_structure_narrows
     |     assert ruled.reason in STRUCTURE_REASONS | {plain.reason}
     | AssertionError: assert 'no_volume_dryup' in ({'contraction_too_short', 'first_depth_too_shallow', 'highs_n [cut]
     |  +  where 'no_volume_dryup' = CriterionResult(passed=False, score=0.0, value=0.7514435783548096, reason='n [cut]
@@ -708,7 +754,7 @@ Break: (PR 57) a null `min_contraction_bars` is not off: it reads as 7 bars.
     | )
     +---------------- 2 ----------------
     | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 859, in test_vcp_structure_narrows
+    |   File "tests/hat/properties/test_criteria.py", line 862, in test_vcp_structure_narrows
     |     assert ruled == plain
     | AssertionError: assert CriterionResu...674814475366}) == CriterionResu...t', extras={})
     |   Differing attributes:

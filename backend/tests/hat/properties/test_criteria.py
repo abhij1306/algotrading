@@ -792,9 +792,9 @@ def test_vcp_contract(
 ) -> None:
     """HAT-CRIT-040: a reported base meets every enabled rule: the count, the depth ratios, the
     final depth, the dry-up against the mean volume of the 50 sessions before the base starts
-    (PR 57), and the enabled structural rules (PR 57): every contraction at least
-    `min_contraction_bars` bars, the first at least `min_first_depth_pct` deep, and every
-    contraction high within `max_high_spread_pct` of the highest. Harm: a loose base, a noise
+    (PR 57; `no_data` with fewer), and the enabled structural rules (PR 57): every contraction
+    at least `min_contraction_bars` bars, the first at least `min_first_depth_pct` deep, and
+    every contraction high within `max_high_spread_pct` of the highest. Harm: a loose base, a noise
     wiggle or a decelerating down-staircase enters the watchlist, or the base's own quiet bars
     make every final contraction look dry."""
     params = {**params, **structure}
@@ -802,6 +802,10 @@ def test_vcp_contract(
     ctx = context(rows)
     result = contract("vcp", params, ctx, rng)
     assert fails_closed("vcp", params, ctx)
+    start = base_index(rows, params["lookback_days"])
+    cut = rows[start - rng.randrange(0, 50) :]  # the same base with fewer than 50 sessions before
+    assert base_index(cut, params["lookback_days"]) < 50
+    assert evaluate("vcp", params, context(cut)).reason == "no_data"
     if not result.passed:
         assert result.score == 0.0
         return
@@ -823,7 +827,6 @@ def test_vcp_contract(
         tops = [h for _, _, h, _ in stats]
         spread = (max(tops) - min(tops)) / max(tops) * 100
         assert spread <= Fraction(str(structure["max_high_spread_pct"]))
-    start = base_index(rows, params["lookback_days"])
     assert stats[0][0] == start  # the first contraction starts the base
     first, last, top, bottom = stats[-1]
     final_volume = mean([Fraction(r.volume) for r in rows[first : last + 1]])

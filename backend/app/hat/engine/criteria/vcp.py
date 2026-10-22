@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -178,16 +179,20 @@ def _pattern_fault(
     return None
 
 
-def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
-    """HAT-CRIT-040. Passes with the score, the contraction list, `pivot` (the highest high of
-    the final contraction) and `final_contraction_low` (its lowest low), or fails with the first
-    rule broken as the reason. A base is the bars from the first highest close of the lookback
-    to the date, at least `MIN_BASE_BARS` long (`base_too_short`) with the 50 sessions before it
-    (`no_data` without them), which are the dry-up baseline. With `pivot_source: base_high` every
-    base passes: the score is the pattern's when it holds and 0 when not (`pattern` names the
-    rule broken), `pivot` is the base's highest high, and `final_contraction_low` the last
-    contraction's low (the base's lowest low without one); a base whose low equals its high
-    fails `flat_base`, so the low is always below the pivot."""
+@dataclass(frozen=True)
+class _Base:
+    """The base's bars (from its start to the date) and the volumes of the 50 sessions before."""
+
+    dates: list[date]
+    highs: list[float]
+    lows: list[float]
+    volumes: list[float]
+    baseline: list[float]
+
+
+def _read_base(ctx: EvalContext, params: VcpParams) -> _Base | CriterionResult:
+    """The base, or the failing result: `no_data` without a start, the 50 sessions before it
+    or a complete base, `base_too_short` under `MIN_BASE_BARS`."""
     bars = ctx.history
     start = base_start(bars.close, params.lookback_days)
     if start is None:
@@ -200,28 +205,79 @@ def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
         return verdict(False, None, "base_too_short")
     if any(v is None for v in (*high, *low, *volume)):
         return no_data()
-    highs = [float(v) for v in high if v is not None]
-    lows = [float(v) for v in low if v is not None]
-    volumes = [float(v) for v in volume if v is not None]
+    return _Base(
+        bars.dates[start:],
+        [float(v) for v in high if v is not None],
+        [float(v) for v in low if v is not None],
+        [float(v) for v in volume if v is not None],
+        baseline,
+    )
+
+
+def _dryup(base: _Base, final: Contraction) -> Decimal | None:
+    """The final contraction's mean volume over the baseline mean, or None on a zero baseline."""
+    mean_avg = dsum(base.baseline) / AVG_VOLUME_DAYS
+    if mean_avg <= 0:
+        return None
+    mean_final = dsum(base.volumes[final.start : final.end + 1]) / (final.end - final.start + 1)
+    return mean_final / mean_avg
+
+
+def _extras(
+    base: _Base,
+    contractions: Sequence[Contraction],
+    levels: tuple[Decimal, Decimal],
+    dryup: Decimal | None,
+) -> dict[str, object]:
+    extras: dict[str, object] = {
+        "pivot": float(levels[0]),
+        "final_contraction_low": float(levels[1]),
+        "contraction_count": len(contractions),
+        "contractions": [
+            {
+                "start": base.dates[c.start].isoformat(),
+                "end": base.dates[c.end].isoformat(),
+                "depth_pct": float(c.depth_pct),
+            }
+            for c in contractions
+        ],
+        "base_start": base.dates[0].isoformat(),
+    }
+    if dryup is not None:
+        extras["dryup_ratio"] = float(dryup)
+    return extras
+
+
+def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
+    """HAT-CRIT-040. Passes with the score, the contraction list, `pivot` (the highest high of
+    the final contraction) and `final_contraction_low` (its lowest low), or fails with the first
+    rule broken as the reason. A base is the bars from the first highest close of the lookback
+    to the date, at least `MIN_BASE_BARS` long (`base_too_short`) with the 50 sessions before it
+    (`no_data` without them), which are the dry-up baseline. With `pivot_source: base_high` every
+    base passes: the score is the pattern's when it holds and 0 when not (`pattern` names the
+    rule broken), `pivot` is the base's highest high, and `final_contraction_low` the last
+    contraction's low (the base's lowest low without one); a base whose low equals its high
+    fails `flat_base`, so the low is always below the pivot."""
+    base = _read_base(ctx, params)
+    if isinstance(base, CriterionResult):
+        return base
     _, hi_count = params.contractions
-    contractions = build_contractions(highs, lows, contraction_chain(highs, lows, hi_count))
+    contractions = build_contractions(
+        base.highs, base.lows, contraction_chain(base.highs, base.lows, hi_count)
+    )
     depths = [c.depth_pct for c in contractions]
     ratios = [b / a for a, b in zip(depths, depths[1:], strict=False) if a > 0]
     fault = _pattern_fault(contractions, ratios, params)
-    dryup: Decimal | None = None
-    if fault is None:
-        mean_avg = dsum(baseline) / AVG_VOLUME_DAYS
-        if mean_avg <= 0:
-            return no_data()
-        final = contractions[-1]
-        mean_final = dsum(volumes[final.start : final.end + 1]) / (final.end - final.start + 1)
-        dryup = mean_final / mean_avg
-        if dryup > dec(params.dryup_vs_avg50):
-            fault = ("no_volume_dryup", float(dryup))
-    if fault is not None and params.pivot_source == "vcp":
+    dryup = None if fault is not None else _dryup(base, contractions[-1])
+    if fault is None and dryup is None:
+        return no_data()
+    if dryup is not None and dryup > dec(params.dryup_vs_avg50):
+        fault = ("no_volume_dryup", float(dryup))
+    based = params.pivot_source == "base_high"
+    if fault is not None and not based:
         return verdict(False, fault[1], fault[0])
     score = 0.0
-    if dryup is not None and fault is None:
+    if fault is None and dryup is not None:
         score = vcp_score(
             len(contractions),
             float(max(ratios, default=Decimal(0))),
@@ -229,30 +285,14 @@ def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
             float(dryup),
             params,
         )
-    if params.pivot_source == "base_high":
-        pivot = dec(max(highs))
-        floor = contractions[-1].low if contractions else dec(min(lows))
+    if based:
+        pivot = dec(max(base.highs))
+        floor = contractions[-1].low if contractions else dec(min(base.lows))
         if floor >= pivot:
             return verdict(False, float(pivot), "flat_base")
     else:
         pivot, floor = contractions[-1].high, contractions[-1].low
-    base_dates = bars.dates[start:]
-    extras: dict[str, object] = {
-        "pivot": float(pivot),
-        "final_contraction_low": float(floor),
-        "contraction_count": len(contractions),
-        "contractions": [
-            {
-                "start": base_dates[c.start].isoformat(),
-                "end": base_dates[c.end].isoformat(),
-                "depth_pct": float(c.depth_pct),
-            }
-            for c in contractions
-        ],
-        "base_start": base_dates[0].isoformat(),
-    }
-    if dryup is not None:
-        extras["dryup_ratio"] = float(dryup)
-    if params.pivot_source == "base_high":
+    extras = _extras(base, contractions, (pivot, floor), dryup)
+    if based:
         extras["pattern"] = "ok" if fault is None else fault[0]
     return CriterionResult(True, score, float(len(contractions)), REASON_OK, extras)
