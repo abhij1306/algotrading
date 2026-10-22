@@ -35,14 +35,16 @@ adverse order): a stop it reaches fills that day, and it seeds the trade's MAE. 
 with a low-of-day stop needs the opening range's low, so without 5-minute bars it is skipped
 (`gap_over_no_intraday`). The rule is recorded in every run's metrics (`entry_day_low`).
 
-Known gaps, recorded in every run's metrics and measured in shadow (PLAN Q4):
-- the trigger is the break of the level alone: `volume_pace`, `adtr_filter` and the opening range
-  need intraday bars (HAT-DEC-I4) and are not modelled, and the episodic-pivot playbook, which is
-  built live from the pre-open scan, is not backtested;
-- close-based exits fill at the official close, not at the 15:25 live price;
-- kill switches are not simulated (their re-arm is manual); the exposure ladder is, with each
-  backtest trade counted as a real one;
-- a sleeve's allocation is the policy's risk per trade with regime and health multipliers of 1.
+Entry filters (PR 61, HAT-BT-025): at each trigger the playbook's entry filters run as live runs
+them (`trigger.evaluate_entry_filters`): `adtr_filter` on the planned stop and ADTR(20) as of the
+session before, and `max_chase` with the upper-circuit state, inferred from a bar pinned at an NSE
+band all day (`upper_circuit_locked`). A failing filter is a Rejected signal, as live writes it.
+
+Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, 09 §7 HAT-BT-070) and
+measured in shadow (PLAN Q4): among them, the trigger is the break of the level alone
+(`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the episodic-pivot playbook
+is not backtested, close-based exits fill at the official close, kill switches are not simulated
+(the exposure ladder is), and a sleeve's allocation uses regime and health multipliers of 1.
 
 The command line runs a sleeve's strategy version over the Parquet store and records the run
 (`app.hat.backtest.runs`): `python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD
@@ -98,7 +100,7 @@ from ..risk.kill import KillState
 from ..risk.policy import PolicyVersion
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import as_utc, trade_date_of
-from . import exits, lifecycle, trades, watchlist
+from . import exits, lifecycle, trades, trigger, watchlist
 from .portfolio.universe import Interval
 from .regime_gate import regime_allows_longs
 from .scan import EP_PLAYBOOK, ScanInputs
@@ -135,6 +137,7 @@ __all__ = [
     "compute_metrics",
     "first_trigger",
     "pre_break_low",
+    "upper_circuit_locked",
     "run_backtest",
     "trades_parquet",
 ]
@@ -143,12 +146,22 @@ INITIAL_EQUITY = Decimal(1_000_000)
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
 # the window it is given holds more, so its watchlist equals a scan of the full history.
 LOOKBACK_SESSIONS = 700
+# What the daily-bar loop does not model, by fixed code (09 §7, HAT-BT-070); measured in shadow.
 KNOWN_GAPS = (
-    "trigger_is_level_break_only",
+    "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
     "episodic_pivot_not_backtested",
     "close_exits_at_official_close",
     "kill_switches_not_simulated",
+    "entry_fills_on_touch",  # a high at the level fills; live needs a trade at or above it
+    "gap_over_fills_at_open",  # live fills at the first tick after the open
+    "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band; no band table in the run
+    "lower_circuit_not_modelled",  # a stop at a locked lower band fills at min(open, stop)
+    "multipliers_fixed_at_one",  # regime and health multipliers are 1
+    "suspension_not_marked",  # a bar-less, not delisted, position is carried at its last close
+    "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
+# The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
+NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
 END_OF_PERIOD = "end_of_period"
 DELISTED = "delisted"
 SKIP_NO_LEVEL = "no_trigger_level"
@@ -325,6 +338,19 @@ class _Bar:
     close: Decimal
 
 
+@dataclass(frozen=True)
+class _EntryPlan:
+    """A trigger's entry: price, stop, the day's low after the entry (None: none below the
+    break's), the upper-circuit state and the first failing entry filter (None: all passed)."""
+
+    price: Decimal
+    stop: Decimal
+    dip: Decimal | None
+    locked: bool | None
+    skip: str | None
+    filters: tuple[dict[str, object], ...] = ()
+
+
 @dataclass
 class _Held:
     """What the loop tracks of an open position beyond the ledger: its instrument, entry day and
@@ -440,6 +466,11 @@ class _Run:
         self.data = data
         self.config = spec.config
         self.policy = spec.policy.policy
+        # Each playbook's configured max chase, as the trigger reads it (HAT-CRIT-122).
+        self.chase = {
+            b.name: trigger.last_configured_chase([self.config], b.name)
+            for b in self.config.playbooks
+        }
         self.days = tuple(sorted(set(data.days)))
         self.period = tuple(d for d in self.days if spec.start <= d <= spec.end)
         if not self.period:
@@ -718,30 +749,19 @@ class _Run:
         equity = self.equity[-1][1] if self.equity else self.spec.initial_equity
         return equity, cash
 
-    def _context(
-        self, row: HatWatchlistEntry, entry: Decimal, stop: Decimal, prev: date
-    ) -> SignalContext:
-        playbook = self.config.playbook(row.playbook)
-        chase = next(
-            (
-                Decimal(repr(f.params["pct"]))
-                for f in playbook.entry_filters
-                if f.type == "max_chase"
-            ),
-            None,
-        )
+    def _context(self, row: HatWatchlistEntry, plan: _EntryPlan, prev: date) -> SignalContext:
         equity, cash = self._equity_now()
         instrument_id = str(row.instrument_id)
         return SignalContext(
             action="entry",
             strategy_key=self.config.bot,
             industry=industry_on(self.data, instrument_id, row.trade_date),
-            entry_price=entry,
-            stop_price=stop,
+            entry_price=plan.price,
+            stop_price=plan.stop,
             trigger_level=Decimal(row.pivot),
-            ltp=entry,
-            locked_upper_circuit=False,
-            configured_max_chase_pct=chase,
+            ltp=plan.price,
+            locked_upper_circuit=plan.locked,
+            configured_max_chase_pct=self.chase[row.playbook],
             equity=equity,
             allocation_risk_pct=self.policy.risk_pct,
             regime_mult=Decimal(1),
@@ -783,7 +803,47 @@ class _Run:
             if stop is None:
                 self._skip(skip or SKIP_BAD_INPUT)
                 continue
-            self._enter(row, bar, price, stop, prev, _at(day, _AT_ENTRY, n), dip=dip)
+            at = _at(day, _AT_ENTRY, n)
+            locked = self._locked(instrument_id, price, bar.high, day)
+            failed, filters = self._entry_filters(
+                playbook, instrument_id, (price, stop, level, locked), (at, prev)
+            )
+            plan = _EntryPlan(price, stop, dip, locked, failed, filters)
+            self._enter(row, bar, plan, prev, at)
+
+    def _locked(self, instrument_id: str, price: Decimal, high: Decimal, day: date) -> bool | None:
+        """Whether the entry at `price` is at the upper circuit (`upper_circuit_locked`)."""
+        dates, bars = self.history.get(instrument_id, ([], []))
+        at = bisect_left(dates, day)
+        prev_close = bars[at - 1].close if at > 0 else None
+        return upper_circuit_locked(price, high, prev_close, self._tick(instrument_id, day))
+
+    def _entry_filters(
+        self,
+        playbook: Playbook,
+        instrument_id: str,
+        entry: tuple[Decimal, Decimal, Decimal, bool | None],
+        when: tuple[datetime, date],
+    ) -> tuple[str | None, tuple[dict[str, object], ...]]:
+        """(the type of the first failing entry filter or None, each filter's outcome as live
+        records it on the signal) for the playbook's entry filters (`adtr_filter`, `max_chase`)
+        at the trigger, evaluated as live evaluates them (HAT-BT-025): `entry` is (price, stop,
+        level, locked), with ADTR(20) as of `prev`, the session before the trigger's instant
+        `at`."""
+        price, stop, level, locked = entry
+        at, prev = when
+        ctx = trigger.entry_filter_context(
+            at=at,
+            entry=price,
+            stop=stop,
+            adtr20=self._feature(prev, instrument_id, "adtr20"),
+            level=level,
+            locked_upper_circuit=locked,
+        )
+        failed, outcomes = trigger.evaluate_entry_filters(
+            playbook, ctx, configured_pct=self.chase[playbook.name], strategy_key=self.config.bot
+        )
+        return failed, tuple({"stage": "entry_filter", **o.to_json()} for o in outcomes)
 
     def _entry_lows(
         self,
@@ -817,16 +877,15 @@ class _Run:
         self,
         row: HatWatchlistEntry,
         bar: _Bar,
-        price: Decimal,
-        stop: Decimal,
+        plan: _EntryPlan,
         prev: date,
         at: datetime,
-        *,
-        dip: Decimal | None,
     ) -> None:
-        """Open the entry; `dip` is the day's low after the entry (None: none below the break's),
-        taken before the high, so a stop it reaches fills that day and it seeds the MAE."""
+        """Open the entry, or record it Rejected with the failing entry filter as live does. The
+        plan's `dip` is taken before the high, so a stop it reaches fills that day and it seeds
+        the MAE."""
         instrument_id = str(row.instrument_id)
+        price, dip = plan.price, plan.dip
         held_prices = {
             uuid.UUID(h.instrument_id): self.last_close[h.instrument_id]
             for h in self.held.values()
@@ -838,8 +897,10 @@ class _Run:
             instrument_id=row.instrument_id,
             trade_date=row.trade_date,
             triggered_at=at,
-            context=self._context(row, price, stop, prev),
+            context=self._context(row, plan, prev),
             last_prices=held_prices,
+            skip_reason=plan.skip,
+            criteria=plan.filters,
         )
         outcome = trades.open_entry(self.session, request, fills=self.spec.fills)
         signal = self.session.get(HatSignal, outcome.signal_id)
@@ -1117,6 +1178,31 @@ def pre_break_low(
     estimate = min(bar_open, level * (1 - adr20 / 100))
     before = max(bar_low, estimate)
     return before, (bar_low if bar_low < before else None)
+
+
+def upper_circuit_locked(
+    price: Decimal, bar_high: Decimal, prev_close: Decimal | None, tick: Decimal | None
+) -> bool | None:
+    """Whether an entry at `price` is at the upper circuit (HAT-BT-025, PR 61), live's rule
+    (`trigger.locked_upper_circuit`: the price at or above the band's upper price) read from a
+    daily bar: the price is the day's high (nothing traded above it), above the previous close,
+    and within one tick of an NSE band's upper price (`trigger.upper_circuit_price` at 2, 5, 10
+    or 20%) over the previous close. The run has no band table, so the band is the nearest of
+    these whose upper price is above the previous close; a name with a wider band entered at
+    exactly a narrower one's price reads as locked. None without a previous close or a tick (live
+    fails closed on an unknown circuit state)."""
+    if prev_close is None or prev_close <= 0 or tick is None or tick <= 0:
+        return None
+    if price != bar_high or price <= prev_close:
+        return False
+    for band in NSE_BANDS:
+        daily = trigger.DailyInputs(
+            prev_close=prev_close, tick=tick, band_known=True, band_pct=band
+        )
+        upper = trigger.upper_circuit_price(daily)
+        if upper is not None and upper > prev_close and abs(price - upper) <= tick:
+            return True
+    return False
 
 
 def first_trigger(

@@ -1,4 +1,4 @@
-"""CONF checks of the backtest (09; HAT-BT-010, 032, 042, 051; HAT-VER-041)."""
+"""CONF checks of the backtest (09; HAT-BT-010, 032, 042, 051, 070; HAT-VER-041)."""
 
 import ast
 import json
@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 
 import hat_backtest_support as s
-from hat_conf_repo import APP_ROOT, imports_of
+from hat_conf_repo import APP_ROOT, REPO_ROOT, imports_of
 
 from app.hat.backtest import runs
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
-from app.hat.engine.backtest import TRADE_SCHEMA
+from app.hat.engine.backtest import KNOWN_GAPS, TRADE_SCHEMA
 from app.hat.models import HatBacktestRun
 
 HAT = APP_ROOT / "hat"
@@ -29,6 +29,7 @@ SHARED = {
     "app.hat.engine.trades.expire_watchlist": "watchlist expiry",
     "app.hat.engine.stops.plan_stop": "initial stop",
     "app.hat.engine.stops.check_width": "stop width",
+    "app.hat.engine.trigger.evaluate_entry_filters": "entry filters",
 }
 PRIVATE = (
     "app.hat.engine.scan.scan_bot",
@@ -152,6 +153,20 @@ def test_dsr_published_example() -> None:
     assert abs(got.sr0 - sr0) < 1e-6
     assert abs(got.prob - _phi(z)) < 1e-6
     assert got.reason is None
+
+
+# --- HAT-BT-070: known gaps ------------------------------------------------------------------
+
+
+def test_known_gaps_listed() -> None:
+    """Spec 09 §7's gap table lists exactly `KNOWN_GAPS`, in order, and the golden runs report
+    that list (HAT-BT-070)."""
+    spec = (REPO_ROOT / "docs" / "specs" / "hat" / "09-backtest.md").read_text(encoding="utf-8")
+    section = spec[spec.index("#### HAT-BT-070") :]
+    codes = re.findall(r"^\| `([a-z_]+)` \|", section, re.MULTILINE)
+    assert tuple(codes) == KNOWN_GAPS
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    assert all(seed["metrics"]["known_gaps"] == list(KNOWN_GAPS) for seed in golden.values())
 
 
 # --- HAT-BT-051: golden replay ----------------------------------------------------------------

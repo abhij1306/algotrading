@@ -36,6 +36,7 @@ from app.hat.data.store import (
 from app.hat.data.ticks import tick_for_date
 from app.hat.engine.backtest import (
     KNOWN_GAPS,
+    NSE_BANDS,
     BacktestResult,
     MarketData,
     TradeRow,
@@ -44,6 +45,7 @@ from app.hat.engine.backtest import (
     pre_break_low,
     run_backtest,
     trades_parquet,
+    upper_circuit_locked,
 )
 from app.hat.engine.portfolio.universe import Interval
 from app.hat.engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, floor_to_tick, low_of_day
@@ -318,12 +320,13 @@ def _tick(data: MarketData, instrument_id: str, day: date) -> D:
     return tick
 
 
-def _adr20(data: MarketData, instrument_id: str, day: date) -> D | None:
-    """adr20 at the close of the session before `day`, as the loop reads it."""
+def _adr20(data: MarketData, instrument_id: str, day: date, name: str = "adr20") -> D | None:
+    """A feature (adr20 unless `name`) at the close of the session before `day`, as the loop
+    reads it."""
     prev = data.days[data.days.index(day) - 1]
     rows = data.features.filter(
         (data.features["instrument_id"] == instrument_id) & (data.features["date"] == prev)
-    )["adr20"].to_list()
+    )[name].to_list()
     return None if not rows or rows[0] is None else D(repr(rows[0])).quantize(D("0.0001"))
 
 
@@ -398,6 +401,130 @@ def test_contraction_stop_too_wide(paths: dict, max_pct: float) -> None:
     assert result.signals == ()
     assert result.skips.get(SKIP_BAD_INPUT, 0) == 0
     assert result.skips.get(SKIP_TOO_WIDE, 0) == triggers
+
+
+# --- HAT-BT-025: entry filters at the trigger (PR 61) -------------------------------------------
+
+
+@given(
+    s.paths(SESSIONS),
+    st.sampled_from([0.25, 0.5, 1.0, 2.0]),
+    st.sets(st.sampled_from(DAYS[s.WARM_UP - 1 :]), max_size=6),
+)
+@RUNS
+def test_adtr_filter_applied(paths: dict, multiple: float, blank: set[date]) -> None:
+    """With an `adtr_filter`, a trigger whose stop is wider than max_multiple x ADTR(20) as of
+    the session before (or that has no ADTR) is recorded Rejected with reason `adtr_filter`, as
+    live records it, and buys nothing; one within it is never refused for that reason. ADTR is
+    blanked at some closes, so a read of the wrong session shows. Harm: the backtest takes
+    wide-stop entries live refuses, so its evidence is not the live strategy's."""
+    data = s.market(paths, DAYS)
+    if blank:
+        adtr20 = pl.when(pl.col("date").is_in(sorted(blank))).then(None).otherwise(pl.col("adtr20"))
+        data = dataclasses.replace(
+            data, features=data.features.with_columns(adtr20.alias("adtr20"))
+        )
+    cfg = s.config(adtr=multiple, chase=30.0)
+    result = run_backtest(s.spec(cfg, DAYS, fills=s.zero_fills()), data)
+    bought = {(f.day, f.instrument_id) for f in result.fills if f.purpose == "entry"}
+    for signal in result.signals:
+        day, iid = signal.trade_date, signal.instrument_id
+        open_, high, _, _ = _bar(data, iid, day)
+        entry = entry_fill(open_, high, signal.trigger_price)
+        assert entry is not None
+        adtr = _adr20(data, iid, day, "adtr20")
+        wide = adtr is None or adtr <= 0 or entry - signal.stop_price > D(repr(multiple)) * adtr
+        assert (signal.reason == "adtr_filter") == wide
+        if wide:
+            assert (signal.state, signal.qty) == ("Rejected", 0)
+            assert (day, iid) not in bought
+
+
+TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])
+
+
+def _band_upper(prev_close: D, band: D, tick: D) -> D:
+    return floor_to_tick(prev_close * (100 + band) / 100, tick)
+
+
+def _at_band(price: D, high: D, prev_close: D, tick: D) -> bool:
+    """The entry is the day's high, above the previous close and within a tick of an NSE band's
+    upper price (one above the previous close)."""
+    uppers = [_band_upper(prev_close, b, tick) for b in NSE_BANDS]
+    near = any(u > prev_close and abs(price - u) <= tick for u in uppers)
+    return price == high and price > prev_close and near
+
+
+@given(PRICE, st.sampled_from(NSE_BANDS), TICKS)
+@example(D(100), D(5), D("0.05"))
+@example(D(2), D(2), D("0.05"))
+def test_upper_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
+    """An entry is at the upper circuit when it is the day's high (nothing traded above it),
+    above the previous close and within one tick of an NSE band's upper price over the previous
+    close (2, 5, 10 or 20%, a band whose floored upper price is above the previous close): an
+    entry below the day's high, at or below the previous close, or between bands is not; without
+    a previous close or a tick the state is unknown (None). Harm: the backtest buys a stock at its
+    upper band, which live cannot buy, or refuses a flat low-priced one live would buy."""
+    upper = _band_upper(prev_close, band, tick)
+    for price in (upper - tick, upper, upper + tick):
+        if price > prev_close and upper > prev_close:
+            assert upper_circuit_locked(price, price, prev_close, tick) is True
+        assert upper_circuit_locked(price, price + tick, prev_close, tick) is False
+    flat = floor_to_tick(prev_close, tick)
+    assert upper_circuit_locked(flat, flat, prev_close, tick) is False
+    between = _band_upper(prev_close, band - D("0.5"), tick)
+    expected = _at_band(between, between, prev_close, tick)
+    assert upper_circuit_locked(between, between, prev_close, tick) is expected
+    assert upper_circuit_locked(upper, upper, None, tick) is None
+    assert upper_circuit_locked(upper, upper, prev_close, None) is None
+
+
+def _lock(paths: dict, sessions: set[int], band: float, fade: bool) -> dict:
+    """`paths` with each session in `sessions` opening at the upper band over the previous close
+    and never trading above it: pinned all day, or (`fade`) falling back 3% by the close; the
+    sessions after it move by the same ratio."""
+    locked = {}
+    for iid, path in paths.items():
+        path = [tuple(bar) for bar in path]
+        for n in sorted(sessions):
+            prev = path[n - 1][3]
+            upper = math.floor(prev * (100 + band) + 1e-6) / 100
+            low = round(upper * 0.97, 2) if fade else upper
+            close = round(upper * 0.98, 2) if fade else upper
+            ratio = close / path[n][3]
+            path[n] = (upper, upper, low, close)
+            path[n + 1 :] = [tuple(round(v * ratio, 2) for v in bar) for bar in path[n + 1 :]]
+        locked[iid] = path
+    return locked
+
+
+@given(
+    s.paths(SESSIONS),
+    st.sets(st.integers(s.WARM_UP, SESSIONS - 1), min_size=1, max_size=4),
+    st.sampled_from([5.0, 10.0, 20.0]),
+    st.booleans(),
+)
+@RUNS
+def test_upper_circuit_skip(paths: dict, sessions: set[int], band: float, fade: bool) -> None:
+    """A trigger whose entry is at the upper band (the day's high, within a tick of a band over
+    the previous close), whether the stock stays pinned or falls back later in the day, is
+    recorded Rejected by `max_chase` (locked upper circuit), as live refuses it at that price,
+    and buys nothing; with a 30% chase no other trigger is refused by `max_chase`. Harm: the
+    backtest buys locked gap-ups live never gets, the best days of a momentum strategy."""
+    data = s.market(_lock(paths, sessions, band, fade), DAYS)
+    result = run_backtest(s.spec(s.config(chase=30.0), DAYS, fills=s.zero_fills()), data)
+    bought = {(f.day, f.instrument_id) for f in result.fills if f.purpose == "entry"}
+    for signal in result.signals:
+        day, iid = signal.trade_date, signal.instrument_id
+        open_, high, _, _ = _bar(data, iid, day)
+        entry = entry_fill(open_, high, signal.trigger_price)
+        assert entry is not None
+        prev_close = _bar(data, iid, DAYS[DAYS.index(day) - 1])[3]
+        locked = _at_band(entry, high, prev_close, _tick(data, iid, day))
+        assert (signal.reason == "max_chase") == locked
+        if locked:
+            assert (signal.state, signal.qty) == ("Rejected", 0)
+            assert (day, iid) not in bought
 
 
 @given(PRICE, PRICE, PRICE)

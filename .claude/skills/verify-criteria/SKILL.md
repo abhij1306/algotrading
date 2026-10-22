@@ -145,12 +145,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `34045d7d6b1bdf0ede723c6f4fe23e6e4e4ba4fa21856c8e4507e70a3b2448ad`
+Covered digest: `9a9ab63168c4793fb72197b056526f24a56861b926cad871e690445cf2a5dcc3`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
 - PR 12: `publish_version` also refuses a run that is not `completed` (`run_not_completed`, HAT-BT-061). The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the checks here were re-run unchanged and pass.
 - `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column (02 §7), so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
 - `vcp` is a port of the legacy detector, not a copy. Dropped (other criteria or outside the spec): the Stage 2 gate, the RS gate, overhead resistance, the volume slope, the grade and the breakout test. A contraction's depth uses the highest high and lowest low of its own bars. The final contraction low is the segment minimum, which can be lower than the legacy pivot low; `vcp_parity` records this. The pivot is the highest high of the final contraction. `MIN_BASE_BARS` stays 15. The score is the mean of four linear sub-scores (an `[OWNER-PENDING]` default).

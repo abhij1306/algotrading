@@ -56,7 +56,7 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 - **Acceptance:**
   - Property: for every (open, high, level), the entry price is level if open <= level <= high, open if open > level, and there is no entry if high < level; the entry is still subject to max-chase, so a gap-over open above level × (1 + pct/100) is skipped. Harm: the backtest buys at prices the live engine would refuse, inflating results.
 - **[OWNER-PENDING]** daily-bar trigger proxy: default as stated (PLAN Q4); episodic-pivot (opening-range) backtests need the Fyers minute history the optional loader writes to `bars_5m` (HAT-DATA-119, I4); the discrepancy is measured in shadow; owner to confirm.
-- **Deviation (PR 12):** the trigger is the break of the level alone. `volume_pace`, `adtr_filter` and the opening range need intraday bars and are not modelled, and the episodic-pivot playbook, built live from the pre-open gap scan, is not backtested (its rows are skipped): the PR 12 loop runs on daily bars only, and the minute-history loader exists for a later EP backtest. Both are listed in `metrics.known_gaps`.
+- **Deviation (PR 12):** the trigger is the break of the level alone. `volume_pace` and the opening range need intraday bars and are not modelled (`adtr_filter` is, since PR 61: HAT-BT-025), and the episodic-pivot playbook, built live from the pre-open gap scan, is not backtested (its rows are skipped): the PR 12 loop runs on daily bars only, and the minute-history loader exists for a later EP backtest. Both are listed in `metrics.known_gaps`.
 - **Design (PR 12):** the initial stop is planned with the instrument's NSE tick on the trade date (`data.ticks.tick_for_date`, HAT-EXEC-053), as the live trigger plans it; an instrument with no close before the trade date is skipped (`stop_input_missing`). The backtest reads the tick from the adjusted closes it runs on, while live reads the unadjusted ones: across a corporate action the two can sit in different price slabs, which moves a stop by less than the larger of the two ticks. Property `backtest.stop_on_instrument_tick`: every opened entry's stop is the live plan on the instrument's tick of the trade date, with prices in more than one slab. Harm: backtest stops sit on a grid the live trigger never uses.
 
 - **Design (PR 60):** the entry day is split at the break (`engine.backtest.pre_break_low`). A low-of-day stop (HAT-EXEC-051) is planned from the day's low before the break, never the whole day's low, which live cannot know when the trigger fires:
@@ -106,6 +106,18 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 - **Verification:** PBT `backtest.decimal_money`
 - **Acceptance:**
   - Property: for every simulated trade, qty is an integer >= 1 and every money field (price, fees, P&L, equity) is a Decimal; summing trade P&L equals the change in equity exactly. Harm: float drift makes equity and kill-switch drawdowns disagree with the trades.
+
+#### HAT-BT-025: Entry filters at the trigger
+- **Statement:** At each trigger the loop evaluates the playbook's entry filters as live does (`trigger.evaluate_entry_filters`, with `max_chase` always present): `adtr_filter` on the planned stop and ADTR(20) as of the previous session, and `max_chase` with the upper-circuit state. A trigger whose filter fails is recorded Rejected with the filter's type as the reason and buys nothing.
+- **Source:** BL "Criteria library" (`adtr_filter`, `max_chase`); HAT-CRIT-121, HAT-CRIT-122; audit 2026-10-22 G05, G10.
+- **PR:** 61
+- **Verification:** PBT `backtest.adtr_filter_applied`, PBT `backtest.upper_circuit_inferred`, PBT `backtest.upper_circuit_skip`
+- **Acceptance:**
+  - Property: with an `adtr_filter`, a trigger whose stop is wider than max_multiple × ADTR(20) as of the previous session, or that has no ADTR, is Rejected `adtr_filter` and buys nothing; one within it is never refused for that reason. Harm: the backtest takes wide-stop entries live refuses.
+  - Property: an entry price is at the upper circuit when it is the day's high, above the previous close, and within one tick of the upper price (`trigger.upper_circuit_price`) of an NSE band (2, 5, 10 or 20%) whose upper price is above the previous close; an entry below the high, at or below the previous close, or between bands is not; with no previous close or tick the state is unknown. Harm: the backtest buys a stock locked at its upper band.
+  - Property: in a run, a trigger whose entry is at the band, on a bar pinned there all day or one that opened at the band and faded, is Rejected `max_chase` and buys nothing, and with a wide chase no other trigger is. Harm: the backtest buys locked gap-ups live never gets.
+- **Design (PR 61):** the run has no price-band table, so the upper circuit is inferred from the entry price and the bar (`engine.backtest.upper_circuit_locked`, with live's `trigger.upper_circuit_price` per band). Live refuses any entry priced at the band (HAT-CRIT-122), so a gap over that opens at the band and then fades is refused too. A band whose floored upper price is not above the previous close (a low-priced stock) is skipped. A name with a wider band entered at exactly a narrower band's price reads as locked; this is listed (`upper_circuit_inferred_from_bar`, HAT-BT-070). A filter rejection is a Rejected signal, as live writes it, and is counted in `metrics.rejections`; a stop-rule skip stays a loop skip (`metrics.skips`).
+- **Deviation (PR 61):** the filter loop was moved from `trigger.plan_entry` into `trigger.evaluate_entry_filters` (with `trigger.entry_filter_context`) so the backtest calls the code live calls without importing `engine.criteria` (HAT-BT-010); `plan_entry` is unchanged in behaviour.
 
 ## §3 Runs, family_key and trial counting
 
@@ -211,4 +223,26 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 
 `python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME]` backtests a sleeve's live strategy version (or `--version`, another version of the same strategy) on the sleeve's universe, under the risk-policy version in force now, over the Parquet store under `HAT_DATA_ROOT` (the adjusted `bars_daily` view, `features_daily`, the regime index closes and point-in-time membership from the database). It records the run as a trial, writes the trades file and prints the run id, status, trade count and DSR; a refusal prints a fixed code and exits non-zero.
 
-Every run's `metrics.known_gaps` lists what the daily-bar loop does not model, in this order: `trigger_is_level_break_only`, `episodic_pivot_not_backtested`, `close_exits_at_official_close`, `kill_switches_not_simulated`. The gaps are measured in shadow mode (PLAN Q4), not corrected.
+#### HAT-BT-070: Every unmodelled behaviour is a listed gap
+- **Statement:** Every run's `metrics.known_gaps` lists, by fixed code and in the order of the table below, each way the daily-bar loop differs from live trading. The gaps are measured in shadow mode (PLAN Q4), not corrected; the lifecycle gate (PR 69) and the confidence label (D132) read the codes.
+- **Source:** PLAN Q4; audit 2026-10-22 N9, G32, N8.
+- **PR:** 12, 61
+- **Verification:** CONF `known_gaps_listed`, PBT `backtest.deterministic`
+- **Acceptance:**
+  - Property: the codes of the table below equal `engine.backtest.KNOWN_GAPS`, in order, and every run's metrics carry that list. Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
+
+| Code | What the loop does instead of live | Closed or measured by |
+|---|---|---|
+| `trigger_is_level_break_only` | the trigger is the break of the level; `volume_pace` and the opening range need intraday bars | PR 70 (`bars_5m`) |
+| `episodic_pivot_not_backtested` | the EP playbook's rows are skipped | PR 70 |
+| `close_exits_at_official_close` | close exits fill at the official close, not the 15:25 price | shadow (PR 40) |
+| `kill_switches_not_simulated` | kill switches never trip (their re-arm is manual); the exposure ladder is simulated | none (by design) |
+| `entry_fills_on_touch` | an entry fills when the high touches the level; live needs a trade at or above it | PR 62 (penetration fill) |
+| `gap_over_fills_at_open` | a gap over fills at the open; live fills at the first tick after it | shadow (PR 40) |
+| `upper_circuit_inferred_from_bar` | the upper circuit is an entry at the day's high within a tick of an NSE band's upper price (HAT-BT-025); no band table | a band loader |
+| `lower_circuit_not_modelled` | a stop on a locked lower band fills at min(open, stop) | PR 64 |
+| `multipliers_fixed_at_one` | regime and health multipliers are 1 when sizing | PR 68 |
+| `suspension_not_marked` | a position with no bar for some sessions that is not delisted is carried at its last close | PR 64 |
+| `entry_day_low_estimated` | without `bars_5m` the pre-break low is the adr20 estimate and low-of-day gap overs are skipped (HAT-BT-020) | PR 70 |
+
+- **Note (N8):** young listings are excluded by design, not by a gap: the 52-week criteria need 252 bars and RS needs 253, so a stock listed under a year ago is never an S1 or S2 candidate, live or in the backtest. It is not a listed gap because live behaves the same way.

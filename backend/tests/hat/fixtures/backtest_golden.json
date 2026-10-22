@@ -1,44 +1,53 @@
 {
  "momentum-breakout-ep": {
   "metrics": {
-   "avg_loss_r": "-1.165252",
-   "avg_mae_r": "-1.254301",
-   "avg_mfe_r": "0.644535",
+   "avg_loss_r": "-1.221582",
+   "avg_mae_r": "-1.381452",
+   "avg_mfe_r": "0.966803",
    "avg_win_r": null,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
    "entry_day_low": "bars_5m_else_max_low_min_open_level_less_adr20",
-   "expectancy_r": "-1.165252",
-   "fees": "556.0700",
-   "final_equity": "995641.8300",
+   "expectancy_r": "-1.221582",
+   "fees": "490.5900",
+   "final_equity": "996952.3400",
    "initial_equity": "1000000",
    "known_gaps": [
     "trigger_is_level_break_only",
     "episodic_pivot_not_backtested",
     "close_exits_at_official_close",
-    "kill_switches_not_simulated"
+    "kill_switches_not_simulated",
+    "entry_fills_on_touch",
+    "gap_over_fills_at_open",
+    "upper_circuit_inferred_from_bar",
+    "lower_circuit_not_modelled",
+    "multipliers_fixed_at_one",
+    "suspension_not_marked",
+    "entry_day_low_estimated"
    ],
-   "max_drawdown": 0.00435817000000005,
-   "net_pnl": "-4358.1700",
-   "rejections": {},
+   "max_drawdown": 0.0030476600000000076,
+   "net_pnl": "-3047.6600",
+   "rejections": {
+    "adtr_filter": 1
+   },
    "returns": {
-    "kurtosis": 27.968160534069163,
-    "skew": -4.912246088127568,
-    "sr": -0.22764752027565335,
+    "kurtosis": 29.84451284491964,
+    "skew": -5.096623153517563,
+    "sr": -0.21324373229851468,
     "t": 100
    },
    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
    "sessions": 100,
-   "sharpe_annual": -3.613792351379477,
+   "sharpe_annual": -3.385139305830611,
    "signals": 3,
    "skips": {},
    "slippage_bps": "0",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
-   "sum_r": "-3.495757",
-   "total_return": -0.00435817000000005,
-   "trades": 3,
+   "sum_r": "-2.443164",
+   "total_return": -0.0030476600000000076,
+   "trades": 2,
    "win_rate": 0.0
   },
   "signals": 3,
@@ -76,23 +85,6 @@
     "r_multiple": "-0.2137810000",
     "realized_pnl": "-261.1100",
     "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
-   },
-   {
-    "entry_date": "2025-07-08",
-    "entry_price": "639.0900",
-    "exit_date": "2025-07-08",
-    "exit_reason": "hard_stop",
-    "fees": "65.4800",
-    "holding_days": "0",
-    "initial_stop": "612.6000",
-    "instrument_id": "00000000-0000-0000-0000-000000002009",
-    "mae_r": "-1.0000000000",
-    "mfe_r": "0E-10",
-    "playbook": "breakout",
-    "qty": "47",
-    "r_multiple": "-1.0525930000",
-    "realized_pnl": "-1310.5100",
-    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
    }
   ],
   "watchlist_rows": 8
@@ -116,7 +108,14 @@
     "trigger_is_level_break_only",
     "episodic_pivot_not_backtested",
     "close_exits_at_official_close",
-    "kill_switches_not_simulated"
+    "kill_switches_not_simulated",
+    "entry_fills_on_touch",
+    "gap_over_fills_at_open",
+    "upper_circuit_inferred_from_bar",
+    "lower_circuit_not_modelled",
+    "multipliers_fixed_at_one",
+    "suspension_not_marked",
+    "entry_day_low_estimated"
    ],
    "max_drawdown": 0.0033513722050979577,
    "net_pnl": "9938.5100",
