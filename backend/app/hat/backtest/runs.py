@@ -60,6 +60,7 @@ from .costs import (
 from .dsr import Deflated, ReturnStats, deflated_sharpe, trial_variance
 from .fills import PENETRATION
 from .market import load_market
+from .slots import SLOT_ORDER_TIME
 
 __all__ = [
     "COMPLETED",
@@ -260,13 +261,15 @@ def backtest_bot(
     cooldown_sessions: int | None = None,
     entry_fill_rule: str = PENETRATION,
     for_promotion: bool = False,
+    slot_order: str = SLOT_ORDER_TIME,
 ) -> HatBacktestRun:
     """Backtest a sleeve's strategy version (its live one unless `version_id` names another of
     the same strategy) on the sleeve's universe under the risk policy in force now, over the
     Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58), and
     `entry_fill_rule` the default penetration fill (PR 62). A run `for_promotion` (one
-    `publish_version` may take) is refused at a slippage of 0 or under `touch`. The command
-    line's body.
+    `publish_version` may take) is refused at a slippage of 0, under `touch` or off the
+    `time` slot order; `slot_order`
+    is the order a capped day's triggers take the slots (PR 63). The command line's body.
     Refusals before the run is recorded raise `RunError` and record nothing; a refusal of the
     engine is a failed trial."""
     bot = session.get(HatBot, bot_id)
@@ -292,7 +295,7 @@ def backtest_bot(
     except CostError as exc:
         raise RunError(exc.code) from None
     try:
-        check_conventions(entry_fill_rule, fills.slippage_bps, for_promotion)
+        check_conventions(entry_fill_rule, fills.slippage_bps, for_promotion, slot_order)
     except BacktestError as exc:
         raise RunError(exc.code) from None
     try:
@@ -310,6 +313,7 @@ def backtest_bot(
         fills=fills,
         entry_fill_rule=entry_fill_rule,
         for_promotion=for_promotion,
+        slot_order=slot_order,
     )
     return record_backtest(
         session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
@@ -337,7 +341,8 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     `--cooldown-sessions` sweep run, or one made before the cooldown changed, traded another rule
     and is not the sleeve's evidence. A run recorded before the field existed ran with none (0).
     Only a run flagged for promotion counts (PR 62, O5): a sensitivity run (`touch`, 0 bps) or
-    one recorded before the flag existed is never the evidence."""
+    one recorded before the flag existed is never the evidence; nor is one whose slots went in
+    another order than the estimated trigger time (PR 63), as every run before PR 63 did."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
@@ -356,6 +361,7 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
             for run in candidates
             if (run.metrics or {}).get("cooldown_sessions", 0) == cooldown
             and (run.metrics or {}).get("for_promotion") is True
+            and (run.metrics or {}).get("slot_order") == SLOT_ORDER_TIME
         ),
         None,
     )

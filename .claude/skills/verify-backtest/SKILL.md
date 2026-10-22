@@ -17,8 +17,11 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
 - `PBT backtest.entry_fill_proxy` A gap over (open above the level) fills at the open under either rule; otherwise the default `penetration_1_tick` fills at the first tick-grid price above the level (level + tick on the grid, the next grid price for an off-grid adjusted level) when the high reaches it and `touch` at the level when the high reaches the level, else no entry; penetration never fills where touch does not nor below its price, and without a tick there is no penetration entry (HAT-BT-020, PR 62). Harm: the backtest buys breakouts live never sees trade, at a better price than live pays.
 - `PBT backtest.entry_fill_proxy_chase` In a run under either entry rule (drawn), every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at that rule's proxy price on the instrument's tick and within max chase of the level, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses, or ignores the rule a run asked for.
-- `PBT backtest.fill_conventions_recorded` Every run's metrics record `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `slippage_bps` (normalised), `cost_model`, `for_promotion` and `config_digest` (the canonical hash of the first six), and a `touch` run appends `entry_fills_on_touch` to `known_gaps`; a run flagged for promotion at a slippage of 0 or under `touch` is refused (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`; HAT-BT-020..022, O5, PR 62). Harm: runs under different fill conventions read as comparable evidence, or a promotion rides on perfect fills.
-- `PBT backtest.fill_conventions_recorded_digest` Two specs' `config_digest`s are equal exactly when their entry rule, slippage (20 and 20.0 bps alike, -0 and 0 alike) and cost model are (PR 62). Harm: a run under other conventions passes for a rerun, or a rerun reads as another convention.
+- `PBT backtest.fill_conventions_recorded` Every run's metrics record `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `slippage_bps` (normalised), `cost_model`, `slot_order` (PR 63), `for_promotion` and `config_digest` (the canonical hash of the first seven), and a `touch` run appends `entry_fills_on_touch` to `known_gaps`; a run flagged for promotion at a slippage of 0 or under `touch` is refused (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`; HAT-BT-020..022, O5, PR 62). Harm: runs under different fill conventions read as comparable evidence, or a promotion rides on perfect fills.
+- `PBT backtest.fill_conventions_recorded_digest` Two specs' `config_digest`s are equal exactly when their entry rule, slippage (20 and 20.0 bps alike, -0 and 0 alike), cost model and slot order are (PR 62, 63). Harm: a run under other conventions passes for a rerun, or a rerun reads as another convention.
+- `PBT backtest.slot_order_rank` Under `time` candidates take the slots in estimated trigger order (every gap over first: an open above the level, or at it under `touch`; then (level - open) / open ascending, compared by cross-multiplying; no level or open last; ties in score order); `score` keeps the score order; `random:K` is a permutation the same K and day reproduce (HAT-BT-026, G11, PR 63). Harm: on a capped day the backtest gives the slots to the best-scored setups, not the first to break.
+- `PBT backtest.slot_order_refused` A slot order other than `time`, `score` or `random:K` (ASCII digits, no leading zeros, below 10^9) is refused `backtest_bad_slot_order` by `check_conventions`, and a run flagged for promotion under any order but `time` is refused `backtest_promotion_off_time_order` (HAT-BT-026, PR 63). Harm: two spellings of one rule hash apart, an unknown order reads as the default, or a version is promoted on a slot allocation live cannot get.
+- `PBT backtest.slot_order_applied` In a run with one open slot (generated markets with up to six instruments, so most trigger days are capped), each day's triggers reach `evaluate_signal` in the run's slot order computed from the day's watchlist and bars, no trigger takes the slot after an earlier one that day was refused `max_positions`, and `metrics.slot_order` records the rule (HAT-BT-026, PR 63). Harm: the backtest fills a capped day's slot with a later break than live would take.
 - `PBT backtest.stop_on_instrument_tick` Every opened entry's stop is entry x 0.95 rounded down to the instrument's NSE tick of the trade date (`data.ticks.tick_for_date` on the closes before it), with prices scaled into the 0.01 and the 0.10 slab (HAT-BT-020 design, HAT-EXEC-053). Harm: backtest stops sit on a grid the live trigger never uses, so backtest and live risk differ.
 - `PBT backtest.pre_break_low` The entry day's low before the break is the lowest low of the 5-minute bars up to the first one that reaches the level, and the low after it the lowest of the later bars (or a day low they miss); without them it is max(day low, min(open, level x (1 - adr20/100))), with the day low after the break only when lower (HAT-BT-020 design, PR 60). Harm: a low-of-day stop reads a low made after the entry.
 - `PBT backtest.entry_day_stop` Under a low-of-day stop, with and without generated 5-minute bars, every entry's stop is the live plan from the low before the break (the break at the entry price, level + tick under penetration, PR 62), a gap over without 5-minute bars is skipped and counted as `gap_over_no_intraday`, an entry without them needs adr20 (generated markets blank it on some dates), and an entry-day low at or below the stop exits that day at -1 R (MAE -1), while a higher one bounds the MAE (HAT-BT-020 design, PR 60). Harm: an S2 entry's stop sits at a low made after the entry, and the entry day's loss is never seen.
@@ -55,7 +58,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
 - `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force when it is read (now for the lifecycle, the request's instant for the risk-increase gate): a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: a gate is passed on a run of a rule that is not live.
-- `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`); a sensitivity run or one recorded before the flag is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
+- `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`) whose `metrics.slot_order` is `time` (PR 63); a sensitivity run or one recorded before the flag or the slot order is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 
 ## Run
@@ -95,6 +98,7 @@ No check touches the network, Fyers or the HAT database: a run's ledger is an in
 Code under check:
 - `backend/app/hat/engine/backtest.py`: `run_backtest`, `industry_on`, `compute_metrics`, `trades_parquet`, `main`
 - `backend/app/hat/backtest/fills.py`: `entry_fill`, `stop_fill`
+- `backend/app/hat/backtest/slots.py`: `is_slot_order`, `trigger_rank`, `order_slots`
 - `backend/app/hat/backtest/costs.py`: `parse_cost_model`, `load_cost_model`, `charges`, `check_slippage`, `slipped`, `BacktestFills`
 - `backend/app/hat/backtest/cost_models/cnc-delivery-1.yaml`
 - `backend/app/hat/backtest/dsr.py`: `return_stats`, `trial_variance`, `expected_max_sharpe`, `deflated_sharpe`
@@ -116,10 +120,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `50d484ecb3c573c13cdb7e6d0b3f77d9881a4ac31e43eacf062c29e73a25fc3f`
+Covered digest: `c39fb973e4baf002791dc7306858a7667a90c7078b61a45899897ded304124a0`
 
 ## Scope changes
 
+- PR 63 (G11): a day's watchlist reaches the triggers in the run's slot order (`backtest/slots.py`, `engine.backtest._slots`): `time` (default; gap overs first, then (level - open) / open ascending, ties by score), `score` (the PR 12 order) or `random:K` (the score order shuffled by a generator seeded `K:<date>`). `RunSpec.slot_order`, `--slot-order`, `backtest_bot(slot_order=)`; `check_conventions` refuses an unknown rule (`backtest_bad_slot_order`) and a promotion run off `time` (`backtest_promotion_off_time_order`); the command line validates `--slot-order` itself. Under `touch` an open at the level is a gap over (it fills at the open). `runs._latest_run` (the evidence) reads only promotion runs with `slot_order` `time`, so every run before PR 63 (score order) stops counting and a sleeve needs one new `--for-promotion` run (code review of PR 63). `conventions()` gains `slot_order`, so `config_digest` changes for every run. The golden replay's trades and metrics are unchanged (the fixture has no capped day); both seeds gain `slot_order: time` and a new `config_digest`.
 - PR 62 (G08, G09, G34, N14; O5): the fill conventions are pessimistic by default and recorded. `fills.entry_fill` takes the instrument's tick and a rule: `penetration_1_tick` (default; the high must reach the first tick-grid price above the level, and the fill is that price: level + tick on the grid, the next grid price for an off-grid adjusted level) or `touch` (the PR 12 rule, `RunSpec.entry_fill_rule`, `--entry-fill touch`). The tick is read only for a penetration from below (open at or under the level, high above it); without one that day skips as `stop_input_missing`. The entry-day split breaks at the entry price. `costs.DEFAULT_SLIPPAGE_BPS` = 20 is the default of the command line and `backtest_bot`. `engine.backtest.check_conventions` (called by `backtest_bot` before recording and by `run_backtest`) refuses an unknown rule, and a run flagged for promotion (`RunSpec.for_promotion`, `--for-promotion`) at 0 bps or under `touch`. `publish_version` takes only a run whose metrics say `for_promotion: true`, and `runs._latest_run` (the lifecycle's and the risk-increase gate's evidence) reads only such runs (code review of PR 62: a sensitivity run must not become the evidence). Metrics gain `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `for_promotion` and `config_digest`; `slippage_bps` is normalised (20.0 and -0 record as 20 and 0). `entry_fills_on_touch` left `KNOWN_GAPS` (a `touch` run reports it as `TOUCH_GAP`). The monotone-rule-stack assumption of `first_trigger` is documented (09 HAT-BT-021, N14). The golden now replays the defaults (penetration, 20 bps): S1's entry 2393.98 to 2398.788 (the grid price 2394.00 on the 0.10 tick, plus 20 bps), `expectancy_r` 8.0036 to 7.5884, `net_pnl` 9938.51 to 9860.77; S2's entries 837.33/838.34 to 839.0247/840.0267 (837.35/838.35 on the 0.05 tick, plus 20 bps), `net_pnl` -3047.66 to -3919.47, `expectancy_r` -1.2216 to -1.2396; both gain the six new metric keys and lose `entry_fills_on_touch` from `known_gaps`.
 - PR 58: the loop reads the per-instrument cooldown (HAT-RISK-036) through `trades.open_entry`, as live does; `engine.backtest.with_cooldown` and `--cooldown-sessions` (`runs.backtest_bot(cooldown_sessions=)`) replace N in the run's copy of the policy, refused as `backtest_bad_cooldown` outside [0, 250], and every run records `metrics.cooldown_sessions`; `runs.backtest_evidence` (`_latest_run`) reads only runs made under the cooldown in force (code review of PR 58: a sweep run must not become the sleeve's evidence). The golden gained that key (0) only; no trade changed.
 - PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (09 §7, HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
@@ -411,6 +416,132 @@ E   Failing test case: test_fill_conventions_recorded_digest(
 E       a=('penetration_1_tick', Decimal('0'), 'zero'),
 E       b=('penetration_1_tick', Decimal('-0'), 'zero'),
 E   )
+```
+
+Break: (PR 63) in `backend/app/hat/engine/backtest.py`: `conventions` leaves `slot_order` out, so the digest and the metrics miss the rule.
+
+```
+tests/hat/properties/test_backtest.py FF
+tests/hat/properties/test_backtest.py:871: in test_fill_conventions_recorded_digest
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+E   AssertionError: assert ('16875ecd416f [cut]046060f7a73c0' == '16875ecd416f [cut]046060f7a73c0'
+E     Skipping 53 identical leading characters in diff, use -v to show
+E       6060f7a73c0) is False
+E   Failing test case: test_fill_conventions_recorded_digest(
+E       a=('penetration_1_tick', Decimal('0'), 'default', 'time'),
+E       b=('penetration_1_tick', Decimal('0'), 'default', 'score'),
+tests/hat/properties/test_backtest.py:846: in test_fill_conventions_recorded
+    assert {k: metrics[k] for k in recorded} == recorded
+E   KeyError: 'slot_order'
+E   Failing test case: test_fill_conventions_recorded(
+E       # The test always failed when commented parts were varied together.
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+```
+
+### PBT backtest.slot_order_rank
+
+Break: (PR 63) in `backend/app/hat/backtest/slots.py`: a gap over is ranked by its (negative) distance, so gap overs no longer tie and leave the score order.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:933: in test_slot_order_rank
+    assert _before(x, y, fill) < 0 or (_before(x, y, fill) == 0 and i < j)
+E   AssertionError: assert (0 < 0 or (0 == 0 and 1 < 0))
+E    +  where 0 = _before((Decimal('101'), Decimal('100')), (Decimal('100'), Decimal('100')), 'touch')
+E    +  and   0 = _before((Decimal('101'), Decimal('100')), (Decimal('100'), Decimal('100')), 'touch')
+E   Failing explicit example: test_slot_order_rank(
+E       cands=[(Decimal('100'), Decimal('100')), (Decimal('101'), Decimal('100'))],
+E       rule='time',
+```
+
+Break: (PR 63) in `backend/app/hat/backtest/slots.py`: the distance is level - open in rupees, not relative to the open.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:933: in test_slot_order_rank
+    assert _before(x, y, fill) < 0 or (_before(x, y, fill) == 0 and i < j)
+E   AssertionError: assert (0 < 0 or (0 == 0 and 1 < 0))
+E    +  where 0 = _before((Decimal('50'), Decimal('51')), (Decimal('100'), Decimal('102')), 'penetration_1_tick')
+E    +  and   0 = _before((Decimal('50'), Decimal('51')), (Decimal('100'), Decimal('102')), 'penetration_1_tick')
+E   Failing explicit example: test_slot_order_rank(
+E       cands=[(Decimal('100'), Decimal('102')), (Decimal('50'), Decimal('51'))],
+E       rule='time',
+```
+
+Break: (PR 63) in `backend/app/hat/backtest/slots.py`: under `touch` an open at the level is ranked a break during the day, though it fills at the open.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:933: in test_slot_order_rank
+    assert _before(x, y, fill) < 0 or (_before(x, y, fill) == 0 and i < j)
+E   AssertionError: assert (0 < 0 or (0 == 0 and 1 < 0))
+E    +  where 0 = _before((Decimal('101'), Decimal('100')), (Decimal('100'), Decimal('100')), 'touch')
+E    +  and   0 = _before((Decimal('101'), Decimal('100')), (Decimal('100'), Decimal('100')), 'touch')
+E   Failing explicit example: test_slot_order_rank(
+E       cands=[(Decimal('100'), Decimal('100')), (Decimal('101'), Decimal('100'))],
+E       rule='time',
+```
+
+### PBT backtest.slot_order_refused
+
+Break: (PR 63) in `backend/app/hat/backtest/slots.py`: `random:K` accepts leading zeros, a second spelling of one seed.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:968: in test_slot_order_refused
+    with pytest.raises(BacktestError, match="backtest_bad_slot_order"):
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_slot_order_refused(
+E       rule='random:07',
+E   )
+```
+
+Break: (PR 63) in `backend/app/hat/engine/backtest.py`: `check_conventions` does not check the slot order.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:968: in test_slot_order_refused
+    with pytest.raises(BacktestError, match="backtest_bad_slot_order"):
+E   Failed: DID NOT RAISE BacktestError
+E   (note: 2 other explicit examples also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_slot_order_refused(
+E       rule='Time',
+E   )
+```
+
+Break: (PR 63) in `backend/app/hat/engine/backtest.py`: a run flagged for promotion runs under any slot order.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:965: in test_slot_order_refused
+    with pytest.raises(BacktestError, match="backtest_promotion_off_time_order"):
+E   Failed: DID NOT RAISE BacktestError
+E   Failing test case: test_slot_order_refused(
+E       rule='score',
+E   )
+E   Explanation:
+E       These lines were always and only run by failing test cases:
+```
+
+### PBT backtest.slot_order_applied
+
+Break: (PR 63) in `backend/app/hat/engine/backtest.py`: the loop takes the watchlist in score order whatever the run's slot order.
+
+```
+tests/hat/properties/test_backtest.py F
+  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+    |   File "backend/tests/hat/properties/test_backtest.py", line 1011, in test_slot_order_applied
+    |     assert order < 0 or (order == 0 and score_key(x) < score_key(y))
+    | AssertionError: assert (1 < 0 or (1 == 0))
+    |     rule='time',
+    |     fill='penetration_1_tick',
+    |   File "backend/tests/hat/properties/test_backtest.py", line 1018, in test_slot_order_applied
+    |     assert rows == [w for w in ranked if w in rows]
+    | AssertionError: assert [WatchRow(tra [cut]('192.4100'))] == [WatchRow(tra [cut]l('76.0000'))]
+    |     rule='random:0',
+    |     fill='penetration_1_tick',
 ```
 
 ### PBT backtest.stop_on_instrument_tick
@@ -1067,6 +1198,20 @@ E    +  where 1 = BacktestFacts(dsr_prob=Decimal('0.778222'), trades=1, expectan
 E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
 E   Failing explicit example: test_evidence_promoted_only(
 E       flags=[None],
+E   )
+```
+
+Break: (PR 63) in `backend/app/hat/backtest/runs.py`: the evidence reads a promotion run whatever its slot order (a run before PR 63 took the slots by score).
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:360: in test_evidence_promoted_only
+    assert facts.trades == (want[-1] if want else 0)
+E   AssertionError: assert 2 == 1
+E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.778222'), trades=2, expectancy=Decimal('2'), trials=2).trades
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_evidence_promoted_only(
+E       flags=[(True, 'time'), (True, None)],
 E   )
 ```
 

@@ -244,6 +244,7 @@ def _result(
     expectancy: str,
     cooldown: int | None = None,
     promoted: bool | None = True,
+    slots: str | None = "time",
 ) -> BacktestResult:
     metrics: dict[str, object] = {
         "trades": trades,
@@ -254,6 +255,8 @@ def _result(
         metrics["cooldown_sessions"] = cooldown
     if promoted is not None:  # None: a run recorded before PR 62
         metrics["for_promotion"] = promoted
+    if slots is not None:  # None: a run recorded before PR 63 (score order)
+        metrics["slot_order"] = slots
     return BacktestResult((), (), (), (), (), {}, metrics)
 
 
@@ -320,15 +323,22 @@ def test_evidence_cooldown_in_force(
         session.rollback()
 
 
-@given(st.lists(st.sampled_from([True, False, None]), max_size=5))
+FLAGS = st.tuples(st.sampled_from([True, False, None]), st.sampled_from(["time", "score", None]))
+
+
+@given(st.lists(FLAGS, max_size=5))
 @settings(max_examples=30, deadline=None)
-@example([True, False])  # a sensitivity run newer than the promotion run
-@example([None])  # a run recorded before PR 62
-def test_evidence_promoted_only(flags: list[bool | None]) -> None:
+@example([(True, "time"), (False, "time")])  # a sensitivity run newer than the promotion run
+@example([(None, None)])  # a run recorded before PR 62
+@example([(True, "time"), (True, None)])  # a promotion run recorded before PR 63
+@example([(True, "time"), (True, "score")])  # a promotion run in score order
+def test_evidence_promoted_only(flags: list[tuple[bool | None, str | None]]) -> None:
     """The sleeve's evidence, for the lifecycle and for the risk-increase gate, is its newest
-    completed run flagged for promotion (PR 62, O5): a sensitivity run (`touch`, 0 bps, a sweep)
-    or one recorded before the flag existed is skipped, and with none there is no evidence.
-    Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills."""
+    completed run flagged for promotion (PR 62, O5) whose slots went in the estimated trigger
+    order (`slot_order` `time`, PR 63): a sensitivity run (`touch`, 0 bps, a sweep, another slot
+    order) or one recorded before the flag or the slot order existed is skipped, and with none
+    there is no evidence. Harm: a sleeve is promoted, or its risk raised, on perfect or
+    optimistic fills."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         strategies, universes = _world(session, 1, 1)
@@ -341,11 +351,11 @@ def test_evidence_promoted_only(flags: list[bool | None]) -> None:
         session.flush()
         user = uuid.uuid4()
         bot = _sleeve_bot(session, user, strategy, live.id, uv)
-        for n, flag in enumerate(flags):
+        for n, (flag, slots) in enumerate(flags):
             run = _start(session, live, universe)
-            result = _result(0.1, 60, n + 1, str(n + 1), promoted=flag)
+            result = _result(0.1, 60, n + 1, str(n + 1), promoted=flag, slots=slots)
             runs.complete_run(session, run, result, root=root)
-        want = [n + 1 for n, flag in enumerate(flags) if flag is True]
+        want = [n + 1 for n, (flag, slots) in enumerate(flags) if flag is True and slots == "time"]
         facts = runs.backtest_evidence(session, bot)
         assert facts.trades == (want[-1] if want else 0)
         got = runs.gate_evidence(session, user, datetime(2026, 1, 15, tzinfo=UTC))

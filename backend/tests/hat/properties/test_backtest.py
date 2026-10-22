@@ -36,6 +36,7 @@ from app.hat.backtest.fills import (
     stop_fill,
 )
 from app.hat.backtest.market import load_market
+from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.confighash import config_hash
 from app.hat.data.store import (
     DATASET_FEATURES,
@@ -53,6 +54,8 @@ from app.hat.engine.backtest import (
     BacktestResult,
     MarketData,
     TradeRow,
+    WatchRow,
+    check_conventions,
     compute_metrics,
     config_digest,
     industry_on,
@@ -72,6 +75,7 @@ from app.hat.models import (
     HatStrategyVersion,
     HatUniverseMember,
 )
+from app.hat.risk.policy import parse_policy
 from app.hat.schema import seed_hat_reference
 
 D = Decimal
@@ -814,7 +818,8 @@ SLIPPAGES = st.sampled_from([D(0), D("-0"), D(5), DEFAULT_SLIPPAGE_BPS, D("20.0"
 @example({s.instrument(0): [(100.0, 101.0, 99.0, 100.0)] * SESSIONS}, TOUCH, D(20), True)
 def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool) -> None:
     """Every run's metrics record its fill path (open, low, high, close), entry fill rule,
-    gap-through rule (min(open, stop)), trigger proxy, slippage and cost model, whether it is
+    gap-through rule (min(open, stop)), trigger proxy, slippage, cost model and slot order
+    (`time` by default, PR 63), whether it is
     flagged for promotion, and `config_digest`, the hash of exactly those conventions; a
     `touch` run also reports the touch gap. A run flagged for promotion at a slippage of 0, or
     under `touch`, is refused. Harm: runs under different fill conventions read as comparable
@@ -836,6 +841,7 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "trigger_proxy": TRIGGER_PROXY,
         "slippage_bps": "0" if bps == 0 else format(bps.normalize(), "f"),  # -0 too
         "cost_model": fills.model.to_json(),
+        "slot_order": SLOT_ORDER_TIME,  # the default (PR 63)
     }
     assert {k: metrics[k] for k in recorded} == recorded
     assert metrics["for_promotion"] is promote
@@ -843,22 +849,177 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
     assert metrics["known_gaps"] == [*KNOWN_GAPS, *([TOUCH_GAP] if rule == TOUCH else [])]
 
 
-@given(
-    st.tuples(st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"])),
-    st.tuples(st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"])),
+SLOT_ORDERS = st.sampled_from([SLOT_ORDER_TIME, SLOT_ORDER_SCORE, "random:0", "random:7"])
+CONVENTIONS = st.tuples(
+    st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"]), SLOT_ORDERS
 )
+
+
+@given(CONVENTIONS, CONVENTIONS)
 def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
     """Two runs' `config_digest`s are equal exactly when their entry fill rule, slippage (20
-    and 20.0 bps alike, -0 and 0 alike) and cost model are. Harm: a run under other
-    conventions passes for a rerun, or a rerun reads as another convention."""
+    and 20.0 bps alike, -0 and 0 alike), cost model and slot order (PR 63) are. Harm: a run
+    under other conventions passes for a rerun, or a rerun reads as another convention."""
 
-    def spec(rule: str, bps: D, model: str) -> object:
+    def spec(rule: str, bps: D, model: str, slots: str) -> object:
         fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
         fills = BacktestFills(fills.model, bps)
-        return dataclasses.replace(s.spec(s.config(), DAYS, fills=fills), entry_fill_rule=rule)
+        base = s.spec(s.config(), DAYS, fills=fills)
+        return dataclasses.replace(base, entry_fill_rule=rule, slot_order=slots)
 
-    same = (a[0], a[1], a[2]) == (b[0], b[1], b[2])  # Decimal(20) == Decimal("20.0")
+    same = tuple(a) == tuple(b)  # Decimal(20) == Decimal("20.0")
     assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+
+
+# --- HAT-BT-026: slot order on a capped day (PR 63) ---------------------------------------------
+
+
+def _before(x: tuple[D | None, D | None], y: tuple[D | None, D | None], rule: str) -> int:
+    """-1, 0 or 1 as a break of level x[1] from open x[0] is estimated to come before, with or
+    after y's under entry rule `rule`, written without the code's key: a gap over (an entry at
+    the open: open above the level, or at it under `touch`) first, then the smaller
+    (level - open) / open (compared by cross-multiplying), then no trigger."""
+
+    def kind(c: tuple[D | None, D | None]) -> int:
+        open_, level = c
+        if open_ is None or level is None or open_ <= 0:
+            return 2
+        return 0 if open_ > level or (open_ == level and rule == TOUCH) else 1
+
+    if kind(x) != kind(y):
+        return -1 if kind(x) < kind(y) else 1
+    if kind(x) != 1:
+        return 0
+    left = (x[1] - x[0]) * y[0]  # type: ignore[operator]
+    right = (y[1] - y[0]) * x[0]  # type: ignore[operator]
+    return (left > right) - (left < right)
+
+
+CANDIDATE = st.tuples(st.none() | PRICE, st.none() | PRICE)
+RULES = st.sampled_from([SLOT_ORDER_TIME, SLOT_ORDER_SCORE]) | st.integers(0, 9).map(
+    lambda k: f"random:{k}"
+)
+
+
+@given(st.lists(CANDIDATE, max_size=8), RULES, st.dates(), st.sampled_from(ENTRY_FILL_RULES))
+@example(
+    [(D(110), D(100)), (D(100), D(101)), (D(105), D(100))],
+    SLOT_ORDER_TIME,
+    date(2025, 1, 6),
+    PENETRATION,
+)
+@example([(D(100), D(102)), (D(50), D(51))], SLOT_ORDER_TIME, date(2025, 1, 6), PENETRATION)
+# under touch both enter at the open, so the score order stands
+@example([(D(100), D(100)), (D(101), D(100))], SLOT_ORDER_TIME, date(2025, 1, 6), TOUCH)
+def test_slot_order_rank(cands: list[tuple], rule: str, day: date, fill: str) -> None:
+    """Under `time` the candidates take the slots in estimated trigger order: every gap over
+    (an entry at the open: open above the level, or at it under `touch`) before every break
+    during the day, those in ascending (level - open)
+    / open, a candidate with no level or open last, and ties in the score order they came in;
+    `score` keeps the score order; `random:K` is a permutation fixed by K and the day. Harm: on a
+    capped day the backtest gives the slots to the best-scored setups, which live gets only when
+    they also break first, so the evidence is better than live can trade."""
+    rows = list(enumerate(cands))  # the index is the score order
+
+    def rank(row: tuple[int, tuple]) -> tuple[int, D]:
+        return trigger_rank(*row[1], fill)
+
+    got = order_slots(rows, rule, day, rank)
+    assert sorted(got) == rows  # a permutation
+    if rule == SLOT_ORDER_SCORE:
+        assert got == rows
+    elif rule == SLOT_ORDER_TIME:
+        for (i, x), (j, y) in zip(got, got[1:], strict=False):
+            assert _before(x, y, fill) < 0 or (_before(x, y, fill) == 0 and i < j)
+    else:
+        assert order_slots(rows, rule, day, rank) == got  # reproducible
+
+
+@given(
+    st.sampled_from([SLOT_ORDER_TIME, SLOT_ORDER_SCORE, "random:0", "random:123456789"])
+    | st.from_regex(r"random:-?[0-9]{0,11}", fullmatch=True)
+    | st.text(max_size=12)
+)
+@example("random:07")  # a second spelling of seed 7
+@example("random:\u0663")  # a non-ASCII digit
+@example("Time")
+def test_slot_order_refused(rule: str) -> None:
+    """A run's slot order is `time`, `score` or `random:K` with K a whole number below 10^9
+    written in ASCII digits without leading zeros; anything else is refused
+    (`backtest_bad_slot_order`) before the run, and a run flagged for promotion is refused under
+    any order but `time` (`backtest_promotion_off_time_order`). Harm: two spellings of one rule
+    hash apart, a run under an unknown order reads as the default, or a version is promoted on
+    a slot allocation live cannot get."""
+    seed = rule.removeprefix("random:")
+    ok = rule in ("time", "score") or (
+        rule.startswith("random:")
+        and 0 < len(seed) <= 9
+        and all(c in "0123456789" for c in seed)
+        and (seed == "0" or not seed.startswith("0"))
+    )
+    if ok:
+        check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, False, rule)
+        if rule == SLOT_ORDER_TIME:
+            check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule)
+        else:  # a promotion run takes the slots in trigger order only
+            with pytest.raises(BacktestError, match="backtest_promotion_off_time_order"):
+                check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule)
+    else:
+        with pytest.raises(BacktestError, match="backtest_bad_slot_order"):
+            check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, False, rule)
+
+
+def _one_slot() -> object:
+    """The seed policy with one open position at most, so most days with a trigger are capped."""
+    base = s.policy_version()
+    policy = parse_policy({**base.policy.to_json(), "max_open_positions": 1})
+    return dataclasses.replace(base, policy=policy)
+
+
+@given(s.paths(SESSIONS, instruments=6), RULES, st.sampled_from(ENTRY_FILL_RULES))
+@RUNS
+def test_slot_order_applied(paths: dict, rule: str, fill: str) -> None:
+    """In a run with one slot, each day's triggers reach `evaluate_signal` in the run's slot
+    order, computed here from the day's watchlist and bars: under `time` by estimated trigger
+    time then score, under `score` by score, under `random:K` in the seeded permutation of the
+    score order; so no trigger takes the slot after an earlier one of that day was refused
+    `max_positions`. The run records the rule. Harm: the backtest fills a capped day's slot
+    with a later break than live would take."""
+    data = s.market(paths, DAYS)
+    cfg = s.config(chase=30.0)
+    spec = dataclasses.replace(
+        s.spec(cfg, DAYS, fills=s.zero_fills(), policy=_one_slot()),  # type: ignore[arg-type]
+        slot_order=rule,
+        entry_fill_rule=fill,
+    )
+    result = run_backtest(spec, data)
+    assert result.metrics["slot_order"] == rule
+    for day in sorted({sig.trade_date for sig in result.signals}):
+        watch = {(w.playbook, w.instrument_id): w for w in result.watchlists if w.trade_date == day}
+        signals = [sig for sig in result.signals if sig.trade_date == day]
+        rows = [watch[(sig.playbook, sig.instrument_id)] for sig in signals]
+
+        def score_key(w: WatchRow) -> tuple:
+            return (-w.score, w.playbook, w.instrument_id)
+
+        def at(w: WatchRow, day: date = day) -> tuple[D | None, D | None]:
+            return _bar(data, w.instrument_id, day)[0], w.pivot
+
+        if rule == SLOT_ORDER_TIME:
+            for x, y in zip(rows, rows[1:], strict=False):
+                order = _before(at(x), at(y), fill)
+                assert order < 0 or (order == 0 and score_key(x) < score_key(y))
+        elif rule == SLOT_ORDER_SCORE:
+            assert rows == sorted(rows, key=score_key)
+        else:
+            ranked = order_slots(
+                sorted(watch.values(), key=score_key), rule, day, lambda _: (0, D(0))
+            )
+            assert rows == [w for w in ranked if w in rows]
+        refused = False
+        for sig in signals:
+            assert not (refused and sig.state == "Open")
+            refused = refused or sig.reason == "max_positions"
 
 
 # --- HAT-BT-061 -------------------------------------------------------------------------------
