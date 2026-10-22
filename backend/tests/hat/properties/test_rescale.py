@@ -29,7 +29,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.hat.clock import FixedClock
 from app.hat.daily.live import ExitViews
 from app.hat.daily.nightly import Nightly
-from app.hat.data.corporate_actions import TYPE_BONUS, TYPE_OTHER, TYPE_SPLIT, factor_to_decimal
+from app.hat.data.corporate_actions import (
+    TYPE_BONUS,
+    TYPE_DIVIDEND,
+    TYPE_NOTICE,
+    TYPE_OTHER,
+    TYPE_SPLIT,
+    factor_to_decimal,
+    stored_factors,
+)
 from app.hat.data.mcp_client import McpClient, McpTransportError
 from app.hat.engine import exits, rescale, trades
 from app.hat.engine.criteria.live import LiveContext
@@ -432,6 +440,80 @@ def test_unhandled_is_manage_only(
         )
         ex = TRADE_DAY + timedelta(days=offset)
         assert [p["action"] for p in flags] == ([f"{ex.isoformat()}:{kind}"] if spans else [])
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    neutral=st.lists(
+        st.tuples(st.sampled_from([TYPE_DIVIDEND, TYPE_NOTICE]), st.integers(-2, 3)),
+        max_size=3,
+        unique_by=lambda n: n,
+    ),
+    other=st.sampled_from(["none", "split", "unhandled"]),
+    runs=st.integers(1, 2),
+)
+@example(neutral=[(TYPE_DIVIDEND, 1)], other="none", runs=1)
+@example(neutral=[(TYPE_NOTICE, 2), (TYPE_DIVIDEND, 1)], other="split", runs=2)
+def test_price_neutral_changes_nothing(
+    neutral: list[tuple[str, int]], other: str, runs: int
+) -> None:
+    """HAT-DATA-052, HAT-EXEC-144 (PR 47): a stored price-neutral action (a dividend or any
+    action of factor 1, kept for its ex-date) changes nothing a price-changing action decides:
+    whatever its ex-date around the entry day, beside a split, an unhandled action or none,
+    `ca.rescale` applies, flags and leaves manage-only exactly what it does without it, the exit
+    view is the same, and the adjusted view's factors leave it out. Harm: every dividend of a
+    held stock leaves the position manage-only for good (no exit ever fires) and pages URGENT,
+    or a factor-1 row enters the price view."""
+    day = TRADE_DAY + timedelta(days=3)
+    outcomes = []
+    for with_neutral in (False, True):
+        engine = memory_engine()
+        factory = sessionmaker(bind=engine)
+        with factory() as session:
+            world = seed_engine_world(session, instruments=1)
+            position_id = open_trade(session, world).outcome.position_id
+            assert position_id is not None
+            iid = world.instruments[0]
+            if other == "split":
+                _action(session, iid, day, TYPE_SPLIT, Fraction(1, 2))
+            elif other == "unhandled":
+                _action(session, iid, TRADE_DAY + timedelta(days=1), TYPE_OTHER, Fraction(3, 2))
+            if with_neutral:
+                for kind, offset in neutral:
+                    _action(session, iid, TRADE_DAY + timedelta(days=offset), kind, Fraction(1))
+            session.commit()
+            deps = SimpleNamespace(
+                session_factory=factory, notifier=RecordingNotifier(), clock=FixedClock(MORNING)
+            )
+            for _ in range(runs):
+                with contextlib.suppress(Exception):
+                    Nightly(deps).rescale(day)  # type: ignore[arg-type]
+            position = _position(session, position_id)
+            views = ExitViews(
+                _Book(),  # type: ignore[arg-type]
+                lambda _iid: paise(5_000),
+                FixedClock(datetime.combine(day, time(9, 16), tzinfo=IST)),
+                lambda: CALENDAR,
+            )
+            flags = session.scalars(
+                select(HatEvent.payload).where(
+                    HatEvent.aggregate_id == position_id,
+                    HatEvent.event_type == rescale.EVENT_UNHANDLED,
+                )
+            ).all()
+            outcomes.append(
+                (
+                    position.qty_open,
+                    rescale.applied_factors(session, position_id),
+                    rescale.manage_only(session, position, day),
+                    rescale.awaits_rescale(session, iid, day),
+                    views(session, position) is None,
+                    sorted(p["action"] for p in flags),
+                    sorted((a.ex_date, a.factor) for a in stored_factors(session)),
+                    [code for code, _, _ in deps.notifier.alerts],
+                )
+            )
+    assert outcomes[1] == outcomes[0]
 
 
 # --- HAT-EXEC-143: the broker stop follows the rescale down ---------------------------------------

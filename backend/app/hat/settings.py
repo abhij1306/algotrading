@@ -1,6 +1,8 @@
 """HAT settings from environment variables (HAT-OPS-001, HAT-OVR-007, HAT-OVR-052).
 
 `HAT_ENABLED` defaults to false, so a developer machine or a test run never starts a HAT task.
+`HAT_EXDATE_GTT_CHECK` (PR 47) defaults to false: the 08:40 `gtt.ex_date` check is registered only
+once the O2(b) live check confirms how the broker treats a GTT on an ex-date (HAT-EXEC-145).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ class HatSettings:
     enabled: bool
     user_id: uuid.UUID
     data_root: Path
+    exdate_gtt_check: bool = False
 
 
 def _is_true(raw: str | None) -> bool:
@@ -44,6 +47,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         enabled=_is_true(source.get("HAT_ENABLED")),
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
+        exdate_gtt_check=_is_true(source.get("HAT_EXDATE_GTT_CHECK")),
     )
 
 

@@ -464,18 +464,21 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     quarantined=st.dictionaries(st.integers(0, 3), st.integers(1, 3), max_size=4),
     found=st.sets(st.integers(0, 4)),
     unreadable=st.sets(st.integers(0, 4)),
+    dividend=st.sets(st.integers(0, 4)),
 )
-@example(quarantined={0: 2}, found={0}, unreadable=set())
-@example(quarantined={0: 2, 1: 2}, found={1}, unreadable={0})
+@example(quarantined={0: 2}, found={0}, unreadable=set(), dividend=set())
+@example(quarantined={0: 2, 1: 2}, found={1}, unreadable={0}, dividend=set())
+@example(quarantined={0: 2}, found=set(), unreadable=set(), dividend={0})
 def test_quarantine_lookup(
-    quarantined: dict[int, int], found: set[int], unreadable: set[int]
+    quarantined: dict[int, int], found: set[int], unreadable: set[int], dividend: set[int]
 ) -> None:
     """HAT-DATA-062 (PR 33): each night `ca.adjust` asks the MCP again for the actions of every
     open quarantine's instrument on its `since` date, and only those; an action it stores
     releases that quarantine at the next gate read, while an unreadable answer or none leaves
-    it standing, and nothing is alerted for it (the quarantine was alerted already). Harm: a
+    it standing, and nothing is alerted for it (the quarantine was alerted already). A
+    price-neutral action (a dividend of factor 1, stored since PR 47) releases nothing. Harm: a
     split whose lookup failed on its day keeps the stock out of the scans until someone
-    notices."""
+    notices, or a dividend on the day of an unexplained price jump lets bad data back in."""
     names = [s for s, _, _ in symbols_of(5)]
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(5))
@@ -489,6 +492,15 @@ def test_quarantine_lookup(
             if i in unreadable:  # no factor: unreadable, so the lookup counts as failed
                 world.nse.actions[names[i]] = [
                     {"exDate": day, "actionType": "BONUS", "purpose": "Bonus"}
+                ]
+            elif i in dividend and i not in found:
+                world.nse.actions[names[i]] = [
+                    {
+                        "exDate": day,
+                        "actionType": "DIVIDEND",
+                        "purpose": "Dividend - Rs 2 Per Share",
+                        "adjustmentFactor": 1.0,
+                    }
                 ]
             elif i in found:
                 world.nse.actions[names[i]] = [

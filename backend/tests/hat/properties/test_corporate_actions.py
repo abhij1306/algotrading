@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from app.hat.data.bhavcopy import weekdays
 from app.hat.data.corporate_actions import (
+    TYPE_DIVIDEND,
+    TYPE_NOTICE,
     ActionRecord,
     factor_to_decimal,
     from_archive_csv,
@@ -350,6 +352,12 @@ def test_upsert_idempotent(plan: list) -> None:
         }
 
 
+def _mcp_kind(row: dict) -> str:
+    if row["adjustmentFactor"] == 1.0:
+        return TYPE_DIVIDEND if row["actionType"] == "DIVIDEND" else TYPE_NOTICE
+    return {"SPLIT": "split", "BONUS": "bonus"}.get(row["actionType"], "other")
+
+
 @given(
     rows=st.lists(
         st.fixed_dictionaries(
@@ -364,12 +372,14 @@ def test_upsert_idempotent(plan: list) -> None:
     )
 )
 def test_upsert_idempotent_mcp_rows(rows: list[dict]) -> None:
-    """MCP rows keep the server's factor for splits and bonuses; a factor of 1 (a dividend) is
-    ignored; zero and negative factors are reported and never become records."""
+    """MCP rows keep the server's factor for splits and bonuses; an action of factor 1 is kept
+    price-neutral, `dividend` for a dividend and `notice` for any other type (PR 47: its
+    ex-date is what the morning GTT check needs); zero and negative factors are reported and
+    never become records."""
     result = from_mcp(uuid.UUID(int=5), rows)
-    kept = [r for r in rows if r["adjustmentFactor"] > 0 and r["adjustmentFactor"] != 1.0]
-    assert [(str(r.ex_date), float(r.factor)) for r in result.records] == [
-        (r["exDate"], r["adjustmentFactor"]) for r in kept
+    kept = [r for r in rows if r["adjustmentFactor"] > 0]
+    assert [(str(r.ex_date), float(r.factor), r.action_type) for r in result.records] == [
+        (r["exDate"], r["adjustmentFactor"], _mcp_kind(r)) for r in kept
     ]
     assert len(result.unparsed) == sum(1 for r in rows if r["adjustmentFactor"] <= 0)
     assert all(r.factor > 0 for r in result.records)

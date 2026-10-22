@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `4ef63cdd64eedf42562eaea0e87c2a8f41cd3f2394ea6410ad36580a5f708b3c`
+Covered digest: `b5109665577c2f94601d2a51a510d5ef2807c27bfb6d056d2e148d81764f11f1`
 
 ## Scope changes
 
@@ -189,6 +189,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 31 (design review 2026-10-22 item 6, HAT-EXEC-144): `from_archive_csv` reports a purpose text naming a consolidation as unparsed (it was ignored as a dividend is); `corporate_actions.factor_parse_unparseable_is_reported` draws the word (split, bonus, two consolidation forms). Rights issues and demergers are still ignored by the archive path. CodeAnt round: the history build kept only the archive's records, so its unparsed rows (splits and bonuses too, since PR 5) were dropped unseen; `ActionHooks.loader` now also returns them, `BuildReport.actions_unparsed` holds them, the summary counts them and each is logged. They do not fail the build (a real archive has odd texts; the operator reads the report). Nothing was narrowed.
 
 - PR 44 (index history to 2010): the MCP keeps index history only from about Oct 2023, and the build now fills earlier days from NSE's daily `ind_close_all_DDMMYYYY.csv` (`ArchiveIndexSource`, `archive_fill_source`), which needs no MCP. Its URL and column layout and the pre-2015 names (`INDEX_ALIASES`: CNX Nifty, CNX 500 and their S&P forms) are `[A]` until the orchestrator's rerun; the properties render that assumed layout. The archive is asked only for days that have bars, so a day the bhavcopy lacks is never filled from the index file. The no-data fixture (`mcp_index_history_no_data.json`) holds only the `error` text the brief quoted: `similar_indices` and `hint` were elided there and nothing reads them. `archive_fills_before_mcp_depth` runs 40 examples over 65 weekdays with a fake clock; `index_failure_isolated` runs 30 builds of one week. The review round made archive fetch errors fail the index, refused to keep a 200 answer with no index row, let the archive fill after an MCP failure, and paced the first archive request (the bhavcopy downloader may have just asked the same host). A day NSE has no index file for is asked again on every run (not remembered like bhavcopy candidates; follow-up). Nothing was narrowed.
+- PR 47 (research G01, HAT-DATA-052, -062): `from_mcp` stores an action of factor 1 as `dividend` or `notice` (price-neutral, `PRICE_NEUTRAL_TYPES`); `stored_factors` and the quarantine's `explained` rows leave them out. `corporate_actions.upsert_idempotent`'s oracle gives each factor-1 row its kind (`_mcp_kind`); `quality_gate.quarantine_lookup` draws a dividend set that releases nothing (and an `@example`). The archive loader still ignores dividends (its ex-dates come from the MCP). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -306,6 +307,14 @@ Break: a later load overwrites the stored factor.
 
 ```
 tests/hat/properties/test_corporate_actions.py F
+```
+
+
+Break: (PR 47) `from_mcp` drops an action of factor 1 again (main before PR 47).
+
+```
+E   AssertionError: assert [] == [('2010-01-01....0, 'notice')]
+E     Right contains one more item: ('2010-01-01', 1.0, 'notice')
 ```
 
 ### PBT store.atomic_write
@@ -1398,6 +1407,15 @@ Break: (PR 33 review) `ca.adjust` does not look up the quarantines' actions (`if
 E   AssertionError: assert set() == {('S0000', '2...'2026-10-18')}
 E     Extra items in the right set:
 E     ('S0000', '2026-10-18', '2026-10-18')
+```
+
+
+Break: (PR 47) in `backend/app/hat/data/quality.py`, the `explained` subquery counts price-neutral rows (a dividend releases the quarantine).
+
+```
+E   AssertionError: assert set() == {'01a164d3-d4...6e0a665c98b5'}
+E     Extra items in the right set:
+E     '01a164d3-d49d-71e4-ae01-6e0a665c98b5'
 ```
 
 ### PBT history_build.archive_unparsed_reported

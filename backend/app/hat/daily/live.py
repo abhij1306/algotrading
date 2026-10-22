@@ -49,6 +49,7 @@ from ..engine.strategy.config import parse_config
 from ..execution.manage import in_close_window
 from ..execution.modes import SHADOW, bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
+from ..execution.series import series_changed
 from ..models import (
     HatAllocationDaily,
     HatBot,
@@ -343,7 +344,9 @@ class ExitViews:
     a split or bonus rescale: its prices are on the old scale, so no exit fires from the action
     alone (HAT-EXEC-142); nor ever once it spans an action the rescale cannot handle (a
     consolidation, a rights issue, a demerger): it is manage-only until the owner resolves it
-    (HAT-EXEC-144)."""
+    (HAT-EXEC-144); nor while its instrument has moved to another series (EQ to BE): its prices
+    stopped with the old series, so it is manage-only until the owner resolves it
+    (HAT-EXEC-146)."""
 
     def __init__(
         self,
@@ -364,6 +367,9 @@ class ExitViews:
         today = trade_date_of(utc_now(self._clock))
         if manage_only(session, position, today):
             logger.warning("position %s spans a corporate action not rescaled", position.id)
+            return None
+        if series_changed(session, position) is not None:
+            logger.warning("position %s is on a series its instrument has left", position.id)
             return None
         signal = session.get(HatSignal, position.signal_id)
         if signal is None:

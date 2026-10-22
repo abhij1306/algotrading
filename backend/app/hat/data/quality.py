@@ -45,6 +45,7 @@ from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..risk.controls import sync_health
 from ..time import utc_now
+from .corporate_actions import PRICE_NEUTRAL_TYPES
 from .ingest import JOB_INGEST, active_universe, has_required_indices, moved_over_limit
 from .store import DATASET_BARS, DataStore
 
@@ -231,12 +232,14 @@ def ingest_summary(session: Session, trade_date: date) -> Mapping[str, Any] | No
 def standing_quarantine(session: Session, trade_date: date, now: datetime) -> set[str]:
     """The instruments still quarantined for `trade_date`: every open quarantine since that day or
     earlier, less those whose corporate action with ex-date `since` is now stored (released
-    here, in the caller's transaction)."""
+    here, in the caller's transaction). A price-neutral row (a dividend, PR 47) explains no
+    price move."""
     explained = (
         select(HatCorporateAction.id)
         .where(
             HatCorporateAction.instrument_id == HatQualityQuarantine.instrument_id,
             HatCorporateAction.ex_date == HatQualityQuarantine.since,
+            HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
         )
         .exists()
     )

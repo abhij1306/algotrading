@@ -16,6 +16,11 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   HAT-OPS-034). The body refuses to run outside the window and sends no sale after 15:30.
 - **`gtt.swap`** (`swap_stops`, ~15:25) and **`gtt.verify`** (`verify_stops`, nightly): through
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
+- **`gtt.ex_date`** (`check_ex_date_gtts`, 08:40, PR 47, behind `HAT_EXDATE_GTT_CHECK`): every
+  open real position with a stored action of ex-date today or the next session, or whose
+  instrument changed series, has its GTT checked against the broker's GTT book and is protected
+  again when the broker cancelled it (HAT-EXEC-145). A series change is alerted URGENT
+  (`position.series_changed`, HAT-EXEC-146) by this check and by every nightly verify.
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
   DAY limit cannot fill after the close. (An entry first found already ended is settled when it
@@ -46,7 +51,14 @@ from sqlalchemy.orm import Session
 
 from ..engine import exits, live_trades, trades
 from ..engine.rescale import unhandled_actions
-from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..models import (
+    HatBot,
+    HatCorporateAction,
+    HatInstrument,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+)
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, as_utc, trade_date_of, utc_now
@@ -62,9 +74,11 @@ from .protect import (
     REPLACED,
     SWAPPED,
     UNSURE,
+    UNVERIFIED,
     VERIFIED,
     StopDesk,
 )
+from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -666,12 +680,91 @@ class TradeManager:
         # so no GTT is modified or placed; each position is alerted `gtt.unverified`.
         fresh = self.sync(session, account_id, now) is not None
         for position in self.open_positions(session, account_id):
+            self._alert_series_change(session, position, now)
             outcome = (
                 self._desk.verify(session, position.id, now)
                 if fresh
                 else self._desk.unverified(session, position.id, now, "fills_unread")
             )
             if outcome == FAILED:
+                report.failed.append(position.id)
+            elif outcome in (VERIFIED, REPLACED):
+                report.done += 1
+        return report
+
+    # --- gtt.ex_date (08:40, behind a flag) and series changes --------------------------------
+
+    def _near_ex_date(self, session: Session, now: datetime) -> set[uuid.UUID]:
+        """The instruments with a stored action (any type, a dividend's too) of ex-date today or
+        the next session."""
+        today = trade_date_of(now)
+        upto = (self._calendar.next_trading_day(today) if self._calendar else None) or today
+        return set(
+            session.scalars(
+                select(HatCorporateAction.instrument_id).where(
+                    HatCorporateAction.ex_date >= today, HatCorporateAction.ex_date <= upto
+                )
+            )
+        )
+
+    def _alert_series_change(self, session: Session, position: HatPosition, now: datetime) -> bool:
+        """URGENT `position.series_changed` for an open position whose instrument moved to
+        another series (HAT-EXEC-146); True when it did."""
+        moved = series_changed(session, position)
+        if moved is None:
+            return False
+        old = session.get(HatInstrument, position.instrument_id)
+        self._notifier.alert(
+            ALERT_SERIES_CHANGED,
+            trade_date_of(now),
+            {
+                "bot_id": str(position.bot_id),
+                "position_id": str(position.id),
+                "symbol": moved.symbol,
+                "from": old.series if old is not None else "",
+                "to": moved.series,
+                "broker_symbol": broker_symbol(session, moved.id) or "unmapped",
+            },
+        )
+        return True
+
+    def check_ex_date_gtts(
+        self, session: Session, account_id: uuid.UUID, now: datetime
+    ) -> StopsReport:
+        """The `gtt.ex_date` job body (HAT-EXEC-145, HAT-EXEC-146): the broker cancels a resting
+        GTT before any ex-date and on a series change, so each open real position with a stored
+        action of ex-date today or the next session, or whose instrument changed series, has its
+        GTT checked against the broker's GTT book (`StopDesk.check_gtt`) and is protected again
+        when it is gone. The fills are read first, as the verify does; while the fills or the GTT
+        book cannot be read, or a GTT's lost answer cannot be settled, each such position is
+        alerted `gtt.unverified`, nothing is placed, and the run fails so the scheduler tries
+        again. A GTT the broker refuses is alerted (`stop.not_placed`) and does not fail the run:
+        retrying it every minute would spend the signal's tags, and from 09:15 the fill sync
+        places the intraday stop. Any other position is not looked at."""
+        report = StopsReport()
+        near = self._near_ex_date(session, now)
+        checked = [
+            position
+            for position in self.open_positions(session, account_id)
+            if self._alert_series_change(session, position, now) or position.instrument_id in near
+        ]
+        if not checked:
+            return report
+        fresh = self.sync(session, account_id, now) is not None
+        book: set[str] | None = None
+        if fresh:
+            try:
+                book = {gtt.gtt_id for gtt in self._broker.gtts()}
+            except BrokerUnavailableError:
+                book = None
+        for position in checked:
+            if book is None:
+                reason = "gtt_book_unread" if fresh else "fills_unread"
+                self._desk.unverified(session, position.id, now, reason)
+                report.failed.append(position.id)
+                continue
+            outcome = self._desk.check_gtt(session, position.id, now, book)
+            if outcome == UNVERIFIED:
                 report.failed.append(position.id)
             elif outcome in (VERIFIED, REPLACED):
                 report.done += 1

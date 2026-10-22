@@ -25,6 +25,15 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   (`gtt.refreshed`). A GTT the broker no longer knows (triggered, cancelled or never confirmed)
   is alerted (`gtt.missing`) and placed again; when the broker cannot be reached the position
   is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
+  A GTT placed `GTT_RENEW_AFTER` (300 days) ago or more is cancelled and placed again (the
+  broker expires a GTT after a year, and a modify may not reset that clock; PR 47).
+- **Before the open, around an ex-date** (`check_gtt`, PR 47, HAT-EXEC-145): Fyers cancels a
+  resting GTT before a corporate action's ex-date (a dividend's too) and on a series change. A
+  live GTT the broker's GTT book no longer holds is ended `cancelled`, alerted (`gtt.missing`)
+  and the position protected again: a GTT before the open, else (refused, or once the session is
+  open) the fill sync's intraday stop from 09:15.
+- **A series change** (`_target`, HAT-EXEC-146): a position whose instrument moved to another
+  series (EQ to BE) has its stops placed under the successor's symbol (`series.successor`).
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
   settled against the broker once `settle_after` has passed since it was sent (a request still
   in flight could land later): a GTT against the broker's GTT book by its tag (else, for a GTT
@@ -44,7 +53,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import ROUND_FLOOR, Decimal
@@ -71,6 +80,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
+from .series import series_changed
 from .submit import (
     EXIT_SALES,
     OrderRefusedError,
@@ -121,6 +131,9 @@ SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 # How long after its send an order whose answer was lost is settled against the broker's books:
 # the guarded call gives up after 1.5 s, but the SDK request may still be in flight and land.
 LOST_ANSWER_SETTLE = timedelta(seconds=60)
+# A GTT this old is placed again by the nightly verify: Fyers expires a GTT a year after it was
+# placed, and a modify may not reset that clock (research G24; [verify on a live account]).
+GTT_RENEW_AFTER = timedelta(days=300)
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
@@ -266,8 +279,15 @@ class StopDesk:
         session.refresh(position)
         signal = session.get(HatSignal, position.signal_id)
         bot = session.get(HatBot, position.bot_id)
-        symbol = session.scalar(
-            select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+        moved = series_changed(session, position)
+        # A series change re-maps the symbol stops go out under (HAT-EXEC-146): the old series'
+        # Fyers symbol takes no order.
+        symbol = (
+            moved.symbol
+            if moved is not None
+            else session.scalar(
+                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+            )
         )
         if signal is None or bot is None or symbol is None:
             raise HatError("position without signal, bot or instrument")
@@ -806,6 +826,60 @@ class StopDesk:
 
     # --- the nightly verify -------------------------------------------------------------------
 
+    def _renewed(
+        self, session: Session, target: _Target, row: HatOrder, goal: Decimal, now: datetime
+    ) -> bool:
+        """A GTT placed `GTT_RENEW_AFTER` ago or more is cancelled for the verify to place again
+        at `goal` (research G24). True once the broker confirmed the cancel; a refused cancel
+        leaves it resting and refreshed as any other, and the next night tries again. One whose
+        new trigger would rest below the old (a coarser tick, F24) is not renewed."""
+        # by the wall clock the placement was stamped with, as a settle reads it
+        if row.placed_at is None or self._wall() - as_utc(row.placed_at) < GTT_RENEW_AFTER:
+            return False
+        if row.trigger_price is not None and goal < Decimal(row.trigger_price):
+            return False
+        return self._cancel(session, target, row, now)
+
+    def check_gtt(
+        self, session: Session, position_id: uuid.UUID, now: datetime, book: Collection[str]
+    ) -> str:
+        """Before the open around an ex-date or a series change (HAT-EXEC-145): `book` holds
+        the ids of the GTTs the broker's GTT book shows (resting or triggered). A live GTT of the
+        position the book does not hold was cancelled by the broker: it is ended `cancelled`,
+        alerted (`gtt.missing`, code `gtt_cancelled_by_broker`) and the position protected again
+        (`protect`: a GTT outside the session, an intraday stop inside it; a refused GTT is
+        alerted `stop.not_placed` and the fill sync places the intraday stop from 09:15). A GTT
+        whose answer was lost is settled first; one still unsure is alerted (`gtt.unverified`)
+        and nothing is placed on top of it. A position still awaiting a split or bonus rescale
+        gets nothing yet (UNVERIFIED, so the job tries again; `ca.rescale` alerts it): a GTT at
+        its old-scale stop would rest above the ex-date price and sell at the open."""
+        target = self._target(session, position_id)
+        position = target.position
+        if position.closed_at is not None or position.qty_open <= 0:
+            return CLOSED
+        gtts = [row for row in self.stops_of(session, position.id) if row.purpose == STOP_GTT]
+        if any(self.lost(row) for row in gtts):
+            self._settle(session, target, [row for row in gtts if self.lost(row)])
+            gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
+        live = [row for row in gtts if row.status in LIVE and row.broker_order_id]
+        if any(row.broker_order_id in book for row in live):
+            return VERIFIED
+        if any(self.lost(row) for row in gtts):
+            self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
+            return UNVERIFIED
+        if pending_actions(session, position, trade_date_of(now)):
+            return UNVERIFIED
+        if live:
+            self._alert(ALERT_GTT_MISSING, target, now, "gtt_cancelled_by_broker")
+            for row in live:
+                row.status = "cancelled"
+                self._order_event(session, row, target, "order.cancelled", now)
+            session.commit()
+        outcome = self.protect(session, position_id, now)
+        if outcome == PLACED:
+            return REPLACED
+        return VERIFIED if outcome == PROTECTED else FAILED
+
     def unverified(
         self, session: Session, position_id: uuid.UUID, now: datetime, reason: str
     ) -> str:
@@ -835,6 +909,10 @@ class StopDesk:
             # No GTT price can be set without the tick: told, and nothing is ended or placed.
             self._alert(ALERT_GTT_UNVERIFIED, target, now, "no_tick")
             return UNVERIFIED
+        if live and self._renewed(session, target, live[-1][0], goal, now):
+            # The old GTT is cancelled (the market is shut at the nightly verify, so nothing can
+            # trigger meanwhile) and placed again, with a new placement date.
+            return REPLACED if self._place(session, target, STOP_GTT, now) else FAILED
         if live:
             row, gtt_id = live[-1]
             limit = gtt_limit_price(goal, tick)

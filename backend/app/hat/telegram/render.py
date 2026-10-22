@@ -49,8 +49,15 @@ __all__ = [
 
 # 15c: a GTT the nightly check could not confirm, or a triggered GTT that left shares unsold,
 # may need the owner before the next open.
+# PR 47: a held instrument that changed series is manage-only until the owner resolves it.
 URGENT_ALERTS = frozenset(
-    {"gtt.unverified", "gtt.unfilled", "fill.excess", "corporate_action.unhandled"}
+    {
+        "gtt.unverified",
+        "gtt.unfilled",
+        "fill.excess",
+        "corporate_action.unhandled",
+        "position.series_changed",
+    }
 )
 _SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 _DIGEST_LIMIT = 40
