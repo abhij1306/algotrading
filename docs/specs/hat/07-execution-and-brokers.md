@@ -91,12 +91,13 @@ Implementation (`app/hat/execution/router.py`, PR 15): the effective mode is the
 
 #### HAT-EXEC-023: Order rejection retried at most once
 - **Statement:** A broker-rejected order is logged, alerted, and retried at most once.
-- **Source:** MA "Failure handling" (Order rejected).
-- **PR:** 15
-- **Verification:** TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once`
+- **Source:** MA "Failure handling" (Order rejected); T-F4 (2026-10-22 test audit).
+- **PR:** 15, 52
+- **Verification:** TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once`, PBT `router.crash_resumes_entry_once`
 - **Acceptance:**
   - Property: in every behaviour, for each (signal, purpose) the number of broker place attempts after a rejection is ≤ 1, and every rejection appends `order.rejected` and raises a health alert. Harm: a retry storm or a silent rejection.
   - Property: for every sequence of broker replies, a rejected entry raises the `order.rejected` alert and is sent once more under the next tag; a second rejection ends the signal Rejected (`order_rejected`) with one `entry.not_placed` alert, and no third order is sent. Harm: a rejected order is re-sent without limit, or a failure is silent.
+  - Property (PR 52): for every crash point and reply sequence, a restart's resume counts the rejections already stored before it reserves a new tag, so a process that died after the second rejection, before the signal ended, sends no third entry order and ends it Rejected (`order_rejected`). Harm: each restart buys one more retry, so a crash loop is a retry storm.
 
 ## §3 Confirm mode, approval, expiry and max-chase re-check
 
@@ -104,12 +105,14 @@ Confirm mode sends a Telegram approval card with Take/Skip buttons; price, size 
 
 #### HAT-EXEC-030: Approval expires after 5 minutes
 - **Statement:** An approval not decided within 5 minutes of `sent_at` expires and no order is placed.
-- **Source:** MA "Execution modes" ("Confirm expires. Default window 5 minutes"); SCH `hat_approval`.
-- **PR:** 15
-- **Verification:** TLA `ApprovalToken!NoTakeAfterExpiry`
+- **Source:** MA "Execution modes" ("Confirm expires. Default window 5 minutes"); SCH `hat_approval`; T-F15, T-F7 (2026-10-22 test audit).
+- **PR:** 15, 52
+- **Verification:** TLA `ApprovalToken!NoTakeAfterExpiry`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.sweep_idempotent`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_concurrent_sweeps_settle_once`
 - **Acceptance:**
   - Property: in every behaviour, no Take decided at or after `expires_at = sent_at + 5 min` produces an order, and every undecided approval reaches decision `expired` with `signal.expired`. Harm: a stale approval opens a position at a price the user never saw.
-- **Implementation:** a Take or Skip at or after `expires_at` is refused and expires the approval in that transaction; the expiry sweep (`router.expire`, wired by PR 17) expires every other undecided approval past its window.
+  - Property (PR 52): for every interleaving of sweeps, Takes, Skips, placements and Takes whose placement crashed over two cards, a sweep run again at the same time leaves the same state (signals, approvals, veto trades, orders, events), each signal has at most one entry order, a card is never placed before its Take, and every card is decided once its 5 minutes have passed; sweeps running at once on PostgreSQL leave what one sweep leaves (one expiry and one veto trade per card). Harm: two sweeps open two veto trades or record an expiry twice, or an undecided card is bought.
+  - Property (PR 52): an auto entry or a Take left unplaced by a dead process (no order that may have reached the broker) is never placed on a later trade date: the next date's sweep or restart, in any order and any number of times, ends it Rejected `signal_expired`, cancelling an entry order reserved and never sent; one that may have reached the broker is left to reconciliation. Harm: yesterday's price, size and risk decision are bought today, or a stranded signal holds its slot for good.
+- **Implementation:** a Take or Skip at or after `expires_at` is refused and expires the approval in that transaction; the expiry sweep (`router.expire`, wired by PR 17, run every minute by the runtime's `expire` job) expires every other undecided approval past its window. Each expiry re-reads the approval under the bot's lock, so the sweep is idempotent and sweeps may overlap (PR 52). The sweep then ends Rejected `signal_expired` every real entry of an earlier trade date still waiting to be placed (PR 52). The router places a confirm signal's entry only after its Take passed (`place_entry` refuses an undecided card).
 
 #### HAT-EXEC-031: Max-chase re-check on take
 - **Statement:** On Take, the price is re-checked; if it has run more than the bot's max-chase % past the trigger, the order is refused. The price re-checked is the instrument's dated live price (HAT-DATA-116, PR 51): a Take or a placement with no usable price (unknown, stale or outside the band) or a price at or below the signal's stop is refused, and the circuit locks, upper and lower, read the stored price band (02 §2).

@@ -28,6 +28,15 @@ at most once with the next tag (HAT-EXEC-023); a second rejection, a refusal on 
 an unreachable broker ends the signal Rejected with a fixed reason and an alert. An order whose
 outcome is unknown is left to the tag lookup and reconciliation, never re-placed blindly.
 
+**Crash safety** (PR 52, audit T-F4, T-F7): the signal commits before its entry is placed (an auto
+signal in Triggered, a Take's decision), so a crash, or a placement that raised, can fall in
+between. The rejection count is read from the stored orders before each new tag, so no restart
+sends a third entry order. A placement that raised is remembered (`take_stranded`) and the
+restart's recovery re-reads the auto signals left in Triggered and the Takes left unplaced
+(`daily/accounts.py:Desks.resume_entries`); each is placed once, under the live conditions read
+then. The approval sweep (`expire`) ends Rejected `signal_expired` an entry of an earlier trade
+date left without an order, so a stranded signal never holds its slot past its own day.
+
 The router imports only `execution.broker`'s contract, never the Fyers adapter or SDK (CONF
 `brk.import_boundary`). A bot runs confirm or auto only once its sleeve is Live, its account
 reports GTT for delivery and has DDPI confirmed, and the owner has confirmed the policy's base
@@ -37,6 +46,7 @@ weights (`modes.gate_refusal`); auto places only a high-confidence signal (`mode
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -48,6 +58,7 @@ from sqlalchemy.orm import Session
 from ..data.live import PRICE_UNKNOWN
 from ..engine import approvals, lifecycle, trades
 from ..models import (
+    HatApproval,
     HatBot,
     HatBrokerAccount,
     HatBrokerSession,
@@ -139,6 +150,13 @@ def _stop_of(signal: HatSignal | None) -> Decimal | None:
     return None if signal is None or signal.stop_price is None else Decimal(signal.stop_price)
 
 
+def _taken(session: Session, signal_id: uuid.UUID) -> bool:
+    """The signal's approval card was taken (the Take passed its re-checks: a refused one ended
+    the signal Rejected in the same transaction)."""
+    approval = session.get(HatApproval, signal_id)
+    return approval is not None and approval.decision == approvals.TAKE
+
+
 def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
     """A kill switch or a pause that came on after the risk check (the bot's lock is released
     when the signal commits) stops the entry: the bot is manage-only (06 §6)."""
@@ -194,6 +212,9 @@ class ExecutionRouter:
         # Signs each approval card's token (the Telegram signer). Without one a confirm card
         # can never be taken (`trades._send_approval`).
         self._issuer = issuer
+        # signals whose placement raised after their commit, for the next resume (PR 52)
+        self._stranded: set[uuid.UUID] = set()
+        self._stranded_lock = threading.Lock()
 
     # --- routing ------------------------------------------------------------------------------
 
@@ -221,9 +242,10 @@ class ExecutionRouter:
             bot_mode(session, bot, request.triggered_at, request.context.calendar), confidence
         )
         outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
-        session.commit()
         if outcome.mode == AUTO and outcome.state == lifecycle.TRIGGERED:
-            self.place_entry(session, outcome.signal_id, now=now, check=check)
+            self._place_committed(session, outcome.signal_id, now, check)
+        else:
+            session.commit()
             signal = session.get(HatSignal, outcome.signal_id)
             state = signal.state if signal is not None else outcome.state
             return trades.EntryOutcome(
@@ -261,9 +283,10 @@ class ExecutionRouter:
             chat_id=chat_id,
             refusal=placement_refusal(check, now, stop),
         )
-        session.commit()
         if decision.place:
-            self.place_entry(session, signal_id, now=now, check=check)
+            self._place_committed(session, signal_id, now, check)
+        else:
+            session.commit()
         return decision
 
     def skip(
@@ -275,10 +298,63 @@ class ExecutionRouter:
         return decision
 
     def expire(self, session: Session, now: datetime) -> int:
-        """The approval sweep: expire what is due and open the missing veto trades."""
+        """The approval sweep: expire what is due and open the missing veto trades, then end
+        Rejected (`signal_expired`) every real entry of an earlier trade date left unplaced (PR
+        52): its entry order reserved and never sent is cancelled first, and one that may have
+        reached the broker is left to reconciliation. Idempotent: a second sweep at the same
+        time changes nothing. Returns how many approvals expired."""
         count = approvals.expire_due(session, now)
         session.commit()
+        for signal_id in self._stranded_before(session, trade_date_of(now)):
+            tag = self._open_entry_tag(session, signal_id)
+            if tag is not None and not self._release_unsent(session, tag):
+                continue  # an entry that may have reached the broker: reconciliation's
+            signal = session.get(HatSignal, signal_id)
+            if signal is not None:
+                self._not_placed(session, signal, SIGNAL_EXPIRED, now)
         return count
+
+    def take_stranded(self) -> list[uuid.UUID]:
+        """The signals whose placement raised since the last call (each returned once)."""
+        with self._stranded_lock:
+            stranded = sorted(self._stranded)
+            self._stranded.clear()
+        return stranded
+
+    def _place_committed(
+        self, session: Session, signal_id: uuid.UUID, now: datetime, check: PlacementCheck
+    ) -> None:
+        """Commit the signal (or the Take) and place its entry; one whose commit or placement
+        raises is remembered for the next resume (`take_stranded`: a commit that did not land
+        leaves nothing to place there) and the error goes on to the caller."""
+        try:
+            session.commit()
+            self.place_entry(session, signal_id, now=now, check=check)
+        except Exception:
+            with self._stranded_lock:
+                self._stranded.add(signal_id)
+            raise
+
+    @staticmethod
+    def _stranded_before(session: Session, day: date) -> list[uuid.UUID]:
+        """Real entries of a trade date before `day` still waiting to be placed: an auto signal
+        in Triggered, or a Take not yet placed."""
+        return list(
+            session.scalars(
+                select(HatSignal.id)
+                .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
+                .where(
+                    HatSignal.trade_date < day,
+                    HatSignal.mode != trades.SHADOW,
+                    (HatSignal.state == lifecycle.TRIGGERED)
+                    | (
+                        (HatSignal.state == lifecycle.AWAITING_APPROVAL)
+                        & (HatApproval.decision == approvals.TAKE)
+                    ),
+                )
+                .order_by(HatSignal.id)
+            )
+        )
 
     # --- placing a real entry -------------------------------------------------------------------
 
@@ -289,14 +365,16 @@ class ExecutionRouter:
         the engine fixed at the trigger, when `check` allows an entry at `now`, no kill switch or
         pause is on and the account still runs real orders. Safe to call again: an order already
         reserved is sent (or looked up) under its own tag, and a signal that left Triggered or
-        AwaitingApproval is left alone. On a refusal a reserved order that never reached the
-        broker is cancelled and one that may have is left to reconciliation; nothing is sent.
-        Returns the last send, or None when nothing was sent."""
+        AwaitingApproval, or a card not yet taken, is left alone. On a refusal a reserved order
+        that never reached the broker is cancelled and one that may have is left to
+        reconciliation; nothing is sent. Returns the last send, or None when nothing was sent."""
         signal = session.get(HatSignal, signal_id)
         if signal is None:
             raise trades.TradeError("unknown_signal")
         if signal.state not in _ROUTABLE or signal.mode == trades.SHADOW or signal.qty <= 0:
             return None
+        if signal.state == lifecycle.AWAITING_APPROVAL and not _taken(session, signal.id):
+            return None  # a card is placed only after its Take passed (PR 52)
         bot = session.get(HatBot, signal.bot_id)
         if bot is None:
             raise trades.TradeError("unknown_bot")
@@ -357,6 +435,10 @@ class ExecutionRouter:
         tag = self._open_entry_tag(session, signal.id)
         while True:
             if tag is None:
+                if self._entry_rejections(session, signal.id) >= MAX_ENTRY_REJECTIONS:
+                    # HAT-EXEC-023 across a restart (audit T-F4): a crash after the second
+                    # rejection, before the signal ended, never sends a third order
+                    return self._not_placed(session, signal, "order_rejected", now)
                 refusal = self._guard.refusal(signal.bot_id, account_id, is_entry=True)
                 if refusal is not None:
                     return self._not_placed(session, signal, refusal, now)

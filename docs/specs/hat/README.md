@@ -440,8 +440,8 @@ to an artefact that exists.
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
 | HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
 | HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase` |
-| HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15 | TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once` |
-| HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15 | TLA `ApprovalToken!NoTakeAfterExpiry` |
+| HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15, 52 | TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once`, PBT `router.crash_resumes_entry_once` |
+| HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15, 52 | TLA `ApprovalToken!NoTakeAfterExpiry`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.sweep_idempotent`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_concurrent_sweeps_settle_once` |
 | HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15, 51 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase`, PBT `bars.circuit_locks_read_the_band`, PBT `bars.exits_and_placement_read_the_checked_price` |
 | HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow`, PBT `router.skip_and_expiry_become_one_veto_trade` |
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
@@ -545,7 +545,7 @@ to an artefact that exists.
 | HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
-| HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start` |
+| HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation), 52 (entries left unplaced) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.crash_resumes_entry_once`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_crash_resumes_entry_once`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start` |
 | HAT-OPS-004 | [10](10-ops.md) | 17 | TLA `NightlyPipeline!ExitsIndependentOfPipeline` |
 | HAT-OPS-010 | [10](10-ops.md) | 2 | TLA `JobScheduler!AtMostOnceSuccess`, DB `ops.job_run_unique` |
 | HAT-OPS-011 | [10](10-ops.md) | 2 | TLA `JobScheduler!FailedJobRetryable`, PBT `ops.job_run_recording`, PBT `ops.retry_after_failed_run`, PBT `ops.chain_carries_past_midnight` |

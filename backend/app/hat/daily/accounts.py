@@ -33,7 +33,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..engine.lifecycle import TRIGGERED
+from ..engine.approvals import TAKE
+from ..engine.lifecycle import AWAITING_APPROVAL, TRIGGERED
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.fills import FillSync, SaleBand, watch_closely
@@ -51,7 +52,7 @@ from ..execution.session import (
     record_session,
     refresh_capabilities,
 )
-from ..models import HatBot, HatBrokerAccount, HatPosition, HatSignal
+from ..models import HatApproval, HatBot, HatBrokerAccount, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
@@ -222,7 +223,8 @@ class Desks:
         self._today = today  # the guards' trade date (the wall clock's when None)
         self._registry = SessionRegistry()
         self.by_account: dict[uuid.UUID, AccountDesk] = {}
-        # the auto entries a crash left in Triggered, per account, until `resume_entries`
+        # the entries a crash left unplaced (auto in Triggered, a Take not yet placed) and those
+        # whose placement raised, per account, until `resume_entries` (HAT-OPS-003, PR 52)
         self._resume: dict[uuid.UUID, list[uuid.UUID]] = {}
         with session_factory() as session:
             accounts = list(
@@ -311,15 +313,16 @@ class Desks:
 
     def recover(self, now: datetime) -> None:
         """Reconcile every account and read its fills (the fill sync re-protects a fill without a
-        working stop whether or not the reconciliation succeeded, D118); remember the auto
-        entries a crash left in Triggered for `resume_entries`. An account that did not
+        working stop whether or not the reconciliation succeeded, D118); remember the entries a
+        crash left unplaced (an auto signal in Triggered, a Take not yet placed: PR 52) for
+        `resume_entries`. An account that did not
         reconcile places no entry until a later reconciliation succeeds. One account's failure is
         logged and never stops another's recovery or the start: its fills are read again by the
         next periodic sync."""
         for account_id, desk in self.by_account.items():
             try:
                 with self._session_factory() as session:
-                    self._resume[account_id] = _left_triggered(session, account_id)
+                    self._resume[account_id] = _left_unplaced(session, account_id)
                     desk.reconcile(session, now)
                     if desk.manager.sync(session, account_id, now) is not None:
                         desk.synced_at = now
@@ -329,10 +332,15 @@ class Desks:
     def resume_entries(
         self, now: datetime, check: CheckFor, feed_stale: Callable[[], bool]
     ) -> None:
-        """Place again the entries `recover` found, once the live feed is fresh (no feed heard
-        since the restart reads as stale: HAT-DATA-116) and the account has reconciled. Each is
-        placed once, under the live conditions read now; the router ends one of an earlier
-        session Rejected."""
+        """Place again the entries `recover` found and those whose placement raised since (PR
+        52), once the live feed is fresh (no feed heard since the restart reads as stale:
+        HAT-DATA-116) and the account has reconciled. Each is placed once, under the live
+        conditions read now; the router ends one of an earlier session Rejected."""
+        for account_id, desk in self.by_account.items():
+            stranded = desk.router.take_stranded()
+            if stranded:
+                waiting = self._resume.setdefault(account_id, [])
+                waiting.extend(s for s in stranded if s not in waiting)
         if not self._resume or feed_stale():
             return
         for account_id in list(self._resume):
@@ -395,15 +403,18 @@ class Desks:
                 desk.reconcile(session, now)
 
 
-def _left_triggered(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
+def _left_unplaced(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
+    """The account's real entries committed but not placed: an auto signal in Triggered, or a
+    confirm signal whose Take passed (its decision is `take` while it still awaits placement)."""
     return list(
         session.scalars(
             select(HatSignal.id)
             .join(HatBot, HatBot.id == HatSignal.bot_id)
+            .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
             .where(
                 HatBot.broker_account_id == account_id,
-                HatSignal.state == TRIGGERED,
-                HatSignal.mode == AUTO,
+                ((HatSignal.state == TRIGGERED) & (HatSignal.mode == AUTO))
+                | ((HatSignal.state == AWAITING_APPROVAL) & (HatApproval.decision == TAKE)),
             )
             .order_by(HatSignal.id)
         )

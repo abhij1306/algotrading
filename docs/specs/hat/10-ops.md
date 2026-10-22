@@ -36,11 +36,12 @@ there is no OpenAlgo process; the broker layer is the in-process Fyers adapter.
 #### HAT-OPS-003: Restart safety: reconcile before acting
 - **Statement:** After any (re)start, HAT reconciles positions and open orders with each broker before its first order and resumes jobs from `hat_job_run`.
 - **Source:** MA "Runtime" (live service reconciles before its first order), "Failure handling" (machine down → on restart, reconcile before acting).
-- **PR:** 17 (wiring), 13 (reconciliation)
-- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start`
+- **PR:** 17 (wiring), 13 (reconciliation), 52 (entries left unplaced)
+- **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.crash_resumes_entry_once`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_crash_resumes_entry_once`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start`
 - **Acceptance:**
   - Property: in every behaviour that includes a restart, no order is sent to a broker account before a reconciliation of that account has completed successfully since the restart. Harm: the engine re-places orders that already exist or misses fills from while it was down.
   - Property: an entry left Triggered by the previous process is placed at most once after the restart, only after the feed has a fresh tick and the account is reconciled, and never on a later trade date than its own. Harm: an entry goes out on a stale price, twice, or a day late.
+  - Property (PR 52): for an auto entry or a Take, a process that dies (or a placement that raises) right after any of its commits or broker calls leaves, after the restart's recovery and resume (or the next resume in the same process), the signal placed or ended exactly once: at most two entry orders under distinct tags, at most one the broker took, none waiting with no order that may have reached the broker, and the stored state equal to its events' replay; on PostgreSQL too. Harm: a Take committed before a crash is never bought and holds its slot, or a restart buys twice.
   - Property: a stop, including one after a start that failed part way, stops the feed once, leaves no tick listener and names every job body still running after its grace. Harm: a half-started runtime keeps the provider socket, or a cut-off close leaves no trace.
 
 #### HAT-OPS-004: Exits and stops never depend on the nightly pipeline
@@ -626,8 +627,10 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    already succeeded for today is not run again (HAT-OPS-010).
 2. Before any entry, every account's book is reconciled with the broker's order and trade books
    and its fills are read (HAT-OPS-003). A broker that cannot be read, or an HT order HAT does
-   not know, places no entry and sends an alert; stops and sales still go out (D118). Entries left Triggered by the previous process
-   are placed once the feed is fresh, and only on their own trade date; a restart after 08:45
+   not know, places no entry and sends an alert; stops and sales still go out (D118). Entries left unplaced by the previous process
+   (an auto signal in Triggered, a Take whose order never went out: PR 52) are placed once the
+   feed is fresh, and only on their own trade date (the next date's sweep ends them Rejected
+   `signal_expired`); a restart after 08:45
    re-arms the day from the stored 5-minute bars and the recorded gap scan.
 3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
    position shows its stop). If the session is not live, follow "Morning login".
