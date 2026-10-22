@@ -32,9 +32,9 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.gap_record_from_its_own_day` In a process running across days, every gap record of trade date d holds d's open: its own indicative open, or the feed's open from a tick at or after 09:15 (a 09:00 snapshot carries yesterday's open), and a later day's record drops the earlier days' records. Harm: `gap_up` runs on yesterday's open (PR 22, audit F13).
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
 - `PBT bars.history_matches_builder` Aggregating a 1-minute series to 5-minute bars (`minute_history.aggregate`) gives exactly the bars the live builder makes of the same prints (open with the volume, high, low, close): same windows, OHLC and volume, nothing outside the session. Harm: EP backtests read bars built differently from live and mislead promotion decisions.
-- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for each symbol's 1-minute candles in consecutive chunks of at most `chunk_days` (drawn 1..100) covering exactly the period and writes each symbol's builder bars to `bars_5m` as soon as it loads; a symbol whose call fails (any of three, first, middle or last) or whose answer holds more candles than the cap is reported with a fixed code (no broker text) and has nothing written, while every other symbol is stored (PR 41, D131). Harm: one bad symbol throws away hours of loaded history, or a broker message reaches the store or the logs.
-- `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
-- `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume`, leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
+- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for each symbol's 1-minute candles in consecutive chunks of at most `chunk_days` (drawn 1..100) covering exactly the period and writes each symbol's builder bars to `bars_5m` as soon as it loads; a symbol whose call fails (any of three, first, middle or last) or whose answer holds more candles than the cap, or whose candle rows are garbage (`None`, a dict, a string, too short, an impossible epoch: `history_bad_candle`), is reported with a fixed code (no broker text) and has nothing written, while every other symbol is stored (PR 41, D131). Harm: one bad symbol throws away hours of loaded history, or a broker message reaches the store or the logs.
+- `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), and across a second run started right after the first with a fresh pacer on the saved progress, no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
+- `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume` (and given the next day's shifted period, which the resume replaces with the stopped run's), leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
 - `PBT bars.minute_history_plan_clamp` A fake plan that refuses (-50, `data.range_from` "exceeds the historical data available for your plan") any range before a floor 0..2 days after `today - plan_days`: a start 0..3 days before the floor is clamped to exactly the floor (saved in the progress), within `max_clamps`, and every symbol is loaded from there; a -50 with another reason is a symbol failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
 - `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed, with the listing's open (PR 22: the gapper is not subscribed yet, so the feed has no open of it). Harm: impossible gaps are chased or valid EP candidates never watched.
@@ -144,7 +144,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `f142ef0a3ed82ced5ad13054db864fafc452aac3159587173b1e7b6f4f3fafaa`
+Covered digest: `0deedb858e69709dc0dbdccaf6b60914db86759db397e175899ace51a16bdf78`
 
 ## Scope changes
 
@@ -1081,6 +1081,16 @@ E        [1_792_553_460, 1.0, 1.0, 1.0, 1.0, 0]],
 E       first=0,
 ```
 
+Break: `parse_candles` drops its row-shape guard (`not isinstance(row, list | tuple) or` removed), so a `None` row raises `TypeError` out of the run.
+
+```
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1594: in test_minute_history_aggregates_to_5m
+E   TypeError: object of type 'NoneType' has no len()
+E   Failing test case: test_minute_history_aggregates_to_5m(
+E       # The test always failed when commented parts were varied together.
+```
+
 ### PBT bars.minute_history_budget
 
 Break: the pacer lets one call too many into the minute (`<` to `<=` in `CallPacer.call`).
@@ -1109,6 +1119,16 @@ E     Use -v to get more diff
 E   Failing test case: test_minute_history_budget(
 ```
 
+Break: a new pacer starts with an empty minute (`deque(sorted(progress.recent))` to `deque()`).
+
+```
+tests/hat/properties/test_bars.py:1640: in test_minute_history_budget
+tests/hat/properties/test_bars.py:1691: in test_minute_history_budget
+E   AssertionError: assert 2 <= 1
+E    +  where 2 = len([datetime.datetime(2026, 10, 31, 0, 5, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')), datetime.datetime(2026, 10, 31, 0, 5, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata'))])
+E   Failing test case: test_minute_history_budget(
+```
+
 ### PBT bars.minute_history_resume
 
 Break: the progress is not saved after a symbol is written.
@@ -1122,6 +1142,16 @@ E     Extra items in the right set:
 E     'NSE:S0-EQ'
 E     Use -v to get more diff
 E   Failing test case: test_minute_history_resume(
+```
+
+Break: a resume asks for the period it is given instead of the stopped run's (`start, end = progress.window` to `pass`).
+
+```
+tests/hat/properties/test_bars.py: in test_minute_history_resume (a Hypothesis ExceptionGroup of two failures)
+    assert resumed.skipped == len(done)
+AssertionError: assert 0 == 1
+    assert _stored(store, start, end) == _stored(once, start, end)
+AssertionError: assert [] == [BarRow(instr...'), volume=0)]
 ```
 
 ### PBT bars.minute_history_plan_clamp

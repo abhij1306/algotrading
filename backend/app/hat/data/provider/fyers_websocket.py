@@ -57,7 +57,7 @@ def fyers_history() -> Callable[[dict[str, str]], Mapping[str, object]] | None:
     from app.hat.execution.fyers_session import get_fyers_session
 
     session = get_fyers_session()
-    if session.fyers is None or not session.validate_token():
+    if not session.validate_token():  # also builds a model the session could not at startup
         return None
     model = session.fyers
     if model is None:

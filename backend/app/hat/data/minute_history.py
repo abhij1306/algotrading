@@ -30,7 +30,6 @@ import argparse
 import json
 import logging
 import math
-import os
 import sys
 import time
 import uuid
@@ -46,12 +45,13 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatError
 from ..models import HatBrokerSymbol, HatInstrument, HatMarket
-from ..time import trade_date_of
+from ..time import as_utc, trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore
 from .ingest import UNIVERSE_SERIES
 from .instruments import BROKER_FYERS
 from .sessions import IST
+from .store import atomic_replace
 
 __all__ = [
     "CHUNK_DAYS",
@@ -118,7 +118,9 @@ def parse_candles(raw: Iterable[Sequence[object]]) -> list[MinuteCandle]:
     volume] each), oldest first. A malformed or inconsistent candle raises; nothing is guessed."""
     found: dict[datetime, MinuteCandle] = {}
     for row in raw:
-        if len(row) != 6 or isinstance(row[0], bool) or not isinstance(row[0], int):
+        if not isinstance(row, list | tuple) or len(row) != 6:
+            raise MinuteHistoryError("history_bad_candle")
+        if isinstance(row[0], bool) or not isinstance(row[0], int):
             raise MinuteHistoryError("history_bad_candle")
         volume = row[5]
         if isinstance(volume, float) and volume.is_integer():
@@ -128,7 +130,10 @@ def parse_candles(raw: Iterable[Sequence[object]]) -> list[MinuteCandle]:
         open_, high, low, close = (_price(v) for v in row[1:5])
         if not low <= min(open_, close) <= max(open_, close) <= high:
             raise MinuteHistoryError("history_bad_candle")
-        at = datetime.fromtimestamp(row[0], tz=UTC)
+        try:
+            at = datetime.fromtimestamp(row[0], tz=UTC)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise MinuteHistoryError("history_bad_candle") from exc
         found[at] = MinuteCandle(at, open_, high, low, close, volume)
     return [found[at] for at in sorted(found)]
 
@@ -178,22 +183,26 @@ def aggregate(
 class HistoryLimits:
     """The Fyers Standard plan's history limits (owner, D131), configurable from the command
     line: days per call, calls per minute and per IST day, how far back the plan serves intraday
-    candles, and the most candles one response may hold (a 100-day call has at most 37,500
-    session minutes; a larger answer is refused, so one symbol never holds more than one
-    response of candles at a time)."""
+    candles, and the most candles one response may hold (by default 400 a day of the call, over
+    the session's 375 minutes; a larger answer is refused, so one symbol never holds more than
+    one response of candles at a time)."""
 
     chunk_days: int = CHUNK_DAYS
     per_minute: int = 50
     per_day: int = 5_000
     plan_days: int = 365
-    max_candles: int = 50_000
+    max_candles: int | None = None  # None: 400 x chunk_days
     max_clamps: int = 3  # plan-limit refusals one run tolerates before it stops
     failures_in_row: int = 3  # consecutive failed symbols that stop the run (a dead session)
 
     def __post_init__(self) -> None:
-        values = (self.chunk_days, self.per_minute, self.per_day, self.plan_days, self.max_candles)
+        values = (self.chunk_days, self.per_minute, self.per_day, self.plan_days, self.candle_cap)
         if min(values) < 1 or self.max_clamps < 0 or self.failures_in_row < 1:
             raise MinuteHistoryError("history_bad_limits")
+
+    @property
+    def candle_cap(self) -> int:
+        return self.max_candles if self.max_candles is not None else 400 * self.chunk_days
 
 
 Clock = Callable[[], datetime]
@@ -214,6 +223,9 @@ class Progress:
     calls: dict[str, int] = field(default_factory=dict)
     done: dict[str, tuple[date, date]] = field(default_factory=dict)
     available_from: date | None = None
+    window: tuple[date, date] | None = None  # the last run's period, which a resume continues
+    recent: list[datetime] = field(default_factory=list)  # the last minute's call instants
+    failed: dict[str, str] = field(default_factory=dict)  # symbols whose last attempt failed
 
     @classmethod
     def load(cls, path: Path) -> Progress:
@@ -229,7 +241,18 @@ class Progress:
                 for symbol, span in raw.get("done", {}).items()
             }
             floor = raw.get("available_from")
-            return cls(path, calls, done, None if floor is None else date.fromisoformat(floor))
+            window = raw.get("window")
+            return cls(
+                path,
+                calls,
+                done,
+                None if floor is None else date.fromisoformat(floor),
+                None
+                if window is None
+                else (date.fromisoformat(window[0]), date.fromisoformat(window[1])),
+                [as_utc(datetime.fromisoformat(at)) for at in raw.get("recent", [])],
+                {str(symbol): str(code) for symbol, code in raw.get("failed", {}).items()},
+            )
         except (OSError, ValueError, TypeError, AttributeError, IndexError) as exc:
             raise MinuteHistoryError("history_bad_progress") from exc
 
@@ -243,14 +266,12 @@ class Progress:
             "available_from": None
             if self.available_from is None
             else self.available_from.isoformat(),
+            "window": None if self.window is None else [d.isoformat() for d in self.window],
+            "recent": [as_utc(at).isoformat() for at in self.recent],
+            "failed": dict(sorted(self.failed.items())),
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_text(json.dumps(body), encoding="utf-8")
-            os.replace(temp, self.path)
-        finally:
-            temp.unlink(missing_ok=True)
+        text = json.dumps(body)
+        atomic_replace(self.path, lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
     def covers(self, symbol: str, start: date, end: date) -> bool:
         span = self.done.get(symbol)
@@ -259,8 +280,10 @@ class Progress:
 
 class CallPacer:
     """Makes each history call within the budget: at most `per_minute` calls in any 60 seconds
-    (it sleeps until the oldest leaves the window) and at most `per_day` in an IST day (counted
-    in `progress`, so restarts share the day's budget; one more raises `history_daily_limit`).
+    (it sleeps until the oldest leaves the window) and at most `per_day` in an IST day (both
+    kept in `progress`, so a restart shares the minute and the day; one more call than the day
+    allows raises `history_daily_limit`). The progress is saved before every call: the count
+    must survive a crash.
     A call counts when it is made, whatever it answers."""
 
     def __init__(
@@ -275,16 +298,14 @@ class CallPacer:
         self._progress = progress
         self._clock = clock
         self._sleep = sleep
-        self._recent: deque[datetime] = deque()
+        # seeded from the progress: a run started right after another sees its last minute
+        self._recent: deque[datetime] = deque(sorted(progress.recent))
         self.made = 0
 
     def today(self) -> date:
         return self._clock().astimezone(IST).date()
 
     def call(self, history: HistoryCall, request: dict[str, str]) -> object:
-        day = self.today().isoformat()
-        if self._progress.calls.get(day, 0) >= self._limits.per_day:
-            raise MinuteHistoryError("history_daily_limit")
         now = self._clock()
         while True:
             while self._recent and self._recent[0] <= now - _WINDOW:
@@ -293,7 +314,11 @@ class CallPacer:
                 break
             self._sleep((self._recent[0] + _WINDOW - now).total_seconds())
             now = self._clock()
+        day = now.astimezone(IST).date().isoformat()  # after any wait: the day the call is made
+        if self._progress.calls.get(day, 0) >= self._limits.per_day:
+            raise MinuteHistoryError("history_daily_limit")
         self._recent.append(now)
+        self._progress.recent = list(self._recent)
         self._progress.calls[day] = self._progress.calls.get(day, 0) + 1
         self.made += 1
         self._progress.save()
@@ -410,7 +435,7 @@ def _load_symbol(
         raw = response.get("candles") or []
         if not isinstance(raw, list):
             raise MinuteHistoryError("history_bad_candle")
-        if len(raw) > limits.max_candles:
+        if len(raw) > limits.candle_cap:
             raise MinuteHistoryError("history_too_many_candles")
         candles = [c for c in parse_candles(raw) if first <= trade_date_of(c.at) <= last]
         bars.extend(aggregate(symbol, candles))
@@ -433,21 +458,27 @@ def load_minute_history(
     """Fetch the 1-minute history of each broker symbol in `instruments` (broker symbol ->
     instrument id) for `start..end`, aggregate it and merge it into `bars_5m`, writing each
     symbol as soon as it has loaded (D131: a later failure keeps what was written). With
-    `resume`, a symbol `progress` records as loaded over the period is skipped. A symbol that
-    fails is reported and the run goes on; `failures_in_row` failed symbols in a row, the day's
-    call budget or too many plan-limit refusals stop it, with the progress saved. Safe to re-run:
-    `BarStore.write` keeps a bar that did not change."""
+    `resume`, the period is the one `progress` recorded for the last run (a later day would
+    otherwise ask for a shifted one) and a symbol it records as loaded over it is skipped. A
+    symbol that fails is reported and the run goes on; `failures_in_row` failed symbols in a
+    row, the day's call budget or too many plan-limit refusals stop it, with the progress saved.
+    Safe to re-run: `BarStore.write` keeps a bar that did not change."""
+    progress = progress if progress is not None else Progress()
+    if resume and progress.window is not None:
+        start, end = progress.window  # a resume continues the stopped run's period
     if start > end:
         raise MinuteHistoryError("history_bad_period")
     limits = limits or HistoryLimits()
-    progress = progress if progress is not None else Progress()
     pacer = pacer or CallPacer(limits, progress)
     report = HistoryReport(start, end, symbols=len(instruments))
     report.available_from = progress.available_from
     if not resume:
         progress.done.clear()
+    progress.window = (start, end)
+    progress.save()
     in_row = 0
-    for symbol in sorted(instruments):
+    # symbols that failed last time go last, so a few bad ones cannot block a resume forever
+    for symbol in sorted(instruments, key=lambda s: (s in progress.failed, s)):
         first = max(start, progress.available_from or start)
         if first > end:
             report.stopped = "history_plan_limit"
@@ -461,9 +492,10 @@ def load_minute_history(
             if exc.code in _RUN_STOPS:
                 report.stopped = exc.code
                 break
-            report.failed[symbol] = exc.code
-            # only refused calls point at a dead session; a symbol's bad data does not
-            in_row += exc.code == "history_failed"
+            report.failed[symbol] = progress.failed[symbol] = exc.code
+            progress.save()
+            # only refused calls in a row point at a dead session; a symbol's bad data does not
+            in_row = in_row + 1 if exc.code == "history_failed" else 0
             if in_row >= limits.failures_in_row:
                 report.stopped = "history_failed"
                 break
@@ -474,6 +506,7 @@ def load_minute_history(
         report.rows += store.write(bars, {symbol: instruments[symbol]})
         report.days[symbol] = len({trade_date_of(b.start) for b in bars})
         progress.done[symbol] = (first, end)
+        progress.failed.pop(symbol, None)
         progress.save()
     return report
 
@@ -506,7 +539,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.minute_history", description=__doc__)
     defaults = HistoryLimits()
     p.add_argument("--days", type=int, default=defaults.plan_days, help="days back from today")
-    p.add_argument("--resume", action="store_true", help="skip symbols already loaded")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue the last run's period, skipping symbols done",
+    )
     p.add_argument("--chunk-days", type=int, default=defaults.chunk_days)
     p.add_argument("--per-minute", type=int, default=defaults.per_minute)
     p.add_argument("--per-day", type=int, default=defaults.per_day)
@@ -538,7 +575,7 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
         per_day=args.per_day,
         plan_days=args.plan_days,
     )
-    from app.database import SessionLocal
+    from app.database import db_session_scope
 
     from ..settings import load_settings
     from .provider.fyers_websocket import fyers_history
@@ -550,7 +587,7 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
     if history is None:
         sys.stderr.write("history_no_session: log in to Fyers from the app first\n")
         return 2
-    with SessionLocal() as db:
+    with db_session_scope() as db:
         instruments, unmapped = history_universe(db)
     today = datetime.now(IST).date()
     report = load_minute_history(

@@ -1556,23 +1556,38 @@ def _want(symbol: str, raw: list[list[Any]], instrument: str, start: date, end: 
     chunk=st.integers(1, CHUNK_DAYS),
     failing=st.sampled_from(["NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ", None]),
     cap=st.integers(1, 60),
+    garbage=st.sampled_from(
+        [None, [None], [{}], ["x"], [[1, 2]], [[10**20, 1.0, 1.0, 1.0, 1.0, 0]], [[0, 1.0, 1.0]]]
+    ),
 )
 @settings(deadline=None)
 def test_minute_history_aggregates_to_5m(
-    raw: list[list[Any]], first: int, span: int, chunk: int, failing: str | None, cap: int
+    raw: list[list[Any]],
+    first: int,
+    span: int,
+    chunk: int,
+    failing: str | None,
+    cap: int,
+    garbage: list[Any] | None,
 ) -> None:
     """The loader asks for 1-minute candles in consecutive chunks of at most `chunk_days`
     covering the period, and writes each symbol's builder bars as soon as it loads: a symbol
     whose call fails, or whose answer holds more candles than the cap, is reported with a fixed
     code (no broker text) and has nothing written, while every other symbol, before or after it,
-    is stored."""
+    is stored. A garbage candle row (not a list, too short, an impossible epoch) fails its symbol
+    with `history_bad_candle`, never the run."""
     start = DAY + timedelta(days=first)
     end = start + timedelta(days=span)
     symbols = {s: str(uuid4()) for s in ("NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ")}
     asked: list[dict[str, str]] = []
-    history = _fake_history(
-        dict.fromkeys(symbols, raw), asked, failing=frozenset({failing} - {None})
-    )
+    clean = _fake_history(dict.fromkeys(symbols, raw), asked, failing=frozenset({failing} - {None}))
+
+    def history(request: dict[str, str]) -> dict[str, Any]:
+        answer = clean(request)
+        if garbage is not None and request["symbol"] == "NSE:MMM-EQ" and answer["s"] != "error":
+            return {"s": "ok", "candles": garbage}
+        return answer
+
     limits = HistoryLimits(chunk_days=chunk, max_candles=cap, per_minute=10**6)
     with tempfile.TemporaryDirectory() as root:
         store = BarStore(Path(root))
@@ -1605,6 +1620,8 @@ def test_minute_history_aggregates_to_5m(
             expected_failed[failing] = "history_failed"
         if too_many:
             expected_failed |= {s: "history_too_many_candles" for s in symbols if s != failing}
+        if garbage is not None and failing != "NSE:MMM-EQ":
+            expected_failed["NSE:MMM-EQ"] = "history_bad_candle"
         assert report.failed == expected_failed
         assert all("XY1234" not in code for code in report.failed.values())
         want = sorted(
@@ -1632,9 +1649,9 @@ def test_minute_history_budget(
     raw: list[list[Any]], per_minute: int, per_day: int, spent: int, took: int, offset: int
 ) -> None:
     """However long calls take and whatever the day's earlier runs spent, no 60 seconds hold
-    more than `per_minute` history calls and no IST day more than `per_day`; a spent day stops
-    the run with `history_daily_limit` (not a crash) and the day's count is kept for the next
-    run."""
+    more than `per_minute` history calls and no IST day more than `per_day`, also across a
+    second run started right after the first (a fresh pacer on the saved progress); a spent day
+    stops a run with `history_daily_limit` (not a crash) and the day's count is kept."""
     start = DAY
     end = DAY + timedelta(days=2)
     symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(4)}
@@ -1654,17 +1671,21 @@ def test_minute_history_budget(
         progress = Progress(Path(root) / "progress.json")
         progress.calls[clock.now().astimezone(IST).date().isoformat()] = spent
         progress.save()
-        pacer = CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep)
-        report = load_minute_history(
-            history,
-            BarStore(Path(root)),
-            symbols,
-            start,
-            end,
-            limits=limits,
-            progress=progress,
-            pacer=pacer,
-        )
+        reports = []
+        for part in (dict(list(symbols.items())[:2]), dict(list(symbols.items())[2:])):
+            progress = Progress.load(Path(root) / "progress.json")
+            reports.append(
+                load_minute_history(
+                    history,
+                    BarStore(Path(root)),
+                    part,
+                    start,
+                    end,
+                    limits=limits,
+                    progress=progress,
+                    pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+                )
+            )
         for i, at in enumerate(instants):
             window = [t for t in instants[: i + 1] if t > at - timedelta(minutes=1)]
             assert len(window) <= per_minute
@@ -1676,11 +1697,11 @@ def test_minute_history_budget(
         first_day = (MIDNIGHT + timedelta(days=10, seconds=offset)).astimezone(IST).date()
         for day, n in per_ist_day.items():
             assert n + (spent if day == first_day else 0) <= per_day
-        assert report.calls == len(instants)
+        assert sum(r.calls for r in reports) == len(instants)
         if len(asked) < len(symbols) * 3:
-            assert report.stopped == "history_daily_limit"
+            assert reports[-1].stopped == "history_daily_limit"
         else:
-            assert report.stopped is None
+            assert all(r.stopped is None for r in reports)
         stored = Progress.load(Path(root) / "progress.json")
         assert stored.calls == progress.calls
         assert sum(stored.calls.values()) == spent + len(instants)
@@ -1693,9 +1714,10 @@ def test_minute_history_budget(
 )
 @settings(deadline=None)
 def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[str]) -> None:
-    """A run stopped anywhere (the day's budget spent, symbols that failed) and then resumed
-    leaves `bars_5m` as one uninterrupted run would, and never asks again for a symbol already
-    loaded over the period."""
+    """A run stopped anywhere (the day's budget spent, symbols that failed) and then resumed the
+    next day leaves `bars_5m` as one uninterrupted run would (the resume continues the stopped
+    run's period, not the shifted one the next day asks for), and never asks again for a symbol
+    already loaded over it."""
     start, end = DAY, DAY + timedelta(days=2)
     symbols = {f"NSE:S{i}-EQ": str(uuid4()) for i in range(4)}
     limits = HistoryLimits(chunk_days=1, per_minute=10**6, per_day=budget or 1)
@@ -1733,8 +1755,8 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
             _fake_history(dict.fromkeys(symbols, raw), again),
             store,
             symbols,
-            start,
-            end,
+            start + timedelta(days=1),  # the next day's command line asks for a shifted period
+            end + timedelta(days=1),
             limits=HistoryLimits(chunk_days=1, per_minute=10**6),
             progress=progress,
             pacer=CallPacer(
