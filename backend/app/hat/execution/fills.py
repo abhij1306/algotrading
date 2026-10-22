@@ -49,6 +49,7 @@ from .broker import BrokerOrder, BrokerTrade, HatBroker, Side
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
+    EXIT_WORKING,
     LIVE,
     STOP_DAY,
     STOP_GTT,
@@ -124,8 +125,7 @@ class FillSync:
             if self._unfilled_trigger(order, gtts):
                 self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
         for position_id in self._unprotected(session, account_id) - report.protected:
-            self._desk.protect(session, position_id, now)
-            report.protected.add(position_id)
+            self._protect(session, position_id, now, report)
         for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
             # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
             # once settled, a stop that landed is cancelled, so it never rests under no shares.
@@ -189,8 +189,7 @@ class FillSync:
         position_id = self._record(session, row, trade, now, report)
         if position_id is not None:
             # HAT-EXEC-060: the stop comes before any other action on the position.
-            self._desk.protect(session, position_id, now)
-            report.protected.add(position_id)
+            self._protect(session, position_id, now, report)
 
     def _record(
         self,
@@ -273,8 +272,15 @@ class FillSync:
             # position is protected (a part-filled sale may still sell the rest).
             gtt.status = "filled" if filled >= gtt.qty else "partially_filled"
             session.commit()
-        self._desk.protect(session, position_id, now)
-        report.protected.add(position_id)
+        self._protect(session, position_id, now, report)
+
+    def _protect(
+        self, session: Session, position_id: uuid.UUID, now: datetime, report: SyncReport
+    ) -> None:
+        # A position whose sale still works is not counted as protected: once that sale ends
+        # (later in this sync, or the next) it is protected again.
+        if self._desk.protect(session, position_id, now) != EXIT_WORKING:
+            report.protected.add(position_id)
 
     # --- 4. statuses ----------------------------------------------------------------------------
 

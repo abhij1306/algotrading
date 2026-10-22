@@ -339,7 +339,7 @@ SeeUnfilled ==
 CancelAfterSale ==
     /\ closed
     /\ ~lostGtt
-    /\ day.st = "working" \/ gtt.st = "working"
+    /\ (day.st = "working" \/ gtt.st = "working")
     /\ day' = None
     /\ gtt' = None
     /\ UNCHANGED <<qty, closed, cur, phase, pc, acted, alerted, lastPx, lowered,

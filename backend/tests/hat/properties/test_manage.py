@@ -609,6 +609,7 @@ SALE_ENDINGS = {"rejected": 5, "cancelled": 1, "expired": 7}
     again=st.booleans(),
 )
 @example(ending="rejected", part=0, again=True)
+@example(ending="cancelled", part=1, again=False)
 def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> None:
     """HAT-EXEC-075, HAT-OPS-032: a sale the broker accepted and then ended short (rejected by
     the exchange or RMS, cancelled, expired) records `order.rejected` (relayed as the health
@@ -620,7 +621,7 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
     are counted on it.)"""
     with (
         Session(memory_engine()) as session,
-        patch("app.hat.execution.submit.utc_now", lambda: at(11, 0)),
+        patch("app.hat.execution.submit.utc_now", return_value=at(11, 0)),
     ):
         rig = ManageRig(session, exits=exit_stack("partials"))
         position = _opened(rig, at(10, 40))
@@ -662,6 +663,45 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
             start = len(rig.fake.calls)
             rig.manager.on_price(session, position.id, view, at(11, 4))
             assert _sold(rig, start) == []
+            session.refresh(position)
+            assert _resting(rig, position)
+
+
+@settings(max_examples=20, deadline=None)
+@given(
+    parts=st.lists(st.integers(min_value=0, max_value=3), min_size=1, max_size=3),
+    ends=st.booleans(),
+)
+@example(parts=[0], ends=False)
+def test_a_resting_sale_is_never_stopped_over(parts: list[int], ends: bool) -> None:
+    """HAT-EXEC-060, HAT-EXEC-065: while a full sale the broker accepted still works (resting,
+    or part filled), no sync places or grows a stop over the shares it sells: `make_room`
+    cancelled the stops for it, and a new stop would hold the shares and the sale be refused.
+    Once the sale ends short, the next sync protects what is left. Harm: a stop rests under
+    shares a working sale is selling, so the sale is refused or the position sold twice."""
+    with (
+        Session(memory_engine()) as session,
+        patch("app.hat.execution.submit.utc_now", return_value=at(11, 0)),
+    ):
+        rig = ManageRig(session, exits=exit_stack("partials"))
+        position = _opened(rig, at(10, 40))
+        view = exits.ExitView(price=D(position.avg_entry) * D("1.4"), days_held=1)
+        start = len(rig.fake.calls)
+        rig.manager.on_price(session, position.id, view, at(11, 0))
+        [sale] = _sold(rig, start)
+        [row] = _sale_rows(rig, position)
+        after = len(rig.fake.calls)
+        for minute, part in enumerate(parts, start=1):
+            if part:
+                rig.fill(row, part, D(position.avg_entry))
+            rig.sync(at(11, minute))
+            stops = [n for n, a in rig.fake.calls[after:] if n in STOP_WRITES and a is not sale]
+            assert stops == []
+            assert rig.stops(position.id, *LIVE) == []
+        if ends:
+            book = next(b for b in rig.fake.book if b["orderTag"] == row.tag)
+            book["status"] = 5
+            rig.sync(at(11, 10))
             session.refresh(position)
             assert _resting(rig, position)
 
@@ -750,3 +790,44 @@ def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
             assert "sale_unresolved" in reasons
             assert _sold(rig, start) == []
             assert _resting(rig, position)
+
+
+@settings(max_examples=20, deadline=None)
+@given(
+    order=st.sampled_from(["entry", "sale"]),
+    landed=st.booleans(),
+    young=st.booleans(),
+)
+@example(order="sale", landed=False, young=True)
+@example(order="entry", landed=False, young=True)
+def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bool) -> None:
+    """HAT-EXEC-065, HAT-EXEC-074: after the close, an entry or a sale whose answer was lost
+    and that the broker's book does not hold ends (an entry's signal Rejected, a sale
+    `expired`); one the book holds is left for the sync to adopt, and one sent less than the
+    settle wait ago is left for the next run, since it may still be on its way. Harm: an order
+    that reached the broker is written off, so HAT loses track of a real position or sells it
+    again."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session, settle_after=timedelta(hours=1) if young else timedelta(0))
+        if order == "entry":
+            rig.fake.script("place_order", unconfirmed(landed=landed))
+            outcome = rig.enter(at(10, 30))
+            row = rig.entry_row(outcome.signal_id)
+        else:
+            position = _opened(rig, at(10, 40))
+            rig.fake.script("place_order", unconfirmed(landed=landed))
+            rig.manager.flatten(session, rig.account_id, at(11, 0))
+            [row] = _sale_rows(rig, position)
+        assert row is not None
+        session.refresh(row)
+        assert row.status == "unconfirmed"
+        rig.manager.end_session(session, rig.account_id, at(15, 40))
+        session.refresh(row)
+        signal = session.get(HatSignal, row.signal_id)
+        assert signal is not None
+        if landed or young:
+            assert row.status == "unconfirmed"
+            assert signal.state != "Rejected"
+        else:
+            assert row.status == "expired"
+            assert order == "sale" or signal.state == "Rejected"

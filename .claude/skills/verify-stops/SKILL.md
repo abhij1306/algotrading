@@ -100,7 +100,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `b0fba74386d7bce936e9247ab9e0d14099f1b11480a87fb2ff5503213b9115f1`
+Covered digest: `e99927788fd4b15662918817654c34d5484e3a61c459210077cb7133f0da7afc`
 
 ## Scope changes
 
@@ -111,7 +111,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
-- PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed.
+- PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 
 ## Scratch breaks

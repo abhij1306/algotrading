@@ -174,7 +174,12 @@ class FakeBroker:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers cancel timeout/unavailable"}
-        return _settle(self.cancel_reply)
+        reply = _settle(self.cancel_reply)
+        if isinstance(reply, dict) and reply.get("s") == "ok":
+            for row in self.book:  # the broker shows a cancelled order as cancelled
+                if row["id"] == order_id and row["status"] in (4, 6):
+                    row["status"] = 1
+        return reply
 
     # --- reads ------------------------------------------------------------------------
 
@@ -244,8 +249,9 @@ class FakeBroker:
         }
 
     def resting_gtts(self) -> list[dict[str, Any]]:
-        """The GTT book rows that can still trigger."""
-        return [row for row in self.gtts if row["ord_status"] == 6]
+        """The GTT book rows that can still trigger (no status, 4 transit or 6 pending, as the
+        adapter reads them)."""
+        return [row for row in self.gtts if row.get("ord_status") in (None, 4, 6)]
 
     def modify_gtt(self, gtt_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
         queue = self._call("modify_gtt", (gtt_id, params))

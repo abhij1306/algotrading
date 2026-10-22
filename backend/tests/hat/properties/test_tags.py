@@ -15,7 +15,7 @@ import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
 from sqlalchemy import select
@@ -913,16 +913,22 @@ def test_the_purposes_match_the_database_domain() -> None:
 # ---------------------------------------------------------------------------------------------
 
 
-@given(answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]), retry=st.booleans())
+@given(
+    answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]),
+    retry=st.booleans(),
+    adopted=st.booleans(),
+)
 @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
-def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool) -> None:
+@example(answer="accepted", retry=True, adopted=True)
+def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool, adopted: bool) -> None:
     """HAT-BRK-102, HAT-EXEC-065: when two senders read the same order before either stamped
     a new attempt (a fill sync and a stop job protecting one position), whether it was never
     sent or its earlier answer was lost and the lookup found nothing (`retry`), only the one
     that stamps first calls the broker, with a new attempt time from which a lost answer's
-    settle wait runs; the other sends nothing and reports what the first left. Harm: two sell
-    stops rest for the same shares, an entry is bought twice, or a resend still in flight is
-    settled as absent."""
+    settle wait runs; the other sends nothing and reports what the first left. A lost answer
+    that the fill sync adopted from the book in between (`adopted`: placed, its attempt time
+    unchanged) is not sent again either. Harm: two sell stops rest for the same shares, an
+    entry is bought twice, or a resend still in flight is settled as absent."""
     env = exec_env()
     live_session(env)
     tag = reserve_order(env.session, env.request(uuid7()))
@@ -938,7 +944,13 @@ def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool) -> None:
     first: list = []
 
     def racing(*args: object, **kwargs: object) -> object:
-        if not first:  # the other sender runs between this one's read and its stamp
+        if not first and retry and adopted:  # the sync adopts the tag from the book meanwhile
+            first.append(None)
+            row = other.scalar(select(HatOrder).where(HatOrder.tag == tag))
+            assert row is not None
+            row.status, row.broker_order_id = "placed", "B-0"
+            other.commit()
+        elif not first:  # the other sender runs between this one's read and its stamp
             first.append(None)
             first[0] = send_order(
                 other, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id
@@ -947,6 +959,11 @@ def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool) -> None:
 
     with patch.object(submit, "_build_request", racing):
         late = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    if retry and adopted:
+        assert late.broker_calls == 0
+        assert late.status == "placed"
+        assert env.fake.count("place_order") == 1
+        return
     assert first[0].broker_calls == 1
     assert late.broker_calls == 0
     assert late.status == first[0].status
@@ -1013,7 +1030,8 @@ def test_the_gtt_book_reads_only_resting_stops(
         foreign.append({**single, "productType": "INTRADAY", "ord_status": odd})
         expected = [g for _, g in rows if g is not None]
         assert adapter_over(GttBookSdk([*book, *foreign])).gtts() == expected
+        unknown = adapter_over(GttBookSdk([*book, {**single, "ord_status": odd}]))
         with pytest.raises(BrokerUnavailableError):
-            adapter_over(GttBookSdk([*book, {**single, "ord_status": odd}])).gtts()
+            unknown.gtts()
         return
     assert adapter_over(GttBookSdk(book)).gtts() == [g for _, g in rows if g is not None]

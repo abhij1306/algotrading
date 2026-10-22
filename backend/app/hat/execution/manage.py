@@ -437,7 +437,7 @@ class TradeManager:
             found = book.get(row.tag)
             if found is None and self._earlier_session(row):
                 stale = True
-            elif found is None and self._wall() - as_utc(row.placed_at) < self._settle_after:
+            elif found is None and self._young(row):
                 waiting = True  # sent too recently: it may still be on its way
             elif found is None:
                 end_lost_order(session, row)
@@ -446,7 +446,15 @@ class TradeManager:
             else:
                 adopt_broker_order(session, row, found, bot_id)
             session.commit()
-        return STALE if stale else WAIT if waiting else SETTLED
+        if stale:
+            return STALE
+        return WAIT if waiting else SETTLED
+
+    def _young(self, row: HatOrder) -> bool:
+        """Sent less than `settle_after` ago (wall clock): its answer may still be on its way."""
+        return (
+            row.placed_at is not None and self._wall() - as_utc(row.placed_at) < self._settle_after
+        )
 
     def _earlier_session(self, row: HatOrder) -> bool:
         """The order was sent on an earlier trade date than today's (by the wall clock)."""
@@ -630,8 +638,9 @@ class TradeManager:
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
         never sent is cancelled with it. A sale of unknown outcome the book does not hold ends
         `expired` (cancelled when never sent) and its rules fire again (a DAY market sale cannot
-        fill after the close). Returns the number of signals ended. Nothing is ended when the
-        book cannot be read."""
+        fill after the close). An order sent less than `settle_after` ago is left for the next run
+        (HAT-EXEC-065). Returns the number of signals ended. Nothing is ended when the book cannot
+        be read."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -650,8 +659,8 @@ class TradeManager:
             return 0
         ended = 0
         for row in rows:
-            if row.tag in book:
-                continue  # the next sync adopts it
+            if row.tag in book or self._young(row):
+                continue  # the next sync adopts it; a young one may still be on its way
             if row.purpose != ENTRY:
                 if row.placed_at is None:
                     row.status = "cancelled"

@@ -130,7 +130,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.lost_answers_never_freeze` For a stop path (lost day stop, lost GTT, refused stop, late fill) and a sale answer (lost and landed, lost and absent, refused, invalid), with the books readable or not and the answer young or settled: an exit or hard stop due is sold once the books can be read and the answer settled, a stop sent with a lost answer is adopted or ended and never doubled, a sale already resting is never sent twice, and an unreadable book alerts instead of acting. Harm: a stop-loss exit is frozen behind a lost answer, or two orders sell the same shares.
 - `PBT manage.async_sale_rejection_retried` A sale the broker accepts and then rejects, cancels or expires short (in full or after a part fill) records `order.rejected`, un-fires its rules unless a partial exit sold some shares, sends one new sale on the next evaluation and alerts `exit.not_placed` on the second rejection with no third sale. Harm: a rule marked fired on a sale that never sold leaves the position open with no alert.
 - `PBT manage.a_settled_answer_never_sells_twice` A lost GTT that landed under a position a sale then closed is cancelled by the first sync after the settle wait; a lost sale the broker filled is left to the fill sync and no second sale goes out before its fills are recorded; a lost sale of an earlier session that today's book cannot show is left unsure with its rule fired, alerted (`sale_unresolved`), and nothing more is sold while the broker stop rests. Harm: a GTT rests under shares already sold, or a position is sold twice.
-- `PBT tags.a_reserved_tag_is_sent_by_one_sender` Two senders that read the same order before either stamped a new attempt (never sent, or a lost answer the lookup did not find): one calls the broker with a new attempt time, the other sends nothing and reports what the first left. Harm: two stops or two entries for one order, or a resend in flight settled as absent.
+- `PBT manage.a_resting_sale_is_never_stopped_over` While a full sale the broker accepted still works (resting, or part filled over one to three syncs), no sync places or grows a stop over its shares, and once it ends short the next sync protects the position again. Harm: a stop rests under shares a working sale is selling, so the sale is refused or the position sold twice.
+- `PBT manage.the_close_ends_only_settled_answers` After the close, a lost entry or sale the book does not hold and that is older than the settle wait ends (entry signal Rejected, sale `expired`); one the book holds, or a young one, is left unsure. Harm: an order that reached the broker is written off.
+- `PBT tags.a_reserved_tag_is_sent_by_one_sender` Two senders that read the same order before either stamped a new attempt (never sent, or a lost answer the lookup did not find): one calls the broker with a new attempt time, the other sends nothing and reports what the first left; a lost answer the fill sync adopted between a sender's lookup and its stamp is not sent again. Harm: two stops or two entries for one order, or a resend in flight settled as absent.
 - `PBT tags.the_gtt_book_reads_only_resting_stops` `gtts()` lists exactly the single-leg CNC GTTs resting or triggered (`ord_status` 2, 4 or 6, or none) from the flat book fields, `orderInfo.leg1` or `leg1`; a cancelled, rejected or expired GTT, an OCO or another product (whatever its status) is left out, and a single-leg CNC row with an unknown status code raises. Harm: a lost GTT is matched to one that no longer rests, or one still resting is read as gone.
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
@@ -264,7 +266,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `09d09559ddf5af3caea3300217084e0a7698064f350f2a5eab266adf3d45736f`
+Covered digest: `000a52b86dc4752649320aab0352efa71e55a7d24ee976118474181e31a49c2f`
 
 ## Scope changes
 
@@ -1742,6 +1744,15 @@ E   AssertionError: assert 0 == 1
 E    +  where 0 = _event_count(<Session ...>, <HatOrder ...>, 'order.rejected')
 ```
 
+Break: in `backend/app/hat/execution/fills.py`, the sync counts a position as protected when `protect` only waited for its working sale, so a sale that part filled and then ended in the same sync leaves the position without a stop (found by the CI profile in the PR 18 review round; pinned by an `@example`).
+
+```
+E   assert False
+E    +  where False = _resting(<hat_manage_support.ManageRig object at 0x...>, <app.hat.models.runtime.HatPosition object at 0x...>)
+E   Failing explicit example: test_async_sale_rejection_retried(
+E       ending='cancelled',
+```
+
 ### PBT fyers_broker.an_ok_reply_without_its_list_is_unreadable
 
 Break: in `backend/app/hat/execution/fyers_broker.py`, `_read_list` turns a missing or non-list key into `[]`.
@@ -1816,6 +1827,41 @@ Break: the conditional claim covers only the first attempt, not a retry after a 
 ```
 E   AssertionError: assert 1 == 0
 E    +  where 1 = SendOutcome(tag='HTE0E...', status='placed', broker_order_id='B-3', code='ok', broker_calls=1).broker_calls
+```
+
+Break: the conditional claim checks only the attempt time, not the status and broker id (CodeAnt, PR 18 review).
+
+```
+E   AssertionError: assert 1 == 0
+E    +  where 1 = SendOutcome(tag='HTE0E...', status='placed', broker_order_id='B-1', code='ok', broker_calls=1).broker_calls
+E   Failing explicit example: test_a_reserved_tag_is_sent_by_one_sender(
+E       answer='accepted',
+E       retry=True,
+E       adopted=True,
+```
+
+### PBT manage.a_resting_sale_is_never_stopped_over
+
+Break: in `backend/app/hat/execution/protect.py`, `protect` no longer waits for a sale the broker holds (CodeAnt, PR 18 review).
+
+```
+E   AssertionError: assert ['place_order'] == []
+```
+
+### PBT manage.the_close_ends_only_settled_answers
+
+Break: in `backend/app/hat/execution/manage.py`, `end_session` ends a lost order sent less than the settle wait ago (CodeAnt, PR 18 review).
+
+```
+E   AssertionError: assert 'expired' == 'unconfirmed'
+E     - unconfirmed
+E     + expired
+```
+
+Break: `end_session` ends a lost order the book holds.
+
+```
+E   AssertionError: assert 'expired' == 'unconfirmed'
 ```
 
 ### PBT tags.the_gtt_book_reads_only_resting_stops

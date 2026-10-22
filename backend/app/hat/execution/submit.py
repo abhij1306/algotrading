@@ -478,13 +478,19 @@ def _call_broker(
 
 
 def _claim_attempt(session: Session, row: HatOrder, earlier: datetime | None) -> bool:
-    """Stamp a new attempt of `row` (now) in one conditional UPDATE on the attempt this sender
-    read (`earlier`, None before the first): False when another sender (a thread or process
-    holding the same tag) stamped one since, so its call may be in flight."""
+    """Stamp a new attempt of `row` (now) in one conditional UPDATE on the attempt and status
+    this sender read (`earlier`, None before the first): False when another sender (a thread
+    or process holding the same tag) stamped one since, so its call may be in flight, or the
+    fill sync adopted the order from the book (placed, its attempt time unchanged)."""
     same = HatOrder.placed_at.is_(None) if earlier is None else HatOrder.placed_at == earlier
     claimed = session.execute(
         update(HatOrder)
-        .where(HatOrder.id == row.id, same)
+        .where(
+            HatOrder.id == row.id,
+            same,
+            HatOrder.status == row.status,
+            HatOrder.broker_order_id.is_(None),
+        )
         .values(placed_at=utc_now())
         .execution_options(synchronize_session=False)
     )

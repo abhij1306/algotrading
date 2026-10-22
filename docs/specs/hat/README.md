@@ -451,12 +451,12 @@ to an artefact that exists.
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
 | HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs` |
-| HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected` |
+| HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over` |
 | HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap` |
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
 | HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
 | HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens` |
-| HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze`, PBT `manage.a_settled_answer_never_sells_twice`, PBT `tags.the_gtt_book_reads_only_resting_stops`, PBT `tags.a_reserved_tag_is_sent_by_one_sender` |
+| HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze`, PBT `manage.a_settled_answer_never_sells_twice`, PBT `manage.the_close_ends_only_settled_answers`, PBT `tags.the_gtt_book_reads_only_resting_stops`, PBT `tags.a_reserved_tag_is_sent_by_one_sender` |
 | HAT-EXEC-070 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.full_beats_partial` |
 | HAT-EXEC-071 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fire_once` |
 | HAT-EXEC-072 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fraction_arithmetic` |

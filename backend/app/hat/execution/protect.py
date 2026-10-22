@@ -188,14 +188,16 @@ class StopDesk:
         )
 
     @staticmethod
-    def exit_working(session: Session, position_id: uuid.UUID) -> bool:
-        """A sale of the position may still be at the broker."""
+    def exit_working(
+        session: Session, position_id: uuid.UUID, statuses: tuple[str, ...] = WORKING
+    ) -> bool:
+        """A sale of the position may still be at the broker (`statuses`: only those)."""
         found = session.scalar(
             select(HatOrder.id).where(
                 HatOrder.position_id == position_id,
                 HatOrder.is_virtual.is_(False),
                 HatOrder.purpose.in_(EXIT_SALES),
-                HatOrder.status.in_(WORKING),
+                HatOrder.status.in_(statuses),
             )
         )
         return found is not None
@@ -443,6 +445,12 @@ class StopDesk:
             # The GTT triggered and its sale is part filled: the rest may still sell. The sync
             # protects what is left once that order ends (`FillSync._gtt_unfilled`).
             return PROTECTED
+        if self.exit_working(session, position.id, LIVE):
+            # A sale the broker holds: `make_room` shrank the stops to what it leaves, and a
+            # stop over the shares it sells would be refused or hold them. The sync protects
+            # what is left once the sale ends. A sale whose answer was lost does not count: the
+            # position is protected meanwhile (HAT-EXEC-065).
+            return EXIT_WORKING
         lost_gtts = [row for row in working if row.purpose == STOP_GTT and self.lost(row)]
         if lost_gtts:
             self._settle(session, target, lost_gtts)
