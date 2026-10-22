@@ -43,7 +43,12 @@ from app.hat.data.store import BarRow, DataStore
 from app.hat.data.ticks import tick_for_date
 from app.hat.engine import exits, live_trades, trades
 from app.hat.errors import HatConfigError
-from app.hat.execution.session import BACKOFF_CAP_SECONDS, SessionWatch, backoff_delay
+from app.hat.execution.session import (
+    BACKOFF_CAP_SECONDS,
+    WATCH_FROM,
+    SessionWatch,
+    backoff_delay,
+)
 from app.hat.logs import CONTEXT_KEYS, JsonFormatter
 from app.hat.models import (
     HatAllocationDaily,
@@ -767,6 +772,38 @@ def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
         assert alerts <= 1
         if now - down_since >= timedelta(minutes=2):
             assert alerts == 1  # due as soon as an outage of 2 minutes has been observed
+
+
+@given(
+    st.lists(
+        st.tuples(st.integers(min_value=0, max_value=180), st.booleans()), min_size=1, max_size=40
+    ),
+    st.integers(min_value=0, max_value=20 * 60),
+)
+def test_no_outage_before_the_login_window(steps: list[tuple[int, bool]], start: int) -> None:
+    """HAT-OPS-031 (design review item 5): an outage is counted from 08:30 IST, when the login
+    prompt goes out. Checks before it (the night after the midnight token expiry, live or not)
+    never alert and reset the watch, so a session down since midnight alerts once, 2 minutes
+    after the first check from 08:30, and only if it is still down then. Harm: a
+    `broker.session_lost` alert every night at 00:02, which trains the owner to ignore the
+    alert that matters."""
+    watch = SessionWatch()
+    now = datetime.combine(date(2026, 10, 21), time(0), tzinfo=IST) + timedelta(minutes=start)
+    down_since: datetime | None = None
+    alerted = False
+    for gap, live in steps:
+        now += timedelta(minutes=gap)
+        step = watch.observe(now, live)
+        watched = now.astimezone(IST).time() >= WATCH_FROM
+        if live or not watched:
+            down_since, alerted = None, False
+            assert not step.alert
+            continue
+        down_since = down_since or now
+        due = not alerted and now - down_since >= timedelta(minutes=2)
+        assert step.alert == due
+        alerted = alerted or due
+        assert datetime.combine(now.date(), WATCH_FROM, tzinfo=IST) <= down_since
 
 
 @given(st.integers(min_value=-5, max_value=200))

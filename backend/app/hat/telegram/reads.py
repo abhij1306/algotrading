@@ -115,6 +115,26 @@ def logged_out(session: Session, day: date) -> list[HatBrokerAccount]:
     return [a for a in accounts(session) if session_status(session, a.id, day) != LIVE]
 
 
+def open_real_positions(session: Session, account_ids: Sequence[uuid.UUID]) -> int:
+    """The real open positions of the accounts' bots (the 09:05 prompt's escalation)."""
+    if not account_ids:
+        return 0
+    bots = select(HatBot.id).where(HatBot.broker_account_id.in_(account_ids))
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(HatPosition)
+            .where(
+                HatPosition.bot_id.in_(bots),
+                HatPosition.is_virtual.is_(False),
+                HatPosition.closed_at.is_(None),
+                HatPosition.qty_open > 0,
+            )
+        )
+        or 0
+    )
+
+
 def account_label(account: HatBrokerAccount) -> str:
     return f"{account.broker} {account.account_ref}"
 

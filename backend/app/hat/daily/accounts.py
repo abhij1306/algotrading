@@ -47,6 +47,7 @@ from ..execution.session import (
     SessionOwner,
     SessionRegistry,
     SessionWatch,
+    broker_health_failing,
     record_session,
     refresh_capabilities,
 )
@@ -55,6 +56,7 @@ from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..ops.trade_jobs import job_name, trade_jobs
+from ..risk.controls import sync_health
 from ..risk.sessions import SessionCalendar
 from ..time import trade_date_of, utc_now
 
@@ -72,6 +74,7 @@ logger = logging.getLogger(__name__)
 END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
 RECONCILE_FAILED = "reconcile.failed"
+BROKER_HEALTH = "broker_health"
 ACTIVE = "active"
 # The fill sync's cadence when nothing is watched closely (10-ops §3); the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
@@ -124,8 +127,11 @@ class AccountDesk:
 
     def check_session(self, session: Session, now: datetime) -> bool:
         """Write today's `hat_broker_session` from one read of the broker's status (the router
-        refuses an entry without a live one) and raise `broker.session_lost` once an outage has
-        lasted two minutes (HAT-OPS-031). True when the session is live."""
+        refuses an entry without a live one), raise `broker.session_lost` once an outage has
+        lasted two minutes (HAT-OPS-031), and trip or clear the account's bots' `broker_health`
+        kill (HAT-RISK-063; a check that failed counts as not live). True when the session is
+        live."""
+        live = False
         try:
             status = self.broker.session_status()
             live = status is SessionStatus.LIVE
@@ -142,8 +148,36 @@ class AccountDesk:
         except Exception:
             session.rollback()
             logger.exception("session check of account %s failed", self.account_id)
-            return False
+            live = False
+        self._sync_broker_health(session, now, live)
         return live
+
+    def _sync_broker_health(self, session: Session, now: datetime, live: bool) -> None:
+        """Each of the account's bots is manage-only while its session is down between 09:05
+        and the close, and clears by itself at the next check that is not (HAT-RISK-063). Per
+        bot, not the account switch: one account's live session never clears another's trip."""
+        failing = broker_health_failing(now, live)
+        try:
+            bots = list(
+                session.scalars(
+                    select(HatBot.id)
+                    .where(HatBot.broker_account_id == self.account_id)
+                    .order_by(HatBot.id)
+                )
+            )
+            for bot_id in bots:
+                sync_health(
+                    session,
+                    scope="bot",
+                    bot_id=bot_id,
+                    failing=failing,
+                    reason=BROKER_HEALTH,
+                    now=now,
+                )
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("broker health of account %s not updated", self.account_id)
 
     def reconcile(self, session: Session, now: datetime) -> bool:
         """Reconcile now; True when the account's trade date is reconciled (its entries may be

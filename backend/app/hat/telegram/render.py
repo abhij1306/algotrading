@@ -278,8 +278,18 @@ def watchlist_digest_text(digest: WatchlistDigest) -> str:
     return "\n".join(lines)
 
 
-def login_text(links: Iterable[tuple[str, str | None]], *, repeat: bool) -> str:
+def login_text(
+    links: Iterable[tuple[str, str | None]], *, repeat: bool, open_positions: int = 0
+) -> str:
+    """The login prompt, one link per line after the head. The repeat with real open positions
+    is URGENT: their broker stops still rest, but breakeven, trim and the MA exits run only on a
+    live session (HAT-TG-021)."""
     head = "Still not logged in:" if repeat else "Log in to your broker for today:"
+    if repeat and open_positions > 0:
+        head = (
+            f"URGENT: still not logged in. {open_positions} open position(s) have broker stops "
+            "only: breakeven, trim and MA exits are off until you log in:"
+        )
     lines = [head]
     for label, link in links:
         lines.append(f"{label}: {link or 'login link unavailable'}")

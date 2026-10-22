@@ -9,14 +9,22 @@ import time as time_module
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
-from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
+from hat_engine_support import (
+    AT,
+    TRADE_DAY,
+    USER,
+    World,
+    add_bot,
+    request_for,
+    seed_engine_world,
+)
 from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
@@ -33,7 +41,7 @@ from app.hat.engine import exits, lifecycle, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.errors import HatConfigError
 from app.hat.execution import modes
-from app.hat.execution.broker import BrokerUnavailableError, OrderType, Side
+from app.hat.execution.broker import BrokerUnavailableError, OrderType, SessionStatus, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.protect import STOP_DAY, STOP_GTT, UNSURE, WORKING
@@ -47,6 +55,7 @@ from app.hat.execution.router import (
     ExecutionRouter,
     PlacementCheck,
 )
+from app.hat.execution.session import broker_health_failing
 from app.hat.execution.submit import ENTRY, OrderRequest, reserve_order
 from app.hat.execution.tags import encode_tag, is_hat_tag
 from app.hat.models import (
@@ -63,7 +72,7 @@ from app.hat.models import (
     HatSignal,
 )
 from app.hat.notify import RecordingNotifier
-from app.hat.risk import controls
+from app.hat.risk import controls, kill
 from app.hat.risk.modes import ModeChangeError
 from app.hat.risk.sessions import SessionState
 from app.hat.time import IST, trade_date_of
@@ -1079,6 +1088,87 @@ def test_desks_start_with_the_adapters_capabilities(stored: bool, live: bool) ->
         outcome = rig.route()
         assert outcome.mode == (modes.AUTO if live else modes.SHADOW)
         assert len(rig.places()) == (1 if live else 0)
+
+
+class ScriptedSession:
+    """The adapter with a scripted session status: live, expired, or a read that fails."""
+
+    def __init__(self, broker: FyersHatBroker) -> None:
+        self._broker = broker
+        self.answer = "live"
+
+    def session_status(self) -> SessionStatus:
+        if self.answer == "fails":
+            raise BrokerUnavailableError("broker_unavailable")
+        return SessionStatus.LIVE if self.answer == "live" else SessionStatus.EXPIRED
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._broker, name)
+
+
+SESSION_CHECKS = st.lists(
+    st.tuples(
+        st.integers(min_value=0, max_value=24 * 60 - 1),
+        st.sampled_from(("live", "expired", "fails")),
+    ),
+    min_size=1,
+    max_size=8,
+    # one check per minute at most, as the periodic step runs them: a trip and a clear at one
+    # instant resolve to the trip by design (`kill._latest`, fail safe)
+    unique_by=lambda check: check[0],
+)
+
+
+@settings(max_examples=25, deadline=None)
+@given(SESSION_CHECKS, st.booleans())
+def test_broker_health_follows_the_session(checks: list[tuple[int, str]], feed_down: bool) -> None:
+    """HAT-RISK-063 (design review item 5): after every session check of a trading day, the
+    account's bots have `broker_health` tripped iff the session is not live (a failed read counts
+    as not live) between 09:05 and the 15:30 close IST, and cleared otherwise; the check never
+    touches another reason (a tripped `feed_health` stays), the account switch or a bot of
+    another account. Harm: a missed login leaves the bots looking healthy while their exits are
+    off, a check clears the feed's trip and entries run on a stale feed, or one account's
+    outage halts another's bots."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        scripted = ScriptedSession(rig.broker)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: scripted,  # type: ignore[arg-type,return-value]
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        bot = rig.world.bot_id
+        sibling = add_bot(session, rig.world).bot_id  # a second bot on the account
+        stranger = add_bot(session, rig.world).bot_id  # a bot on another account
+        sibling_row = session.get(HatBot, sibling)
+        assert sibling_row is not None
+        sibling_row.broker_account_id = rig.account_id
+        session.commit()
+        if feed_down:
+            controls.sync_health(
+                session, scope="bot", bot_id=bot, failing=True, reason="feed_health", now=AT
+            )
+            session.commit()
+        midnight = datetime.combine(TRADE_DAY, time(0), tzinfo=IST)
+        for minute, answer in sorted(checks):
+            now = midnight + timedelta(minutes=minute)
+            scripted.answer = answer
+            desks.watch_sessions(now)
+            session.expire_all()
+            rows = controls.kill_rows(session)
+            down = broker_health_failing(now, answer == "live")
+            for mine in (bot, sibling):
+                state = kill.current_state(rows, "bot", mine, stream="broker_health")
+                assert state == (kill.TRIPPED if down else kill.ARMED)
+            assert kill.current_state(rows, "bot", stranger) == kill.ARMED
+            feed = kill.current_state(rows, "bot", bot, stream="feed_health")
+            assert feed == (kill.TRIPPED if feed_down else kill.ARMED)
+            assert kill.current_state(rows, "account", None) == kill.ARMED
+        desks.release()
 
 
 PAUSED = "paused"

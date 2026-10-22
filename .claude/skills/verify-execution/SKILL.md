@@ -38,6 +38,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT broker.token_refused_on_a_read_ends_the_check` A -16 on any read inside the 30 s window of a passed profile check makes the next `session_status` EXPIRED at once (CodeAnt, PR 23). Harm: the alert and login prompt wait up to 30 s while every read already fails.
 - `PBT broker.one_session_owner` `SessionRegistry` hands out one owner per account, serialises that owner's calls and refuses a call after release; the adapter's session status never raises and maps (connected, client, store error) to live, expired, missing or unknown; `record_session` writes the morning login. Harm: two owners race for one session, or a broken token store reads as live.
 - `PBT ops.session_backoff_alert` The reconnect delay is 1 s doubling to 30 s, and an outage raises exactly one alert after 2 minutes, none after a recovery until the next outage. Harm: a dead session retries in a tight loop or alerts every minute.
+- `PBT ops.no_outage_before_the_login_window` An outage is counted from 08:30 IST: checks before it never alert and reset the watch, so a session down since midnight alerts once, 2 minutes after the first check from 08:30, only if it is still down. Harm: a `broker.session_lost` alert every night at 00:02 trains the owner to ignore it.
+- `PBT router.broker_health_follows_the_session` After every session check of the desks, each bot of the account has `broker_health` tripped iff the session is not live (a failed read counts) between 09:05 and the 15:30 close IST; a tripped `feed_health` stays, and the account switch and a bot of another account are untouched (checks are at least a minute apart: a trip wins a same-instant tie by design, `kill._latest`). Harm: a missed login leaves the bots looking healthy while their exits are off, or a check clears another reason's trip.
 - `CONF brk__interface_methods` The `HatBroker` protocol has exactly the 17 methods of 07 §8 and the Fyers adapter implements each with the same parameters. Harm: a method is added to or dropped from the broker boundary without the spec.
 - `CONF brk__import_boundary` Engine, risk, data, router and the interface module import nothing from `app.brokers`, `fyers_apiv3` or an OpenAlgo package, directly or transitively (and the checker is shown to catch a synthetic offender). Harm: strategy code starts to depend on one broker's SDK.
 - `CONF brk__fyers_capabilities` The Fyers adapter reports tag length 20, a static IP requirement, CNC only and no GTT for delivery. Harm: confirm and auto unlock before the owner verified GTT on a live account.
@@ -296,7 +298,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `10ecd4874234a99a862dbb66ecc10013c0d55e585456b1aef39e6024269190af`
+Covered digest: `21d2a480a7d50fc9452e14620cdce0892a5b986f1b339c21bc72f14346807028`
 
 ## Scope changes
 
@@ -340,6 +342,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 27 (design review 2026-10-22 item 2): a GTT that triggers with its sale resting below the limit is seen by `FillSync` step 5b (`_resting_trigger`: untagged SELL, working, short of its quantity, the GTT's quantity) and its sale made a market sale (`StopDesk.market_sale`, `modify_order` with `order_type` MARKET only). `BrokerOrder.order_type` is new (the adapter maps the Fyers `type` code; an unknown code is None, so the sync asks again). `FakeBroker.modify_order` now shows an accepted type change in its book. The GTT row stays live while the sale works, and `StopDesk.triggered_gtts` (a live GTT with a `gtt.triggered` event) holds back exit sales and `follow`. The review's proposals (a `triggered` status, a one-shot 09:15 job) were not taken: the sync already runs every minute and the live row keeps every other path off the shares. That Fyers accepts the change on a GTT's child is `[verify on a live account]`. Review round (/code-review): the sale is identified by its limit price (`BrokerOrder.price`, the adapter's `limitPrice`) and CNC product as well as quantity, and by its broker order id once marked; a sale is acted on only after `fills.RESTING_AFTER` (60 s, an in-memory first sight: a restart waits again); `triggered_gtts` counts only today's triggers (the sale is a DAY order) and filters on `aggregate_type`; `rescaled` waits on a triggered GTT too. That wait in `rescaled` has no property (a rescale and a trigger on one day need an ex-date intraday, which cannot happen: the rescale runs before the open). Declined: a `triggered` status (every LIVE-based path would then treat the shares as unprotected and place a stop over the working sale); bounding the conversion retries (once a minute while the sale works, and only in the session); persisting the refused-conversion alert (a restart may alert it once more); merging the resting and the ended-unfilled alerts (two different events). Nothing was narrowed.
 - PR 28 (design review 2026-10-22 item 3, HAT-BRK-102, -103): `_lookup_before_retry` raises `UnresolvedOrderError` for an entry the lookup did not find, so an unknown-outcome entry is never placed again; the fill sync adopts it by tag or `end_session` ends the signal `entry_not_found`. `find_mismatches` adds `duplicate_ht_order` for a tag the broker holds twice; `FillSync` records every fill and raises URGENT `fill.excess` for a fill that leaves an entry above its quantity. `FakeBroker.lagging` hides the newest book rows. The model gains `seen` (the lagging book), `BookCatchesUp`, `Adopt` (the later sync) and the liveness `LostEntryAdopted`. Review round (/code-review): the router alerts `entry.unresolved` (a crash between the attempt's commit and the call is not sent again either); `submit.TagBook` is the one rule for a duplicated tag in the send path, the fill sync and reconciliation (a row's own broker id, else the first order); `fill.excess` is alerted on the crossing fill only; `tags.a_reserved_tag_is_sent_by_one_sender` keeps entries in its retry case (both senders refuse; one the sync adopted meanwhile is reported placed). CodeAnt round: `fill.excess` is sent after the fill's stop (a slow Telegram call no longer delays the stop); `TagBook` skips a duplicate the broker ended unfilled when a row has no broker id. Declined: `FakeBroker.fetch_orderbook` appending `book` to a scripted read (unchanged behaviour the rigs rely on). Not taken from the review: the early `entry_unresolved` rejection (on a lagging book it rejects a signal whose order is live), the fill fence by broker order id and the refusal of excess fills (both leave real shares untracked and unstopped). Stops keep the same-tag re-place (above). Nothing was narrowed.
 - PR 29 (design review 2026-10-22 item 4, HAT-EXEC-012, HAT-BRK-092): `session.refresh_capabilities` rewrites `hat_broker_account.capabilities` from the adapter when the desks start and after every session check's row commit (`broker.capabilities_changed` on a change, relayed as a health alert); `modes.real_orders_allowed` (stored and the adapter's GTT) gates `router._gtt_refusal` and `submit._check_allowed` for an entry. `FyersHatBroker` takes `capabilities` (default `FYERS_CAPABILITIES`), and the rigs that place real entries build it and store it as `hat_exec_support.GTT_READY` (`exec_env` takes `stored_gtt` and `live_gtt`; the router `Rig` takes `live_gtt`). `tags.refusals_before_the_broker` gains both flags (re-pinned: stronger). `OwnedBroker.capabilities` reads the local value without the session owner, and `OverlapSpy` does not count it as a broker call, so `router.desk_calls_serialised` is unchanged. The triage asked for the first live check of a trade date; the desk start and every session check are used (the value is local, and a deploy that flips the constant reaches the account at once). Review round (/code-review): the refresh at start and on every check, outside the owner, after the row's commit, the health alert, the changed keys in the payload. `ExecutionRouter.tla` still has one GTT value per account: the stored/live split is checked by the properties only. Nothing was narrowed.
+- PR 30 (design review 2026-10-22 item 5, HAT-RISK-063, HAT-OPS-031, HAT-TG-021): `SessionWatch.observe` resets before `WATCH_FROM` (08:30 IST), which ends the nightly 00:02 `broker.session_lost`; `AccountDesk.check_session` syncs `broker_health` per bot of the account (`session.broker_health_failing`: not live from 09:05 until 15:30 IST; a failed status read counts as not live). `ops.session_backoff_alert` is unchanged (its runs start at 14:30 IST).
 - PR 41 only reworded the comment on `brk.import_boundary`'s data-socket exception (`test_conf_broker.py`): the module also hands the minute-history download the session's REST `history` (HAT-DATA-119). The graph check itself is unchanged.
 - PR 38 (design review 2026-10-22 item 17, HAT-DEC-BD5): the two login POSTs depend on `app/hat/api/guard.py`'s `frontend_write`. `FyersAuthService.exchange` takes an optional `accept_user` that sees the profile's user id before the save and raises `WrongAccountError` (a minimal change to `execution/fyers_auth.py`, which revfix's PR 30 may also touch). `POST /token` passes the active Fyers `account_ref`s through it and now opens a request session (`get_db`), so a login fails closed (503) while the database is down. The route properties' `client_for` sends the write header, wires a test origin rule and serves the broker accounts from SQLite. `fyers_auth_routes.cross_site_write_refused` needed `@example`s: 100 random draws missed the cross-site-without-Origin shape (about 1 in 87) when `Sec-Fetch-Site` was ignored (recorded below).
 - PR 38 review round: `_account_check` reads the accounts inside `accept_user`, once Fyers has answered (no connection held while Fyers answers, and an account onboarded meanwhile counts); an unknown user gets `ACCOUNT_UNCONFIRMED`; unreadable accounts answer 503 `DB_ERROR`. Not covered: the read-after-answer ordering itself (no property orders the read against the exchange). Left as follow-ups: `FyersHatBroker.complete_login` (`fyers_adapter.py`, no production caller) still calls `exchange` without `accept_user`; `ACCOUNT_ACTIVE` and `FYERS` are local strings in `api/fyers_auth.py`, because importing them from `execution.submit` or `execution.accounts` pulls the mode code into the API (CONF `auto_mode_single_user`), as `dashboard.py` and `daily/accounts.py` already do.
@@ -818,6 +821,54 @@ Break: `SessionWatch.observe` alerts on every down observation.
 ```
 E   assert 2 <= 1
 E   Failing test case: test_session_backoff_alert(
+```
+
+### PBT ops.no_outage_before_the_login_window
+
+Break: `SessionWatch.observe` has no 08:30 window (the code before PR 30). (PR 30)
+
+```
+E   assert not True
+E    +  where True = WatchStep(retry_in=2, alert=True).alert
+E   Failing test case: test_no_outage_before_the_login_window(
+```
+
+### PBT router.broker_health_follows_the_session
+
+Break: `check_session` does not sync `broker_health` (the code before PR 30). (PR 30)
+
+```
+E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: `broker_health_failing` ignores the 09:05-15:30 window (`return not live`). (PR 30)
+
+```
+E   AssertionError: assert 'tripped' == 'armed'
+```
+
+Break: a failed status read returns before the sync, so it does not count as not live. (PR 30)
+
+```
+E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: the sync trips the account switch instead of each bot. (PR 30)
+
+```
+E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: the sync covers only the account's first bot (CodeAnt review: the property now has a second bot on the account). (PR 30)
+
+```
+E   AssertionError: assert 'armed' == 'tripped'
+```
+
+Break: the sync covers every bot, not only the account's (a bot on another account is in the property). (PR 30)
+
+```
+E   AssertionError: assert 'tripped' == 'armed'
 ```
 
 ### CONF brk__interface_methods

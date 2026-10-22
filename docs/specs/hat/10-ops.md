@@ -285,13 +285,14 @@ MA "Failure handling" (verbatim):
   - Property: in every state where the data-health check for the current trade date is failing, no entry order is placed and every exit rule still fires; once the check passes again the health manage-only state clears without manual action. Harm: trading on bad data, or positions abandoned because data failed.
 
 #### HAT-OPS-031: Broker session drop: retry with backoff, alert after 2 minutes
-- **Statement:** When a broker session drops, HAT retries with backoff and sends a health alert if the session is still down after 2 minutes; affected bots are manage-only until it recovers.
-- **Source:** MA "Failure handling"; BL "Kill switches" (broker health); SCH event `broker.session_lost`.
-- **PR:** 13 (session), 16 (alert)
-- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, PBT `ops.session_backoff_alert`
+- **Statement:** When a broker session drops, HAT retries with backoff and sends a health alert if the session is still down after 2 minutes; affected bots are manage-only while it is down during the session, 09:05 to the 15:30 close (`broker_health`, HAT-RISK-063; no entry runs outside it). An outage is counted from the first check at or after 08:30 IST, when the login prompt goes out: a session that is not live between the midnight token expiry and 08:30 is not an outage.
+- **Source:** MA "Failure handling"; BL "Kill switches" (broker health); SCH event `broker.session_lost`; design review 2026-10-22 item 5.
+- **PR:** 13 (session), 16 (alert), 30 (08:30 start)
+- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, PBT `ops.session_backoff_alert`, PBT `ops.no_outage_before_the_login_window`
 - **Acceptance:**
   - Property: for every outage of duration t, a `broker.session_lost` alert is sent iff t ≥ 2 minutes, exactly once per outage, and retry intervals never decrease within an outage. Harm: either alert spam or a silent outage during market hours.
   - Property: while the session is down, no entry order is attempted for bots on that broker account. Harm: orders fail or are retried blindly.
+  - Property: checks before 08:30 IST never alert and reset the watch, so a session down since midnight alerts once, 2 minutes after the first check from 08:30 (about 08:32 with the one-minute session step), and only if it is still down then. Harm: a `broker.session_lost` alert every night at 00:02 trains the owner to ignore the one that matters.
 - **[OWNER-PENDING]** backoff schedule: the docs give none; default exponential backoff starting at 1 s, capped at 30 s; owner to confirm.
 
 #### HAT-OPS-032: Order rejected: retried at most once
@@ -512,8 +513,13 @@ incident in the PR or issue tracker).
 
 ### Missed login
 
-1. 09:05 IST: Telegram sends the second prompt. If it is missed too, the bots stay without a live
-   session: no entries that day (HAT-DEC-T14); broker-side stops still protect open positions.
+1. About 08:32 IST: if the session is still down, Telegram sends one `broker.session_lost` alert
+   (HAT-OPS-031). 09:05 IST: Telegram sends the second prompt, URGENT when real positions are
+   open (HAT-TG-021), and each bot on the account is manage-only (`broker_health`, HAT-RISK-063)
+   until the session is live. There are no entries until the login, and none that day if it
+   never comes (HAT-DEC-T14).
+   Only the broker-side stops protect open positions: without a session there are no ticks, no
+   reconciliation and no GTT changes, so breakeven, trim and the MA exits are off.
 2. Late login: send `/login` in Telegram for a fresh link, then follow "Morning login". Entries
    resume from the next trigger after the session is live; missed triggers are not replayed.
 3. If the token was revoked mid-day, `GET /api/hat/auth/fyers/status` shows disconnected: log in

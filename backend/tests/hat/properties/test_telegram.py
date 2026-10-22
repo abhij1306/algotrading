@@ -944,16 +944,23 @@ class Links:
 
 
 @SLOW
+# the positions' account is logged in, another is not: the repeat is not URGENT
+@example(offset=0, statuses=["live", "missing"], inactive=False, positions=["real"])
 @given(
     st.integers(min_value=-7, max_value=7),
     st.lists(st.sampled_from(("live", "expired", "missing")), min_size=1, max_size=3),
     st.booleans(),
+    st.lists(st.sampled_from(("real", "virtual", "closed")), max_size=3),
 )
-def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) -> None:
+def test_login_prompt_links(
+    offset: int, statuses: list[str], inactive: bool, positions: list[str]
+) -> None:
     """HAT-TG-021: on a trading day the 08:30 job sends one prompt with one link per active
     account, once however often it is run; the 09:05 job sends one iff some active account has
-    no live `hat_broker_session` that day, listing exactly those; on a non-trading day neither
-    sends anything. Harm: a missed login blocks all entries for the day, or noise trains the
+    no live `hat_broker_session` that day, listing exactly those, and it is URGENT, naming
+    their real open positions, iff those accounts hold any; on a non-trading day neither sends
+    anything. Harm: a missed login blocks all entries for the day, positions sit with broker
+    stops only while the app's exits are off and the owner is not told, or noise trains the
     owner to ignore prompts."""
     day = TRADE_DAY + timedelta(days=offset)
     rig = TgRig()
@@ -980,6 +987,24 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
                 )
             )
         session.flush()
+        for kind in positions:  # on the rig's bot, so on the first account
+            session.add(
+                HatPosition(
+                    bot_id=rig.world.bot_id,
+                    signal_id=uuid.uuid4(),
+                    instrument_id=rig.world.instruments[0],
+                    is_virtual=kind == "virtual",
+                    qty_open=10,
+                    avg_entry=Decimal(100),
+                    initial_stop=Decimal(95),
+                    current_stop=Decimal(95),
+                    currency="INR",
+                    opened_at=ist(day, 9, 0) - timedelta(days=3),
+                    closed_at=ist(day, 9, 0) - timedelta(days=1) if kind == "closed" else None,
+                    state="Open",
+                    rules_fired=[],
+                )
+            )
         session.execute(delete(HatBrokerSession))  # the rig's live sessions: this test sets its own
         for account, status in zip(accounts, statuses, strict=True):
             if status != "missing":
@@ -1019,6 +1044,11 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
     else:
         [again] = second
         assert {line.split("/")[-1] for line in again.splitlines()[1:]} == out
+        held = positions.count("real") if "X0001" in out else 0
+        head = again.splitlines()[0]
+        assert head.startswith("URGENT") == (held > 0)
+        if held:
+            assert f" {held} open position(s) " in head
 
 
 # --- HAT-TG-022: the watchlist digest -----------------------------------------------------------
