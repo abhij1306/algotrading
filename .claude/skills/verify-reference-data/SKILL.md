@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `695479cfe44a077607adb9e44844dc6a53104f9e9c8ff66ffa94e1ca0bcee82b`
+Covered digest: `b9f79f1f31a48bf6f4e9bf4c6af12bd09e9775768aecf4ae9361fb0d505008f1`
 
 ## Scope changes
 
@@ -109,6 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The Muhurat and Saturday special sessions are modelled as `MarketHoursPolicy.sessions`; the NSE holiday JSON shape (`tradingDate`, `evening_session`) is `[A]`, validated on the first live download.
 - `mcp.no_raw_error_text` checks substrings of 9 or more characters; payloads that are substrings of the stable codes themselves are excluded (`assume`).
 - `mcp.no_raw_error_text` leaves out the log record's own source location (`pathname`, `filename`, `module`) when comparing, and has an `@example` of the checkout directory: on a CI runner the path holds "algotrading", which a generated payload matched once a new module shifted Hypothesis's string pool (PR 14 finding).
+- `mcp.no_raw_error_text` also leaves out the call's own inputs, the server name `nse-bhavcopy` and the tool `get_bulk_quote`, which the client logs by design, and has an `@example` of `nse-bhavc`. PR 29 finding: new string constants shifted the pool and CI drew that payload. Break: drop `nse-bhavcopy` from `LOG_FIELD_TEXT` and the example fails.
 - Postgres is checked by `refresh_on_postgres` only for the unique keys; the property tests use SQLite, where the keys are the same constraints.
 - K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten socket and single-feed checks): the reference-data checks are unchanged and still pass.
 
