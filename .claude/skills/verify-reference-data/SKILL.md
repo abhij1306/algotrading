@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `b9f79f1f31a48bf6f4e9bf4c6af12bd09e9775768aecf4ae9361fb0d505008f1`
+Covered digest: `7003b4d97ef6e4b9b216063e17d6fb12d2c439a16688238f70d76085278325cb`
 
 ## Scope changes
 
@@ -116,6 +116,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 7 moved the three MCP ingest properties (`batches_le_50`, `concurrency_bounded`, `date_mismatch_rejected`) from `test_ingest_mcp.py` into `test_ingest.py`, unchanged, so that every `ingest.*` check lives in one file; `McpClient` gained `probe`, `index_snapshot` and `market_breadth` (see `verify-data`).
 
 - PR 23 (live checks 2026-10-22): `HttpTransport` speaks streamable HTTP with a session, after the live servers refused the bare `tools/call`. `CONF imports.mcp_transport_only` now looks for the deferred `requests` import in the whole `HttpTransport` class (it moved from `call` to `_post_raw`). `mcp.session_handshake` drives `HttpTransport` directly (not through `McpClient`): the client's retries are `mcp.retry_bounded`'s. The success envelope (text content) is the PR 4 recorded one; the live tool results are the recorded replies.
+- PR 44: `index_history` raises the new stable code `mcp_no_data` for the server's "No data for index" answer (outside `TRANSPORT_CODES`: it is an answer, not a transport failure). Its checks live in `verify-data` (`history_build.mcp_index_source_ends_at_depth`, `CONF fixtures.index_history_no_data`, a new test in `test_conf_fixtures.py`); the reference-data checks are unchanged.
 
 ## Scratch breaks
 

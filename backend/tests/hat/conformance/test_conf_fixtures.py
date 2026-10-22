@@ -7,7 +7,7 @@ from decimal import Decimal
 from hat_mcp_support import ScriptedTransport, fixture_json, fixture_text
 
 from app.hat.data.calendar import parse_nse_holidays
-from app.hat.data.mcp_client import McpClient, McpTransportError, unwrap_result
+from app.hat.data.mcp_client import McpClient, McpError, McpTransportError, unwrap_result
 from app.hat.data.reference import (
     ListedSymbol,
     build_listing_from_mcp,
@@ -107,6 +107,24 @@ def test_fixtures_history_mcp() -> None:
     index, next_end = client.index_history("India VIX", date(2026, 10, 1), 1)
     assert [r["date"] for r in index] == ["2026-09-30", "2026-10-01"]
     assert next_end == date(2026, 9, 1)
+
+
+def test_fixtures_index_history_no_data() -> None:
+    """The `get_index_history` answer for a window older than the server keeps (the `error` text
+    of the 22 Oct 2026 build, HAT-DATA-095) raises `mcp_no_data`, not `mcp_bad_response`, and
+    ends that index's chain without a row."""
+    from app.hat.data.history_build import mcp_index_source
+
+    reply = fixture_json("mcp_index_history_no_data.json")
+    client = McpClient(ScriptedTransport([reply]), sleep=lambda _s: None)
+    try:
+        client.index_history("NIFTY 50", date(2023, 10, 18), 12)
+    except McpError as exc:
+        assert exc.code == "mcp_no_data"
+    else:
+        raise AssertionError("a no-data answer must raise")
+    client = McpClient(ScriptedTransport([reply]), sleep=lambda _s: None)
+    assert list(mcp_index_source(client)("NIFTY 50", date(2010, 1, 1), date(2023, 10, 18))) == []
 
 
 VCP_ORACLE_SHA256 = "95e991f5a33b950f443db7ccc9a14caff24969832c9ecd10c6e549a2dabf3f4b"

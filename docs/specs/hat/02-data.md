@@ -639,12 +639,13 @@ Running it (an ops step, from `backend/`, with the HAT database up, `HAT_DATA_RO
   - Property: for every combination of MCP and archive records covering the same actions, the stored set is the union keyed by (instrument_id, ex_date, action_type) with no duplicates. Harm: pre-MCP splits stay unadjusted and early history is wrong.
 
 #### HAT-DATA-095: Index history
-- **Statement:** NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX history load into `index_daily` from NSE index archives.
-- **Source:** DS "Historical data build" step 5 (check Smallcap 250's start date); PLAN PR 5 (adds India VIX for the regime).
-- **PR:** 5
-- **Verification:** PBT `ingest.index_snapshot_stored`
+- **Statement:** NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX history load into `index_daily` from NSE index archives. The NSE MCP `get_index_history` serves recent years: its "No data for index" answer for an older window ends that index's chain (code `mcp_no_data`), while any other unusable answer is a failure (`mcp_bad_response`). Every earlier day that has bars is filled from NSE's daily `ind_close_all_DDMMYYYY.csv` [A] (fetched once per day for all indices, paced like the bhavcopy downloader, kept under `raw/`; pre-2015 names such as CNX Nifty read as today's [A]). An index whose source fails is reported with its code and keeps the rows it gave; the other indices, the validation and the report still run, and the command line exits 1.
+- **Source:** DS "Historical data build" step 5 (check Smallcap 250's start date); PLAN PR 5 (adds India VIX for the regime); the 22 Oct 2026 build, which aborted on the MCP's no-data answer (PR 44).
+- **PR:** 5, 44
+- **Verification:** PBT `ingest.index_snapshot_stored`, PBT `history_build.mcp_index_source_ends_at_depth`, PBT `history_build.archive_fills_before_mcp_depth`, PBT `history_build.index_failure_isolated`, CONF `fixtures.index_history_no_data`
 - **Acceptance:**
   - Property: for every trading day in the built range on or after each index's start date, `index_daily` has exactly one row for that index. Harm: the regime engine and RS benchmark have gaps that bias backtests.
+  - Property: days before the MCP's depth are filled from the archive, a no-data answer ends the chain and nothing else does, and one index failing stops neither the others nor the validation and report. Harm: the full-history build aborts with no index, validation or report, or backtests run on two years of index history.
 
 #### HAT-DATA-096: Validation report
 - **Statement:** The build reports row counts per day and compares 50 random symbol-days with NSE MCP `get_stock_history`; closes must match exactly. The command line prints its summary and appends it to `history_build/report-YYYY-MM-DD.txt` under the data root (the IST day the run finished, under a line with that time), so a finished run's report survives without `tee` (a run interrupted or stopped by an exception prints and saves none); a report that cannot be written is logged and does not change the exit code.

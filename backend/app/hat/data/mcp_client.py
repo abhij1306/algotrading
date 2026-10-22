@@ -54,6 +54,10 @@ CODE_TIMEOUT = "mcp_timeout"
 CODE_TOOL_ERROR = "mcp_tool_error"
 CODE_BAD_RESPONSE = "mcp_bad_response"
 CODE_CONFIG = "mcp_config"
+# `get_index_history` asked for a window before the server's depth (about two years): the end of
+# that index's chain, not a failure (HAT-DATA-095). Only the stable code leaves the client.
+CODE_NO_DATA = "mcp_no_data"
+NO_DATA_PREFIX = "No data for index"
 TRANSPORT_CODES = frozenset({CODE_TRANSPORT, CODE_TIMEOUT, CODE_TOOL_ERROR, CODE_BAD_RESPONSE})
 
 
@@ -553,13 +557,16 @@ class McpClient:
     def index_history(
         self, index_name: str, end_date: date, months: int = 12
     ) -> tuple[list[dict[str, Any]], date | None]:
-        """One chunk of `get_index_history` and the `next_end_date` to chain from."""
+        """One chunk of `get_index_history` and the `next_end_date` to chain from. A window older
+        than the server keeps raises `mcp_no_data`; any other unusable answer `mcp_bad_response`."""
         data = self.call(
             SERVER_BHAVCOPY,
             "get_index_history",
             {"indexName": index_name, "months": months, "endDate": end_date.isoformat()},
             symbol_count=1,
         )
+        if isinstance(data, dict) and str(data.get("error", "")).startswith(NO_DATA_PREFIX):
+            raise McpError(CODE_NO_DATA, attempts=1)
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             raise McpError(CODE_BAD_RESPONSE, attempts=1)

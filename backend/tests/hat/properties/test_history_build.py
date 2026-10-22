@@ -5,8 +5,9 @@ nothing."""
 
 import hashlib
 import io
+import itertools
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import date, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -33,16 +34,30 @@ from app.hat.data.bhavcopy import (
 )
 from app.hat.data.corporate_actions import LoadReport
 from app.hat.data.history_build import (
+    INDEX_NAMES,
+    ArchiveIndexSource,
     BuildReport,
     DictCatalog,
+    IndexPoint,
     Pacing,
+    Validation,
+    archive_fill_source,
     history_build_job,
+    index_archive_name,
+    load_index_history,
     mcp_close_source,
     mcp_index_source,
     run_history_build,
 )
-from app.hat.data.mcp_client import McpClient, McpError
-from app.hat.data.store import DATASET_BARS, DataStore, PartitionReport
+from app.hat.data.mcp_client import CODE_BAD_RESPONSE, McpClient, McpError
+from app.hat.data.store import (
+    DATASET_BARS,
+    BarRow,
+    DataStore,
+    IndexRow,
+    PartitionReport,
+    index_coverage,
+)
 from app.hat.models import HatMarket, HatTradingCalendar
 from app.hat.ops.jobs import JobError
 
@@ -288,6 +303,225 @@ def test_mcp_index_source_chains(present: set[date], start: date, span: int) -> 
     got = list(mcp_index_source(client)("India VIX", start, end))
     assert sorted(p.day for p in got) == sorted(d for d in present if start <= d <= end)
     assert all(p.row.close == values[p.day] and p.row.index_name == "INDIA VIX" for p in got)
+
+
+CHUNK_DAYS = 30 * 12  # the fake server's chunk for MCP_HISTORY_MONTHS
+
+
+@given(
+    present=st.sets(st.sampled_from(SERIES_DAYS), min_size=1, max_size=120),
+    depth=st.sampled_from(SERIES_DAYS),
+    start=st.sampled_from(SERIES_DAYS),
+    span=st.integers(0, 900),
+    other_error=st.booleans(),
+)
+@settings(max_examples=40)
+def test_mcp_index_source_ends_at_depth(
+    present: set[date], depth: date, start: date, span: int, other_error: bool
+) -> None:
+    """PR 44: a server that keeps history only from `depth` answers an older window with its
+    "No data for index" error. The chain then ends: it yields every present day from `depth` in
+    [start, end] and asks nothing more. Any other `error` answer is a failure (raised as
+    `mcp_bad_response`), never the end of the history."""
+    end = start + timedelta(days=span)
+    values = {d: Decimal(i + 1) for i, d in enumerate(sorted(present)) if d >= depth}
+    served = _index_server(values)
+
+    def answer(tool: str, args: Mapping[str, Any]) -> object:
+        if date.fromisoformat(args["endDate"]) < depth:
+            if other_error:
+                return {"error": "upstream unavailable"}
+            return {"error": f"No data for index '{args['indexName']}' between x and y"}
+        return served.call("nse-bhavcopy", tool, args)
+
+    transport = ScriptedTransport(answer)
+    source = mcp_index_source(McpClient(transport, sleep=lambda _s: None))
+    cursors = [end - timedelta(days=CHUNK_DAYS * k) for k in range((end - start).days // 360 + 1)]
+    reaches = any(c < depth for c in cursors if c >= start)
+    if other_error and reaches:
+        with pytest.raises(McpError) as caught:
+            list(source("NIFTY 50", start, end))
+        assert caught.value.code == CODE_BAD_RESPONSE
+        return
+    got = list(source("NIFTY 50", start, end))
+    assert sorted(p.day for p in got) == sorted(d for d in values if start <= d <= end)
+    asked = [date.fromisoformat(args["endDate"]) for _s, _t, args in transport.calls]
+    assert sum(d < depth for d in asked) == (1 if reaches else 0)
+    assert all(d < depth for d in asked[-1:]) == reaches  # the no-data answer was the last call
+
+
+FILL_DAYS = weekdays(date(2023, 9, 1), date(2023, 11, 30))
+OLD_NAMES = {"NIFTY 50": "CNX Nifty", "NIFTY 500": "CNX 500"}  # the archive's names before 2015
+
+
+def _archive_csv(day: date, old_names: bool) -> bytes:
+    """An `ind_close_all` file in NSE's layout [A]; values tagged .5 so archive rows are known."""
+    lines = [
+        "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,"
+        "Closing Index Value,Points Change,Change(%),Volume,Turnover (Rs. Cr.),P/E,P/B,Div Yield"
+    ]
+    for name in (*INDEX_NAMES, "NIFTY BANK"):
+        shown = OLD_NAMES.get(name, name.title()) if old_names else name.title()
+        v = f"{day.toordinal()}.5"
+        lines.append(f'"{shown}",{day:%d-%m-%Y},{v},{v},{v},{v},1.0,0.1,100,"1,234.5",20,3,1')
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _bars(store: DataStore, days: set[date]) -> None:
+    one = Decimal(1)
+    for day in days:
+        store.write_bars(
+            day,
+            [
+                BarRow(
+                    "i1",
+                    "INE000000001",
+                    "S1",
+                    "EQ",
+                    one,
+                    one,
+                    one,
+                    one,
+                    None,
+                    1,
+                    None,
+                    "bhavcopy",
+                    "r",
+                )
+            ],
+        )
+
+
+@given(
+    bars=st.sets(st.sampled_from(FILL_DAYS), min_size=1),
+    depths=st.fixed_dictionaries(
+        {n: st.one_of(st.none(), st.sampled_from(FILL_DAYS)) for n in INDEX_NAMES}
+    ),
+    files=st.dictionaries(
+        st.sampled_from(FILL_DAYS), st.sampled_from(["ok", "old_names", "not_found", "error"])
+    ),
+    usual=st.sampled_from(["ok", "old_names"]),
+)
+@settings(max_examples=40, deadline=None)
+def test_archive_fills_before_mcp_depth(
+    bars: set[date], depths: dict[str, date | None], files: dict[date, str], usual: str
+) -> None:
+    """PR 44: with the MCP serving each index only from its depth (or not at all), the daily
+    `ind_close_all` archive fills every earlier day that has bars, under today's index names
+    whatever the file calls them, and the MCP's rows win from its depth on. Only a day whose
+    file NSE lacks or failed to send stays missing. Each file is fetched once for all indices,
+    requests are spaced by the interval, and a rerun reads stored files from disk and asks
+    again only for the days that failed."""
+    far = date.max
+    first = {n: min((d for d in bars if d >= (depths[n] or far)), default=far) for n in depths}
+
+    def primary(name: str, start: date, end: date) -> Iterator[IndexPoint]:
+        for day in sorted(d for d in bars if d >= first[name] and start <= d <= end):
+            v = Decimal(day.toordinal())
+            yield IndexPoint(day, IndexRow(name, v, v, v, v))
+
+    now = [0.0]
+    asked: list[tuple[date, float]] = []
+    by_url = {history_build.INDEX_ARCHIVE_URL + index_archive_name(d): d for d in FILL_DAYS}
+
+    def fetch(url: str) -> FetchResult:
+        day = by_url[url]
+        asked.append((day, now[0]))
+        kind = files.get(day, usual)
+        if kind in ("not_found", "error"):
+            return FetchResult(kind)  # type: ignore[arg-type]
+        return FetchResult("ok", _archive_csv(day, kind == "old_names"))
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    pacing = Pacing(interval=2.0, clock=lambda: now[0], sleep=sleep)
+    failed = {d for d, kind in files.items() if kind in ("not_found", "error")}
+    with tempfile.TemporaryDirectory() as tmp:
+        store = DataStore(Path(tmp))
+        _bars(store, bars)
+        archive = ArchiveIndexSource(store, fetch, pacing)
+        load_index_history(
+            store, archive_fill_source(primary, archive), FILL_DAYS[0], FILL_DAYS[-1]
+        )
+        before = max(first.values())
+        assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before)
+        assert all(b - a >= 2.0 for (_d, a), (_e, b) in itertools.pairwise(asked))
+        missing = index_coverage(store, sorted(bars), dict.fromkeys(INDEX_NAMES, FILL_DAYS[0]))
+        for name in INDEX_NAMES:
+            assert missing[name] == sorted(d for d in bars if d < first[name] and d in failed)
+        con = store.connect()
+        rows = con.execute("SELECT index_name, date, close FROM index_daily").fetchall()
+        con.close()
+        assert {n for n, _d, _c in rows} <= set(INDEX_NAMES)
+        for name, day, close in rows:
+            assert close == day.toordinal() + (Decimal(0) if day >= first[name] else Decimal("0.5"))
+        asked.clear()
+        again = ArchiveIndexSource(store, fetch, pacing)
+        load_index_history(store, archive_fill_source(primary, again), FILL_DAYS[0], FILL_DAYS[-1])
+        assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before and d in failed)
+
+
+ISOLATION_DAYS = weekdays(date(2024, 6, 24), date(2024, 6, 28))
+
+
+@given(
+    failing=st.dictionaries(
+        st.sampled_from(INDEX_NAMES), st.tuples(st.booleans(), st.integers(0, 5))
+    ),
+)
+@settings(max_examples=30, deadline=None)
+def test_index_failure_isolated(failing: dict[str, tuple[bool, int]]) -> None:
+    """PR 44: an index whose source fails (an MCP error, or anything else) is recorded with a
+    stable code and keeps the rows it gave before failing; every other index loads in full, the
+    validation and the report still run, and the run (exit code and job) needs the operator
+    exactly when an index failed."""
+
+    def source(name: str, start: date, end: date) -> Iterator[IndexPoint]:
+        mcp, after = failing.get(name, (False, len(ISOLATION_DAYS)))
+        for day in weekdays(start, end)[:after]:
+            v = Decimal(day.toordinal())
+            yield IndexPoint(day, IndexRow(name, v, v, v, v))
+        if name in failing:
+            raise McpError(CODE_BAD_RESPONSE) if mcp else RuntimeError("upstream text")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        args: dict[str, Any] = {
+            "store": DataStore(Path(tmp)),
+            "fetch": lambda _url: FetchResult("not_found"),
+            "catalog": DictCatalog(auto=True),
+            "start": ISOLATION_DAYS[0],
+            "end": ISOLATION_DAYS[-1],
+            "holidays": set(ISOLATION_DAYS),  # no gaps: only the index can fail the run
+            "pacing": Pacing(interval=0),
+            "index_source": source,
+            "index_starts": dict.fromkeys(INDEX_NAMES, ISOLATION_DAYS[0]),
+            "validation": Validation(lambda _s, _d: None),
+        }
+        report = run_history_build(**args)
+        assert report.index is not None
+        assert report.validation is not None
+        assert report.index.failed == {
+            n: CODE_BAD_RESPONSE if mcp else "index_source_failed"
+            for n, (mcp, _after) in failing.items()
+        }
+        loaded = load_index_history(args["store"], lambda *_a: iter(()), *ISOLATION_DAYS[::4])
+        assert loaded.failed == {}
+        con = args["store"].connect()
+        rows = con.execute("SELECT index_name, count(*) FROM index_daily GROUP BY 1").fetchall()
+        con.close()
+        want = {
+            n: min(failing.get(n, (False, len(ISOLATION_DAYS)))[1], len(ISOLATION_DAYS))
+            for n in INDEX_NAMES
+        }
+        assert dict(rows) == {n: k for n, k in want.items() if k}
+        assert history_build._exit_code(report) == (1 if failing else 0)
+        assert ("failed {}" in history_build._summary(report)) is not bool(failing)
+        if failing:
+            with pytest.raises(JobError, match="history_index_incomplete"):
+                history_build_job(**args)()
+        else:
+            history_build_job(**args)()
 
 
 @given(

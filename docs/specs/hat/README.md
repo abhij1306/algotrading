@@ -218,7 +218,7 @@ to an artefact that exists.
 | HAT-DATA-092 | [02](02-data.md) | 5 | PBT `bhavcopy.resume_skips_done`, PBT `bhavcopy.rate_limited` |
 | HAT-DATA-093 | [02](02-data.md) | 5 | PBT `bhavcopy.parsers_agree` |
 | HAT-DATA-094 | [02](02-data.md) | 5 | PBT `corporate_actions.upsert_idempotent` |
-| HAT-DATA-095 | [02](02-data.md) | 5 | PBT `ingest.index_snapshot_stored` |
+| HAT-DATA-095 | [02](02-data.md) | 5, 44 | PBT `ingest.index_snapshot_stored`, PBT `history_build.mcp_index_source_ends_at_depth`, PBT `history_build.archive_fills_before_mcp_depth`, PBT `history_build.index_failure_isolated`, CONF `fixtures.index_history_no_data` |
 | HAT-DATA-096 | [02](02-data.md) | 5, 43 | PBT `bhavcopy.validation_flags_mismatch`, PBT `history_build.cli_root_and_report` |
 | HAT-DATA-097 | [02](02-data.md) | 5 | PBT `bhavcopy.traded_value_kept` |
 | HAT-DATA-100 | [02](02-data.md) | 14 | PBT `announcements.poll_schedule` |
