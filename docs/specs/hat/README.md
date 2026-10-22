@@ -431,7 +431,7 @@ to an artefact that exists.
 | HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
 | HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
-| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15, 29 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker` |
+| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15, 25, 29 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker` |
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
 | HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
@@ -457,8 +457,8 @@ to an artefact that exists.
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
 | HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
 | HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15, 20 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens`, PBT `manage.verify_covers` |
-| HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze`, PBT `manage.a_settled_answer_never_sells_twice`, PBT `manage.the_close_ends_only_settled_answers`, PBT `tags.the_gtt_book_reads_only_resting_stops`, PBT `tags.a_reserved_tag_is_sent_by_one_sender` |
-| HAT-EXEC-066 | [07](07-execution-and-brokers.md) | 27 | TLA `StopPlacement!RestingSold`, PBT `manage.gtt_resting_marketed` |
+| HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18, 25 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze`, PBT `manage.a_settled_answer_never_sells_twice`, PBT `manage.the_close_ends_only_settled_answers`, PBT `tags.the_gtt_book_reads_only_resting_stops`, PBT `tags.a_reserved_tag_is_sent_by_one_sender`, PBT `tags.a_lost_gtt_is_found_by_its_tag` |
+| HAT-EXEC-066 | [07](07-execution-and-brokers.md) | 25, 27 | TLA `StopPlacement!RestingSold`, PBT `manage.gtt_resting_marketed` |
 | HAT-EXEC-070 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.full_beats_partial` |
 | HAT-EXEC-071 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fire_once` |
 | HAT-EXEC-072 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fraction_arithmetic` |
@@ -466,15 +466,16 @@ to an artefact that exists.
 | HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15, 17 | TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close`, PBT `ops.window_not_starved` |
 | HAT-EXEC-075 | [07](07-execution-and-brokers.md) | 18 | PBT `manage.async_sale_rejection_retried` |
 | HAT-BRK-080 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.interface_methods`, CONF `brk.import_boundary` |
-| HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13, 18 | PBT `tags.broker_errors_fail_closed`, PBT `tags.a_keyless_book_never_reads_as_absent`, PBT `fyers_broker.an_ok_reply_without_its_list_is_unreadable`, PBT `fyers_broker.a_circuit_opening_mid_place_is_not_sent` |
-| HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16 | TLA `ExecutionRouter!NoEntryWithoutSession` |
-| HAT-BRK-090 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.fyers_payload_mapping` |
-| HAT-BRK-091 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.fyers_capabilities` |
+| HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13, 18, 25 | PBT `tags.broker_errors_fail_closed`, PBT `tags.a_keyless_book_never_reads_as_absent`, PBT `fyers_broker.an_ok_reply_without_its_list_is_unreadable`, PBT `fyers_broker.a_circuit_opening_mid_place_is_not_sent`, PBT `fyers_broker.a_rejection_with_an_id_stays_rejected` |
+| HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16, 23, 25 | TLA `ExecutionRouter!NoEntryWithoutSession`, PBT `broker.token_refused_is_session_expired`, PBT `broker.token_refused_on_a_read_ends_the_check`, PBT `fyers_auth.a_good_exchange_saves_once_and_reports_in_order`, PBT `broker.rate_limit_is_its_own_code`, PBT `bars.minute_history_rate_limit_stops_run` |
+| HAT-BRK-090 | [07](07-execution-and-brokers.md) | 13, 25 | PBT `tags.fyers_payload_mapping`, PBT `tags.gtt_payloads`, PBT `tags.the_gtt_book_reads_only_resting_stops`, CONF `brk.recorded_writes` |
+| HAT-BRK-091 | [07](07-execution-and-brokers.md) | 13, 25 | CONF `brk.fyers_capabilities`, CONF `brk.recorded_writes`, PBT `broker.the_fyers_adapter_unlocks_modes_on_an_active_account` |
 | HAT-BRK-092 | [07](07-execution-and-brokers.md) | 13, 29 | TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.session_check_refreshes_capabilities`, PBT `router.desks_start_with_the_adapters_capabilities` |
+| HAT-BRK-093 | [07](07-execution-and-brokers.md) | 25 | PBT `fyers_ipv4.fyers_http_leaves_over_ipv4`, PBT `fyers_ipv4.is_fyers_host_exact`, CONF `brk.fyers_adapter_wraps_existing` |
 | HAT-BRK-100 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.shape_and_roundtrip`, DB `runtime.order_tag_unique` |
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13, 28 | TLA `OrderReconciliation!UnconfirmedResolvedByTag`, TLA `OrderReconciliation!AtMostOneEntryPerSignal`, TLA `OrderReconciliation!LostEntryAdopted`, PBT `tags.a_timeout_is_looked_up_before_any_retry`, PBT `tags.idempotent_order_submission`, PBT `router.unresolved_entry_is_alerted_not_resent` |
-| HAT-BRK-103 | [07](07-execution-and-brokers.md) | 28 | PBT `tags.a_tag_twice_at_the_broker_blocks_the_account`, PBT `manage.a_second_order_under_one_tag_is_tracked`, PBT `manage.a_dead_second_order_never_ends_the_entry`, PBT `tags.a_duplicated_tag_is_read_one_way` |
+| HAT-BRK-103 | [07](07-execution-and-brokers.md) | 25, 28 | CONF `brk.recorded_writes`, PBT `tags.a_tag_twice_at_the_broker_blocks_the_account`, PBT `manage.a_second_order_under_one_tag_is_tracked`, PBT `manage.a_dead_second_order_never_ends_the_entry`, PBT `tags.a_duplicated_tag_is_read_one_way` |
 | HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15, 24 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order`, PBT `router.routine_reconcile_keeps_gate`, PBT `router.entry_gate_keyed_by_trade_date`, PBT `router.failed_first_reconcile_alerts_once_per_date` |
 | HAT-BRK-111 | [07](07-execution-and-brokers.md) | 13, 24, 28 | TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today`, PBT `router.older_read_never_overrides_newer` |
 | HAT-BRK-112 | [07](07-execution-and-brokers.md) | 13, 24 | PBT `tags.reconcile_scope`, PBT `tags.unreadable_foreign_rows_skipped` |

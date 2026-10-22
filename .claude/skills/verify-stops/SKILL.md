@@ -118,7 +118,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `062a5960d4b655c843cbb5f3fe0f5eb387581162d18ca1bb4b20689d033071e8`
+Covered digest: `78aea293b6ec3a74f7004a7bcb177a4b743d32cef711d229562cf5cec6770e3f`
 
 ## Scope changes
 
@@ -127,6 +127,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
 - PR 15c built `StopPlacement` and removed `TLA StopPlacement!StopOnlyTightens` from `KNOWN_GAPS`. The model has one real position, at most two entry fills and three stop levels; it does not model the quantity a stop covers (resizing is checked by `manage.real_fill_protected` on the real code) nor the GTT's limit price (`stops.gtt_limit_offset`). `AlwaysProtected` allows the window between a fill and its stop work, a failure that was alerted, and an unseen unfilled GTT (then `GttUnfilledAlerted` holds). `NightlyVerifyCovers` accepts an alert in place of a GTT (the broker could not be reached, or the new GTT failed). `TypeOK` has no broken variant.
 - PR 20 (audit 2026-10-22 F2) added the broker's shares (`bqty`), the working entry (`rest`), `exited` and `cancelAsked`: a sale that empties the position closes it only when no entry works, and `EntryFill` can follow it. The cancel of the remainder is asked in the sale's own step (for a stop fill the code asks it in the protect that follows the fill in the same sync); a cancel that comes too late is the interleaving of `EntryFill` before `EntryEnds`. A day stop that expires at the close under a held position with no GTT (reachable once a late fill after the swap rests on the day stop alone) puts the position back to `protecting`, as `FillSync._statuses` does with an ended stop. `EmptiedCloses` relies on the broker ending the entry (weak fairness on `EntryEnds`: the cancel, else the DAY expiry).
+- PR 25 only reworded `protect.py`'s docstring and a comment (a GTT now carries its HT tag; a lost one is settled by tag first). No check here changed.
 - Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
