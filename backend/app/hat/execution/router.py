@@ -311,8 +311,8 @@ class ExecutionRouter:
         )
         if refusal is not None:
             return refusal
-        if not self._guard.reconciled:
-            # HAT-BRK-110: the session's first order waits for a successful reconciliation.
+        if not self._guard.reconciled_today():
+            # HAT-BRK-110: the trade date's first entry waits for a successful reconciliation.
             try:
                 self._reconciler.run(session, account_id)
             except BrokerUnavailableError:

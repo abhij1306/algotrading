@@ -17,7 +17,7 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
+from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from sqlalchemy import select
@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.engine import trades
 from app.hat.execution.fyers_adapter import FyersHatBroker
-from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.manage import FlattenReport
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
 from app.hat.execution.router import ExecutionRouter, PlacementCheck
@@ -217,7 +216,7 @@ class TgRig:
         self.notifier: Notifier = notifier if notifier is not None else RecordingNotifier()
         if telegram_alerts:
             self.notifier = TelegramNotifier(self.client, self.factory)
-        guard = ExecutionGuard(reconciled=True)
+        guard = guard_on(TRADE_DAY)
         reconciler = ReconciliationService(broker, guard, notifier_sink(self.notifier))
         self.signer = ApprovalSigner(secret)
         self.router = ExecutionRouter(

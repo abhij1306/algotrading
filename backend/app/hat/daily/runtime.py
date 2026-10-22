@@ -265,6 +265,7 @@ class HatRuntime:
             issuer=self.signer.issue,
             calendar=self.calendar,
             tick_for=lambda _s, p: self.book.day(trade_date_of(self._now())).tick(p.instrument_id),
+            today=lambda: trade_date_of(self._now()),
         )
         feed_stale = self._feed_stale
         self.route = LiveRoute(self.desks.router, self.gates, feed_stale, clock, self.calendar)

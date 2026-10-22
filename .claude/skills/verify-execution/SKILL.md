@@ -12,7 +12,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA OrderReconciliation!PersistBeforeCall` A broker call is made only after the attempt is stamped in hat_order.placed_at and committed. Harm: an order reaches the broker, the process dies, and nothing records that it was tried, so a restart cannot tell it happened.
 - `TLA OrderReconciliation!AtMostOneEntryPerSignal` One signal has at most one live entry order at the broker; a retry reuses the tag. Harm: a retried entry is a second order and the position is doubled.
 - `TLA OrderReconciliation!UnconfirmedResolvedByTag` An order whose outcome is unknown is looked up by tag before any second placement. Harm: a timeout is retried blind and the first order had landed.
-- `TLA OrderReconciliation!ReconcileBeforeFirstOrder` No order is called before a reconciliation succeeded in this process lifetime. Harm: orders go out on top of a book HAT has never compared with the broker's.
+- `TLA OrderReconciliation!ReconcileBeforeFirstOrder` No entry is called before a reconciliation succeeded in this process lifetime (the model's orders are entries; a new trade date closing the gate again is `router.entry_gate_keyed_by_trade_date`). Harm: orders go out on top of a book HAT has never compared with the broker's.
 - `TLA OrderReconciliation!MismatchBlocksEntries` While a mismatch is open, no entry is called for the bot or account it blocks. Harm: HAT keeps buying while its own books disagree with the broker's.
 - `TLA OrderReconciliation!AlertOncePerMismatch` One alert per mismatch, however many reconciliations see it. Harm: the owner is flooded and learns to ignore the alert.
 - `TLA OrderReconciliation!AccountActiveAfterCheck` An order is called only for an account that passed the capability check. Harm: orders go to an account whose funds, positions or holdings could not be read.
@@ -129,7 +129,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.swap_leaves_no_gap` Whatever the broker answers to the GTT (and its retry), `gtt.swap` cancels the intraday stop only after a confirmed GTT; otherwise the intraday stop keeps working, `gtt.swap_failed` is raised and the job fails to be retried; a day stop the broker will not cancel fails the swap too. Harm: the day stop is cancelled first and the position spends the night unprotected.
 - `PBT manage.entry_remainder_tracked` An entry fills in chunks, interleaved with its day stop filling and a flatten, with the broker taking or refusing the cancel of the entry's rest. Once a sale empties the position the rest of the entry is asked to be cancelled (once); a chunk that fills first adds to the still-open position and gets a stop; after every sync HAT's open quantity equals the shares in the broker's trade book and its live stops cover exactly those, and the position closes only with no share held and no entry working at the broker (audit 2026-10-22 F2). Harm: shares the broker bought after HAT closed the position sit untracked and unprotected.
 - `PBT manage.verify_covers` The nightly verify refreshes a GTT the broker confirms to the current stop (`gtt.refreshed`), never below the trigger it rests at when the instrument's tick changed since (a coarser tick floors the stop lower; audit F24), and a refused refresh of a GTT so kept is alerted `gtt.unverified` with nothing placed; one it does not confirm is alerted (`gtt.missing`), cancelled at the broker and in HAT's book, and placed again; when the cancel fails, the broker is unreachable, the fills cannot be read or HAT's GTT row was never confirmed, `gtt.unverified` is raised and no GTT is modified or placed. Harm: a GTT that triggered or expired goes unnoticed and the position opens the next day without a stop.
-- `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause; HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
+- `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause, and whatever the reconciliation state (none today, only yesterday's, a failed run, a mismatch; the new fill's stop is placed in each, D118); HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
 - `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
 - `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
 - `PBT manage.gtt_trigger_handled` A GTT that triggers and fills only in part reduces the position and is neither resized nor doubled while its sale may still sell the rest; once that sale ends short, `gtt.unfilled` is raised once and the shares left get a new stop for exactly their quantity. Harm: a second stop under a working sale sells the shares twice, or the rest stays unprotected.
@@ -143,8 +143,12 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
 - `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
-- `PBT router.routine_reconcile_keeps_gate` A routine reconciliation (the periodic pass) of an account already reconciled leaves the gate open: an entry placed during or after it is not refused as not reconciled; only the first reconciliation of the process or of a new trade date starts a new session. Harm: entries are refused while a routine pass runs, or wait on a pass that already succeeded.
-- `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`). Harm: an entry goes out on a stale price, twice, or a day late.
+- `PBT router.routine_reconcile_keeps_gate` A routine reconciliation (the periodic pass) of an account already reconciled for the trade date leaves the entry gate open while it reads the book and after it, readable or not. Harm: entries are refused while a routine pass runs, or wait on a pass that already succeeded.
+- `PBT router.entry_gate_keyed_by_trade_date` Over any sequence of reconciliations that read the book or cannot, with the clock moving on 0..2 trade dates between them, `ExecutionGuard` accepts an entry exactly on a trade date that has had a success, and never refuses a stop or a sale (D118, MX-F5). Harm: yesterday's success opens today's entries over an unmatched book, or an unreadable book keeps a stop or a sale from the broker.
+- `PBT router.failed_first_reconcile_alerts_once_per_date` Through `Desks`, a reconciliation that fails before the trade date's first success raises exactly one `reconcile.failed` health alert for that date, and a failure after the success raises none. Harm: the owner never learns the account cannot open entries, or is flooded every five minutes.
+- `PBT tags.unreadable_foreign_rows_skipped` An order row without an HT tag that the adapter cannot read (a missing key, an unreadable side or quantity, not a mapping) is skipped and counted (`OrderBook.skipped`, `ReconcileReport.skipped_rows`) and the rest of the book is read, with one `reconcile.unreadable_row` alert per trade date; an HT-tagged row that cannot be read fails the read and the reconciliation. Harm: one manual order fails every reconciliation of the day, or an HT order HAT cannot read is missed.
+- `PBT tags.held_quantity_nets_today` Through the adapter, the quantity reconciled per symbol is the holding plus today's signed net CNC position, an intraday position not counted; `@example`s for a buy today, a buy and sale today, a holding sold in full and in part (MX-F8). Harm: a holding a GTT sold today reads as held (fail open), or a correct HAT book blocks the account.
+- `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`); the restart runs the fill sync whether or not its reconciliation succeeded (D118). Harm: an entry goes out on a stale price, twice, or a day late.
 - `PBT router.desk_calls_serialised` Every broker call of an account's desk goes through its session owner, so no two overlap, and a session check reads `session_status` once and records that same status. Harm: concurrent sends race the reconciliation gate, and the recorded session status disagrees with the one that raised the alert.
 - `PBT router.one_login_per_broker` Two active accounts of one broker refuse the start with `HatConfigError`; one per broker builds. Harm: two accounts share one login and the same funds count twice in the allocation equity.
 
@@ -315,6 +319,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 18 (audit 2026-10-22 money-safety-execution F1-F3, engine-ops F1, tests-hat F3): `HatBroker.gtts()` reads the GTT book (07 §8, so `brk__interface_methods` changed with the spec table); `FakeBroker` keeps GTT book rows in the Fyers shape and `RecordingSdk`'s default read replies now carry their list keys (a reply without one is the case `fyers_broker.an_ok_reply_without_its_list_is_unreadable` drives). `ManageRig` takes `settle_after` (default 0: the rig settles a lost answer at once; `manage.lost_answers_never_freeze` also draws a young answer that must wait) and moves the settle's wall clock on by `elapsed`. `FakeBroker`'s GTT book rows take the flat Fyers book shape (`price_trigger`, `qty`, `ord_status`, `gtt_oco_ind`, as OpenAlgo's Fyers mapping reads them) and a cancelled GTT stays in the book with `ord_status` 1 (`resting_gtts()` lists the active ones). The pre-push review found and fixed: a lost GTT left resting under a position a sale closed (the sync now settles and cancels it), two threads sending one reserved stop (`send_order` claims the first attempt), a lost sale found filled followed by a second sale, a lost sale of an earlier session read as never sent, ended or foreign GTT book rows, and a repeated alert while a lost answer is still young. A second review of those fixes found and fixed: a retry kept its first attempt's time (the settle wait then ran from the wrong send), two senders of a retry both sending (every attempt is now a conditional stamp), a triggered GTT dropped from the book read, an odd status on someone else's GTT failing the whole read, and an earlier session's lost sale followed by a new sale for a quantity it may already have sold (it now holds further sales). `manage.async_sale_rejection_retried` patches `submit.utc_now` because `rejected_sales` counts the sales placed on the trade day of the wall clock. The hard-stop fallback now counts only a broker-confirmed stop (an unsure one is settled first, and one still unsure no longer holds the sale back: the previous rule froze positions behind lost answers); `manage.real_exits_never_blocked` passes unchanged. Nothing was narrowed.
 - PR 19 (audit 2026-10-22 money-safety-execution F4, tests-hat F1): `open_entry` hands the decision `owner_slots`, the slots of every bot of the owner on every broker account (each slot carries its own bot, so the per-bot caps in `decide` keep filtering to the bot's own), and takes `lock_owner` after `lock_bot` and after the duplicate check. The scope is the owner, not one broker account, because total equity sums every bot's allocation (`daily/live.py`). Only an entry adds open risk: the other slot writers (fills, Take, skip, expiry, stop raises, exits) hold only the bot's lock and can only keep or shrink a slot, so a stale read over-counts; `_slots` reads the pending signals before the positions so that a fill landing between the two reads is counted twice, never missed (CodeAnt). `bot_snapshot` (the bot's own slots) is unchanged for its other callers. `hat_engine_support.add_bot` adds a second bot of the owner on another broker account. The per-bot DB breaks now also remove the owner lock (above). Nothing was narrowed.
 - PR 23 (live checks 2026-10-22): Fyers code -16 raises `FyersSessionExpiredError` (a `FyersUnavailableError`, so every read still fails closed); `session_status` makes one profile read when the token file says live (only -16 turns it EXPIRED; an outage leaves it LIVE as before); `FyersAuthService` reads the profile after a login (on its own small pool, 5 s timeout, checked by the shared `profile_data`) only with a `model_factory` (the process instance passes the SDK model, tests a `RecordingSdk`, so no test can reach Fyers). The login fixtures lost the `fy_id` they had put in the token reply, which Fyers does not send. `FakeBroker` gained `profile` and `get_profile`.
+- PR 24 (audit 2026-10-22 money-safety-execution F5, F8; D118): `ExecutionGuard` keys the gate by trade date (`reconciled_for`, `today`; `begin_session` and the boolean `reconciled` are gone) and gates entries only; `TradeManager` no longer takes the reconciler (its sales, `gtt.swap` and the fill sync never wait for a reconciliation). The rigs build their guard with `hat_exec_support.guard_on(day)`, a fixed trade date. `tags.refusals_before_the_broker` now expects a stop or a sale to pass while the date is not reconciled, and `tags.broker_errors_fail_closed`'s garbage order row carries an HT tag (an untagged unreadable row is now skipped, not a failure). `OrderReconciliation` is unchanged: its orders are entries, and a new trade date is the router property. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -487,6 +492,44 @@ Break: `find_mismatches` considers every broker order, not only HT-tagged ones.
 E   AssertionError: assert [Mismatch(kind='unknown_ht_order', key='None', bot_id=None)] == []
 ```
 
+### PBT tags.unreadable_foreign_rows_skipped
+
+Break: `_order_book` re-raises for every unreadable row (main before PR 24: the whole book failed).
+
+```
+E   app.hat.execution.broker.BrokerUnavailableError: broker_response_invalid
+E   Failing explicit example: test_unreadable_foreign_rows_skipped(
+E       rows=[('bad', None, 'side')],
+```
+
+Break: `_order_book` skips an unreadable HT-tagged row too.
+
+```
+E   Failed: DID NOT RAISE BrokerUnavailableError
+E   Failing explicit example: test_unreadable_foreign_rows_skipped(
+E       rows=[('good', None, '')],
+E       ht_broken=('HTE00000000000000001', 'qty'),
+```
+
+Break: `_alert_unreadable` drops the once-per-date check.
+
+```
+E   AssertionError: assert [('reconcile.... {'rows': 1})] == [('reconcile.... {'rows': 1})]
+E     Left contains one more item: ('reconcile.unreadable_row', datetime.date(2026, 10, 21), {'rows': 1})
+```
+
+### PBT tags.held_quantity_nets_today
+
+Break: `broker_quantities` takes the larger of the CNC position and the holding (main before PR 24).
+
+```
+E   AssertionError: assert 100 == ((100 + 0) - 40)
+E   Failing explicit example: test_held_quantity_nets_today(
+E       holding=100,
+E       bought=0,
+E       sold=40,
+```
+
 ### PBT tags.status_mapping_total
 
 Break: `map_fyers_status` indexes `_FYERS_STATUS[status]` instead of defaulting to `unconfirmed`.
@@ -512,6 +555,14 @@ Break: the session-live check in `_check_allowed` is removed.
 ```
 E   Failed: DID NOT RAISE OrderRefusedError
 E   Failing test case: test_refusals_happen_before_the_broker(
+```
+
+Break: `ExecutionGuard.refusal` refuses a stop or a sale too while the date is not reconciled (main before PR 24).
+
+```
+E   app.hat.execution.submit.OrderRefusedError: not_reconciled
+E       'reconciled': False,
+E       'purpose': 'stop_day',
 ```
 
 ### PBT stops.gtt_limit_offset
@@ -1745,6 +1796,23 @@ E   AssertionError: assert 3 == 2
 E   Failing test case: test_real_exits_never_blocked(
 ```
 
+Break: `_sell_locked` returns before sending while the trade date is not reconciled (main before PR 24 ran `_reconciled` there).
+
+```
+E   AssertionError: assert [] == [('MARKET', 500)]
+E   Failing explicit example: test_real_exits_never_blocked(
+E       kill='none',
+E       reconciled='never',
+```
+
+Break: `ExecutionGuard.refusal` refuses a stop while the date is not reconciled: the fill sync places no stop.
+
+```
+E   ValueError: not enough values to unpack (expected 1, got 0)
+E   Failing explicit example: test_real_exits_never_blocked(
+E       reconciled='never',
+```
+
 Break: `StopDesk.make_room` returns True without touching the broker stop.
 
 ```
@@ -1994,10 +2062,37 @@ E     Left contains one more item: BrokerGtt(gtt_id='G1', symbol='SBIN', side=<S
 
 ### PBT router.routine_reconcile_keeps_gate
 
-Break: `ReconciliationService.run` calls `guard.begin_session()` again at its top (the code before the fix).
+Break: `ReconciliationService.run` clears `guard.reconciled_for` at its top (re-checked in PR 24; before PR 17 it called `begin_session()` there).
 
 ```
 E   AssertionError: assert {'not_reconciled'} == {None}
+```
+
+### PBT router.entry_gate_keyed_by_trade_date
+
+Break: `ExecutionGuard.refusal` checks `reconciled_for is None` instead of `!= today()` (main before PR 24: a boolean gate).
+
+```
+E   assert (None is None) == (datetime.date(2026, 10, 22) in {datetime.date(2026, 10, 21)})
+E   Failing explicit example: test_entry_gate_keyed_by_trade_date(
+E       runs=[(0, True), (1, False)],
+```
+
+### PBT router.failed_first_reconcile_alerts_once_per_date
+
+Break: `AccountDesk.reconcile` drops the `failed_alerted_on != day` check.
+
+```
+E   assert [datetime.dat...2026, 10, 21)] == [datetime.date(2026, 10, 21)]
+E     Left contains one more item: datetime.date(2026, 10, 21)
+```
+
+Break: `AccountDesk.reconcile` never alerts (main before PR 24: it only logged).
+
+```
+E   assert [] == [datetime.date(2026, 10, 21)]
+E   Failing test case: test_failed_first_reconcile_alerts_once_per_date(
+E       runs=[(0, False), (0, False)],
 ```
 
 ### PBT router.resumed_entry_waits_for_feed
@@ -2018,7 +2113,15 @@ E   Failing test case: test_resumed_entry_waits_for_feed(
 E       earlier=True,
 ```
 
-Break: `Desks.resume_entries` does not wait for the reconciliation (`if not desk.guard.reconciled:` to `if False:`).
+Break: `Desks.recover` runs the fill sync only after a successful reconciliation (main before PR 24): a restart over an unreadable book leaves a fill without its stop.
+
+```
+E   AssertionError: assert 1 == 2
+E    +  where 1 = <built-in method count of list object at 0x7f8a01ce9900>('fetch_orderbook')
+E       late=True,
+```
+
+Break: `Desks.resume_entries` does not wait for the reconciliation (`if not desk.guard.reconciled_today():` to `if False:`).
 
 ```
 E   AssertionError: assert [{'symbol': 'NSE:SBIN-EQ', ... 'type': 'LIMIT', ...}] == []

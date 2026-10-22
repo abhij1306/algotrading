@@ -43,6 +43,7 @@ from .broker import (
     GttResult,
     Instrument,
     InvalidIntentError,
+    OrderBook,
     OrderIntent,
     OrderType,
     OrderUpdate,
@@ -98,6 +99,8 @@ _WORKING = {4, 6}
 # is the fill sync's to attribute), 1, 5 and 7 ended without selling.
 _GTT_ENDED = {1, 5, 7}
 _GTT_KNOWN = {2, 4, 6}
+# what a reply that cannot be read raises while it is parsed
+_UNREADABLE = (KeyError, ValueError, TypeError, InvalidOperation, AttributeError, OverflowError)
 _GTT_OCO = 2  # `gtt_oco_ind`: 1 a single GTT, 2 an OCO
 
 
@@ -498,7 +501,7 @@ class FyersHatBroker:
             raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
         try:
             return parse(raw)
-        except (KeyError, ValueError, TypeError, InvalidOperation, AttributeError, OverflowError):
+        except _UNREADABLE:
             logger.exception("Fyers reply could not be read")
             raise BrokerUnavailableError(CODE_INVALID_RESPONSE) from None
 
@@ -520,10 +523,23 @@ class FyersHatBroker:
             product=str(row.get("productType") or ""),
         )
 
-    def orders(self) -> list[BrokerOrder]:
-        return self._read(
-            self._broker.fetch_orderbook, lambda rows: [self._order_row(r) for r in rows]
-        )
+    def _order_book(self, rows: Iterable[Any]) -> OrderBook:
+        """Every row of the book. A row without an HT tag that cannot be read is skipped and
+        counted (a manual or foreign order must not fail the whole read, D118); an HT-tagged row
+        that cannot be read raises, so the read fails instead of missing one of HAT's orders."""
+        book = OrderBook()
+        for row in rows:
+            try:
+                book.append(self._order_row(row))
+            except _UNREADABLE:
+                tag = row.get("orderTag") if isinstance(row, dict) else None
+                if is_hat_tag(_clean_tag(tag)):
+                    raise
+                book.skipped += 1
+        return book
+
+    def orders(self) -> OrderBook:
+        return self._read(self._broker.fetch_orderbook, self._order_book)
 
     def trades(self) -> list[BrokerTrade]:
         def parse(rows: list[dict[str, Any]]) -> list[BrokerTrade]:

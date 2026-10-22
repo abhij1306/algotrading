@@ -536,14 +536,23 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 1. On start the scheduler marks any run left `running` by the previous process as interrupted, so
    it can run again (`recover_interrupted`); jobs resume from `hat_job_run` and a job that
    already succeeded for today is not run again (HAT-OPS-010).
-2. Before any order, every account's book is reconciled with the broker's order and trade books
+2. Before any entry, every account's book is reconciled with the broker's order and trade books
    and its fills are read (HAT-OPS-003). A broker that cannot be read, or an HT order HAT does
-   not know, places nothing and sends an alert. Entries left Triggered by the previous process
+   not know, places no entry and sends an alert; stops and sales still go out (D118). Entries left Triggered by the previous process
    are placed once the feed is fresh, and only on their own trade date; a restart after 08:45
    re-arms the day from the stored 5-minute bars and the recorded gap scan.
 3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
    position shows its stop). If the session is not live, follow "Morning login".
 4. If a `reconcile.mismatch` alert arrives, follow "Reconciliation mismatch".
+
+### Reconciliation failed or a row skipped
+
+1. Alert `reconcile.failed` (account): the first reconciliation of the trade date could not read
+   the broker. No entry opens on that account until one succeeds (the 5-minute pass retries);
+   stops and sales still go out. Check the Fyers session (`/status`, "Morning login").
+2. Alert `reconcile.unreadable_row` (rows): order rows without an HT tag (manual or foreign
+   orders) that HAT could not read were skipped; the reconciliation went on. Check the Fyers
+   order book for an odd manual order. An HT-tagged row HAT cannot read fails the run instead.
 
 ### Failure: Machine down
 

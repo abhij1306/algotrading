@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `1bc1ec30f287e87e1efcb673bd7f0e8c123429b7f00a3f0255352e92f2a4efb8`
+Covered digest: `cde023895017b009a7677ddaf1bfabe93685aae5abec091898df768e6f76f291`
 
 ## Scope changes
 
@@ -114,6 +114,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - K4 deleted the legacy manual-trading code and the digest pin of its risk tests (`test_risk__existing_suite_green`, HAT-RISK-103). `risk.hat_safety_properties_pinned` pins HAT's own safety properties in its place, `risk.manager_reads_no_hat_state` goes with the legacy risk manager, and `risk.no_manual_trading_path` checks that the deleted modules stay deleted. The spec row of HAT-RISK-103 was rewritten to match.
 - PR 16 added `RequestFlatten` and `ConfirmFlatten` to `KillSwitch` with `FlattenNeedsConfirm` and `FlattenExitOnly` (code: `telegram/commands.py:_flatten`, `execution/manage.py:flatten`); their breaks are recorded in `verify-telegram`. The bullet above about their absence is superseded.
 - PR 19: `caps.global_open_risk` checks `decide` over a hand-built list, so it could not see that `open_entry` fed it one bot's slots. The wiring (every bot of the owner, under an owner lock) is checked by `PBT trades.global_open_risk_across_bots` and `DB runtime.owner_serialised`, recorded in `verify-execution`. `caps.global_open_risk` is unchanged.
+- PR 24 (owner decision D118): `risk.hat_safety_properties_pinned` re-pins `tags.refusals_before_the_broker` (`test_refusals_happen_before_the_broker`), a deliberate, reviewed change: the reconciliation gate now holds entries only, so the property expects a stop or a sale to pass while the trade date is not reconciled (trading-safety rules 5 and 7 reworded). The fixture `_failing_fake` behind the pinned `test_broker_errors_fail_closed` gives its garbage order row an HT tag, since an untagged unreadable row is now skipped (HAT-BRK-112); that property's digest is unchanged. Nothing was narrowed beyond the owner's rule.
 
 ## Scratch breaks
 

@@ -154,8 +154,8 @@ class _Target:
 
 
 class StopDesk:
-    """Broker stops for one broker account's session; `guard` is that session's reconciliation
-    state (nothing is placed before it reconciled)."""
+    """Broker stops for one broker account's session; `guard` is the account's order gate (it
+    never holds a stop back: the reconciliation gates entries only, D118)."""
 
     def __init__(
         self,

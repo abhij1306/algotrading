@@ -16,7 +16,7 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
+from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 from app.hat.engine import trades
 from app.hat.execution.fills import FillSync
 from app.hat.execution.fyers_adapter import FyersHatBroker
-from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.manage import TradeManager
 from app.hat.execution.protect import WORKING, StopDesk
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
@@ -105,10 +104,10 @@ class ManageRig:
         broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.broker = broker
-        self.guard = ExecutionGuard(reconciled=True)
+        self.guard = guard_on(TRADE_DAY)
         self.notifier = RecordingNotifier()
-        reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
-        self.router = ExecutionRouter(broker, self.guard, reconciler, self.notifier)
+        self.reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
+        self.router = ExecutionRouter(broker, self.guard, self.reconciler, self.notifier)
         self.desk = StopDesk(
             broker,
             self.guard,
@@ -122,7 +121,6 @@ class ManageRig:
         self.manager = TradeManager(
             broker,
             self.guard,
-            reconciler,
             self.desk,
             self.fills,
             calendar=CALENDAR,

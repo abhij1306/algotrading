@@ -1,11 +1,11 @@
 """One trading desk per active broker account (PR 17; 07 §2-§6, 10-ops §1 HAT-OPS-003).
 
 A desk holds the account's one broker session (`SessionRegistry`: one owner per account, and
-every broker call of the desk goes through it), its `ExecutionGuard` (nothing is placed before
-the session reconciled), the reconciliation, the execution router (signing approval cards with
-the Telegram signer), the stop desk, the fill sync and the `TradeManager`. The live exits, the
-close job, the GTT jobs and the Telegram flatten all use the same `TradeManager`, whose
-per-position sale lock serialises their sales.
+every broker call of the desk goes through it), its `ExecutionGuard` (no entry is placed before
+the trade date reconciled; stops and sales never wait, D118), the reconciliation, the execution
+router (signing approval cards with the Telegram signer), the stop desk, the fill sync and the
+`TradeManager`. The live exits, the close job, the GTT jobs and the Telegram flatten all use the
+same `TradeManager`, whose per-position sale lock serialises their sales.
 
 `recover` is the restart order of HAT-OPS-003: reconcile each account and read its fills (which
 re-protects a fill without a working stop and re-sends a lost stop by tag). The auto entries a
@@ -41,7 +41,7 @@ from ..execution.reconcile import ReconciliationService, notifier_sink
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..execution.session import SessionOwner, SessionRegistry, SessionWatch, record_session
 from ..models import HatBot, HatBrokerAccount, HatPosition, HatSignal
-from ..notify import Notifier
+from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..ops.trade_jobs import job_name, trade_jobs
@@ -51,6 +51,7 @@ from ..time import trade_date_of, utc_now
 __all__ = [
     "END_SESSION",
     "END_SESSION_AT",
+    "RECONCILE_FAILED",
     "AccountDesk",
     "Desks",
     "account_jobs",
@@ -60,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
+RECONCILE_FAILED = "reconcile.failed"
 ACTIVE = "active"
 
 BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
@@ -97,8 +99,9 @@ class AccountDesk:
     reconciler: ReconciliationService
     router: ExecutionRouter
     manager: TradeManager
+    notifier: Notifier = field(default_factory=LogNotifier)
     watch: SessionWatch = field(default_factory=SessionWatch)
-    reconciled_on: date | None = None  # the trade date of the last successful reconciliation
+    failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
 
     def check_session(self, session: Session, now: datetime) -> bool:
         """Write today's `hat_broker_session` from one read of the broker's status (the router
@@ -124,20 +127,20 @@ class AccountDesk:
         return live
 
     def reconcile(self, session: Session, now: datetime) -> bool:
-        """Reconcile now; True when the account may place orders. The first reconciliation of
-        the process or of a trade date blocks every order until it succeeds (HAT-BRK-110: before
-        the first order of each session); a routine re-run leaves the gate open (`run` never
-        closes it under orders on other threads)."""
-        day = trade_date_of(now)
-        if self.reconciled_on != day:
-            self.guard.begin_session()
+        """Reconcile now; True when the account's trade date is reconciled (its entries may be
+        placed). Until the first success of a trade date its entries wait (HAT-BRK-110), and a
+        failure then raises one `reconcile.failed` health alert for the date; a failed routine
+        re-run after a success leaves the gate open. Stops and sales never wait (D118)."""
         try:
             self.reconciler.run(session, self.account_id)
         except Exception:
             logger.exception("reconciliation of account %s failed", self.account_id)
+            day = trade_date_of(now)
+            if not self.guard.reconciled_today() and self.failed_alerted_on != day:
+                self.failed_alerted_on = day
+                self.notifier.alert(RECONCILE_FAILED, day, {"account_id": str(self.account_id)})
             return False
-        self.reconciled_on = day
-        return self.guard.reconciled
+        return self.guard.reconciled_today()
 
 
 class Desks:
@@ -152,8 +155,10 @@ class Desks:
         issuer: TokenIssuer | None,
         calendar: Callable[[], SessionCalendar | None],
         tick_for: TickFor,
+        today: Callable[[], date] | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._today = today  # the guards' trade date (the wall clock's when None)
         self._registry = SessionRegistry()
         self.by_account: dict[uuid.UUID, AccountDesk] = {}
         # the auto entries a crash left in Triggered, per account, until `resume_entries`
@@ -185,14 +190,13 @@ class Desks:
     ) -> AccountDesk:
         owner = self._registry.acquire(account_id)
         broker = cast(HatBroker, OwnedBroker(owner, broker))
-        guard = ExecutionGuard()
-        reconciler = ReconciliationService(broker, guard, notifier_sink(notifier))
+        guard = ExecutionGuard() if self._today is None else ExecutionGuard(today=self._today)
+        reconciler = ReconciliationService(broker, guard, notifier_sink(notifier), notifier)
         stops = StopDesk(broker, guard, tick_for=tick_for, calendar=calendar, notifier=notifier)
         fills = FillSync(broker, stops, notifier)
         manager = TradeManager(
             broker,
             guard,
-            reconciler,
             stops,
             fills,
             calendar=calendar,
@@ -207,6 +211,7 @@ class Desks:
             reconciler,
             router,
             manager,
+            notifier,
         )
 
     def router(self, account_id: uuid.UUID) -> ExecutionRouter | None:
@@ -232,14 +237,15 @@ class Desks:
     # --- restart recovery (HAT-OPS-003) ------------------------------------------------------
 
     def recover(self, now: datetime) -> None:
-        """Reconcile every account and read its fills; remember the auto entries a crash left
-        in Triggered for `resume_entries`. An account that did not reconcile places nothing
-        until a later reconciliation succeeds."""
+        """Reconcile every account and read its fills (the fill sync re-protects a fill without a
+        working stop whether or not the reconciliation succeeded, D118); remember the auto
+        entries a crash left in Triggered for `resume_entries`. An account that did not
+        reconcile places no entry until a later reconciliation succeeds."""
         for account_id, desk in self.by_account.items():
             with self._session_factory() as session:
                 self._resume[account_id] = _left_triggered(session, account_id)
-                if desk.reconcile(session, now):
-                    desk.manager.sync(session, account_id, now)
+                desk.reconcile(session, now)
+                desk.manager.sync(session, account_id, now)
 
     def resume_entries(
         self, now: datetime, check: CheckFor, feed_stale: Callable[[], bool]
@@ -252,7 +258,7 @@ class Desks:
             return
         for account_id in list(self._resume):
             desk = self.by_account[account_id]
-            if not desk.guard.reconciled:
+            if not desk.guard.reconciled_today():
                 continue
             with self._session_factory() as session:
                 for signal_id in self._resume.pop(account_id):
