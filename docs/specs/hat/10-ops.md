@@ -696,6 +696,18 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 3. If the host is on the 4G link, see "Failover drill": no entries until the static line returns.
 4. Recovery is automatic once the session is back; check `/status`.
 
+### Broker call limits: `broker_rate_limited`
+
+1. Every Fyers call takes a slot from one call budget (HAT-BRK-082): by default 8 calls a
+   second, 180 a minute and 5,000 a day (the Standard plan). Stops and orders go first; reads
+   get 80% of each window. A call refused by the budget or answered HTTP 429 is
+   `broker_rate_limited`: nothing was sent, and the fill sync reads again at its next step.
+2. After a plan change (Fyers Prime, D154), set `HAT_BROKER_CALLS_PER_SECOND`,
+   `HAT_BROKER_CALLS_PER_MINUTE` and `HAT_BROKER_CALLS_PER_DAY` (`off` for no daily cap) in the
+   env file to the new plan's limits and restart. Do not raise them above the plan's limits.
+3. The day count is kept in the process and restarts at zero on a restart, so after a restart
+   late in the day the broker's own -360 may come first; it is also `broker_rate_limited`.
+
 ### Failure: Feed stale
 
 1. Alert: `feed.stale`. Bars and triggers stop for the stale symbols; broker-side stops are not

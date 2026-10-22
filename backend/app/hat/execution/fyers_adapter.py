@@ -64,6 +64,7 @@ from .fyers_broker import (
     FyersRateLimitedError,
     FyersSessionExpiredError,
     FyersUnavailableError,
+    process_budget,
     rate_limited,
 )
 from .fyers_session import FyersSession, get_fyers_session
@@ -286,7 +287,11 @@ class FyersHatBroker:
         clock: Callable[[], float] = time.monotonic,
         capabilities: Capabilities = FYERS_CAPABILITIES,
     ) -> None:
-        self._broker = broker if broker is not None else FyersBroker(breaker=PROCESS_BREAKER)
+        self._broker = (
+            broker
+            if broker is not None
+            else FyersBroker(breaker=PROCESS_BREAKER, budget=process_budget())
+        )
         self._capabilities = capabilities  # FYERS_CAPABILITIES in production; rigs set others
         self._client = client
         self._auth = auth

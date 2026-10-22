@@ -50,6 +50,7 @@ from app.hat.errors import HatConfigError
 from app.hat.execution import mode_changes, modes
 from app.hat.execution.broker import BrokerUnavailableError, OrderType, SessionStatus, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
+from app.hat.execution.fyers_broker import FyersRateLimitedError
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.protect import STOP_DAY, STOP_GTT, UNSURE, WORKING
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
@@ -910,6 +911,9 @@ STOP_REPLIES = {
 @example(gaps=[1] * 30, placed=0, filled=2, earlier=False, stop="unconfirmed", down=frozenset())
 @example(gaps=[1] * 30, placed=0, filled=2, earlier=False, stop="rejected", down=frozenset())
 @example(gaps=[1] * 20, placed=19, filled=0, earlier=False, stop="accepted", down=frozenset({0}))
+@example(
+    gaps=[1, 12, 1, 1], placed=3, filled=0, earlier=False, stop="accepted", down=frozenset({1})
+)
 def test_fill_sync_cadence(
     gaps: list[int], placed: int, filled: int, earlier: bool, stop: str, down: frozenset[int]
 ) -> None:
@@ -918,7 +922,8 @@ def test_fill_sync_cadence(
     fill (from the pass it is sent until the pass that reads its fill) or a stop's answer is not
     in yet, and otherwise at the first pass and then once a minute: an entry of the previous
     session still shown working and a stop the broker refused do not speed it up. A pass whose
-    read failed (`down`) is tried again at the next pass. Harm: an entry filled just after a sync
+    read failed (`down`: an outage, or the call budget refusing it, PR 50) is tried again at the
+    next pass, never waited for. Harm: an entry filled just after a sync
     sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until
     its tag's sequence runs out."""
     engine = memory_engine()
@@ -947,7 +952,14 @@ def test_fill_sync_cadence(
                 rig.fake.script("place_order", STOP_REPLIES[stop]())
             due = last is None or now - last >= timedelta(minutes=1) or _watched(session, now)
             if due and n in down:
-                rig.fake.script("fetch_tradebook", BrokerUnavailableError("Fyers tradebook failed"))
+                # an outage, or (odd passes) the call budget refusing the read (PR 50): either
+                # way the 5-second cadence yields and the next pass reads again
+                failure = (
+                    FyersRateLimitedError("Fyers fetch_tradebook request limit reached")
+                    if n % 2
+                    else BrokerUnavailableError("Fyers tradebook failed")
+                )
+                rig.fake.script("fetch_tradebook", failure)
             reads = rig.fake.count("fetch_orderbook")
             desks.sync_due(now)
             assert (rig.fake.count("fetch_orderbook") > reads) == due

@@ -3,6 +3,9 @@
 `HAT_ENABLED` defaults to false, so a developer machine or a test run never starts a HAT task.
 `HAT_EXDATE_GTT_CHECK` (PR 47) defaults to false: the 08:40 `gtt.ex_date` check is registered only
 once the O2(b) live check confirms how the broker treats a GTT on an ex-date (HAT-EXEC-145).
+`HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY` (PR 50, HAT-BRK-082) are the broker
+call budget: defaults 8, 180 and 5,000 (the Standard plan counts every call); `_PER_DAY` 0 or
+`off` is no day cap, and an unreadable value is the default.
 """
 
 from __future__ import annotations
@@ -28,10 +31,26 @@ class HatSettings:
     user_id: uuid.UUID
     data_root: Path
     exdate_gtt_check: bool = False
+    broker_calls_per_second: int = 8
+    broker_calls_per_minute: int = 180
+    broker_calls_per_day: int | None = 5000
 
 
 def _is_true(raw: str | None) -> bool:
     return raw is not None and raw.strip().lower() in TRUE_VALUES
+
+
+def _calls(raw: str | None, default: int | None, *, allow_off: bool = False) -> int | None:
+    """A positive whole number of broker calls; `0` or `off` is no cap where allowed, anything
+    else unreadable is the default (a typo never stops every call, nor fails a start)."""
+    text = (raw or "").strip().lower()
+    if allow_off and text in {"0", "off", "none"}:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
@@ -48,6 +67,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
         exdate_gtt_check=_is_true(source.get("HAT_EXDATE_GTT_CHECK")),
+        broker_calls_per_second=_calls(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8) or 8,
+        broker_calls_per_minute=_calls(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180) or 180,
+        broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
     )
 
 
