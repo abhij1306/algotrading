@@ -430,6 +430,70 @@ def check_governance__stop_only_rises(conn: Connection) -> None:
     rejects(conn, "deleting every position", lambda: conn.execute(delete(table)))
 
 
+# --- the rescale exception to invariant 1 (HAT-SCH-081, HAT-EXEC-141) --------------------------
+
+RESCALE_FROM = {"qty_open": 10, "avg_entry": "100", "initial_stop": "95", "current_stop": "98"}
+RESCALE_TO = {"qty_open": 20, "avg_entry": "50", "initial_stop": "47.5", "current_stop": "49"}
+
+
+def _rescaled_event(
+    conn: Connection, position_id: uuid.UUID, frm: dict, to: dict, event_type: str = ""
+) -> None:
+    b.event(
+        conn,
+        aggregate_type="position",
+        aggregate_id=position_id,
+        event_type=event_type or "position.rescaled",
+        payload={"action": "2024-01-10:split", "factor": "0.5", "from": frm, "to": to},
+    )
+
+
+def _as_row(values: dict) -> dict:
+    return {k: Decimal(v) if isinstance(v, str) else v for k, v in values.items()}
+
+
+def _nudged(value: int | str) -> int | str:
+    return value + 1 if isinstance(value, int) else str(Decimal(value) + Decimal("0.0001"))
+
+
+def check_governance__rescale_moves_stop(conn: Connection) -> None:
+    """A lowering UPDATE goes through only with a `position.rescaled` event of that position that
+    names exactly its old and new quantity, entry and stops."""
+    w = b.world(conn)
+    table = m.HatPosition.__table__
+
+    def make(tag: str) -> uuid.UUID:
+        return b.position(
+            conn, w, b.signal(conn, w, playbook=f"rescale-{tag}"), **_as_row(RESCALE_FROM)
+        )
+
+    def move(p: uuid.UUID, values: dict = RESCALE_TO) -> None:
+        conn.execute(update(table).where(table.c.id == p).values(**_as_row(values)))
+
+    exact = make("exact")
+    _rescaled_event(conn, exact, RESCALE_FROM, RESCALE_TO)
+    accepts(conn, "a rescale with its event", lambda: move(exact))
+    row = conn.execute(select(table).where(table.c.id == exact)).mappings().one()
+    assert {k: row[k] for k in RESCALE_TO} == _as_row(RESCALE_TO), "the rescale was not kept"
+    lower = {**RESCALE_TO, "current_stop": "48"}
+    rejects(conn, "lowering again after the rescale", lambda: move(exact, lower))
+    bare = make("bare")
+    rejects(conn, "a rescale with no event", lambda: move(bare))
+    mine, other = make("mine"), make("other")
+    _rescaled_event(conn, other, RESCALE_FROM, RESCALE_TO)
+    rejects(conn, "a rescale with another position's event", lambda: move(mine))
+    typed = make("typed")
+    _rescaled_event(conn, typed, RESCALE_FROM, RESCALE_TO, event_type="stop.moved")
+    rejects(conn, "a rescale whose event is another type", lambda: move(typed))
+    for side in ("from", "to"):
+        for key in RESCALE_FROM:
+            p = make(f"{side}-{key}")
+            frm, to = dict(RESCALE_FROM), dict(RESCALE_TO)
+            (frm if side == "from" else to)[key] = _nudged((frm if side == "from" else to)[key])
+            _rescaled_event(conn, p, frm, to)
+            rejects(conn, f"a rescale whose event differs in {side}.{key}", lambda p=p: move(p))
+
+
 SIGNAL_STATES = (
     "Watchlisted", "Triggered", "AwaitingApproval", "EntryPlaced", "Open", "PartiallyExited",
     "ExitPending", "Closed", "Rejected", "Expired", "Cancelled",

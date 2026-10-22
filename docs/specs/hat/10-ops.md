@@ -119,6 +119,7 @@ table.
 | `bands.nightly` | trading | 07:45 | | | 4 |
 | `reference.weekly` | every, Saturday | 09:00 | | | 4 |
 | `telegram.login_prompt` | trading | 08:30 | 09:05 | | 16 |
+| `ca.rescale` (open positions across a split or bonus, HAT-EXEC-141) | trading | 08:40 | | | 21 |
 | `live.prepare` | trading | 08:45 | | | 14 |
 | `telegram.login_reprompt` | trading | 09:05 | 15:30 | | 16 |
 | `modes.apply` | trading | 09:15 | | | 15b |
@@ -134,7 +135,7 @@ table.
 | `ingest.nightly` (probe 18:00, poll 10 min, 22:00 bhavcopy fallback) | trading | 18:00 | | | 7 |
 | `exits.close_gaps` | trading | 18:00 | | `ingest.nightly` | 15c |
 | `quality.gate` | trading | 18:00 | | `ingest.nightly` | 7 |
-| `ca.adjust` | trading | 18:00 | | `quality.gate` | 6 |
+| `ca.adjust` (and the next session's actions of held and watchlisted instruments, HAT-EXEC-140) | trading | 18:00 | | `quality.gate` | 6, 21 |
 | `features` | trading | 18:00 | | `ca.adjust` | 6 |
 | `regime` | trading | 18:00 | | `features` | 11 |
 | `allocate` | trading | 18:00 | | `regime` | 11 |
@@ -207,6 +208,7 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
 - The daily inputs of the live engine (ATR and swing lengths) are shared across bots and fail
   closed (no candidate) when the active bots disagree.
 - The nightly scan does not read price bands; the band is checked at entry (`risk.service.price_band_ok`, HAT-DATA-025).
+- `ca.rescale` (PR 21) fails while some position could not be rescaled, so it is retried every 5 minutes (three tries before the 09:00 pre-open); that position stays manage-only and is alerted `corporate_action.pending` on each try.
 
 Acceptance run (PR 17, PLAN §4.3): `backend/tests/hat/db/test_db_daily_cycle.py::test_ops__simulated_day`
 (Postgres-marked, CI job `backend-postgres`) runs a whole day through `HatRuntime` with HAT enabled,

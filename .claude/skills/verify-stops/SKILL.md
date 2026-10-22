@@ -1,11 +1,11 @@
 ---
 name: verify-stops
-description: How to run, read and update the checks behind Hire a Trader's initial stop rules, the nine-rule exit stack, the rule that a stop only rises and the stop resting at the broker under every real position (PBT stops and exits, DB governance.stop_only_rises, TLA StopPlacement). Use before and after any change to backend/app/hat/engine/stops.py, backend/app/hat/engine/exits.py, backend/app/hat/execution/protect.py, verification/tla/StopPlacement.tla, the hat_position stop and delete triggers in backend/app/hat/schema.py, or the stop and exit parts of the strategy config.
+description: How to run, read and update the checks behind Hire a Trader's initial stop rules, the nine-rule exit stack, the rule that a stop only rises and the stop resting at the broker under every real position (PBT stops, exits and rescale, DB governance.stop_only_rises and rescale_moves_stop, TLA StopPlacement), and the split and bonus rescale of open positions. Use before and after any change to backend/app/hat/engine/stops.py, backend/app/hat/engine/exits.py, backend/app/hat/engine/rescale.py, backend/app/hat/execution/protect.py, verification/tla/StopPlacement.tla, the hat_position stop and delete triggers in backend/app/hat/schema.py, or the stop and exit parts of the strategy config.
 ---
 
 # verify-stops
 
-Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..065), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
+Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model), and that a split or bonus rescales an open position before the ex-date open instead of stopping it out (07 §14). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..065), §14 (HAT-EXEC-140..143), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
 
 ## Properties
 
@@ -18,6 +18,13 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT exits.rule_semantics` Each of the nine rules alone sells or raises the stop exactly when the spec says, in the phase the spec gives it (live, 15:25 close, nightly), and a disabled rule or a missing price never fires one. Harm: a rule firing early or late changes every trade result.
 - `PBT exits.never_lowers_stop` Over any run of evaluations the stop never goes down, a new stop is always above the current one and a result carrying a lower stop changes nothing. Harm: a lower stop widens the risk the position was sized for.
 - `DB governance.stop_only_rises` The database refuses an UPDATE that lowers `hat_position.current_stop` (alone or with other columns, one row or all) and refuses to DELETE a position; equal or higher stops and other columns move freely. Harm: a lowered stop, or a delete and re-insert, widens the risk behind the owner's back.
+- `DB governance.rescale_moves_stop` A lowering UPDATE goes through only when a `position.rescaled` event of that position names exactly its old and new quantity, entry and stops: not with no event, another position's event, another event type, or an event that differs in any of the eight values; and a second lowering after the rescale is refused. Harm: the exception becomes a way to widen any stop.
+- `PBT rescale.preserves_position` For every split or bonus ratio, stack and raised stop, `ca.rescale` gives quantity ⌊q / f⌋ and prices × f, keeps quantity × entry within one share, open risk and the stop's R distance within rounding, and on the ex-date open at the old close × f no exit fires (live or close). Harm: a fake `hard_stop` or a fake 50% loss on the ex-date open (F3).
+- `PBT rescale.applied_once` For every sequence of runs with actions added between, each (position, action) is applied once, and an action on or before the entry day, an `other` action and a consolidation never. Harm: a split applied twice, or a rights issue adding shares.
+- `PBT rescale.factor_exact` A stored 12-place factor of a ratio with denominator ≤ 1000 reads back exactly; a short factor that is no such ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91.
+- `PBT rescale.pending_is_manage_only` While a position awaits its rescale the exits' view source gives it no view and a trigger of its instrument is stored Rejected `corporate_action_pending`; once rescaled both return. Harm: exits or entries on prices of the wrong scale.
+- `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
+- `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
 - `TLA StopPlacement!StopAfterFill` After a real entry fill, its broker stop is placed (or resized) before any other HAT action on the position. Harm: a raised stop, a sale or a swap runs on a position the broker does not yet protect.
 - `TLA StopPlacement!AlwaysProtected` A held real position always has a working broker stop, except while a fill's stop work has not run yet, after a failure that raised an alert, or while a GTT that triggered without a fill is still unseen. Harm: a gap-down or a machine outage hits an unprotected position and nobody is told.
@@ -38,10 +45,10 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 
 ```bash
 cd backend
-CI=1 python -m pytest tests/hat/properties/test_stops.py tests/hat/properties/test_exits.py -q --no-cov
+CI=1 python -m pytest tests/hat/properties/test_stops.py tests/hat/properties/test_exits.py tests/hat/properties/test_rescale.py -q --no-cov
 # the DB check needs a throwaway Postgres whose database name ends in _test
 SMARTTRADER_PG_TESTS=1 DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test \
-  python -m pytest tests/hat/db/test_db_runtime.py tests/hat/db/test_db_broken_variants.py -q --no-cov -m postgres -k "stop_only_rises"
+  python -m pytest tests/hat/db/test_db_runtime.py tests/hat/db/test_db_broken_variants.py -q --no-cov -m postgres -k "stop_only_rises or rescale_moves_stop"
 ```
 
 ```bash
@@ -77,12 +84,14 @@ Code under check:
 - `backend/app/hat/engine/strategy/config.py`
 - `backend/app/hat/schema.py`
 - `backend/app/hat/execution/protect.py`
+- `backend/app/hat/engine/rescale.py`
 - `verification/tla/StopPlacement.tla`
 - `verification/tla/StopPlacement.cfg`
 
 Checks:
 - `backend/tests/hat/properties/test_stops.py`
 - `backend/tests/hat/properties/test_exits.py`
+- `backend/tests/hat/properties/test_rescale.py`
 - `backend/tests/hat/hat_engine_support.py`
 - `backend/tests/hat/db/hat_db_runtime.py`
 - `backend/tests/hat/db/test_db_runtime.py`
@@ -106,7 +115,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `d91c3737a559db0fcc55426060057266ab94c5115f620cc2df2c791de744d73e`
+Covered digest: `c5c056595c9f0e3e659525140393be8407d6fd4d5b87ddfeacb0f16ff8807221`
 
 ## Scope changes
 
@@ -119,6 +128,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
 - PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
+- PR 21 (audit 2026-10-22 F3) added the split and bonus rescale (`engine/rescale.py`, 07 §14). `StopPlacement` keeps one price scale: a rescale is a change of unit, not a stop move, so `StopOnlyTightens` and `BrokerStopMatchesCurrent` hold in scale-adjusted prices and the rescale is not modelled (between `ca.rescale` and the next sync the broker stop rests above the rescaled stop in new units, at the old stop in old units; the market is shut). The broker stop's move down is `StopDesk.rescaled`, checked by `rescale.broker_stop_follows`, and it moves only a position with a `position.rescaled` event. Fractional entitlements are floored (the broker pays them in cash); a factor is read back as the ratio with denominator ≤ 1000 within 1e-9 of it, or refused; only splits and bonuses with factor below 1 are applied. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 
 ## Scratch breaks
@@ -434,3 +444,137 @@ State 4: <EntryFill ...>
 State 5: <Protect ...>
 State 6: <Sell ...>
 ```
+
+### PBT rescale.preserves_position
+
+Break: in `backend/app/hat/engine/rescale.py`: `_apply` records the event but leaves the row unchanged (main before PR 21).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_preserves_position - assert [cut]
+======================= 1 failed, 4 deselected in 0.76s ========================
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: the quantity is not scaled.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_preserves_position - assert [cut]
+```
+
+Break: in `backend/app/hat/engine/trades.py`: `_entry_qty` ignores applied rescales (R and partials on the old quantity).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_preserves_position - Assert [cut]
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: the current stop rounds up (`ROUND_CEILING`).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_preserves_position - Assert [cut]
+```
+
+### PBT rescale.applied_once
+
+Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` ignores the actions already applied.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: an action with ex-date on the entry day is applied (`>=`).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` takes every action type.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
+======================= 1 failed, 5 deselected in 45.89s =======================
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` takes a factor above 1 (a consolidation).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
+```
+
+### PBT rescale.factor_exact
+
+Break: in `backend/app/hat/engine/rescale.py`: `exact_factor` takes the nearest ratio without the 1e-9 check.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_factor_exact - Failed: DID  [cut]
+```
+
+### PBT rescale.pending_is_manage_only
+
+Break: in `backend/app/hat/daily/live.py`: `ExitViews` gives a view to a position awaiting a rescale.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_pending_is_manage_only - As [cut]
+```
+
+Break: in `backend/app/hat/engine/live_entry.py`: `submit_trigger` does not skip an instrument awaiting a rescale.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_pending_is_manage_only - As [cut]
+```
+
+### PBT rescale.broker_stop_follows
+
+Break: in `backend/app/hat/execution/manage.py`: `TradeManager.sync` does not call `_follow_rescales`.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
+```
+
+Break: in `backend/app/hat/execution/manage.py`: `TradeManager.sync` reads the fills before following the rescale (the fill sync sizes the stop up at the old trigger).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
+```
+
+Break: in `backend/app/hat/execution/protect.py`: `StopDesk.rescaled` resizes the stop to the rescaled quantity in the same move (refused while the new shares are not credited, so the trigger stays on the old scale).
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
+```
+
+### PBT rescale.next_session_lookup
+
+Break: in `backend/app/hat/engine/rescale.py`: `held_and_watchlisted` leaves out the watchlist.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
+```
+
+Break: in `backend/app/hat/daily/nightly.py`: a failed lookup is not alerted.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
+```
+
+Break: in `backend/app/hat/data/ingest.py`: `lookup_actions` counts a symbol with an unreadable row as looked up.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
+```
+
+Break: in `backend/app/hat/daily/nightly.py`: `ca.adjust` lets a lookup that cannot run fail the step.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - app.h [cut]
+```
+
+### DB governance.rescale_moves_stop
+
+Break: the `to` half of the event match (new quantity, entry and stops) removed from `hat_stop_only_tightens` in `backend/app/hat/schema.py`.
+
+```
+tests/hat/db/hat_db_runtime.py:494: in check_governance__rescale_moves_stop
+tests/hat/db/hat_db_rules.py:35: in rejects
+E   AssertionError: the database accepted: a rescale whose event differs in to.qty_open
+```
+
+The five `rescale_function` variants in `test_db_broken_variants.py` (no rescale exception, any event of the position, an event of any position, only the stops matched, the trigger dropped) each make the check fail too.

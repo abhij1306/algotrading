@@ -297,7 +297,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
   - Property: for every (stored previous close c₀, fetched prev_close p, fetched close c, RSS set R), the symbol is flagged if and only if p ≠ c₀ ∨ |c / p − 1| > 0.20 ∨ symbol ∈ R. Harm: an unflagged split looks like a 50% crash, triggers stops in backtests and corrupts every moving average.
 
 #### HAT-DATA-051: Corporate actions are fetched only for flagged symbols
-- **Statement:** `get_corporate_actions` is called for flagged symbols only.
+- **Statement:** The nightly ingest calls `get_corporate_actions` for flagged symbols only. (The `ca.adjust` step adds one lookup per held or watchlisted instrument for the next session, HAT-EXEC-140; a few calls a night.)
 - **Source:** DS "Nightly ingest" step 5.
 - **PR:** 7
 - **Verification:** PBT `corporate_actions.lookup_only_flagged`
@@ -318,7 +318,8 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 - **PR:** 5
 - **Verification:** PBT `corporate_actions.adjusted_view`
 - **Acceptance:**
-  - Property: for every instrument, set of actions A and raw bar on date d, adj_price(d) = raw_price(d) × Π_{a ∈ A, a.ex_date > d} a.adjustment_factor for each of open, high, low and close; adj_prev_close(d) = raw_prev_close(d) × Π_{a ∈ A, a.ex_date ≥ d} a.adjustment_factor, because `prev_close` on the ex-date bar is the pre-action close; for d after the latest ex_date, adj = raw. Harm: features and stops see a fake gap at every split and bonus.
+  - Property: for every instrument, set of actions A and raw bar on date d, adj_price(d) = raw_price(d) × Π_{a ∈ A, a.ex_date > d} a.adjustment_factor for each of open, high, low and close; adj_prev_close(d) = raw_prev_close(d) × Π_{a ∈ A, a.ex_date > d} a.adjustment_factor (the factor of d itself), because NSE publishes the ex-date bar's `prev_close` already adjusted for the action (the official previous close is the action-adjusted base price; the HAT-DATA-050 flag rule relies on the same fact) *[verify on the first stored ex-date row]*; for d after the latest ex_date, adj = raw. Harm: features and stops see a fake gap at every split and bonus, and an ex-date `prev_close` adjusted twice inflates `adtr20` for 20 sessions (audit F14).
+  - The ex-date true range and `adtr20` across a split are checked by `features.split_invariant` (HAT-DATA-073): on the ex-date bar the unsplit series and the adjusted split series give the same features.
   - Property: for every computation of the view, the raw Parquet files are byte-identical before and after. Harm: raw evidence is lost and adjustments become irreproducible.
   - Property: for a 1:2 split (factor 0.5), every pre-ex-date adjusted price is exactly half of raw and every post-ex-date price is unchanged. Harm: the canonical split case is wrong.
 

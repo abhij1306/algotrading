@@ -315,6 +315,14 @@ def stop_function(condition: str) -> Break:
     )
 
 
+def rescale_function(event_match: str) -> Break:
+    """The invariant-1 function with its rescale exception matching events by `event_match`."""
+    return stop_function(
+        "NEW.current_stop < OLD.current_stop AND NOT EXISTS (SELECT 1 FROM hat_event e"  # noqa: S608 - fixed test SQL
+        f" WHERE e.event_type = 'position.rescaled' AND {event_match})"
+    )
+
+
 def event_function(body: str) -> Break:
     return sql(
         "CREATE OR REPLACE FUNCTION hat_event_is_append_only() RETURNS trigger AS $$ BEGIN"
@@ -404,6 +412,23 @@ VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
         ),
         ("function allows every move", stop_function("false")),
         ("delete guard dropped", sql("DROP TRIGGER hat_position_no_delete_guard ON hat_position")),
+    ],
+    "governance.rescale_moves_stop": [
+        ("no rescale exception", stop_function("NEW.current_stop < OLD.current_stop")),
+        ("any event of the position", rescale_function("e.aggregate_id = OLD.id")),
+        (
+            "an event of any position",
+            rescale_function("(e.payload->'to'->>'current_stop')::numeric = NEW.current_stop"),
+        ),
+        (
+            "only the stops are matched",
+            rescale_function(
+                "e.aggregate_id = OLD.id"
+                " AND (e.payload->'from'->>'current_stop')::numeric = OLD.current_stop"
+                " AND (e.payload->'to'->>'current_stop')::numeric = NEW.current_stop"
+            ),
+        ),
+        ("trigger dropped", sql("DROP TRIGGER hat_position_stop_guard ON hat_position")),
     ],
     "runtime.state_domain": [
         (

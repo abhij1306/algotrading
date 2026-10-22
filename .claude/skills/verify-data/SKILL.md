@@ -143,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `3602f51a9b1b588bc1b4e1d47935c0f50823830d8ba84fcee5e61c8a806d3335`
+Covered digest: `aa6ad3347d7a6dd08ccc94ee467c914b47c3566aa80760684b90b2a71f60606e`
 
 ## Scope changes
 

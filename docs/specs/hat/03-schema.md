@@ -767,7 +767,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Data | `ingest.completed`, `ingest.failed`, `quality.failed`, `gapscan.completed` |
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
 | Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed` |
-| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap` |
+| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled` |
 | Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
 | Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
@@ -805,7 +805,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 38 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, and `gapscan.completed` from PR 17, the gap scan's record for a restart). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 39 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation
@@ -1029,12 +1029,13 @@ create trigger hat_position_stop_guard
   - Property: for every version with status in {backtested, shadow, live, retired} and every new config value, an UPDATE of `config` raises and the stored config and `config_hash` are unchanged; for a `draft` row it succeeds. With the trigger dropped (broken variant) the check fails. Harm: a live strategy changes under open trades and signals no longer match the version they cite.
 
 #### HAT-SCH-081: `current_stop` can only rise
-- **Statement:** The `hat_position_stop_guard` trigger rejects any UPDATE that lowers `hat_position.current_stop`, and the `hat_position_no_delete_guard` trigger rejects any DELETE of a position, so a delete and re-insert cannot restart the stop lower.
+- **Statement:** The `hat_position_stop_guard` trigger rejects any UPDATE that lowers `hat_position.current_stop`, and the `hat_position_no_delete_guard` trigger rejects any DELETE of a position, so a delete and re-insert cannot restart the stop lower. The one exception is a split or bonus rescale (HAT-EXEC-141): the UPDATE is accepted only when a `position.rescaled` event of that position records exactly the old and new (`qty_open`, `avg_entry`, `initial_stop`, `current_stop`). Nothing else changes `initial_stop` and a rescale only lowers it, so one event can authorise only its own move.
 - **Source:** SCH "Runtime" (trigger SQL); BL "Invariants" (1: a stop is never moved further from price).
-- **PR:** 3, 11
-- **Verification:** DB `governance.stop_only_rises`, TLA `StopPlacement!StopOnlyTightens`
+- **PR:** 3, 11, 21
+- **Verification:** DB `governance.stop_only_rises`, DB `governance.rescale_moves_stop`, TLA `StopPlacement!StopOnlyTightens`
 - **Acceptance:**
   - Property: for every position and every pair (old, new) of stop values, an UPDATE setting `current_stop = new` raises if new < old and succeeds if new ≥ old; and every DELETE of a position raises; with either trigger dropped (broken variant) the check fails. Harm: a bug or a manual edit widens a stop and turns a planned 0.25% loss into a larger one.
+  - Property: a lowering UPDATE is accepted when, and only when, a `position.rescaled` event of that position names exactly its old and new quantity, entry and stops (an event of another position, or one that differs in any of the four values, leaves it refused). Harm: a split strands the stop above the new price (a fake stop-out on the ex-date open), or the exception becomes a way to widen any stop.
 
 #### HAT-SCH-082: One live version per strategy and per universe
 - **Statement:** Partial unique indexes allow at most one `live` row per `strategy_id` in `hat_strategy_version` and per `universe_id` in `hat_universe_version`.

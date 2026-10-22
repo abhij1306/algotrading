@@ -10,8 +10,9 @@ them by cumulative factors computed from corporate actions (HAT-DATA-053, 054).
 
 Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
-- `bars_daily_adj`: raw x cumulative factor; prev_close uses the factor of the day before, volume
-  is divided by the same factor (multiplied by its reciprocal, rounded to 12 places).
+- `bars_daily_adj`: raw x cumulative factor, prev_close by the factor of its own day (NSE's
+  ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same factor
+  (multiplied by its reciprocal, rounded to 12 places).
 - `bars_daily`: `bars_daily_adj` with one row per (instrument_id, date), from the latest
   ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
@@ -291,14 +292,12 @@ SELECT r.instrument_id, r.date, r.isin, r.symbol, r.series,
        r.high * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS high,
        r.low * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS low,
        r.close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS close,
-       r.prev_close * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
+       r.prev_close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
        CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
        r.traded_value, r.source, r.ingest_run_id
 FROM bars_daily_raw r
 LEFT JOIN ca_segment c ON c.instrument_id = r.instrument_id
      AND (c.from_date IS NULL OR r.date >= c.from_date) AND r.date < c.to_date
-LEFT JOIN ca_segment p ON p.instrument_id = r.instrument_id
-     AND (p.from_date IS NULL OR r.date - 1 >= p.from_date) AND r.date - 1 < p.to_date
 """
 _COUNT_SQL = {
     DATASET_BARS: "SELECT date, count(*) FROM bars_daily_raw GROUP BY date ORDER BY date",

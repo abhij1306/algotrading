@@ -48,6 +48,7 @@ from ..data.symbols import symbol_master
 from ..engine.live_trades import record_close_gaps
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
 from ..engine.portfolio.service import policy_at
+from ..engine.rescale import ALERT_ACTION_UNCHECKED, held_and_watchlisted, rescale_open_positions
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
@@ -65,6 +66,7 @@ __all__ = [
     "BANDS_NIGHTLY",
     "CALENDAR_REFRESH",
     "CA_ADJUST",
+    "CA_RESCALE",
     "CLOSE_GAPS",
     "EVENTS_PARTITIONS",
     "FEATURES",
@@ -83,6 +85,7 @@ __all__ = [
 
 INGEST_NIGHTLY = nightly_ingest.JOB_INGEST
 CA_ADJUST = "ca.adjust"
+CA_RESCALE = "ca.rescale"
 FEATURES = "features"
 SCAN = "scan"
 WATCHLIST_DIGEST = "watchlist.digest"
@@ -111,11 +114,13 @@ logger = logging.getLogger(__name__)
 INGEST_AT = time(18, 0)  # the first probe (HAT-OPS-022); the body waits until 22:00 at most
 CALENDAR_AT = time(7, 0)  # daily: a changed holiday list is picked up the same morning
 BANDS_AT = time(7, 45)  # before the pre-open: the bands in force today
+RESCALE_AT = time(8, 40)  # before `live.prepare` and the 09:00 pre-open (HAT-EXEC-141)
 REFERENCE_AT = time(9, 0)
 REFERENCE_WEEKDAY = 5  # Saturday: the market is shut and the instrument master is quiet
 PARTITIONS_AT = time(0, 30)
 PURGE_AT = time(1, 0)
 INGEST_RETRY = timedelta(minutes=10)
+RESCALE_RETRY = timedelta(minutes=5)  # three tries before the 09:00 pre-open
 
 
 @dataclass(frozen=True)
@@ -221,14 +226,48 @@ class Nightly:
             clock=deps.clock,
         )()
 
-    def ca_adjust(self, _day: date) -> JobResult:
-        """Corporate actions adjust prices at read time (`bars_daily` over the stored factors);
-        this step checks the factors load into the adjusted view before the features read it."""
+    def ca_adjust(self, day: date) -> JobResult:
+        """Corporate actions adjust prices at read time (`bars_daily` over the stored factors).
+        First the next session's actions of the held and watchlisted instruments are looked up
+        and stored (HAT-EXEC-140), so the features, the scan and the morning's `ca.rescale` see
+        them; a failed lookup is alerted and never fails the step. Then the factors are checked
+        to load into the adjusted view before the features read it."""
+        try:
+            self._next_session_actions(day)
+        except Exception:
+            # Fail closed without stopping the chain: tomorrow's features and scan still run, and
+            # the alert says the next session's actions are unknown.
+            logger.exception("next-session corporate-action lookup failed")
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
         with self.deps.session_factory() as session:
             factors = stored_factors(session)
         with self.deps.store.connect(factors):
             logger.info("adjusted view loads with %d factors", len(factors))
         return JobResult(rows=len(factors))
+
+    def _next_session_actions(self, day: date) -> None:
+        with self.deps.session_factory() as session:
+            target = next_session(session, day)
+            instruments = held_and_watchlisted(session, day)
+        if target is None or not instruments:
+            return
+        created, failed = nightly_ingest.lookup_actions(
+            _mcp(self.deps), self.deps.session_factory, instruments, target, target
+        )
+        logger.info("next-session actions: %d stored, %d lookups failed", created, len(failed))
+        for symbol in failed:
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
+
+    def rescale(self, day: date) -> JobResult:
+        """`ca.rescale` (before the open): every open position spanning a stored split or bonus
+        is rescaled (HAT-EXEC-141). Fails when one could not be, so the job is retried; that
+        position stays manage-only and is alerted meanwhile."""
+        applied, failed = rescale_open_positions(
+            self.deps.session_factory, day, self._now(), self.deps.notifier
+        )
+        if failed:
+            raise JobError("rescale_failed")
+        return JobResult(rows=applied)
 
     def features(self, day: date) -> JobResult:
         def actions() -> list[ActionFactor]:
@@ -387,6 +426,7 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
             weekday=REFERENCE_WEEKDAY,
         ),
         ScheduledJob(BANDS_NIGHTLY, BANDS_AT, n.bands),
+        ScheduledJob(CA_RESCALE, RESCALE_AT, n.rescale, retry_after=RESCALE_RETRY),
         ScheduledJob(EVENTS_PARTITIONS, PARTITIONS_AT, n.partitions, days=Days.EVERY),
         ScheduledJob(RETENTION_PURGE, PURGE_AT, n.purge, days=Days.EVERY),
     )

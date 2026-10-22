@@ -557,25 +557,45 @@ def _lookup_actions(
     deps: IngestDeps, trade_date: date, flagged: Sequence[str], members: Mapping[str, Member]
 ) -> tuple[int, int]:
     """`get_corporate_actions` for the flagged symbols only; (created, failed lookups)."""
+    created, failed = lookup_actions(
+        deps.client,
+        deps.session_factory,
+        {s: members[s].instrument_id for s in flagged},
+        trade_date,
+        trade_date,
+    )
+    return created, len(failed)
+
+
+def lookup_actions(
+    client: McpClient,
+    session_factory: SessionFactory,
+    instruments: Mapping[str, object],
+    from_date: date,
+    to_date: date,
+) -> tuple[int, list[str]]:
+    """`get_corporate_actions` for each symbol (to its instrument id) over the dates, stored
+    idempotently (HAT-DATA-052). Returns (actions created, symbols whose lookup failed, came
+    back incomplete or held a row that could not be read: an unknown action is not "none")."""
 
     def one(symbol: str) -> Callable[[], tuple[str, ca.Normalised | None]]:
         def run() -> tuple[str, ca.Normalised | None]:
             try:
-                page = deps.client.corporate_actions(symbol, trade_date, trade_date)
+                page = client.corporate_actions(symbol, from_date, to_date)
             except McpError:
                 return symbol, None
             if page.incomplete:
                 return symbol, None
-            return symbol, ca.from_mcp(members[symbol].instrument_id, page.actions)
+            return symbol, ca.from_mcp(instruments[symbol], page.actions)
 
         return run
 
-    results = deps.client.map_calls([one(s) for s in flagged])
+    results = client.map_calls([one(s) for s in sorted(instruments)])
     records = [r for _, n in results if n is not None for r in n.records]
-    failed = sum(1 for _, n in results if n is None)
+    failed = sorted(s for s, n in results if n is None or n.unparsed)
     created = 0
     if records:
-        with deps.session_factory() as session:
+        with session_factory() as session:
             created = ca.load_actions(session, records).created
             session.commit()
     return created, failed

@@ -127,11 +127,27 @@ BEGIN
 END $$
 """
 
-# Invariant 1 (HAT-SCH-081, HAT-RISK-070): a long position's stop can only rise.
+# Invariant 1 (HAT-SCH-081, HAT-RISK-070): a long position's stop can only rise. The one exception
+# is a split or bonus rescale (HAT-EXEC-141): the whole position moves to the new price scale, and
+# only when a `position.rescaled` event of that position names exactly the old and new quantity,
+# entry and stops. Such an event cannot authorise a second move: nothing but a rescale changes
+# `initial_stop`, and a rescale only lowers it, so the position never holds its `from` again.
 _STOP_ONLY_TIGHTENS_FN = """
 CREATE OR REPLACE FUNCTION hat_stop_only_tightens() RETURNS trigger AS $$
 BEGIN
-  IF NEW.current_stop < OLD.current_stop THEN
+  IF NEW.current_stop < OLD.current_stop AND NOT EXISTS (
+    SELECT 1 FROM hat_event e
+    WHERE e.aggregate_type = 'position' AND e.aggregate_id = OLD.id
+      AND e.event_type = 'position.rescaled'
+      AND (e.payload->'from'->>'qty_open')::bigint = OLD.qty_open
+      AND (e.payload->'from'->>'avg_entry')::numeric = OLD.avg_entry
+      AND (e.payload->'from'->>'initial_stop')::numeric = OLD.initial_stop
+      AND (e.payload->'from'->>'current_stop')::numeric = OLD.current_stop
+      AND (e.payload->'to'->>'qty_open')::bigint = NEW.qty_open
+      AND (e.payload->'to'->>'avg_entry')::numeric = NEW.avg_entry
+      AND (e.payload->'to'->>'initial_stop')::numeric = NEW.initial_stop
+      AND (e.payload->'to'->>'current_stop')::numeric = NEW.current_stop
+  ) THEN
     RAISE EXCEPTION 'stop for position % cannot move from % to %',
       OLD.id, OLD.current_stop, NEW.current_stop;
   END IF;

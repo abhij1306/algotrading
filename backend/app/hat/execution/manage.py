@@ -610,13 +610,30 @@ class TradeManager:
         return report
 
     def sync(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport | None:
-        """Read the broker's fills into HAT's book (after this session's reconciliation)."""
+        """Bring down to its stop the broker stop of any position a split or bonus rescaled,
+        then read the broker's fills into HAT's book (after this session's reconciliation). The
+        trigger moves first: the fill sync resizes a stop to the open quantity at its trigger, and
+        a full-size stop at the old trigger would sell the position at the open."""
         if not self._reconciled(session, account_id):
             return None
+        self._follow_rescales(session, account_id, now)
         try:
             return self._fills.run(session, account_id, now)
         except BrokerUnavailableError:
             return None
+
+    def _follow_rescales(self, session: Session, account_id: uuid.UUID, now: datetime) -> None:
+        """`StopDesk.rescaled` for every open real position (HAT-EXEC-143); one position's
+        failure leaves the others tried, and the next sync tries it again."""
+        for position in self.open_positions(session, account_id):
+            try:
+                self._desk.rescaled(session, position.id, now)
+            except BrokerUnavailableError:
+                session.rollback()
+                return
+            except Exception:
+                session.rollback()
+                logger.exception("rescaled stop of position %s failed", position.id)
 
     def verify_stops(self, session: Session, account_id: uuid.UUID, now: datetime) -> StopsReport:
         """The `gtt.verify` job body (HAT-EXEC-063, HAT-OPS-024): the broker's fills first, then

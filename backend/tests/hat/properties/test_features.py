@@ -771,7 +771,8 @@ def test_changed_inputs_rebuild_everything(
 def test_split_invariant(rng: Lcg, factor: str, length: int, ex_at: int) -> None:
     """A split at an ex-date, stored with its factor, leaves every price feature, return and
     percentile of every date as the unsplit series has them (raw prices before the ex-date are
-    the unsplit prices divided by the factor; the adjusted view multiplies them back)."""
+    the unsplit prices divided by the factor; the adjusted view multiplies them back; the
+    ex-date's prev_close is the exchange's adjusted one, so `adtr20` does not jump)."""
     f = Decimal(factor)
     base = [_make_series(rng, f"i{k}", length, 0, narrow=False, gaps=False) for k in range(3)]
     for s in base:
@@ -792,8 +793,8 @@ def test_split_invariant(rng: Lcg, factor: str, length: int, ex_at: int) -> None
                     "prev_close": r["prev_close"] / f,
                     "volume": int(r["volume"] * f),
                 }
-            elif k == 0 and i == ex_index:
-                r = {**r, "prev_close": r["prev_close"] / f}
+            # The ex-date row keeps the unsplit prev_close: NSE publishes it already adjusted
+            # (HAT-DATA-053, audit F14), so the view must not scale it again.
             rows.append(r)
         split.append(Series(s.iid, rows))
     ex_date = base[0].rows[ex_index]["date"]

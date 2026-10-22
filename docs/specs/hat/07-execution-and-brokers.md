@@ -611,3 +611,41 @@ Parameters, defaults and data needs are specified in 04-criteria-and-bots §4. T
 - **Verification:** PBT `exits.veto_verdict_threshold`
 - **Acceptance:**
   - Property: for every decision history, the verdict is present iff the count of decided approvals is ≥ 50, and it compares mean R of skipped trades with mean R of taken trades; when either group has no closed trade, that mean is reported as not available and the verdict is "insufficient data". Harm: a verdict drawn from too few decisions, or a division by zero when every decision went one way.
+
+## §14 Corporate actions on open positions
+
+A split or bonus with factor f (a 1:2 split is 0.5, a 1:1 bonus 0.5, a 1:2 bonus 2/3; 02 §5) puts every price after its ex-date on a new scale. A position opened before the ex-date and still open on it holds prices of the old scale: its stop sits above the new price, so without a rescale `hard_stop` sells it on the ex-date open for nothing but the action, a shadow position books a fake loss and stop-out, `close_below_sma` fires against an unadjusted SMA, and a broker stop re-placed at the old trigger is refused (audit 2026-10-22 F3). Implementation: `engine/rescale.py`.
+
+#### HAT-EXEC-140: Next-session actions are fetched the night before
+- **Statement:** The nightly `ca.adjust` step looks up `get_corporate_actions` with ex-date = the next session for every instrument with an open position or a watchlist row of the day, and stores what it finds (HAT-DATA-052) before `features` runs, so the night's features, scan and the morning's rescale see it. A failed or incomplete lookup (including one with a row that cannot be read), or one that cannot run (no MCP client, a database error), is alerted (`corporate_action.unchecked`, symbol `*` when the whole lookup failed) and never fails the step, so the nightly chain goes on.
+- **Source:** audit 2026-10-22 F3.
+- **PR:** 21
+- **Verification:** PBT `rescale.next_session_lookup`
+- **Acceptance:**
+  - Property: for every set of open positions, watchlist rows and MCP answers, the symbols looked up are exactly the held and watchlisted ones, each over (next session, next session); every action returned is stored once; and every failed lookup raises one alert while the step still succeeds; with no MCP client the step succeeds and raises one alert. Harm: a split of a held name is first seen after its ex-date close, when the fake stop-out has already happened.
+
+#### HAT-EXEC-141: Open positions are rescaled before the open
+- **Statement:** `ca.rescale` (08:40, trading days) applies every stored split or bonus with factor below 1 whose ex-date is after the day a position opened and on or before today, and that the position has not been rescaled for (an `other` action such as a rights issue, or a consolidation, changes no share count HAT can know and is not rescaled): quantity ⌊q / f⌋ (a fractional entitlement is the broker's cash), average entry × f (half-even) and both stops × f (rounded down, 4 places), in one transaction with the event `position.rescaled` (`action`, `factor`, `from`, `to`). The stop guard accepts this one downward move (HAT-SCH-081). The entry quantity behind R and the partial exits is scaled the same way, so R and the exit fractions stay on one scale. Each action is applied once per position. The factor is read as the ratio with denominator up to 1000 within 1e-9 of it; a factor that is no such ratio (one sent to 4 places, 0.6667) is refused, so the position stays manage-only and is alerted rather than rescaled by a guessed ratio.
+- **Source:** audit 2026-10-22 F3.
+- **PR:** 21
+- **Verification:** PBT `rescale.preserves_position`, PBT `rescale.applied_once`, PBT `rescale.factor_exact`, DB `governance.rescale_moves_stop`
+- **Acceptance:**
+  - Property: for every quantity, entry, stops and split or bonus ratio, the rescaled position keeps quantity × entry within one share's value, its open risk (entry − stop) × quantity within rounding, and the stop's distance in R, (current − initial) / (entry − initial), within rounding; `current_stop ≥ initial_stop` still holds; and on the ex-date open at the old close × f no exit rule fires (no `hard_stop`, no sale) from the action alone. Harm: the ex-date open sells the position at a fake stop or books a fake loss.
+  - Property: for every sequence of `ca.rescale` runs (repeated, with actions added between), each (position, action) is applied exactly once, a position opened on or after an ex-date is never rescaled for it, and an `other` action or a consolidation is never applied. Harm: a split applied twice halves the position's prices again, or a rights issue adds shares the account does not hold.
+  - Property: for every ratio n/d below 1 with d ≤ 1000, the stored 12-place factor reads back as n/d exactly, and a factor sent to 5 places or fewer that is not exactly such a ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91 sizes the position at a tenth of its shares.
+
+#### HAT-EXEC-142: Until rescaled, the instrument is manage-only and its exits wait
+- **Statement:** While an open position has a stored action it was not rescaled for, the exits' `ViewSource` gives it no view (no exit rule runs on its old-scale prices), and any trigger of that instrument is stored skipped with reason `corporate_action_pending`. A failed rescale fails the job (retried every 5 minutes) and alerts `corporate_action.pending`.
+- **Source:** audit 2026-10-22 F3.
+- **PR:** 21
+- **Verification:** PBT `rescale.pending_is_manage_only`
+- **Acceptance:**
+  - Property: for every position with a pending action and every live price, the view source returns None and a trigger of that instrument is stored Rejected with `corporate_action_pending`; once rescaled, the view returns and the trigger is decided by the risk authority. Harm: an exit or an entry is decided on prices of the wrong scale.
+
+#### HAT-EXEC-143: The broker stop follows the rescale down
+- **Statement:** After a rescale, each fill sync first moves every live broker stop of the position resting above the rescaled stop down to it (the stop rounded down to the tick), keeping the quantity the stop already covers: a GTT by `modify_gtt`, a day stop by `modify_order`. Only then does the fill sync resize the stop to the rescaled quantity, so no stop is ever larger than the old size while its trigger is on the old scale, and a refused resize (the new shares not yet in the holdings) leaves the old shares under the new stop and is tried again by the next sync. The move waits while a sale of the position is working. This is the only downward move a broker stop makes, and only for a position with a `position.rescaled` event; a refused move is alerted (`stop.not_moved`) and tried again by the next sync. *[verify: whether Fyers cancels or adjusts a resting GTT itself on an ex-date, and when the new shares reach the holdings; until they do, reconciliation sees a quantity mismatch and blocks the account's entries.]*
+- **Source:** audit 2026-10-22 F3.
+- **PR:** 21
+- **Verification:** PBT `rescale.broker_stop_follows`
+- **Acceptance:**
+  - Property: for every rescaled real position and resting broker stop, after a sync every live stop rests at the rescaled trigger and quantity, no modify on the way sized the stop above the old size while its trigger was above the rescaled stop, while the broker refuses the larger size the stop rests at the rescaled trigger for the old size, and for a position never rescaled no stop is moved down. Harm: the old GTT at the pre-split trigger fires on the ex-date open and sells part of the position.
