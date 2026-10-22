@@ -9,7 +9,11 @@ An order is two steps with the database in between:
 2. `send_order(tag)`: the only way an order reaches the broker. It is a no-op for an order that
    was already placed or ended. For one whose outcome is unknown (`unconfirmed`, or `pending`
    with an attempt already stamped in `placed_at`) it looks the order up by tag first: found means
-   adopt it, absent means the same tag may be placed again.
+   adopt it. Absent means the same tag may be placed again for a stop or a sale, never for an
+   entry: Fyers does not enforce tag uniqueness and its book can lag a placed order, so a second
+   entry could double the position (HAT-BRK-102, -103). An entry of unknown outcome is left to
+   the fill sync, which adopts it when the book shows it, and to the session end, which ends its
+   signal Rejected `entry_not_found` when the book never does.
 
 Every refusal (account not active, no reconciliation this session, mismatch for the bot, no live
 session, a virtual order, a non-delivery product, a short entry) is raised before the broker is
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -60,7 +65,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
-from .tags import encode_tag
+from .tags import encode_tag, is_hat_tag
 
 __all__ = [
     "ACCOUNT_ACTIVE",
@@ -69,6 +74,7 @@ __all__ = [
     "OrderRefusedError",
     "OrderRequest",
     "SendOutcome",
+    "TagBook",
     "UnresolvedOrderError",
     "adopt_broker_order",
     "adopt_gtt",
@@ -189,10 +195,44 @@ def _row(session: Session, tag: str) -> HatOrder:
     return row
 
 
+@dataclass(frozen=True)
+class TagBook:
+    """The broker's order book as HAT's rows read it. Fyers does not enforce tag uniqueness
+    (HAT-BRK-103), so one tag may name two orders: a row that holds a broker order id is matched
+    by that id only, and a row without one adopts the first order under its tag that the broker
+    has not ended unfilled (else the first), the one `resolve_by_tag` picks, so every reader of
+    one book adopts the same order and a dead duplicate never ends a live one's signal."""
+
+    first: dict[str, BrokerOrder]
+    by_id: dict[str, BrokerOrder]
+
+    @classmethod
+    def of(cls, orders: Iterable[BrokerOrder]) -> TagBook:
+        first: dict[str, BrokerOrder] = {}
+        by_id: dict[str, BrokerOrder] = {}
+        for order in orders:
+            if order.tag is not None and is_hat_tag(order.tag):
+                held = first.get(order.tag)
+                if held is None or (_dead(held) and not _dead(order)):
+                    first[order.tag] = order
+                by_id[order.order_id] = order
+        return cls(first, by_id)
+
+    def for_row(self, row: HatOrder) -> BrokerOrder | None:
+        if row.broker_order_id is None:
+            return self.first.get(row.tag)
+        found = self.by_id.get(row.broker_order_id)
+        return found if found is not None and found.tag == row.tag else None
+
+
+def _dead(order: BrokerOrder) -> bool:
+    return order.status in ("cancelled", "rejected", "expired") and order.filled_qty == 0
+
+
 def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:
     """The broker's order with `tag`, or None when its order book has none. Raises
     BrokerUnavailableError when the book cannot be read (never "absent" on a failed read)."""
-    return next((o for o in broker.orders() if o.tag == tag), None)
+    return TagBook.of(o for o in broker.orders() if o.tag == tag).first.get(tag)
 
 
 def adopt_broker_order(
@@ -430,11 +470,14 @@ def _lookup_before_retry(
     session: Session, broker: HatBroker, row: HatOrder, tag: str, bot_id: uuid.UUID
 ) -> SendOutcome | None:
     """An attempt was made before: ask the broker for the tag. An order found is adopted and
-    returned; None means the book has none and the same tag may be placed again."""
+    returned; None means the book has none and the same tag may be placed again (a stop or a
+    sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed."""
     if row.purpose == GTT_PURPOSE:
         raise UnresolvedOrderError("a GTT has no tag to look up")
     found = resolve_by_tag(broker, tag)
     if found is None:
+        if row.purpose == ENTRY:
+            raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
     adopt_broker_order(session, row, found, bot_id)
     session.commit()

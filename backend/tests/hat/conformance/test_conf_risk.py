@@ -305,8 +305,11 @@ SAFETY_DIGESTS = {
     "test_broker_errors_fail_closed": (
         "d9c116d96a4842f25e19a8a9b6ab348acb32b6f08dff6eda2722bcfc4070dc37"
     ),
+    # Re-pinned in PR 28 (stronger, not weaker; HAT-BRK-102, -103): an entry is now placed exactly
+    # once, also with a lagging order book. The added day-stop cases keep the lookup-before-retry
+    # check; a stop on a lagging book may rest twice (the known window in verify-execution).
     "test_a_timeout_is_looked_up_before_any_retry": (
-        "4b50acb1d6e3570be4df3eeee09e32b431a950f8cd0acbfd6f8dafa536d0d8bd"
+        "5fda6dbac35be3e8a2c8c358bdd43968e8c2bb445d4906bff142237d258a7353"
     ),
     # Re-pinned in PR 24 (owner decision D118, trading-safety rules 5 and 7 reworded): the
     # reconciliation gate holds entries only, so a stop or a sale must now pass while the trade

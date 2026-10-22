@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..engine import live_trades
@@ -74,18 +74,21 @@ from .protect import (
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
+    TagBook,
     adopt_broker_order,
     record_broker_status,
     rejected_sales,
 )
-from .tags import is_hat_tag
 
-__all__ = ["ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
+__all__ = ["ALERT_FILL_EXCESS", "ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
 
 logger = logging.getLogger(__name__)
 
 ENTRY = "entry"
 ALERT_FILL_REFUSED = "fill.refused"
+# An entry filled beyond its quantity: its tag reached the broker twice (HAT-BRK-103). Every
+# fill is still recorded, so the shares the broker holds are tracked and under the stop.
+ALERT_FILL_EXCESS = "fill.excess"
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
@@ -162,8 +165,8 @@ class FillSync:
                 )
             )
         }
-        by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}
-        self._adopt(session, rows, by_tag, now, report)
+        book = TagBook.of(orders)
+        self._adopt(session, rows, book, now, report)
         for trade in trades:
             row = rows.get(trade.tag) if trade.tag else None
             if row is not None:
@@ -172,7 +175,7 @@ class FillSync:
         for trade in trades:
             if trade.tag is None and trade.side is Side.SELL and trade.symbol in gtts:
                 self._apply_gtt_trade(session, gtts[trade.symbol], trade, now, report)
-        self._statuses(session, rows, by_tag, now, report)
+        self._statuses(session, rows, book, now, report)
         gtts = self._working_gtts(session, account_id)
         for order in orders:
             if self._unfilled_trigger(order, gtts):
@@ -218,16 +221,17 @@ class FillSync:
         self,
         session: Session,
         rows: dict[str, HatOrder],
-        by_tag: dict[str | None, BrokerOrder],
+        book: TagBook,
         now: datetime,
         report: SyncReport,
     ) -> None:
-        for tag, row in rows.items():
-            if row.status in UNSURE and tag in by_tag:
-                adopt_broker_order(session, row, by_tag[tag], self._bot_of(session, row))
+        for row in rows.values():
+            found = book.for_row(row) if row.status in UNSURE else None
+            if found is not None:
+                adopt_broker_order(session, row, found, self._bot_of(session, row))
                 session.commit()
                 report.adopted += 1
-                self._sale_ended(session, row, by_tag[tag], now)
+                self._sale_ended(session, row, found, now)
 
     def _sale_ended(
         self, session: Session, row: HatOrder, found: BrokerOrder, now: datetime
@@ -266,6 +270,8 @@ class FillSync:
         if position_id is not None:
             # HAT-EXEC-060: the stop comes before any other action on the position.
             self._protect(session, position_id, now, report)
+            if row.purpose == ENTRY:
+                self._check_excess(session, row, trade.qty, now)  # the alert after the stop
 
     def _record(
         self,
@@ -295,6 +301,22 @@ class FillSync:
         session.commit()
         report.fills += 1
         return position.id
+
+    def _check_excess(self, session: Session, row: HatOrder, qty: int, now: datetime) -> None:
+        """The fill of `qty` just recorded took the entry's fills above its quantity:
+        `fill.excess`, once, on the fill that crosses it (each fill is recorded once; later fills
+        of the same excess are not alerted again). The fills stay recorded: shares refused here
+        would sit at the broker untracked, with no stop; recorded, the stop covers them and
+        reconciliation blocks the account's entries."""
+        filled = session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == row.id))
+        if not int(filled or 0) - qty <= row.qty < int(filled or 0):
+            return
+        logger.error("entry %s filled %s of %s", row.tag, filled, row.qty)
+        self._notifier.alert(
+            ALERT_FILL_EXCESS,
+            trade_date_of(now),
+            {"tag": row.tag, "qty": row.qty, "filled": int(filled or 0)},
+        )
 
     def _refused(
         self, row: HatOrder, trade_id: str, code: str, now: datetime, report: SyncReport
@@ -364,14 +386,14 @@ class FillSync:
         self,
         session: Session,
         rows: dict[str, HatOrder],
-        by_tag: dict[str | None, BrokerOrder],
+        book: TagBook,
         now: datetime,
         report: SyncReport,
     ) -> None:
         touched: set[uuid.UUID] = set()
-        for tag, found in by_tag.items():
-            row = rows.get(tag) if tag else None
-            if row is None or row.status in UNSURE:
+        for row in rows.values():
+            found = None if row.status in UNSURE else book.for_row(row)
+            if found is None:
                 continue
             session.refresh(row)
             if record_broker_status(session, row, found, self._bot_of(session, row)):

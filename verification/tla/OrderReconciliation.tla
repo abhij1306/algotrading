@@ -19,11 +19,13 @@
 (*   broken variant ("none" is the real protocol).                         *)
 (* Assumptions: each action is one database transaction or one broker call *)
 (*   (atomic), and a crash can fall between any two of them (Restart); the *)
-(*   broker never invents an order, answers a lookup truthfully and a      *)
-(*   rejection means nothing was placed; an answer can be lost with the    *)
-(*   order landed or not; the tag lookup is consistent with the broker's   *)
-(*   book (a real risk at Fyers: the order book may lag, see verify-       *)
-(*   execution "Known window"); the capability check, a divergence and its *)
+(*   broker never invents an order and a rejection means nothing was      *)
+(*   placed; an answer can be lost with the order landed or not; the tag   *)
+(*   lookup reads an order book that may lag the orders that landed (it    *)
+(*   catches up eventually, BookCatchesUp), and the broker does not        *)
+(*   enforce tag uniqueness (HAT-BRK-103): so an entry is sent at most     *)
+(*   once per tag and an unknown outcome is only ever adopted, never sent  *)
+(*   again (HAT-BRK-102); the capability check, a divergence and its      *)
 (*   repair are environment steps; exits and stops are not modelled (they  *)
 (*   never consult the entry block, see the PBT refusals property);        *)
 (*   scheduling is otherwise arbitrary, with no fairness needed (every     *)
@@ -40,7 +42,8 @@ CONSTANTS MaxTags, MaxRetries, MaxBook, MaxDiverge, NOwners, MaxRestarts, Broken
 
 ASSUME BrokenMode \in {"none", "no_persist", "retry_new_tag", "retry_without_lookup",
                        "no_reconcile", "ignore_mismatch", "alert_every_run",
-                       "inactive_account", "two_owners", "non_cnc", "unlimited_retry"}
+                       "inactive_account", "two_owners", "non_cnc", "unlimited_retry",
+                       "retry_on_lagging_lookup", "no_late_adoption"}
 
 Tags == 0..(MaxTags - 1)
 Owners == 1..NOwners
@@ -52,6 +55,7 @@ VARIABLES
     answer,       \* per tag, while called: accepted | rejected | lost_landed | lost_not_landed
     unresolved,   \* per tag: the outcome is unknown and no tag lookup has run since
     book,         \* per tag: broker orders carrying the tag
+    seen,         \* per tag: the orders carrying the tag the order book shows yet (<= book)
     product,      \* per tag: none | CNC | OTHER (the product the intent was built with)
     retries,      \* retries after a rejection so far
     acct,         \* new | active | failed
@@ -65,7 +69,7 @@ VARIABLES
     restarts,     \* process restarts so far
     violUnresolved, violUnreconciled, violBlocked, violInactive  \* history flags of a place call
 
-vars == <<row, attempted, stage, answer, unresolved, book, product, retries, acct, checked,
+vars == <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct, checked,
           owners, reconciled, diverged, divergeCount, blocked, alerts, restarts,
           violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -76,6 +80,7 @@ Init ==
     /\ answer = [t \in Tags |-> "none"]
     /\ unresolved = [t \in Tags |-> FALSE]
     /\ book = [t \in Tags |-> 0]
+    /\ seen = [t \in Tags |-> 0]
     /\ product = [t \in Tags |-> "none"]
     /\ retries = 0
     /\ acct = "new"
@@ -98,7 +103,7 @@ CheckAccount ==
     /\ acct = "new"
     /\ \/ acct' = "active" /\ checked' = TRUE
        \/ acct' = "failed" /\ checked' = FALSE
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, owners,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, owners,
                    reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -107,7 +112,7 @@ AcquireSession(o) ==
     /\ o \notin owners
     /\ owners = {} \/ BrokenMode = "two_owners"
     /\ owners' = owners \cup {o}
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -115,7 +120,7 @@ AcquireSession(o) ==
 ReleaseSession(o) ==
     /\ o \in owners
     /\ owners' = owners \ {o}
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -132,18 +137,21 @@ Reserve(t, p) ==
     /\ row' = [row EXCEPT ![t] = "pending"]
     /\ product' = [product EXCEPT ![t] = p]
     /\ retries' = IF t > 0 THEN retries + 1 ELSE retries
-    /\ UNCHANGED <<attempted, stage, answer, unresolved, book, acct, checked, owners, reconciled,
+    /\ UNCHANGED <<seen, attempted, stage, answer, unresolved, book, acct, checked, owners, reconciled,
                    diverged, divergeCount, blocked, alerts, restarts, violUnresolved,
                    violUnreconciled, violBlocked, violInactive>>
 
 \* code: backend/app/hat/execution/submit.py:send_order  (the guards, then commit the attempt in
-\* hat_order.placed_at before the broker call; an order whose outcome is unknown needs a tag
-\* lookup first: unresolved is cleared only by Lookup)
+\* hat_order.placed_at before the broker call; an entry is attempted once per tag: one whose
+\* outcome is unknown is looked up and adopted, never sent again (broken variant
+\* "retry_on_lagging_lookup": sent again after a lookup that found nothing, the code before
+\* PR 28; "retry_without_lookup": sent again with no lookup at all))
 Stamp(t) ==
     /\ \/ row[t] \in {"pending", "unconfirmed"}
        \/ BrokenMode = "no_persist" /\ t = 0 /\ row[t] = "none"
     /\ stage[t] = "idle"
-    /\ \/ ~unresolved[t]
+    /\ \/ ~attempted[t]
+       \/ BrokenMode = "retry_on_lagging_lookup" /\ ~unresolved[t]
        \/ BrokenMode = "retry_without_lookup"
     /\ \/ acct = "active"
        \/ BrokenMode = "inactive_account"
@@ -155,7 +163,7 @@ Stamp(t) ==
        \/ BrokenMode \in {"non_cnc", "no_persist"}
     /\ attempted' = [attempted EXCEPT ![t] = TRUE]
     /\ stage' = [stage EXCEPT ![t] = "stamped"]
-    /\ UNCHANGED <<row, answer, unresolved, book, product, retries, acct, checked, owners,
+    /\ UNCHANGED <<seen, row, answer, unresolved, book, product, retries, acct, checked, owners,
                    reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -177,7 +185,7 @@ PlaceCall(t, a) ==
     /\ violUnreconciled' = (violUnreconciled \/ ~reconciled)
     /\ violBlocked' = (violBlocked \/ blocked)
     /\ violInactive' = (violInactive \/ acct # "active")
-    /\ UNCHANGED <<row, attempted, unresolved, product, retries, acct, checked, owners,
+    /\ UNCHANGED <<seen, row, attempted, unresolved, product, retries, acct, checked, owners,
                    reconciled, diverged, divergeCount, blocked, alerts, restarts>>
 
 \* code: backend/app/hat/execution/submit.py:send_order  (record the answer: placed, rejected, or
@@ -190,18 +198,19 @@ Record(t) ==
     /\ unresolved' = [unresolved EXCEPT ![t] = answer[t] \in {"lost_landed", "lost_not_landed"}]
     /\ stage' = [stage EXCEPT ![t] = "idle"]
     /\ answer' = [answer EXCEPT ![t] = "none"]
-    /\ UNCHANGED <<attempted, book, product, retries, acct, checked, owners, reconciled,
+    /\ UNCHANGED <<seen, attempted, book, product, retries, acct, checked, owners, reconciled,
                    diverged, divergeCount, blocked, alerts, restarts, violUnresolved,
                    violUnreconciled, violBlocked, violInactive>>
 
 \* code: backend/app/hat/execution/submit.py:resolve_by_tag  (look the tag up in the broker's
-\* order book: a found order is adopted with its broker id, absent clears the unknown state)
+\* order book, which may lag: a found order is adopted with its broker id; absent clears the
+\* unknown state)
 Lookup(t) ==
     /\ stage[t] = "idle"
     /\ unresolved[t]
-    /\ row' = [row EXCEPT ![t] = IF book[t] > 0 THEN "placed" ELSE @]
+    /\ row' = [row EXCEPT ![t] = IF seen[t] > 0 THEN "placed" ELSE @]
     /\ unresolved' = [unresolved EXCEPT ![t] = FALSE]
-    /\ UNCHANGED <<attempted, stage, answer, book, product, retries, acct, checked, owners,
+    /\ UNCHANGED <<seen, attempted, stage, answer, book, product, retries, acct, checked, owners,
                    reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
@@ -215,7 +224,7 @@ Restart ==
     /\ unresolved' = [t \in Tags |-> unresolved[t] \/ stage[t] # "idle"]
     /\ stage' = [t \in Tags |-> "idle"]
     /\ answer' = [t \in Tags |-> "none"]
-    /\ UNCHANGED <<row, attempted, book, product, retries, acct, checked, diverged,
+    /\ UNCHANGED <<seen, row, attempted, book, product, retries, acct, checked, diverged,
                    divergeCount, blocked, alerts, violUnresolved, violUnreconciled,
                    violBlocked, violInactive>>
 
@@ -226,7 +235,7 @@ Reconcile ==
     /\ blocked' = diverged
     /\ alerts' = IF diverged /\ (~blocked \/ BrokenMode = "alert_every_run")
                     THEN alerts + 1 ELSE alerts
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, owners, diverged, divergeCount, restarts, violUnresolved,
                    violUnreconciled, violBlocked, violInactive>>
 
@@ -236,7 +245,7 @@ Diverge ==
     /\ divergeCount < MaxDiverge
     /\ diverged' = TRUE
     /\ divergeCount' = divergeCount + 1
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, owners, reconciled, blocked, alerts, restarts, violUnresolved,
                    violUnreconciled, violBlocked, violInactive>>
 
@@ -245,8 +254,31 @@ Diverge ==
 Repair ==
     /\ diverged
     /\ diverged' = FALSE
-    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+    /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, owners, reconciled, divergeCount, blocked, alerts, restarts,
+                   violUnresolved, violUnreconciled, violBlocked, violInactive>>
+
+\* code: backend/app/hat/execution/submit.py:resolve_by_tag  (environment: the order book it
+\* reads catches up and shows the orders that landed under the tag)
+BookCatchesUp(t) ==
+    /\ seen[t] < book[t]
+    /\ seen' = [seen EXCEPT ![t] = book[t]]
+    /\ UNCHANGED <<row, attempted, stage, answer, unresolved, book, product, retries, acct,
+                   checked, owners, reconciled, diverged, divergeCount, blocked, alerts, restarts,
+                   violUnresolved, violUnreconciled, violBlocked, violInactive>>
+
+\* code: backend/app/hat/execution/fills.py:FillSync._adopt  (and ReconciliationService.run: an
+\* attempted order whose lookup found nothing is adopted once the book shows its tag)
+Adopt(t) ==
+    /\ BrokenMode # "no_late_adoption"
+    /\ stage[t] = "idle"
+    /\ attempted[t]
+    /\ row[t] \in {"pending", "unconfirmed"}
+    /\ seen[t] > 0
+    /\ row' = [row EXCEPT ![t] = "placed"]
+    /\ unresolved' = [unresolved EXCEPT ![t] = FALSE]
+    /\ UNCHANGED <<seen, attempted, stage, answer, book, product, retries, acct, checked, owners,
+                   reconciled, diverged, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
 Next ==
@@ -262,8 +294,11 @@ Next ==
           \/ \E a \in {"accepted", "rejected", "lost_landed", "lost_not_landed"} : PlaceCall(t, a)
           \/ Record(t)
           \/ Lookup(t)
+          \/ BookCatchesUp(t)
+          \/ Adopt(t)
 
-Spec == Init /\ [][Next]_vars
+\* The book catches up and the fill sync runs (every minute, HAT-EXEC-064).
+Spec == Init /\ [][Next]_vars /\ \A t \in Tags : WF_vars(BookCatchesUp(t)) /\ WF_vars(Adopt(t))
 
 Total == book[0] + book[1] + book[2]
 
@@ -271,6 +306,8 @@ TypeOK ==
     /\ row \in [Tags -> {"none", "pending", "unconfirmed", "placed", "rejected"}]
     /\ stage \in [Tags -> {"idle", "stamped", "called"}]
     /\ book \in [Tags -> 0..MaxBook]
+    /\ seen \in [Tags -> 0..MaxBook]
+    /\ \A t \in Tags : seen[t] <= book[t]
     /\ product \in [Tags -> {"none", "CNC", "OTHER"}]
     /\ owners \subseteq Owners
     /\ acct \in {"new", "active", "failed"}
@@ -307,4 +344,11 @@ ProductIsCNC == \A t \in Tags : book[t] > 0 => product[t] = "CNC"
 
 \* A rejected order is retried at most once.
 RetryAtMostOnce == retries <= 1
+
+\* HAT-BRK-102: an entry of unknown outcome that did land is adopted by tag once the book shows
+\* it, though it is never sent again (liveness, under fairness of BookCatchesUp and Adopt).
+LostEntryAdopted ==
+    \A t \in Tags :
+        (stage[t] = "idle" /\ row[t] \in {"pending", "unconfirmed"} /\ book[t] > 0)
+            ~> row[t] = "placed"
 ==============================================================================

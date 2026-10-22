@@ -252,6 +252,8 @@ DIRECT = st.lists(
             "gtt.missing",
             "gtt.unverified",
             "gtt.unfilled",
+            "fill.excess",
+            "entry.unresolved",
             "fill.refused",
             "exit.not_placed",
             "reconcile.mismatch",
@@ -276,8 +278,9 @@ def test_health_alert_for_every_failure(
     """HAT-DEC-T15, HAT-OPS-071: every `quality.failed`, `feed.stale`, `broker.session_lost` and
     `order.rejected` event becomes exactly one health alert in the chat, and every other alert
     the services raise becomes one message; an alert whose event the relay sends is not sent
-    twice. `gtt.unverified` and `gtt.unfilled` are URGENT. Harm: the owner does not learn that
-    a bot went manage-only or an order failed, or learns it twice and starts ignoring alerts."""
+    twice. `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does
+    not learn that a bot went manage-only or an order failed, or learns it twice and starts
+    ignoring alerts."""
     fake = FakeBroker()
     fake.script("place_order", *[rejected("Insufficient funds")] * rejections)
     rig = TgRig(mode="auto", fake=fake, telegram_alerts=True)
@@ -304,6 +307,7 @@ def test_health_alert_for_every_failure(
     if rejections >= 2:
         expected["entry.not_placed"] += 1
     assert Counter(alert_code(t) for t in sent) == +expected
+    assert {"gtt.unverified", "gtt.unfilled", "fill.excess"} <= URGENT_ALERTS
     for text in sent:
         assert text.startswith("URGENT: ") == (alert_code(text) in URGENT_ALERTS)
 

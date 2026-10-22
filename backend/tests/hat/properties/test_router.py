@@ -40,6 +40,7 @@ from app.hat.execution.protect import STOP_DAY, STOP_GTT, UNSURE, WORKING
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
 from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
+    ALERT_ENTRY_UNRESOLVED,
     ALERT_ORDER_REJECTED,
     SESSION_NOT_LIVE,
     SIGNAL_EXPIRED,
@@ -660,6 +661,28 @@ class _NoHealth:
 
     def feed_recovered(self, now: datetime) -> None:
         del now
+
+
+@settings(max_examples=20, deadline=None)
+@given(landed=st.booleans(), repeats=st.integers(min_value=1, max_value=3))
+@example(landed=True, repeats=1)
+def test_unresolved_entry_is_alerted_not_resent(landed: bool, repeats: int) -> None:
+    """HAT-BRK-102, -103: an auto entry whose answer was lost, landed behind a lagging order book
+    or never landed, is placed once: every later attempt finds nothing by tag, sends nothing and
+    raises one `entry.unresolved` alert, and the signal is not rejected while the order may be
+    live. Harm: a lagging book doubles the position, or a stuck entry is silent until the
+    close."""
+    fake = FakeBroker()
+    fake.script("place_order", unconfirmed(landed=landed))
+    fake.lagging = 1 if landed else 0
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO, fake=fake)
+        signal = rig.signal(rig.route().signal_id)
+        for _ in range(repeats):
+            rig.router.place_entry(session, signal.id, now=AT, check=LIVE)
+        assert len(rig.places()) == 1
+        assert rig.codes().count(ALERT_ENTRY_UNRESOLVED) == repeats
+        assert signal.state != lifecycle.REJECTED
 
 
 @settings(max_examples=30, deadline=None)

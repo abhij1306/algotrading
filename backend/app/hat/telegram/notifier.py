@@ -4,8 +4,8 @@ HAT-DEC-T15, HAT-DATA-065, HAT-OPS-071).
 It replaces `LogNotifier` for the alerts the router, the trade manager, the stop desk, fill sync,
 reconciliation and the nightly ingest raise: each becomes one message with the code, the trade
 date and the detail's fixed codes and ids (`render.alert_text` prints anything else as `?`, so no
-broker or server text reaches the chat, HAT-TG-014). `gtt.unverified` and `gtt.unfilled` are
-sent as URGENT (PR 15c).
+broker or server text reaches the chat, HAT-TG-014). `gtt.unverified` and `gtt.unfilled` (PR 15c)
+and `fill.excess` (PR 28) are sent as URGENT (`render.URGENT_ALERTS`).
 
 Two alerts also exist as events, `order.rejected` and the quality gate's `quality.failed`; the
 event relay sends those (`relay.HEALTH_EVENTS`), so the notifier only logs them and each failure

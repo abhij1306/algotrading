@@ -4,7 +4,7 @@ adapter over `FakeBroker`. Nothing reaches a real broker."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
-from app.hat.execution.fills import NOT_MARKETED, RESTING
+from app.hat.execution.fills import ALERT_FILL_EXCESS, NOT_MARKETED, RESTING
 from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
@@ -793,6 +793,93 @@ def test_gtt_resting_marketed(
         assert position.closed_at is not None
         assert [name for name, _ in _writes_since(rig, start)] == []
         assert rig.stops(position.id, *LIVE) == []
+
+
+@settings(max_examples=20, deadline=None)
+@given(
+    extra=st.integers(min_value=3, max_value=40),
+    parts=st.integers(min_value=1, max_value=3),
+    syncs=st.integers(min_value=1, max_value=3),
+)
+@example(extra=3, parts=1, syncs=2)
+@example(extra=3, parts=3, syncs=1)
+def test_a_second_order_under_one_tag_is_tracked(extra: int, parts: int, syncs: int) -> None:
+    """HAT-BRK-103, HAT-DEC-B17: when the broker holds a second order under an entry's tag (Fyers
+    does not enforce tag uniqueness) and it fills, every share is recorded on the position, its
+    stop covers them all, and `fill.excess` is raised once, however many partial fills make up
+    the excess and however many syncs follow, only once the stop covers every share. Harm:
+    shares bought twice sit at the broker untracked and with no stop, or the owner never learns
+    the position is larger than its risk budget."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        row = rig.entry_row(position.signal_id)
+        assert row is not None
+        rig.fake.book.append({**rig.fake.book[0], "id": "DUP-1", "qty": extra, "filledQty": extra})
+        rig.fake.tradebook = [
+            *rig.fake.tradebook,  # type: ignore[misc]
+            *(
+                {
+                    "tradeNumber": f"T-DUP-{n}",
+                    "orderNumber": "DUP-1",
+                    "orderTag": row.tag,
+                    "symbol": SYMBOLS["SBIN"],
+                    "side": 1,
+                    "tradedQty": extra // parts + (extra % parts if n == 0 else 0),
+                    "tradePrice": float(D(row.price)),
+                }
+                for n in range(parts)
+            ),
+        ]
+        covered: list[bool] = []
+        alert = rig.notifier.alert
+
+        def checked(code: str, day: date, detail: dict) -> None:
+            if code == ALERT_FILL_EXCESS:
+                session.refresh(position)
+                live = sum(stop.qty for stop in rig.stops(position.id, *LIVE))
+                covered.append(live == position.qty_open)
+            alert(code, day, detail)
+
+        rig.notifier.alert = checked  # type: ignore[method-assign]
+        for n in range(syncs):
+            rig.sync(at(16, 5 + n))
+        session.refresh(position)
+        assert position.qty_open == row.qty + extra
+        assert covered == [True]
+        assert rig.codes().count(ALERT_FILL_EXCESS) == 1
+        live = rig.stops(position.id, *LIVE)
+        assert sum(stop.qty for stop in live) == position.qty_open
+
+
+@settings(max_examples=20, deadline=None)
+@given(status=st.sampled_from([1, 5, 7]), before=st.booleans(), syncs=st.integers(1, 3))
+@example(status=5, before=False, syncs=1)
+def test_a_dead_second_order_never_ends_the_entry(status: int, before: bool, syncs: int) -> None:
+    """HAT-BRK-103: a second order under a filled entry's tag that the broker cancels, rejects or
+    expires with nothing filled, listed before or after the entry's own order, leaves the entry
+    row on its own broker order id and status, its signal as it was and the position open under
+    its stops. Harm: the duplicate's status is read as the entry's, and an open position's
+    signal is ended or its order row points at an order HAT never tracked."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        row = rig.entry_row(position.signal_id)
+        assert row is not None
+        signal = session.get(HatSignal, position.signal_id)
+        assert signal is not None
+        state, order_id, row_status = signal.state, row.broker_order_id, row.status
+        dead = {**rig.fake.book[0], "id": "DUP-1", "status": status, "filledQty": 0}
+        rig.fake.book = [dead, *rig.fake.book] if before else [*rig.fake.book, dead]
+        for n in range(syncs):
+            rig.sync(at(16, 5 + n))
+        session.refresh(row)
+        session.refresh(signal)
+        session.refresh(position)
+        assert (row.broker_order_id, row.status) == (order_id, row_status)
+        assert signal.state == state
+        assert position.closed_at is None
+        assert sum(stop.qty for stop in rig.stops(position.id, *LIVE)) == position.qty_open
 
 
 # ---------------------------------------------------------------------------------------
