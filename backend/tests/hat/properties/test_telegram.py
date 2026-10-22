@@ -243,7 +243,10 @@ def alert_code(text: str) -> str:
 # --- HAT-DEC-T15, HAT-TG-024: one alert per health failure -------------------------------------
 
 HEALTH = st.lists(
-    st.sampled_from(("quality.failed", "feed.stale", "broker.session_lost")), max_size=4
+    st.sampled_from(
+        ("quality.failed", "feed.stale", "broker.session_lost", "broker.capabilities_changed")
+    ),
+    max_size=4,
 )
 DIRECT = st.lists(
     st.sampled_from(
@@ -269,6 +272,7 @@ _HEALTH_AGGREGATE = {
     "quality.failed": ("ingest", "scheduler"),
     "feed.stale": ("session", "engine"),
     "broker.session_lost": ("session", "broker"),
+    "broker.capabilities_changed": ("session", "broker"),
 }
 
 
@@ -277,8 +281,9 @@ _HEALTH_AGGREGATE = {
 def test_health_alert_for_every_failure(
     health: list[str], rejections: int, direct: list[str]
 ) -> None:
-    """HAT-DEC-T15, HAT-OPS-071: every `quality.failed`, `feed.stale`, `broker.session_lost` and
-    `order.rejected` event becomes exactly one health alert in the chat, and every other alert
+    """HAT-DEC-T15, HAT-OPS-071: every `quality.failed`, `feed.stale`, `broker.session_lost`,
+    `broker.capabilities_changed` and `order.rejected` event becomes exactly one health alert in
+    the chat, and every other alert
     the services raise becomes one message; an alert whose event the relay sends is not sent
     twice. `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does
     not learn that a bot went manage-only or an order failed, or learns it twice and starts

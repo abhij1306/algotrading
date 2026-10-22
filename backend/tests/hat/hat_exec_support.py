@@ -7,7 +7,7 @@ SQLite database. Nothing reaches a real broker.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -17,7 +17,7 @@ from hat_support import memory_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.execution.broker import OrderType, Side
-from app.hat.execution.fyers_adapter import FyersHatBroker
+from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.submit import OrderRequest
 from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent, HatOrder, HatSignal
@@ -26,10 +26,15 @@ from app.hat.time import utc_now
 
 USER = uuid.UUID("00000000-0000-7000-8000-000000000001")
 SYMBOLS = {"SBIN": "NSE:SBIN-EQ", "RELIANCE": "NSE:RELIANCE-EQ", "M&M": "NSE:M&M-EQ"}
+# The adapter's capabilities once GTT for delivery is verified: the rigs that place real entries
+# store them on the account and build the adapter with them (HAT-EXEC-012, HAT-BRK-092).
+GTT_READY = replace(FYERS_CAPABILITIES, gtt_delivery=True)
 
 
 def adapter_over(sdk: RecordingSdk) -> FyersHatBroker:
-    return FyersHatBroker(broker_over(sdk), instruments=lambda: list(SYMBOLS.items()))
+    return FyersHatBroker(
+        broker_over(sdk), instruments=lambda: list(SYMBOLS.items()), capabilities=GTT_READY
+    )
 
 
 @dataclass
@@ -70,15 +75,22 @@ class ExecEnv:
 
 
 def exec_env(
-    *, account_status: str = "active", reconciled: bool = True, fake: FakeBroker | None = None
+    *,
+    account_status: str = "active",
+    reconciled: bool = True,
+    fake: FakeBroker | None = None,
+    stored_gtt: bool = True,
+    live_gtt: bool = True,
 ) -> ExecEnv:
+    """An account and the adapter over `fake`. `stored_gtt` is the account's stored GTT for
+    delivery, `live_gtt` the adapter's (HAT-EXEC-012)."""
     engine = memory_engine(HatEvent, HatOrder, HatBrokerAccount, HatSignal)
     session = sessionmaker(engine, expire_on_commit=False)()
     account = HatBrokerAccount(
         user_id=USER,
         broker="fyers",
         account_ref="X0001",
-        capabilities={},
+        capabilities=replace(GTT_READY, gtt_delivery=stored_gtt).to_json(),
         status=account_status,
     )
     session.add(account)
@@ -89,7 +101,11 @@ def exec_env(
         session=session,
         account_id=account.id,
         fake=fake,
-        broker=FyersHatBroker(fake, instruments=lambda: list(SYMBOLS.items())),  # type: ignore[arg-type]
+        broker=FyersHatBroker(
+            fake,  # type: ignore[arg-type]
+            instruments=lambda: list(SYMBOLS.items()),
+            capabilities=replace(GTT_READY, gtt_delivery=live_gtt),
+        ),
         guard=guard,
         bot_id=uuid.uuid4(),
     )

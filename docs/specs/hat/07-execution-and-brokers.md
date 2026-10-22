@@ -28,12 +28,14 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 #### HAT-EXEC-012: Auto requires a broker with delivery GTT
 - **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.
 - **Source:** BL "Stop placement at the broker (B17)" step 4; DS "Broker matrix"; MA "Risks" (GTT support).
-- **PR:** 13, 15
-- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`
+- **PR:** 13, 15, 29
+- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker`
 - **Acceptance:**
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode auto, and an auto request for it is refused. Harm: an auto position is left without an overnight stop.
   - Property: a Take whose account no longer reports GTT for delivery (or is no longer active) when the user decides places no order and ends the signal Rejected (`no_gtt_delivery`). Harm: a card sent before a capability change still buys without an overnight stop.
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode confirm either, so it places no real order. Harm: a confirmed entry fills and then goes overnight with no resting stop, breaking "protective stops sit at the broker on every real fill" (MA "Execution modes").
+  - Property: a stored `gtt_delivery = true` never enables a real order the adapter does not report: the router refuses such an entry at placement (`no_gtt_delivery`, before any order is reserved) and `send_order` refuses it before the broker call; a stop or a sale is never refused for the capability. Harm: a hand-written or stale account row buys real shares that get no overnight stop.
+- **Implementation:** `modes.real_orders_allowed` (active, stored GTT, the adapter's GTT now) gates `router._gtt_refusal` and `submit._check_allowed` for an entry; `bot_mode` and `/mode` read the stored value, which the desks set at start and every session check keeps (HAT-BRK-092).
 - **[OWNER-PENDING]** Fyers GTT for CNC: until verified on a live account, the Fyers adapter reports `gtt_delivery = false`, so the MVP runs shadow only until then (PLAN Q8 extended to confirm, which also places real orders); owner to confirm after verification.
 
 #### HAT-EXEC-013: Delivery only
@@ -493,12 +495,14 @@ The MVP adapter (`app/hat/execution/fyers_adapter.py`) wraps HAT's `FyersBroker`
 - **[OWNER-PENDING]** GTT delivery support on Fyers: default false (PLAN Q8); owner flips it after a live verification.
 
 #### HAT-BRK-092: Onboarding and capability check
-- **Statement:** A broker account becomes usable only after the capability check (funds, positions and holdings fetched) and is recorded in `hat_broker_account` with its capabilities.
-- **Source:** DS "Onboarding a broker" (steps 4–5, without OpenAlgo per OWN-20OCT); I9.
-- **PR:** 13
-- **Verification:** TLA `OrderReconciliation!AccountActiveAfterCheck`
+- **Statement:** A broker account becomes usable only after the capability check (funds, positions and holdings fetched) and is recorded in `hat_broker_account` with its capabilities. The stored capabilities are the adapter's (a local value, read without a broker call or the session owner): the desks rewrite them at start, before any routing reads them, and every session check (`record_session`, after its session row is committed) rewrites them again; a change records `broker.capabilities_changed`, which the relay sends as a health alert. A flip of the adapter's value reaches an existing account at the next start or session check, in either direction; a refresh that fails (the adapter's answer, the row or the event write) is logged and rolled back alone, never undoes the session row, and is retried by the next check. A stale row fails closed: a real entry needs both the stored and the adapter's GTT value (HAT-EXEC-012).
+- **Source:** DS "Onboarding a broker" (steps 4–5, without OpenAlgo per OWN-20OCT); I9; design review 2026-10-22 item 4.
+- **PR:** 13, 29
+- **Verification:** TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.session_check_refreshes_capabilities`, PBT `router.desks_start_with_the_adapters_capabilities`
 - **Acceptance:**
   - Property: in every behaviour, a bot bound to a broker account places a real order only if that account's status is active, which it reaches only after a passing capability check. Harm: orders go to an account whose permissions or funds were never confirmed.
+  - Property: for every sequence of session checks, live or not, with the adapter reporting GTT, not, or failing, the stored capabilities equal the adapter's after each refresh that committed and are left unchanged by one that failed (the adapter's answer or the write), each change records one `broker.capabilities_changed` (GTT before and after, the changed keys), and the session row is written whatever the refresh did. Harm: a flip of the adapter's GTT value never reaches an existing account, a revoked one keeps routing real orders, or a failed refresh loses the day's login.
+  - Property: after the desks are built, each account's stored capabilities are its adapter's, so the first signal routes auto only when the adapter reports GTT; a capability read never waits behind a broker call in flight. Harm: a stale row sends cards or entries the placement then refuses.
 
 ## §10 Tags and idempotency
 

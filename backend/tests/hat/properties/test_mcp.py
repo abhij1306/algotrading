@@ -45,6 +45,10 @@ LOG_FIELD_TEXT = (
     "mcp_transport",
     "asctime",
     "levelname",
+    # the call's own inputs, which the client logs by design (found when PR 29's new string
+    # constants shifted Hypothesis's pool and it drew "nse-bhavc")
+    "nse-bhavcopy",
+    "get_bulk_quote",
 )
 
 payloads = st.text(
@@ -135,6 +139,7 @@ def leaks(payload: str, *texts: str) -> bool:
     return any(payload[i : i + 9] in text for text in texts for i in range(len(payload) - 8))
 
 
+@example(payload="nse-bhavc", kind="raise")  # a logged server name is not a leak
 @example(
     payload=Path(mcp_client.__file__).parents[3].as_posix()[-40:], kind="raise"
 )  # a source path is not logged data

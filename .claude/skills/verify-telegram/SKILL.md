@@ -17,7 +17,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `TLA ExecutionRouter!UserCannotRaiseRisk` A user action only takes or skips an engine-sized entry: it never creates an entry or changes its size or stop. Harm: discretionary edits bypass the risk policy.
 - `TLA JobScheduler!LoginPromptOrder` The 08:30 prompt goes out only on a trading day, and the 09:05 reprompt only for accounts still logged out. Harm: noise trains the owner to ignore prompts, or a missed login blocks the day.
 - `TLA JobScheduler!ReportsAfterClose` The rejection digest, the daily report and the veto digest go out only after the 15:30 close of a trading day. Harm: a report built mid-session shows a day that is not over.
-- `PBT telegram.health_alert_for_every_failure` Every `quality.failed`, `feed.stale`, `broker.session_lost` and `order.rejected` event is exactly one health alert; every other service alert is one message; `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does not learn that a bot went manage-only or an order failed.
+- `PBT telegram.health_alert_for_every_failure` Every `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` and `order.rejected` event is exactly one health alert; every other service alert is one message; `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does not learn that a bot went manage-only or an order failed.
 - `PBT telegram.unknown_chat_has_no_effect` An update from any other chat writes one refused `hat_command_log` row (`unknown_chat`) and nothing else: no reply, no broker call. Harm: a stranger controls the bots.
 - `PBT telegram.every_command_logged` Every message is one `hat_command_log` row with the sender's chat id; a refused one has a reason and changed nothing. Harm: discipline metrics and audits miss user actions.
 - `PBT telegram.unknown_command_rejected` Text that is not one of the ten commands with its arguments is refused and changes nothing. Harm: malformed input triggers an action.
@@ -117,7 +117,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `7e4882725ba783dc79d86fa3934cd9d9ce4952cc752a1908c366c3256475ff44`
+Covered digest: `3d436c32bfd6997a5a4489f31e4df7496bc89e3568944a0b09a215ff86f420b8`
 
 ## Scope changes
 
@@ -236,6 +236,18 @@ E   AssertionError: assert Counter() == Counter({'feed.stale': 1})
 E
 E     Right contains 1 more item:
 E     {'feed.stale': 1}
+```
+
+Break: `HEALTH_EVENTS` without `broker.capabilities_changed`. (PR 29)
+
+```
+E   AssertionError: assert Counter() == Counter({'bro..._changed': 1})
+```
+
+Break: `URGENT_ALERTS` without `fill.excess`. (PR 28)
+
+```
+E   AssertionError: assert {'fill.excess...t.unverified'} <= frozenset({'g....unverified'})
 ```
 
 ### PBT telegram.unknown_chat_has_no_effect

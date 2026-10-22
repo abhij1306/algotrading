@@ -16,7 +16,7 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -82,7 +82,7 @@ class ManageRig:
                 user_id=USER,
                 broker="fyers",
                 account_ref="X0001",
-                capabilities={"gtt_delivery": True},
+                capabilities=GTT_READY.to_json(),
                 status="active",
             )
         )
@@ -101,7 +101,11 @@ class ManageRig:
         seed_live_sessions(session, self.account_id)
         session.commit()
         self.fake = FakeBroker()
-        broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
+        broker = FyersHatBroker(
+            self.fake,  # type: ignore[arg-type]
+            instruments=lambda: list(SYMBOLS.items()),
+            capabilities=GTT_READY,
+        )
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.broker = broker
         self.guard = guard_on(TRADE_DAY)

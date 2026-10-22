@@ -17,7 +17,7 @@ from typing import Any
 
 from hat.fakes.broker import FakeBroker
 from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from sqlalchemy import select
@@ -188,7 +188,7 @@ class TgRig:
                     user_id=OWNER,  # the configured HAT_USER_ID: auto is allowed on it
                     broker="fyers",
                     account_ref="X0001",
-                    capabilities={"gtt_delivery": True},
+                    capabilities=GTT_READY.to_json(),
                     status="active",
                 )
             )
@@ -211,7 +211,11 @@ class TgRig:
         self.fake = fake if fake is not None else FakeBroker()
         self.transport = FakeTransport()
         self.client = BotClient(self.transport, CHAT)
-        broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
+        broker = FyersHatBroker(
+            self.fake,  # type: ignore[arg-type]
+            instruments=lambda: list(SYMBOLS.items()),
+            capabilities=GTT_READY,
+        )
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.notifier: Notifier = notifier if notifier is not None else RecordingNotifier()
         if telegram_alerts:

@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
+from hat_exec_support import GTT_READY, SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
@@ -85,6 +85,7 @@ class Rig:
         gtt: bool = True,
         reconciled: bool = True,
         fake: FakeBroker | None = None,
+        live_gtt: bool | None = None,  # the adapter's GTT now; `gtt` (the stored one) when None
     ) -> None:
         self.session = session
         self.world: World = seed_engine_world(session, mode=mode, instruments=2)
@@ -98,7 +99,7 @@ class Rig:
                 user_id=USER,
                 broker="fyers",
                 account_ref="X0001",
-                capabilities={"gtt_delivery": gtt},
+                capabilities=replace(GTT_READY, gtt_delivery=gtt).to_json(),
                 status="active",
             )
         )
@@ -118,7 +119,11 @@ class Rig:
         seed_live_sessions(session, self.account_id)
         session.commit()
         self.fake = fake if fake is not None else FakeBroker()
-        broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
+        broker = FyersHatBroker(
+            self.fake,  # type: ignore[arg-type]
+            instruments=lambda: list(SYMBOLS.items()),
+            capabilities=replace(GTT_READY, gtt_delivery=gtt if live_gtt is None else live_gtt),
+        )
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
         self.broker = broker
         self.guard = guard_on(TRADE_DAY, reconciled=reconciled)
@@ -766,7 +771,7 @@ class OverlapSpy:
 
     def __getattr__(self, name: str) -> object:
         attribute = getattr(self._broker, name)
-        if not callable(attribute):
+        if not callable(attribute) or name == "capabilities":  # a local value, not a call
             return attribute
 
         def call(*args: object, **kwargs: object) -> object:
@@ -1011,6 +1016,69 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
         assert session.scalar(
             select(func.count()).select_from(HatOrder).where(HatOrder.is_virtual.is_(False))
         ) == len(rig.places())
+
+
+@settings(max_examples=20, deadline=None)
+@given(stored=st.booleans(), live=st.booleans())
+@example(stored=True, live=False)
+def test_a_stored_capability_never_enables_a_real_entry(stored: bool, live: bool) -> None:
+    """HAT-EXEC-012, HAT-BRK-092: an auto entry reaches the broker only when the account's
+    stored capabilities and the adapter's own both report GTT for delivery. A stored `true` the
+    adapter does not report routes the bot as auto but places nothing and ends the signal
+    Rejected `no_gtt_delivery` before any order is reserved; a stored `false` routes as
+    shadow. Harm: a hand-written or stale account row buys real shares that get no overnight
+    stop."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO, gtt=stored, live_gtt=live)
+        outcome = rig.route()
+        signal = rig.signal(outcome.signal_id)
+        assert len(rig.places()) == (1 if stored and live else 0)
+        if stored and not live:  # refused at placement, before any order row is reserved
+            assert signal.state == lifecycle.REJECTED
+            assert _rejected_reason(session, signal.id) == "no_gtt_delivery"
+            assert session.scalar(select(func.count()).select_from(HatOrder)) == 0
+        if not stored:
+            assert outcome.mode == modes.SHADOW
+
+
+@settings(max_examples=20, deadline=None)
+@given(stored=st.booleans(), live=st.booleans())
+def test_desks_start_with_the_adapters_capabilities(stored: bool, live: bool) -> None:
+    """HAT-BRK-092, HAT-EXEC-012: building the desks rewrites each account's stored
+    capabilities to its adapter's before any routing reads them, so the first signal after a
+    start routes by the adapter's GTT value: auto when it reports GTT, shadow when it does not,
+    whatever the row said. Harm: a stale row sends confirm cards or auto entries the placement
+    then refuses, or keeps a revoked account out of shadow until its first session check; a
+    placement's capability read waits behind a slow broker call."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO, gtt=stored, live_gtt=live)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        desk = desks.by_account[rig.account_id]
+        read: list[object] = []
+
+        def in_flight() -> None:  # a broker call holds the owner; the capability read is local
+            reader = threading.Thread(target=lambda: read.append(desk.broker.capabilities()))
+            reader.start()
+            reader.join(timeout=2)
+            assert read, "the capability read waited for a broker call in flight"
+
+        desk.owner.call(in_flight)
+        desks.release()
+        account = session.get(HatBrokerAccount, rig.account_id)
+        assert account is not None
+        session.refresh(account)
+        assert account.capabilities["gtt_delivery"] is live
+        outcome = rig.route()
+        assert outcome.mode == (modes.AUTO if live else modes.SHADOW)
+        assert len(rig.places()) == (1 if live else 0)
 
 
 PAUSED = "paused"

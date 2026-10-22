@@ -290,7 +290,7 @@ create table hat_risk_policy_version (
 );
 ```
 
-**`hat_broker_account`**: capabilities come from the adapter (GTT, tag field).
+**`hat_broker_account`**: capabilities come from the adapter (GTT, tag field). The column is derived: every live session check rewrites it from the adapter (HAT-BRK-092), and a real entry also needs the adapter's own value (HAT-EXEC-012), so the stored value can only narrow.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -299,7 +299,7 @@ create table hat_risk_policy_version (
 | broker | text | `fyers` in MVP |
 | account_ref | text | |
 | openalgo_ref | text null | unused in MVP; kept for a later adapter (PLAN C5) |
-| capabilities | jsonb | GTT for delivery, order-tag field and length, order types, static-IP requirement |
+| capabilities | jsonb | GTT for delivery, order-tag field and length, order types, static-IP requirement; derived from the adapter, rewritten at every live session check |
 | status | text | |
 
 **`hat_bot`** (the sleeve; no risk columns):
@@ -771,7 +771,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Control | `mode.change_requested`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
 | Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
-| Sessions | `broker.logged_in`, `broker.session_lost`, `feed.stale` |
+| Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `feed.stale` |
 
 Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload, so discipline metrics (skips, flattens, pauses) come straight from this table. `events.record()` takes `actor` as the type `Actor` (the four values of the check) and refuses a user event whose payload has no integer `chat_id`.
 
@@ -805,7 +805,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 - **PR:** 3, 9
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 40 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 41 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

@@ -84,7 +84,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `098bd89edfcba7b715a4487e5305c5fe0835dd73bbf40a7f24ef370876c3ee53`
+Covered digest: `2d52bc379b4f9eb996b8871a967a4ea72c3f00aca17a23cc35d3c1551ca5b69f`
 
 ## Scope changes
 
@@ -103,6 +103,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
 - PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
 - PR 27 added `gtt.triggered` to the Orders group (HAT-EXEC-066: a GTT triggered with its sale resting below the limit; the payload names the broker order it became). The catalogue now holds 40 types; the text above no longer gives a count. The properties are unchanged.
+- PR 29 added `broker.capabilities_changed` to the Sessions group (HAT-BRK-092: a live session check rewrote the account's capabilities from the adapter; the payload has `gtt_delivery` and `was_gtt_delivery`). The catalogue holds 41 types (`events.catalogue`). The properties are unchanged.
 
 ## Scratch breaks
 

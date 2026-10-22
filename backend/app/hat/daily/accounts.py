@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..engine.lifecycle import TRIGGERED
 from ..engine.trades import TokenIssuer
-from ..execution.broker import HatBroker, SessionStatus
+from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.fills import FillSync, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
@@ -43,7 +43,13 @@ from ..execution.modes import AUTO
 from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
 from ..execution.router import ExecutionRouter, PlacementCheck
-from ..execution.session import SessionOwner, SessionRegistry, SessionWatch, record_session
+from ..execution.session import (
+    SessionOwner,
+    SessionRegistry,
+    SessionWatch,
+    record_session,
+    refresh_capabilities,
+)
 from ..models import HatBot, HatBrokerAccount, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobResult, SessionFactory
@@ -84,6 +90,11 @@ class OwnedBroker:
     def __init__(self, owner: SessionOwner, broker: HatBroker) -> None:
         self._owner = owner
         self._broker = broker
+
+    def capabilities(self) -> Capabilities:
+        """A local value, no broker call: not serialised, so a slow call in flight never holds
+        up a placement's capability check (HAT-EXEC-012)."""
+        return self._broker.capabilities()
 
     def __getattr__(self, name: str) -> object:
         attribute = getattr(self._broker, name)
@@ -183,6 +194,9 @@ class Desks:
                 broker = broker_for(account)
                 if broker is None:
                     continue
+                # HAT-BRK-092: the stored capabilities are the adapter's from the start, before
+                # any routing reads them (the session checks keep them so)
+                refresh_capabilities(session, broker, account.id)
                 self.by_account[account.id] = self._desk(
                     account.id, broker, notifier, issuer, calendar(), tick_for
                 )

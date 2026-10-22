@@ -7,7 +7,11 @@ The only adapter registered in the MVP is Fyers. Confirm and auto mode place rea
 every real fill needs an overnight broker-side stop, so both need an active account whose
 capabilities report GTT for delivery; the Fyers adapter reports none until the owner verifies GTT
 on a live account (PLAN Q8), so the MVP runs shadow only until then. The gate itself lives in
-`modes.py` (which imports no broker, so the engine may read it) and is re-exported here.
+`modes.py` (which imports no broker, so the engine may read it); the mode helpers are
+re-exported here. The
+stored capabilities are a cache: every session check rewrites them from the adapter
+(`session.record_session`, HAT-BRK-092), and a real entry also needs the adapter's own GTT value
+(`modes.real_orders_allowed`).
 """
 
 from __future__ import annotations

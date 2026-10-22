@@ -313,9 +313,11 @@ SAFETY_DIGESTS = {
     ),
     # Re-pinned in PR 24 (owner decision D118, trading-safety rules 5 and 7 reworded): the
     # reconciliation gate holds entries only, so a stop or a sale must now pass while the trade
-    # date is not reconciled; every other refusal is unchanged.
+    # date is not reconciled; every other refusal is unchanged. Re-pinned in PR 29 (stronger,
+    # HAT-EXEC-012, HAT-BRK-092): an entry also needs GTT for delivery in both the stored
+    # capabilities and the adapter's own; a stop or a sale still passes either way.
     "test_refusals_happen_before_the_broker": (
-        "37d5904fb0319c25bc548b5c0381aab09f4bf40bd1e7fa822acc41adfea54750"
+        "92af53d09331ab7bef7b1fa4abcd51c61b918d45c1cd9507b98a156fc2c5d95e"
     ),
     "test_nothing_is_sent_while_the_circuit_is_open": (
         "56c22d14f1156f34bf3893a3d34265da99af6a590d6c4eab9dab33635e00b300"
