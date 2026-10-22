@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
-from app.hat.execution.fills import NOT_MARKETED, RESTING
+from app.hat.execution.fills import ALERT_FILL_EXCESS, NOT_MARKETED, RESTING
 from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
@@ -793,6 +793,43 @@ def test_gtt_resting_marketed(
         assert position.closed_at is not None
         assert [name for name, _ in _writes_since(rig, start)] == []
         assert rig.stops(position.id, *LIVE) == []
+
+
+@settings(max_examples=20, deadline=None)
+@given(extra=st.integers(min_value=1, max_value=40), syncs=st.integers(min_value=1, max_value=3))
+@example(extra=1, syncs=2)
+def test_a_second_order_under_one_tag_is_tracked(extra: int, syncs: int) -> None:
+    """HAT-BRK-103, HAT-DEC-B17: when the broker holds a second order under an entry's tag (Fyers
+    does not enforce tag uniqueness) and it fills, every share is recorded on the position, its
+    stop covers them all, and `fill.excess` is raised once for that fill however many syncs
+    follow. Harm:
+    shares bought twice sit at the broker untracked and with no stop, or the owner never learns
+    the position is larger than its risk budget."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        row = rig.entry_row(position.signal_id)
+        assert row is not None
+        rig.fake.book.append({**rig.fake.book[0], "id": "DUP-1", "qty": extra, "filledQty": extra})
+        rig.fake.tradebook = [
+            *rig.fake.tradebook,  # type: ignore[misc]
+            {
+                "tradeNumber": "T-DUP",
+                "orderNumber": "DUP-1",
+                "orderTag": row.tag,
+                "symbol": SYMBOLS["SBIN"],
+                "side": 1,
+                "tradedQty": extra,
+                "tradePrice": float(D(row.price)),
+            },
+        ]
+        for n in range(syncs):
+            rig.sync(at(16, 5 + n))
+        session.refresh(position)
+        assert position.qty_open == row.qty + extra
+        assert rig.codes().count(ALERT_FILL_EXCESS) == 1
+        live = rig.stops(position.id, *LIVE)
+        assert sum(stop.qty for stop in live) == position.qty_open
 
 
 # ---------------------------------------------------------------------------------------

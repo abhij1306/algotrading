@@ -98,6 +98,9 @@ class FakeBroker:
         self.holdings: list[dict[str, Any]] | BaseException = []
         self.profile: dict[str, Any] | BaseException = {"fy_id": "XA00000"}
         self.book: list[dict[str, Any]] = []
+        # How many of the newest `book` rows the order book does not show yet (Fyers' book can
+        # lag a placed order: HAT-BRK-103).
+        self.lagging = 0
         self.gtts: list[dict[str, Any]] = []
         self.place_gtt_reply: object = None
         self.place_reply: object = None
@@ -204,7 +207,7 @@ class FakeBroker:
 
     def fetch_orderbook(self) -> list[dict[str, Any]]:
         rows = self._read("fetch_orderbook", None, self.orders, fail_closed=True)
-        return [*rows, *self.book]
+        return [*rows, *self.book[: max(0, len(self.book) - self.lagging)]]
 
     def fetch_tradebook(self) -> list[dict[str, Any]]:
         return self._read("fetch_tradebook", None, self.tradebook, fail_closed=True)

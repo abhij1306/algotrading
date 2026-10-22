@@ -39,6 +39,7 @@ from app.hat.execution.broker import (
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, map_fyers_status
 from app.hat.execution.fyers_broker import BROKER_CIRCUIT_OPEN, FYERS_ORDER_TAG_PATTERN
 from app.hat.execution.reconcile import (
+    DUPLICATE_HT_ORDER,
     UNREADABLE_ROW_ALERT,
     Mismatch,
     ReconciliationService,
@@ -47,6 +48,7 @@ from app.hat.execution.reconcile import (
 )
 from app.hat.execution.submit import (
     OrderRefusedError,
+    UnresolvedOrderError,
     reserve_order,
     send_order,
 )
@@ -713,8 +715,17 @@ class OrderSubmission(RuleBasedStateMachine):
                 symbol="SBIN",
                 bot_id=self.env.bot_id,
             )
-        except (BrokerUnavailableError, SimulatedCrash):
+        except (BrokerUnavailableError, SimulatedCrash, UnresolvedOrderError):
             self.env.session.rollback()
+
+    @rule()
+    def the_book_lags(self) -> None:
+        """Fyers' order book does not show the newest order yet (HAT-BRK-103)."""
+        self.fake.lagging = 1
+
+    @rule()
+    def the_book_catches_up(self) -> None:
+        self.fake.lagging = 0
 
     @rule()
     def send_accepted(self) -> None:
@@ -779,8 +790,9 @@ class OrderSubmission(RuleBasedStateMachine):
 
 
 def test_idempotent_order_submission() -> None:
-    """HAT-BRK-101/-102: whatever sequence of sends, lost answers and crashes, one tag yields at
-    most one broker order and one row, and a lost answer is resolved by looking the tag up."""
+    """HAT-BRK-101/-102/-103: whatever sequence of sends, lost answers, crashes and order books
+    that lag a placed order, one entry tag yields at most one broker order and one row: an entry
+    of unknown outcome is adopted when the lookup finds it and never sent again otherwise."""
     run_state_machine_as_test(
         OrderSubmission,
         settings=settings(
@@ -789,13 +801,23 @@ def test_idempotent_order_submission() -> None:
     )
 
 
-@given(st.lists(st.sampled_from(["lost", "landed", "ok"]), min_size=1, max_size=6))
-def test_a_timeout_is_looked_up_before_any_retry(outcomes: list[str]) -> None:
-    """HAT-BRK-102: after a lost answer, a second place call with the tag happens only after an
-    order-book lookup that found nothing; a found order is adopted, not placed again."""
+@given(
+    st.lists(st.sampled_from(["lost", "landed", "ok"]), min_size=1, max_size=6),
+    st.sampled_from(["entry", "stop_day"]),
+    st.booleans(),
+)
+@example(["landed", "ok"], "entry", True)
+def test_a_timeout_is_looked_up_before_any_retry(
+    outcomes: list[str], purpose: str, lagging: bool
+) -> None:
+    """HAT-BRK-102, -103: after a lost answer the tag is looked up in the order book and a found
+    order is adopted, not placed again. A stop is placed again only after a lookup that found
+    nothing; an entry is never placed again, also when the book lags the order that landed.
+    Harm: Fyers takes the same tag twice and the position is doubled."""
     env = exec_env()
     live_session(env)
-    tag = reserve_order(env.session, env.request(uuid7()))
+    tag = reserve_order(env.session, env.request(uuid7(), purpose))
+    env.fake.lagging = 1 if lagging else 0
     replies = {
         "lost": unconfirmed(),
         "landed": unconfirmed(landed=True),
@@ -803,12 +825,42 @@ def test_a_timeout_is_looked_up_before_any_retry(outcomes: list[str]) -> None:
     }
     for outcome in outcomes:
         env.fake.script("place_order", replies[outcome])
-        send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        try:
+            send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        except UnresolvedOrderError:
+            assert purpose == "entry"
     names = [name for name, _ in env.fake.calls]
     placed_at = [i for i, name in enumerate(names) if name == "place_order"]
     for earlier, later in zip(placed_at, placed_at[1:], strict=False):
         assert "fetch_orderbook" in names[earlier:later], names
-    assert len([r for r in env.fake.book if r["orderTag"] == tag]) <= 1
+    if purpose == "entry":
+        assert len(placed_at) == 1
+        assert len([r for r in env.fake.book if r["orderTag"] == tag]) <= 1
+    elif not lagging:
+        assert len([r for r in env.fake.book if r["orderTag"] == tag]) <= 1
+
+
+@given(
+    st.lists(st.tuples(tags_, st.sampled_from(sorted(SYMBOLS))), max_size=8),
+    st.sets(tags_, max_size=4),
+)
+def test_a_tag_twice_at_the_broker_blocks_the_account(ht, known) -> None:  # noqa: ANN001
+    """HAT-BRK-103, HAT-BRK-111: for every order book, each HT tag the broker holds more than one
+    order for is reported once as `duplicate_ht_order` for the whole account (the bot cannot be
+    told), known to HAT or not; a tag held once is never reported so. Harm: one logical order
+    reaches the broker twice and the account keeps opening positions as if nothing happened."""
+    mismatches = find_mismatches(
+        broker_orders=[_order(t, s) for t, s in ht],
+        broker_qty={},
+        hat_tags=known | {t for t, _ in ht},
+        hat_positions=[],
+        hat_symbols=set(),
+    )
+    tags = [t for t, _ in ht]
+    twice = {t for t in tags if tags.count(t) > 1}
+    found = [m for m in mismatches if m.kind == DUPLICATE_HT_ORDER]
+    assert sorted(m.key for m in found) == sorted(twice)
+    assert all(m.bot_id is None for m in found)
 
 
 # An ok reply that does not carry the order book list where Fyers documents it.
@@ -1066,11 +1118,12 @@ def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool, adopted:
     that stamps first calls the broker, with a new attempt time from which a lost answer's
     settle wait runs; the other sends nothing and reports what the first left. A lost answer
     that the fill sync adopted from the book in between (`adopted`: placed, its attempt time
-    unchanged) is not sent again either. Harm: two sell stops rest for the same shares, an
-    entry is bought twice, or a resend still in flight is settled as absent."""
+    unchanged) is not sent again either. A resend after a lost answer is a stop's: an entry of
+    unknown outcome is never sent again (HAT-BRK-102). Harm: two sell stops rest for the same
+    shares, an entry is bought twice, or a resend still in flight is settled as absent."""
     env = exec_env()
     live_session(env)
-    tag = reserve_order(env.session, env.request(uuid7()))
+    tag = reserve_order(env.session, env.request(uuid7(), "stop_day" if retry else "entry"))
     earlier = None
     if retry:
         env.fake.script("place_order", unconfirmed())

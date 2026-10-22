@@ -541,12 +541,24 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
   - Property: in every behaviour, including crashes between any two steps, every broker place call is preceded by a committed PENDING row with the same tag, and at most one broker order exists per tag. Harm: a crash or retry double-places a real order.
 
 #### HAT-BRK-102: Unconfirmed submit resolved by tag
-- **Statement:** When a submit's outcome is unknown, the adapter resolves it by looking the order up by tag before any retry.
-- **Source:** PLAN "Broker" (`SUBMIT_UNCONFIRMED`, `find_order_by_tag`); MA "Failure handling".
-- **PR:** 13
-- **Verification:** TLA `OrderReconciliation!UnconfirmedResolvedByTag`
+- **Statement:** When a submit's outcome is unknown, the order is looked up by tag before anything else is sent for it, and a found order is adopted. An entry of unknown outcome is never placed again: a lookup that finds nothing leaves it unknown (the fill sync adopts it when the book shows it; the session end ends its signal Rejected `entry_not_found` when the book never does, 07 §4). A day stop or a sale found absent may be placed again under its tag once its settle wait has passed (HAT-EXEC-065).
+- **Source:** PLAN "Broker" (`SUBMIT_UNCONFIRMED`, `find_order_by_tag`); MA "Failure handling"; design review 2026-10-22 item 3 (HAT-BRK-103).
+- **PR:** 13, 28
+- **Verification:** TLA `OrderReconciliation!UnconfirmedResolvedByTag`, TLA `OrderReconciliation!AtMostOneEntryPerSignal`, PBT `tags.a_timeout_is_looked_up_before_any_retry`, PBT `tags.idempotent_order_submission`
 - **Acceptance:**
   - Property: in every behaviour where a submit times out, no new place call with that tag occurs until a tag lookup has returned "absent"; a found order is adopted with its broker order id. Harm: a timed-out order is placed twice.
+  - Property: in every behaviour, including an order book that lags the orders that landed, an entry tag reaches the broker at most once: a lost entry is adopted when a lookup finds it and is never sent again. Harm: Fyers takes the same tag twice and the position is doubled at double the risk.
+- **Implementation:** `submit.send_order` raises `UnresolvedOrderError` for an entry whose lookup finds nothing; the router leaves the signal to the fill sync and the session end. A missed entry costs nothing; a doubled one costs money.
+
+#### HAT-BRK-103: Fyers does not enforce tag uniqueness
+- **Statement:** The broker may hold two orders under one HT tag (Fyers accepts the same `orderTag` twice). Reconciliation reports a tag held more than once as the `duplicate_ht_order` mismatch for the whole account (entries blocked, one alert); the fill sync records every fill of such an order, so the shares the broker holds stay tracked and under the stop, and raises the URGENT `fill.excess` alert once for each fill that leaves an entry's fills above its quantity.
+- **Source:** Design review 2026-10-22 item 3; the live recording `audits/fyers-live/trading_05_writes.json` (two `place_order` calls with tag `HATTEST2` got two order ids, 26102200316678 and 26102200316686, both shown in the book as `1:HATTEST2`).
+- **PR:** 28
+- **Verification:** PBT `tags.a_tag_twice_at_the_broker_blocks_the_account`, PBT `manage.a_second_order_under_one_tag_is_tracked`
+- **Acceptance:**
+  - Property: for every order book, each HT tag the broker holds more than one order for is reported once as `duplicate_ht_order` for the account, and a tag held once never is. Harm: one logical order reaches the broker twice and the account keeps opening positions.
+  - Property: when a second order under an entry's tag fills, every share is recorded on the position, its stop covers them all, and `fill.excess` is raised once for that fill. Harm: shares bought twice sit at the broker untracked and with no stop, or the owner never learns the position outgrew its risk.
+- **Not done:** refusing the excess fill or fencing trades on the broker order id (the review's proposal) would leave the excess shares at the broker untracked and unprotected; a mismatch never auto-closes them either (HAT-BRK-111), so the owner sells them (`/flatten`, or by hand after reconciliation).
 
 ## §11 Reconciliation
 
@@ -563,9 +575,9 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 - **Implementation:** mismatch alerts reach the user through the `Notifier` (`reconcile.notifier_sink`: one `reconcile.mismatch` health alert per new mismatch, carrying its kind, its tag or symbol and the bot, or `account` when the bot cannot be told; Telegram from PR 16, the log until then). `daily/accounts.py:AccountDesk.reconcile` raises `reconcile.failed` (the account id) once per trade date while the date is not reconciled.
 
 #### HAT-BRK-111: Reconciliation fails closed
-- **Statement:** A mismatch (broker position without a HAT row, HAT open position missing at the broker, quantity difference, or an unknown HT-tagged order) blocks new entries for the affected bot and raises an alert; it never auto-closes or auto-adopts a position.
+- **Statement:** A mismatch (broker position without a HAT row, HAT open position missing at the broker, quantity difference, an unknown HT-tagged order, or an HT tag the broker holds more than once, HAT-BRK-103) blocks new entries for the affected bot (the account when the bot cannot be told) and raises an alert; it never auto-closes or auto-adopts a position.
 - **Source:** MA "Failure handling"; PLAN PR 13 (fail closed).
-- **PR:** 13, 24
+- **PR:** 13, 24, 28
 - **Verification:** TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today`, PBT `router.older_read_never_overrides_newer`
 - **Acceptance:**
   - Property: in every reachable state with an unresolved mismatch for a bot, that bot accepts no entry and has raised exactly one alert per mismatch, while its exits and stops keep running. Harm: the engine trades on a false view of its book.

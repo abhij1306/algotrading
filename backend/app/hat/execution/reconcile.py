@@ -38,6 +38,7 @@ from .submit import adopt_broker_order
 from .tags import is_hat_tag
 
 __all__ = [
+    "DUPLICATE_HT_ORDER",
     "HatPositionView",
     "Mismatch",
     "ReconcileReport",
@@ -53,6 +54,7 @@ UNKNOWN_HT_ORDER = "unknown_ht_order"
 POSITION_WITHOUT_HAT_ROW = "broker_position_without_hat_row"
 POSITION_MISSING_AT_BROKER = "hat_position_missing_at_broker"
 QUANTITY_DIFFERENCE = "quantity_difference"
+DUPLICATE_HT_ORDER = "duplicate_ht_order"  # Fyers does not enforce tag uniqueness (HAT-BRK-103)
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,16 @@ def find_mismatches(
     mismatches = [
         Mismatch(UNKNOWN_HT_ORDER, str(o.tag), None) for o in ht_orders if o.tag not in hat_tags
     ]
+    # Two broker orders under one tag: one logical order reached the broker twice. The bot
+    # cannot be told from the order book, so the account is blocked.
+    per_tag: dict[str, int] = defaultdict(int)
+    for order in ht_orders:
+        per_tag[str(order.tag)] += 1
+    mismatches.extend(
+        Mismatch(DUPLICATE_HT_ORDER, tag, None)
+        for tag, count in sorted(per_tag.items())
+        if count > 1
+    )
     positions = [p for p in hat_positions if p.qty_open > 0]
     held = {p.symbol for p in positions}
     touched = held | hat_symbols | {o.symbol for o in ht_orders}

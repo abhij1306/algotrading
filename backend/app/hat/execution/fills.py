@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..engine import live_trades
@@ -80,12 +80,15 @@ from .submit import (
 )
 from .tags import is_hat_tag
 
-__all__ = ["ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
+__all__ = ["ALERT_FILL_EXCESS", "ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
 
 logger = logging.getLogger(__name__)
 
 ENTRY = "entry"
 ALERT_FILL_REFUSED = "fill.refused"
+# An entry filled beyond its quantity: its tag reached the broker twice (HAT-BRK-103). Every
+# fill is still recorded, so the shares the broker holds are tracked and under the stop.
+ALERT_FILL_EXCESS = "fill.excess"
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
@@ -294,7 +297,24 @@ class FillSync:
             return None
         session.commit()
         report.fills += 1
+        if row.purpose == ENTRY:
+            self._check_excess(session, row, now)
         return position.id
+
+    def _check_excess(self, session: Session, row: HatOrder, now: datetime) -> None:
+        """A fill just recorded left the entry's fills above its quantity: `fill.excess` (each
+        such fill is recorded once, so it is alerted once). The fills stay recorded: shares
+        refused here would sit at the broker untracked, with no stop; recorded, the stop covers
+        them and reconciliation blocks the account's entries."""
+        filled = session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == row.id))
+        if int(filled or 0) <= row.qty:
+            return
+        logger.error("entry %s filled %s of %s", row.tag, filled, row.qty)
+        self._notifier.alert(
+            ALERT_FILL_EXCESS,
+            trade_date_of(now),
+            {"tag": row.tag, "qty": row.qty, "filled": int(filled or 0)},
+        )
 
     def _refused(
         self, row: HatOrder, trade_id: str, code: str, now: datetime, report: SyncReport

@@ -9,7 +9,11 @@ An order is two steps with the database in between:
 2. `send_order(tag)`: the only way an order reaches the broker. It is a no-op for an order that
    was already placed or ended. For one whose outcome is unknown (`unconfirmed`, or `pending`
    with an attempt already stamped in `placed_at`) it looks the order up by tag first: found means
-   adopt it, absent means the same tag may be placed again.
+   adopt it. Absent means the same tag may be placed again for a stop or a sale, never for an
+   entry: Fyers does not enforce tag uniqueness and its book can lag a placed order, so a second
+   entry could double the position (HAT-BRK-102, -103). An entry of unknown outcome is left to
+   the fill sync, which adopts it when the book shows it, and to the session end, which ends its
+   signal Rejected `entry_not_found` when the book never does.
 
 Every refusal (account not active, no reconciliation this session, mismatch for the bot, no live
 session, a virtual order, a non-delivery product, a short entry) is raised before the broker is
@@ -430,11 +434,14 @@ def _lookup_before_retry(
     session: Session, broker: HatBroker, row: HatOrder, tag: str, bot_id: uuid.UUID
 ) -> SendOutcome | None:
     """An attempt was made before: ask the broker for the tag. An order found is adopted and
-    returned; None means the book has none and the same tag may be placed again."""
+    returned; None means the book has none and the same tag may be placed again (a stop or a
+    sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed."""
     if row.purpose == GTT_PURPOSE:
         raise UnresolvedOrderError("a GTT has no tag to look up")
     found = resolve_by_tag(broker, tag)
     if found is None:
+        if row.purpose == ENTRY:
+            raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
     adopt_broker_order(session, row, found, bot_id)
     session.commit()
