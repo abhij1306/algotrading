@@ -95,13 +95,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `571652024410c87e826648a18d0c60a93a47d0e9200c92267ff9c650271e6da9`
+Covered digest: `7191eef79eb079bf05b0361c81a12246f27fba578acbf6a190ad4fe9cbdd9b5a`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
-- PR 62: `backtest/runs.py:backtest_bot` takes `entry_fill_rule` (default `penetration_1_tick`) and `for_promotion`, defaults the slippage to 20 bps (`costs.DEFAULT_SLIPPAGE_BPS`), and refuses an unknown rule (`backtest_bad_fill_rule`) or a promotion run at 0 bps or under `touch` (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`) before the run is recorded. The lifecycle's evidence (`backtest_evidence`, and `gate_evidence`) now reads only runs flagged for promotion, so a sleeve whose only runs predate PR 62 has no evidence (the Research -> Backtested guard stays closed) until a `--for-promotion` run; property `dsr.evidence_promoted_only` in `verify-backtest`.
+- PR 62: `backtest/runs.py:backtest_bot` takes `entry_fill_rule` (default `penetration_1_tick`) and `for_promotion`, defaults the slippage to 20 bps (`costs.DEFAULT_SLIPPAGE_BPS`), and refuses an unknown rule (`backtest_bad_fill_rule`) or a promotion run at 0 bps or under `touch` (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`) before the run is recorded. The lifecycle's evidence (`backtest_evidence`, and `gate_evidence`) now reads only runs flagged for promotion, so a sleeve whose only runs predate PR 62 has no evidence (the Research -> Backtested guard stays closed) until a `--for-promotion` run; property `dsr.evidence_promoted_only` in `verify-backtest`. The admin runbook property (`test_admin.add_run`) records its scripted run with `for_promotion` set, since `publish-version` now refuses an unflagged run (`run_not_for_promotion`).
 - PR 58: `backtest/runs.py:backtest_bot` takes `cooldown_sessions` (the cooldown sweep, HAT-RISK-036) and refuses a bad one with `backtest_bad_cooldown` before the run is recorded; the lifecycle's evidence (`backtest_evidence`) skips any run not made under the cooldown in force (PBT `dsr.evidence_cooldown_in_force`, verify-backtest).
 - PR 55 (plan audit N7, §6 item 10): the fast/slow regime rule's `rising_days` defaults to 3 (was an `[OWNER-PENDING]` 1) and `sma_fast_above_slow_both_rising` takes it without a default. A stored version keeps the value it was saved with (the config stores every parameter), so an S2 version saved before PR 55 keeps 1 until a new version is published. The S2 seed and its spec YAML state `rising_days: 3`, and the config generator (`hat_config_support.REGIMES`) draws it or leaves it out. Nothing was narrowed; `regime.strategy_rules` now draws the lookback for both rules.
 

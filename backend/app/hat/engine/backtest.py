@@ -824,21 +824,13 @@ class _Run:
             bar = self.bar.get((instrument_id, day))
             if bar is None:
                 continue  # no session today: the level cannot break
-            if row.pivot is None:
-                self._skip(SKIP_NO_LEVEL)
+            price = self._fill(row, bar, day)
+            if isinstance(price, str):
+                self._skip(price)
                 continue
-            level = Decimal(row.pivot)
-            rule = self.spec.entry_fill_rule
-            # The tick matters only to a penetration from below; read it only then.
-            tick = None
-            if rule == PENETRATION and bar.open <= level < bar.high:
-                tick = self._tick(instrument_id, day)
-                if tick is None:
-                    self._skip(SKIP_BAD_INPUT)  # no tick to penetrate by (nor to plan a stop on)
-                    continue
-            price = entry_fill(bar.open, bar.high, level, tick, rule)
             if price is None:
                 continue  # the level did not break: the row expires at the session end
+            level = Decimal(row.pivot)
             playbook = self.config.playbook(row.playbook)
             lows = self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
             if isinstance(lows, str):
@@ -856,6 +848,22 @@ class _Run:
             )
             plan = _EntryPlan(price, stop, dip, locked, failed, filters)
             self._enter(row, bar, plan, prev, at)
+
+    def _fill(self, row: HatWatchlistEntry, bar: _Bar, day: date) -> Decimal | str | None:
+        """The entry fill of the row's level under the run's entry fill rule, None when the
+        level did not break, or the skip reason when there is no level or no tick to penetrate
+        by (HAT-BT-020)."""
+        if row.pivot is None:
+            return SKIP_NO_LEVEL
+        level = Decimal(row.pivot)
+        rule = self.spec.entry_fill_rule
+        # The tick matters only to a penetration from below; read it only then.
+        tick = None
+        if rule == PENETRATION and bar.open <= level < bar.high:
+            tick = self._tick(str(row.instrument_id), day)
+            if tick is None:
+                return SKIP_BAD_INPUT  # no tick to penetrate by (nor to plan a stop on)
+        return entry_fill(bar.open, bar.high, level, tick, rule)
 
     def _locked(self, instrument_id: str, price: Decimal, high: Decimal, day: date) -> bool | None:
         """Whether the entry at `price` is at the upper circuit (`upper_circuit_locked`)."""

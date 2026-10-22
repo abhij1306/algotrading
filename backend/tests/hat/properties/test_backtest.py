@@ -823,11 +823,12 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
     spec = dataclasses.replace(
         s.spec(s.config(), DAYS, fills=fills), entry_fill_rule=rule, for_promotion=promote
     )
+    market = s.market(paths, DAYS)
     if promote and (bps == 0 or rule == TOUCH):
         with pytest.raises(BacktestError, match="backtest_promotion_(without_slippage|on_touch)"):
-            run_backtest(spec, s.market(paths, DAYS))
+            run_backtest(spec, market)
         return
-    metrics = run_backtest(spec, s.market(paths, DAYS)).metrics
+    metrics = run_backtest(spec, market).metrics
     recorded = {
         "fill_path": FILL_PATH,
         "entry_fill_rule": rule,
