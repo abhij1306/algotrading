@@ -281,7 +281,7 @@ def test_pre_break_low(
     assert min(before, before if after is None else after) == bar_low
     day_low = min(open_, *(low for _, low in intraday))
     before, after = pre_break_low(open_, day_low, level, adr20)
-    if adr20 is None or adr20 <= 0:
+    if adr20 is None:
         assert (before, after) == (day_low, None)
         return
     assert before == max(day_low, min(open_, level * (1 - adr20 / 100)))
@@ -363,7 +363,7 @@ def test_entry_day_stop(paths: dict, with_intraday: bool, draw: st.DataObject) -
         assert entry is not None
         assert entry != open_ or intraday  # no gap over without 5-minute bars
         adr20 = _adr20(data, iid, day)
-        assert intraday or (adr20 is not None and adr20 > 0)
+        assert intraday or adr20 is not None
         before, dip = pre_break_low(open_, low, level, adr20, intraday)
         assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
         trade = trades.get((iid, day))

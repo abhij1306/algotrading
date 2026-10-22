@@ -164,6 +164,7 @@ _AT_NIGHT = time(16, 0)
 _AT_OPEN = time(9, 15)
 _AT_LOW = time(9, 20)
 _AT_ENTRY = time(9, 30)
+_AT_DIP = time(9, 45)  # the entry day's low after the entry
 _AT_HIGH = time(10, 0)
 _AT_FALL = time(15, 20)
 _AT_CLOSE = time(15, 25)
@@ -604,16 +605,19 @@ class _Run:
             fills=self.spec.fills,
         )
 
-    def _down_leg(self, position: HatPosition, bar: _Bar, day: date) -> None:
-        """The way down from the open to the low: the stop fills at min(open, stop). A position
-        the stop closes never saw the rest of the fall, so its excursion stops at the fill."""
+    def _down_leg(
+        self, position: HatPosition, bar: _Bar, day: date, moment: time = _AT_LOW
+    ) -> None:
+        """The way down from the open to the low (at `moment`): the stop fills at min(open, stop).
+        A position the stop closes never saw the rest of the fall, so its excursion stops at the
+        fill."""
         held = self.held[position.id]
         if position.closed_at is not None:
             return
         fill = stop_fill(bar.open, bar.low, Decimal(position.current_stop))
         if fill is not None:
             held.low = min(held.low, fill)
-            self._evaluate(position, exits.ExitView(fill), "live", _at(day, _AT_LOW))
+            self._evaluate(position, exits.ExitView(fill), "live", _at(day, moment))
         if position.closed_at is None:
             held.low = min(held.low, bar.low)
 
@@ -801,7 +805,7 @@ class _Run:
             if gapped:
                 # A gap over enters at the open: its stop needs the opening range's low.
                 return SKIP_GAP_NO_INTRADAY
-            if adr20 is None or adr20 <= 0:
+            if adr20 is None or adr20 < 0:
                 return SKIP_BAD_INPUT  # the whole day's low would be read before the break
         before, after = pre_break_low(bar.open, bar.low, level, adr20, intraday)
         if gapped and not low_of_day:
@@ -864,7 +868,7 @@ class _Run:
         self.held[position.id] = _Held(instrument_id, day, price, price)
         if dip is not None and dip < price:
             # From the entry down to the low: a stop it reaches fills at min(entry, stop).
-            self._down_leg(position, _Bar(price, bar.high, dip, bar.close), day)
+            self._down_leg(position, _Bar(price, bar.high, dip, bar.close), day, _AT_DIP)
         self._up_leg(position, price, bar.high, day)
 
     # --- the close, delistings, the period end ------------------------------------------------
@@ -1108,7 +1112,7 @@ def pre_break_low(
         # the bars miss is taken as after it.
         later = [*lows[at + 1 :], *([bar_low] if bar_low < min(lows) else [])]
         return min(lows[: at + 1]), (min(later) if later else None)
-    if adr20 is None or adr20 <= 0:
+    if adr20 is None or adr20 < 0:
         return bar_low, None
     estimate = min(bar_open, level * (1 - adr20 / 100))
     before = max(bar_low, estimate)

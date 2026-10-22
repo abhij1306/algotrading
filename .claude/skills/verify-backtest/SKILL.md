@@ -107,11 +107,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `961d82b10b84f56cdf7366de0c814f97851a45e52a2fb18f2596559f41f8eb9f`
+Covered digest: `2673dbb507c4e08b8bca49d26f8cbb4cb9705bab1c8c93c94b74ff29ef8f3ca3`
 
 ## Scope changes
 
-- PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`), the low after the break can stop the trade out on the entry day and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
+- PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`; an adr20 of 0 is a value, not a gap), the low after the break can stop the trade out on the entry day (recorded at 09:45, after the 09:30 entry) and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
 - PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
 
@@ -324,7 +324,7 @@ Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the low-of-day stop plan
 tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:368: in test_entry_day_stop
     assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
-E   AssertionError: assert Decimal('142.2600') == Decimal('144.87')
+E   AssertionError: assert Decimal('79.9100') == Decimal('79.99')
 ```
 
 Break: (PR 60) in `backend/app/hat/engine/backtest.py`: a gap over without 5-minute bars entered instead of skipped.
@@ -341,8 +341,8 @@ Break: (PR 60) in `backend/app/hat/engine/backtest.py`: a low-of-day entry with 
 ```
 tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:366: in test_entry_day_stop
-    assert intraday or (adr20 is not None and adr20 > 0)
-E   AssertionError: assert (() or (Decimal('0.0000') is not None and Decimal('0.0000') > 0))
+    assert intraday or adr20 is not None
+E   assert (() or None is not None)
 ```
 
 Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the entry day's low after the break never run (no same-day stop, no MAE seed).
@@ -351,7 +351,7 @@ Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the entry day's low afte
 tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:374: in test_entry_day_stop
     assert outcome == (day, "hard_stop", -1, -1)
-E   AssertionError: assert (datetime.dat....1867220000')) == (datetime.dat...stop', -1, -1)
+E   AssertionError: assert (datetime.dat....7777780000')) == (datetime.dat...stop', -1, -1)
 ```
 
 ### PBT backtest.contraction_stop_too_wide
