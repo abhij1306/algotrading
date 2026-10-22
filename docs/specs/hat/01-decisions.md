@@ -258,12 +258,12 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: the initial `hat_risk_policy_version` (direction `initial`) has `policy.risk_pct = 0.0025` exactly, as a Decimal. Harm: the first live trades risk more than the owner agreed. Detail: 06 §1.
 
 #### HAT-DEC-B15: Per-bot capital plus global open-risk cap
-- **Statement:** Each bot gets its capital from the risk policy, and total open risk across bots is capped at 3% of total equity.
-- **Source:** MA (B15); BL "Caps".
-- **PR:** 10
+- **Statement:** Each bot gets its capital from the risk policy, and total open risk across bots is capped at 1.5% of total equity (D128; was 3%).
+- **Source:** MA (B15); BL "Caps"; D128.
+- **PR:** 10, 46
 - **Verification:** PBT `caps.global_open_risk`
 - **Acceptance:**
-  - Property: for every set of open positions and candidate entry, the entry is approved only if `Σ (entry − stop) × qty` including it ≤ 0.03 × total equity. Harm: correlated stop-outs lose more than 3% in one move. Detail: 06 §3.
+  - Property: for every set of open positions and candidate entry, the entry is approved only if `Σ (entry − stop) × qty` including it ≤ 0.015 × total equity. Harm: correlated stop-outs lose more than 1.5% in one move. Detail: 06 §3.
 
 #### HAT-DEC-B16: Progressive exposure
 - **Statement:** Exposure starts at ladder level L1 and moves up and down on consecutive winners and losers.
@@ -345,14 +345,14 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Acceptance:**
   - Property: for every live state where the last price equals the upper band limit with no sellers, `max_chase` fails. Harm: a buy order rests at circuit and fills at the worst price of the day. Detail: 04 §4.
 
-#### HAT-DEC-B26: Kill switches 15% / 10%
-- **Statement:** Account equity ≥ 15% below peak puts all bots manage-only; bot equity ≥ 10% [A] below its peak puts that bot manage-only.
-- **Source:** MA (B26); BL "Kill switches (B26)".
-- **PR:** 10
+#### HAT-DEC-B26: Kill switches 10% / 10%
+- **Statement:** Account equity ≥ 10% below peak puts all bots manage-only; bot equity ≥ 10% below its peak puts that bot manage-only (D128; the account kill was 15%).
+- **Source:** MA (B26); BL "Kill switches (B26)"; D128.
+- **PR:** 10, 46
 - **Verification:** TLA `KillSwitch!TripOnDrawdown`, PBT `caps.kill_thresholds`
 - **Acceptance:**
-  - Property: for every equity series, the account kill switch is tripped iff equity ≤ 0.85 × peak at the snapshot, and a bot switch iff bot equity ≤ 0.90 × bot peak. Harm: drawdowns keep compounding past the agreed stop. Detail: 06 §6.
-- **[A]** Bot kill 10%: default 0.10; validated by live review (BL "Defaults that are assumptions").
+  - Property: for every equity series, the account kill switch trips at the first snapshot whose equity ≤ 0.90 × peak, and a bot switch at the first whose bot equity ≤ 0.90 × bot peak; a tripped switch stays tripped through any recovery until a manual re-arm. Harm: drawdowns keep compounding past the agreed stop. Detail: 06 §6.
+- Bot kill 10%: the owner's number since D128 (it was an [A] default).
 
 #### HAT-DEC-B27: Auto-adjust for splits and bonuses
 - **Statement:** Adjusted prices are computed from raw bars and corporate-action factors; raw bars are never rewritten.

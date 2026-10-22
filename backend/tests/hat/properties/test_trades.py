@@ -74,14 +74,14 @@ def _owner_open_risk(session: Session) -> Decimal:
 @given(_two_bot_triggers(), st.integers(1, 7), st.integers(1, 2499))
 def test_global_open_risk_across_bots(order: list[int], room: int, spare: int) -> None:
     """HAT-RISK-030 through `open_entry`: two bots of one owner, on different broker accounts,
-    share the 3% global open-risk cap. However their triggers interleave, a trigger is rejected
-    with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 3% of
-    total equity, and is accepted otherwise; the owner never holds more. Harm: each bot reads
-    only its own positions, so N bots hold N x 3%."""
+    share the 1.5% global open-risk cap (D128). However their triggers interleave, a trigger is
+    rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds
+    1.5% of total equity, and is accepted otherwise; the owner never holds more. Harm: each bot
+    reads only its own positions, so N bots hold N x 1.5%."""
     policy = policy_with(max_entries_per_day=20)  # the per-bot caps never bind here
     risk = decide(valid_ctx(total_equity=Decimal(10**12))).risk_amount
-    total_equity = (risk * room + spare) / Decimal("0.03")  # room for `room` entries, not more
-    cap = Decimal("0.03") * total_equity
+    total_equity = (risk * room + spare) / Decimal("0.015")  # room for `room` entries, not more
+    cap = Decimal("0.015") * total_equity
     engine = memory_engine()
     with Session(engine) as session:
         first = seed_engine_world(session, instruments=len(order) or 1)

@@ -88,7 +88,7 @@ def accepted_risk(parts: dict) -> Decimal:
 )
 def test_global_open_risk(others: list, total_equity: Decimal) -> None:
     """An entry is accepted only if the open risk of every bot's positions plus its own risk is
-    within 3% of total equity, and is rejected with `global_open_risk` when it is not."""
+    within 1.5% of total equity (D128), and is rejected with `global_open_risk` when it is not."""
     positions = [
         position(
             bot=OTHER_BOT, avg_entry=entry, stop=entry - min(entry - D("0.01"), D(gap)), qty=qty
@@ -98,18 +98,18 @@ def test_global_open_risk(others: list, total_equity: Decimal) -> None:
     open_risk = sum(((p.avg_entry - p.current_stop) * p.qty for p in positions), D(0))
     candidate = accepted_risk({})
     decision = decide(valid_ctx(open_positions=positions, total_equity=total_equity))
-    over = open_risk + candidate > D("0.03") * total_equity
+    over = open_risk + candidate > D("0.015") * total_equity
     if over:
         assert decision.reason == Reason.GLOBAL_OPEN_RISK
     else:
         assert decision.accepted
-        assert open_risk + decision.risk_amount <= D("0.03") * total_equity
+        assert open_risk + decision.risk_amount <= D("0.015") * total_equity
 
 
 def test_global_open_risk_boundary() -> None:
     """Exactly at the cap is allowed; one paisa over is not."""
     candidate = accepted_risk({})
-    exact_equity = candidate / D("0.03")
+    exact_equity = candidate / D("0.015")
     assert decide(valid_ctx(total_equity=exact_equity)).accepted
     assert (
         decide(valid_ctx(total_equity=exact_equity - D("0.01"))).reason == Reason.GLOBAL_OPEN_RISK
@@ -255,11 +255,12 @@ def running_peak_series(equities: list) -> list[EquityPoint]:
 
 @given(STEPS, st.one_of(st.none(), st.integers(min_value=0, max_value=14)))
 def test_kill_thresholds(equities: list, rearm_after: int | None) -> None:
-    """The account kill trips exactly when (peak - equity)/peak >= 15% has occurred since the last
-    re-arm, and a bot kill exactly at 10%; a snapshot at or before the re-arm does not count."""
+    """The account kill trips exactly when (peak - equity)/peak >= 10% has occurred since the last
+    re-arm, and a bot kill exactly at 10% (both D128); a snapshot at or before the re-arm does
+    not count."""
     series = running_peak_series(equities)
     since = None if rearm_after is None else AT + timedelta(days=rearm_after)
-    for threshold, percent in ((SEED.account_drawdown_pct, 15), (SEED.bot_drawdown_pct, 10)):
+    for threshold, percent in ((SEED.account_drawdown_pct, 10), (SEED.bot_drawdown_pct, 10)):
         expected = any(
             p.at > since if since else True
             for p in series
@@ -270,8 +271,8 @@ def test_kill_thresholds(equities: list, rearm_after: int | None) -> None:
 
 @given(st.decimals(min_value=D("1"), max_value=D("1000000"), places=2))
 def test_kill_threshold_boundary(peak: Decimal) -> None:
-    """Exactly 15% below the peak trips the account kill; a paisa less of a drop does not."""
-    at_limit = peak * D("0.85")
+    """Exactly 10% below the peak trips the account kill (D128); a paisa less of a drop does not."""
+    at_limit = peak * D("0.90")
     assert kill.drawdown_breached(at_limit, peak, SEED.account_drawdown_pct)
     assert not kill.drawdown_breached(at_limit + D("0.01"), peak, SEED.account_drawdown_pct)
 

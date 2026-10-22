@@ -17,6 +17,7 @@ from sqlalchemy.pool import QueuePool
 
 from .base import Base
 from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
+from .hat.risk.policy_upkeep import ensure_hat_policies
 from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
 from .hat.settings import is_enabled as hat_is_enabled
 from .paths import ENV_FILE
@@ -85,7 +86,8 @@ def init_db() -> None:
 
 
 def ensure_hat_database(*, bind: Engine | None = None) -> None:
-    """HAT's Postgres-only DDL and reference seed (HAT-SCH-101, HAT-SCH-021).
+    """HAT's Postgres-only DDL, reference seed and policy upkeep (HAT-SCH-101, HAT-SCH-021,
+    HAT-RISK-011).
 
     A failure here must not take the API down while HAT is off: it is logged, and raised only
     when HAT_ENABLED is true.
@@ -95,6 +97,7 @@ def ensure_hat_database(*, bind: Engine | None = None) -> None:
         ensure_hat_columns(db_engine)
         ensure_hat_schema(db_engine)
         seed_hat_reference(db_engine)
+        ensure_hat_policies(db_engine)
     except Exception:
         logger.exception("HAT schema upkeep failed")
         if hat_is_enabled():

@@ -95,7 +95,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `2bd6605c48bcb12738877cb9089d9eb6ee04cb67a61276d1ff394d00da096ab2`
+Covered digest: `8be0ef9c9b49621b5bf97f2e5ddaa8125aaa1dc78ed15151c9b2df4e5279be60`
 
 ## Scope changes
 
@@ -961,6 +961,12 @@ E            1,
 E            D(0) / 100,  # or any other generated value
 E        )],
 FAILED tests/hat/properties/test_lifecycle.py::test_trade_results_ignore_later_trades
+```
+
+Break: (PR 46) the seed's Probation band (`health_bands.zero_dd`) back to 0.12: a sleeve 10% under its peak stays live (`lifecycle.allocation_moves_a_health_zero_sleeve_to_probation`, whose 9% and 10% edges are now `@example`s).
+
+```
+E   AssertionError: assert 'live' == 'probation'
 ```
 
 ### CONF portfolio.*

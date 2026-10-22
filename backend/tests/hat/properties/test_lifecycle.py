@@ -305,10 +305,12 @@ def test_transition_records_its_event(current: str, target: str, ev: Evidence, o
 
 @settings(max_examples=40)
 @given(st.integers(1, 10_000_000), st.integers(0, 40))
+@example(peak_cents=10_000_000, drop_pct=10)  # the Probation band's edge (D128)
+@example(peak_cents=10_000_000, drop_pct=9)
 def test_allocation_moves_a_health_zero_sleeve_to_probation(peak_cents: int, drop_pct: int) -> None:
-    """In the nightly allocation a live sleeve whose last snapshot is 12% or more under its peak
-    moves to Probation before the weights are written, with its event and weight 0; a shallower
-    drawdown leaves it live; a rerun moves nothing again (HAT-PORT-040, HAT-PORT-063)."""
+    """In the nightly allocation a live sleeve whose last snapshot is 10% (D128) or more under
+    its peak moves to Probation before the weights are written, with its event and weight 0; a
+    shallower drawdown leaves it live; a rerun moves nothing again (HAT-PORT-040, HAT-PORT-063)."""
     peak = D(peak_cents) / 100
     equity = peak * (100 - drop_pct) / 100
     engine = memory_engine()
@@ -335,7 +337,7 @@ def test_allocation_moves_a_health_zero_sleeve_to_probation(peak_cents: int, dro
             select(HatEvent).where(HatEvent.event_type == "sleeve.lifecycle_changed")
         ).all()
         assert again.moved == ()
-        if (peak - equity) * 100 >= 12 * peak:
+        if (peak - equity) * 100 >= 10 * peak:
             assert bot.lifecycle_state == "probation"
             assert first.moved == ((bot_id, "probation"),)
             assert (D(row.health_mult), D(row.final_weight), D(row.capital)) == (0, 0, 0)

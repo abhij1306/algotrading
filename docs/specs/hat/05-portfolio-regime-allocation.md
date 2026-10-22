@@ -152,18 +152,18 @@ Two regime definitions exist on purpose (design review 2026-10-22 item 13, kept 
 | Sleeve drawdown from its peak | Multiplier | State |
 | --- | --- | --- |
 | Under 8% | 1.0 | Live |
-| 8% to 12% | 0.5 | Live |
-| 12% or more | 0 | Probation |
+| 8% to 10% | 0.5 | Live |
+| 10% or more | 0 | Probation |
 
 #### HAT-PORT-040: Health multiplier from sleeve drawdown bands
-- **Statement:** With drawdown dd = 1 − equity / equity_peak of the sleeve, the health multiplier is 1.0 if dd < 8%, 0.5 if 8% <= dd < 12%, and 0 with a move to Probation if dd >= 12%.
+- **Statement:** With drawdown dd = 1 − equity / equity_peak of the sleeve, the health multiplier is 1.0 if dd < 8%, 0.5 if 8% <= dd < 10%, and 0 with a move to Probation if dd >= 10% (D128; the Probation band was 12%).
 - **Source:** BL "Health multiplier (per sleeve)"; SCH `hat_daily_bot_snapshot` (equity, equity_peak); PL2, PL4.
-- **PR:** 9
+- **PR:** 9, 46
 - **Verification:** PBT `health.bands`, TLA `SleeveLifecycle!ProbationOnHealthZero`
 - **Acceptance:**
   - Property: for every (equity >= 0, equity_peak > 0), the multiplier equals the band value above and is monotone non-increasing in dd. Harm: a sleeve in a deep drawdown keeps full capital.
   - Property: in every reachable state, a sleeve whose health multiplier is 0 is in Probation by the next allocation. Harm: a broken sleeve keeps trading live.
-- **[A]** bands 8% / 12%: defaults modelled on multi-manager pods; validated by backtest of sleeve drawdown paths (PR 12) and live review.
+- **[A]** half band 8%: default modelled on multi-manager pods; the Probation band 10% is the owner's (D128). Both validated by backtest of sleeve drawdown paths (PR 12) and live review.
 
 ## §5 Allocator
 
