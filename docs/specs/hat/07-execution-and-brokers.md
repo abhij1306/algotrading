@@ -29,7 +29,7 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 - **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.
 - **Source:** BL "Stop placement at the broker (B17)" step 4; DS "Broker matrix"; MA "Risks" (GTT support).
 - **PR:** 13, 15, 29
-- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_before_the_broker`
+- **Verification:** TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker`
 - **Acceptance:**
   - Property: in every reachable state, a bot whose broker account has `capabilities.gtt_delivery = false` is never in effective mode auto, and an auto request for it is refused. Harm: an auto position is left without an overnight stop.
   - Property: a Take whose account no longer reports GTT for delivery (or is no longer active) when the user decides places no order and ends the signal Rejected (`no_gtt_delivery`). Harm: a card sent before a capability change still buys without an overnight stop.

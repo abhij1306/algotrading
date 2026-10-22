@@ -430,7 +430,7 @@ to an artefact that exists.
 | HAT-RISK-104 | [06](06-risk-and-governance.md) | 10, K1 | PBT `caps.hat_kill_is_authority`, CONF `risk.no_legacy_halt_read` |
 | HAT-EXEC-010 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual` |
 | HAT-EXEC-011 | [07](07-execution-and-brokers.md) | 8, 15 | CONF `exec.default_mode_shadow` |
-| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15, 29 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_before_the_broker` |
+| HAT-EXEC-012 | [07](07-execution-and-brokers.md) | 13, 15, 29 | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker` |
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
 | HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
