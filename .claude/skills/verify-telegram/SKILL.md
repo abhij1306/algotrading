@@ -117,7 +117,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `7e4882725ba783dc79d86fa3934cd9d9ce4952cc752a1908c366c3256475ff44`
+Covered digest: `3d436c32bfd6997a5a4489f31e4df7496bc89e3568944a0b09a215ff86f420b8`
 
 ## Scope changes
 
