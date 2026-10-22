@@ -313,7 +313,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `20803ef4d66b07c18da4d4815d7cbf9f77fb24c03b88650d3337212bb0d7d93e`
+Covered digest: `a26aec33a31ac423ba9efa6bf0e88c69d317732b4f1d0d825a8ff46eac4d761f`
 
 ## Scope changes
 

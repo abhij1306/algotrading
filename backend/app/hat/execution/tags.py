@@ -111,7 +111,7 @@ def is_hat_tag(tag: object) -> bool:
 
 def is_gtt_tag(tag: object) -> bool:
     """True for a HAT tag of a GTT stop (purpose `stop_gtt`)."""
-    return is_hat_tag(tag) and tag[2] == PURPOSE_LETTERS["stop_gtt"]  # type: ignore[index]
+    return isinstance(tag, str) and is_hat_tag(tag) and tag[2] == PURPOSE_LETTERS["stop_gtt"]
 
 
 def decode_tag(tag: str) -> DecodedTag:

@@ -371,8 +371,9 @@ def test_gtt_payloads(
     2026-10-22); a GTT without a stop_gtt HT tag is refused before any SDK call."""
     sdk = RecordingSdk()
     broker = adapter_over(sdk)
+    untagged = GttRequest(symbol, qty, trigger, min(limit, trigger), tag=other)
     with pytest.raises(InvalidIntentError):
-        broker.place_gtt_stop(GttRequest(symbol, qty, trigger, min(limit, trigger), tag=other))
+        broker.place_gtt_stop(untagged)
     if limit >= trigger:
         request = GttRequest(symbol, qty, trigger, limit, tag=tag)
         with pytest.raises(InvalidIntentError):

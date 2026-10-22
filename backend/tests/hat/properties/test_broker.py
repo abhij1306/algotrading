@@ -261,8 +261,9 @@ def test_rate_limit_is_its_own_code(read: str, write: str) -> None:
         instruments=lambda: list(SYMBOLS.items()),
     )
     assert adapter.session_status() is SessionStatus.LIVE
+    read_book = getattr(adapter, read)
     with pytest.raises(BrokerUnavailableError) as caught:
-        getattr(adapter, read)()
+        read_book()
     assert caught.value.code == CODE_RATE_LIMITED
     result = WRITES[write](adapter)
     assert getattr(result, "status", "rejected") == "rejected"

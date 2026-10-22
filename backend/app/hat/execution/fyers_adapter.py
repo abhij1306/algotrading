@@ -129,7 +129,7 @@ _GTT_KNOWN = {2, 4, 6}
 # what a reply that cannot be read raises while it is parsed
 _UNREADABLE = (KeyError, ValueError, TypeError, InvalidOperation, AttributeError, OverflowError)
 _GTT_OCO = 2  # `gtt_oco_ind`: 1 a single GTT, 2 an OCO
-_INTEGER_TEXT = re.compile(r"-?[0-9]+")
+_INTEGER_TEXT = re.compile(r"-?\d+", re.ASCII)  # ASCII: "¹" is a str digit, not an int
 
 
 def _whole_number(value: object) -> int | None:
